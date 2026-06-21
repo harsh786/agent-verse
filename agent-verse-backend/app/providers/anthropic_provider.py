@@ -1,0 +1,103 @@
+"""Anthropic (Claude) provider implementation.
+
+Default provider for AgentVerse. Uses the official Anthropic Python SDK.
+The API key is read from the credential vault or directly from env/secrets.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.providers.base import (
+    CompletionRequest,
+    CompletionResponse,
+    EmbedRequest,
+    EmbedResponse,
+)
+
+
+class AnthropicProvider:
+    """Anthropic Claude provider.
+
+    Args:
+        api_key: Anthropic API key. Reads from env ANTHROPIC_API_KEY if not given.
+        default_model: Model to use when the request does not specify one.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        default_model: str = "claude-opus-4-8",
+    ) -> None:
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise ImportError("Install 'anthropic' to use AnthropicProvider") from exc
+
+        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        self._default_model = default_model
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        import anthropic
+
+        model = request.model or self._default_model
+        messages = [
+            {"role": m.role, "content": m.content}
+            for m in request.messages
+            if m.role != "system"
+        ]
+        system_prompt = request.system or next(
+            (m.content for m in request.messages if m.role == "system"), anthropic.NOT_GIVEN
+        )
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+        }
+        if system_prompt is not anthropic.NOT_GIVEN:
+            kwargs["system"] = system_prompt
+        if request.tools:
+            kwargs["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }
+                for t in request.tools
+            ]
+
+        response = await self._client.messages.create(**kwargs)
+
+        text_content = " ".join(
+            block.text for block in response.content if hasattr(block, "text")
+        )
+        tool_calls = [
+            {"name": block.name, "input": block.input, "id": block.id}
+            for block in response.content
+            if block.type == "tool_use"
+        ]
+
+        return CompletionResponse(
+            content=text_content,
+            model=response.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            tool_calls=tool_calls,
+            stop_reason=response.stop_reason or "end_turn",
+        )
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        # Anthropic does not currently offer an embedding API.
+        # This raises to ensure callers use a dedicated embedder (Voyage AI, etc.)
+        raise NotImplementedError(
+            "Anthropic does not provide an embedding API. "
+            "Use VoyageProvider or OpenAICompatibleProvider for embeddings."
+        )
+
+    def supports_vision(self) -> bool:
+        return True
+
+    def supports_tool_use(self) -> bool:
+        return True
