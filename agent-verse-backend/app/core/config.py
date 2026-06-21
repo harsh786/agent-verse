@@ -1,0 +1,65 @@
+"""Typed application settings, loaded from the environment (12-factor).
+
+Sensitive values (DB password, Redis password, vault master key) are resolved through
+:func:`app.core.secrets.read_secret` so the same image works in dev (env vars) and prod
+(mounted secret files). Non-sensitive config is loaded directly by pydantic-settings.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+Environment = Literal["development", "staging", "production"]
+
+
+class Settings(BaseSettings):
+    """Application-wide configuration."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
+    )
+
+    # --- app ---
+    app_name: str = "AgentVerse"
+    environment: Environment = "development"
+    debug: bool = False
+    log_level: str = "INFO"
+
+    # --- networking / security ---
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:5173"]
+    )
+
+    # --- infrastructure DSNs ---
+    database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # --- observability ---
+    service_name: str = "agentverse-backend"
+    otel_exporter_otlp_endpoint: str | None = None
+    metrics_enabled: bool = True
+
+    # --- LLM (default provider) ---
+    default_llm_provider: str = "anthropic"
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_csv_origins(cls, value: object) -> object:
+        """Allow CORS origins as a comma-separated string in the environment."""
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return the cached process-wide settings singleton."""
+    return Settings()
