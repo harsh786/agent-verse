@@ -32,6 +32,10 @@ _BYPASS_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/tenants/signup",  # public — no auth yet to sign up
+    "/auth/login",      # SSO redirect initiation
+    "/auth/callback",   # SSO OAuth2 callback
+    "/auth/config",     # frontend SSO config discovery
+    "/auth/token",      # authorization code exchange
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]
@@ -50,6 +54,40 @@ def _is_cors_preflight(request: Request) -> bool:
         and "origin" in request.headers
         and "access-control-request-method" in request.headers
     )
+
+
+async def _try_resolve_sso(request: Request) -> "TenantContext | None":
+    """Attempt to resolve a Keycloak JWT Bearer token to a TenantContext.
+
+    Returns None if SSO is disabled, if the token isn't a JWT, or if
+    validation fails — allowing the API key flow to handle it instead.
+    """
+    from app.auth.keycloak import _sso_enabled, resolve_tenant_from_jwt
+
+    if not _sso_enabled():
+        return None
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+
+    token = auth[7:].strip()
+    if not token or len(token) < 20:
+        return None
+
+    # Only try JWT validation if it looks like a JWT (3 base64 segments separated by dots)
+    # API keys typically have no dots.
+    if token.count(".") < 2:
+        return None  # Not a JWT — let API key flow handle it
+
+    tenant_service = getattr(request.app.state, "tenant_service", None)
+    if tenant_service is None:
+        return None
+
+    try:
+        return await resolve_tenant_from_jwt(token, tenant_service)
+    except Exception:
+        return None  # Fall through to API key auth
 
 
 def _auth_error_response() -> JSONResponse:
@@ -115,7 +153,15 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if raw_key is None:
             return _auth_error_response()
 
-        tenant_ctx = await self._resolver(raw_key)
+        # Try SSO JWT first when the token looks like a JWT (has 2+ dots)
+        tenant_ctx: TenantContext | None = None
+        if raw_key.count(".") >= 2:
+            tenant_ctx = await _try_resolve_sso(request)
+
+        # Fall back to API key resolution
+        if tenant_ctx is None:
+            tenant_ctx = await self._resolver(raw_key)
+
         if tenant_ctx is None:
             return _auth_error_response()
 

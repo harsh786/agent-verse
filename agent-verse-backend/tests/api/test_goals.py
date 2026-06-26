@@ -72,6 +72,7 @@ def test_submit_goal_accepts_agent_binding() -> None:
         tenant_ctx=_CTX,
         agent_id="agent-123",
         workflow_mode="multi_agent",
+        execution_context={},
     )
 
 

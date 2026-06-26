@@ -16,12 +16,28 @@ from app.tenancy.context import TenantContext
 router = APIRouter(prefix="/goals", tags=["goals"])
 
 
+class PersistenceConfigRequest(BaseModel):
+    max_attempts: int = Field(default=10, ge=1, le=100)
+    iterations_per_attempt: int = Field(default=15, ge=1, le=50)
+    base_backoff_seconds: float = Field(default=30.0, ge=1.0, le=3600.0)
+    max_backoff_seconds: float = Field(default=600.0, ge=10.0, le=86400.0)
+    strategy_switch_after: int = Field(default=2, ge=1, le=10)
+    escalate_after_failures: int = Field(default=6, ge=1, le=50)
+    total_timeout_seconds: float = Field(default=0.0, ge=0.0)
+    decompose_on_failure: bool = True
+
+
 class GoalRequest(BaseModel):
-    goal: str = Field(..., min_length=1)
+    goal: str = Field(..., min_length=1, max_length=10_000)
     priority: str = "normal"
     dry_run: bool = False
     agent_id: str | None = None
     workflow_mode: str = "single_agent"
+    # Persistence mode: keep trying until goal is achieved
+    persistence_mode: bool = False
+    persistence_config: PersistenceConfigRequest = Field(
+        default_factory=PersistenceConfigRequest
+    )
 
 
 class ApproveRequest(BaseModel):
@@ -46,6 +62,13 @@ def _require_tenant(request: Request) -> TenantContext:
 async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     svc = _goal_service(request)
+
+    # Build execution_context with persistence settings when enabled
+    exec_ctx: dict[str, Any] = {}
+    if body.persistence_mode:
+        exec_ctx["persistence_mode"] = True
+        exec_ctx["persistence_config"] = body.persistence_config.model_dump()
+
     result: dict[str, Any] = await svc.submit_goal(
         goal=body.goal,
         priority=body.priority,
@@ -53,6 +76,7 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
         tenant_ctx=tenant,
         agent_id=body.agent_id,
         workflow_mode=body.workflow_mode,
+        execution_context=exec_ctx,
     )
     return result
 
