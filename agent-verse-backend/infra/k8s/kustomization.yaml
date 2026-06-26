@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentverse
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - external-secret.yaml
+  - migration-job.yaml
+  - pgbouncer-deployment.yaml
+  - networkpolicy.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - backend-hpa.yaml
+  - backend-pdb.yaml
+  - worker-deployment.yaml
+  - worker-hpa.yaml
+  - worker-pdb.yaml
+  - beat-deployment.yaml
+  - ingress.yaml
+  - postgres-pvc.yaml
+  - keda-scaledobject.yaml
+  - frontend-deployment.yaml
+  - pg-backup-cronjob.yaml
+  - cluster-issuer.yaml

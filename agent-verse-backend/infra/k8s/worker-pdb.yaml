@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentverse-worker-pdb
+  namespace: agentverse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: agentverse-worker

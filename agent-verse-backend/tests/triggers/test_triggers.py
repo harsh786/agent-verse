@@ -9,13 +9,11 @@ Tests cover:
 
 from __future__ import annotations
 
-import pytest
-
-from app.triggers.models import TriggerSpec, TriggerType
-from app.triggers.store import ScheduleStore
-from app.triggers.nl_scheduler import NLScheduler
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
+from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.nl_scheduler import NLScheduler
+from app.triggers.store import ScheduleStore
 
 _CTX = TenantContext(tenant_id="tid-a", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
 _CTX_B = TenantContext(tenant_id="tid-b", plan=PlanTier.STARTER, api_key_id="kid-2")

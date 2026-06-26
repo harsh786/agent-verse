@@ -48,6 +48,19 @@ class CircuitBreaker:
             time.monotonic() - self._opened_at >= self._cooldown
         )
 
+    def can_call(self) -> bool:
+        """Return True if a call is allowed now (handles HALF_OPEN probe window)."""
+        if self._state == CircuitState.CLOSED:
+            return True
+        if self._state == CircuitState.OPEN:
+            if self.allows_probe():
+                self._state = CircuitState.HALF_OPEN
+                return True
+            return False
+        if self._state == CircuitState.HALF_OPEN:
+            return True
+        return False
+
     def record_failure(self) -> None:
         self._failure_count += 1
         if self._failure_count >= self._threshold:

@@ -64,6 +64,27 @@ class OpenAICompatibleProvider:
             ]
 
         response = await self._client.chat.completions.create(**kwargs)
+
+        # Record token and cost metrics (never let this break the main path)
+        try:
+            from app.governance.pricing import estimate_cost
+            from app.observability.metrics import record_cost_usd, record_llm_tokens
+            usage = getattr(response, "usage", None)
+            if usage:
+                record_llm_tokens("openai", response.model or "", "prompt",
+                                  getattr(usage, "prompt_tokens", 0))
+                record_llm_tokens("openai", response.model or "", "completion",
+                                  getattr(usage, "completion_tokens", 0))
+                cost = estimate_cost(
+                    response.model or "",
+                    getattr(usage, "prompt_tokens", 0),
+                    getattr(usage, "completion_tokens", 0),
+                )
+                if cost > 0:
+                    record_cost_usd("llm", cost)
+        except Exception:
+            pass
+
         choice = response.choices[0]
         content = choice.message.content or ""
         tool_calls = []

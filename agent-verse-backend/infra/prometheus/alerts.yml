@@ -1,0 +1,61 @@
+groups:
+  - name: agentverse_alerts
+    rules:
+
+      # 1 — Goal failure rate > 50% over 5 min (raw rate threshold)
+      - alert: HighGoalFailureRate
+        expr: rate(agentverse_goal_total{status="failed"}[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High goal failure rate"
+          description: "More than 50% of goals are failing"
+          runbook: "https://docs.agentverse.ai/runbooks/high-goal-failure-rate"
+
+      # 2 — Goal queue depth exceeds 100 items
+      - alert: GoalQueueDepthHigh
+        expr: agentverse_queue_depth{queue="goals"} > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Goal queue depth high"
+          description: "Goal queue has more than 100 pending items"
+          runbook: "https://docs.agentverse.ai/runbooks/celery-queue-depth"
+
+      # 3 — LLM cost exceeded $50 in the last hour
+      - alert: HighLLMCost
+        expr: increase(agentverse_cost_usd_total[1h]) > 50
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High LLM cost in last hour"
+          description: "LLM cost exceeded $50 in the last hour"
+          runbook: "https://docs.agentverse.ai/runbooks/high-llm-cost"
+
+      # 4 — Tool call error rate > 10% over 5 min
+      - alert: ToolCallErrorRateHigh
+        expr: |
+          rate(agentverse_tool_call_total{status="failed"}[5m])
+          / (rate(agentverse_tool_call_total[5m]) + 0.0001)
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High tool call error rate"
+          description: "More than 10% of tool calls are failing"
+          runbook: "https://docs.agentverse.ai/runbooks/high-tool-error-rate"
+
+      # 5 — More than 10 HITL approvals waiting for > 10 minutes
+      - alert: HITLApprovalBacklog
+        expr: agentverse_approval_wait_seconds_count > 10
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "HITL approval backlog"
+          description: "More than 10 approvals waiting"
+          runbook: "https://docs.agentverse.ai/runbooks/hitl-approval-backlog"

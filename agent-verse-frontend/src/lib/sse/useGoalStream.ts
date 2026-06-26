@@ -1,6 +1,7 @@
 /**
  * SSE hook for real-time goal execution events.
- * Connects to GET /goals/{id}/stream and emits typed events.
+ * Uses fetch-based streaming to support X-API-Key header.
+ * Native EventSource cannot set custom headers, so we use fetch + ReadableStream.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -22,7 +23,7 @@ interface UseGoalStreamOptions {
 export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions) {
   const [events, setEvents] = useState<GoalEvent[]>([]);
   const [connected, setConnected] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const onEventRef = useRef(opts?.onEvent);
   onEventRef.current = opts?.onEvent;
 
@@ -30,31 +31,69 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
     if (!goalId) return;
 
     const apiKey = localStorage.getItem("av_api_key") ?? "";
-    const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
-    const url = `${baseUrl}/goals/${goalId}/stream?api_key=${encodeURIComponent(apiKey)}`;
+    const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
+    const url = `${API_BASE_URL}/goals/${goalId}/stream`;
 
-    const es = new EventSource(url);
-    esRef.current = es;
+    const abort = new AbortController();
+    abortRef.current = abort;
 
-    es.onopen = () => setConnected(true);
-
-    es.onmessage = (e: MessageEvent<string>) => {
+    const connect = async () => {
       try {
-        const parsed = JSON.parse(e.data) as GoalEvent;
-        setEvents((prev) => [...prev, parsed]);
-        onEventRef.current?.(parsed);
-      } catch {
-        // ignore malformed events
+        const res = await fetch(url, {
+          headers: {
+            "X-API-Key": apiKey,
+            Accept: "text/event-stream",
+          },
+          signal: abort.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          setConnected(false);
+          return;
+        }
+
+        setConnected(true);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE frames are separated by double newlines
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+
+          for (const frame of frames) {
+            for (const line of frame.split("\n")) {
+              const data = line.startsWith("data: ") ? line.slice(6).trim() : null;
+              if (!data) continue;
+              try {
+                const parsed = JSON.parse(data) as GoalEvent;
+                setEvents((prev) => [...prev, parsed]);
+                onEventRef.current?.(parsed);
+              } catch {
+                // ignore malformed JSON frames
+              }
+            }
+          }
+        }
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          setConnected(false);
+        }
+      } finally {
+        setConnected(false);
       }
     };
 
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-    };
+    connect();
 
     return () => {
-      es.close();
+      abort.abort();
+      abortRef.current = null;
       setConnected(false);
     };
   }, [goalId]);

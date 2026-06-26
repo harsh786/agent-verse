@@ -16,13 +16,7 @@ from dataclasses import dataclass
 
 PASS_THRESHOLD = 0.70
 
-EVAL_DIMENSIONS = [
-    "task_completion",
-    "accuracy",
-    "efficiency",
-    "safety",
-    "coherence",
-]
+EVAL_DIMENSIONS = ["task_completion", "accuracy", "efficiency", "safety", "coherence", "sla"]
 
 
 @dataclass
@@ -36,6 +30,8 @@ class EvalResult:
 class EvalScorecard:
     goal_id: str
     scores: dict[str, float]
+    goal: str = ""
+    iterations: int = 0
 
     def average_score(self) -> float:
         if not self.scores:
@@ -47,3 +43,6 @@ class EvalScorecard:
 
     def dimension_results(self) -> list[EvalResult]:
         return [EvalResult(dimension=k, score=v) for k, v in self.scores.items()]
+
+    def get_score(self, dimension: str) -> float | None:
+        return self.scores.get(dimension)

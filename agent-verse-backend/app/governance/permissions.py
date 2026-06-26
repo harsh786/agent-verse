@@ -49,9 +49,52 @@ class PermissionMatrix:
     def get_rule(self, tool_name: str, *, tenant_ctx: TenantContext) -> PermissionRule | None:
         return self._rules.get((tenant_ctx.tenant_id, tool_name))
 
-    def check(self, tool_name: str, *, tenant_ctx: TenantContext) -> ActionLevel:
+    def check(
+        self,
+        tool_name: str,
+        *,
+        tenant_ctx: TenantContext,
+        scope_value: str | None = None,
+    ) -> ActionLevel:
+        """Return the action level for a tool call.
+
+        If scope_value is provided and the rule has a scope_pattern, the value
+        is matched against the pattern using glob semantics. A mismatch returns DENY.
+        If scope_value is None, scope_pattern is not evaluated.
+        """
+        import fnmatch
         rule = self.get_rule(tool_name, tenant_ctx=tenant_ctx)
-        return rule.level if rule is not None else self._DEFAULT
+        if rule is None:
+            return self._DEFAULT
+        if scope_value is not None and rule.scope_pattern is not None:
+            if not fnmatch.fnmatch(scope_value, rule.scope_pattern):
+                return ActionLevel.DENY
+        return rule.level
+
+    def check_with_limits(
+        self,
+        tool_name: str,
+        *,
+        tenant_ctx: TenantContext,
+        scope_value: str | None = None,
+        daily_call_count: int = 0,
+        goal_call_count: int = 0,
+    ) -> ActionLevel:
+        """Check permission plus rate limits.
+
+        Evaluates scope, daily_limit, and per_goal_limit in order.
+        Returns DENY as soon as any constraint is violated.
+        """
+        base = self.check(tool_name, tenant_ctx=tenant_ctx, scope_value=scope_value)
+        if base == ActionLevel.DENY:
+            return ActionLevel.DENY
+        rule = self.get_rule(tool_name, tenant_ctx=tenant_ctx)
+        if rule is not None:
+            if rule.daily_limit is not None and daily_call_count >= rule.daily_limit:
+                return ActionLevel.DENY
+            if rule.per_goal_limit is not None and goal_call_count >= rule.per_goal_limit:
+                return ActionLevel.DENY
+        return base
 
     def list_rules(self, *, tenant_ctx: TenantContext) -> list[PermissionRule]:
         return [

@@ -3,21 +3,53 @@ import { useNavigate } from "react-router-dom";
 import { Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 
+const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+
+interface TenantProfile {
+  tenant_id: string;
+  plan: string;
+}
+
+async function validateCredentials(apiKey: string): Promise<TenantProfile | null> {
+  const res = await fetch(`${API_BASE}/tenants/me`, {
+    headers: { 'X-API-Key': apiKey },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export function AuthPage() {
   const [apiKey, setApiKey] = useState("");
   const [tenantId, setTenantId] = useState("");
   const [error, setError] = useState("");
-  const { login } = useAuthStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { setCredentials } = useAuthStore();
   const navigate = useNavigate();
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!apiKey.trim() || !tenantId.trim()) {
+    const trimmedApiKey = apiKey.trim();
+    const trimmedTenantId = tenantId.trim();
+    if (!trimmedApiKey || !trimmedTenantId) {
       setError("API key and tenant ID are required.");
       return;
     }
-    login({ apiKey: apiKey.trim(), tenantId: tenantId.trim() });
-    navigate("/dashboard");
+
+    setError("");
+    setIsSubmitting(true);
+    try {
+      const tenant = await validateCredentials(trimmedApiKey);
+      if (!tenant || tenant.tenant_id !== trimmedTenantId) {
+        setError("Invalid tenant ID or API key.");
+        return;
+      }
+      setCredentials(trimmedApiKey, tenant.tenant_id, tenant.plan);
+      navigate("/dashboard");
+    } catch {
+      setError("Unable to reach the backend. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -77,9 +109,10 @@ export function AuthPage() {
 
             <button
               type="submit"
+              disabled={isSubmitting}
               className="w-full py-2 px-4 bg-primary text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
             >
-              Sign in
+              {isSubmitting ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
 

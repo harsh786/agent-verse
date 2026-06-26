@@ -20,6 +20,7 @@ class PlanLimits:
     max_agents: int
     max_api_keys: int
     max_knowledge_collections: int
+    goal_timeout_seconds: int
 
 
 PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
@@ -29,6 +30,7 @@ PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
         max_agents=2,
         max_api_keys=2,
         max_knowledge_collections=1,
+        goal_timeout_seconds=300,         # 5 minutes
     ),
     PlanTier.STARTER: PlanLimits(
         requests_per_minute=300,
@@ -36,6 +38,7 @@ PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
         max_agents=10,
         max_api_keys=5,
         max_knowledge_collections=5,
+        goal_timeout_seconds=900,         # 15 minutes
     ),
     PlanTier.PROFESSIONAL: PlanLimits(
         requests_per_minute=1200,
@@ -43,6 +46,7 @@ PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
         max_agents=50,
         max_api_keys=20,
         max_knowledge_collections=20,
+        goal_timeout_seconds=1800,        # 30 minutes
     ),
     PlanTier.ENTERPRISE: PlanLimits(
         requests_per_minute=6000,
@@ -50,6 +54,7 @@ PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
         max_agents=500,
         max_api_keys=100,
         max_knowledge_collections=100,
+        goal_timeout_seconds=7200,        # 2 hours
     ),
 }
 

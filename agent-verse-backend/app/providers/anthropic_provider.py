@@ -42,11 +42,31 @@ class AnthropicProvider:
         import anthropic
 
         model = request.model or self._default_model
-        messages = [
-            {"role": m.role, "content": m.content}
-            for m in request.messages
-            if m.role != "system"
-        ]
+        messages = []
+        for m in request.messages:
+            if m.role == "system":
+                continue
+            if m.image_data:
+                # Multi-modal message with image
+                messages.append({
+                    "role": m.role,
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": m.image_data,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": m.content if isinstance(m.content, str) else str(m.content),
+                        },
+                    ],
+                })
+            else:
+                messages.append({"role": m.role, "content": m.content})
         system_prompt = request.system or next(
             (m.content for m in request.messages if m.role == "system"), anthropic.NOT_GIVEN
         )
@@ -69,6 +89,24 @@ class AnthropicProvider:
             ]
 
         response = await self._client.messages.create(**kwargs)
+
+        # Record token and cost metrics (never let this break the main path)
+        try:
+            from app.governance.pricing import estimate_cost
+            from app.observability.metrics import record_cost_usd, record_llm_tokens
+            record_llm_tokens("anthropic", response.model or "", "prompt",
+                              getattr(response.usage, "input_tokens", 0))
+            record_llm_tokens("anthropic", response.model or "", "completion",
+                              getattr(response.usage, "output_tokens", 0))
+            cost = estimate_cost(
+                response.model or "",
+                getattr(response.usage, "input_tokens", 0),
+                getattr(response.usage, "output_tokens", 0),
+            )
+            if cost > 0:
+                record_cost_usd("llm", cost)
+        except Exception:
+            pass  # Metrics must never break the API call
 
         text_content = " ".join(
             block.text for block in response.content if hasattr(block, "text")

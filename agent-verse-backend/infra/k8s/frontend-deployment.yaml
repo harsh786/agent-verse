@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-frontend
+  namespace: agentverse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentverse-frontend
+  template:
+    metadata:
+      labels:
+        app: agentverse-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: agentverse/frontend:latest
+        ports:
+        - containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentverse-frontend
+  namespace: agentverse
+spec:
+  selector:
+    app: agentverse-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP

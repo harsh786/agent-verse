@@ -11,18 +11,19 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-# ── Message types ─────────────────────────────────────────────────────────────
+# -- Message types -------------------------------------------------------------
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
 
 class Message(BaseModel):
-    """Chat message — uses Pydantic for runtime role validation at API boundaries."""
+    """Chat message -- uses Pydantic for runtime role validation at API boundaries."""
 
     role: MessageRole
     content: str | list[dict[str, Any]]
     tool_call_id: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+    image_data: str | None = None  # Base64-encoded image for vision models
 
 
 @dataclass
@@ -32,7 +33,7 @@ class ToolDefinition:
     input_schema: dict[str, Any]
 
 
-# ── Completion ────────────────────────────────────────────────────────────────
+# -- Completion ----------------------------------------------------------------
 
 @dataclass
 class CompletionRequest:
@@ -59,23 +60,23 @@ class CompletionResponse:
         return self.input_tokens + self.output_tokens
 
 
-# ── Embedding ─────────────────────────────────────────────────────────────────
+# -- Embedding -----------------------------------------------------------------
 
 @dataclass
 class EmbedRequest:
     texts: list[str]
-    model: str
+    model: str = ""
     input_type: str = "document"
 
 
 @dataclass
 class EmbedResponse:
     embeddings: list[list[float]]
-    model: str
+    model: str = ""
     total_tokens: int = 0
 
 
-# ── Provider protocol ─────────────────────────────────────────────────────────
+# -- Provider protocol ---------------------------------------------------------
 
 @runtime_checkable
 class LLMProvider(Protocol):
@@ -91,3 +92,28 @@ class LLMProvider(Protocol):
     def supports_vision(self) -> bool: ...
 
     def supports_tool_use(self) -> bool: ...
+
+
+# -- Standalone helpers --------------------------------------------------------
+
+
+async def embed_texts(
+    texts: list[str], provider: LLMProvider | None = None
+) -> list[list[float]]:
+    """Embed texts using the given provider, or return random unit-norm vectors as fallback."""
+    import math
+    import random
+
+    if provider is not None:
+        try:
+            resp = await provider.embed(EmbedRequest(texts=texts))
+            return resp.embeddings
+        except NotImplementedError:
+            pass  # provider doesn't support embedding -- fall through to random
+    # Fallback: random unit-norm vectors (768-dim)
+    results = []
+    for _ in texts:
+        raw = [random.gauss(0, 1) for _ in range(768)]
+        mag = math.sqrt(sum(x * x for x in raw))
+        results.append([x / mag for x in raw] if mag > 0 else raw)
+    return results

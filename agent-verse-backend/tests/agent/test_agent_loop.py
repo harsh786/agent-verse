@@ -119,10 +119,12 @@ async def test_pipeline_cost_check_stub_passes() -> None:
 
 
 async def test_pipeline_governance_stub_passes() -> None:
+    from app.governance.permissions import ActionLevel
     from app.pipeline.steps import governance_check
 
     result = await governance_check(tool_name="any_tool", tenant_ctx=_CTX)
-    assert result is True  # stub always allows
+    # Real implementation returns ActionLevel.ALLOW when no matrix is injected
+    assert result == ActionLevel.ALLOW
 
 
 async def test_pipeline_dedup_stub_is_not_duplicate() -> None:

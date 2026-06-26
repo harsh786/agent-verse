@@ -7,7 +7,8 @@ from app.core.config import Settings, get_settings
 
 def test_defaults_apply_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ENVIRONMENT", raising=False)
-    settings = Settings()
+    monkeypatch.delenv("DEBUG", raising=False)
+    settings = Settings(_env_file=None)
     assert settings.environment == "development"
     assert settings.debug is False
 

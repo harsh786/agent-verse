@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-worker
+  namespace: agentverse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentverse-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9540"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: worker
+          image: agentverse-backend:latest
+          command:
+            - "celery"
+            - "-A"
+            - "app.scaling.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "-Q"
+            - "goals,schedules,maintenance"
+            - "--concurrency=4"
+            - "--max-tasks-per-child=100"
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          env:
+            - name: AGENTVERSE_DB_SCHEDULE_DISCOVERY
+              value: "true"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "celery -A app.scaling.celery_app inspect ping -d celery@$HOSTNAME -t 5 2>/dev/null | grep -q OK"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3

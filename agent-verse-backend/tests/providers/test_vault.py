@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.providers.vault import CredentialVault
+from app.providers.vault import CredentialVault, get_vault
 
 
 def _vault(master_key: str = "test-master-key-for-unit-tests") -> CredentialVault:
@@ -59,3 +59,39 @@ def test_vault_secret_never_appears_in_repr() -> None:
     # The master key should not leak through __repr__ or __str__
     assert "super-secret" not in repr(vault)
     assert "super-secret" not in str(vault)
+
+
+def test_get_vault_raises_without_key_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.delenv("VAULT_MASTER_KEY_FILE", raising=False)
+    monkeypatch.delenv("AGENTVERSE_VAULT_KEY", raising=False)
+    monkeypatch.delenv("AGENTVERSE_VAULT_KEY_FILE", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"vault master key.*production"):
+        get_vault()
+
+
+def test_get_vault_rejects_dev_fallback_key_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("AGENTVERSE_VAULT_KEY", "dev-insecure-master-key")
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.delenv("VAULT_MASTER_KEY_FILE", raising=False)
+    monkeypatch.delenv("AGENTVERSE_VAULT_KEY_FILE", raising=False)
+
+    with pytest.raises(RuntimeError, match="dev-insecure-master-key"):
+        get_vault()
+
+
+def test_get_vault_uses_development_fallback_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.delenv("VAULT_MASTER_KEY_FILE", raising=False)
+    monkeypatch.delenv("AGENTVERSE_VAULT_KEY", raising=False)
+    monkeypatch.delenv("AGENTVERSE_VAULT_KEY_FILE", raising=False)
+
+    vault = get_vault()
+
+    assert vault.decrypt(vault.encrypt("dev-secret")) == "dev-secret"

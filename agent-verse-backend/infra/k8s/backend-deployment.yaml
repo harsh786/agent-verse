@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-backend
+  namespace: agentverse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentverse-backend
+  template:
+    metadata:
+      labels:
+        app: agentverse-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: backend
+          image: agentverse-backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          env:
+            # Expose POSTGRES_PASSWORD so DATABASE_URL substitution works below
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: POSTGRES_PASSWORD
+                  optional: true
+            # Route all DB traffic through pgBouncer for connection pooling
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://agentverse:$(POSTGRES_PASSWORD)@pgbouncer:5432/agentverse"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30

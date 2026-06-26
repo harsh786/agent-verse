@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-beat
+  namespace: agentverse
+spec:
+  replicas: 1  # MUST be 1 — only one scheduler
+  selector:
+    matchLabels:
+      app: agentverse-beat
+  template:
+    metadata:
+      labels:
+        app: agentverse-beat
+    spec:
+      containers:
+        - name: beat
+          image: agentverse-backend:latest
+          command:
+            - "celery"
+            - "-A"
+            - "app.scaling.celery_app"
+            - "beat"
+            - "--loglevel=info"
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          env:
+            - name: AGENTVERSE_DB_SCHEDULE_DISCOVERY
+              value: "true"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pgrep -f 'celery.*beat' > /dev/null"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3

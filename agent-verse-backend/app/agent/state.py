@@ -44,6 +44,19 @@ class StepResult:
 
 
 @dataclass
+class SubGoal:
+    """A decomposed sub-goal produced by the goal-tree planner."""
+
+    sub_goal_id: str
+    description: str
+    parent_goal_id: str
+    depends_on: list[str] = field(default_factory=list)
+    status: GoalStatus = GoalStatus.PLANNING
+    result: str = ""
+    error: str = ""
+
+
+@dataclass
 class AgentState:
     """Full runtime state of one agent execution, serializable for checkpointing."""
 
@@ -68,6 +81,9 @@ class AgentState:
 
     # Error information if failed
     error_message: str = ""
+
+    # Sub-goals produced by goal-tree decomposition (empty when not decomposed)
+    sub_goals: list[SubGoal] = field(default_factory=list)
 
     # SSE event stream (not checkpointed — ephemeral)
     events: list[dict[str, Any]] = field(default_factory=list)

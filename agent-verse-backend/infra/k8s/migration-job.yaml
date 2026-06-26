@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentverse-db-migration
+  namespace: agentverse
+  labels:
+    app: agentverse-db-migration
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: agentverse-db-migration
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: alembic-upgrade
+          image: agentverse-backend:latest
+          command:
+            - alembic
+          args:
+            - upgrade
+            - head
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://agentverse:$(POSTGRES_PASSWORD)@pgbouncer:5432/agentverse"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

@@ -1,10 +1,11 @@
 /**
  * Typed API client for the AgentVerse backend.
- * Base URL is injected from environment — VITE_API_BASE_URL defaults to /api
- * (proxied to localhost:8000 in dev).
+ * Base URL is injected from environment — VITE_API_URL defaults to http://localhost:8000.
+ * In development the Vite proxy rewrites /api → localhost:8000, but direct URL
+ * works too and is required for production builds.
  */
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 function getApiKey(): string {
   return localStorage.getItem("av_api_key") ?? "";
@@ -21,7 +22,7 @@ async function request<T>(
   };
   if (apiKey) headers["X-API-Key"] = apiKey;
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: { message: res.statusText } }));
     throw new ApiError(res.status, body?.error?.message ?? res.statusText, body);
@@ -47,15 +48,19 @@ export interface GoalRequest {
   goal: string;
   priority?: string;
   dry_run?: boolean;
+  agent_id?: string;
+  workflow_mode?: string;
 }
 
 export interface GoalResponse {
   id: string;
+  goal_id?: string;
   status: string;
   goal: string;
   steps?: StepResponse[];
   iterations?: number;
   cost_usd?: number;
+  created_at?: string;
 }
 
 export interface StepResponse {
@@ -66,11 +71,27 @@ export interface StepResponse {
 }
 
 export const goalsApi = {
+  list: () => request<{ goals: GoalResponse[] }>("/goals"),
   submit: (body: GoalRequest) =>
     request<GoalResponse>("/goals", { method: "POST", body: JSON.stringify(body) }),
   get: (id: string) => request<GoalResponse>(`/goals/${id}`),
   cancel: (id: string) =>
     request<GoalResponse>(`/goals/${id}/cancel`, { method: "POST" }),
+};
+
+// ── Agents ───────────────────────────────────────────────────────────────────
+
+export interface AgentResponse {
+  agent_id: string;
+  name: string;
+  autonomy_mode: string;
+  goal_template?: string;
+  status?: string;
+  created_at?: string;
+}
+
+export const agentsApi = {
+  list: () => request<AgentResponse[]>("/agents"),
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────
@@ -137,6 +158,66 @@ export const tenantsApi = {
       "/tenants/me/keys",
       { method: "POST", body: JSON.stringify({ name }) }
     ),
+  revokeKey: (keyId: string) =>
+    request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
+};
+
+// ── Governance ────────────────────────────────────────────────────────────────
+
+export interface ApprovalRequest {
+  request_id: string;
+  goal_id: string;
+  action?: string;
+  risk_level?: string;
+  status: string;
+}
+
+export interface GoalMetrics {
+  active_goals: number;
+  total_goals: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  cost_today_usd: number;
+  goals_today: number;
+}
+
+export const governanceApi = {
+  listApprovals: () => request<ApprovalRequest[]>("/governance/approvals"),
+  approve: (requestId: string, approver: string, note: string) =>
+    request<{ status: string }>(`/governance/approvals/${requestId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approver, note }),
+    }),
+  reject: (requestId: string, approver: string, note: string) =>
+    request<{ status: string }>(`/governance/approvals/${requestId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ approver, note }),
+    }),
+  goalMetrics: () => request<GoalMetrics>("/goals/metrics"),
+};
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export interface LLMConfig {
+  provider: string;
+  api_key: string;
+  default_model?: string;
+  base_url?: string;
+}
+
+export const settingsApi = {
+  getLLM: () => request<LLMConfig>("/tenants/me/llm"),
+  setLLM: (config: LLMConfig) =>
+    request<LLMConfig>("/tenants/me/llm", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  listKeys: () => request<ApiKeyResponse[]>("/tenants/me/keys"),
+  createKey: (name: string) =>
+    request<{ raw_key: string; key_id: string }>("/tenants/me/keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
   revokeKey: (keyId: string) =>
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
 };

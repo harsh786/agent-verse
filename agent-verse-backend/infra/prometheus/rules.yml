@@ -1,0 +1,75 @@
+groups:
+  - name: agentverse_alerts
+    interval: 30s
+    rules:
+
+      # 1 — Goal failure rate > 10% over 5 min
+      - alert: HighGoalFailureRate
+        expr: |
+          rate(agentverse_goal_total{status="failed"}[5m])
+          / (rate(agentverse_goal_total{status="complete"}[5m]) + rate(agentverse_goal_total{status="failed"}[5m]) + 0.0001)
+          > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High goal failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 10% of goals are failing in the last 5 minutes."
+          runbook: "https://docs.agentverse.ai/runbooks/high-goal-failure-rate"
+
+      # 2 — Tool call p95 latency > 30s
+      - alert: HighToolCallLatency
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(agentverse_tool_call_duration_seconds_bucket[5m]))) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tool call p95 latency is high ({{ $value }}s)"
+          description: "95th percentile tool call duration exceeds 30 seconds."
+          runbook: "https://docs.agentverse.ai/runbooks/high-tool-latency"
+
+      # 3 — Queue depth > 100
+      - alert: QueueDepthHigh
+        expr: agentverse_queue_depth > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue depth is high ({{ $value }} tasks)"
+          description: "A bounded AgentVerse queue has more than 100 pending tasks."
+          runbook: "https://docs.agentverse.ai/runbooks/celery-queue-depth"
+
+      # 4 — Backend instance down
+      - alert: BackendInstanceDown
+        expr: up{job="agentverse_backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AgentVerse backend instance is down"
+          description: "Backend Prometheus target {{ $labels.instance }} has been unreachable for 1 minute."
+          runbook: "https://docs.agentverse.ai/runbooks/backend-instance-down"
+
+      # 5 — PostgreSQL connections near limit
+      - alert: PostgresConnectionsHigh
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connections nearing limit ({{ $value }})"
+          description: "More than 80 active PostgreSQL connections detected."
+          runbook: "https://docs.agentverse.ai/runbooks/postgres-connections-high"
+
+      # 6 — RAG search p95 latency > 5s
+      - alert: RAGSearchLatencyHigh
+        expr: |
+          histogram_quantile(0.95, rate(agentverse_tool_call_duration_seconds_bucket{tool="rag"}[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG search p95 latency is high ({{ $value }}s)"
+          description: "95th percentile RAG hybrid search duration exceeds 5 seconds."
+          runbook: "https://docs.agentverse.ai/runbooks/rag-search-latency"
