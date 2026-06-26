@@ -173,6 +173,7 @@ class FakeGoalService:
         tenant_ctx: object = None,
         agent_id: str | None = None,
         workflow_mode: str = "single_agent",
+        execution_context: dict | None = None,
     ) -> dict[str, Any]:
         goal_id = uuid.uuid4().hex
         self._goals[goal_id] = {

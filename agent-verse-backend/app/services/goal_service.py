@@ -621,6 +621,95 @@ class GoalService:
         # Track per-tenant durations so get_metrics can compute avg_latency_ms.
         self._goal_durations.setdefault(record.tenant_id, []).append(duration_seconds)
 
+    async def _run_agent_loop_persistent(
+        self,
+        goal_id: str,
+        goal_text: str,
+        tenant_ctx: TenantContext,
+        tool_context: Any = None,
+        persistence_config: dict[str, Any] | None = None,
+    ) -> None:
+        """Run agent with persistence — keep retrying until goal achieved."""
+        from app.agent.persistence import GoalPersistenceEngine, PersistenceConfig
+
+        record = self._goals.get(goal_id)
+
+        async def callback(event: dict[str, Any]) -> None:
+            await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
+
+        cfg_data = persistence_config or {}
+        config = PersistenceConfig(
+            max_attempts=cfg_data.get("max_attempts", 10),
+            iterations_per_attempt=cfg_data.get("iterations_per_attempt", 15),
+            base_backoff_seconds=cfg_data.get("base_backoff_seconds", 30.0),
+            max_backoff_seconds=cfg_data.get("max_backoff_seconds", 600.0),
+            strategy_switch_after=cfg_data.get("strategy_switch_after", 2),
+            escalate_after_failures=cfg_data.get("escalate_after_failures", 6),
+            total_timeout_seconds=cfg_data.get("total_timeout_seconds", 0.0),
+            decompose_on_failure=cfg_data.get("decompose_on_failure", True),
+        )
+
+        engine = GoalPersistenceEngine(config=config)
+
+        def agent_factory() -> Any:
+            loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
+            if tool_context is not None:
+                # Seed initial_context into the agent's run via a wrapper
+                _tc = tool_context
+
+                class _WrappedAgent:
+                    async def run(
+                        self_inner: "_WrappedAgent",
+                        goal: str,
+                        tenant_ctx: TenantContext,
+                        event_callback: Any = None,
+                    ) -> Any:
+                        initial_ctx: dict[str, Any] = {
+                            "tool_prompt": _tc.to_prompt_block(),
+                            "tool_context": _tc,
+                        }
+                        return await loop.run(
+                            goal=goal,
+                            tenant_ctx=tenant_ctx,
+                            initial_context=initial_ctx,
+                            event_callback=event_callback,
+                        )
+
+                return _WrappedAgent()
+            return loop
+
+        try:
+            success, attempts = await engine.run(
+                goal=goal_text,
+                agent_factory=agent_factory,
+                tenant_ctx=tenant_ctx,
+                event_callback=callback,
+            )
+            if not success:
+                # All attempts exhausted
+                reason = (
+                    f"Goal could not be achieved after {len(attempts)} attempts. "
+                    f"Last strategy: {attempts[-1].strategy if attempts else 'none'}. "
+                    f"Total cost: ${engine.total_cost_usd:.4f}"
+                )
+                await self._dispatch_event(
+                    goal_id,
+                    {"type": "goal_failed", "reason": reason, "attempts": len(attempts)},
+                    tenant_ctx=tenant_ctx,
+                )
+        except asyncio.CancelledError:
+            if record is not None and record.status != GoalStatus.CANCELLED:
+                record.status = GoalStatus.CANCELLED
+                await self._dispatch_event(
+                    goal_id, {"type": "goal_cancelled"}, tenant_ctx=tenant_ctx
+                )
+            raise
+        except Exception as exc:
+            await self._dispatch_event(
+                goal_id, {"type": "goal_failed", "reason": str(exc)},
+                tenant_ctx=tenant_ctx
+            )
+
     async def _run_agent_loop(
         self,
         goal_id: str,
@@ -711,6 +800,7 @@ class GoalService:
         tenant_ctx: TenantContext,
         agent_id: str | None = None,
         workflow_mode: str = "single_agent",
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a goal record and (unless *dry_run*) launch it as a background task."""
         with _tracer.start_as_current_span("goal.submit") as span:
@@ -759,6 +849,7 @@ class GoalService:
                 created_at=datetime.now(UTC).isoformat(),
                 agent_id=agent_id,
                 workflow_mode=workflow_mode,
+                execution_context=execution_context or {},
             )
             self._goals[goal_id] = record
 
@@ -828,10 +919,28 @@ class GoalService:
                             "workflow_mode": record.workflow_mode,
                             "created_at": record.created_at,
                         }
-                    agent_task: asyncio.Task[None] = asyncio.create_task(
-                        self._run_agent_loop(goal_id, goal, tenant_ctx, tool_context=tool_context),
-                        name=f"goal-{goal_id}",
+                    persistence_mode = (execution_context or {}).get(
+                        "persistence_mode", False
                     )
+                    persistence_cfg = (execution_context or {}).get(
+                        "persistence_config", {}
+                    )
+                    if persistence_mode:
+                        agent_task: asyncio.Task[None] = asyncio.create_task(
+                            self._run_agent_loop_persistent(
+                                goal_id, goal, tenant_ctx,
+                                tool_context=tool_context,
+                                persistence_config=persistence_cfg,
+                            ),
+                            name=f"goal-persistent-{goal_id}",
+                        )
+                    else:
+                        agent_task = asyncio.create_task(
+                            self._run_agent_loop(
+                                goal_id, goal, tenant_ctx, tool_context=tool_context
+                            ),
+                            name=f"goal-{goal_id}",
+                        )
                     record.task = agent_task
             else:
                 # Dry-run: validate intent only, but still emit visible lifecycle

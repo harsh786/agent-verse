@@ -44,6 +44,7 @@ from app.api.a2a import router as a2a_router
 from app.api.agents import AgentStore
 from app.api.agents import router as agents_router
 from app.api.artifacts import router as artifacts_router
+from app.api.auth import router as auth_router
 from app.api.collab import router as collab_router
 from app.api.connectors import router as connectors_router
 from app.api.enterprise import (
@@ -582,6 +583,8 @@ def create_app(
     app.include_router(tenants_router)
     app.include_router(goals_router)
     app.include_router(connectors_router)
+    # SSO authentication
+    app.include_router(auth_router)
     # Agents, governance, knowledge, scheduling
     app.include_router(agents_router)
     app.include_router(governance_router)
