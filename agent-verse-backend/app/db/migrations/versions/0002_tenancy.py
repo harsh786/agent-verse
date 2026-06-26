@@ -49,7 +49,6 @@ def upgrade() -> None:
             sa.String(36),
             sa.ForeignKey("tenants.id", ondelete="CASCADE"),
             nullable=False,
-            index=True,
         ),
         sa.Column("name", sa.String(200), nullable=False),
         # SHA-256 hex digest of the raw key; raw key is NEVER stored.

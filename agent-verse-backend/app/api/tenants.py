@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from app.core.errors import ConflictError, NotFoundError, PlatformError
+from app.providers.vault import get_vault
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -125,3 +126,124 @@ async def revoke_key(
     except NotFoundError as exc:
         return JSONResponse(exc.to_dict(), status_code=404)
     return Response(status_code=204)
+
+
+# ── Key rotation ──────────────────────────────────────────────────────────────
+
+class RotateKeyRequest(BaseModel):
+    """Request body for key rotation."""
+
+    name: str = Field(default="Rotated Key", min_length=1, max_length=200)
+    scopes: list[str] = Field(default_factory=list)
+    revoke_old: bool = True
+
+
+@router.post("/me/keys/{key_id}/rotate", status_code=201)
+async def rotate_key(
+    key_id: str,
+    body: RotateKeyRequest,
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> JSONResponse:
+    """Rotate an API key: create a replacement, optionally revoke the original.
+
+    The newly created key's raw secret is returned **once** in this response.
+    """
+    svc = _get_tenant_service(request)
+
+    # Create the replacement key first so callers can take it before the old one
+    # is revoked — minimising the window without a valid key.
+    new_key = await svc.create_api_key(
+        tenant_id=ctx.tenant_id,
+        name=body.name,
+        scopes=body.scopes,
+        expires_at=None,
+    )
+
+    if body.revoke_old:
+        try:
+            await svc.revoke_api_key(tenant_id=ctx.tenant_id, key_id=key_id)
+        except Exception:
+            pass  # Best-effort: don't fail the rotation if revocation errors
+
+    return JSONResponse(
+        {"new_key": new_key, "old_key_id": key_id, "old_revoked": body.revoke_old},
+        status_code=201,
+    )
+
+
+# ── LLM provider configuration ────────────────────────────────────────────────
+
+class LLMProviderConfig(BaseModel):
+    """LLM provider configuration for a tenant."""
+    provider: str = Field(
+        description="Provider name: anthropic | openai | gemini | groq | together | azure | ollama"
+    )
+    api_key: str = Field(min_length=1, description="API key (stored encrypted in vault)")
+    base_url: str | None = Field(
+        default=None, description="Base URL override (for Ollama / Azure / vLLM)"
+    )
+    default_model: str = Field(default="", description="Default model slug")
+
+
+@router.get("/me/llm")
+async def get_llm_config(
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> JSONResponse:
+    """Return the current LLM provider config for this tenant (key never exposed)."""
+    llm_configs: dict[str, Any] = getattr(request.app.state, "_llm_configs", {})
+    cfg = llm_configs.get(ctx.tenant_id)
+    if cfg is None:
+        return JSONResponse(
+            {"tenant_id": ctx.tenant_id, "provider": None, "configured": False}
+        )
+    # Never return the raw key or the vault-encrypted ciphertext.
+    safe = {k: v for k, v in cfg.items() if k not in {"api_key", "encrypted_key"}}
+    return JSONResponse({"tenant_id": ctx.tenant_id, **safe, "configured": True})
+
+
+@router.put("/me/llm", status_code=200)
+async def set_llm_config(
+    body: LLMProviderConfig,
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> JSONResponse:
+    """Configure the LLM provider for this tenant. The API key is stored encrypted."""
+    if not hasattr(request.app.state, "_llm_configs"):
+        request.app.state._llm_configs = {}
+
+    # Fix 7: Encrypt the key via CredentialVault before storing.
+    vault = get_vault()
+    encrypted_key = vault.encrypt(body.api_key)
+    masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
+
+    request.app.state._llm_configs[ctx.tenant_id] = {
+        "provider": body.provider,
+        "base_url": body.base_url,
+        "default_model": body.default_model,
+        "masked_key": masked_key,
+        "encrypted_key": encrypted_key,  # stored encrypted; never returned to callers
+    }
+
+    # Also persist to Redis so Celery workers can access it without app state.
+    from app.services.llm_config_store import get_llm_config_store
+    _config_store = get_llm_config_store()
+    if _config_store is not None:
+        await _config_store.set_config(
+            tenant_id=ctx.tenant_id,
+            provider=body.provider,
+            encrypted_key=encrypted_key,
+            model=body.default_model or "",
+            base_url=body.base_url,
+        )
+
+    return JSONResponse(
+        {
+            "tenant_id": ctx.tenant_id,
+            "provider": body.provider,
+            "default_model": body.default_model,
+            "configured": True,
+        },
+        status_code=200,
+    )

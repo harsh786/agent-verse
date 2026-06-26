@@ -7,6 +7,7 @@ Records every call in ``call_history`` for assertion in tests.
 from __future__ import annotations
 
 import math
+from collections.abc import AsyncGenerator
 
 from app.providers.base import (
     CompletionRequest,
@@ -41,16 +42,27 @@ class FakeProvider:
         self._call_index = 0
         self.call_history: list[CompletionRequest] = []
 
-    async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        self.call_history.append(request)
+    def _next_response(self) -> str:
+        """Return the next scripted response, cycling through the list."""
         text = self._responses[self._call_index % len(self._responses)]
         self._call_index += 1
+        return text
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.call_history.append(request)
+        text = self._next_response()
         return CompletionResponse(
             content=text,
             model=request.model,
             input_tokens=10,
             output_tokens=len(text.split()),
         )
+
+    async def stream_complete(self, request: CompletionRequest) -> AsyncGenerator[str, None]:
+        """Yield response text token by token (word by word) for testing."""
+        full_response = self._next_response()
+        for word in full_response.split():
+            yield word + " "
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         embeddings = [
@@ -69,3 +81,9 @@ class FakeProvider:
 
     def supports_tool_use(self) -> bool:
         return self._tool_use
+
+    def supports_streaming(self) -> bool:
+        return True
+
+    def supports_embeddings(self) -> bool:
+        return False

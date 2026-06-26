@@ -20,6 +20,9 @@ dependencies = [
     "pgvector>=0.3.6",
     # cache / broker / state
     "redis>=5.2.0",
+    "celery[redis]>=5.4.0",
+    # CLI
+    "typer>=0.12.0",
     # http clients (MCP / A2A / providers)
     "httpx>=0.28.0",
     # crypto (credential vault)
@@ -33,10 +36,26 @@ dependencies = [
     "prometheus-client>=0.21.0",
     "anthropic>=0.50.0",
     "langgraph>=0.2.0",
+    # scheduling
+    "croniter>=1.4.0",
+    "python-multipart>=0.0.32",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 agentverse = "app.cli.main:app"
+
+[project.optional-dependencies]
+# LLM providers (install as needed)
+voyage = ["voyageai>=0.2.0"]
+gemini = ["google-generativeai>=0.8.0"]
+local-embed = ["sentence-transformers>=3.0.0"]
+browser = ["playwright>=1.40.0"]
+artifacts = ["aioboto3>=13.0"]
+pdf = ["pypdf>=5.0"]
+docx = ["python-docx>=1.1"]
+
+# Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"
 
 [dependency-groups]
 dev = [
@@ -67,8 +86,11 @@ markers = [
 ]
 filterwarnings = [
     "error",
-    # Third-party deprecation inside testcontainers' wait helpers (out of our control).
+    # Third-party deprecation inside testcontainers wait helpers (out of our control).
     "ignore::DeprecationWarning:testcontainers.*",
+    # asyncpg GC cleanup — unclosed connections are harmless in tests (pool teardown timing).
+    "ignore::ResourceWarning:asyncpg.*",
+    "ignore::ResourceWarning",
 ]
 
 [tool.coverage.report]
@@ -80,7 +102,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
-ignore = ["A003", "B008"]  # B008: Depends() in defaults is normal FastAPI pattern
+ignore = ["A003", "B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

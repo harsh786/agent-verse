@@ -163,3 +163,71 @@ def test_hash_key_is_deterministic() -> None:
 
 def test_hash_key_different_for_different_inputs() -> None:
     assert _hash_key("a") != _hash_key("b")
+
+
+# ── LLM provider config ───────────────────────────────────────────────────────
+
+def test_set_llm_config_returns_200() -> None:
+    svc = AsyncMock()
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.put(
+        "/tenants/me/llm",
+        json={
+            "provider": "anthropic",
+            "api_key": "sk-ant-test123456",
+            "default_model": "claude-opus-4-8",
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "anthropic"
+    assert data["configured"] is True
+
+
+def test_get_llm_config_unconfigured_returns_not_configured() -> None:
+    svc = AsyncMock()
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.get("/tenants/me/llm", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["configured"] is False
+
+
+def test_set_then_get_llm_config() -> None:
+    svc = AsyncMock()
+    app = _make_app(svc)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    client.put(
+        "/tenants/me/llm",
+        json={"provider": "gemini", "api_key": "google-key-abc123xyz"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    resp = client.get("/tenants/me/llm", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "gemini"
+    assert data["configured"] is True
+    # Raw key must never appear in the response
+    assert "google-key-abc123xyz" not in resp.text
+
+
+def test_set_llm_config_encrypted_key_never_returned() -> None:
+    """Fix 7: vault-encrypted ciphertext must not appear in GET /me/llm response."""
+    svc = AsyncMock()
+    app = _make_app(svc)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    client.put(
+        "/tenants/me/llm",
+        json={"provider": "openai", "api_key": "sk-openai-secretkeyXYZ"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    resp = client.get("/tenants/me/llm", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 200
+    data = resp.json()
+    # The response dict must not contain the encrypted_key field at all
+    assert "encrypted_key" not in data
+    # The raw plaintext key must not appear in the response body
+    assert "sk-openai-secretkeyXYZ" not in resp.text

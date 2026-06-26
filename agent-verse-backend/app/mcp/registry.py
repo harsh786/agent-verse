@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -65,11 +66,17 @@ class MCPRegistry:
     def _index_key(self, tenant_id: str) -> str:
         return f"mcp:server_ids:{tenant_id}"
 
-    async def register(self, config: MCPServerConfig, *, tenant_ctx: TenantContext) -> str:
+    async def register(
+        self,
+        config: MCPServerConfig | Callable[[str], MCPServerConfig],
+        *,
+        tenant_ctx: TenantContext,
+    ) -> str:
         """Register a new MCP server and return its ID."""
         server_id = uuid.uuid4().hex
+        resolved_config = config(server_id) if callable(config) else config
         key = self._server_key(tenant_ctx.tenant_id, server_id)
-        await self._redis.set(key, config.model_dump_json())
+        await self._redis.set(key, resolved_config.model_dump_json())
         await self._redis.sadd(self._index_key(tenant_ctx.tenant_id), server_id)
         return server_id
 
@@ -83,12 +90,19 @@ class MCPRegistry:
 
     async def list_servers(self, *, tenant_ctx: TenantContext) -> list[MCPServerConfig]:
         """Return all servers registered for this tenant."""
+        return [cfg for _, cfg in await self.list_server_records(tenant_ctx=tenant_ctx)]
+
+    async def list_server_records(
+        self, *, tenant_ctx: TenantContext
+    ) -> list[tuple[str, MCPServerConfig]]:
+        """Return all servers with their registry IDs for this tenant."""
         ids: set[str] = await self._redis.smembers(self._index_key(tenant_ctx.tenant_id))
-        servers: list[MCPServerConfig] = []
+        servers: list[tuple[str, MCPServerConfig]] = []
         for server_id in ids:
-            cfg = await self.get(server_id, tenant_ctx=tenant_ctx)
+            sid = server_id.decode() if isinstance(server_id, bytes) else str(server_id)
+            cfg = await self.get(sid, tenant_ctx=tenant_ctx)
             if cfg is not None:
-                servers.append(cfg)
+                servers.append((sid, cfg))
         return servers
 
     async def unregister(self, server_id: str, *, tenant_ctx: TenantContext) -> bool:
@@ -98,4 +112,15 @@ class MCPRegistry:
         if deleted == 0:
             return False
         await self._redis.srem(self._index_key(tenant_ctx.tenant_id), server_id)
+        return True
+
+    async def update(
+        self, server_id: str, config: MCPServerConfig, *, tenant_ctx: TenantContext
+    ) -> bool:
+        """Replace a registered server config while preserving its server ID."""
+        key = self._server_key(tenant_ctx.tenant_id, server_id)
+        if await self._redis.get(key) is None:
+            return False
+        await self._redis.set(key, config.model_dump_json())
+        await self._redis.sadd(self._index_key(tenant_ctx.tenant_id), server_id)
         return True

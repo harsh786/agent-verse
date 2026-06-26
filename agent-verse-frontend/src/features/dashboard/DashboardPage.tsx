@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Target, CheckCircle, Clock, DollarSign, Activity } from "lucide-react";
-import { goalsApi } from "@/lib/api/client";
+import { goalsApi, governanceApi } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 
 function KpiCard({
@@ -55,6 +55,12 @@ export function DashboardPage() {
     refetchInterval: 10_000,
   });
 
+  const { data: metrics, isLoading: metricsLoading } = useQuery({
+    queryKey: ["goal-metrics"],
+    queryFn: () => governanceApi.goalMetrics(),
+    refetchInterval: 15_000,
+  });
+
   const goals = data?.goals ?? [];
   const activeCount = goals.filter((g) => ["executing", "planning"].includes(g.status)).length;
   const successCount = goals.filter((g) => g.status === "complete").length;
@@ -72,7 +78,7 @@ export function DashboardPage() {
         <KpiCard
           icon={Target}
           label="Active Goals"
-          value={isLoading ? "—" : activeCount}
+          value={isLoading ? "—" : (metrics?.active_goals ?? activeCount)}
           sub="executing + planning"
           color="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
         />
@@ -86,15 +92,25 @@ export function DashboardPage() {
         <KpiCard
           icon={Clock}
           label="Avg Latency"
-          value="—"
-          sub="p95 not yet tracked"
+          value={
+            metricsLoading
+              ? "—"
+              : metrics?.avg_latency_ms != null
+              ? `${Math.round(metrics.avg_latency_ms)}ms`
+              : "—"
+          }
+          sub="p95 execution latency"
           color="bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400"
         />
         <KpiCard
           icon={DollarSign}
           label="Cost Today"
-          value="$0.00"
-          sub="cost ledger pending"
+          value={
+            metricsLoading
+              ? "—"
+              : `$${(metrics?.cost_today_usd ?? 0).toFixed(2)}`
+          }
+          sub={`${metrics?.goals_today ?? 0} goals today`}
           color="bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400"
         />
       </div>

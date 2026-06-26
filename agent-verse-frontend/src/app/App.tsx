@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -7,6 +8,9 @@ import { GoalsListPage } from "@/features/goals/GoalsListPage";
 import { GoalDetailPage } from "@/features/goals/GoalDetailPage";
 import { AgentsListPage } from "@/features/agents/AgentsListPage";
 import { AgentCreatePage } from "@/features/agents/AgentCreatePage";
+import { AgentDetailPage } from "@/features/agents/AgentDetailPage";
+import { ApprovalsPage } from "@/features/approvals/ApprovalsPage";
+import { OnboardingPage } from "@/features/onboarding/OnboardingPage";
 import { ConnectorsCatalogPage } from "@/features/connectors/ConnectorsCatalogPage";
 import { ConnectorsRegisteredPage } from "@/features/connectors/ConnectorsRegisteredPage";
 import { SchedulesPage } from "@/features/schedules/SchedulesPage";
@@ -14,14 +18,58 @@ import { KnowledgePage } from "@/features/knowledge/KnowledgePage";
 import { GovernancePage } from "@/features/governance/GovernancePage";
 import { CollaborationPage } from "@/features/collaboration/CollaborationPage";
 import { ObservabilityPage } from "@/features/observability/ObservabilityPage";
+import { CostDashboardPage } from "@/features/observability/CostDashboardPage";
 import { EvalPage } from "@/features/eval/EvalPage";
 import { MarketplacePage } from "@/features/marketplace/MarketplacePage";
 import { EnterprisePage } from "@/features/enterprise/EnterprisePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 
+const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const apiKey = useAuthStore((s) => s.apiKey);
+  const tenantId = useAuthStore((s) => s.tenantId);
+  const logout = useAuthStore((s) => s.logout);
+  const [isChecking, setIsChecking] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !apiKey) return;
+
+    let cancelled = false;
+    setIsChecking(true);
+
+    async function validateSession() {
+      try {
+        const res = await fetch(`${API_BASE}/tenants/me`, {
+          headers: { 'X-API-Key': apiKey },
+        });
+        if (!res.ok) {
+          logout();
+          return;
+        }
+
+        const tenant = await res.json();
+        if (tenant.tenant_id !== tenantId) {
+          logout();
+        }
+      } catch {
+        // Keep the session during transient backend/network failures; page queries
+        // will show their own connection errors without destroying credentials.
+      } finally {
+        if (!cancelled) setIsChecking(false);
+      }
+    }
+
+    void validateSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, isAuthenticated, logout, tenantId]);
+
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
+  if (isChecking) return null;
   return <>{children}</>;
 }
 
@@ -29,6 +77,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
+      <Route path="/login" element={<AuthPage />} />
       <Route
         path="/"
         element={
@@ -43,6 +92,9 @@ export default function App() {
         <Route path="goals/:goalId" element={<GoalDetailPage />} />
         <Route path="agents" element={<AgentsListPage />} />
         <Route path="agents/create" element={<AgentCreatePage />} />
+        <Route path="agents/:agentId" element={<AgentDetailPage />} />
+        <Route path="approvals" element={<ApprovalsPage />} />
+        <Route path="onboarding" element={<OnboardingPage />} />
         <Route path="connectors/catalog" element={<ConnectorsCatalogPage />} />
         <Route path="connectors" element={<ConnectorsRegisteredPage />} />
         <Route path="schedules" element={<SchedulesPage />} />
@@ -50,6 +102,7 @@ export default function App() {
         <Route path="governance" element={<GovernancePage />} />
         <Route path="collaboration" element={<CollaborationPage />} />
         <Route path="observability" element={<ObservabilityPage />} />
+        <Route path="observability/cost" element={<CostDashboardPage />} />
         <Route path="eval" element={<EvalPage />} />
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="enterprise" element={<EnterprisePage />} />

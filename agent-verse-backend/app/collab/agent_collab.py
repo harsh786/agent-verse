@@ -13,6 +13,7 @@ In production collab sessions are stored in PostgreSQL and enabled via WebSocket
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -58,3 +59,46 @@ class AgentCollabSession:
             self.goal,
         )
         return ConsensusResult(agreed=True, summary=last_proposal)
+
+    async def synthesize_consensus_llm(
+        self,
+        provider: Any,
+    ) -> ConsensusResult:
+        """Use LLM to synthesize consensus from all collaboration rounds."""
+        if not self.rounds or provider is None:
+            return self.synthesize_consensus()
+
+        rounds_summary = [
+            {"agent": r.agent_id, "type": r.round_type, "content": r.content[:300]}
+            for r in self.rounds
+        ]
+
+        try:
+            import json as _json
+            from app.providers.base import CompletionRequest, Message
+            req = CompletionRequest(
+                messages=[Message(
+                    role="user",
+                    content=(
+                        f"Analyze these collaboration rounds and produce a consensus:\n"
+                        f"{_json.dumps(rounds_summary, indent=2)}\n\n"
+                        f'Return JSON: {{"consensus": "...", "agreed": true|false, '
+                        f'"key_points": ["..."], "dissenter_id": null}}'
+                    )
+                )],
+                model="",
+            )
+            resp = await provider.complete(req)
+            import re
+            m = re.search(r'\{[\s\S]*\}', resp.content)
+            if m:
+                data = _json.loads(m.group())
+                return ConsensusResult(
+                    agreed=data.get("agreed", False),
+                    summary=data.get("consensus", ""),
+                    dissenter=data.get("dissenter_id"),
+                )
+        except Exception:
+            pass
+
+        return self.synthesize_consensus()

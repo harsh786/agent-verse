@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: production
+    service: agentverse
+
+rule_files:
+  - "rules.yml"
+  - "alerts.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+scrape_configs:
+  - job_name: agentverse_backend
+    static_configs:
+      - targets: ["backend:8000"]
+    metrics_path: /metrics
+    scheme: http
+
+  - job_name: celery_worker
+    static_configs:
+      - targets: ["worker:9540"]
+    metrics_path: /metrics
+    honor_labels: true
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

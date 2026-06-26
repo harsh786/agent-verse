@@ -12,21 +12,25 @@ from pydantic import BaseModel
 class AgentCard(BaseModel):
     """Publicly discoverable capability declaration for this agent."""
 
+    agent_id: str = ""
     name: str
     version: str
     endpoint: str
     capabilities: list[str] = []
     description: str = ""
     tenant_id: str = ""
+    auth_required: bool = False
 
 
 class A2ATask(BaseModel):
     """A task sent from one agent to another."""
 
     task_id: str
-    sender_endpoint: str
     goal: str
+    sender_endpoint: str = ""
     context: dict[str, object] = {}
+    callback_url: str | None = None
+    status: str = "pending"
 
 
 class A2ATaskResult(BaseModel):
@@ -34,5 +38,5 @@ class A2ATaskResult(BaseModel):
 
     task_id: str
     status: str
-    result: str = ""
+    result: dict | None = None
     error: str = ""

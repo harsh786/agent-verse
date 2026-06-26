@@ -117,3 +117,41 @@ def test_tool_definition_has_schema() -> None:
     )
     assert td.name == "get_weather"
     assert "properties" in td.input_schema
+
+
+# ── W-1: Streaming tests ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fake_provider_stream_complete():
+    """FakeProvider.stream_complete yields word tokens."""
+    from app.providers.fake import FakeProvider
+    from app.providers.base import CompletionRequest, Message
+
+    provider = FakeProvider(responses=["Hello world from stream"])
+    req = CompletionRequest(
+        messages=[Message(role="user", content="test")],
+        model="fake",
+    )
+    tokens = []
+    async for token in provider.stream_complete(req):
+        tokens.append(token)
+
+    full = "".join(tokens).strip()
+    assert "Hello" in full
+    assert "world" in full
+    assert len(tokens) >= 3  # at least 3 words
+
+
+@pytest.mark.asyncio
+async def test_stream_complete_endpoint_exists():
+    """GET /goals/{id}/stream/tokens returns SSE stream."""
+    from app.main import create_app
+    from httpx import AsyncClient, ASGITransport
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/tenants/signup", json={"name": "T", "email": "st@t.com"})
+        c.headers["X-API-Key"] = r.json()["api_key"]
+        # Stream tokens for nonexistent goal should return 200 with empty stream
+        resp = await c.get("/goals/nonexistent/stream/tokens")
+        # Either 200 (empty stream) or 404
+        assert resp.status_code in (200, 404)

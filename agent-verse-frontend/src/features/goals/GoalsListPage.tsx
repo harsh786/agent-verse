@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Plus, Search, XCircle } from "lucide-react";
-import { goalsApi } from "@/lib/api/client";
+import { agentsApi, goalsApi } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
@@ -24,10 +24,12 @@ function StatusBadge({ status }: { status: string }) {
 
 export function GoalsListPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
+  const apiKey = useAuthStore((s) => s.apiKey);
   const [goalText, setGoalText] = useState("");
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [dryRun, setDryRun] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState("auto");
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -37,8 +39,20 @@ export function GoalsListPage() {
     refetchInterval: 5_000,
   });
 
+  const { data: agents = [] } = useQuery({
+    queryKey: ["agents", apiKey],
+    queryFn: () => agentsApi.list(),
+    enabled: !!apiKey,
+  });
+
   const submit = useMutation({
-    mutationFn: (goal: string) => goalsApi.submit({ goal, dry_run: dryRun }),
+    mutationFn: (goal: string) =>
+      goalsApi.submit({
+        goal,
+        dry_run: dryRun,
+        agent_id: selectedAgentId === "auto" ? undefined : selectedAgentId,
+        workflow_mode: selectedAgentId === "auto" ? "auto_route" : "single_agent",
+      }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["goals"] });
       navigate(`/goals/${res.goal_id}`);
@@ -75,6 +89,21 @@ export function GoalsListPage() {
           }}
           className="flex flex-col gap-3"
         >
+          <label className="flex flex-col gap-1.5 text-sm font-medium">
+            Agent
+            <select
+              value={selectedAgentId}
+              onChange={(e) => setSelectedAgentId(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              <option value="auto">Auto-select best agent</option>
+              {agents.map((agent) => (
+                <option key={agent.agent_id} value={agent.agent_id}>
+                  {agent.name} ({agent.autonomy_mode})
+                </option>
+              ))}
+            </select>
+          </label>
           <textarea
             value={goalText}
             onChange={(e) => setGoalText(e.target.value)}

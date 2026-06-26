@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentverse-pg-backup
+  namespace: agentverse
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: pg-backup
+            image: postgres:16-alpine
+            command:
+            - /bin/sh
+            - -c
+            - |
+              FILENAME="agentverse-$(date +%Y%m%d-%H%M%S).sql.gz"
+              pg_dump "$DATABASE_URL" | gzip > /tmp/$FILENAME
+              echo "Backup: $FILENAME ($(du -h /tmp/$FILENAME | cut -f1))"
+            envFrom:
+            - secretRef:
+                name: agentverse-secrets

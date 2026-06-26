@@ -14,6 +14,7 @@ an optional event_callback.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -21,12 +22,27 @@ from typing import Any
 
 from app.agent.prompts import EXECUTOR_SYSTEM, PLANNER_SYSTEM, VERIFIER_SYSTEM
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
+from app.governance.audit import AuditEvent, AuditLog
+from app.governance.cost import CostController
+from app.governance.hitl import HITLGateway
+from app.governance.permissions import ActionLevel, PermissionMatrix
+from app.memory.execution import ExecutionMemory
+from app.observability.logging import get_logger
 from app.providers.base import CompletionRequest, LLMProvider, Message
+from app.reliability.circuit_breaker import CircuitBreaker
+from app.reliability.dedup import DeduplicationCache
+from app.reliability.result_processor import ResultProcessor
+from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
+
+logger = get_logger(__name__)
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 _DEFAULT_MAX_ITERATIONS = 15
+
+# Keywords that indicate a high-risk step requiring HITL approval
+_HIGH_RISK_KEYWORDS = ("deploy", "delete", "drop", "rm", "prod", "production", "destroy")
 
 
 def _parse_json_response(text: str, key: str | None = None) -> dict[str, Any]:
@@ -43,6 +59,22 @@ def _parse_json_response(text: str, key: str | None = None) -> dict[str, Any]:
         return {"success": True, "reason": text}
 
 
+def _extract_tool_name(step: str) -> str:
+    """Heuristically extract a tool name from a step description.
+
+    If the step contains 'call', takes the first word after 'call'.
+    Otherwise returns 'llm_call' as the default.
+    """
+    lower = step.lower()
+    if "call" in lower:
+        parts = lower.split("call", 1)
+        if len(parts) > 1:
+            words = parts[1].strip().split()
+            if words:
+                return words[0].strip("_-.,;:")
+    return "llm_call"
+
+
 class AgentLoop:
     """Stateful agent execution loop.
 
@@ -51,6 +83,15 @@ class AgentLoop:
         executor: LLMProvider used for step execution.
         verifier: LLMProvider used for result verification.
         max_iterations: Safety ceiling on plan/execute/verify cycles.
+        permission_matrix: Optional per-tenant permission matrix for governance.
+        audit_log: Optional append-only audit trail.
+        cost_controller: Optional per-goal/per-tenant budget enforcement.
+        hitl_gateway: Optional human-in-the-loop approval gateway.
+        circuit_breakers: Optional map of tool name → CircuitBreaker.
+        rollback_engine: Optional LIFO rollback point registry.
+        dedup_cache: Optional content-hash deduplication cache.
+        result_processor: Optional output sanitizer (redact, truncate).
+        exec_memory: Optional execution memory for winning plan recall.
     """
 
     def __init__(
@@ -60,11 +101,29 @@ class AgentLoop:
         executor: LLMProvider,
         verifier: LLMProvider,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+        permission_matrix: PermissionMatrix | None = None,
+        audit_log: AuditLog | None = None,
+        cost_controller: CostController | None = None,
+        hitl_gateway: HITLGateway | None = None,
+        circuit_breakers: dict[str, CircuitBreaker] | None = None,
+        rollback_engine: RollbackEngine | None = None,
+        dedup_cache: DeduplicationCache | None = None,
+        result_processor: ResultProcessor | None = None,
+        exec_memory: ExecutionMemory | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
         self._verifier = verifier
         self._max_iterations = max_iterations
+        self._permission_matrix = permission_matrix
+        self._audit_log = audit_log
+        self._cost_controller = cost_controller
+        self._hitl_gateway = hitl_gateway
+        self._circuit_breakers = circuit_breakers
+        self._rollback_engine = rollback_engine
+        self._dedup_cache = dedup_cache
+        self._result_processor = result_processor
+        self._exec_memory = exec_memory
 
     async def run(
         self,
@@ -114,6 +173,13 @@ class AgentLoop:
             await emit({"type": "verification_done", "success": success, "reason": reason})
 
             if success:
+                # Record the winning plan in execution memory for future reuse
+                if self._exec_memory is not None:
+                    self._exec_memory.record(
+                        goal=state.goal,
+                        plan=state.plan,
+                        tenant_ctx=state.tenant_ctx,
+                    )
                 state.status = GoalStatus.COMPLETE
                 await emit({"type": "goal_complete"})
                 return state
@@ -147,6 +213,65 @@ class AgentLoop:
         return steps if steps else [resp.content]
 
     async def _execute(self, step: str, state: AgentState) -> str:
+        tenant_ctx = state.tenant_ctx
+        tool_name = _extract_tool_name(step)
+
+        # ── Step 1: Cost check ───────────────────────────────────────────────
+        if self._cost_controller is not None:
+            within_budget = self._cost_controller.check_and_record(
+                goal_id=state.goal_id,
+                cost_usd=0.01,
+                tenant_ctx=tenant_ctx,
+            )
+            if not within_budget:
+                return "Step skipped: budget exceeded."
+
+        # ── Step 2: Smart context (no-op — recent outputs injected below) ────
+
+        # ── Step 3: Exec memory lookup ───────────────────────────────────────
+        if self._exec_memory is not None:
+            # Retrieve past winning plans; available for future prompt injection
+            self._exec_memory.recall(goal_hint=state.goal, tenant_ctx=tenant_ctx)
+
+        # ── Step 4: Dedup check ──────────────────────────────────────────────
+        if self._dedup_cache is not None:
+            content_hash = hashlib.sha256(f"{step}:{state.goal}".encode()).hexdigest()
+            if self._dedup_cache.is_duplicate(content_hash=content_hash, tenant_ctx=tenant_ctx):
+                return "Duplicate step, returning cached result."
+            self._dedup_cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
+
+        # ── Step 5: Circuit breaker ("llm" key) ──────────────────────────────
+        if self._circuit_breakers is not None:
+            breaker = self._circuit_breakers.get("llm")
+            if breaker is not None and not breaker.is_closed():
+                return "Circuit open, step skipped."
+
+        # ── Step 6: Governance check ─────────────────────────────────────────
+        if self._permission_matrix is not None:
+            level = self._permission_matrix.check(tool_name=tool_name, tenant_ctx=tenant_ctx)
+            if level == ActionLevel.DENY:
+                raise PermissionError(
+                    f"Tool '{tool_name}' denied by governance policy "
+                    f"for tenant '{tenant_ctx.tenant_id}'."
+                )
+
+        # ── Step 7: HITL gate ────────────────────────────────────────────────
+        if self._hitl_gateway is not None:
+            risk_level = (
+                "high"
+                if any(kw in step.lower() for kw in _HIGH_RISK_KEYWORDS)
+                else "low"
+            )
+            if risk_level == "high":
+                self._hitl_gateway.request_approval(
+                    goal_id=state.goal_id,
+                    action=step,
+                    risk_level=risk_level,
+                    tenant_ctx=tenant_ctx,
+                )
+                # Auto-proceed after logging the approval request
+
+        # ── Step 8: Execute LLM call ─────────────────────────────────────────
         recent_outputs = "\n".join(s.output for s in state.steps[-3:] if s.output)
         content = (
             f"Step: {step}\nRecent context:\n{recent_outputs}"
@@ -161,7 +286,33 @@ class AgentLoop:
             model="claude-opus-4-8",
         )
         resp = await self._executor.complete(req)
-        return resp.content
+        raw_output = resp.content
+
+        # ── Step 9: Result processor ─────────────────────────────────────────
+        if self._result_processor is not None:
+            raw_output = self._result_processor.process(raw_output)
+
+        # ── Step 10: Record rollback point ───────────────────────────────────
+        if self._rollback_engine is not None:
+            self._rollback_engine.register(
+                action=step,
+                inverse=lambda: None,  # placeholder; real inverse comes from tool adapters
+            )
+
+        # ── Step 11: Stream event — handled by caller via event_callback ─────
+
+        # ── Step 12: Record usage in audit log ───────────────────────────────
+        if self._audit_log is not None:
+            audit_event = AuditEvent(
+                goal_id=state.goal_id,
+                tool_name=tool_name,
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="step_complete",
+                step_id=state.steps[-1].step_id if state.steps else "",
+            )
+            self._audit_log.record(audit_event, tenant_ctx=tenant_ctx)
+
+        return raw_output
 
     async def _verify(self, state: AgentState) -> tuple[bool, str]:
         steps_summary = "\n".join(

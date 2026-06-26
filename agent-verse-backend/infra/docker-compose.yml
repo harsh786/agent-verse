@@ -42,6 +42,9 @@ services:
       ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@postgres:5432/agentverse
       REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
     ports:
       - "8000:8000"
     depends_on:
@@ -54,14 +57,15 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,schedules,maintenance"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@postgres:5432/agentverse
       REDIS_URL: redis://redis:6379/0
     depends_on:
       redis:
         condition: service_healthy
-    profiles: ["full"]  # enabled once Celery app lands (Phase 9)
+      postgres:
+        condition: service_healthy
 
   beat:
     build:
@@ -73,8 +77,25 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    profiles: ["full"]  # enabled once Celery app lands (Phase 9)
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   pgdata:
   redisdata:
+  minio_data:

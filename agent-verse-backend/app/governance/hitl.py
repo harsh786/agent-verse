@@ -1,19 +1,17 @@
-"""Human-In-The-Loop (HITL) gateway — approval request lifecycle.
+"""Human-In-The-Loop gateway with asyncio.Event-based blocking.
 
-When the permission matrix returns APPROVAL or the pipeline detects high risk,
-the agent pauses and creates an ApprovalRequest. A human operator approves or
-rejects it via the API. On approval the agent resumes; on rejection it either
-retries with a different approach or marks the goal as failed.
-
-In production ApprovalRequests are stored in PostgreSQL and notifications are
-sent via Slack/email. This in-memory version is used in tests.
+When the agent loop creates an approval request, it waits on an asyncio.Event.
+When a human approves/rejects via the API, the event is set and the agent resumes.
+Timeout escalation: after `timeout_seconds`, the request auto-rejects.
 """
-
 from __future__ import annotations
 
+import asyncio
 import enum
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
 
 from app.tenancy.context import TenantContext
 
@@ -34,14 +32,26 @@ class ApprovalRequest:
     status: ApprovalStatus = ApprovalStatus.PENDING
     approver: str | None = None
     note: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    required_approvers: int = 1
+    approvals_received: int = 0
+    approvers_list: list[str] = field(default_factory=list)
+    # asyncio.Event set when approved/rejected; created in running event loop context
+    _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    # In-process expiry datetime (not persisted to DB directly)
+    _expires_at_dt: Any = field(default=None, repr=False, compare=False)
 
 
 class HITLGateway:
-    """In-memory HITL gateway, namespaced per tenant."""
+    """Async-capable HITL gateway with blocking wait and timeout escalation."""
 
-    def __init__(self) -> None:
-        # Key: (tenant_id, request_id) → ApprovalRequest
+    DEFAULT_TIMEOUT = 300.0  # 5 minutes default
+
+    def __init__(self, timeout_seconds: float = DEFAULT_TIMEOUT) -> None:
+        # Key: (tenant_id, request_id) -> ApprovalRequest
         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
+        self._timeout = timeout_seconds
+        self._notification_service: Any = None
 
     def request_approval(
         self,
@@ -51,13 +61,60 @@ class HITLGateway:
         risk_level: str,
         tenant_ctx: TenantContext,
     ) -> str:
+        """Create an approval request and return its ID (non-blocking).
+
+        Also sets _expires_at_dt for in-process timeout enforcement.
+        """
+        from datetime import UTC, timedelta
         req = ApprovalRequest(goal_id=goal_id, action=action, risk_level=risk_level)
+        req._expires_at_dt = datetime.now(UTC) + timedelta(seconds=self._timeout)
         self._requests[(tenant_ctx.tenant_id, req.request_id)] = req
+
+        # Dispatch notification (fire and forget)
+        if self._notification_service is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        self._notification_service.notify_approval_required(
+                            request_id=req.request_id,
+                            goal_id=goal_id,
+                            action=action,
+                            risk_level=risk_level,
+                            tenant_id=tenant_ctx.tenant_id,
+                        )
+                    )
+            except Exception:
+                pass
+
         return req.request_id
 
-    def get_request(
-        self, request_id: str, *, tenant_ctx: TenantContext
-    ) -> ApprovalRequest | None:
+    async def wait_for_approval(
+        self,
+        request_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        timeout: float | None = None,
+    ) -> ApprovalStatus:
+        """Block until the request is resolved or timeout expires.
+
+        Returns the final ApprovalStatus (APPROVED, REJECTED, or TIMED_OUT).
+        """
+        req = self._requests.get((tenant_ctx.tenant_id, request_id))
+        if req is None:
+            return ApprovalStatus.REJECTED
+
+        timeout_s = timeout if timeout is not None else self._timeout
+        try:
+            await asyncio.wait_for(req._event.wait(), timeout=timeout_s)
+        except TimeoutError:
+            req.status = ApprovalStatus.TIMED_OUT
+            req._event.set()  # Unblock any other waiters
+
+        return req.status
+
+    def get_request(self, request_id: str, *, tenant_ctx: TenantContext) -> ApprovalRequest | None:
         return self._requests.get((tenant_ctx.tenant_id, request_id))
 
     def approve(
@@ -69,11 +126,18 @@ class HITLGateway:
         tenant_ctx: TenantContext,
     ) -> bool:
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
-        if req is None:
+        if req is None or req.status != ApprovalStatus.PENDING:
             return False
-        req.status = ApprovalStatus.APPROVED
-        req.approver = approver
+        # Track approvers (prevent duplicate votes)
+        if approver not in req.approvers_list:
+            req.approvers_list.append(approver)
+            req.approvals_received += 1
+        req.approver = approver  # Last approver
         req.note = note
+        # Only set APPROVED when threshold reached
+        if req.approvals_received >= req.required_approvers:
+            req.status = ApprovalStatus.APPROVED
+            req._event.set()  # Unblock waiting agent
         return True
 
     def reject(
@@ -85,11 +149,12 @@ class HITLGateway:
         tenant_ctx: TenantContext,
     ) -> bool:
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
-        if req is None:
+        if req is None or req.status != ApprovalStatus.PENDING:
             return False
         req.status = ApprovalStatus.REJECTED
         req.approver = approver
         req.note = note
+        req._event.set()  # Unblock waiting agent
         return True
 
     def list_pending(self, *, tenant_ctx: TenantContext) -> list[ApprovalRequest]:
@@ -98,3 +163,48 @@ class HITLGateway:
             for (tid, _), req in self._requests.items()
             if tid == tenant_ctx.tenant_id and req.status == ApprovalStatus.PENDING
         ]
+
+    def expire_timed_out_requests(self) -> list[str]:
+        """Check all pending requests and auto-reject those past _expires_at_dt."""
+        from datetime import UTC
+        expired = []
+        now = datetime.now(UTC)
+        for (tenant_id, req_id), req in list(self._requests.items()):
+            if req.status != ApprovalStatus.PENDING:
+                continue
+            expires_at = getattr(req, "_expires_at_dt", None)
+            if expires_at and now > expires_at:
+                req.status = ApprovalStatus.TIMED_OUT
+                req._event.set()
+                expired.append(req_id)
+        return expired
+
+    async def load_pending_from_db(self, db: Any, tenant_id: str) -> int:
+        """Restore pending approvals from DB on startup (so goals can resume)."""
+        if db is None:
+            return 0
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.governance import ApprovalRequest as DBApprovalReq
+            async with db() as session:
+                result = await session.execute(
+                    select(DBApprovalReq)
+                    .where(DBApprovalReq.tenant_id == tenant_id,
+                           DBApprovalReq.status == "pending")
+                )
+                rows = result.scalars().all()
+            for row in rows:
+                req = ApprovalRequest(
+                    goal_id=row.goal_id,
+                    action=row.action or "unknown",
+                    risk_level=row.risk_level or "unknown",
+                    request_id=row.id,
+                    status=ApprovalStatus.PENDING,
+                )
+                self._requests[(tenant_id, row.id)] = req
+            return len(rows)
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("hitl_load_from_db_failed", error=str(exc))
+            return 0

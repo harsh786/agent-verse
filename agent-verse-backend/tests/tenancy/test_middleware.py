@@ -1,6 +1,7 @@
 """Tests for TenantMiddleware and SecurityHeadersMiddleware."""
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from app.tenancy.context import PlanTier, TenantContext
@@ -82,3 +83,34 @@ def test_docs_endpoint_bypasses_auth() -> None:
     client = TestClient(_APP, raise_server_exceptions=False)
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
+
+
+def test_cors_preflight_bypasses_auth() -> None:
+    app = FastAPI()
+
+    async def _resolve(_: str) -> TenantContext | None:
+        return None
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+
+    @app.get("/protected")
+    async def protected() -> dict[str, str]:
+        return {"status": "ok"}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.options(
+        "/protected",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
