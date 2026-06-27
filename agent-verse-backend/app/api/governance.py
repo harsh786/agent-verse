@@ -51,6 +51,12 @@ class PolicySimulateRequest(BaseModel):
     tool_calls: list[str] = []
 
 
+class PolicyGoalSimulateRequest(BaseModel):
+    goal: str
+    agent_id: str | None = None
+    dry_run: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Helpers — lazy app.state init keeps tests isolated per FastAPI instance
 # ---------------------------------------------------------------------------
@@ -289,6 +295,83 @@ async def simulate_policies(
         except Exception as exc:
             results[tool_name] = f"error: {exc}"
     return {"simulation_results": results, "tenant_id": tenant.tenant_id}
+
+
+@router.post("/simulate")
+async def simulate_policy_for_goal(
+    request: Request, body: PolicyGoalSimulateRequest
+) -> dict[str, Any]:
+    """Simulate what governance policies would fire for a given goal + agent."""
+    ctx = _require_tenant(request)
+    policy_engine = getattr(request.app.state, "policy_engine", None)
+    agent_store = getattr(request.app.state, "agent_store", None)
+
+    # Get agent's connector tools
+    tools_to_check: list[str] = []
+    if body.agent_id and agent_store is not None:
+        try:
+            agent = await agent_store.get_async(body.agent_id, tenant_ctx=ctx)
+            if agent:
+                connector_ids = agent.get("connector_ids", [])
+                tools_to_check = (
+                    [f"{cid}.read" for cid in connector_ids]
+                    + [f"{cid}.write" for cid in connector_ids]
+                    + [f"{cid}.delete" for cid in connector_ids]
+                )
+        except Exception:
+            pass
+
+    if not tools_to_check:
+        # Default to common high-risk tools
+        tools_to_check = [
+            "jira.delete", "github.deploy", "stripe.refund",
+            "jira.search", "github.read", "slack.message",
+        ]
+
+    simulation_result: dict[str, Any] = {
+        "goal": body.goal,
+        "policy_checks": [],
+        "summary": {},
+    }
+
+    if policy_engine is not None:
+        allowed: list[str] = []
+        denied: list[str] = []
+        requires_approval: list[str] = []
+
+        for tool in tools_to_check:
+            result = policy_engine.evaluate(tool, tenant_ctx=ctx)
+            status = result.value if hasattr(result, "value") else str(result)
+            check = {"tool": tool, "result": status}
+            simulation_result["policy_checks"].append(check)
+            if "deny" in status.lower():
+                denied.append(tool)
+            elif "approval" in status.lower():
+                requires_approval.append(tool)
+            else:
+                allowed.append(tool)
+
+        simulation_result["summary"] = {
+            "allowed_tools": allowed,
+            "denied_tools": denied,
+            "requires_approval": requires_approval,
+            "would_block_execution": len(denied) > 0,
+            "hitl_approvals_needed": len(requires_approval),
+        }
+    else:
+        # No policy engine — everything is allowed by default
+        simulation_result["policy_checks"] = [
+            {"tool": t, "result": "allow"} for t in tools_to_check
+        ]
+        simulation_result["summary"] = {
+            "allowed_tools": tools_to_check,
+            "denied_tools": [],
+            "requires_approval": [],
+            "would_block_execution": False,
+            "hitl_approvals_needed": 0,
+        }
+
+    return simulation_result
 
 
 # ---------------------------------------------------------------------------

@@ -511,6 +511,11 @@ def create_app(
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
+            # Wire DB session factory into AgentRouter for history scoring
+            _agent_router_state = getattr(app.state, "agent_router", None)
+            if _agent_router_state is not None:
+                _agent_router_state._db = db_factory
+
             # Wire DB persistence into AuditLog, ScheduleStore, KnowledgeStore
             from app.governance.audit import AuditLog as AuditLogClass
             from app.rag.store import KnowledgeStore as KnowledgeStoreClass

@@ -372,6 +372,8 @@ class MCPClient:
         Raises:
             CircuitBreakerOpenError: If the circuit breaker for this server is open.
         """
+        import time as _time
+
         # Input validation
         if not server_id:
             return ToolCallResult(
@@ -426,24 +428,45 @@ class MCPClient:
                 error=f"Server {server_id} not found",
             )
 
+        _tenant_id = getattr(tenant_ctx, "tenant_id", "")
+        _t0 = _time.monotonic()
         try:
             result = await self._call_tool_impl(
                 cfg, server_id, tool_name, arguments, tenant_ctx
             )
+            _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
                 try:
                     await cb.record_success_async()
                 except Exception:
                     pass
+            # Update tool capability stats
+            try:
+                _db = getattr(self, "_db", None)
+                await self._update_tool_stats(
+                    server_id, tool_name, _tenant_id,
+                    success=result.success, latency_ms=_latency_ms, db=_db
+                )
+            except Exception:
+                pass
             return result
         except CircuitBreakerOpenError:
             raise
         except httpx.HTTPStatusError as exc:
+            _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
                 try:
                     await cb.record_failure_async()
                 except Exception:
                     pass
+            try:
+                _db = getattr(self, "_db", None)
+                await self._update_tool_stats(
+                    server_id, tool_name, _tenant_id,
+                    success=False, latency_ms=_latency_ms, db=_db
+                )
+            except Exception:
+                pass
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,
@@ -451,17 +474,56 @@ class MCPClient:
                 server_id=server_id,
             )
         except Exception as exc:
+            _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
                 try:
                     await cb.record_failure_async()
                 except Exception:
                     pass
+            try:
+                _db = getattr(self, "_db", None)
+                await self._update_tool_stats(
+                    server_id, tool_name, _tenant_id,
+                    success=False, latency_ms=_latency_ms, db=_db
+                )
+            except Exception:
+                pass
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,
                 error=str(exc),
                 server_id=server_id,
             )
+
+    async def _update_tool_stats(
+        self, server_id: str, tool_name: str, tenant_id: str,
+        success: bool, latency_ms: float, db: Any = None
+    ) -> None:
+        """Update tool reliability statistics in tool_capabilities table."""
+        if db is None:
+            return
+        try:
+            from sqlalchemy import text
+            col_success = "call_count = call_count + 1" + (", error_count = error_count + 1" if not success else "")
+            async with db() as session, session.begin():
+                await session.execute(text(f"""
+                    UPDATE tool_capabilities
+                    SET {col_success},
+                        avg_latency_ms = (avg_latency_ms * call_count + :lat) / (call_count + 1),
+                        health_status = :status,
+                        success_rate = CASE WHEN call_count + 1 > 0
+                            THEN (call_count - error_count + :inc) * 1.0 / (call_count + 1)
+                            ELSE 1.0 END,
+                        updated_at = NOW()
+                    WHERE tenant_id = :tid AND connector_id = :cid AND tool_name = :tool
+                """), {
+                    "lat": latency_ms, "tid": tenant_id, "cid": server_id,
+                    "tool": tool_name,
+                    "status": "healthy" if success else "degraded",
+                    "inc": 1 if success else 0,
+                })
+        except Exception as exc:
+            import logging; logging.getLogger(__name__).debug("tool_stats_update_failed: %s", exc)
 
     async def _build_auth_headers(
         self,

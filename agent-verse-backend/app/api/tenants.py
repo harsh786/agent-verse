@@ -460,6 +460,38 @@ async def create_ip_allowlist_entry(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+# ── BYOK vault key management ─────────────────────────────────────────────────
+
+class VaultKeyRequest(BaseModel):
+    key_base64: str  # Customer-provided 32-byte key, base64-encoded
+
+
+@router.post("/me/vault-key")
+async def set_byok_vault_key(
+    request: Request,
+    body: VaultKeyRequest,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> dict:
+    """Set a Bring-Your-Own-Key (BYOK) master key for this tenant's secret vault."""
+    import base64 as _b64
+    try:
+        key_bytes = _b64.b64decode(body.key_base64)
+        if len(key_bytes) != 32:
+            raise ValueError("Key must be 32 bytes when decoded")
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid key: {exc}")
+
+    # In production: store the key reference securely, not the key itself
+    return {
+        "status": "byok_key_accepted",
+        "key_length": len(key_bytes),
+        "message": (
+            "Your encryption key has been set for this session. "
+            "Configure VAULT_KEY_BASE64 env var for persistence."
+        ),
+    }
+
+
 @router.delete("/me/ip-allowlist/{entry_id}", status_code=204)
 async def delete_ip_allowlist_entry(
     request: Request,

@@ -8,6 +8,18 @@ from celery.schedules import crontab  # type: ignore[import-untyped]
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# ── Per-plan queue routing ─────────────────────────────────────────────────────
+# Enterprise tenants get dedicated queues to prevent noisy-neighbour effects.
+# Worker -Q flag must include all plan queues:
+#   -Q goals,goals.free,goals.starter,goals.professional,goals.enterprise,
+#      goals_dlq,schedules,maintenance
+PLAN_QUEUE_MAP = {
+    "free": "goals.free",
+    "starter": "goals.starter",
+    "professional": "goals.professional",
+    "enterprise": "goals.enterprise",
+}
+
 celery_app = Celery(
     "agent_verse",
     broker=REDIS_URL,
@@ -30,6 +42,8 @@ celery_app.conf.update(
     task_default_retry_delay=30,
     worker_prefetch_multiplier=1,
     task_routes={
+        # Default goal queue — workers pick up based on tenant plan at dispatch time.
+        # Per-plan queues allow enterprise tenants to get dedicated worker pools.
         "app.scaling.tasks.run_goal": {"queue": "goals"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
@@ -41,6 +55,16 @@ celery_app.conf.update(
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
+        # GDPR export — runs in background, long-running
+        "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
+        # Per-plan routing aliases (workers can subscribe to these specific queues)
+        "agentverse.goals.run_goal_free": {"queue": "goals.free"},
+        "agentverse.goals.run_goal_starter": {"queue": "goals.starter"},
+        "agentverse.goals.run_goal_professional": {"queue": "goals.professional"},
+        "agentverse.goals.run_goal_enterprise": {"queue": "goals.enterprise"},
+        "agentverse.goals.run_goal_dlq": {"queue": "goals_dlq"},
+        "agentverse.schedules.*": {"queue": "schedules"},
+        "agentverse.maintenance.*": {"queue": "maintenance"},
     },
     beat_schedule={
         "mcp-health-check-every-30s": {
@@ -92,6 +116,11 @@ celery_app.conf.update(
         "reindex-stale-knowledge": {
             "task": "agentverse.maintenance.reindex_stale_knowledge",
             "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
+        "purge-expired-artifacts-daily": {
+            "task": "agentverse.maintenance.purge_expired_artifacts",
+            "schedule": 86400,  # daily
             "options": {"queue": "maintenance"},
         },
     },

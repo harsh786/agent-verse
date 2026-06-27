@@ -163,6 +163,17 @@ async def run_red_team(request: Request, body: RedTeamRequest) -> dict[str, Any]
     }
 
 
+def _get_db(request: Request) -> Any:
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        try:
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+        except Exception:
+            pass
+    return db
+
+
 # --- Marketplace ---
 
 class PublishTemplateRequest(BaseModel):
@@ -172,6 +183,12 @@ class PublishTemplateRequest(BaseModel):
     connectors: list[str] = []
     autonomy_mode: str = "bounded-autonomous"
     agent_id: str | None = None  # Optional: publish from existing agent
+    visibility: str = "private"  # private | team | community
+
+
+class BundleDeployRequest(BaseModel):
+    name: str
+    template_ids: list[str]
 
 
 @marketplace_router.post("/publish", status_code=201)
@@ -192,6 +209,15 @@ async def publish_template(request: Request, body: PublishTemplateRequest) -> di
     return _marketplace(request).publish(template=template_data, tenant_ctx=ctx)
 
 
+@marketplace_router.post("/bundles", status_code=201)
+async def deploy_bundle(request: Request, body: BundleDeployRequest) -> dict[str, Any]:
+    """Deploy multiple templates as a bundle (group deployment)."""
+    ctx = _require_tenant(request)
+    return await _marketplace(request).create_bundle(
+        name=body.name, template_ids=body.template_ids, tenant_ctx=ctx
+    )
+
+
 @marketplace_router.get("/browse")
 async def browse_marketplace(
     request: Request, q: str = "", domain: str = ""
@@ -207,7 +233,12 @@ async def get_template_versions(request: Request, template_id: str) -> list[dict
     t = _marketplace(request).get_template(template_id=template_id)
     if t is None:
         raise HTTPException(status_code=404, detail="Template not found")
-    # Return current version (history would come from DB in production)
+    # Try DB-backed version history first
+    db = _get_db(request)
+    history = await _marketplace(request).get_version_history(template_id=template_id, db=db)
+    if history:
+        return history
+    # Fall back: return current version record
     return [
         {
             "version": t.get("version", "1.0.0"),
@@ -216,6 +247,20 @@ async def get_template_versions(request: Request, template_id: str) -> list[dict
             "is_current": True,
         }
     ]
+
+
+@marketplace_router.post("/{template_id}/publish", status_code=201)
+async def publish_template_version(
+    request: Request, template_id: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    """Publish a versioned snapshot of a template."""
+    _require_tenant(request)
+    db = _get_db(request)
+    version = str(body.get("version", "1.0.0"))
+    changelog = str(body.get("changelog", ""))
+    return await _marketplace(request).publish_version(
+        template_id=template_id, version=version, changelog=changelog, db=db
+    )
 
 
 @marketplace_router.get("/{template_id}")

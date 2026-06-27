@@ -13,18 +13,53 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
-@dataclass
 class GoldenTask:
-    task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    suite_id: str = ""
-    goal: str = ""
-    expected_tools: list[str] = field(default_factory=list)
-    forbidden_tools: list[str] = field(default_factory=list)
-    expected_output_contains: list[str] = field(default_factory=list)
-    expected_output: str | None = None  # for LLM judge semantic comparison
-    max_iterations: int = 15
-    max_cost_usd: float = 1.0
-    tags: list[str] = field(default_factory=list)
+    """A verified (goal, expected_output) pair for regression testing.
+
+    Accepts both the new interface (expected_output_contains as str, min_score,
+    expected_tool_calls) and the legacy dataclass interface (suite_id,
+    expected_tools, expected_output_contains as list, max_iterations).
+    """
+
+    def __init__(
+        self,
+        goal: str,
+        expected_output_contains: str | list[str] = "",
+        expected_tool_calls: list[str] | None = None,
+        forbidden_tools: list[str] | None = None,
+        min_score: float = 0.8,
+        tags: list[str] | None = None,
+        task_id: str = "",
+        # Backward-compat params (used by EvalSuiteRunner and enterprise.py)
+        suite_id: str = "",
+        expected_tools: list[str] | None = None,
+        expected_output: str | None = None,
+        max_iterations: int = 15,
+        max_cost_usd: float = 1.0,
+    ) -> None:
+        self.task_id = task_id or uuid.uuid4().hex
+        self.suite_id = suite_id
+        self.goal = goal
+        self.min_score = min_score
+        self.tags = tags or []
+        self.expected_output = expected_output
+        self.max_iterations = max_iterations
+        self.max_cost_usd = max_cost_usd
+
+        # expected_output_contains: stored as list internally for backward compat
+        # with EvalSuiteRunner._run_task(), but accepts string from new interface.
+        if isinstance(expected_output_contains, list):
+            self.expected_output_contains = expected_output_contains
+        else:
+            self.expected_output_contains = (
+                [expected_output_contains] if expected_output_contains else []
+            )
+
+        # expected_tool_calls: merge with expected_tools (legacy name)
+        self.expected_tool_calls = expected_tool_calls or expected_tools or []
+        # Alias so existing code using task.expected_tools still works
+        self.expected_tools = self.expected_tool_calls
+        self.forbidden_tools = forbidden_tools or []
 
 
 @dataclass

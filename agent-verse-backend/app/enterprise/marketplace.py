@@ -258,6 +258,7 @@ class Marketplace:
         from datetime import datetime as _dt
 
         template_id = f"tpl-custom-{_uuid.uuid4().hex[:8]}"
+        visibility = template.get("visibility", "private")
         record: dict[str, Any] = {
             "template_id": template_id,
             "name": template.get("name", "Untitled"),
@@ -268,7 +269,102 @@ class Marketplace:
             "author": tenant_ctx.tenant_id,
             "published_at": _dt.now(UTC).isoformat(),
             "published_by": tenant_ctx.tenant_id,
-            "is_community": True,
+            "is_community": visibility == "community",
+            "visibility": visibility,  # private | team | community
         }
         self._community_templates[template_id] = record
         return record
+
+    async def create_bundle(
+        self, *, name: str, template_ids: list[str], tenant_ctx: Any
+    ) -> dict[str, Any]:
+        """Deploy multiple templates as a group (a 'bundle')."""
+        results = []
+        errors = []
+        for template_id in template_ids:
+            try:
+                result = await self.deploy(
+                    template_id=template_id, params={}, tenant_ctx=tenant_ctx
+                )
+                if isinstance(result, dict) and result.get("status") == "failed":
+                    errors.append({"template_id": template_id, "error": result.get("reason", "deploy failed")})
+                else:
+                    results.append(
+                        result
+                        if isinstance(result, dict)
+                        else {"deployment_id": result.deployment_id, "agent_id": result.agent_id}
+                    )
+            except Exception as exc:
+                errors.append({"template_id": template_id, "error": str(exc)})
+
+        return {
+            "bundle_name": name,
+            "templates_deployed": len(results),
+            "errors": errors,
+            "results": results,
+            "status": "complete" if not errors else "partial",
+        }
+
+    async def publish_version(
+        self, *, template_id: str, version: str, changelog: str, db: Any = None
+    ) -> dict[str, Any]:
+        """Save a version snapshot of a template to DB."""
+        template = self.get_template(template_id=template_id) or {}
+        if db is not None:
+            try:
+                import json
+                import uuid
+
+                from sqlalchemy import text
+                async with db() as session, session.begin():
+                    await session.execute(
+                        text("""
+                            INSERT INTO template_versions
+                                (id, template_id, version, changelog, template_data, published_at)
+                            VALUES (:id, :tid, :ver, :log, :data::jsonb, NOW())
+                        """),
+                        {
+                            "id": uuid.uuid4().hex,
+                            "tid": template_id,
+                            "ver": version,
+                            "log": changelog,
+                            "data": json.dumps(dict(template)),
+                        },
+                    )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("version_publish_failed: %s", exc)
+
+        return {"template_id": template_id, "version": version, "changelog": changelog}
+
+    async def get_version_history(
+        self, *, template_id: str, db: Any = None
+    ) -> list[dict[str, Any]]:
+        """Get version history for a template."""
+        if db is None:
+            return []
+        try:
+            from sqlalchemy import text
+            async with db() as session:
+                rows = (
+                    await session.execute(
+                        text("""
+                            SELECT version, changelog, published_by, published_at
+                            FROM template_versions
+                            WHERE template_id = :tid
+                            ORDER BY published_at DESC LIMIT 20
+                        """),
+                        {"tid": template_id},
+                    )
+                ).fetchall()
+            return [
+                {
+                    "version": r[0],
+                    "changelog": r[1],
+                    "published_by": r[2],
+                    "published_at": r[3].isoformat() if r[3] else "",
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []

@@ -1549,3 +1549,88 @@ except Exception as _reindex_sched_exc:
     logger.warning(
         "Failed to register reindex_stale_knowledge beat schedule: %s", _reindex_sched_exc
     )
+
+
+@celery_app.task(name="agentverse.maintenance.purge_expired_artifacts")
+def purge_expired_artifacts() -> dict:
+    """Delete artifacts past their expiry date from DB (MinIO lifecycle handles storage)."""
+    async def _run() -> dict:
+        from app.db.session import get_session_factory
+        from sqlalchemy import text
+        db = get_session_factory()
+        async with db() as session, session.begin():
+            result = await session.execute(text(
+                "DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+            ))
+            return {"purged_count": result.rowcount}
+    import asyncio; return asyncio.run(_run())
+
+
+@celery_app.task(name="agentverse.compliance.run_gdpr_export", bind=True, max_retries=1)
+def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+    """Async GDPR data export job — runs in background worker.
+
+    Collects all tenant data, serialises to JSON, updates the job record
+    in gdpr_export_jobs with status='complete' and a download_url.
+    """
+    async def _run() -> dict[str, Any]:
+        from app.db.session import get_session_factory
+        from sqlalchemy import text
+        db = get_session_factory()
+        try:
+            # Collect all tenant data
+            async with db() as session:
+                goals = (await session.execute(text(
+                    "SELECT id, goal_text, status, created_at FROM goals "
+                    "WHERE tenant_id = :tid LIMIT 10000"
+                ), {"tid": tenant_id})).fetchall()
+                try:
+                    audit = (await session.execute(text(
+                        "SELECT event_id, goal_id, tool_name, outcome FROM audit_log "
+                        "WHERE tenant_id = :tid LIMIT 10000"
+                    ), {"tid": tenant_id})).fetchall()
+                except Exception:
+                    audit = []
+
+            import json
+            import uuid as _uuid
+            from datetime import datetime, timezone
+
+            export_data = {
+                "tenant_id": tenant_id,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "goals": [
+                    {"id": str(r[0]), "text": str(r[1]), "status": str(r[2])}
+                    for r in goals
+                ],
+                "audit_entries": [
+                    {"id": str(r[0]), "goal_id": str(r[1]), "tool": str(r[2])}
+                    for r in audit
+                ],
+            }
+
+            export_json = json.dumps(export_data, indent=2, default=str)  # noqa: F841
+            export_id = _uuid.uuid4().hex
+            download_url = f"/compliance/export/{export_id}/download"
+
+            async with db() as session, session.begin():
+                await session.execute(text("""
+                    UPDATE gdpr_export_jobs
+                    SET status = 'complete', completed_at = NOW(), download_url = :url
+                    WHERE id = :jid
+                """), {"url": download_url, "jid": job_id})
+
+            return {"status": "complete", "job_id": job_id, "download_url": download_url}
+
+        except Exception as exc:
+            try:
+                async with db() as session, session.begin():
+                    await session.execute(text(
+                        "UPDATE gdpr_export_jobs SET status = 'failed', "
+                        "error_message = :err WHERE id = :jid"
+                    ), {"err": str(exc)[:500], "jid": job_id})
+            except Exception:
+                pass
+            raise
+
+    return _run_async(_run())

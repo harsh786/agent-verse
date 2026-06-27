@@ -1020,6 +1020,93 @@ async def clone_agent(
     return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
 
 
+class AgentCredentialRequest(BaseModel):
+    connector_id: str
+    secret_ref: str  # Vault reference e.g. vault://connectors/<server_id>/api_key
+
+
+@router.get("/{agent_id}/credentials")
+async def list_agent_credentials(request: Request, agent_id: str) -> list[dict[str, Any]]:
+    """List per-agent connector credentials (secret refs only — never raw secrets)."""
+    tenant_ctx = _require_tenant(request)
+    store = _agent_store(request)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found")
+
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            rows = (await session.execute(
+                text(
+                    "SELECT id, connector_id, secret_ref, created_at "
+                    "FROM agent_connector_credentials "
+                    "WHERE agent_id = :aid AND tenant_id = :tid"
+                ),
+                {"aid": agent_id, "tid": tenant_ctx.tenant_id},
+            )).fetchall()
+        return [
+            {
+                "id": r[0],
+                "agent_id": agent_id,
+                "connector_id": r[1],
+                "secret_ref": r[2],
+                "created_at": r[3].isoformat() if r[3] else "",
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{agent_id}/credentials", status_code=status.HTTP_201_CREATED)
+async def create_agent_credential(
+    request: Request, agent_id: str, body: AgentCredentialRequest
+) -> dict[str, Any]:
+    """Store a per-agent connector credential reference."""
+    tenant_ctx = _require_tenant(request)
+    store = _agent_store(request)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found")
+
+    cred_id = uuid.uuid4().hex
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO agent_connector_credentials
+                            (id, agent_id, connector_id, tenant_id, secret_ref)
+                        VALUES (:id, :aid, :cid, :tid, :ref)
+                        ON CONFLICT (agent_id, connector_id, tenant_id) DO UPDATE
+                            SET secret_ref = EXCLUDED.secret_ref
+                    """),
+                    {
+                        "id": cred_id,
+                        "aid": agent_id,
+                        "cid": body.connector_id,
+                        "tid": tenant_ctx.tenant_id,
+                        "ref": body.secret_ref,
+                    },
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "id": cred_id,
+        "agent_id": agent_id,
+        "connector_id": body.connector_id,
+        "secret_ref": body.secret_ref,
+        "status": "stored",
+    }
+
+
 @router.get("/{agent_id}/readiness")
 async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
     """Check if an agent is ready for production use."""
