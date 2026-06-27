@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # --- LLM (default provider) ---
     default_llm_provider: str = "anthropic"
 
+    # --- feature flags ---
+    civilization_enabled: bool = False
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:

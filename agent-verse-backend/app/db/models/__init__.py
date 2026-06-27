@@ -33,6 +33,15 @@ from app.db.models.knowledge import (  # noqa: E402
 from app.db.models.mcp import MCPCredential, MCPServer, OAuthToken  # noqa: E402
 from app.db.models.scheduling import Policy, Schedule  # noqa: E402
 from app.db.models.tenant import ApiKey, Tenant  # noqa: E402
+from app.db.models.civilization import (  # noqa: E402
+    Civilization,
+    CivilizationAgent,
+    SpawnRequest,
+    BlackboardEntry,
+    BusMessage,
+    CivilizationLearning,
+    CivilizationEvent,
+)
 
 __all__ = [
     "Base",
@@ -69,4 +78,12 @@ __all__ = [
     "CollabSession",
     "CollabOperation",
     "AgentTemplate",
+    # civilization
+    "Civilization",
+    "CivilizationAgent",
+    "SpawnRequest",
+    "BlackboardEntry",
+    "BusMessage",
+    "CivilizationLearning",
+    "CivilizationEvent",
 ]
