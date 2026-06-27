@@ -73,6 +73,24 @@ export interface StepResponse {
   output: string;
 }
 
+// ── Goal extended types ───────────────────────────────────────────────────────
+
+export interface GoalEvent {
+  event_id: string;
+  goal_id: string;
+  type: string;
+  payload?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface EvalScorecard {
+  goal_id: string;
+  score: number;
+  passed: boolean;
+  criteria: Array<{ name: string; passed: boolean; score: number }>;
+  evaluated_at: string;
+}
+
 export const goalsApi = {
   list: () => request<{ goals: GoalResponse[] }>("/goals"),
   submit: (body: GoalRequest) =>
@@ -80,6 +98,19 @@ export const goalsApi = {
   get: (id: string) => request<GoalResponse>(`/goals/${id}`),
   cancel: (id: string) =>
     request<GoalResponse>(`/goals/${id}/cancel`, { method: "POST" }),
+  submitBatch: (goals: string[], priority = "normal", agentId?: string) =>
+    request<{ batch_id: string; total: number; goals: GoalResponse[] }>("/goals/batch", {
+      method: "POST",
+      body: JSON.stringify({ goals, priority, agent_id: agentId }),
+    }),
+  pause: (id: string) =>
+    request<GoalResponse>(`/goals/${id}/pause`, { method: "POST" }),
+  resume: (id: string) =>
+    request<GoalResponse>(`/goals/${id}/resume`, { method: "POST" }),
+  getEvents: (id: string) =>
+    request<GoalEvent[]>(`/goals/${id}/stream`),
+  getEvaluation: (id: string) =>
+    request<EvalScorecard>(`/goals/${id}/eval`),
 };
 
 // ── Agents ───────────────────────────────────────────────────────────────────
@@ -93,8 +124,39 @@ export interface AgentResponse {
   created_at?: string;
 }
 
+// ── Agent extended types ──────────────────────────────────────────────────────
+
+export interface CreateAgentRequest {
+  name: string;
+  autonomy_mode: string;
+  goal_template?: string;
+  description?: string;
+  tools?: string[];
+  model?: string;
+}
+
+export interface AgentSnapshot {
+  snapshot_id: string;
+  agent_id: string;
+  created_at: string;
+  config: Record<string, unknown>;
+}
+
 export const agentsApi = {
   list: () => request<AgentResponse[]>("/agents"),
+  get: (id: string) => request<AgentResponse>(`/agents/${id}`),
+  create: (data: CreateAgentRequest) =>
+    request<AgentResponse>("/agents", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<CreateAgentRequest>) =>
+    request<AgentResponse>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/agents/${id}`, { method: "DELETE" }),
+  snapshot: (id: string) =>
+    request<AgentSnapshot>(`/agents/${id}/snapshot`, { method: "POST" }),
+  listVersions: (id: string) => request<AgentSnapshot[]>(`/agents/${id}/versions`),
+  rollback: (id: string, snapshotId: string) =>
+    request<AgentResponse>(`/agents/${id}/rollback/${snapshotId}`, { method: "POST" }),
+  export: (id: string, format: "openai" | "anthropic") =>
+    request<object>(`/agents/${id}/export?format=${format}`),
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────
@@ -121,12 +183,24 @@ export interface CatalogEntry {
   default_url: string;
 }
 
+// ── Connector extended types ──────────────────────────────────────────────────
+
+export interface ConnectorTestResult {
+  server_id: string;
+  reachable: boolean;
+  latency_ms?: number;
+  error?: string;
+}
+
 export const connectorsApi = {
   catalog: () => request<CatalogEntry[]>("/connectors/catalog"),
+  getCatalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   list: () => request<ConnectorResponse[]>("/connectors"),
   register: (body: ConnectorRequest) =>
     request<ConnectorResponse>("/connectors", { method: "POST", body: JSON.stringify(body) }),
   unregister: (id: string) => request<void>(`/connectors/${id}`, { method: "DELETE" }),
+  test: (id: string) =>
+    request<ConnectorTestResult>(`/connectors/${id}/test`, { method: "POST" }),
 };
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -184,6 +258,22 @@ export interface GoalMetrics {
   goals_today: number;
 }
 
+// ── Governance extended types ─────────────────────────────────────────────────
+
+export interface Policy {
+  policy_id: string;
+  name: string;
+  rule: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface CreatePolicyRequest {
+  name: string;
+  rule: string;
+  enabled?: boolean;
+}
+
 export const governanceApi = {
   listApprovals: () => request<ApprovalRequest[]>("/governance/approvals"),
   approve: (requestId: string, approver: string, note: string) =>
@@ -197,6 +287,11 @@ export const governanceApi = {
       body: JSON.stringify({ approver, note }),
     }),
   goalMetrics: () => request<GoalMetrics>("/goals/metrics"),
+  listPolicies: () => request<Policy[]>("/governance/policies"),
+  createPolicy: (data: CreatePolicyRequest) =>
+    request<Policy>("/governance/policies", { method: "POST", body: JSON.stringify(data) }),
+  deletePolicy: (id: string) => request<void>(`/governance/policies/${id}`, { method: "DELETE" }),
+  getPendingApprovals: () => request<ApprovalRequest[]>("/governance/hitl/pending"),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -223,4 +318,116 @@ export const settingsApi = {
     }),
   revokeKey: (keyId: string) =>
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
+};
+
+// ── Knowledge ────────────────────────────────────────────────────────────────
+
+export interface KnowledgeCollection {
+  collection_id: string;
+  name: string;
+  description?: string;
+  document_count: number;
+  created_at: string;
+}
+
+export interface IngestRequest {
+  collection_id: string;
+  content: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SearchResult {
+  document_id: string;
+  content: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
+export const knowledgeApi = {
+  listCollections: () => request<KnowledgeCollection[]>("/knowledge/collections"),
+  createCollection: (data: { name: string; description?: string }) =>
+    request<KnowledgeCollection>("/knowledge/collections", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  deleteCollection: (id: string) =>
+    request<void>(`/knowledge/collections/${id}`, { method: "DELETE" }),
+  ingest: (data: IngestRequest) =>
+    request<void>("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
+  search: (collectionId: string, query: string, limit = 10) =>
+    request<SearchResult[]>(
+      `/knowledge/search?collection_id=${collectionId}&q=${encodeURIComponent(query)}&limit=${limit}`
+    ),
+};
+
+// ── Schedules ────────────────────────────────────────────────────────────────
+
+export interface Schedule {
+  schedule_id: string;
+  name: string;
+  cron?: string;
+  goal_template: string;
+  enabled: boolean;
+  next_run_at?: string;
+  created_at: string;
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  cron: string;
+  goal_template: string;
+  agent_id?: string;
+  enabled?: boolean;
+}
+
+export const schedulesApi = {
+  list: () => request<Schedule[]>("/schedules"),
+  create: (data: CreateScheduleRequest) =>
+    request<Schedule>("/schedules", { method: "POST", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/schedules/${id}`, { method: "DELETE" }),
+  createNl: (command: string) =>
+    request<Schedule>("/schedules/nl", { method: "POST", body: JSON.stringify({ command }) }),
+};
+
+// ── Analytics ────────────────────────────────────────────────────────────────
+
+export interface CostMetrics {
+  total_cost_usd: number;
+  cost_by_day: Array<{ date: string; cost_usd: number }>;
+  cost_by_model: Record<string, number>;
+  daily_budget_usd: number;
+  budget_utilization: number;
+}
+
+export interface EvalMetrics {
+  total_evals: number;
+  pass_rate: number;
+  avg_score: number;
+  evals_by_day: Array<{ date: string; pass_rate: number }>;
+}
+
+export const analyticsApi = {
+  getGoalMetrics: (days = 30) =>
+    request<GoalMetrics>(`/analytics/goals?days=${days}`),
+  getCostMetrics: (days = 30) =>
+    request<CostMetrics>(`/analytics/cost?days=${days}`),
+  getEvalMetrics: (days = 30) =>
+    request<EvalMetrics>(`/analytics/evals?days=${days}`),
+};
+
+// ── Memory ───────────────────────────────────────────────────────────────────
+
+export interface Memory {
+  memory_id: string;
+  content: string;
+  tags?: string[];
+  created_at: string;
+}
+
+export const memoryApi = {
+  recall: (query: string, limit = 10) =>
+    request<Memory[]>(`/memory/recall?q=${encodeURIComponent(query)}&limit=${limit}`),
+  store: (data: { content: string; tags?: string[] }) =>
+    request<Memory>("/memory", { method: "POST", body: JSON.stringify(data) }),
 };

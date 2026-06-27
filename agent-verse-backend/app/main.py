@@ -423,14 +423,23 @@ def create_app(
                 app.state.llm_config_store = _llm_store
                 # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7)
                 try:
-                    from langgraph.checkpoint.redis import RedisSaver
-                    _redis_url_for_saver = settings.redis_url
-                    if _redis_url_for_saver:
-                        _checkpointer = RedisSaver.from_conn_string(_redis_url_for_saver)
+                    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+                    _checkpointer = AsyncRedisSaver.from_conn_string(str(settings.redis_url))
+                    await _checkpointer.setup()  # create Redis data structures
+                    app.state.langgraph_checkpointer = _checkpointer
+                    logger.info("async_redis_saver_checkpointer_wired")
+                except (ImportError, Exception) as _exc:
+                    # Fall back to sync RedisSaver
+                    try:
+                        from langgraph.checkpoint.redis import RedisSaver
+                        _checkpointer = RedisSaver.from_conn_string(str(settings.redis_url))
                         app.state.langgraph_checkpointer = _checkpointer
                         logger.info("redis_saver_checkpointer_wired")
-                except (ImportError, Exception) as _exc:
-                    logger.warning("redis_saver_unavailable", error=str(_exc))
+                    except (ImportError, Exception) as _exc2:
+                        logger.warning("redis_saver_unavailable", error=str(_exc2))
+                        from langgraph.checkpoint.memory import MemorySaver
+                        app.state.langgraph_checkpointer = MemorySaver()
+                        logger.warning("using_memory_saver_checkpointer_no_persistence")
             else:
                 # Pool didn't provide a Redis client; fall back to a direct
                 # connection from REDIS_URL (e.g. when using a minimal pool config).
@@ -591,6 +600,7 @@ def create_app(
     # Core services
     app.state.tenant_service = _tenant_svc
     app.state.goal_service = _goal_svc
+    app.state._app_provider = _app_provider
     app.state.mcp_registry = _mcp_registry
     app.state.mcp_client = _mcp_client
     app.state.oauth_manager = _oauth_manager

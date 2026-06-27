@@ -158,6 +158,76 @@ async def slack_events(
     return {"ok": True}
 
 
+@router.post("/slack/interactive")
+async def slack_interactive_callback(request: Request) -> dict:
+    """Receive Slack interactive component payloads (button clicks for HITL)."""
+    import json
+    from urllib.parse import unquote_plus
+
+    # Slack sends payload as form-encoded
+    body = await request.body()
+
+    # Verify Slack signature
+    from app.integrations.slack.handler import verify_slack_signature
+    signing_secret = os.getenv("SLACK_SIGNING_SECRET", "")
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+    if not verify_slack_signature(body, timestamp, signature, signing_secret):
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+    # Parse the payload
+    try:
+        # Slack sends: payload=<url-encoded-json>
+        body_str = body.decode("utf-8")
+        if body_str.startswith("payload="):
+            payload_json = unquote_plus(body_str[len("payload="):])
+        else:
+            payload_json = body_str
+        payload = json.loads(payload_json)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {exc}")
+
+    payload_type = payload.get("type")
+    if payload_type != "block_actions":
+        return {"ok": True}  # ignore non-button payloads
+
+    # Process each action
+    goal_service = getattr(request.app.state, "goal_service", None)
+
+    for action in payload.get("actions", []):
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")  # goal_id encoded in value
+        user = payload.get("user", {}).get("name", "unknown")
+
+        if action_id in ("approve_hitl", "reject_hitl") and value:
+            approved = action_id == "approve_hitl"
+            feedback = f"{'Approved' if approved else 'Rejected'} by {user} via Slack"
+
+            # Resolve tenant context from the goal
+            if goal_service:
+                try:
+                    from app.tenancy.context import PlanTier, TenantContext
+                    tenant_id = os.getenv("SLACK_TENANT_ID", "")
+                    if tenant_id:
+                        tenant_ctx = TenantContext(
+                            tenant_id=tenant_id,
+                            plan=PlanTier.PROFESSIONAL,
+                            api_key_id="slack-interactive",
+                        )
+                        await goal_service.resume_goal(
+                            goal_id=value,
+                            approved=approved,
+                            feedback=feedback,
+                            tenant_ctx=tenant_ctx,
+                        )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("slack_interactive_resume_failed: %s", exc)
+
+    # Acknowledge immediately (Slack requires response within 3s)
+    return {"ok": True}
+
+
 # ── Zapier ─────────────────────────────────────────────────────────────────────
 
 

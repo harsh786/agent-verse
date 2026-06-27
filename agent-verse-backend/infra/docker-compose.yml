@@ -117,6 +117,7 @@ services:
       # SMTP_USER: ""
       # SMTP_PASSWORD: ""
       SMTP_TLS: "false"
+      SEARXNG_URL: http://searxng:8080
     ports:
       - "8000:8000"
     depends_on:
@@ -253,6 +254,20 @@ services:
       - backend
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8081/
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3

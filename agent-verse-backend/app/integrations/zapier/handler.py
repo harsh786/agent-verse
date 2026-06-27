@@ -21,8 +21,10 @@ def get_zapier_secret() -> str:
 def verify_zapier_secret(secret_header: str) -> bool:
     expected = get_zapier_secret()
     if not expected:
-        return True  # Disabled in dev
-    return hmac.compare_digest(secret_header, expected)
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            return False  # Fail-closed in production
+        return True  # Allow in development only
+    return hmac.compare_digest(expected, secret_header)
 
 
 def map_zapier_payload_to_goal(payload: dict[str, Any]) -> str:

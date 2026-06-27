@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Allow subprocess execution in test environments (not production).
+# The CodeInterpreter uses subprocess as Docker fallback in dev/CI.
+os.environ.setdefault("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
+# Ensure tests run in development mode (not production fail-closed)
+os.environ.setdefault("ENVIRONMENT", "development")
 
 
 @pytest.fixture

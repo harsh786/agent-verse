@@ -162,3 +162,74 @@ async def persist_tools(
         import logging
         logging.getLogger(__name__).warning("persist_tools failed: %s", exc)
         return 0
+
+
+async def import_and_register(
+    *,
+    spec_content: str,
+    server_name: str,
+    base_url: str,
+    registry: Any,
+    tenant_ctx: Any,
+    auth_config: dict | None = None,
+) -> dict:
+    """Import an OpenAPI spec and register it as a live MCP server.
+
+    Args:
+        spec_content: OpenAPI JSON or YAML string
+        server_name: Human-readable name for the connector
+        base_url: API base URL
+        registry: MCPRegistry instance
+        tenant_ctx: Tenant context
+        auth_config: Optional authentication configuration
+
+    Returns:
+        {"server_id": ..., "tool_count": ...} or {"error": ..., "server_id": None}
+    """
+    from app.mcp.registry import MCPServerConfig, AuthType
+
+    # 1. Parse the spec
+    try:
+        spec = parse_openapi_spec(spec_content)
+    except ValueError as exc:
+        return {"error": str(exc), "server_id": None}
+
+    # 2. Extract raw tools using the existing extractor
+    tenant_id = getattr(tenant_ctx, "tenant_id", "")
+    server_id = uuid.uuid4().hex
+    raw_tools = extract_tools_from_spec(spec, connector_id=server_id, tenant_id=tenant_id)
+
+    if not raw_tools:
+        return {"error": "No tools found in OpenAPI spec", "server_id": None}
+
+    # 3. Normalize to the name/description/parameters shape used by call_tool()
+    tools: list[dict[str, Any]] = [
+        {
+            "name": t["tool_name"],
+            "description": t["description"],
+            "parameters": t["parameters_schema"],
+            "http_method": t["http_method"],
+            "http_path": t["http_path"],
+        }
+        for t in raw_tools
+    ]
+
+    # 4. Build MCPServerConfig
+    auth_type = (
+        AuthType.API_KEY if auth_config and "api_key" in auth_config else AuthType.NONE
+    )
+    server_config = MCPServerConfig(
+        server_id=server_id,
+        name=server_name,
+        base_url=base_url,
+        auth_type=auth_type,
+        auth_config=auth_config or {},
+        capabilities=list({t["name"] for t in tools}),
+        enabled=True,
+        tool_definitions=tools,
+    )
+
+    # 5. Register in the live registry
+    await registry.register(server_config, tenant_ctx=tenant_ctx)
+
+    return {"server_id": server_config.server_id, "tool_count": len(tools)}

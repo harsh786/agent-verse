@@ -8,29 +8,29 @@ namespaced as:
 This allows no-restart register/unregister and per-tenant isolation without
 any shared mutable state.
 """
-
 from __future__ import annotations
 
 import enum
 import uuid
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.tenancy.context import TenantContext
 
-AuthType = Literal[
-    "bearer",
-    "api_key",
-    "oauth_ac",
-    "oauth_cc",
-    "pkce",
-    "basic",
-    "custom_header",
-    "mtls",
-    "hmac",
-]
+
+class AuthType(enum.StrEnum):
+    BEARER = "bearer"
+    API_KEY = "api_key"
+    OAUTH_AC = "oauth_ac"
+    OAUTH_CC = "oauth_cc"
+    PKCE = "pkce"
+    BASIC = "basic"
+    CUSTOM_HEADER = "custom_header"
+    MTLS = "mtls"
+    HMAC = "hmac"
+    NONE = "none"
 
 
 class ServerStatus(enum.StrEnum):
@@ -41,13 +41,33 @@ class ServerStatus(enum.StrEnum):
 
 
 class MCPServerConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Pre-set or auto-generated server identity
+    server_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
-    url: str
-    auth_type: AuthType
+    # url: existing field kept for backward compat; base_url is the new preferred name
+    url: str = ""
+    base_url: str = ""
+    auth_type: AuthType = AuthType.NONE
     auth_config: dict[str, Any] = Field(default_factory=dict)
     status: ServerStatus = ServerStatus.ACTIVE
     description: str = ""
     priority: int = 0
+    enabled: bool = True
+    capabilities: list[str] = Field(default_factory=list)
+    tool_definitions: list[dict[str, Any]] = Field(default_factory=list)
+    # Callable for built-in server dispatch — excluded from JSON serialization
+    builtin_handler: Any = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def _sync_url_fields(self) -> "MCPServerConfig":
+        """Keep url and base_url in sync so either can be used."""
+        if self.base_url and not self.url:
+            self.url = self.base_url
+        elif self.url and not self.base_url:
+            self.base_url = self.url
+        return self
 
 
 class MCPRegistry:
@@ -72,9 +92,19 @@ class MCPRegistry:
         *,
         tenant_ctx: TenantContext,
     ) -> str:
-        """Register a new MCP server and return its ID."""
-        server_id = uuid.uuid4().hex
-        resolved_config = config(server_id) if callable(config) else config
+        """Register a new MCP server and return its ID.
+
+        If config.server_id is already set (non-empty), that value is used as
+        the registry key so callers can pre-specify stable IDs (e.g. built-ins).
+        """
+        if callable(config):
+            generated_id = uuid.uuid4().hex
+            resolved_config = config(generated_id)
+            server_id = resolved_config.server_id or generated_id
+        else:
+            resolved_config = config
+            server_id = resolved_config.server_id or uuid.uuid4().hex
+
         key = self._server_key(tenant_ctx.tenant_id, server_id)
         await self._redis.set(key, resolved_config.model_dump_json())
         await self._redis.sadd(self._index_key(tenant_ctx.tenant_id), server_id)
@@ -124,3 +154,8 @@ class MCPRegistry:
         await self._redis.set(key, config.model_dump_json())
         await self._redis.sadd(self._index_key(tenant_ctx.tenant_id), server_id)
         return True
+
+    # Alias — preferred name for callers that scan all registered servers
+    async def list_all(self, *, tenant_ctx: TenantContext) -> list[MCPServerConfig]:
+        """Alias for list_servers()."""
+        return await self.list_servers(tenant_ctx=tenant_ctx)

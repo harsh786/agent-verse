@@ -209,6 +209,75 @@ class MCPClient:
             logger.warning("discover_all_tools failed: %s", exc)
         return all_tools
 
+    async def _dispatch_builtin_tool(
+        self,
+        server: MCPServerConfig,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        """Call a built-in server's Python handler directly."""
+        handler = server.builtin_handler
+        if handler is None:
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error="Built-in handler not available (lost after Redis round-trip)",
+                server_id=server.server_id,
+            )
+        try:
+            output = await handler(tool_name, arguments)
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=True,
+                output=output,
+                server_id=server.server_id,
+            )
+        except Exception as exc:
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=str(exc),
+                server_id=server.server_id,
+            )
+
+    async def _dispatch_openapi_tool(
+        self,
+        server: MCPServerConfig,
+        tool_def: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        """Dispatch an HTTP call for an OpenAPI-imported tool definition."""
+        effective_base = server.base_url or server.url
+        http_method = tool_def.get("http_method", "POST").upper()
+        http_path = tool_def.get("http_path", "")
+        tool_name = tool_def.get("name") or tool_def.get("tool_name", "")
+
+        url = effective_base.rstrip("/") + "/" + http_path.lstrip("/")
+        headers = {"Content-Type": "application/json"}
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                if http_method == "GET":
+                    resp = await client.get(url, params=arguments, headers=headers)
+                else:
+                    resp = await client.request(
+                        http_method, url, json=arguments, headers=headers
+                    )
+                resp.raise_for_status()
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=True,
+                    output=resp.json(),
+                    server_id=server.server_id,
+                )
+        except Exception as exc:
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=str(exc),
+                server_id=server.server_id,
+            )
+
     async def _call_tool_impl(
         self,
         cfg: MCPServerConfig,
@@ -217,7 +286,18 @@ class MCPClient:
         arguments: dict[str, Any],
         tenant_ctx: TenantContext,
     ) -> ToolCallResult:
-        """Inner HTTP call logic — raises on any error for circuit-breaker accounting."""
+        """Inner dispatch logic — raises on any error for circuit-breaker accounting."""
+        # 1. Built-in server (Python handler)
+        if cfg.builtin_handler is not None:
+            return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
+
+        # 2. OpenAPI-imported tool stored in tool_definitions
+        if cfg.tool_definitions:
+            for tdef in cfg.tool_definitions:
+                if tdef.get("name") == tool_name or tdef.get("tool_name") == tool_name:
+                    return await self._dispatch_openapi_tool(cfg, tdef, arguments)
+
+        # 3. Normal MCP/HTTP dispatch
         headers = await self._build_auth_headers(
             cfg, tenant_ctx=tenant_ctx, server_id=server_id
         )
@@ -304,6 +384,22 @@ class MCPClient:
 
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
+            # Fallback: scan all registered servers for an OpenAPI-imported tool
+            try:
+                for server in await self._registry.list_all(tenant_ctx=tenant_ctx):
+                    if server.tool_definitions:
+                        for tdef in server.tool_definitions:
+                            if (
+                                tdef.get("name") == tool_name
+                                or tdef.get("tool_name") == tool_name
+                            ):
+                                return await self._dispatch_openapi_tool(
+                                    server=server,
+                                    tool_def=tdef,
+                                    arguments=arguments,
+                                )
+            except Exception:
+                pass
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,

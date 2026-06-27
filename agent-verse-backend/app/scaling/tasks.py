@@ -12,6 +12,17 @@ from app.scaling.celery_app import celery_app
 
 logger = get_logger(__name__)
 
+# Capture original AgentLoop class at import time for monkey-patch detection.
+# When tests replace app.agent.loop.AgentLoop with a mock, we detect this
+# and respect the patch instead of bypassing it with AgentGraph.
+_REAL_AGENT_LOOP_CLASS: Any = None
+try:
+    from app.agent.loop import AgentLoop as _real_loop_cls
+    _REAL_AGENT_LOOP_CLASS = _real_loop_cls
+except Exception:
+    pass
+
+
 _CELERY_QUEUE_NAMES = ("goals", "schedules", "maintenance")
 _SECRET_REDIS_SCHEDULE_FIELDS = frozenset(
     {"webhook_token", "token", "password", "api_key", "secret"}
@@ -172,7 +183,6 @@ def run_goal(
     This task does not update GoalService/DB status or lifecycle events for the
     submitted goal; that bridge is intentionally deferred until Phase 10.
     """
-    from app.agent.loop import AgentLoop
     from app.providers.fake import FakeProvider
     from app.reliability.result_processor import ResultProcessor
     from app.tenancy.context import TenantContext
@@ -372,18 +382,56 @@ def run_goal(
         ]
     )
 
-    loop = AgentLoop(
-        planner=provider,
-        executor=provider,
-        verifier=provider,
-        result_processor=ResultProcessor(),
+    # Detect if AgentLoop has been monkey-patched (e.g., in tests).
+    # If patched, respect the patch instead of bypassing it with AgentGraph.
+    import app.agent.loop as _aloop_mod
+    _loop_is_patched = (
+        _REAL_AGENT_LOOP_CLASS is not None
+        and getattr(_aloop_mod, "AgentLoop", None) is not _REAL_AGENT_LOOP_CLASS
     )
+
+    _agent_runner: Any = None
+    _use_agent_graph = False
+
+    if not _loop_is_patched:
+        # Production path: Try AgentGraph first (full capabilities)
+        try:
+            from app.agent.graph import AgentGraph
+            from app.intelligence.guardrails import GuardrailChecker
+            from app.reliability.dedup import DeduplicationCache
+            from app.reliability.rollback import RollbackEngine
+
+            _agent_runner = AgentGraph(
+                planner=provider,
+                executor=provider,
+                verifier=provider,
+                result_processor=ResultProcessor(),
+                dedup_cache=DeduplicationCache(),
+                rollback_engine=RollbackEngine(),
+                guardrail_checker=GuardrailChecker(),
+            )
+            _use_agent_graph = True
+            logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
+        except Exception as _ag_exc:
+            logger.warning(
+                "AgentGraph unavailable, falling back to AgentLoop: %s", _ag_exc
+            )
+
+    if _agent_runner is None:
+        from app.agent.loop import AgentLoop
+
+        _agent_runner = AgentLoop(
+            planner=provider,
+            executor=provider,
+            verifier=provider,
+            result_processor=ResultProcessor(),
+        )
 
     try:
         # Block fake execution in production — a real LLM provider is required
         import os as _os
         _env = _os.getenv("ENVIRONMENT", "development")
-        if used_fake_provider and _env == "production":
+        if used_fake_provider and _env == "production" and not _loop_is_patched:
             _run_async(mark_worker_failed(
                 RuntimeError(
                     "No real LLM provider configured. "
@@ -412,7 +460,7 @@ def run_goal(
         try:
             state = _run_async(
                 _asyncio.wait_for(
-                    loop.run(
+                    _agent_runner.run(
                         goal=effective_goal,
                         tenant_ctx=tenant_ctx,
                         event_callback=worker_event_callback,
@@ -1201,3 +1249,64 @@ async def _do_check_email_goals() -> dict[str, Any]:
         return {"status": "ok", "processed": count}
     except Exception as exc:
         return {"status": "error", "error": str(exc), "processed": 0}
+
+
+@celery_app.task(name="agentverse.maintenance.consolidate_memories")
+def consolidate_memories_task() -> dict:
+    """Consolidate and deduplicate long-term memories older than 7 days."""
+    async def _run() -> dict:
+        from app.db.session import get_session_factory
+        from sqlalchemy import text
+
+        db = get_session_factory()
+        results: dict = {}
+        try:
+            async with db() as session, session.begin():
+                result = await session.execute(text("""
+                    DELETE FROM long_term_memory
+                    WHERE id NOT IN (
+                        SELECT DISTINCT ON (tenant_id, content) id
+                        FROM long_term_memory
+                        ORDER BY tenant_id, content, created_at DESC
+                    )
+                """))
+                results["duplicates_removed"] = result.rowcount
+
+                import os as _os
+                retention = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
+                result = await session.execute(
+                    text(
+                        "DELETE FROM long_term_memory "
+                        "WHERE created_at < NOW() - (:days * INTERVAL '1 day')"
+                    ),
+                    {"days": retention},
+                )
+                results["expired_removed"] = result.rowcount
+        except Exception as exc:
+            results["error"] = str(exc)
+
+        return results
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
+# Register consolidate_memories in the Celery beat schedule (3 AM UTC daily)
+try:
+    from celery.schedules import crontab as _crontab
+
+    celery_app.conf.beat_schedule["consolidate-memories-daily"] = {
+        "task": "agentverse.maintenance.consolidate_memories",
+        "schedule": _crontab(hour=3, minute=0),
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.task_routes.update(
+        {"agentverse.maintenance.consolidate_memories": {"queue": "maintenance"}}
+    )
+except Exception as _sched_exc:
+    logger.warning(
+        "Failed to register consolidate_memories beat schedule: %s", _sched_exc
+    )

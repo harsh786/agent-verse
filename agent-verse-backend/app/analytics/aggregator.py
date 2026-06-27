@@ -82,7 +82,7 @@ class GoalAnalyticsAggregator:
                         SELECT id, status, priority, agent_id, created_at, dry_run
                         FROM goals
                         WHERE tenant_id = :tid
-                          AND created_at > NOW() - INTERVAL ':days days'
+                          AND created_at > NOW() - (:days * INTERVAL '1 day')
                         ORDER BY created_at DESC
                         LIMIT 10000
                     """),

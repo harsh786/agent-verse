@@ -168,7 +168,7 @@ class SupervisorAgent:
         req = CompletionRequest(
             messages=[Message(role="user",
                               content=DECOMPOSE_PROMPT.format(goal=goal))],
-            model="",
+            model=getattr(self._planner, "_default_model", "claude-opus-4-8"),
         )
         try:
             resp = await self._planner.complete(req)
@@ -195,16 +195,35 @@ class SupervisorAgent:
         failed: list[SubAgentTask],
         tenant_ctx: Any,
     ) -> str:
-        """Synthesize results from all sub-agents into a coherent summary."""
+        """Synthesize results from all sub-agents via LLM into a coherent answer."""
         if not completed:
-            return f"All {len(failed)} sub-tasks failed."
+            return f"All {len(failed)} sub-tasks failed. No results to synthesize."
 
-        results_text = "\n".join([
-            f"- {t.goal}: {t.result[:200]}"
+        results_text = "\n\n".join([
+            f"Sub-task: {t.goal}\nResult: {t.result[:500]}"
             for t in completed
         ])
 
-        return (
-            f"Completed {len(completed)}/{len(completed)+len(failed)} sub-tasks.\n\n"
-            f"Results:\n{results_text}"
+        prompt = (
+            f"Original goal: {original_goal}\n\n"
+            f"Completed sub-tasks:\n{results_text}\n\n"
+            "Synthesize a coherent, comprehensive answer to the original goal based on "
+            "all sub-task results. Be concise and actionable."
         )
+
+        try:
+            from app.providers.base import CompletionRequest, Message
+            model = getattr(self._planner, "_default_model", "claude-opus-4-8")
+            resp = await self._planner.complete(CompletionRequest(
+                messages=[Message(role="user", content=prompt)],
+                model=model,
+                max_tokens=2000,
+            ))
+            return resp.content
+        except Exception as exc:
+            logger.warning("supervisor_synthesize_llm_failed", error=str(exc))
+            # Fallback: structured text summary if LLM call fails
+            lines = [f"Completed {len(completed)}/{len(completed) + len(failed)} sub-tasks.\n"]
+            for t in completed:
+                lines.append(f"• {t.goal}: {t.result[:200]}")
+            return "\n".join(lines)
