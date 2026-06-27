@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,13 +33,38 @@ class Agent(Base):
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    goal_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    goal_template: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    model_override: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="", server_default=""
+    )
     autonomy_mode: Mapped[str] = mapped_column(
         String(50), nullable=False, default="bounded-autonomous"
     )
-    connector_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    trigger_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    connector_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    trigger_config: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
+    max_iterations: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=15, server_default="15"
+    )
+    timeout_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=300, server_default="300"
+    )
+    allowed_collection_ids: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    eval_suite_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    policy_ids: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    cloned_from: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

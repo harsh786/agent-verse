@@ -880,6 +880,20 @@ class GoalService:
 
         def agent_factory() -> Any:
             loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
+            # Set agent knowledge collection IDs for graph RAG
+            _persist_record = self._goals.get(goal_id)
+            _persist_collection_ids: list[str] = []
+            if _persist_record is not None and _persist_record.agent_id:
+                _persist_agent_store = self._get_agent_store()
+                if _persist_agent_store is not None:
+                    _persist_agent = _persist_agent_store.get(
+                        _persist_record.agent_id, tenant_ctx=tenant_ctx
+                    )
+                    if isinstance(_persist_agent, dict):
+                        _persist_collection_ids = list(
+                            _persist_agent.get("allowed_collection_ids", [])
+                        )
+            loop._agent_collection_ids = _persist_collection_ids
             if tool_context is not None:
                 # Seed initial_context into the agent's run via a wrapper
                 _tc = tool_context
@@ -953,6 +967,15 @@ class GoalService:
             # Store graph instance on record so HITL resume can re-invoke from checkpoint
             if record is not None:
                 record._graph_instance = loop
+            # Set agent knowledge collection IDs for graph RAG
+            _agent_collection_ids: list[str] = []
+            if record is not None and record.agent_id:
+                _agent_store_ref = self._get_agent_store()
+                if _agent_store_ref is not None:
+                    _agent_rec = _agent_store_ref.get(record.agent_id, tenant_ctx=tenant_ctx)
+                    if isinstance(_agent_rec, dict):
+                        _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
+            loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
             if hasattr(loop, '_planner') and type(loop._planner).__name__ == 'FakeProvider':
                 if record is not None:

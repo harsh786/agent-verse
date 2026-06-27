@@ -68,10 +68,17 @@ class GoalSubmitRequest(BaseModel):
 
 class AgentCreateRequest(BaseModel):
     name: str
-    autonomy_mode: str = "supervised"
-    model: str | None = None
-    system_prompt: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    goal_template: str = ""
+    autonomy_mode: str = "bounded-autonomous"
+    connector_ids: list[str] = Field(default_factory=list)
+    trigger_config: dict[str, Any] = Field(default_factory=dict)
+    allowed_collection_ids: list[str] = Field(default_factory=list)
+    eval_suite_id: str | None = None
+    policy_ids: list[str] = Field(default_factory=list)
+    system_prompt: str = ""        # matches backend CreateAgentRequest
+    model_override: str = ""       # renamed from 'model' to match backend
+    max_iterations: int = 15       # new field
+    timeout_seconds: int = 300     # new field
 
 
 class ConnectorRegisterRequest(BaseModel):

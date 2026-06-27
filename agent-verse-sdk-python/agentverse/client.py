@@ -92,6 +92,17 @@ class AgentVerseClient:
             )
         return self._http
 
+    async def _request(self, method: str, path: str, *, json: dict | None = None) -> dict:
+        """Low-level request helper used by agent CRUD methods."""
+        import json as json_lib
+
+        kw: dict[str, Any] = {}
+        if json is not None:
+            kw["content"] = json_lib.dumps(json).encode()
+        resp = await self._client().request(method, path, **kw)
+        self._raise_for_status(resp)
+        return resp.json()  # type: ignore[no-any-return]
+
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code == 401:
             raise AuthError("Invalid or missing API key.", status_code=401)
@@ -234,25 +245,22 @@ class AgentVerseClient:
     # Agents
     # ------------------------------------------------------------------
 
-    async def create_agent(
-        self,
-        name: str,
-        autonomy_mode: str = "supervised",
-        model: str | None = None,
-        system_prompt: str | None = None,
-        **metadata: Any,
-    ) -> Agent:
+    async def create_agent(self, request: AgentCreateRequest) -> dict:
         """Create a new agent configuration."""
-        payload = AgentCreateRequest(
-            name=name,
-            autonomy_mode=autonomy_mode,
-            model=model,
-            system_prompt=system_prompt,
-            metadata=metadata,
-        )
-        resp = await self._client().post("/agents", content=payload.model_dump_json())
-        self._raise_for_status(resp)
-        return Agent.model_validate(resp.json())
+        return await self._request("POST", "/agents", json={
+            "name": request.name,
+            "goal_template": request.goal_template,
+            "autonomy_mode": request.autonomy_mode,
+            "connector_ids": request.connector_ids,
+            "trigger_config": request.trigger_config,
+            "allowed_collection_ids": request.allowed_collection_ids,
+            "eval_suite_id": request.eval_suite_id,
+            "policy_ids": request.policy_ids,
+            "system_prompt": request.system_prompt,
+            "model_override": request.model_override,
+            "max_iterations": request.max_iterations,
+            "timeout_seconds": request.timeout_seconds,
+        })
 
     async def get_agent(self, agent_id: str) -> Agent:
         """Fetch an agent by ID."""
@@ -267,6 +275,38 @@ class AgentVerseClient:
         data = resp.json()
         items = data if isinstance(data, list) else data.get("agents", [])
         return [Agent.model_validate(a) for a in items]
+
+    async def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        goal_template: str | None = None,
+        autonomy_mode: str | None = None,
+        connector_ids: list[str] | None = None,
+        system_prompt: str | None = None,
+        model_override: str | None = None,
+        max_iterations: int | None = None,
+        timeout_seconds: int | None = None,
+        allowed_collection_ids: list[str] | None = None,
+        eval_suite_id: str | None = None,
+        policy_ids: list[str] | None = None,
+    ) -> dict:
+        """Update an agent's configuration. Only provided fields are changed."""
+        data = {k: v for k, v in {
+            "name": name,
+            "goal_template": goal_template,
+            "autonomy_mode": autonomy_mode,
+            "connector_ids": connector_ids,
+            "system_prompt": system_prompt,
+            "model_override": model_override,
+            "max_iterations": max_iterations,
+            "timeout_seconds": timeout_seconds,
+            "allowed_collection_ids": allowed_collection_ids,
+            "eval_suite_id": eval_suite_id,
+            "policy_ids": policy_ids,
+        }.items() if v is not None}
+        return await self._request("PUT", f"/agents/{agent_id}", json=data)
 
     async def delete_agent(self, agent_id: str) -> None:
         """Delete an agent."""

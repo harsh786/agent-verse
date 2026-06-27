@@ -166,17 +166,26 @@ async def test_db_backed_agent_store_sync_from_db_loads_agent() -> None:
     agent = store.get("agent-db-1", tenant_ctx=_CTX)
 
     assert loaded == 1
-    assert agent == {
-        "agent_id": "agent-db-1",
-        "tenant_id": _CTX.tenant_id,
-        "name": "hydrated-agent",
-        "goal_template": "Handle {ticket}",
-        "autonomy_mode": "bounded-autonomous",
-        "connector_ids": ["github", "slack"],
-        "trigger_config": {"trigger_type": "manual"},
-        "permissions": {},
-        "created_at": "",
-    }
+    # Verify core fields are present (new fields from _row_to_dict expansion are also present)
+    assert agent is not None
+    assert agent["agent_id"] == "agent-db-1"
+    assert agent["tenant_id"] == _CTX.tenant_id
+    assert agent["name"] == "hydrated-agent"
+    assert agent["goal_template"] == "Handle {ticket}"
+    assert agent["autonomy_mode"] == "bounded-autonomous"
+    assert agent["connector_ids"] == ["github", "slack"]
+    assert agent["trigger_config"] == {"trigger_type": "manual"}
+    assert agent["permissions"] == {}
+    assert agent["created_at"] == ""
+    # New fields (defaults for SimpleNamespace without these attributes)
+    assert agent["system_prompt"] == ""
+    assert agent["model_override"] == ""
+    assert agent["max_iterations"] == 15
+    assert agent["timeout_seconds"] == 300
+    assert agent["allowed_collection_ids"] == []
+    assert agent["eval_suite_id"] is None
+    assert agent["policy_ids"] == []
+    assert agent["cloned_from"] is None
 
 
 def test_create_agent_surfaces_db_persistence_failure() -> None:

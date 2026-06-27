@@ -185,6 +185,8 @@ class AgentGraph:
         self._self_optimizer: Any = None    # Settable from outside; SelfOptimizer instance
         # Track fire-and-forget background tasks to prevent GC before completion
         self._background_tasks: set[Any] = set()
+        # Agent knowledge collection binding — set externally by goal_service after construction
+        self._agent_collection_ids: list[str] = []
         from app.observability.logging import get_logger as _get_logger
         self._logger = _get_logger(__name__)
 
@@ -329,7 +331,43 @@ class AgentGraph:
                 ltm_text = "\n".join(f"- {m.content}" for m in ltm)
                 context_parts.append(f"[Domain knowledge]\n{ltm_text}")
 
-        # 3. KnowledgeStore hybrid search (skip — no collection_id available here)
+        # 3. KnowledgeStore hybrid search using agent's allowed_collection_ids
+        if self._knowledge_store is not None and self._agent_collection_ids:
+            try:
+                # Get query embedding if embedder is available
+                query_embedding: list[float] = []
+                if self._embedder is not None:
+                    try:
+                        from app.providers.base import EmbedRequest
+                        _embed_resp = await self._embedder.embed(EmbedRequest(texts=[agent_state.goal]))
+                        if _embed_resp.embeddings:
+                            query_embedding = _embed_resp.embeddings[0]
+                    except Exception:
+                        pass
+                knowledge_contexts = []
+                for collection_id in self._agent_collection_ids[:3]:  # max 3 collections
+                    results = await self._knowledge_store.hybrid_search_db(
+                        query=agent_state.goal,
+                        query_embedding=query_embedding,
+                        collection_id=collection_id,
+                        tenant_ctx=tenant_ctx,
+                        top_k=3,
+                    )
+                    for result in results:
+                        content = getattr(result, "content", str(result))
+                        if content:
+                            knowledge_contexts.append(
+                                f"[From collection {collection_id}]\n{content[:300]}"
+                            )
+                if knowledge_contexts:
+                    agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
+                    self._logger.info(
+                        "knowledge_store_rag_hit",
+                        collections=len(self._agent_collection_ids),
+                        chunks=len(knowledge_contexts),
+                    )
+            except Exception as _ks_exc:
+                self._logger.warning("knowledge_store_rag_failed", error=str(_ks_exc))
 
         rag_context = "\n\n".join(context_parts)
         return {"rag_context": rag_context}
@@ -393,6 +431,10 @@ class AgentGraph:
         extra_parts: list[str] = []
         if rag_context:
             extra_parts.append(f"[Relevant context]\n{rag_context}")
+        # Inject knowledge base context from agent's bound collections
+        rag_knowledge: str = agent_state.context.get("rag_knowledge", "")
+        if rag_knowledge:
+            extra_parts.append(f"[Knowledge base context]\n{rag_knowledge}")
         tool_prompt = agent_state.context.get("tool_prompt")
         if isinstance(tool_prompt, str) and tool_prompt:
             extra_parts.append(f"[Available connector tools]\n{tool_prompt}")
