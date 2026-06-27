@@ -58,17 +58,29 @@ def test_slack_server_tool_definitions() -> None:
 
 
 def test_builtin_registry_wiring_returns_correct_count() -> None:
-    """get_builtin_server_configs() always returns 3 entries regardless of env vars."""
+    """get_builtin_server_configs() returns all catalog entries regardless of env vars.
+
+    3 original (github, postgres, slack) + 12 PM connectors = 15 total.
+    """
     import os
 
     # Ensure none of the env vars are set so active count is 0
-    for key in ["GITHUB_TOKEN", "POSTGRES_MCP_URL", "SLACK_BOT_TOKEN"]:
+    for key in [
+        "GITHUB_TOKEN", "POSTGRES_MCP_URL", "SLACK_BOT_TOKEN",
+        "JIRA_BASE_URL", "CONFLUENCE_BASE_URL", "ASANA_ACCESS_TOKEN",
+        "LINEAR_API_KEY", "NOTION_API_KEY", "TRELLO_API_KEY",
+        "MONDAY_API_KEY", "TODOIST_API_TOKEN", "BASECAMP_ACCOUNT_ID",
+        "WRIKE_ACCESS_TOKEN", "CLICKUP_API_TOKEN", "SMARTSUITE_API_KEY",
+    ]:
         os.environ.pop(key, None)
 
     from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
     configs = get_builtin_server_configs()
-    assert len(configs) == 3  # always 3 configs in the catalog
+    # 3 original + 12 PM connectors = 15 total
+    assert len(configs) >= 15, (
+        f"Expected at least 15 configs (3 original + 12 PM), got {len(configs)}"
+    )
 
     # With no env vars, active count should be 0
     active = [
