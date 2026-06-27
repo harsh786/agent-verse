@@ -53,6 +53,7 @@ services:
       PGBOUNCER_CLIENT_IDLE_TIMEOUT: "0"
       PGBOUNCER_LOG_CONNECTIONS: "0"
       PGBOUNCER_LOG_DISCONNECTIONS: "0"
+      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: "extra_float_digits"
     ports:
       - "6432:6432"
     depends_on:
@@ -118,6 +119,7 @@ services:
       # SMTP_PASSWORD: ""
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      EMBEDDING_DIM: "1536"
     ports:
       - "8000:8000"
     depends_on:
@@ -128,7 +130,7 @@ services:
       pgbouncer:
         condition: service_healthy
       keycloak:
-        condition: service_healthy
+        condition: service_started  # Don't block on Keycloak health — it takes 60-90s
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0

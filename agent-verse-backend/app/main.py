@@ -184,8 +184,11 @@ class _FakeRedis:
             return None
         return self._d.get(key)
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+    async def set(self, key: str, value: str, ex: int | None = None, **kwargs: Any) -> None:
         self._d[key] = value
+        if ex is not None:
+            import time
+            self._ttl[key] = time.monotonic() + ex
 
     async def delete(self, key: str) -> int:
         existed = key in self._d
@@ -518,6 +521,34 @@ def create_app(
             app.state.schedule_store = _schedule_store_db
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
+
+            # Load governance policies from DB into PolicyEngine (H2 fix)
+            try:
+                from sqlalchemy import text as _sql_text
+                async with db_factory() as _pol_session:
+                    _pol_result = await _pol_session.execute(
+                        _sql_text(
+                            "SELECT name, tenant_id, tools_pattern, action, description "
+                            "FROM governance_policies"
+                        )
+                    )
+                    _pol_rows = _pol_result.fetchall()
+                from app.governance.policies import Policy as _PolicyClass
+                for _row in _pol_rows:
+                    _pname, _ptenant, _ppattern, _paction, _pdesc = _row
+                    _denied = [_ppattern] if _paction == "deny" else []
+                    _approval = [_ppattern] if _paction == "require_approval" else []
+                    _p = _PolicyClass(
+                        name=_pname,
+                        description=_pdesc or "",
+                        denied_tools=_denied,
+                        approval_tools=_approval,
+                        tenant_id=_ptenant or "",
+                    )
+                    _policy_engine._policies.append(_p)
+                logger.info("policy_engine_loaded", count=len(_pol_rows))
+            except Exception as _pol_exc:
+                logger.warning("policy_engine_load_failed", error=str(_pol_exc))
 
             # Re-wire compliance controller with DB-backed services and DB factory.
             _compliance_controller.configure_services(

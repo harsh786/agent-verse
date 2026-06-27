@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 interface AuthState {
   apiKey: string;
@@ -11,6 +11,23 @@ interface AuthState {
   logout: () => void;
 }
 
+// Use sessionStorage (cleared on tab close) to reduce XSS exfiltration risk.
+// Falls back to localStorage for backward compat on reads only — never writes
+// API keys back to localStorage.
+const secureStorage = createJSONStorage(() => ({
+  getItem: (name: string): string | null => {
+    return sessionStorage.getItem(name) ?? localStorage.getItem(name);
+  },
+  setItem: (name: string, value: string): void => {
+    sessionStorage.setItem(name, value);
+    // Do NOT write to localStorage so API keys are not persisted to disk.
+  },
+  removeItem: (name: string): void => {
+    sessionStorage.removeItem(name);
+    localStorage.removeItem(name);
+  },
+}));
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -19,18 +36,23 @@ export const useAuthStore = create<AuthState>()(
       plan: "",
       isAuthenticated: false,
       setCredentials: (apiKey, tenantId, plan) => {
-        localStorage.setItem("av_api_key", apiKey);
+        sessionStorage.setItem("av_api_key", apiKey);
+        localStorage.removeItem("av_api_key"); // migration: remove from localStorage
         set({ apiKey, tenantId, plan, isAuthenticated: true });
       },
       login: (creds) => {
-        localStorage.setItem("av_api_key", creds.apiKey);
+        sessionStorage.setItem("av_api_key", creds.apiKey);
+        localStorage.removeItem("av_api_key"); // migration: remove from localStorage
         set({ apiKey: creds.apiKey, tenantId: creds.tenantId, plan: "", isAuthenticated: true });
       },
       logout: () => {
+        sessionStorage.removeItem("av_api_key");
         localStorage.removeItem("av_api_key");
+        sessionStorage.removeItem("av-auth");
+        localStorage.removeItem("av-auth");
         set({ apiKey: "", tenantId: "", plan: "", isAuthenticated: false });
       },
     }),
-    { name: "av-auth" }
+    { name: "av-auth", storage: secureStorage }
   )
 );
