@@ -158,12 +158,13 @@ services:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.0.0
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafanadata:/var/lib/grafana
     ports:
@@ -171,8 +172,40 @@ services:
     depends_on:
       - prometheus
 
+  redis-sentinel-1:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      sh -c "echo 'sentinel monitor mymaster redis 6379 2
+      sentinel down-after-milliseconds mymaster 5000
+      sentinel failover-timeout mymaster 60000
+      sentinel parallel-syncs mymaster 1
+      bind 0.0.0.0' > /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    depends_on:
+      - redis
+    networks:
+      - agentverse
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      sh -c "echo 'sentinel monitor mymaster redis 6379 2
+      sentinel down-after-milliseconds mymaster 5000
+      sentinel failover-timeout mymaster 60000
+      sentinel parallel-syncs mymaster 1
+      bind 0.0.0.0' > /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    depends_on:
+      - redis
+    networks:
+      - agentverse
+
 volumes:
   pgdata:
   redisdata:
   promdata:
   grafanadata:
+
+networks:
+  agentverse:
+    driver: bridge

@@ -128,6 +128,45 @@ class ExecutionMemory:
             from app.observability.logging import get_logger
             get_logger(__name__).warning("execution_memory_db_write_failed", error=str(exc))
 
+    async def record_failure_async(
+        self,
+        *,
+        goal: str,
+        error: str,
+        tenant_id: str,
+        db: Any = None,
+    ) -> None:
+        """Persist failed attempt to DB for cross-session pattern learning."""
+        # In-memory record
+        self._failures.setdefault(tenant_id, []).append({"goal": goal, "error": error})
+        if len(self._failures.get(tenant_id, [])) > 100:
+            self._failures[tenant_id] = self._failures[tenant_id][-50:]
+
+        if db is None:
+            return
+        try:
+            import json
+            import uuid
+
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO execution_memory (id, tenant_id, goal_text, plan, success, created_at)
+                        VALUES (:id, :tid, :goal, :plan::jsonb, FALSE, NOW())
+                        ON CONFLICT DO NOTHING
+                    """),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tid": tenant_id,
+                        "goal": goal[:500],
+                        "plan": json.dumps({"error": error[:500]}),
+                    },
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("failure_persist_failed: %s", exc)
+
     async def recall_async(
         self,
         goal_hint: str,

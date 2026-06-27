@@ -82,12 +82,29 @@ class PolicyEngine:
                 return False
         return True
 
-    def evaluate(self, tool_name: str, *, tenant_ctx: TenantContext) -> PolicyResult:
-        for policy in self._policies:
-            # Skip policies belonging to other tenants
-            policy_tenant = getattr(policy, "tenant_id", "")
-            if policy_tenant and policy_tenant != tenant_ctx.tenant_id:
-                continue
+    def evaluate(
+        self,
+        tool_name: str,
+        *,
+        tenant_ctx: TenantContext,
+        parent_policy_ids: list[str] | None = None,
+    ) -> PolicyResult:
+        """Evaluate tool access. parent_policy_ids allows sub-agents to inherit parent policies."""
+        # Collect applicable policies for this tenant (including inherited)
+        applicable_policies = [
+            p for p in self._policies
+            if not getattr(p, "tenant_id", "")
+            or getattr(p, "tenant_id", "") == tenant_ctx.tenant_id
+        ]
+
+        # If parent_policy_ids given, also apply parent's policies (cross-agent inheritance)
+        if parent_policy_ids:
+            for pol in self._policies:
+                pol_id = getattr(pol, "policy_id", "") or getattr(pol, "name", "")
+                if pol_id in parent_policy_ids and pol not in applicable_policies:
+                    applicable_policies.append(pol)
+
+        for policy in applicable_policies:
             if not self._is_within_time_window(policy):
                 continue  # Time window not active, skip this policy
             for pattern in policy.denied_tools:

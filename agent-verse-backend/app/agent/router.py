@@ -51,10 +51,18 @@ class AgentRouter:
     A routing decision is made only when the composite score ≥ 0.3.
     """
 
-    def __init__(self, *, agent_store: Any, eval_store: Any = None, llm_provider: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        agent_store: Any,
+        eval_store: Any = None,
+        llm_provider: Any = None,
+        db_session_factory: Any = None,
+    ) -> None:
         self._agent_store = agent_store
         self._eval_store = eval_store
         self._llm_provider = llm_provider
+        self._db = db_session_factory
 
     # ── scoring helpers ───────────────────────────────────────────────────────
 
@@ -83,13 +91,36 @@ class AgentRouter:
         return min(matched / len(connector_ids), 1.0)
 
     def _score_by_history(self, agent_id: str, tenant_ctx: TenantContext) -> float:
-        """Return historical success rate, or 0.0 when eval store is unavailable."""
+        """Return historical success rate from eval store, or 0.0 when unavailable."""
         if self._eval_store is None:
             return 0.0
         try:
             return float(self._eval_store.get_success_rate(agent_id, tenant_ctx=tenant_ctx))
         except Exception:
             return 0.0
+
+    async def _score_by_history_db(self, agent: dict, goal: str, tenant_ctx: Any) -> float:
+        """Score agent based on historical success rate from evaluations table."""
+        if self._db is None:
+            return 0.0
+        agent_id = agent.get("agent_id", "")
+        if not agent_id:
+            return 0.0
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                row = (await session.execute(text("""
+                    SELECT AVG(average_score) as avg_score, COUNT(*) as run_count
+                    FROM evaluations e
+                    JOIN goals g ON e.goal_id = g.id
+                    WHERE g.agent_id = :aid AND g.tenant_id = :tid
+                      AND e.created_at > NOW() - INTERVAL '30 days'
+                """), {"aid": agent_id, "tid": tenant_ctx.tenant_id})).fetchone()
+            if row and row[1] and row[1] > 0:
+                return min(1.0, float(row[0] or 0))
+        except Exception as exc:
+            import logging; logging.getLogger(__name__).debug("router_history_score_failed: %s", exc)
+        return 0.0
 
     async def _score_by_llm(
         self,
@@ -179,7 +210,11 @@ class AgentRouter:
             aid = agent.get("agent_id", "")
             kw = self._score_by_keywords(goal, agent)
             conn = self._score_by_connector_match(goal, agent)
-            hist = self._score_by_history(aid, tenant_ctx)
+            # Use DB-backed history scoring when available, fall back to eval store
+            if self._db is not None:
+                hist = await self._score_by_history_db(agent, goal, tenant_ctx)
+            else:
+                hist = self._score_by_history(aid, tenant_ctx)
 
             # Weighted composite: keywords 40 %, connector 40 %, history 20 %
             composite = kw * 0.4 + conn * 0.4 + hist * 0.2

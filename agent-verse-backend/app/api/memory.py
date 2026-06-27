@@ -191,6 +191,15 @@ async def delete_memory(request: Request, memory_id: str) -> None:
         raise HTTPException(404, "Memory not found")
 
 
+@router.get("/tool-reliability")
+async def get_tool_reliability(request: Request) -> list[dict]:
+    """Get per-tool reliability stats (tools with poor success rates) for this tenant."""
+    tenant_ctx = _require_tenant(request)
+    from app.memory.tool_reliability import ToolReliabilityStore
+    store = ToolReliabilityStore(db_session_factory=_get_db(request))
+    return await store.get_unreliable_tools(tenant_id=tenant_ctx.tenant_id, min_calls=3)
+
+
 @router.delete("", status_code=204)
 async def clear_all_memories(request: Request) -> None:
     """Clear all long-term memories for this tenant (GDPR erasure)."""
