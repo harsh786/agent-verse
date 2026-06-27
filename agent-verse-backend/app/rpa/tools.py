@@ -127,6 +127,56 @@ RPA_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["field_values"],
         },
     },
+    # P1.2: CAPTCHA detection, human help, and network-idle tools
+    {
+        "name": "rpa_detect_captcha",
+        "description": (
+            "Detect if a CAPTCHA challenge is present on the current page. "
+            "Returns 'captcha_detected: true/false'."
+        ),
+        "category": "browser",
+        "risk": "read",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "rpa_request_human_help",
+        "description": (
+            "Pause the RPA session and request a human operator to take over. "
+            "Returns the takeover URL."
+        ),
+        "category": "browser",
+        "risk": "read",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Reason human help is needed (e.g., 'CAPTCHA detected')",
+                }
+            },
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "rpa_wait_for_network_idle",
+        "description": (
+            "Wait for the page network to be idle (no pending requests). "
+            "Useful after form submissions."
+        ),
+        "category": "browser",
+        "risk": "read",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "timeout_ms": {
+                    "type": "integer",
+                    "default": 10000,
+                    "description": "Maximum wait in milliseconds",
+                }
+            },
+            "required": [],
+        },
+    },
 )
 
 _RISK_BY_TOOL = {str(tool["name"]): str(tool["risk"]) for tool in RPA_TOOLS}

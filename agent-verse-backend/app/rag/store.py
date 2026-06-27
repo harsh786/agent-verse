@@ -15,7 +15,9 @@ DB session is available.
 
 from __future__ import annotations
 
+import asyncio
 import math
+import uuid as _uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +38,10 @@ class HybridSearchResult:
     score: float
     vector_score: float
     trigram_score: float
+    source_url: str = ""
+    source_doc_id: str = ""
+    page_number: int | None = None
+    metadata: dict = field(default_factory=dict)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -244,6 +250,7 @@ class KnowledgeStore:
             async with self._db() as session:
                 async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
                     # Hybrid search: 70% cosine similarity + 30% trigram
+                    # Includes citation fields: source_url, source_doc_id, page_number
                     sql = text("""
                         SELECT
                             id AS chunk_id,
@@ -251,7 +258,11 @@ class KnowledgeStore:
                             (0.7 * (1 - (embedding <=> :qvec::vector)) +
                              0.3 * similarity(content, :query)) AS score,
                             (1 - (embedding <=> :qvec::vector)) AS vector_score,
-                            similarity(content, :query) AS trigram_score
+                            similarity(content, :query) AS trigram_score,
+                            COALESCE(source_url, '') AS source_url,
+                            COALESCE(source_doc_id, '') AS source_doc_id,
+                            page_number,
+                            COALESCE(metadata, '{}') AS metadata
                         FROM documents
                         WHERE collection_id = :cid
                         ORDER BY score DESC
@@ -268,15 +279,159 @@ class KnowledgeStore:
                         HybridSearchResult(
                             chunk_id=str(r.chunk_id),
                             content=r.content,
-                            score=float(r.score),
-                            vector_score=float(r.vector_score),
-                            trigram_score=float(r.trigram_score),
+                            score=float(r.score or 0),
+                            vector_score=float(r.vector_score or 0),
+                            trigram_score=float(r.trigram_score or 0),
+                            source_url=getattr(r, "source_url", "") or "",
+                            source_doc_id=getattr(r, "source_doc_id", "") or "",
+                            page_number=getattr(r, "page_number", None),
+                            metadata=dict(getattr(r, "metadata", {}) or {}),
                         )
                         for r in rows
                     ]
         except Exception as exc:
             _log.warning("DB hybrid search failed, falling back to in-memory: %s", exc)
             return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+
+    async def ingest_document(
+        self,
+        *,
+        collection_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        tenant_ctx: TenantContext,
+        embedder: Any = None,
+        source_url: str = "",
+        source_type: str = "text",
+        source_doc_id: str = "",
+        page_number: int | None = None,
+        freshness_ttl_hours: int = 168,
+    ) -> str:
+        """Ingest a single content chunk with citation metadata.
+
+        Creates an embedding (if an embedder is provided), stores the chunk
+        in-memory, and persists to PostgreSQL with the citation fields
+        (source_url, source_type, source_doc_id, page_number, freshness_ttl_hours).
+
+        Returns the new chunk_id (UUID hex string).
+        """
+        import hashlib
+
+        chunk_id = _uuid.uuid4().hex
+        embedding: list[float] = []
+        if embedder is not None:
+            try:
+                from app.providers.base import embed_texts
+                embeddings = await embed_texts([content], provider=embedder)
+                embedding = embeddings[0]
+            except Exception as exc:
+                _log.warning("ingest_document_embed_failed: %s", exc)
+
+        merged_metadata = dict(metadata or {})
+        merged_metadata.update({
+            "source_url": source_url,
+            "source_type": source_type,
+            "source_doc_id": source_doc_id,
+            "page_number": page_number,
+        })
+
+        chunk = Chunk(
+            document_id=source_doc_id or chunk_id,
+            content=content,
+            embedding=embedding,
+            chunk_index=0,
+            chunk_id=chunk_id,
+            metadata=merged_metadata,
+        )
+
+        # In-memory storage
+        store = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if store is not None:
+            store.chunks.append(chunk)
+            store.collection.document_count = len({c.document_id for c in store.chunks})
+
+        # DB persistence with citation fields
+        if self._db is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._db_ingest_with_citations(
+                        chunk_id=chunk_id,
+                        collection_id=collection_id,
+                        content=content,
+                        embedding=embedding,
+                        metadata=merged_metadata,
+                        tenant_id=tenant_ctx.tenant_id,
+                        source_url=source_url,
+                        source_type=source_type,
+                        source_doc_id=source_doc_id,
+                        page_number=page_number,
+                        freshness_ttl_hours=freshness_ttl_hours,
+                        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                    )
+                )
+            except RuntimeError:
+                pass  # No running loop (sync context)
+
+        return chunk_id
+
+    async def _db_ingest_with_citations(
+        self,
+        *,
+        chunk_id: str,
+        collection_id: str,
+        content: str,
+        embedding: list[float],
+        metadata: dict[str, Any],
+        tenant_id: str,
+        source_url: str,
+        source_type: str,
+        source_doc_id: str,
+        page_number: int | None,
+        freshness_ttl_hours: int,
+        content_hash: str,
+    ) -> None:
+        """Persist a document chunk with citation fields to PostgreSQL."""
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with self._db() as session, session.begin():
+                async with sqlalchemy_rls_context(session, tenant_id):
+                    await session.execute(
+                        text("""
+                            INSERT INTO documents
+                                (id, collection_id, tenant_id, source, content, content_hash,
+                                 embedding, chunk_index, metadata,
+                                 source_url, source_type, source_doc_id,
+                                 page_number, freshness_ttl_hours)
+                            VALUES
+                                (:id, :cid, :tid, :src, :content, :hash,
+                                 :emb::vector, 0, :meta::jsonb,
+                                 :source_url, :source_type, :source_doc_id,
+                                 :page_number, :ttl)
+                            ON CONFLICT (id) DO NOTHING
+                        """),
+                        {
+                            "id": chunk_id,
+                            "cid": collection_id,
+                            "tid": tenant_id,
+                            "src": source_type,
+                            "content": content,
+                            "hash": content_hash,
+                            "emb": str(embedding) if embedding else None,
+                            "meta": str(metadata),
+                            "source_url": source_url,
+                            "source_type": source_type,
+                            "source_doc_id": source_doc_id,
+                            "page_number": page_number,
+                            "ttl": freshness_ttl_hours,
+                        },
+                    )
+        except Exception as exc:
+            _log.warning("DB ingest with citations failed: %s", exc)
 
     async def sync_from_db(self) -> int:
         """Load collections and chunks from PostgreSQL into memory.

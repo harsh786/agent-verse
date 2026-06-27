@@ -18,6 +18,37 @@ class StructuredStep:
     depends_on: list[str] = field(default_factory=list)
     risk: str = "read"
     expected_output: str = ""
+    # P1.1: Conditional execution and loop fields
+    condition: str | None = None          # Python expr: "s1.status == 'complete'"
+    loop_until: str | None = None         # Python expr: "output.startswith('SUCCESS')"
+    max_loop_iter: int = 5               # Max loop iterations before forced exit
+    iterations_used: int = 0            # Tracks how many times we've looped
+    # Runtime state (populated during execution)
+    status: str = "pending"             # pending | running | complete | failed | skipped
+    output: str = ""
+    error: str | None = None
+
+    def should_execute(self, step_results: dict[str, "StructuredStep"]) -> bool:
+        """Evaluate condition field. Returns True if step should run."""
+        if self.condition is None:
+            return True
+        try:
+            ctx: dict[str, Any] = {}
+            for sid, s in step_results.items():
+                ctx[sid] = type(
+                    "SR", (), {"status": s.status, "output": s.output, "error": s.error}
+                )()
+            return bool(
+                eval(  # noqa: S307
+                    self.condition,
+                    {"__builtins__": {}, "len": len, "str": str, "int": int, "bool": bool},
+                    ctx,
+                )
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("condition_eval_failed: %s", e)
+            return True  # default: run if condition can't be evaluated
 
 
 @dataclass
@@ -54,6 +85,10 @@ class StructuredPlan:
                                     depends_on=list(raw.get("depends_on") or []),
                                     risk=str(raw.get("risk", "read")),
                                     expected_output=str(raw.get("expected_output", "")),
+                                    # P1.1: condition and loop fields
+                                    condition=raw.get("condition") or None,
+                                    loop_until=raw.get("loop_until") or None,
+                                    max_loop_iter=int(raw.get("max_loop_iter", 5)),
                                 )
                             )
                         elif isinstance(raw, str):

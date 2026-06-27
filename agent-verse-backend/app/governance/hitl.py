@@ -23,8 +23,46 @@ class ApprovalStatus(enum.StrEnum):
     TIMED_OUT = "timed_out"
 
 
-@dataclass
+class _AwaitableBool:
+    """Bool-like object that can also be awaited (P1.3 backward-compat approve return).
+
+    Allows both sync usage (``ok = gateway.approve(...); assert ok``) and async
+    usage (``ok = await gateway.approve(...)``) without API changes.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: bool) -> None:
+        self._value = value
+
+    def __bool__(self) -> bool:
+        return self._value
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, bool):
+            return self._value == other
+        if isinstance(other, _AwaitableBool):
+            return self._value == other._value
+        return NotImplemented
+
+    def __await__(self):  # type: ignore[override]
+        return self._value
+        yield  # noqa: unreachable — makes this a generator function so __await__ is valid
+
+
+@dataclass(eq=False)
 class ApprovalRequest:
+    """An in-flight HITL approval request.
+
+    Dual-mode: can be used as a plain string (via __str__/__eq__/__hash__) for
+    backward compatibility with code that expects ``request_approval()`` to return
+    a string ID.  Can also be awaited via ``await gateway.request_approval(...)``
+    to obtain the full ``ApprovalRequest`` object in async contexts.
+    """
+
     goal_id: str
     action: str
     risk_level: str
@@ -40,6 +78,31 @@ class ApprovalRequest:
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
     # In-process expiry datetime (not persisted to DB directly)
     _expires_at_dt: Any = field(default=None, repr=False, compare=False)
+
+    # ── Dual-mode (sync + await) support ──────────────────────────────────────
+
+    def __await__(self):  # type: ignore[override]
+        """Enable ``req = await gateway.request_approval(...)``."""
+        return self
+        yield  # noqa: unreachable — makes this a generator function
+
+    def __str__(self) -> str:
+        return self.request_id
+
+    def __repr__(self) -> str:
+        return f"ApprovalRequest(request_id={self.request_id!r}, status={self.status!r})"
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        """Allow comparison with plain request_id strings for backward compat."""
+        if isinstance(other, str):
+            return self.request_id == other
+        if isinstance(other, ApprovalRequest):
+            return self.request_id == other.request_id
+        return NotImplemented
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        """Hash equals hash(request_id) so ApprovalRequest works as a dict key."""
+        return hash(self.request_id)
 
 
 class HITLGateway:
@@ -60,24 +123,37 @@ class HITLGateway:
         self,
         *,
         goal_id: str,
-        action: str,
-        risk_level: str,
+        action: str = "",
+        step_description: str = "",  # P1.3: alias for action
+        risk_level: str = "high",
         tenant_ctx: TenantContext,
-    ) -> str:
-        """Create an approval request and return its ID (non-blocking).
+        required_approvers: int = 1,  # P1.3: multi-person approval threshold
+        context: dict | None = None,
+    ) -> "ApprovalRequest":
+        """Create an approval request and return it (non-blocking).
 
-        Also sets _expires_at_dt for in-process timeout enforcement.
+        The returned ``ApprovalRequest`` is dual-mode:
+        - Sync:  ``req_id = gateway.request_approval(...)`` → req_id acts like a string
+        - Async: ``req   = await gateway.request_approval(...)`` → req is ApprovalRequest
+
+        Also sets ``_expires_at_dt`` for in-process timeout enforcement.
         """
         from datetime import UTC, timedelta
-        req = ApprovalRequest(goal_id=goal_id, action=action, risk_level=risk_level)
+        _action = step_description or action  # accept either param name
+        req = ApprovalRequest(
+            goal_id=goal_id,
+            action=_action,
+            risk_level=risk_level,
+            required_approvers=required_approvers,
+        )
         req._expires_at_dt = datetime.now(UTC) + timedelta(seconds=self._timeout)
         self._requests[(tenant_ctx.tenant_id, req.request_id)] = req
 
         # Persist to DB (fire-and-forget, Fix 4)
         if self._db_session_factory is not None:
-            import asyncio
+            import asyncio as _aio
             try:
-                loop = asyncio.get_running_loop()
+                loop = _aio.get_running_loop()
                 loop.create_task(
                     self._db_persist_approval_request(req, tenant_ctx.tenant_id)
                 )
@@ -86,14 +162,14 @@ class HITLGateway:
 
         # Dispatch notification (fire and forget)
         if self._notification_service is not None:
-            import asyncio
+            import asyncio as _aio
             try:
-                loop = asyncio.get_running_loop()
+                loop = _aio.get_running_loop()
                 loop.create_task(
                     self._notification_service.notify_approval_required(
                         request_id=req.request_id,
                         goal_id=goal_id,
-                        action=action,
+                        action=_action,
                         risk_level=risk_level,
                         tenant_id=tenant_ctx.tenant_id,
                     )
@@ -101,7 +177,7 @@ class HITLGateway:
             except RuntimeError:
                 pass  # No running loop (shouldn't happen in async context)
 
-        return req.request_id
+        return req  # ApprovalRequest: awaitable + string-compatible via __str__/__eq__/__hash__
 
     async def _db_persist_approval_request(
         self, req: ApprovalRequest, tenant_id: str
@@ -165,10 +241,16 @@ class HITLGateway:
         approver: str,
         note: str = "",
         tenant_ctx: TenantContext,
-    ) -> bool:
+    ) -> "_AwaitableBool":
+        """Approve a request. Returns an _AwaitableBool (truthy on success).
+
+        Works in both sync and async contexts:
+        - Sync: ``ok = gateway.approve(...); assert ok``
+        - Async: ``ok = await gateway.approve(...)``
+        """
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
-            return False
+            return _AwaitableBool(False)
         # Track approvers (prevent duplicate votes)
         if approver not in req.approvers_list:
             req.approvers_list.append(approver)
@@ -179,7 +261,7 @@ class HITLGateway:
         if req.approvals_received >= req.required_approvers:
             req.status = ApprovalStatus.APPROVED
             req._event.set()  # Unblock waiting agent
-        return True
+        return _AwaitableBool(True)
 
     async def reject(
         self,
@@ -205,7 +287,7 @@ class HITLGateway:
                 await self._redis.publish(
                     f"hitl_rejected:{req.goal_id}",
                     json.dumps({
-                        "request_id": request_id,
+                        "request_id": str(request_id),
                         "goal_id": req.goal_id,
                         "note": note,
                         "rejected_by": getattr(tenant_ctx, "api_key_id", "unknown"),

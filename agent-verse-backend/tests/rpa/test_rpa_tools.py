@@ -242,7 +242,7 @@ def test_execute_rpa_tool_returns_failure_for_unknown_tool() -> None:
 
 def test_rpa_tools_metadata() -> None:
     """All RPA tools have the required metadata fields."""
-    assert len(RPA_TOOLS) == 10
+    assert len(RPA_TOOLS) >= 10  # P1.2 added 3 new tools (was 10, now 13)
     for tool in RPA_TOOLS:
         assert "name" in tool, f"Tool missing 'name': {tool}"
         assert "description" in tool, f"Tool missing 'description': {tool}"
