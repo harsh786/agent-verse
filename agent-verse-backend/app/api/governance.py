@@ -349,22 +349,40 @@ async def query_audit(
     goal_id: str | None = None,
     tool_name: str | None = None,
     limit: int = 100,
+    offset: int = 0,
+    start_time: str | None = None,
+    end_time: str | None = None,
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     log = _audit(request)
-    events = log.query(tenant_ctx=tenant_ctx, goal_id=goal_id, tool_name=tool_name)
+
+    # Use direct DB query for accuracy + pagination support
+    events = await log.query_db(
+        tenant_ctx=tenant_ctx,
+        goal_id=goal_id,
+        tool_name=tool_name,
+        limit=limit,
+        offset=offset,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
     return [
         {
             "event_id": e.event_id,
             "goal_id": e.goal_id,
             "tool_name": e.tool_name,
-            "action_level": e.action_level,
+            "action_level": (
+                e.action_level.value
+                if hasattr(e.action_level, "value")
+                else e.action_level
+            ),
             "outcome": e.outcome,
             "step_id": e.step_id,
             "approver": e.approver,
             "note": e.note,
         }
-        for e in events[:limit]
+        for e in events
     ]
 
 

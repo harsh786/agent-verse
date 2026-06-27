@@ -119,6 +119,95 @@ class AgentStore:
             logging.getLogger(__name__).warning("DB sync agents failed: %s", exc)
             return 0
 
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        """Convert an Agent ORM row to a plain dict (same shape as in-memory store)."""
+        created_at = getattr(row, "created_at", None)
+        return {
+            "agent_id": str(row.id),
+            "tenant_id": str(row.tenant_id),
+            "name": row.name,
+            "goal_template": row.goal_template or "",
+            "autonomy_mode": row.autonomy_mode or "bounded-autonomous",
+            "connector_ids": list(row.connector_ids or []),
+            "trigger_config": dict(row.trigger_config or {}),
+            "permissions": {},
+            "created_at": created_at.isoformat() if created_at else "",
+        }
+
+    # ── async DB reads ─────────────────────────────────────────────────────────
+
+    async def get_async(
+        self, agent_id: str, *, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """Read a single agent directly from DB; fall back to memory cache."""
+        if self._db is not None:
+            try:
+                from sqlalchemy import select
+
+                from app.db.models.agent import Agent
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with self._db() as session, sqlalchemy_rls_context(
+                    session, tenant_ctx.tenant_id
+                ):
+                    result = await session.execute(
+                        select(Agent).where(
+                            Agent.id == agent_id,
+                            Agent.tenant_id == tenant_ctx.tenant_id,
+                            Agent.is_active == True,  # noqa: E712
+                        )
+                    )
+                    row = result.scalar_one_or_none()
+
+                if row is not None:
+                    record = self._row_to_dict(row)
+                    # Refresh in-memory cache
+                    self._data[(tenant_ctx.tenant_id, agent_id)] = record
+                    return record
+                # Row not found in DB → not found
+                return None
+            except Exception as exc:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("agent_get_db_failed", error=str(exc))
+
+        return self._data.get((tenant_ctx.tenant_id, agent_id))
+
+    async def list_async(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
+        """Read all agents for a tenant directly from DB; fall back to memory cache."""
+        if self._db is not None:
+            try:
+                from sqlalchemy import select
+
+                from app.db.models.agent import Agent
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with self._db() as session, sqlalchemy_rls_context(
+                    session, tenant_ctx.tenant_id
+                ):
+                    result = await session.execute(
+                        select(Agent)
+                        .where(
+                            Agent.tenant_id == tenant_ctx.tenant_id,
+                            Agent.is_active == True,  # noqa: E712
+                        )
+                        .order_by(Agent.created_at.desc())
+                    )
+                    rows = result.scalars().all()
+
+                agents = [self._row_to_dict(r) for r in rows]
+                # Refresh in-memory cache
+                for a in agents:
+                    self._data[(tenant_ctx.tenant_id, a["agent_id"])] = a
+                return agents
+            except Exception as exc:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("agent_list_db_failed", error=str(exc))
+
+        return self.list_all(tenant_ctx=tenant_ctx)
+
     def list_all(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
         return [
             rec
@@ -223,7 +312,7 @@ async def _create_agent_record(
 async def list_agents(request: Request) -> list[dict[str, Any]]:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
-    return store.list_all(tenant_ctx=tenant_ctx)
+    return await store.list_async(tenant_ctx=tenant_ctx)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -294,7 +383,7 @@ async def create_agent_nl(
 async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
-    rec = store.get(agent_id, tenant_ctx=tenant_ctx)
+    rec = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
