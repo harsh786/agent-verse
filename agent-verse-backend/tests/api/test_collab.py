@@ -79,6 +79,7 @@ class FakeCollabStore:
         session_id: str,
         operation: dict[str, Any],
         author: str,
+        expected_version: int | None = None,
     ) -> dict[str, Any]:
         ops = self.operations[(tenant_ctx.tenant_id, session_id)]
         op = {

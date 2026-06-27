@@ -137,6 +137,8 @@ class AgentGraph:
         goal_tree_threshold: int = 4,  # decompose when plan >= this many steps
         # LangGraph checkpointer (RedisSaver when available, else MemorySaver)
         checkpointer: Any | None = None,
+        # Distributed bulkhead registry (RedisBulkheadRegistry or None)
+        bulkhead_registry: Any = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -167,6 +169,7 @@ class AgentGraph:
         self._goal_tree_threshold = goal_tree_threshold
         self._hitl_timeout: float = 300.0
         self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
+        self._bulkhead_registry = bulkhead_registry
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -815,15 +818,58 @@ class AgentGraph:
             model="claude-opus-4-8",
             tools=_tool_defs,
         )
+
+        # 8a. Bulkhead — distributed concurrency limit per tenant (RedisBulkhead or Semaphore)
+        _bulkhead = None
+        if self._bulkhead_registry is not None and tenant_ctx is not None:
+            try:
+                _bulkhead = self._bulkhead_registry.get_bulkhead(tenant_ctx.tenant_id)
+            except Exception:
+                _bulkhead = None
+
+        _bulkhead_acquired = False
+        if _bulkhead is not None:
+            try:
+                if hasattr(_bulkhead, "acquire"):
+                    # RedisBulkhead path
+                    _bulkhead_acquired = await _bulkhead.acquire()
+                    if not _bulkhead_acquired:
+                        self._logger.warning(
+                            "bulkhead_full",
+                            tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                            step=step[:100],
+                        )
+                        return (
+                            "[Bulkhead: too many concurrent operations for this tenant."
+                            " Please retry.]"
+                        )
+                else:
+                    # asyncio.Semaphore fallback
+                    await _bulkhead.acquire()
+                    _bulkhead_acquired = True
+            except Exception as bulkhead_exc:
+                self._logger.warning("bulkhead_acquire_failed", error=str(bulkhead_exc))
+                _bulkhead_acquired = False
+
         try:
-            async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
-                resp = await self._executor.complete(req)
-            if _active_breaker is not None:
-                _active_breaker.record_success()
-        except Exception:
-            if _active_breaker is not None:
-                _active_breaker.record_failure()
-            raise
+            try:
+                async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
+                    resp = await self._executor.complete(req)
+                if _active_breaker is not None:
+                    _active_breaker.record_success()
+            except Exception:
+                if _active_breaker is not None:
+                    _active_breaker.record_failure()
+                raise
+        finally:
+            if _bulkhead_acquired and _bulkhead is not None:
+                try:
+                    if hasattr(_bulkhead, "release"):
+                        await _bulkhead.release()  # RedisBulkhead
+                    else:
+                        _bulkhead.release()  # asyncio.Semaphore
+                except Exception:
+                    pass
 
         # 1. Calculate actual LLM cost from token usage and check budget
         if self._cost_controller is not None:

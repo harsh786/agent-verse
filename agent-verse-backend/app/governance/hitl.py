@@ -279,3 +279,28 @@ class HITLGateway:
             from app.observability.logging import get_logger
             get_logger(__name__).warning("hitl_load_pending_full_failed", error=str(exc))
             return 0
+
+    async def startup_restore(self, db: Any) -> int:
+        """Restore pending HITL approval requests from DB on startup.
+
+        This MUST be called after DB session factory is available so that:
+        - Goals that were waiting_human before restart can be resumed when approved
+        - Operators who approved via Slack/UI during downtime have their approval processed
+
+        Returns: number of requests restored
+        """
+        if db is None:
+            return 0
+        try:
+            count = await self.load_pending_from_db_full(db)
+            from app.observability.logging import get_logger
+            get_logger(__name__).info(
+                "hitl_pending_restored",
+                count=count,
+                message=f"Restored {count} pending HITL approval requests from DB",
+            )
+            return count
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("hitl_startup_restore_failed", error=str(exc))
+            return 0
