@@ -189,7 +189,7 @@ async def _get_or_provision_tenant(
         # Try to find existing tenant by sso_sub
         existing = await tenant_service.get_tenant_by_sso_sub(sso_sub=sub)
         if existing:
-            return str(existing.id)
+            return str(existing["tenant_id"])
 
         # JIT provision: create tenant for this SSO user on first login
         new_tenant = await tenant_service.create_tenant_from_sso(
@@ -197,7 +197,7 @@ async def _get_or_provision_tenant(
         )
         if new_tenant:
             logger.info("sso_tenant_provisioned", email=email, plan=plan)
-            return str(new_tenant.id)
+            return str(new_tenant["tenant_id"])
     except Exception as exc:
         logger.warning("sso_tenant_lookup_failed", error=str(exc), sub=sub[:16])
     return None

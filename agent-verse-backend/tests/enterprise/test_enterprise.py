@@ -75,9 +75,9 @@ async def test_compliance_retention_sweep_no_old_records() -> None:
 # Simulation
 # ---------------------------------------------------------------------------
 
-def test_simulation_run_completes() -> None:
+async def test_simulation_run_completes() -> None:
     runner = SimulationRunner()
-    run = runner.start(
+    run = await runner.start(
         goal="Analyse logs for errors",
         mock_tools={"log_reader": {"response": "[ERROR] db timeout"}},
         tenant_ctx=T,
@@ -88,16 +88,16 @@ def test_simulation_run_completes() -> None:
     assert run.result["side_effects"] == []
 
 
-def test_simulation_run_records_mock_tools() -> None:
+async def test_simulation_run_records_mock_tools() -> None:
     runner = SimulationRunner()
     tools = {"tool_a": {}, "tool_b": {}}
-    run = runner.start(goal="Do something", mock_tools=tools, tenant_ctx=T)
+    run = await runner.start(goal="Do something", mock_tools=tools, tenant_ctx=T)
     assert set(run.result["mock_tools_used"]) == {"tool_a", "tool_b"}
 
 
-def test_simulation_get_run() -> None:
+async def test_simulation_get_run() -> None:
     runner = SimulationRunner()
-    run = runner.start(goal="Test goal", mock_tools={}, tenant_ctx=T)
+    run = await runner.start(goal="Test goal", mock_tools={}, tenant_ctx=T)
     fetched = runner.get(run_id=run.run_id, tenant_ctx=T)
     assert fetched is not None
     assert fetched.run_id == run.run_id
@@ -109,10 +109,10 @@ def test_simulation_get_unknown_run_returns_none() -> None:
     assert runner.get(run_id="nonexistent", tenant_ctx=T) is None
 
 
-def test_simulation_list_runs() -> None:
+async def test_simulation_list_runs() -> None:
     runner = SimulationRunner()
-    runner.start(goal="goal 1", mock_tools={}, tenant_ctx=T)
-    runner.start(goal="goal 2", mock_tools={}, tenant_ctx=T)
+    await runner.start(goal="goal 1", mock_tools={}, tenant_ctx=T)
+    await runner.start(goal="goal 2", mock_tools={}, tenant_ctx=T)
     runs = runner.list_runs(tenant_ctx=T)
     assert len(runs) == 2
 

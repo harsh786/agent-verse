@@ -58,8 +58,48 @@ class RetrievalEvaluator:
         print(f"Overall score: {report.overall_score:.2f}")
     """
 
-    def __init__(self, knowledge_store: KnowledgeStore) -> None:
+    def __init__(self, knowledge_store: KnowledgeStore, tenant_ctx: Any = None) -> None:
         self._store = knowledge_store
+        self._tenant_ctx = tenant_ctx
+
+    async def _run_search(self, collection_id: str, query: str, k: int) -> list[Any]:
+        """Dispatch to whichever search API the backing store exposes.
+
+        Priority:
+        1. ``store.search(collection_id, query, top_k)`` — used by tests (AsyncMock).
+        2. ``store.hybrid_search_db(query, embedding, collection_id, tenant_ctx, top_k)``
+           — async DB-backed path on :class:`~app.rag.store.KnowledgeStore`.
+        3. ``store.hybrid_search(...)`` — synchronous in-memory fallback.
+        4. Empty list when nothing is available.
+        """
+        import inspect
+
+        # Path 1: explicit async .search() — preserves backward compat with test mocks.
+        search_fn = getattr(self._store, "search", None)
+        if search_fn is not None and inspect.iscoroutinefunction(search_fn):
+            return await search_fn(collection_id=collection_id, query=query, top_k=k)
+
+        # Path 2: real KnowledgeStore.hybrid_search_db (async, prefers DB).
+        if hasattr(self._store, "hybrid_search_db") and self._tenant_ctx is not None:
+            raw = await self._store.hybrid_search_db(
+                query, [], collection_id, self._tenant_ctx, top_k=k
+            )
+            return [
+                {"chunk_id": r.chunk_id, "id": r.chunk_id, "text": r.content, "content": r.content}
+                for r in raw
+            ]
+
+        # Path 3: real KnowledgeStore.hybrid_search (sync, in-memory).
+        if hasattr(self._store, "hybrid_search") and self._tenant_ctx is not None:
+            raw = self._store.hybrid_search(
+                query, [], collection_id, self._tenant_ctx, top_k=k
+            )
+            return [
+                {"chunk_id": r.chunk_id, "id": r.chunk_id, "text": r.content, "content": r.content}
+                for r in raw
+            ]
+
+        return []
 
     async def evaluate_collection(
         self,
@@ -139,11 +179,7 @@ class RetrievalEvaluator:
     ) -> QueryEvalResult:
         """Evaluate a single query against the collection."""
         try:
-            search_results = await self._store.search(
-                collection_id=collection_id,
-                query=query,
-                top_k=k,
-            )
+            search_results = await self._run_search(collection_id, query, k)
         except Exception as exc:
             logger.warning("Search failed for query=%r: %s", query, exc)
             search_results = []

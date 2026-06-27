@@ -397,9 +397,32 @@ def run_goal(
         # Production path: Try AgentGraph first (full capabilities)
         try:
             from app.agent.graph import AgentGraph
+            from app.governance.audit import AuditLog
+            from app.governance.cost import CostController
+            from app.governance.hitl import HITLGateway
+            from app.governance.policies import PolicyEngine
+            from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
+            from app.memory.long_term import LongTermMemoryStore
             from app.reliability.dedup import DeduplicationCache
             from app.reliability.rollback import RollbackEngine
+
+            _audit = AuditLog(db_session_factory=db_factory)
+            _hitl = HITLGateway()
+            _cost = CostController()
+            _policy = PolicyEngine()
+            _ltm = LongTermMemoryStore()
+            _eval = EvalRunner()
+
+            # Wire Redis into CostController for distributed rate-limiting
+            import os as _os_cw
+            _redis_url_cw = _os_cw.getenv("REDIS_URL", "")
+            if _redis_url_cw:
+                try:
+                    import redis.asyncio as _aioredis_cw
+                    _cost._redis = _aioredis_cw.from_url(_redis_url_cw, decode_responses=True)
+                except Exception:
+                    pass
 
             _agent_runner = AgentGraph(
                 planner=provider,
@@ -409,6 +432,12 @@ def run_goal(
                 dedup_cache=DeduplicationCache(),
                 rollback_engine=RollbackEngine(),
                 guardrail_checker=GuardrailChecker(),
+                audit_log=_audit,
+                hitl_gateway=_hitl,
+                cost_controller=_cost,
+                policy_engine=_policy,
+                long_term_memory=_ltm,
+                eval_runner=_eval,
             )
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
@@ -1097,7 +1126,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
-                raise
+                continue
 
         return {
             "status": "ok",
@@ -1232,11 +1261,13 @@ async def _do_check_email_goals() -> dict[str, Any]:
 
     try:
         from app.db.session import get_session_factory
+        from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
         from app.tenancy.context import PlanTier, TenantContext
 
-        db = get_session_factory()
-        goal_service = GoalService(db_session_factory=db)
+        db_factory = get_session_factory()
+        event_store = EventStore(db_factory)
+        goal_service = GoalService(db_session_factory=db_factory, event_store=event_store)
 
         email_tenant_id = os.getenv("IMAP_TENANT_ID", "email-default")
         ctx = TenantContext(

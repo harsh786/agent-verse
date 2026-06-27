@@ -1,60 +1,61 @@
 {
   "realm": "agentverse",
-  "displayName": "AgentVerse",
   "enabled": true,
-  "registrationAllowed": false,
-  "loginTheme": "keycloak",
+  "displayName": "AgentVerse",
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
   "clients": [
     {
       "clientId": "agentverse-backend",
-      "name": "AgentVerse Backend",
       "enabled": true,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "agentverse-dev-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "agentverse-backend-secret",
       "redirectUris": ["http://localhost:8000/*", "http://localhost:5173/*"],
       "webOrigins": ["http://localhost:8000", "http://localhost:5173"],
-      "publicClient": false,
-      "protocol": "openid-connect",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "serviceAccountsEnabled": true
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false
     },
     {
       "clientId": "agentverse-frontend",
-      "name": "AgentVerse Frontend",
       "enabled": true,
-      "publicClient": true,
-      "redirectUris": ["http://localhost:5173/*", "http://localhost:8000/*"],
-      "webOrigins": ["http://localhost:5173", "http://localhost:8000"],
       "protocol": "openid-connect",
-      "standardFlowEnabled": true
+      "publicClient": true,
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false
     }
   ],
   "roles": {
     "realm": [
-      {"name": "admin", "description": "Full platform access"},
-      {"name": "operator", "description": "Can submit goals, manage agents"},
-      {"name": "viewer", "description": "Read-only access"},
-      {"name": "approver", "description": "Can approve HITL requests"}
+      {"name": "admin", "description": "Platform administrator"},
+      {"name": "operator", "description": "Can submit and manage goals"},
+      {"name": "approver", "description": "Can approve HITL requests"},
+      {"name": "viewer", "description": "Read-only access"}
     ]
   },
   "users": [
     {
-      "username": "admin@agentverse.local",
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
       "email": "admin@agentverse.local",
-      "enabled": true,
-      "emailVerified": true,
       "credentials": [{"type": "password", "value": "admin123", "temporary": false}],
-      "realmRoles": ["admin"]
-    },
-    {
-      "username": "operator@agentverse.local",
-      "email": "operator@agentverse.local",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{"type": "password", "value": "operator123", "temporary": false}],
-      "realmRoles": ["operator"]
+      "realmRoles": ["admin", "operator", "approver", "viewer"]
     }
   ],
-  "defaultRoles": ["operator"]
+  "identityProviders": [],
+  "components": {},
+  "internationalizationEnabled": false,
+  "accessTokenLifespan": 3600,
+  "refreshTokenMaxReuse": 0,
+  "revokeRefreshToken": false
 }

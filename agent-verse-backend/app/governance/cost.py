@@ -11,6 +11,7 @@ This in-memory implementation is used in tests.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,8 +30,21 @@ class BudgetConfig:
 class CostController:
     """Enforces per-goal and per-tenant-daily cost budgets."""
 
-    def __init__(self, config: BudgetConfig | None = None) -> None:
-        self._cfg = config or BudgetConfig()
+    def __init__(
+        self,
+        config: BudgetConfig | None = None,
+        *,
+        per_goal_usd: float | None = None,
+        per_tenant_daily_usd: float | None = None,
+    ) -> None:
+        if config is None:
+            config = BudgetConfig(
+                per_goal_usd=per_goal_usd if per_goal_usd is not None else 10.0,
+                per_tenant_daily_usd=(
+                    per_tenant_daily_usd if per_tenant_daily_usd is not None else 500.0
+                ),
+            )
+        self._cfg = config
         # Key: (tenant_id, goal_id) → total USD spent
         self._goal_totals: dict[tuple[str, str], float] = defaultdict(float)
         # Key: tenant_id → total daily USD spent
@@ -39,9 +53,11 @@ class CostController:
         self._last_reset_date: dict[str, str] = {}
         # Optional Redis client for cross-replica cost tracking (set by main.py)
         self._redis: Any = None
+        # Per-goal+tenant locks to prevent TOCTOU races
+        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def _reset_if_new_day(self, tenant_id: str) -> None:
-        """Reset daily totals if we've crossed midnight UTC."""
+        """Reset daily totals if we've crossed midnight UTC (sync, no lock)."""
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         last = self._last_reset_date.get(tenant_id)
         if last != today:
@@ -50,28 +66,43 @@ class CostController:
                 self._daily_totals[tenant_id] = 0.0
             self._last_reset_date[tenant_id] = today
 
-    def check_and_record(
+    async def _reset_if_new_day_atomic(self, tenant_id: str) -> None:
+        """Atomic daily reset using a per-tenant lock."""
+        async with self._locks[f"reset:{tenant_id}"]:
+            from datetime import date  # noqa: PLC0415
+
+            today = date.today().isoformat()
+            if self._last_reset_date.get(tenant_id) != today:
+                if self._last_reset_date.get(tenant_id) is not None:
+                    self._daily_totals[tenant_id] = 0.0
+                self._last_reset_date[tenant_id] = today
+
+    async def check_and_record(
         self,
         *,
         goal_id: str,
         cost_usd: float,
         tenant_ctx: TenantContext,
+        tool_name: str = "",
     ) -> bool:
-        self._reset_if_new_day(tenant_ctx.tenant_id)
+        """Atomically check budget and record cost. Returns True if within budget."""
+        lock_key = f"{tenant_ctx.tenant_id}:{goal_id}"
+        async with self._locks[lock_key]:
+            await self._reset_if_new_day_atomic(tenant_ctx.tenant_id)
 
-        goal_key = (tenant_ctx.tenant_id, goal_id)
-        new_goal_total = self._goal_totals[goal_key] + cost_usd
-        new_daily_total = self._daily_totals[tenant_ctx.tenant_id] + cost_usd
+            goal_key = (tenant_ctx.tenant_id, goal_id)
+            new_goal_total = self._goal_totals[goal_key] + cost_usd
+            new_daily_total = self._daily_totals[tenant_ctx.tenant_id] + cost_usd
 
-        if new_goal_total > self._cfg.per_goal_usd:
-            return False
-        if new_daily_total > self._cfg.per_tenant_daily_usd:
-            return False
+            if new_goal_total > self._cfg.per_goal_usd:
+                return False
+            if new_daily_total > self._cfg.per_tenant_daily_usd:
+                return False
 
-        self._goal_totals[goal_key] = new_goal_total
-        self._daily_totals[tenant_ctx.tenant_id] = new_daily_total
-        record_cost_usd(scope="tool", amount=cost_usd)
-        return True
+            self._goal_totals[goal_key] = new_goal_total
+            self._daily_totals[tenant_ctx.tenant_id] = new_daily_total
+            record_cost_usd(scope="tool", amount=cost_usd)
+            return True
 
     def goal_total(self, goal_id: str, *, tenant_ctx: TenantContext) -> float:
         return self._goal_totals.get((tenant_ctx.tenant_id, goal_id), 0.0)
@@ -143,8 +174,11 @@ class RedisCostController:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("redis_cost_check_failed", error=str(exc))
-            # On Redis failure, allow the call (fail open)
-            return True
+            import os
+
+            if os.getenv("ENVIRONMENT", "development") == "production":
+                return False  # fail-closed: deny when cost tracking unavailable
+            return True  # fail-open in development
 
     async def get_tenant_cost_today(self, tenant_ctx: Any) -> float:
         """Get today's accumulated cost for this tenant from Redis."""
@@ -157,4 +191,3 @@ class RedisCostController:
 
     def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
         self._tenant_configs[tenant_id] = budget
-

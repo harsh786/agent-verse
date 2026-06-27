@@ -218,7 +218,7 @@ class AgentLoop:
 
         # ── Step 1: Cost check ───────────────────────────────────────────────
         if self._cost_controller is not None:
-            within_budget = self._cost_controller.check_and_record(
+            within_budget = await self._cost_controller.check_and_record(
                 goal_id=state.goal_id,
                 cost_usd=0.01,
                 tenant_ctx=tenant_ctx,

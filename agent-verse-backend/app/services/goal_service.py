@@ -51,6 +51,10 @@ _tracer = trace.get_tracer(__name__)
 _SENTINEL: dict[str, Any] | None = None
 _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED}
 
+# TTL for completed/failed/cancelled goals in the in-memory cache.
+# They are safe to evict because they are already persisted in the DB.
+_COMPLETED_GOAL_TTL_SECONDS = 3600  # 1 hour
+
 
 def _monotonic() -> float:
     return time.monotonic()
@@ -183,7 +187,111 @@ class GoalService:
         self._db_tasks.add(task)
         task.add_done_callback(self._db_tasks.discard)
 
-    # ── per-tenant agent loop construction (Fix 8) ────────────────────────────
+    # ── memory management ─────────────────────────────────────────────────────
+
+    def _evict_stale_goals(self) -> int:
+        """Remove terminal goals older than TTL from the in-memory cache.
+
+        These are already persisted in DB. Evicting from memory is safe
+        and prevents unbounded growth in long-running processes.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=_COMPLETED_GOAL_TTL_SECONDS)
+        terminal = (GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED)
+        to_evict: list[str] = []
+        for goal_id, record in self._goals.items():
+            if record.status in terminal:
+                completed_at = getattr(record, "completed_at", None)
+                if completed_at and isinstance(completed_at, str):
+                    try:
+                        dt = datetime.fromisoformat(completed_at.rstrip("Z"))
+                        if dt.replace(tzinfo=UTC) < cutoff:
+                            to_evict.append(goal_id)
+                    except Exception:
+                        pass
+                elif not completed_at:
+                    # No timestamp — count as stale if terminal
+                    to_evict.append(goal_id)
+        for gid in to_evict:
+            del self._goals[gid]
+            _GOAL_PAUSE_EVENTS.pop(gid, None)
+        self._sweep_pause_events()
+        return len(to_evict)
+
+    def _sweep_pause_events(self) -> int:
+        """Remove pause events for goals that are no longer tracked."""
+        stale = [gid for gid in list(_GOAL_PAUSE_EVENTS.keys()) if gid not in self._goals]
+        for gid in stale:
+            _GOAL_PAUSE_EVENTS.pop(gid, None)
+        return len(stale)
+
+    async def _recover_interrupted_goals(self) -> int:
+        """Re-enqueue goals that were executing when the process died.
+
+        Called after sync_from_db() on startup so that goals whose agent task
+        was killed by a restart are not silently stuck in a non-terminal state.
+        """
+        terminal = {
+            GoalStatus.COMPLETE,
+            GoalStatus.FAILED,
+            GoalStatus.CANCELLED,
+            GoalStatus.WAITING_HUMAN,
+        }
+        recovered = 0
+        for goal_id, record in list(self._goals.items()):
+            if record.status not in terminal and getattr(record, "task", None) is None:
+                if self._task_queue is not None:
+                    try:
+                        self._task_queue.enqueue_goal(
+                            goal_id=goal_id,
+                            goal_text=record.goal_text,
+                            tenant_id=record.tenant_id,
+                            priority=getattr(record, "priority", "normal"),
+                            dry_run=getattr(record, "dry_run", False),
+                            agent_id=record.agent_id,
+                            workflow_mode=record.workflow_mode,
+                            goal_template="",
+                        )
+                        record.status = GoalStatus.PLANNING
+                        recovered += 1
+                    except Exception as exc:
+                        _svc_logger.warning(
+                            "goal_recovery_failed", goal_id=goal_id, error=str(exc)
+                        )
+                else:
+                    # No task queue — mark as failed so callers know to resubmit
+                    record.status = GoalStatus.FAILED
+                    record.error_message = (  # type: ignore[attr-defined]
+                        "Goal interrupted by process restart. Please resubmit."
+                    )
+        return recovered
+
+    async def _batch_event_counts(
+        self, goal_ids: list[str], tenant_id: str
+    ) -> dict[str, int]:
+        """Fetch event counts for multiple goals in one DB query.
+
+        Replaces per-goal calls to _event_count_for_response() inside
+        list_goals() to avoid N+1 query behaviour.
+        """
+        if not goal_ids or self._db is None:
+            return {}
+        try:
+            from sqlalchemy import text
+
+            async with self._db() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT goal_id, COUNT(*) as cnt FROM goal_events "
+                        "WHERE tenant_id = :tid AND goal_id = ANY(:ids) "
+                        "GROUP BY goal_id"
+                    ),
+                    {"tid": tenant_id, "ids": goal_ids},
+                )
+                return {row[0]: int(row[1]) for row in result.fetchall()}
+        except Exception:
+            return {}
 
     def _make_agent_loop_for_tenant(
         self, tenant_ctx: TenantContext, app_state: Any
@@ -623,6 +731,12 @@ class GoalService:
         elif etype == "goal_cancelled":
             record.status = GoalStatus.CANCELLED
             self._record_terminal_goal_metrics(record, "cancelled")
+        # Decrement the per-tenant concurrent-goal counter for every terminal event.
+        if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
+            from app.tenancy.limits import decrement_concurrent_goals
+            await decrement_concurrent_goals(
+                tenant_id=record.tenant_id, redis=self._redis
+            )
         # Publish terminal events to Redis pub/sub for cross-replica SSE delivery.
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:
             try:
@@ -859,6 +973,14 @@ class GoalService:
             )
             check_daily_goal_limit(tenant_ctx, daily_count)
 
+            # Check and atomically increment the concurrent-goal counter.
+            # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
+            from app.tenancy.limits import check_and_increment_concurrent_goals
+            await check_and_increment_concurrent_goals(
+                tenant_ctx=tenant_ctx,
+                redis=getattr(self, "_redis", None),
+            )
+
             goal_id = uuid.uuid4().hex
 
             # Auto-route to best agent when agent_id not specified
@@ -893,6 +1015,10 @@ class GoalService:
                 execution_context=execution_context or {},
             )
             self._goals[goal_id] = record
+
+            # Every 500 submissions, evict stale terminal goals to prevent OOM.
+            if len(self._goals) % 500 == 0:
+                asyncio.create_task(asyncio.to_thread(self._evict_stale_goals))
 
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
@@ -1044,11 +1170,17 @@ class GoalService:
                 continue
             tenant_records.append(await self._refresh_goal_from_db_if_needed(record, tenant_ctx))
         tenant_records.sort(key=lambda record: record.created_at, reverse=True)
+
+        # Single batch query for DB event counts — replaces the previous per-goal
+        # call to _event_count_for_response() which caused N+1 DB round-trips.
+        goal_ids = [r.goal_id for r in tenant_records]
+        batch_counts = await self._batch_event_counts(goal_ids, tenant_ctx.tenant_id)
+
         responses: list[dict[str, Any]] = []
         for record in tenant_records:
-            event_count = await self._event_count_for_response(
-                record.goal_id, record, tenant_ctx
-            )
+            # Use the larger of DB count and in-memory count to stay correct
+            # when some events have not yet been flushed to the DB.
+            event_count = max(batch_counts.get(record.goal_id, 0), len(record.events))
             responses.append(
                 {
                     "id": record.goal_id,
@@ -1073,6 +1205,8 @@ class GoalService:
         active_goals = 0
         total_goals = 0
         completed_goals = 0
+        failed_goals = 0
+        cancelled_goals = 0
         goals_today = 0
 
         for record in self._goals.values():
@@ -1083,10 +1217,17 @@ class GoalService:
                 active_goals += 1
             if record.status == GoalStatus.COMPLETE:
                 completed_goals += 1
+            elif record.status == GoalStatus.FAILED:
+                failed_goals += 1
+            elif record.status == GoalStatus.CANCELLED:
+                cancelled_goals += 1
             if record.created_at.startswith(today):
                 goals_today += 1
 
-        success_rate = completed_goals / total_goals if total_goals > 0 else 0.0
+        # Use only terminal goals as denominator so that in-progress goals
+        # do not dilute the success rate.
+        terminal_goals = completed_goals + failed_goals + cancelled_goals
+        success_rate = completed_goals / terminal_goals if terminal_goals > 0 else 0.0
 
         durations = self._goal_durations.get(tenant_ctx.tenant_id, [])
         avg_latency_ms = (sum(durations) / len(durations) * 1000.0) if durations else 0.0
@@ -1585,6 +1726,10 @@ class GoalService:
             
 
             _svc_logger.info("Synced %d recent goals from DB", loaded)
+            # Re-enqueue any goal that was interrupted mid-execution by a restart.
+            recovered = await self._recover_interrupted_goals()
+            if recovered:
+                _svc_logger.info("Recovered %d interrupted goals after restart", recovered)
             return loaded
         except Exception as exc:
             

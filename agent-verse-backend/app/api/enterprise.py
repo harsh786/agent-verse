@@ -105,7 +105,7 @@ class SimulationRequest(BaseModel):
 @router.post("/simulation", status_code=201)
 async def run_simulation(request: Request, body: SimulationRequest) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    run = _simulation(request).start(
+    run = await _simulation(request).start(
         goal=body.goal, mock_tools=body.mock_tools, tenant_ctx=ctx
     )
     # Flatten result fields to top-level so frontend SimulationResult type is satisfied

@@ -80,7 +80,7 @@ class SimulationRunner:
     def __init__(self) -> None:
         self._runs: dict[str, SimulationRun] = {}
 
-    def start(
+    async def start(
         self,
         *,
         goal: str,
@@ -108,13 +108,20 @@ class SimulationRunner:
                     )],
                     model="",
                 )
-                import asyncio
+                used_real_llm = False
+                resp = None
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Cannot use run_until_complete in a running loop — fall through
-                        raise RuntimeError("async context")
-                    resp = loop.run_until_complete(provider.complete(req))
+                    resp = await provider.complete(req)
+                    used_real_llm = True
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "simulation_llm_failed: %s", str(exc)
+                    )
+                    used_real_llm = False
+                    resp = None
+
+                if used_real_llm and resp is not None:
                     plan_text = resp.content
                     step_lines = [
                         line.strip().lstrip("0123456789.-) ")
@@ -133,7 +140,7 @@ class SimulationRunner:
                         steps_with_tools.append(
                             {"description": step_line, "tool": matched_tool}
                         )
-                except Exception:
+                else:
                     steps_with_tools = self._build_plan(goal, mock_tools)
             except Exception:
                 steps_with_tools = self._build_plan(goal, mock_tools)

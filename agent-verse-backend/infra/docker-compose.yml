@@ -78,7 +78,7 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: agentverse
       KEYCLOAK_CLIENT_ID: agentverse-backend
-      KEYCLOAK_CLIENT_SECRET: ""
+      KEYCLOAK_CLIENT_SECRET: "agentverse-backend-secret"
       SSO_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: agentverse-backend
@@ -154,7 +154,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,schedules,maintenance"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,schedules,maintenance,goals_dlq"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0

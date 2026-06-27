@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Play, Shield, FlaskConical, BarChart3 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+import { API_BASE } from '@/lib/api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

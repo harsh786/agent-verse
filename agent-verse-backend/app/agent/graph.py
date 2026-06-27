@@ -32,7 +32,7 @@ from app.agent.sanitization import (
     sanitize_tool_raw_output,
 )
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import extract_tool_call
+from app.agent.tool_calls import ToolCall, extract_tool_call
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import CostController
@@ -85,6 +85,7 @@ class GraphState(TypedDict, total=False):
     plan: list[str]          # current step list
     iteration: int           # current iteration count
     terminal_reason: str     # why the graph terminated
+    cot_reasoning: str       # chain-of-thought output from _node_think
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +303,7 @@ class AgentGraph:
                 query=agent_state.goal,
                 tenant_ctx=tenant_ctx,
                 top_k=3,
+                db=self._db_session_factory,
                 embedder=self._embedder,
             )
             if ltm:
@@ -321,7 +323,11 @@ class AgentGraph:
                 Message(role="system", content=CHAIN_OF_THOUGHT_SYSTEM),
                 Message(role="user", content=f"Goal: {agent_state.goal}"),
             ],
-            model="claude-opus-4-8",
+            model=(
+                self._model_router.route("think", state.get("tenant_ctx"))
+                if self._model_router is not None
+                else ""
+            ),
         )
         resp = await self._planner.complete(req)
         return {"cot_reasoning": resp.content}
@@ -589,10 +595,20 @@ class AgentGraph:
                         sr.error = str(exc)
                         raise
 
-                await _asyncio.gather(*[
-                    _run_wave_step(wave[i].description, parallel_steps[i])
+                tasks = [
+                    _asyncio.create_task(
+                        _run_wave_step(wave[i].description, parallel_steps[i])
+                    )
                     for i in range(len(wave))
-                ])
+                ]
+                try:
+                    await _asyncio.gather(*tasks)
+                except (PermissionError, Exception) as exc:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    await _asyncio.gather(*tasks, return_exceptions=True)
+                    raise
 
                 for i in range(len(wave)):
                     await self._write_checkpoint(
@@ -679,6 +695,7 @@ class AgentGraph:
                 return f"Guardrail blocked step: {'; '.join(violations)}"
 
         # 6b. Policy engine check (glob-based policies)
+        _hitl_already_requested = False
         if self._policy_engine is not None:
             policy_result = self._policy_engine.evaluate(
                 tool_name=tool_name, tenant_ctx=tenant_ctx
@@ -694,6 +711,7 @@ class AgentGraph:
                     goal_id=state.goal_id, action=step, risk_level="high",
                     tenant_ctx=tenant_ctx,
                 )
+                _hitl_already_requested = True
                 if self._autonomy_mode == "supervised":
                     await self._emit(
                         {"type": "waiting_approval", "request_id": req_id, "action": step}
@@ -709,7 +727,7 @@ class AgentGraph:
                         )
 
         # 7. HITL gate
-        if self._hitl_gateway is not None:
+        if not _hitl_already_requested and self._hitl_gateway is not None:
             risk = "high" if any(kw in step.lower() for kw in _HIGH_RISK_KEYWORDS) else "low"
             if risk == "high":
                 req_id = self._hitl_gateway.request_approval(
@@ -798,7 +816,7 @@ class AgentGraph:
             state.context["total_cost_usd"] = (
                 state.context.get("total_cost_usd", 0.0) + _actual_cost
             )
-            ok = self._cost_controller.check_and_record(
+            ok = await self._cost_controller.check_and_record(
                 goal_id=state.goal_id,
                 cost_usd=_actual_cost,
                 tenant_ctx=tenant_ctx,

@@ -223,6 +223,7 @@ async def create_policy(
         approval_tools=approval_tools,
         allowed_hours_utc=tuple(body.allowed_hours_utc) if body.allowed_hours_utc and len(body.allowed_hours_utc) == 2 else None,  # type: ignore[arg-type]
         allowed_weekdays=body.allowed_weekdays,
+        tenant_id=tenant_ctx.tenant_id,
     )
     engine.add_policy(policy)
 
@@ -255,8 +256,16 @@ async def delete_policy(request: Request, policy_id: str) -> None:
             detail=f"Policy {policy_id} not found",
         )
 
-    # Remove from the PolicyEngine's internal list by matching name.
-    engine._policies = [p for p in engine._policies if p.name != record["name"]]  # type: ignore[attr-defined]
+    # Remove from the PolicyEngine's internal list, scoped to THIS tenant only.
+    # Matching only on name (without tenant check) would delete identically-named
+    # policies belonging to other tenants — the critical isolation bug.
+    engine._policies = [  # type: ignore[attr-defined]
+        p for p in engine._policies  # type: ignore[attr-defined]
+        if not (
+            p.name == record["name"]
+            and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id
+        )
+    ]
     del tenant_policies[policy_id]
     await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
 

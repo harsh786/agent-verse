@@ -729,9 +729,12 @@ def test_fire_due_schedules_db_dispatch_failure_does_not_update_last_fired_at(
         raising=False,
     )
 
-    with pytest.raises(RuntimeError, match="broker down"):
-        tasks.fire_due_schedules.run()
+    # BUG 6 fix: dispatch failures are now continued (not re-raised), so the task
+    # completes normally with schedules_fired=0 and last_fired_at is NOT updated.
+    result = tasks.fire_due_schedules.run()
 
+    assert result["schedules_checked"] == 1
+    assert result["schedules_fired"] == 0
     assert updates == []
 
 
@@ -774,8 +777,11 @@ def test_fire_due_schedules_retries_dispatch_failure(monkeypatch: Any) -> None:
     )
     monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
 
-    with pytest.raises(RuntimeError, match="broker down"):
-        tasks.fire_due_schedules.run()
+    # BUG 6 fix: per-schedule dispatch failures are now continued (not re-raised),
+    # so the task completes normally with schedules_fired=0.
+    result = tasks.fire_due_schedules.run()
+    assert result["schedules_checked"] == 1
+    assert result["schedules_fired"] == 0
 
 
 def test_fire_due_schedules_cron_dispatch_failure_raises(monkeypatch: Any) -> None:
@@ -828,8 +834,11 @@ def test_fire_due_schedules_cron_dispatch_failure_raises(monkeypatch: Any) -> No
     )
     monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
 
-    with pytest.raises(RuntimeError, match="broker down"):
-        tasks.fire_due_schedules.run()
+    # BUG 6 fix: per-schedule dispatch failures are now continued (not re-raised),
+    # so the task completes normally with schedules_fired=0.
+    result = tasks.fire_due_schedules.run()
+    assert result["schedules_checked"] == 1
+    assert result["schedules_fired"] == 0
 
 
 def test_fire_due_schedules_updates_db_when_schedule_also_exists_in_redis(

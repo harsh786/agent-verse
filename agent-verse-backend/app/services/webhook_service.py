@@ -13,6 +13,9 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
+_MAX_DELIVERIES = 10_000  # per process
+_DELIVERY_TTL_SECONDS = 86_400  # 24 hours
+
 
 @dataclass
 class WebhookDelivery:
@@ -34,6 +37,37 @@ class OutboundWebhookService:
     def __init__(self) -> None:
         self._deliveries: dict[str, WebhookDelivery] = {}
         self._dlq: list[WebhookDelivery] = []  # Dead Letter Queue
+        self._deliver_count: int = 0
+
+    def _evict_old_deliveries(self) -> int:
+        """Remove delivery records older than TTL or beyond size limit."""
+        from datetime import timedelta
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=_DELIVERY_TTL_SECONDS)
+        to_remove = []
+        for delivery_id, delivery in self._deliveries.items():
+            created = getattr(delivery, "created_at", None)
+            if created:
+                try:
+                    dt = datetime.fromisoformat(created.rstrip("Z")).replace(tzinfo=UTC)
+                    if dt < cutoff:
+                        to_remove.append(delivery_id)
+                except Exception:
+                    pass
+        for did in to_remove:
+            del self._deliveries[did]
+
+        # Also cap total size
+        if len(self._deliveries) > _MAX_DELIVERIES:
+            excess = len(self._deliveries) - _MAX_DELIVERIES
+            for did in list(self._deliveries.keys())[:excess]:
+                del self._deliveries[did]
+
+        # Cap DLQ
+        if len(self._dlq) > 1000:
+            self._dlq = self._dlq[-1000:]
+
+        return len(to_remove)
 
     async def deliver(
         self,
@@ -52,6 +86,11 @@ class OutboundWebhookService:
             max_attempts=max_attempts,
         )
         self._deliveries[delivery.delivery_id] = delivery
+
+        # Evict stale records every 100 deliveries to prevent unbounded OOM growth
+        self._deliver_count += 1
+        if self._deliver_count % 100 == 0:
+            self._evict_old_deliveries()
 
         for attempt in range(max_attempts):
             delivery.attempts = attempt + 1
