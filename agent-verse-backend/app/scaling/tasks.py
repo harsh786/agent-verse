@@ -335,6 +335,19 @@ def run_goal(
             await event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
         except Exception as db_exc:
             logger.warning("DB event append failed (non-fatal): %s", db_exc)
+        # C-1: Publish to Redis pub/sub so API-process SSE bridge receives it
+        try:
+            import json as _json
+            _r = _get_sync_redis()
+            _event_data = _json.dumps({
+                "goal_id": goal_id,
+                "tenant_id": tenant_id,
+                "type": event.get("type", ""),
+                "payload": event,
+            })
+            _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
+        except Exception:
+            pass  # Non-fatal: SSE may degrade but goal execution continues
 
     async def ensure_submitted_goal_row() -> None:
         if goal_bridge is None:

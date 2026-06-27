@@ -1110,9 +1110,13 @@ class GoalService:
         engine = GoalPersistenceEngine(config=config)
 
         def agent_factory() -> Any:
-            loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
             # Set agent knowledge collection IDs for graph RAG
             _persist_record = self._goals.get(goal_id)
+            loop = self._make_agent_loop_for_tenant(
+                tenant_ctx,
+                self._app_state,
+                agent_id=_persist_record.agent_id if _persist_record is not None else None,
+            )
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
                 _persist_agent_store = self._get_agent_store()
@@ -1334,10 +1338,16 @@ class GoalService:
             if agent_id is None and self._app_state is not None:
                 agent_store = self._get_agent_store()
                 if agent_store is not None:
-                    from app.agent.router import AgentRouter
-                    router = AgentRouter(agent_store=agent_store)
+                    # H-6: Use pre-wired router from app.state (has DB session)
+                    agent_router = getattr(self._app_state, "agent_router", None)
                     try:
-                        decision = await router.route(goal, tenant_ctx)
+                        if agent_router is not None:
+                            decision = await agent_router.route(goal=goal, tenant_ctx=tenant_ctx)
+                        else:
+                            # Fallback: create fresh router (no DB history scoring)
+                            from app.agent.router import AgentRouter
+                            router = AgentRouter(agent_store=agent_store)
+                            decision = await router.route(goal, tenant_ctx)
                         if decision.agent_id and decision.confidence >= 0.3:
                             agent_id = decision.agent_id
                             _svc_logger.info(

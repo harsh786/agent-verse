@@ -7,6 +7,46 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _safe_eval_condition(expr: str, context: dict) -> bool:
+    """Evaluate a condition expression safely using simpleeval or restricted eval.
+
+    Only allows: comparisons, boolean ops, attribute access on step objects,
+    string methods, numeric operations. No imports, no arbitrary function calls.
+    """
+    if not expr or not expr.strip():
+        return True
+
+    try:
+        # Try simpleeval first (safer AST-based evaluator)
+        import simpleeval
+        evaluator = simpleeval.EvalWithCompoundTypes(names=context)
+        return bool(evaluator.eval(expr))
+    except ImportError:
+        pass
+
+    # Fallback: validate expression before eval using allowlist pattern
+    SAFE_PATTERN = re.compile(
+        r'^[\w\s\.\[\]\'\"=!<>&|+\-\*/%\(\),]+$'
+    )
+    if not SAFE_PATTERN.match(expr):
+        import logging
+        logging.getLogger(__name__).warning(
+            "unsafe_eval_expression_rejected: %s", expr[:100]
+        )
+        return True  # Default to True (run the step) on unsafe expressions
+
+    # Restricted builtins — no __import__, no open, no exec, no eval
+    safe_builtins = {
+        "len": len, "str": str, "int": int, "float": float,
+        "bool": bool, "list": list, "dict": dict,
+        "True": True, "False": False, "None": None,
+    }
+    try:
+        return bool(eval(expr, {"__builtins__": safe_builtins}, context))  # noqa: S307
+    except Exception:
+        return True  # Default to True on eval error
+
+
 @dataclass
 class StructuredStep:
     """A single step in a structured execution plan."""
@@ -38,13 +78,7 @@ class StructuredStep:
                 ctx[sid] = type(
                     "SR", (), {"status": s.status, "output": s.output, "error": s.error}
                 )()
-            return bool(
-                eval(  # noqa: S307
-                    self.condition,
-                    {"__builtins__": {}, "len": len, "str": str, "int": int, "bool": bool},
-                    ctx,
-                )
-            )
+            return _safe_eval_condition(self.condition, ctx)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("condition_eval_failed: %s", e)

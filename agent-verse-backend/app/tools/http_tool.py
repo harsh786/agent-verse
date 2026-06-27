@@ -1,8 +1,10 @@
 """Generic HTTP request tool for calling arbitrary APIs."""
 from __future__ import annotations
 
+import ipaddress
 import json
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import httpx
 
@@ -14,21 +16,47 @@ HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
 
 _BLOCKED_HOSTS = frozenset({
     "localhost", "127.0.0.1", "0.0.0.0", "::1",
-    "169.254.169.254",  # AWS metadata
+    "169.254.169.254",   # AWS metadata
     "metadata.google.internal",  # GCP metadata
+    "100.100.100.200",   # Alibaba Cloud metadata
 })
 
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
 
 def _is_blocked(url: str) -> bool:
-    """Block requests to internal/metadata endpoints."""
+    """Block requests to internal/private/metadata endpoints (SSRF protection)."""
     try:
-        from urllib.parse import urlparse
         host = urlparse(url).hostname or ""
-        return host in _BLOCKED_HOSTS or host.startswith("10.") or host.startswith("192.168.")
+        if not host:
+            return True
+
+        # Check exact known-bad hostnames
+        if host.lower() in _BLOCKED_HOSTS:
+            return True
+
+        # Check if it's a valid IP address
+        try:
+            addr = ipaddress.ip_address(host)
+            # Block all private, loopback, link-local, reserved, and multicast addresses
+            return (
+                addr.is_private
+                or addr.is_loopback
+                or addr.is_link_local
+                or addr.is_reserved
+                or addr.is_multicast
+            )
+        except ValueError:
+            pass  # Not an IP address — hostname, continue
+
+        # Block common internal hostname patterns
+        lower_host = host.lower()
+        if lower_host.endswith(".internal") or lower_host.endswith(".local"):
+            return True
+
+        return False
     except Exception:
-        return True
+        return True  # Block on parse error (fail-safe)
 
 
 class HttpRequestTool:

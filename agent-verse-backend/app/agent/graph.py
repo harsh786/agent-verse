@@ -804,12 +804,10 @@ class AgentGraph:
             step.output = output
 
             try:
-                done = bool(
-                    eval(  # noqa: S307
-                        step.loop_until,
-                        {"__builtins__": {}, "len": len, "str": str},
-                        {"output": output, "iteration": iteration + 1, "iterations": iteration + 1},
-                    )
+                from app.agent.structured_plan import _safe_eval_condition as _loop_eval
+                done = _loop_eval(
+                    step.loop_until,
+                    {"output": output, "iteration": iteration + 1, "iterations": iteration + 1},
                 )
             except Exception:
                 done = True  # On eval error, exit loop
