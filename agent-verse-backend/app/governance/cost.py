@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from app.observability.metrics import record_cost_usd
 from app.tenancy.context import TenantContext
@@ -36,6 +37,8 @@ class CostController:
         self._daily_totals: dict[str, float] = defaultdict(float)
         # Track when daily totals were last reset (per tenant: tenant_id → date string)
         self._last_reset_date: dict[str, str] = {}
+        # Optional Redis client for cross-replica cost tracking (set by main.py)
+        self._redis: Any = None
 
     def _reset_if_new_day(self, tenant_id: str) -> None:
         """Reset daily totals if we've crossed midnight UTC."""
@@ -81,3 +84,77 @@ class CostController:
         """Return the current-day spend for the tenant (resets at UTC midnight)."""
         self._reset_if_new_day(tenant_ctx.tenant_id)
         return self._daily_totals.get(tenant_ctx.tenant_id, 0.0)
+
+
+class RedisCostController:
+    """Production CostController backed by Redis for cross-replica accuracy.
+
+    Uses INCRBYFLOAT with EXPIREAT at next midnight UTC for daily counters.
+    All replicas share the same counters, preventing per-replica bypass.
+    """
+
+    def __init__(self, redis: Any, per_tenant_config: dict | None = None) -> None:
+        self._redis = redis
+        self._tenant_configs: dict[str, BudgetConfig] = per_tenant_config or {}
+
+    def _daily_key(self, tenant_id: str) -> str:
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        return f"cost:daily:{tenant_id}:{today}"
+
+    def _goal_key(self, goal_id: str) -> str:
+        return f"cost:goal:{goal_id}"
+
+    async def _get_ttl_to_midnight(self) -> int:
+        """Seconds until next UTC midnight."""
+        now = datetime.now(UTC)
+        from datetime import timedelta
+
+        midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return max(1, int((midnight - now).total_seconds()))
+
+    async def check_and_record_async(
+        self, *, goal_id: str, cost_usd: float, tenant_ctx: Any
+    ) -> bool:
+        """Check budget and record cost atomically. Returns True if within budget."""
+        cfg = self._tenant_configs.get(tenant_ctx.tenant_id, BudgetConfig())
+
+        try:
+            # Record goal-level cost
+            goal_key = self._goal_key(goal_id)
+            goal_total = await self._redis.incrbyfloat(goal_key, cost_usd)
+            await self._redis.expire(goal_key, 86400)  # 24h TTL
+
+            if cfg.per_goal_usd > 0 and goal_total > cfg.per_goal_usd:
+                return False  # Over per-goal budget
+
+            # Record daily tenant cost
+            daily_key = self._daily_key(tenant_ctx.tenant_id)
+            daily_total = await self._redis.incrbyfloat(daily_key, cost_usd)
+            ttl = await self._get_ttl_to_midnight()
+            await self._redis.expire(daily_key, ttl + 3600)  # Extra hour buffer
+
+            if cfg.per_tenant_daily_usd > 0 and daily_total > cfg.per_tenant_daily_usd:
+                return False  # Over daily tenant budget
+
+            return True
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("redis_cost_check_failed", error=str(exc))
+            # On Redis failure, allow the call (fail open)
+            return True
+
+    async def get_tenant_cost_today(self, tenant_ctx: Any) -> float:
+        """Get today's accumulated cost for this tenant from Redis."""
+        try:
+            daily_key = self._daily_key(tenant_ctx.tenant_id)
+            val = await self._redis.get(daily_key)
+            return float(val) if val else 0.0
+        except Exception:
+            return 0.0
+
+    def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
+        self._tenant_configs[tenant_id] = budget
+

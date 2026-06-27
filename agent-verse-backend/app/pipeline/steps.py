@@ -175,7 +175,7 @@ async def stream_step_event(
 
 async def smart_context_fetch(
     *,
-    goal: str,
+    goal: str = "",
     step: str,
     tenant_ctx: TenantContext,
     knowledge_store: Any = None,
@@ -187,20 +187,25 @@ async def smart_context_fetch(
 
     Returns formatted context string or empty string if nothing relevant found.
     Filters to agent's allowed_collection_ids when agent_id is present in context.
+    Requires a real embedder (query_embedding must be provided); returns empty
+    string when no embedding is available rather than generating random noise.
     """
     if knowledge_store is None:
         return ""
 
+    # Skip RAG when no query embedding is available — random vectors corrupt results
+    if query_embedding is None:
+        from app.observability.logging import get_logger as _get_logger
+        _get_logger(__name__).debug(
+            "rag_skipped_no_embedder",
+            message=(
+                "smart_context_fetch skipped: no embedder configured. "
+                "Set VOYAGE_API_KEY or OPENAI_API_KEY for RAG support."
+            )
+        )
+        return ""
+
     try:
-        import math
-        import random
-
-        # Use provided embedding or generate a fallback one
-        if query_embedding is None:
-            raw = [random.gauss(0, 1) for _ in range(768)]
-            mag = math.sqrt(sum(x * x for x in raw))
-            query_embedding = [x / mag for x in raw] if mag > 0 else raw
-
         # Determine allowed collections from agent binding
         allowed_collections: list[str] | None = None
         agent_id = context.get("agent_id") if context else None

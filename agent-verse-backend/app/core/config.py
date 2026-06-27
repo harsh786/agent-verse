@@ -69,4 +69,14 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return the cached process-wide settings singleton."""
-    return Settings()
+    settings = Settings()
+    # Warn loudly if production is using the default database password
+    if settings.environment == "production":
+        import logging
+
+        if "agentverse:agentverse@" in settings.database_url:
+            logging.getLogger(__name__).error(
+                "SECURITY: DATABASE_URL contains default password 'agentverse'. "
+                "This must be changed before production deployment!"
+            )
+    return settings

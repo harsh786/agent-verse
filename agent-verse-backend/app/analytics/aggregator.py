@@ -62,11 +62,45 @@ def _goal_status_cancelled(status: Any) -> bool:
 class GoalAnalyticsAggregator:
     """Computes analytics from the GoalService in-memory goal states.
 
-    In production this would query the ``goal_events`` Postgres table.
+    When ``db`` is provided, ``goal_metrics()`` will query PostgreSQL for
+    accurate analytics instead of reading from the in-process in-memory store.
     """
 
-    def __init__(self, goal_service: Any) -> None:
+    def __init__(self, goal_service: Any = None, db: Any = None) -> None:
         self._goal_service = goal_service
+        self._db = db
+
+    async def _get_goals_from_db(self, tenant_id: str, db: Any, days: int = 30) -> list[dict]:
+        """Query goals directly from PostgreSQL for accurate analytics."""
+        if db is None:
+            return []
+        try:
+            from sqlalchemy import text
+            async with db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT id, status, priority, agent_id, created_at, dry_run
+                        FROM goals
+                        WHERE tenant_id = :tid
+                          AND created_at > NOW() - INTERVAL ':days days'
+                        ORDER BY created_at DESC
+                        LIMIT 10000
+                    """),
+                    {"tid": tenant_id, "days": days}
+                )
+                rows = result.fetchall()
+            return [
+                {
+                    "id": r[0], "status": r[1], "priority": r[2],
+                    "agent_id": r[3],
+                    "created_at": r[4].isoformat() if r[4] else "",
+                    "dry_run": r[5],
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.warning("analytics_db_query_failed", error=str(exc))
+            return []
 
     def _get_all_goals(
         self,
@@ -85,13 +119,35 @@ class GoalAnalyticsAggregator:
             goals = [g for g in goals if getattr(g, "agent_id", None) == agent_id]
         return goals
 
-    def goal_metrics(
+    async def goal_metrics(
         self,
+        tenant_id: str = "",
         days: int = 30,
         agent_id: str | None = None,
     ) -> GoalMetrics:
-        """Compute success/failure breakdown for goals."""
+        """Compute success/failure breakdown for goals.
+
+        Uses PostgreSQL when ``tenant_id`` and ``db`` are available;
+        falls back to the in-process in-memory store otherwise.
+        """
         since = datetime.now(UTC) - timedelta(days=days)
+        goals: list[Any]
+
+        if tenant_id and self._db is not None:
+            db_rows = await self._get_goals_from_db(tenant_id, self._db, days)
+            if db_rows:
+                m = GoalMetrics(total=len(db_rows))
+                for row in db_rows:
+                    status = row.get("status", "")
+                    if _goal_status_completed(status):
+                        m.completed += 1
+                    elif _goal_status_failed(status):
+                        m.failed += 1
+                    elif _goal_status_cancelled(status):
+                        m.cancelled += 1
+                m.success_rate = round(m.completed / m.total, 4) if m.total > 0 else 0.0
+                return m
+
         goals = self._get_all_goals(since=since, agent_id=agent_id)
 
         m = GoalMetrics(total=len(goals))

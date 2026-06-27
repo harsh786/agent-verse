@@ -45,7 +45,7 @@ def _self_optimizer(request: Request) -> Any:
 @router.get("/compliance/export")
 async def request_data_export(request: Request) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    req = _compliance(request).request_data_export(tenant_ctx=ctx)
+    req = await _compliance(request).request_data_export(tenant_ctx=ctx)
     return {
         "request_id": req.request_id,
         "status": req.status,
@@ -57,7 +57,7 @@ async def request_data_export(request: Request) -> dict[str, Any]:
 async def download_export(request: Request, request_id: str) -> Response:
     """Download the GDPR data export as a JSON file."""
     ctx = _require_tenant(request)
-    req = _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
+    req = await _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
     if req is None:
         raise HTTPException(status_code=404, detail="Export request not found")
     if req.status != "ready":
@@ -77,7 +77,7 @@ async def download_export(request: Request, request_id: str) -> Response:
 @router.get("/compliance/export/{request_id}")
 async def get_export_status(request: Request, request_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    req = _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
+    req = await _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
     if req is None:
         raise HTTPException(status_code=404, detail="Export request not found")
     return {"request_id": req.request_id, "status": req.status, "payload": req.payload}
@@ -86,7 +86,7 @@ async def get_export_status(request: Request, request_id: str) -> dict[str, Any]
 @router.post("/compliance/delete", status_code=202)
 async def request_data_deletion(request: Request) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    return _compliance(request).request_data_deletion(tenant_ctx=ctx)
+    return await _compliance(request).request_data_deletion(tenant_ctx=ctx)
 
 
 @router.get("/compliance/residency")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 from typing import Any
 
@@ -9,6 +10,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+
+def _get_slack_tenant_id() -> str:
+    return os.getenv("SLACK_TENANT_ID", "")
+
+
+def _get_zapier_tenant_id() -> str:
+    return os.getenv("ZAPIER_TENANT_ID", "")
 
 
 # ── Slack ──────────────────────────────────────────────────────────────────────
@@ -52,11 +61,19 @@ async def slack_slash_command(
 
     from app.tenancy.context import PlanTier, TenantContext
 
-    slack_tenant_id = (
-        request.app.state.settings.slack_tenant_id
-        if hasattr(request.app.state.settings, "slack_tenant_id")
-        else "slack-default"
-    )
+    slack_tenant_id = _get_slack_tenant_id()
+    if not slack_tenant_id:
+        # Try legacy settings attribute before failing
+        slack_tenant_id = (
+            request.app.state.settings.slack_tenant_id
+            if hasattr(request.app.state.settings, "slack_tenant_id")
+            else ""
+        )
+    if not slack_tenant_id:
+        return {
+            "response_type": "ephemeral",
+            "text": "⚠️ Slack integration not configured. Ask admin to set SLACK_TENANT_ID env var.",
+        }
 
     ctx = TenantContext(
         tenant_id=slack_tenant_id,
@@ -127,7 +144,7 @@ async def slack_events(
                 from app.tenancy.context import PlanTier, TenantContext
 
                 ctx = TenantContext(
-                    tenant_id="slack-default",
+                    tenant_id=_get_slack_tenant_id() or "slack-events",
                     plan=PlanTier.PROFESSIONAL,
                     api_key_id="slack-button",
                 )
@@ -175,8 +192,14 @@ async def zapier_trigger(
 
     from app.tenancy.context import PlanTier, TenantContext
 
+    zapier_tenant_id = _get_zapier_tenant_id()
+    if not zapier_tenant_id:
+        raise HTTPException(
+            503, "Zapier integration not configured. Set ZAPIER_TENANT_ID env var."
+        )
+
     ctx = TenantContext(
-        tenant_id="zapier-default",
+        tenant_id=zapier_tenant_id,
         plan=PlanTier.PROFESSIONAL,
         api_key_id="zapier",
     )
@@ -207,8 +230,12 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
 
     from app.tenancy.context import PlanTier, TenantContext
 
+    zapier_tenant_id = _get_zapier_tenant_id()
+    if not zapier_tenant_id:
+        return []
+
     ctx = TenantContext(
-        tenant_id="zapier-default",
+        tenant_id=zapier_tenant_id,
         plan=PlanTier.PROFESSIONAL,
         api_key_id="zapier-poll",
     )

@@ -1,6 +1,7 @@
 """Tests for A2A protocol endpoints — updated for DB-backed + HMAC implementation."""
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -15,6 +16,11 @@ def _make_app() -> FastAPI:
     app.include_router(a2a_router)
     return app
 
+
+@pytest.fixture(autouse=True)
+def _set_a2a_tenant(monkeypatch) -> None:
+    """Set A2A_TENANT_ID for all tests in this module."""
+    monkeypatch.setenv("A2A_TENANT_ID", "test-a2a-tenant")
 
 def test_agent_card_returns_json() -> None:
     client = TestClient(_make_app())

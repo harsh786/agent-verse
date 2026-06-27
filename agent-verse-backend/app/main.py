@@ -119,6 +119,42 @@ from app.triggers.store import ScheduleStore
 logger = get_logger(__name__)
 
 
+def _resolve_provider_for_app(settings: "Settings") -> Any:
+    """Resolve a real LLM provider from environment, or FakeProvider as last resort."""
+    import os
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+
+    if anthropic_key:
+        try:
+            from app.providers.anthropic_provider import AnthropicProvider
+            return AnthropicProvider(api_key=anthropic_key)
+        except Exception:
+            pass
+
+    if openai_key:
+        try:
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+            return OpenAICompatibleProvider(api_key=openai_key)
+        except Exception:
+            pass
+
+    # No real provider — warn and fall back to Fake
+    logger.warning(
+        "no_real_llm_provider_for_meta_services",
+        message=(
+            "MetaAgentPlanner and NLScheduler are using FakeProvider. "
+            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real NL→agent and NL→schedule parsing."
+        )
+    )
+    from app.providers.fake import FakeProvider
+    return FakeProvider(responses=[
+        '{"steps": ["Complete the requested task"]}',
+        "Task executed successfully",
+        '{"success": true, "reason": "Goal achieved"}',
+    ])
+
+
 # ── Minimal in-memory Redis fallback (used when pools are not started) ─────────
 
 class _FakeRedis:
@@ -245,18 +281,10 @@ def create_app(
     _cost = CostController()
     _policy_engine = PolicyEngine()
     _agent_store = AgentStore()
-    _fake_provider = FakeProvider(responses=[
-        '{"steps": ["Complete the requested task"]}',
-        "Task executed successfully",
-        '{"success": true, "reason": "Goal achieved"}',
-    ])
-    _meta_agent = MetaAgentPlanner(provider=_fake_provider)
+    _app_provider = _resolve_provider_for_app(settings)
+    _meta_agent = MetaAgentPlanner(provider=_app_provider)
     _schedule_store = ScheduleStore()
-    _nl_sched = NLScheduler(
-        provider=FakeProvider(responses=[
-            '{"trigger_type": "cron", "cron_expression": "0 9 * * *", "timezone": "UTC"}'
-        ])
-    )
+    _nl_sched = NLScheduler(provider=_app_provider)
     _knowledge_store = KnowledgeStore()
     _semantic_cache = SemanticCache()
     _fake_redis = _FakeRedis()
@@ -273,7 +301,8 @@ def create_app(
     _notification_service = NotificationService()
 
     # Wire embedder: use VoyageProvider if VOYAGE_API_KEY set,
-    # OpenAICompatibleProvider if OPENAI_API_KEY set, else None (random fallback).
+    # OpenAICompatibleProvider if OPENAI_API_KEY set,
+    # LocalEmbedProvider if SENTENCE_TRANSFORMERS_MODEL set, else None.
     import os
     _embedder: Any = None
     _openai_key = os.getenv("OPENAI_API_KEY", "")
@@ -298,6 +327,18 @@ def create_app(
             _embedder = GeminiProvider(api_key=os.getenv("GOOGLE_API_KEY"))
         except Exception:
             pass
+    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):
+        try:
+            from app.providers.voyage_provider import LocalEmbedProvider
+            _embedder = LocalEmbedProvider(
+                model_name=os.getenv("SENTENCE_TRANSFORMERS_MODEL", "all-MiniLM-L6-v2")
+            )
+            logger.info(
+                "local_embed_provider_wired",
+                model=os.getenv("SENTENCE_TRANSFORMERS_MODEL"),
+            )
+        except Exception as _exc:
+            logger.warning("local_embed_provider_failed", error=str(_exc))
     # app.state.embedder is set after app = FastAPI(...)
 
     from app.rpa.executor import RPAExecutor
@@ -333,7 +374,8 @@ def create_app(
         audit_log=_audit_log, hitl=_hitl, task_queue=_task_queue
     )
 
-    # Wire service references into the compliance controller for data export
+    # Wire service references into the compliance controller for data export.
+    # These are the non-DB services; the lifespan re-wires with DB-backed ones.
     _compliance_controller.configure_services(
         goal_service=_goal_svc,
         audit_log=_audit_log,
@@ -361,6 +403,16 @@ def create_app(
                 )
                 app.state.connector_secret_store_is_production_safe = True
                 app.state.mcp_client = _make_mcp_client(app.state.mcp_registry)
+                # Re-wire MCP client into tool inverse registry with the real Redis-backed client
+                from app.reliability.tool_inverses import set_mcp_client as _set_inv_mcp
+                _set_inv_mcp(app.state.mcp_client)
+                # Wire Redis-backed CostController for cross-replica budget accuracy
+                from app.governance.cost import RedisCostController
+                _redis_cost_ctrl = RedisCostController(redis=real_redis)
+                app.state.redis_cost_controller = _redis_cost_ctrl
+                # Also patch _redis on the in-memory controller so it can fall back
+                if hasattr(app.state, "cost_controller"):
+                    app.state.cost_controller._redis = real_redis
                 # Upgrade rate-limiter from in-memory stub to real Redis so all
                 # replicas share one rate-limit counter per tenant.
                 app.state._rate_limiter_redis = real_redis
@@ -458,6 +510,16 @@ def create_app(
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 
+            # Re-wire compliance controller with DB-backed services and DB factory.
+            _compliance_controller.configure_services(
+                goal_service=_goal_svc_with_db,
+                audit_log=_audit_log_db,
+                agent_store=_agent_store_with_db,
+                schedule_store=_schedule_store_db,
+                knowledge_store=_knowledge_store_db,
+                db=db_factory,
+            )
+
             # ── Wire Redis into runtime services ──────────────────────────────
             if redis_for_runtime is not None:
                 # GoalService: Redis pub/sub for cross-replica SSE delivery.
@@ -490,6 +552,11 @@ def create_app(
                 if _rpa_sm is not None:
                     _rpa_sm._redis = redis_for_runtime
 
+                # RPA session store: Redis-backed so sessions survive pod restarts.
+                _rpa_ss = getattr(app.state, "rpa_session_store", None)
+                if _rpa_ss is not None:
+                    _rpa_ss._redis = redis_for_runtime
+
             try:
                 yield
             finally:
@@ -511,6 +578,10 @@ def create_app(
         return MCPClient(registry=registry, secret_resolver=_resolve_connector_secret)
 
     _mcp_client = _make_mcp_client(_mcp_registry)
+
+    # Wire MCP client into tool inverse registry so rollback inverses can execute real API calls
+    from app.reliability.tool_inverses import set_mcp_client as _set_inverse_mcp_client
+    _set_inverse_mcp_client(_mcp_client)
 
     # ── Bind all services to app.state ────────────────────────────────────────
     app.state.settings = settings

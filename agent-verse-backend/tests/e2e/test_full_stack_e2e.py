@@ -20,6 +20,10 @@ from app.main import create_app
 @pytest.fixture(scope="module")
 def real_app():
     """A fully wired app instance shared across tests in this module."""
+    import os
+
+    # Ensure A2A_TENANT_ID is set so the a2a endpoint works in tests
+    os.environ.setdefault("A2A_TENANT_ID", "e2e-test-tenant")
     app = create_app()
     return app
 

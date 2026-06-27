@@ -248,9 +248,21 @@ class GoalService:
                 except Exception:
                     pass
 
-        # 3. Final fallback: FakeProvider
+        # 3. Final fallback: FakeProvider (with explicit warning)
         if provider is None:
-            provider = _fake_provider()
+            from app.providers.fake import FakeProvider as _FakeProvider
+            provider = _FakeProvider(responses=[
+                '{"steps": ["Complete the requested task"]}',
+                "Task executed successfully",
+                '{"success": true, "reason": "Goal achieved"}',
+            ])
+            _svc_logger.warning(
+                "fake_provider_active",
+                message=(
+                    "No real LLM provider configured. Goal will use FakeProvider. "
+                    "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real agent execution."
+                )
+            )
 
         # ── Pull services from app.state ─────────────────────────────────────────
         audit_log = getattr(app_state, "audit_log", None) if app_state else self._audit_log
@@ -743,6 +755,12 @@ class GoalService:
 
             loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
             record = self._goals.get(goal_id)
+            # Detect FakeProvider so get_goal() can surface a warning to callers
+            if hasattr(loop, '_planner') and type(loop._planner).__name__ == 'FakeProvider':
+                if record is not None:
+                    record.execution_context['provider_warning'] = (
+                        "No real LLM provider configured. Results are simulated."
+                    )
             initial_context: dict[str, Any] = {}
             if tool_context is not None:
                 initial_context["tool_prompt"] = tool_context.to_prompt_block()
@@ -1012,6 +1030,7 @@ class GoalService:
             "workflow_mode": record.workflow_mode,
             "created_at": record.created_at,
             "event_count": event_count,
+            "provider_warning": record.execution_context.get("provider_warning"),
         }
 
     async def list_goals(self, tenant_ctx: TenantContext) -> dict[str, list[dict[str, Any]]]:

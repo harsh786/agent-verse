@@ -38,7 +38,13 @@ async def export_training_data(
         Streaming JSONL download.
     """
     goal_service = getattr(request.app.state, "goal_service", None)
-    examples = _collect_training_examples(goal_service, min_score, limit)
+    db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
+
+    # Prefer DB query; fall back to in-memory cache for no-DB environments
+    if db is not None:
+        examples = await _collect_training_examples_db(db, min_score, limit)
+    else:
+        examples = _collect_training_examples_memory(goal_service, min_score, limit)
 
     if format == "openai":
         jsonl_lines = [_to_openai_format(ex) for ex in examples]
@@ -59,12 +65,87 @@ async def export_training_data(
     )
 
 
-def _collect_training_examples(
+async def _collect_training_examples_db(
+    db: Any,
+    min_score: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Query completed, high-scoring goals from PostgreSQL via the evaluations table."""
+    try:
+        from sqlalchemy import text
+
+        async with db() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT g.goal_text,
+                               g.error_message AS result,
+                               e.average_score,
+                               g.id AS goal_id
+                        FROM goals g
+                        INNER JOIN evaluations e ON e.goal_id = g.id
+                        WHERE g.status IN ('complete', 'completed')
+                          AND e.average_score >= :min_score
+                        ORDER BY e.average_score DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"min_score": min_score, "limit": limit},
+                )
+            ).fetchall()
+
+        examples: list[dict[str, Any]] = []
+        for row in rows:
+            goal_text, result, avg_score, goal_id = row
+            # Fetch steps for this goal (best-effort; empty list on failure)
+            steps: list[dict[str, Any]] = []
+            try:
+                async with db() as step_session:
+                    step_rows = (
+                        await step_session.execute(
+                            text(
+                                "SELECT description, output, tool_calls "
+                                "FROM goal_steps WHERE goal_id = :gid "
+                                "ORDER BY step_index ASC"
+                            ),
+                            {"gid": goal_id},
+                        )
+                    ).fetchall()
+                for sr in step_rows:
+                    desc, output, tool_calls = sr
+                    tool_name = ""
+                    if tool_calls and isinstance(tool_calls, list) and tool_calls:
+                        tool_name = tool_calls[0].get("tool_name", "")
+                    steps.append(
+                        {
+                            "type": "step_complete",
+                            "tool_name": tool_name,
+                            "output": output or "",
+                        }
+                    )
+            except Exception:
+                pass
+            examples.append(
+                {
+                    "goal": goal_text or "",
+                    "result": result or "",
+                    "steps": steps,
+                    "eval_score": float(avg_score or 0.0),
+                    "model": "unknown",
+                }
+            )
+        return examples
+    except Exception:
+        return []
+
+
+def _collect_training_examples_memory(
     goal_service: Any,
     min_score: float,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Extract high-scoring goal executions from the GoalService."""
+    """Fallback: extract high-scoring goal executions from the GoalService in-memory cache."""
     if goal_service is None:
         return []
 

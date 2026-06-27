@@ -1,16 +1,19 @@
 """Tests for compliance data export with structured payload and service wiring."""
 from __future__ import annotations
 
+import pytest
+
 from app.enterprise.compliance import ComplianceController
 from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="comp-t1", plan=PlanTier.ENTERPRISE, api_key_id="ck1")
 
 
-def test_compliance_export_has_structured_payload():
+@pytest.mark.asyncio
+async def test_compliance_export_has_structured_payload():
     """Export payload contains structured data section with tenant_profile."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     assert req.status == "ready"
     assert "data" in req.payload
     assert "tenant_profile" in req.payload["data"]
@@ -18,20 +21,22 @@ def test_compliance_export_has_structured_payload():
     assert req.payload["data"]["tenant_profile"]["plan"] == T.plan.value
 
 
-def test_compliance_export_payload_has_all_data_keys():
+@pytest.mark.asyncio
+async def test_compliance_export_payload_has_all_data_keys():
     """Export payload data section contains all expected collection keys."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     data = req.payload["data"]
     for expected_key in ("goals", "audit_entries", "api_keys", "agents", "schedules"):
         assert expected_key in data, f"Missing key: {expected_key}"
         assert isinstance(data[expected_key], list)
 
 
-def test_compliance_export_top_level_fields():
+@pytest.mark.asyncio
+async def test_compliance_export_top_level_fields():
     """Export payload always includes tenant_id, plan, and timestamp at top level."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     assert req.payload["tenant_id"] == T.tenant_id
     assert req.payload["plan"] == T.plan.value
     assert "export_timestamp" in req.payload
@@ -73,26 +78,29 @@ def test_compliance_residency():
     assert residency["tenant_id"] == T.tenant_id
 
 
-def test_compliance_export_download_url_format():
+@pytest.mark.asyncio
+async def test_compliance_export_download_url_format():
     """Download URL follows the /compliance/export/{id}/download pattern."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     assert req.download_url.startswith("/compliance/export/")
     assert req.download_url.endswith("/download")
     assert req.request_id in req.download_url
 
 
-def test_compliance_export_retrievable_after_creation():
+@pytest.mark.asyncio
+async def test_compliance_export_retrievable_after_creation():
     """Created export request is immediately retrievable by ID."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
-    fetched = cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
+    fetched = await cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
     assert fetched is not None
     assert fetched.request_id == req.request_id
     assert fetched.tenant_id == T.tenant_id
 
 
-def test_compliance_export_returns_real_goals_when_service_wired() -> None:
+@pytest.mark.asyncio
+async def test_compliance_export_returns_real_goals_when_service_wired() -> None:
     """request_data_export populates goals from the injected GoalService."""
     from app.agent.state import GoalStatus
     from app.services.goal_service import GoalRecord, GoalService
@@ -112,7 +120,7 @@ def test_compliance_export_returns_real_goals_when_service_wired() -> None:
     )
 
     cc.configure_services(goal_service=goal_svc)
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
 
     assert req.status == "ready"
     goals = req.payload["data"]["goals"]

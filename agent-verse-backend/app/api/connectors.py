@@ -550,12 +550,14 @@ async def oauth_callback(
     # Get the OAuth manager from app state
     oauth_manager = getattr(request.app.state, "oauth_manager", None)
     if oauth_manager is None:
-        # Backward-compat stub: no manager configured (e.g. in tests that don't set it)
-        return {
-            "server_id": server_id,
-            "status": "connected",
-            "message": "OAuth tokens stored. Connector is now active.",
-        }
+        # OAuthFlowManager not configured — return a clear error instead of faking success.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OAuth flow manager is not configured. "
+                "Ensure OAuthFlowManager is wired in the application factory."
+            ),
+        )
 
     # Look up the server config to get token URL and client_id
     reg = _registry(request)

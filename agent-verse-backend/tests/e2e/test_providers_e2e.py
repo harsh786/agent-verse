@@ -22,26 +22,24 @@ async def test_embed_texts_with_fake_provider():
 
 
 async def test_embed_texts_fallback_no_provider():
-    """embed_texts returns normalised random 768-dim vectors when no provider given."""
+    """embed_texts returns empty embeddings when no provider is given (Fix 1.6)."""
     result = await embed_texts(["hello"])
     assert len(result) == 1
-    vec = result[0]
-    assert len(vec) == 768
-    norm = math.sqrt(sum(x * x for x in vec))
-    assert abs(norm - 1.0) < 0.01
+    # Must be empty list, not random noise
+    assert result[0] == []
 
 
 async def test_embed_texts_multiple_texts_no_provider():
-    """embed_texts returns one vector per text when falling back."""
+    """embed_texts returns one empty embedding per text when no provider (Fix 1.6)."""
     texts = ["a", "b", "c", "d"]
     result = await embed_texts(texts)
     assert len(result) == len(texts)
     for vec in result:
-        assert len(vec) == 768
+        assert vec == []
 
 
 async def test_embed_texts_provider_not_implemented_falls_back():
-    """embed_texts falls back to random when provider raises NotImplementedError."""
+    """embed_texts returns empty embeddings when provider raises NotImplementedError (Fix 1.6)."""
 
     class NoEmbedProvider:
         async def embed(self, req: EmbedRequest) -> None:
@@ -55,7 +53,7 @@ async def test_embed_texts_provider_not_implemented_falls_back():
 
     result = await embed_texts(["hello"], provider=NoEmbedProvider())  # type: ignore[arg-type]
     assert len(result) == 1
-    assert len(result[0]) == 768
+    assert result[0] == []
 
 
 # ── FakeProvider ──────────────────────────────────────────────────────────────

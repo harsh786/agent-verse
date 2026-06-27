@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -14,8 +15,67 @@ from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-# Module-level in-memory snapshot store (production: DB table)
+# In-memory fallback snapshot store — only used when DB is not configured.
 _AGENT_SNAPSHOTS: dict[str, list[dict[str, Any]]] = {}
+
+
+# ---------------------------------------------------------------------------
+# DB helpers for snapshot persistence
+# ---------------------------------------------------------------------------
+
+async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str) -> None:
+    """Persist an agent snapshot to the agent_snapshots table."""
+    if db is None:
+        return
+    try:
+        from sqlalchemy import text
+        async with db() as session, session.begin():
+            await session.execute(
+                text(
+                    """INSERT INTO agent_snapshots
+                       (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
+                       VALUES (:id, :tid, :aid, :version, :snap::jsonb, NOW())
+                       ON CONFLICT (id) DO NOTHING"""
+                ),
+                {
+                    "id": snapshot["snapshot_id"],
+                    "tid": tenant_id,
+                    "aid": snapshot["agent_id"],
+                    "version": snapshot["version"],
+                    "snap": json.dumps(snapshot),
+                },
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("snapshot_persist_failed: %s", exc)
+
+
+async def _load_snapshots_from_db(
+    tenant_id: str, agent_id: str, db: Any
+) -> list[dict[str, Any]]:
+    """Load agent snapshots from DB ordered by version ascending."""
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            result = await session.execute(
+                text(
+                    "SELECT snapshot FROM agent_snapshots "
+                    "WHERE tenant_id = :tid AND agent_id = :aid "
+                    "ORDER BY version ASC"
+                ),
+                {"tid": tenant_id, "aid": agent_id},
+            )
+            rows = result.fetchall()
+        return [
+            (json.loads(r[0]) if isinstance(r[0], str) else r[0])
+            for r in rows
+        ]
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("snapshot_load_failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -216,10 +276,43 @@ class AgentStore:
         ]
 
     def delete(self, agent_id: str, *, tenant_ctx: TenantContext) -> bool:
+        """Synchronous in-memory delete (used by tests / no-DB mode)."""
         key = (tenant_ctx.tenant_id, agent_id)
         if key not in self._data:
             return False
         del self._data[key]
+        return True
+
+    async def delete_async(self, agent_id: str, *, tenant_ctx: TenantContext) -> bool:
+        """Soft-delete from PostgreSQL (is_active=FALSE) and remove from memory cache."""
+        key = (tenant_ctx.tenant_id, agent_id)
+        if self._db is not None:
+            try:
+                from sqlalchemy import text
+                from app.db.rls import sqlalchemy_rls_context
+                async with self._db() as session, session.begin(), sqlalchemy_rls_context(
+                    session, tenant_ctx.tenant_id
+                ):
+                    result = await session.execute(
+                        text(
+                            "UPDATE agents SET is_active = FALSE "
+                            "WHERE id = :id AND tenant_id = :tid AND is_active = TRUE"
+                        ),
+                        {"id": agent_id, "tid": tenant_ctx.tenant_id},
+                    )
+                    if result.rowcount == 0:
+                        return False
+            except Exception as exc:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("agent_delete_db_failed", error=str(exc))
+                # Fall through to in-memory-only delete so the endpoint still
+                # returns a meaningful response when DB is temporarily unavailable.
+                if key not in self._data:
+                    return False
+        elif key not in self._data:
+            return False
+        # Evict from in-memory cache
+        self._data.pop(key, None)
         return True
 
     def update(self, agent_id: str, data: dict[str, Any], *, tenant_ctx: TenantContext) -> bool:
@@ -396,7 +489,7 @@ async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
 async def delete_agent(request: Request, agent_id: str) -> None:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
-    removed = store.delete(agent_id, tenant_ctx=tenant_ctx)
+    removed = await store.delete_async(agent_id, tenant_ctx=tenant_ctx)
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -459,8 +552,13 @@ async def update_knowledge_binding(
 async def list_agent_versions(request: Request, agent_id: str) -> list[dict[str, Any]]:
     """List all saved version snapshots of an agent."""
     tenant = _require_tenant(request)
-    snapshots = _AGENT_SNAPSHOTS.get(f"{tenant.tenant_id}:{agent_id}", [])
-    return snapshots
+    store = _agent_store(request)
+    db = getattr(store, "_db", None)
+
+    # Try DB first; fall back to in-memory module dict
+    if db is not None:
+        return await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+    return _AGENT_SNAPSHOTS.get(f"{tenant.tenant_id}:{agent_id}", [])
 
 
 @router.post("/{agent_id}/snapshot")
@@ -472,14 +570,27 @@ async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    key = f"{tenant.tenant_id}:{agent_id}"
+    db = getattr(store, "_db", None)
+
+    # Determine next version number
+    if db is not None:
+        existing = await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+    else:
+        existing = _AGENT_SNAPSHOTS.get(f"{tenant.tenant_id}:{agent_id}", [])
+
     snapshot = {
         **agent,
         "snapshot_id": uuid.uuid4().hex,
         "snapshotted_at": datetime.now(UTC).isoformat(),
-        "version": len(_AGENT_SNAPSHOTS.get(key, [])) + 1,
+        "version": len(existing) + 1,
     }
-    _AGENT_SNAPSHOTS.setdefault(key, []).append(snapshot)
+
+    if db is not None:
+        await _save_snapshot_to_db(snapshot, db, tenant.tenant_id)
+    else:
+        key = f"{tenant.tenant_id}:{agent_id}"
+        _AGENT_SNAPSHOTS.setdefault(key, []).append(snapshot)
+
     return snapshot
 
 
@@ -489,13 +600,19 @@ async def rollback_agent(
 ) -> dict[str, Any]:
     """Roll back agent to a previous snapshot."""
     tenant = _require_tenant(request)
-    key = f"{tenant.tenant_id}:{agent_id}"
-    snapshots = _AGENT_SNAPSHOTS.get(key, [])
+    store = _agent_store(request)
+    db = getattr(store, "_db", None)
+
+    if db is not None:
+        snapshots = await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+    else:
+        key = f"{tenant.tenant_id}:{agent_id}"
+        snapshots = _AGENT_SNAPSHOTS.get(key, [])
+
     snapshot = next((s for s in snapshots if s.get("snapshot_id") == snapshot_id), None)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
 
-    store = _agent_store(request)
     restore_data = {
         k: v
         for k, v in snapshot.items()

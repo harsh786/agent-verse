@@ -82,6 +82,41 @@ services:
       SSO_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: agentverse-backend
+      FRONTEND_URL: http://localhost:5173
+      DATA_RETENTION_DAYS: "90"
+      AGENTVERSE_DB_SCHEDULE_DISCOVERY: "true"
+      # ── LLM providers (set at least one for real goal execution) ──────────
+      # ANTHROPIC_API_KEY: sk-ant-...
+      # OPENAI_API_KEY: sk-...
+      # VOYAGE_API_KEY: pa-...
+      # GOOGLE_API_KEY: ...
+      # SENTENCE_TRANSFORMERS_MODEL: all-MiniLM-L6-v2  # local CPU embeddings
+      # ── A2A (Agent-to-Agent) protocol ─────────────────────────────────────
+      # A2A_TENANT_ID: ""          # REQUIRED for /a2a/tasks endpoint
+      # A2A_SHARED_SECRET: ""      # HMAC signing secret (empty = dev mode, no auth)
+      # ── Slack integration ──────────────────────────────────────────────────
+      # SLACK_TENANT_ID: ""        # tenant_id for Slack-originated goals
+      # SLACK_SIGNING_SECRET: ""
+      # SLACK_BOT_TOKEN: xoxb-...
+      # SLACK_APPROVAL_CHANNEL: hitl-approvals
+      # ── Zapier integration ─────────────────────────────────────────────────
+      # ZAPIER_TENANT_ID: ""       # tenant_id for Zapier-triggered goals
+      # ZAPIER_WEBHOOK_SECRET: ""
+      # ── IMAP email-to-goal listener ────────────────────────────────────────
+      # IMAP_ENABLED: "false"
+      # IMAP_HOST: imap.example.com
+      # IMAP_PORT: "993"
+      # IMAP_USER: goals@example.com
+      # IMAP_PASSWORD: ""
+      # IMAP_SSL: "true"
+      # IMAP_MAILBOX: INBOX
+      # IMAP_TENANT_ID: ""
+      # ── SMTP outbound email ────────────────────────────────────────────────
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      # SMTP_USER: ""
+      # SMTP_PASSWORD: ""
+      SMTP_TLS: "false"
     ports:
       - "8000:8000"
     depends_on:

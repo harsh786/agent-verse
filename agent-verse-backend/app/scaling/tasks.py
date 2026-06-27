@@ -380,6 +380,25 @@ def run_goal(
     )
 
     try:
+        # Block fake execution in production — a real LLM provider is required
+        import os as _os
+        _env = _os.getenv("ENVIRONMENT", "development")
+        if used_fake_provider and _env == "production":
+            _run_async(mark_worker_failed(
+                RuntimeError(
+                    "No real LLM provider configured. "
+                    "Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+                )
+            ))
+            return {
+                "status": "failed",
+                "goal_id": goal_id,
+                "reason": "no_llm_provider",
+                "message": (
+                    "Goal requires a real LLM provider. "
+                    "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY."
+                ),
+            }
         async def worker_event_callback(event: dict[str, Any]) -> None:
             await append_submitted_goal_event(event)
 

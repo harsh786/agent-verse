@@ -293,46 +293,48 @@ async def test_rpa_executor_all_tools() -> None:
         )
 
 
-def test_rpa_session_store() -> None:
+@pytest.mark.asyncio
+async def test_rpa_session_store() -> None:
     """RPASessionStore CRUD works correctly with tenant isolation."""
     from app.rpa.session import RPASessionStore
 
     store = RPASessionStore()
 
     # Create
-    session = store.create(tenant_id="t1")
+    session = await store.create(tenant_id="t1")
     assert session.session_id
     assert session.status == "active"
 
     # Get by tenant
-    fetched = store.get(session.session_id, tenant_id="t1")
+    fetched = await store.get(session.session_id, tenant_id="t1")
     assert fetched is not None
     assert fetched.session_id == session.session_id
 
     # Tenant isolation: another tenant cannot see this session
-    other = store.get(session.session_id, tenant_id="t2")
+    other = await store.get(session.session_id, tenant_id="t2")
     assert other is None
 
     # List active
-    active_before = store.list_active(tenant_id="t1")
+    active_before = await store.list_active(tenant_id="t1")
     assert any(s.session_id == session.session_id for s in active_before)
 
     # Close
-    closed = store.close(session.session_id, tenant_id="t1")
+    closed = await store.close(session.session_id, tenant_id="t1")
     assert closed is True
 
     # No longer in active list
-    active_after = store.list_active(tenant_id="t1")
+    active_after = await store.list_active(tenant_id="t1")
     assert not any(s.session_id == session.session_id for s in active_after)
 
 
-def test_rpa_session_store_close_wrong_tenant_returns_false() -> None:
+@pytest.mark.asyncio
+async def test_rpa_session_store_close_wrong_tenant_returns_false() -> None:
     """Closing a session with the wrong tenant ID fails gracefully."""
     from app.rpa.session import RPASessionStore
 
     store = RPASessionStore()
-    session = store.create(tenant_id="owner")
-    result = store.close(session.session_id, tenant_id="other-tenant")
+    session = await store.create(tenant_id="owner")
+    result = await store.close(session.session_id, tenant_id="other-tenant")
     assert result is False
     # Original session is still active
-    assert store.get(session.session_id, tenant_id="owner") is not None
+    assert await store.get(session.session_id, tenant_id="owner") is not None

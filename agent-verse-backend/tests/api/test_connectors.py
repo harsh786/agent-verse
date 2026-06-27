@@ -585,7 +585,8 @@ def test_oauth_start_requires_oauth_auth_type() -> None:
     assert resp.status_code == 400
 
 
-def test_oauth_callback_returns_connected() -> None:
+def test_oauth_callback_returns_503_when_oauth_manager_missing() -> None:
+    """OAuth callback must return 503 (not a fake success) when oauth_manager is not configured."""
     reg = AsyncMock()
     client = TestClient(_make_app(reg), raise_server_exceptions=False)
     resp = client.get(
@@ -593,6 +594,6 @@ def test_oauth_callback_returns_connected() -> None:
         params={"code": "abc", "state": "xyz", "server_id": "srv-1"},
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     data = resp.json()
-    assert data["status"] == "connected"
+    assert "OAuth flow manager" in data.get("detail", "")
