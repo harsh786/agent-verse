@@ -13,10 +13,12 @@ name = "agent-verse-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aioimaplib" },
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },
     { name = "celery", extra = ["redis"] },
+    { name = "celery-redbeat" },
     { name = "croniter" },
     { name = "cryptography" },
     { name = "fastapi" },
@@ -65,6 +67,7 @@ voyage = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "agentverse-sdk", extra = ["dev"] },
     { name = "httpx2" },
     { name = "mypy" },
     { name = "pytest" },
@@ -78,10 +81,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", marker = "extra == 'artifacts'", specifier = ">=13.0" },
+    { name = "aioimaplib", specifier = ">=1.1" },
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "anthropic", specifier = ">=0.50.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4.0" },
+    { name = "celery-redbeat", specifier = ">=2.3.0" },
     { name = "croniter", specifier = ">=1.4.0" },
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
@@ -114,6 +119,7 @@ provides-extras = ["voyage", "gemini", "local-embed", "browser", "artifacts", "p
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "agentverse-sdk", extras = ["dev"], directory = "../agent-verse-sdk-python" },
     { name = "httpx2", specifier = ">=2.4.0" },
     { name = "mypy", specifier = ">=1.13.0" },
     { name = "pytest", specifier = ">=8.3.0" },
@@ -123,6 +129,34 @@ dev = [
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.9.0" },
 ]
+
+[[package]]
+name = "agentverse-sdk"
+version = "0.1.0"
+source = { directory = "../agent-verse-sdk-python" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "respx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "pydantic", specifier = ">=2.9.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.22.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "aioboto3"
@@ -276,6 +310,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/3c/bb4a7cba26956cb3da4553cc2056cf67be5b5ff6e6d8fa4fbdff73bfb7ae/aiohttp-3.14.1-cp314-cp314t-win32.whl", hash = "sha256:47ddf841cdecc810749921d25606dee45857d12d2ad5ddb7b5bd7eab12e4b365", size = 494166, upload-time = "2026-06-07T21:09:28.505Z" },
     { url = "https://files.pythonhosted.org/packages/8a/84/ec80c2c1f66a952555a9f86df6b33af65108a6febfa0471b69013a12f807/aiohttp-3.14.1-cp314-cp314t-win_amd64.whl", hash = "sha256:5e78b522b7a6e27e0b25d19b247b75039ac4c94f99823e3c9e53ae1603a9f7e9", size = 530255, upload-time = "2026-06-07T21:09:30.843Z" },
     { url = "https://files.pythonhosted.org/packages/2a/71/6e22be134a4061ada85a92951b842f2657f17d926b727f3f94c56ae963d6/aiohttp-3.14.1-cp314-cp314t-win_arm64.whl", hash = "sha256:90d53f1609c29ccc2193945ef732428382a28f78d0456ae4d3daf0d48b74f0f6", size = 469640, upload-time = "2026-06-07T21:09:33.028Z" },
+]
+
+[[package]]
+name = "aioimaplib"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/da/a454c47fb8522e607425e15bf1f49ccfdb3d75f4071f40b63ebd49573495/aioimaplib-2.0.1.tar.gz", hash = "sha256:5a494c3b75f220977048f5eb2c7ba9c0570a3148aaf38bee844e37e4d7af8648", size = 35555, upload-time = "2025-01-16T10:38:23.14Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/52/48aaa287fb3c4c995edcb602370b10d182dc5c48371df7cb3a404356733f/aioimaplib-2.0.1-py3-none-any.whl", hash = "sha256:727e00c35cf25106bd34611dddd6e2ddf91a5f1a7e72d9269f3ce62486b31e14", size = 34729, upload-time = "2025-01-16T10:38:20.427Z" },
 ]
 
 [[package]]
@@ -543,6 +586,21 @@ wheels = [
 [package.optional-dependencies]
 redis = [
     { name = "kombu", extra = ["redis"] },
+]
+
+[[package]]
+name = "celery-redbeat"
+version = "2.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "celery" },
+    { name = "python-dateutil" },
+    { name = "redis" },
+    { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7d/d5/cebf6a03a4716ae33315ce1dad68f2465ea30491a560293ecd2a4ad3148a/celery_redbeat-2.3.3.tar.gz", hash = "sha256:f52664b490b2923a787d9f348f291243601430bf8ec383b6e79870a1731ee92a", size = 34429, upload-time = "2025-07-02T13:08:55.251Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/26/c1/ea03e5c737b4b0f4054001d8db64bec693b1506cbb68f93ebecd710b2785/celery_redbeat-2.3.3-py2.py3-none-any.whl", hash = "sha256:0d6da101c46c0147b88f3ae2bfaed42548545934263a31d325a8b0e6585c3fb1", size = 14674, upload-time = "2025-07-02T13:08:54.062Z" },
 ]
 
 [[package]]

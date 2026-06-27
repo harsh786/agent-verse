@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-backend-green
+  namespace: agentverse
+  labels:
+    app: agentverse-backend
+    color: green
+spec:
+  replicas: 0   # starts at 0; scaled up before traffic switch
+  selector:
+    matchLabels:
+      app: agentverse-backend
+      color: green
+  template:
+    metadata:
+      labels:
+        app: agentverse-backend
+        color: green
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: backend
+          image: ghcr.io/agentverse/backend:latest   # update image tag before switching
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: redis-url
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5

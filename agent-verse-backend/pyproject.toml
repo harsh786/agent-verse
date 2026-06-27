@@ -21,6 +21,7 @@ dependencies = [
     # cache / broker / state
     "redis>=5.2.0",
     "celery[redis]>=5.4.0",
+    "celery-redbeat>=2.3.0",
     # CLI
     "typer>=0.12.0",
     # http clients (MCP / A2A / providers)
@@ -42,6 +43,8 @@ dependencies = [
     "croniter>=1.4.0",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0",
+    # email-to-goal IMAP listener
+    "aioimaplib>=1.1",
 ]
 
 [project.scripts]
@@ -69,6 +72,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "httpx2>=2.4.0",
+    "agentverse-sdk[dev]",
 ]
 
 [build-system]
@@ -123,3 +127,6 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = ["asyncpg.*", "pgvector.*", "openai.*"]
 ignore_missing_imports = true
+
+[tool.uv.sources]
+agentverse-sdk = { path = "../agent-verse-sdk-python" }

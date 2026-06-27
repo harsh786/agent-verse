@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- database pool ---
+    db_pool_size: int = 10
+    db_max_overflow: int = 5
+    db_pool_timeout: float = 30.0
+    db_pool_recycle: int = 1800
+    db_pool_pre_ping: bool = True
+
     # --- observability ---
     service_name: str = "agentverse-backend"
     otel_exporter_otlp_endpoint: str | None = None

@@ -40,6 +40,7 @@ celery_app.conf.update(
         "app.scaling.tasks.detect_stuck_goals": {"queue": "maintenance"},
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
+        "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
     },
     beat_schedule={
         "mcp-health-check-every-30s": {
@@ -72,5 +73,27 @@ celery_app.conf.update(
             "schedule": 60.0,  # every 60 seconds
             "options": {"queue": "maintenance"},
         },
+        "check-email-goals": {
+            "task": "app.scaling.tasks.check_email_goals",
+            "schedule": 60.0,  # every 60 seconds
+            "options": {"queue": "maintenance"},
+        },
     },
 )
+
+# ── RedBeat HA Beat Scheduler ──────────────────────────────────────────────────
+# Allows multiple beat replicas — only one acquires the Redis lock at a time.
+# Requires: pip install celery-redbeat
+try:
+    import redbeat  # type: ignore[import]  # noqa: F401
+    celery_app.conf.beat_scheduler = "redbeat.RedBeatScheduler"
+    celery_app.conf.redbeat_redis_url = REDIS_URL
+    celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"
+    celery_app.conf.redbeat_lock_timeout = 300  # 5 minutes
+except ImportError:
+    # redbeat not installed — falls back to default file-based beat scheduler
+    pass
+
+# Backwards-compatible alias used by some imports
+app = celery_app
+

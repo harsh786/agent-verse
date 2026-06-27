@@ -1145,3 +1145,40 @@ async def _expire_db_approvals() -> list[str]:
     except Exception as exc:
         logger.warning("expire_db_approvals failed: %s", exc)
         return []
+
+
+@celery_app.task(name="app.scaling.tasks.check_email_goals",
+                 bind=True, max_retries=1)
+def check_email_goals(self: Any) -> dict[str, Any]:
+    """Check IMAP mailbox and submit new emails as goals."""
+    import os
+    if os.getenv("IMAP_ENABLED", "false").lower() not in {"true", "1"}:
+        return {"status": "disabled", "processed": 0}
+
+    return _run_async(_do_check_email_goals())
+
+
+async def _do_check_email_goals() -> dict[str, Any]:
+    import os
+
+    from app.integrations.email.imap_listener import check_and_process_emails
+
+    try:
+        from app.db.session import get_session_factory
+        from app.services.goal_service import GoalService
+        from app.tenancy.context import PlanTier, TenantContext
+
+        db = get_session_factory()
+        goal_service = GoalService(db_session_factory=db)
+
+        email_tenant_id = os.getenv("IMAP_TENANT_ID", "email-default")
+        ctx = TenantContext(
+            tenant_id=email_tenant_id,
+            plan=PlanTier.PROFESSIONAL,
+            api_key_id="email-listener",
+        )
+
+        count = await check_and_process_emails(goal_service, ctx)
+        return {"status": "ok", "processed": count}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "processed": 0}

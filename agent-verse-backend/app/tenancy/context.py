@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class PlanTier(enum.StrEnum):
@@ -66,3 +66,5 @@ class TenantContext:
     tenant_id: str
     plan: PlanTier
     api_key_id: str
+    # RBAC roles assigned to this API key / SSO user (expanded from role hierarchy)
+    roles: tuple[str, ...] = field(default_factory=tuple)

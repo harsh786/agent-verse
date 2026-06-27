@@ -103,6 +103,24 @@ class OpenAICompatibleProvider:
             stop_reason=choice.finish_reason or "stop",
         )
 
+    async def stream_complete(self, request: CompletionRequest):
+        """Stream completion tokens one by one via the OpenAI streaming API."""
+        model = request.model or self._default_model
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        try:
+            stream = await self._client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=request.max_tokens,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+        except Exception as exc:
+            yield f"[stream error: {exc}]"
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         model = request.model or "text-embedding-3-small"
         response = await self._client.embeddings.create(

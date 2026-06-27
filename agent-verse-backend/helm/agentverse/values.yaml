@@ -1,0 +1,119 @@
+# Default values for agentverse Helm chart.
+# Override with: helm install agentverse ./helm/agentverse -f custom-values.yaml
+
+global:
+  imageRegistry: "ghcr.io/agentverse"
+  imagePullPolicy: IfNotPresent
+  namespace: agentverse
+
+# ── Backend API ──────────────────────────────────────────────────────────────
+backend:
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    minAvailable: 1
+  env:
+    ENVIRONMENT: production
+    LOG_LEVEL: INFO
+    DEFAULT_LLM_PROVIDER: anthropic
+
+# ── Celery Worker ─────────────────────────────────────────────────────────────
+worker:
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 2
+  concurrency: 4
+  queues: "goals,schedules,maintenance"
+  resources:
+    requests:
+      cpu: 300m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+
+# ── Celery Beat ───────────────────────────────────────────────────────────────
+beat:
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 2  # HA with RedBeat
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+frontend:
+  image:
+    name: frontend
+    tag: "latest"
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  host: agentverse.example.com
+  tls:
+    enabled: true
+    secretName: agentverse-tls
+
+# ── External Secrets ─────────────────────────────────────────────────────────
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: vault-secret-store
+    kind: ClusterSecretStore
+  refreshInterval: 1h
+  secrets:
+    databaseUrl:
+      remoteRef:
+        key: agentverse/database-url
+    redisUrl:
+      remoteRef:
+        key: agentverse/redis-url
+    anthropicApiKey:
+      remoteRef:
+        key: agentverse/anthropic-api-key
+    masterEncryptionKey:
+      remoteRef:
+        key: agentverse/master-encryption-key
+
+# ── Non-secret config ─────────────────────────────────────────────────────────
+config:
+  corsOrigins: "https://agentverse.example.com"
+  otlpEndpoint: "http://otel-collector:4317"
+  metricsEnabled: "true"
+  semanticCacheEnabled: "true"

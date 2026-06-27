@@ -41,6 +41,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
+from app.api.analytics import router as analytics_router
+from app.api.training_export import router as training_export_router
+from app.api.integrations import router as integrations_router
 from app.api.agents import AgentStore
 from app.api.agents import router as agents_router
 from app.api.artifacts import router as artifacts_router
@@ -70,6 +73,7 @@ from app.api.schedules import (
 )
 from app.api.system import router as system_router
 from app.api.tenants import router as tenants_router
+from app.api.tools import router as tools_router
 from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
@@ -583,6 +587,8 @@ def create_app(
     app.include_router(tenants_router)
     app.include_router(goals_router)
     app.include_router(connectors_router)
+    # Native tools (code execution, file ops, email)
+    app.include_router(tools_router)
     # SSO authentication
     app.include_router(auth_router)
     # Agents, governance, knowledge, scheduling
@@ -606,6 +612,12 @@ def create_app(
     app.include_router(intelligence_router)
     # Perception
     app.include_router(perception_router)
+    # Integrations (Slack, Zapier, email triggers)
+    app.include_router(integrations_router)
+    # Analytics
+    app.include_router(analytics_router)
+    # Training data export (intelligence)
+    app.include_router(training_export_router)
 
     configure_tracing(app, settings)
 

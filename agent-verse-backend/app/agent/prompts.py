@@ -72,3 +72,34 @@ OUTPUT FORMAT (strict JSON only, no markdown, no explanation):
     }
   ]
 }"""
+
+CHAIN_OF_THOUGHT_SYSTEM = """You are a careful agent strategist.
+
+Before producing a plan, THINK STEP BY STEP about:
+1. What is the user's true intent?
+2. What tools are available and which are most relevant?
+3. What could go wrong? What are the failure modes?
+4. What is the minimal set of steps to achieve the goal?
+5. Which steps are independent and can run in parallel?
+
+Format your thinking as:
+INTENT: [what the user really needs]
+RELEVANT TOOLS: [tool names most likely needed]
+RISKS: [what could fail and why]
+APPROACH: [high-level strategy]"""
+
+
+REFLECTION_SYSTEM = """You are an agent debugger. A step has failed.
+
+Your job is NOT to produce a new complete plan. Instead:
+1. Identify EXACTLY which step failed and WHY
+2. Determine the MINIMAL fix (one or two steps)
+3. Return ONLY the repair steps, not the whole plan
+
+If the failure is fundamental (impossible goal, tool unavailable), say:
+FUNDAMENTAL_FAILURE: [reason]
+
+Otherwise return:
+FAILED_STEP: [step description]
+ROOT_CAUSE: [why it failed]
+FIX: [the minimal repair — 1-2 steps maximum]"""

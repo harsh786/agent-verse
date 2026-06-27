@@ -648,3 +648,81 @@ async def unregister_connector(request: Request, server_id: str) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Connector {server_id} not found",
         )
+
+
+# ── OpenAPI auto-import ───────────────────────────────────────────────────────
+
+class OpenAPIImportRequest(BaseModel):
+    openapi_spec: str
+    base_url: str
+    name: str = ""
+    auth_type: str = "bearer"
+    auth_config: dict[str, Any] = {}
+    description: str = ""
+
+
+@router.post("/import-openapi", status_code=status.HTTP_201_CREATED)
+async def import_openapi_connector(
+    request: Request, body: OpenAPIImportRequest
+) -> dict[str, Any]:
+    """Import an OpenAPI 3.x spec and register it as a connector with extracted tools."""
+    tenant_ctx = _require_tenant(request)
+
+    from app.mcp.openapi_importer import extract_tools_from_spec, parse_openapi_spec
+
+    try:
+        spec = parse_openapi_spec(body.openapi_spec)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot parse OpenAPI spec: {exc}",
+        ) from exc
+
+    import uuid
+    placeholder_id = uuid.uuid4().hex
+    tools = extract_tools_from_spec(
+        spec, connector_id=placeholder_id, tenant_id=tenant_ctx.tenant_id
+    )
+
+    # Normalise auth_type to a known Literal (default to bearer for unknown types)
+    _VALID_AUTH_TYPES = {
+        "bearer", "api_key", "oauth_ac", "oauth_cc", "pkce",
+        "basic", "custom_header", "mtls", "hmac",
+    }
+    safe_auth_type: Any = body.auth_type if body.auth_type in _VALID_AUTH_TYPES else "bearer"
+
+    connector_name = body.name or (spec.get("info", {}).get("title") or "Imported API")
+    connector_desc = (
+        body.description
+        or f"Auto-imported from OpenAPI spec ({len(tools)} endpoints)"
+    )
+
+    cfg = MCPServerConfig(
+        name=connector_name,
+        url=body.base_url,
+        auth_type=safe_auth_type,
+        auth_config=body.auth_config,
+        description=connector_desc,
+    )
+
+    reg = _registry(request)
+    server_id = await reg.register(cfg, tenant_ctx=tenant_ctx)
+
+    # Optionally persist tool definitions (best-effort, non-fatal)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db and tools:
+        from app.mcp.openapi_importer import persist_tools
+        for tool in tools:
+            tool["connector_id"] = server_id
+            tool["tenant_id"] = tenant_ctx.tenant_id
+        try:
+            await persist_tools(tools, db, tenant_ctx.tenant_id)
+        except Exception:
+            pass
+
+    return {
+        "server_id": server_id,
+        "name": connector_name,
+        "tools_imported": len(tools),
+        "base_url": body.base_url,
+    }

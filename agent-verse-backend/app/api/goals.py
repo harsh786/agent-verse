@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -278,6 +279,60 @@ async def resume_goal(request: Request, goal_id: str) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return result
+
+
+class BatchGoalRequest(BaseModel):
+    goals: list[str] = Field(..., min_length=1, max_length=100)
+    priority: str = "normal"
+    agent_id: str | None = None
+    max_parallel: int = Field(default=10, ge=1, le=50)
+
+
+@router.post("/batch", status_code=status.HTTP_202_ACCEPTED)
+async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[str, Any]:
+    """Submit multiple goals as a batch for parallel processing."""
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+
+    batch_id = uuid.uuid4().hex
+    submitted = []
+
+    for goal_text in body.goals:
+        try:
+            result = await svc.submit_goal(
+                goal=goal_text, priority=body.priority, dry_run=False,
+                tenant_ctx=tenant, agent_id=body.agent_id,
+            )
+            submitted.append({
+                "goal_id": result.get("goal_id"),
+                "goal": goal_text[:100],
+                "status": "queued",
+            })
+        except Exception as exc:
+            submitted.append({
+                "goal_id": None,
+                "goal": goal_text[:100],
+                "status": "error",
+                "error": str(exc),
+            })
+
+    return {
+        "batch_id": batch_id,
+        "total": len(body.goals),
+        "queued": sum(1 for s in submitted if s["status"] == "queued"),
+        "errors": sum(1 for s in submitted if s["status"] == "error"),
+        "goals": submitted,
+    }
+
+
+@router.get("/batch/{batch_id}/status")
+async def get_batch_status(request: Request, batch_id: str) -> dict[str, Any]:
+    """Get status summary for a batch submission (track individual goal_ids for details)."""
+    _require_tenant(request)
+    return {
+        "batch_id": batch_id,
+        "message": "Track individual goal_ids from batch submission",
+    }
 
 
 @router.get("/{goal_id}/traces")

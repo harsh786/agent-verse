@@ -24,7 +24,7 @@ from typing import Any, TypedDict
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.prompts import EXECUTOR_SYSTEM, PLANNER_SYSTEM, VERIFIER_SYSTEM
+from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, EXECUTOR_SYSTEM, PLANNER_SYSTEM, REFLECTION_SYSTEM, VERIFIER_SYSTEM
 from app.agent.sanitization import (
     sanitize_event,
     sanitize_event_value,
@@ -121,6 +121,14 @@ class AgentGraph:
         # Intelligence
         guardrail_checker: GuardrailChecker | None = None,
         eval_runner: EvalRunner | None = None,
+        # Model routing
+        model_router: Any | None = None,
+        # Semantic cache + embedder
+        semantic_cache: Any | None = None,
+        embedder: Any | None = None,
+        # Phase 2 feature flags
+        enable_cot: bool = False,
+        enable_reflection: bool = False,
         # Autonomy
         autonomy_mode: str = "bounded-autonomous",
         # Goal-tree decomposition
@@ -146,6 +154,11 @@ class AgentGraph:
         self._mcp_client = mcp_client
         self._guardrail_checker = guardrail_checker
         self._eval_runner = eval_runner
+        self._model_router: Any = model_router
+        self._semantic_cache: Any = semantic_cache
+        self._embedder: Any = embedder
+        self._enable_cot = enable_cot
+        self._enable_reflection = enable_reflection
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -276,6 +289,42 @@ class AgentGraph:
         rag_context = "\n\n".join(context_parts)
         return {"rag_context": rag_context}
 
+    async def _node_think(self, state: GraphState) -> dict[str, Any]:
+        """Chain-of-thought thinking node: produces reasoning before planning."""
+        agent_state: AgentState = state["agent_state"]
+        req = CompletionRequest(
+            messages=[
+                Message(role="system", content=CHAIN_OF_THOUGHT_SYSTEM),
+                Message(role="user", content=f"Goal: {agent_state.goal}"),
+            ],
+            model="claude-opus-4-8",
+        )
+        resp = await self._planner.complete(req)
+        return {"cot_reasoning": resp.content}
+
+    async def _node_reflect(self, state: GraphState) -> dict[str, Any]:
+        """Reflection node: diagnoses failure and populates verification_feedback."""
+        agent_state: AgentState = state["agent_state"]
+        failed_steps = [s for s in agent_state.steps if s.status == StepStatus.FAILED]
+        failed_summary = (
+            "\n".join(f"- {s.description}: {s.error}" for s in failed_steps)
+            or agent_state.error_message
+            or "No specific failure information available."
+        )
+        req = CompletionRequest(
+            messages=[
+                Message(role="system", content=REFLECTION_SYSTEM),
+                Message(
+                    role="user",
+                    content=f"Goal: {agent_state.goal}\nFailed steps:\n{failed_summary}",
+                ),
+            ],
+            model="claude-opus-4-8",
+        )
+        resp = await self._planner.complete(req)
+        agent_state.verification_feedback = resp.content
+        return {"agent_state": agent_state}
+
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -303,16 +352,34 @@ class AgentGraph:
                 f"[Previous attempt feedback]\n{agent_state.verification_feedback}"
             )
 
+        # Inject chain-of-thought reasoning if available
+        cot_reasoning: str = state.get("cot_reasoning", "")
+        if cot_reasoning:
+            extra_parts.append(f"[Chain-of-thought reasoning]\n{cot_reasoning}")
+
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
 
+        # Determine system content — prepend agent system_prompt if present
+        agent_system_prompt = agent_state.context.get("system_prompt", "")
+        system_content = (
+            f"{agent_system_prompt}\n\n{PLANNER_SYSTEM}" if agent_system_prompt else PLANNER_SYSTEM
+        )
+
+        # Determine planning model via model_router if wired
+        planning_model = "claude-opus-4-8"
+        if self._model_router is not None:
+            routed = self._model_router.model_for("planning")
+            if routed:
+                planning_model = routed
+
         req = CompletionRequest(
             messages=[
-                Message(role="system", content=PLANNER_SYSTEM),
+                Message(role="system", content=system_content),
                 Message(role="user", content=user_content),
             ],
-            model="claude-opus-4-8",
+            model=planning_model,
         )
         with self._tracer.start_as_current_span("agentverse.plan") as span:
             span.set_attribute("plan.iteration", agent_state.iterations)
@@ -396,6 +463,23 @@ class AgentGraph:
             except Exception as exc:
                 # Fall through to normal execution if goal-tree fails
                 await self._emit({"type": "goal_tree_error", "error": str(exc)})
+
+        # Pre-scan plan for structured parallel steps and emit events
+        for _entry in plan:
+            try:
+                _parsed = json.loads(_entry)
+                if isinstance(_parsed, dict) and "steps" in _parsed:
+                    from app.agent.structured_plan import StructuredPlan as _SP
+                    _sp = _SP.from_llm_response(_entry)
+                    for _wave in _sp.execution_waves():
+                        if len(_wave) > 1:
+                            await self._emit({
+                                "type": "steps_parallel_start",
+                                "steps": [s.description for s in _wave],
+                                "wave_size": len(_wave),
+                            })
+            except Exception:
+                pass
 
         for step_index, step_desc in enumerate(plan):
             step = StepResult(description=step_desc, status=StepStatus.RUNNING)
@@ -884,6 +968,22 @@ class AgentGraph:
             )
 
         return raw_output
+
+    async def _execute_step_with_cache(
+        self, step: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
+        """Execute a step, returning a cached result when the semantic cache hits."""
+        if self._semantic_cache is not None and self._embedder is not None:
+            from app.providers.base import EmbedRequest
+            embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
+            embedding = embed_resp.embeddings[0] if embed_resp.embeddings else []
+            cached = self._semantic_cache.lookup(
+                query_embedding=embedding, tenant_ctx=tenant_ctx
+            )
+            if cached is not None:
+                await self._emit({"type": "cache_hit", "step": step})
+                return cached
+        return await self._execute_step(step, state, tenant_ctx)
 
     async def _node_verify(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]

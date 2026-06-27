@@ -1,0 +1,81 @@
+"""Pydantic v2 models mirroring the AgentVerse REST API schemas."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class GoalStatus(str, Enum):
+    PENDING = "pending"
+    PLANNING = "planning"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Goal(BaseModel):
+    goal_id: str
+    goal: str
+    status: GoalStatus
+    created_at: datetime
+    updated_at: datetime | None = None
+    result: str | None = None
+    error: str | None = None
+    steps_total: int = 0
+    steps_completed: int = 0
+    cost_usd: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GoalEvent(BaseModel):
+    type: str
+    goal_id: str
+    ts: datetime
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class Agent(BaseModel):
+    agent_id: str
+    name: str
+    autonomy_mode: str
+    model: str | None = None
+    created_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Connector(BaseModel):
+    server_id: str
+    name: str
+    url: str
+    status: str
+    created_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GoalSubmitRequest(BaseModel):
+    goal: str
+    priority: str = "normal"
+    dry_run: bool = False
+    agent_id: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentCreateRequest(BaseModel):
+    name: str
+    autonomy_mode: str = "supervised"
+    model: str | None = None
+    system_prompt: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorRegisterRequest(BaseModel):
+    name: str
+    url: str
+    auth_token: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)

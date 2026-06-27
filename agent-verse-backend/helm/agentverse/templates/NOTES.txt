@@ -1,0 +1,23 @@
+AgentVerse has been deployed!
+
+Backend API:
+  {{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}/api/health
+  {{- else }}
+  kubectl port-forward svc/agentverse-backend 8000:80 -n {{ .Values.global.namespace }}
+  http://localhost:8000/health
+  {{- end }}
+
+Frontend:
+  {{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}
+  {{- else }}
+  kubectl port-forward svc/agentverse-frontend 5173:80 -n {{ .Values.global.namespace }}
+  http://localhost:5173
+  {{- end }}
+
+Monitor Beat HA:
+  kubectl logs -l app=agentverse-beat -n {{ .Values.global.namespace }} | grep redbeat
+
+Scale workers:
+  kubectl scale deployment agentverse-worker --replicas=5 -n {{ .Values.global.namespace }}

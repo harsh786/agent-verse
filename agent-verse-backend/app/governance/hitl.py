@@ -52,6 +52,7 @@ class HITLGateway:
         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
         self._timeout = timeout_seconds
         self._notification_service: Any = None
+        self._db_session_factory: Any = None
 
     def request_approval(
         self,
@@ -207,4 +208,36 @@ class HITLGateway:
         except Exception as exc:
             from app.observability.logging import get_logger
             get_logger(__name__).warning("hitl_load_from_db_failed", error=str(exc))
+            return 0
+
+    async def load_pending_from_db_full(self, db: Any) -> int:
+        """Load all pending requests from DB on startup (full tenant scan).
+
+        Returns the number of requests loaded. Returns 0 immediately when db is None.
+        """
+        if db is None:
+            return 0
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.governance import ApprovalRequest as DBApprovalReq
+            async with db() as session:
+                result = await session.execute(
+                    select(DBApprovalReq).where(DBApprovalReq.status == "pending")
+                )
+                rows = result.scalars().all()
+            for row in rows:
+                req = ApprovalRequest(
+                    goal_id=row.goal_id,
+                    action=row.action or "unknown",
+                    risk_level=row.risk_level or "unknown",
+                    request_id=row.id,
+                    status=ApprovalStatus.PENDING,
+                )
+                tenant_id = getattr(row, "tenant_id", "unknown")
+                self._requests[(tenant_id, row.id)] = req
+            return len(rows)
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("hitl_load_pending_full_failed", error=str(exc))
             return 0

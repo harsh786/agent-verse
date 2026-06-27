@@ -60,10 +60,17 @@ def test_kustomization_references_all_manifests():
     resources = content.get("resources", [])
     assert len(resources) > 0
 
-    # All yaml files (except kustomization itself and dev-only secrets.yaml) should be in resources
+    # All yaml files (except kustomization itself, dev-only secrets.yaml,
+    # and blue/green alternate deployments which are opt-in, not default) should be in resources
+    _EXCLUDED = {
+        "kustomization.yaml",
+        "secrets.yaml",                       # dev-only
+        "backend-deployment-blue.yaml",       # blue/green: alternate deploy
+        "backend-deployment-green.yaml",      # blue/green: alternate deploy
+    }
     yaml_files = [
         f.name for f in K8S.glob("*.yaml")
-        if f.name not in ("kustomization.yaml", "secrets.yaml")
+        if f.name not in _EXCLUDED
     ]
     for fname in yaml_files:
         assert fname in resources, (
