@@ -93,7 +93,7 @@ describe('GoalsListPage', () => {
     });
   });
 
-  test('submits auto-selected goals with auto-route workflow mode', async () => {
+  test('submits auto-selected goals with single_agent workflow mode', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
 
@@ -141,7 +141,7 @@ describe('GoalsListPage', () => {
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
       goal: 'Preview deploy',
       dry_run: true,
-      workflow_mode: 'auto_route',
+      workflow_mode: 'single_agent',
     });
   });
 });

@@ -88,6 +88,7 @@ class GoalRecord:
     completed_at: str | None = None
     # Phase 12: rejection note from HITL operator — passed to planner for replanning
     hitl_rejection_note: str = ""
+    error_message: str = ""
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -266,6 +267,12 @@ class GoalService:
         self._event_store: Any = event_store
         self._task_queue = task_queue
         self._db_tasks: set[asyncio.Future[None]] = set()
+        # Background tasks set (used for Celery SSE bridge, etc.)
+        self._background_tasks: set[Any] = set()
+        # Agent store reference — set externally after construction (H-4)
+        self._agent_store: Any = None
+        # Logger for use in methods
+        self._logger = _svc_logger
         # Redis client for pub/sub (set by create_app lifespan when manage_pools=True)
         self._redis: Any = None
         # Eval scorecards keyed by goal_id; populated on goal completion.
@@ -328,14 +335,81 @@ class GoalService:
             except Exception as exc:
                 _svc_logger.warning("hitl_rejection_subscriber_error", error=str(exc))
                 await asyncio.sleep(5)
-
     def _track_db_task(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
         self._db_tasks.add(task)
         task.add_done_callback(self._db_tasks.discard)
 
-    # ── memory management ─────────────────────────────────────────────────────
+    # ── C-1: Celery → SSE event bridge ────────────────────────────────────────
 
+    async def _subscribe_celery_goal_events(self, redis_url: str) -> None:
+        """Bridge Celery worker goal events to in-process SSE queues.
+
+        Celery workers publish events to Redis channels:
+          goal_events:{tenant_id}:{goal_id}  -> JSON event dict
+
+        This subscriber feeds those events into the in-process GoalRecord.subscribers
+        queues so that SSE streams work correctly even when goals run on workers.
+        """
+        import json
+
+        import redis.asyncio as aioredis
+
+        while True:
+            try:
+                async with aioredis.from_url(redis_url, decode_responses=True) as r:
+                    pubsub = r.pubsub()
+                    await pubsub.psubscribe("goal_events:*")
+                    self._logger.info("celery_event_bridge_subscribed")
+
+                    async for message in pubsub.listen():
+                        if message.get("type") not in ("pmessage", "message"):
+                            continue
+                        try:
+                            data = json.loads(message.get("data", "{}"))
+                            goal_id = data.get("goal_id", "")
+                            tenant_id = data.get("tenant_id", "")
+                            event_type = data.get("type", "")
+                            payload = data.get("payload", {})
+
+                            if goal_id and goal_id in self._goals:
+                                record = self._goals[goal_id]
+                                # Feed into SSE subscriber queues
+                                event = {
+                                    "type": event_type,
+                                    "payload": payload,
+                                    "goal_id": goal_id,
+                                    "tenant_id": tenant_id,
+                                }
+                                dead = []
+                                for q in list(record.subscribers):
+                                    try:
+                                        q.put_nowait(event)
+                                    except Exception:
+                                        dead.append(q)
+                                for q in dead:
+                                    try:
+                                        record.subscribers.remove(q)
+                                    except Exception:
+                                        pass
+                        except Exception as exc:
+                            self._logger.warning(
+                                "celery_event_bridge_parse_failed", error=str(exc)
+                            )
+            except Exception as exc:
+                self._logger.warning("celery_event_bridge_error", error=str(exc))
+                await asyncio.sleep(5)
+
+    def start_celery_event_bridge(self, redis_url: str) -> None:
+        """Start the Celery→SSE event bridge as a background asyncio task."""
+        task = asyncio.create_task(
+            self._subscribe_celery_goal_events(redis_url),
+            name="celery_goal_event_bridge",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    # ── memory management ─────────────────────────────────────────────────────
     def _evict_stale_goals(self) -> int:
         """Remove terminal goals older than TTL from the in-memory cache.
 
@@ -448,7 +522,7 @@ class GoalService:
                 else:
                     # No task queue — mark as failed so callers know to resubmit
                     record.status = GoalStatus.FAILED
-                    record.error_message = (  # type: ignore[attr-defined]
+                    record.error_message = (
                         "Goal interrupted by process restart. Please resubmit."
                     )
         return recovered
@@ -480,7 +554,7 @@ class GoalService:
             return {}
 
     def _make_agent_loop_for_tenant(
-        self, tenant_ctx: TenantContext, app_state: Any
+        self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
     ) -> Any:
         """Build an AgentGraph using the tenant's configured LLM provider AND all
         governance/RAG/memory services from app.state.
@@ -578,8 +652,23 @@ class GoalService:
         _model_router = getattr(app_state, "model_router", None) if app_state else None
         _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
         _bulkhead_registry = getattr(app_state, "bulkhead_registry", None) if app_state else None
-        # Agent-level feature flags — read from agent config when available
+        # Execution memory (H-3: wire from app.state instead of leaving None)
+        exec_memory = getattr(app_state, "exec_memory", None) if app_state else None
+        # Agent-level feature flags — read from agent config when available (H-4)
         _agent_config: dict[str, Any] = {}
+        _system_prompt: str = ""
+        if agent_id:
+            _agent_store_ref = self._get_agent_store()
+            if _agent_store_ref is not None:
+                try:
+                    _agent_record = _agent_store_ref.get(agent_id, tenant_ctx=tenant_ctx)
+                    if isinstance(_agent_record, dict):
+                        _agent_config = _agent_record
+                        _system_prompt = _agent_record.get("system_prompt", "")
+                except Exception as _ae:
+                    _svc_logger.warning(
+                        "agent_config_load_failed", agent_id=agent_id, error=str(_ae)
+                    )
 
         graph = AgentGraph(
             planner=provider,
@@ -597,13 +686,15 @@ class GoalService:
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             policy_engine=policy_engine,
+            # Execution memory (H-3)
+            exec_memory=exec_memory,
             # RAG / intelligence services
             embedder=_embedder,
             semantic_cache=_semantic_cache,
             model_router=_model_router,
             # Distributed per-tenant concurrency bulkhead
             bulkhead_registry=_bulkhead_registry,
-            # Agent feature flags
+            # Agent feature flags (H-4: loaded from agent record when available)
             enable_cot=_agent_config.get("enable_cot", False),
             enable_reflection=_agent_config.get("enable_reflection", False),
             enable_goal_tree=_agent_config.get("enable_goal_tree", False),
@@ -613,6 +704,8 @@ class GoalService:
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
+        # Store agent system prompt so callers can inject it into initial_context
+        graph._agent_system_prompt = _system_prompt
         graph._prompt_optimizer = _prompt_optimizer
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)
@@ -630,6 +723,9 @@ class GoalService:
 
     def _get_agent_store(self) -> Any:
         """Return the configured agent store when the application wired one."""
+        # Check directly wired store first (H-4: set by main.py lifespan)
+        if self._agent_store is not None:
+            return self._agent_store
         if self._app_state is None:
             return None
         store = getattr(self._app_state, "agent_store", None)
@@ -1097,8 +1193,12 @@ class GoalService:
         with _tracer.start_as_current_span("goal.execute") as span:
             span.set_attribute("goal_id", goal_id)
 
-            loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
             record = self._goals.get(goal_id)
+            loop = self._make_agent_loop_for_tenant(
+                tenant_ctx,
+                self._app_state,
+                agent_id=record.agent_id if record is not None else None,
+            )
             # Store graph instance on record so HITL resume can re-invoke from checkpoint
             if record is not None:
                 record._graph_instance = loop
@@ -1132,6 +1232,10 @@ class GoalService:
             if tool_context is not None:
                 initial_context["tool_prompt"] = tool_context.to_prompt_block()
                 initial_context["tool_context"] = tool_context
+            # Inject agent system prompt when loaded from agent record (H-4)
+            _agent_system_prompt = getattr(loop, "_agent_system_prompt", "")
+            if _agent_system_prompt:
+                initial_context["system_prompt"] = _agent_system_prompt
 
             async def callback(event: dict[str, Any]) -> None:
                 await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)

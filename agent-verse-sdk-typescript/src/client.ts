@@ -80,17 +80,56 @@ export class AgentVerseClient {
 
   async waitForGoal(
     goalId: string,
-    { timeout = 300, pollInterval = 2 }: { timeout?: number; pollInterval?: number } = {},
+    options?: { timeout?: number; pollInterval?: number },
   ): Promise<Goal> {
+    const timeout = options?.timeout ?? 300;
+
+    // Try SSE streaming first (more efficient)
+    try {
+      let finalGoal: Goal | null = null;
+      const deadline = Date.now() + timeout * 1000;
+
+      for await (const event of this.streamGoal(goalId)) {
+        if (Date.now() > deadline) break;
+
+        const eventType = (event as any).type ?? '';
+        if (eventType === 'goal_complete' || eventType === 'goal_finished') {
+          finalGoal = await this.getGoal(goalId);
+          return finalGoal;
+        }
+        if (eventType === 'goal_failed' || eventType === 'goal_error') {
+          finalGoal = await this.getGoal(goalId);
+          const reason = (event.payload as any)?.reason ?? 'Goal failed';
+          throw new GoalFailedError(goalId, `Goal ${goalId} failed: ${reason}`);
+        }
+      }
+
+      return await this.getGoal(goalId);
+    } catch (err) {
+      // SSE failed or timed out — fall back to polling
+      if (err instanceof GoalFailedError) {
+        throw err;  // Re-throw actual goal failures
+      }
+      if (err instanceof GoalTimeoutError) {
+        throw err;
+      }
+    }
+
+    // Polling fallback
+    const pollInterval = options?.pollInterval ?? 2000;
     const deadline = Date.now() + timeout * 1000;
     while (Date.now() < deadline) {
       const goal = await this.getGoal(goalId);
-      if (goal.status === 'complete') return goal;
-      if (goal.status === 'failed' || goal.status === 'cancelled') {
-        throw new GoalFailedError(goalId, `Goal ${goal.status}`);
+      const status = goal.status ?? '';
+      if (['complete', 'completed', 'failed', 'error', 'cancelled'].includes(status)) {
+        if (status === 'failed' || status === 'error') {
+          throw new GoalFailedError(goalId, `Goal ${goalId} failed: ${(goal as any).error_message ?? 'unknown error'}`);
+        }
+        return goal;
       }
-      await new Promise(r => setTimeout(r, pollInterval * 1000));
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
+
     throw new GoalTimeoutError(goalId, timeout);
   }
 

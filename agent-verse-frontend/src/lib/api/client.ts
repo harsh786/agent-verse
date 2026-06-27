@@ -124,10 +124,7 @@ export const goalsApi = {
     request<GoalResponse>(`/goals/${id}/resume`, { method: "POST" }),
   // Returns the persisted event log for a goal (non-streaming DB records).
   // For real-time streaming use the useGoalStream hook (EventSource).
-  getEventLog: async (id: string): Promise<GoalEvent[]> => {
-    const goal = await request<GoalResponse & { events?: GoalEvent[] }>(`/goals/${id}`);
-    return goal?.events ?? [];
-  },
+  getEventLog: (id: string) => request<GoalEvent[]>(`/goals/${id}/events`),
   getEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`),
 };

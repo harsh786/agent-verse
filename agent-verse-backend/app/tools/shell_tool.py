@@ -8,6 +8,7 @@ Docker image: python:3.12-slim (same as backend). Network disabled.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shlex
 from dataclasses import dataclass
@@ -21,6 +22,31 @@ _ALLOWED_COMMANDS = frozenset({
     "head", "tail", "find", "date", "env", "pwd", "which", "python3",
     "node", "git", "npm", "pip", "curl",  # extend as needed
 })
+
+_MAX_OUTPUT = 64 * 1024  # 64KB
+
+# Allowed safe base directories for working_dir validation
+_SAFE_ROOTS = ["/tmp", "/workspace", "/sandbox"]
+
+
+def _validate_working_dir(working_dir: str) -> str:
+    """Validate working_dir is safe. Returns normalized path or /tmp fallback."""
+    if not working_dir:
+        return "/tmp"
+
+    try:
+        normalized = os.path.normpath(working_dir)
+        for safe_root in _SAFE_ROOTS:
+            if normalized == safe_root or normalized.startswith(safe_root + os.sep):
+                return normalized
+    except Exception:
+        pass
+
+    logging.getLogger(__name__).warning(
+        "shell_tool_unsafe_working_dir_rejected: requested=%s fallback=/tmp",
+        working_dir,
+    )
+    return "/tmp"
 
 _MAX_OUTPUT = 64 * 1024  # 64KB
 
@@ -58,6 +84,9 @@ class ShellTool:
                 )
             }
 
+        # Validate working_dir to prevent path traversal
+        working_dir = _validate_working_dir(working_dir)
+
         # Validate first token against allowlist
         tokens = shlex.split(command)
         if not tokens:
@@ -70,7 +99,7 @@ class ShellTool:
         try:
             import docker  # type: ignore[import]
             client = docker.from_env()
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: client.containers.run(
                     self._docker_image,

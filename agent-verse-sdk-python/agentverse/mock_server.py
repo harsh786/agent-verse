@@ -55,8 +55,22 @@ class MockServer:
                 "status": "complete" if body.get("dry_run") else "executing",
                 "plan": {"steps": [f"Step 1: {body.get('goal', '')[:50]}"]},
                 "created_at": datetime.now(UTC).isoformat(),
+                "result": "",
             }
             self._goals[goal_id] = goal
+
+            # Auto-complete after 0.5s for testing (non-dry-run goals)
+            if not body.get("dry_run"):
+                async def _auto_complete() -> None:
+                    await asyncio.sleep(0.5)
+                    if goal_id in self._goals:
+                        self._goals[goal_id]["status"] = "complete"
+                        self._goals[goal_id]["result"] = (
+                            f"Mock: {body.get('goal', '')} completed successfully"
+                        )
+
+                asyncio.create_task(_auto_complete())
+
             return goal
 
         @app.get("/goals/{goal_id}")
