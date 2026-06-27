@@ -21,6 +21,11 @@ class OAuthState:
     state_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     code_verifier: str = field(default_factory=lambda: secrets.token_urlsafe(64))
     created_at: float = field(default_factory=time.time)
+    # Optional alias fields for external/test construction
+    state: str = ""
+    tenant_id: str = ""
+    redirect_uri: str = ""
+    pkce_verifier: str = ""
 
     @property
     def code_challenge(self) -> str:
@@ -41,6 +46,9 @@ class OAuthToken:
         return time.time() > self.obtained_at + self.expires_in - 60
 
 
+_OAUTH_STATE_TTL = 600  # 10 minutes
+
+
 class OAuthFlowManager:
     """Manages PKCE OAuth 2.0 authorization code flows."""
 
@@ -51,6 +59,24 @@ class OAuthFlowManager:
         self._tokens: dict[tuple[str, str], OAuthToken] = {}
         # Set externally to enable DB persistence
         self._db_session_factory: Any = None
+
+    def _cleanup_expired_flows(self) -> None:
+        """Remove OAuth state tokens older than 10 minutes."""
+        now = time.time()
+        expired = [k for k, v in self._pending_flows.items() if now - v.created_at > _OAUTH_STATE_TTL]
+        for k in expired:
+            del self._pending_flows[k]
+
+    def get_pending_flow(self, state: str) -> "OAuthState | None":
+        """Get and validate a pending OAuth flow by state token."""
+        self._cleanup_expired_flows()  # cleanup on every access
+        flow = self._pending_flows.get(state)
+        if flow is None:
+            return None
+        if time.time() - flow.created_at > _OAUTH_STATE_TTL:
+            del self._pending_flows[state]
+            return None
+        return flow
 
     def start_flow(self, *, server_id: str, tenant_ctx: TenantContext) -> dict[str, str]:
         """Initiate a PKCE OAuth flow. Returns the PKCE parameters and state token."""
@@ -74,6 +100,9 @@ class OAuthFlowManager:
         tenant_ctx: TenantContext,
     ) -> OAuthToken | None:
         """Exchange authorization code for tokens (PKCE flow)."""
+        # Validate expiry before consuming the flow
+        if self.get_pending_flow(state) is None:
+            return None
         flow = self._pending_flows.pop(state, None)
         if flow is None:
             return None

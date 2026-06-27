@@ -65,7 +65,7 @@ _FILE_EXTENSIONS: dict[str, str] = {
     "bash": "sh",
 }
 
-# Docker is optional — detected at runtime
+# Docker is optional -- detected at runtime
 _DOCKER_AVAILABLE = False
 try:
     import docker as _docker_module
@@ -82,8 +82,8 @@ class CodeInterpreter:
     the container immediately after completion. Containers have no network access
     and no persistent filesystem.
 
-    Falls back to subprocess execution (unsandboxed) when Docker is unavailable —
-    suitable for CI/testing environments.
+    Falls back to subprocess execution (unsandboxed) when Docker is unavailable.
+    Subprocess requires AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true (blocked by default).
     """
 
     def __init__(
@@ -132,28 +132,45 @@ class CodeInterpreter:
         language: str,
         timeout: int | None,
     ) -> CodeResult:
-        """Execute code in Docker container with strict isolation."""
+        """Execute code in Docker container with strict isolation.
+
+        Writes code to a host temp file, then mounts it read-only into the
+        container using volumes= (the correct docker-py API).
+        """
         import time
 
         import docker
 
         effective_timeout = timeout if timeout is not None else self._timeout
         image = _DOCKER_IMAGES[language]
-        command = _LANGUAGE_COMMANDS[language]
         ext = _FILE_EXTENSIONS[language]
-        filename = f"code.{ext}"
+        suffix = f".{ext}"
+
+        container_path = f"/sandbox/code{suffix}"
+        cmd = {
+            "python": ["python3", container_path],
+            "javascript": ["node", container_path],
+            "bash": ["sh", container_path],
+        }.get(language, ["python3", container_path])
 
         t0 = time.monotonic()
+
+        # Write code to a host-side temp file; volume-mount it read-only.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=suffix, delete=False
+        ) as f:
+            f.write(code)
+            tmp_path = f.name
 
         try:
             client = docker.from_env()
 
-            # Run container with isolation constraints
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: client.containers.run(
                     image,
-                    command=command,
+                    command=cmd,
+                    volumes={tmp_path: {"bind": container_path, "mode": "ro"}},
                     remove=True,
                     network_mode="none",
                     mem_limit=self._memory_limit,
@@ -162,7 +179,6 @@ class CodeInterpreter:
                     tmpfs={"/tmp": "size=64m,noexec=off"},
                     user="1000:1000",
                     environment={"PYTHONDONTWRITEBYTECODE": "1"},
-                    files={f"/tmp/{filename}": code.encode()},
                     stdout=True,
                     stderr=True,
                     timeout=effective_timeout,
@@ -198,6 +214,11 @@ class CodeInterpreter:
                 timed_out=timed_out,
                 execution_time_ms=elapsed,
             )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
     async def _execute_subprocess_fallback(
         self,
@@ -208,8 +229,21 @@ class CodeInterpreter:
         """Fallback subprocess execution when Docker unavailable (testing only).
 
         WARNING: This is NOT sandboxed. Only use in tests.
+        Requires AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true -- blocked by default.
         """
         import time
+
+        if os.getenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "false").lower() != "true":
+            return CodeResult(
+                stdout="",
+                stderr=(
+                    "Subprocess execution is disabled. "
+                    "Set AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true to enable "
+                    "(testing/development only -- not sandboxed)."
+                ),
+                exit_code=1,
+                timed_out=False,
+            )
 
         effective_timeout = timeout if timeout is not None else self._timeout
         ext = _FILE_EXTENSIONS[language]

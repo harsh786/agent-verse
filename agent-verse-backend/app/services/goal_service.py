@@ -755,6 +755,9 @@ class GoalService:
 
             loop = self._make_agent_loop_for_tenant(tenant_ctx, self._app_state)
             record = self._goals.get(goal_id)
+            # Store graph instance on record so HITL resume can re-invoke from checkpoint
+            if record is not None:
+                record._graph_instance = loop
             # Detect FakeProvider so get_goal() can surface a warning to callers
             if hasattr(loop, '_planner') and type(loop._planner).__name__ == 'FakeProvider':
                 if record is not None:
@@ -1148,13 +1151,83 @@ class GoalService:
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": "paused"}
 
-    async def resume_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """Resume a paused goal."""
+    async def resume_goal(
+        self,
+        goal_id: str,
+        tenant_ctx: TenantContext,
+        *,
+        approved: bool = True,
+        feedback: str = "",
+    ) -> dict[str, Any]:
+        """Resume a paused goal.
+
+        When *approved* is False the goal is immediately failed with the
+        rejection feedback.  When True the goal is resumed — either by
+        re-invoking the stored AgentGraph from its LangGraph checkpoint, or by
+        firing the legacy asyncio pause-event (backward-compatible fallback).
+        """
         record = self._get_record(goal_id, tenant_ctx)
-        event = _GOAL_PAUSE_EVENTS.pop(goal_id, None)
-        if event:
-            event.set()
+        if record.status in _TERMINAL_STATUSES:
+            raise ValueError(
+                f"Goal {goal_id} is already terminal (status: {record.status.value})"
+            )
+
+        if not approved:
+            record.status = GoalStatus.FAILED
+            record.execution_context["hitl_rejected"] = True
+            record.execution_context["hitl_feedback"] = feedback
+            await self._dispatch_event(
+                goal_id,
+                {"type": "goal_failed", "reason": f"HITL rejected: {feedback}"},
+                tenant_ctx=tenant_ctx,
+            )
+            return {"goal_id": goal_id, "status": "rejected"}
+
+        # Store approval decision so the graph can read it on resume
+        record.execution_context["hitl_approved"] = True
+        record.execution_context["hitl_feedback"] = feedback
+
+        # Attempt LangGraph checkpoint re-invocation when a graph instance is stored
+        graph = getattr(record, "_graph_instance", None)
+        if graph is not None:
+            config = {"configurable": {"thread_id": goal_id}}
+            try:
+                import asyncio as _asyncio
+
+                async def _resume_graph() -> None:
+                    resume_input = {
+                        "hitl_decision": "approved",
+                        "hitl_feedback": feedback,
+                    }
+                    try:
+                        async for _ in graph._graph.astream(resume_input, config=config):
+                            pass
+                    except Exception as _inner_exc:
+                        _svc_logger.warning(
+                            "hitl_checkpoint_resume_task_failed", error=str(_inner_exc)
+                        )
+                        # Fallback: fire asyncio pause event
+                        evt = _GOAL_PAUSE_EVENTS.pop(goal_id, None)
+                        if evt is not None:
+                            evt.set()
+
+                _asyncio.create_task(_resume_graph())
+                record.status = GoalStatus.EXECUTING
+                await self._dispatch_event(
+                    goal_id, {"type": "goal_resumed", "method": "checkpoint"}, tenant_ctx=tenant_ctx
+                )
+                return {"goal_id": goal_id, "status": "resumed"}
+            except Exception as exc:
+                _svc_logger.warning("hitl_checkpoint_resume_failed", error=str(exc))
+
+        # Fallback: fire any waiting asyncio pause-event (legacy path)
         record.status = GoalStatus.EXECUTING
+        record.events.append(
+            {"type": "hitl_approved", "feedback": feedback, "ts": datetime.now(UTC).isoformat()}
+        )
+        evt = _GOAL_PAUSE_EVENTS.pop(goal_id, None)
+        if evt is not None:
+            evt.set()
         await self._dispatch_event(goal_id, {"type": "goal_resumed"}, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": "resumed"}
 

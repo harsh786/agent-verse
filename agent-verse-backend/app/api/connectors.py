@@ -208,7 +208,7 @@ async def _persist_connector_secrets(
 
 
 def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
-    data = cfg.model_dump()
+    data = cfg.model_dump(exclude={"server_id"})
     data["auth_config"] = _mask_auth_config(dict(cfg.auth_config))
     return {"server_id": server_id, **data}
 
@@ -279,6 +279,7 @@ async def register_connector(
 
     def _config_for(server_id: str) -> MCPServerConfig:
         return MCPServerConfig(
+            server_id=server_id,  # preserve the registry-generated ID
             name=body.name,
             url=body.url,
             auth_type=body.auth_type,

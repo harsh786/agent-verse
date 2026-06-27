@@ -11,6 +11,13 @@ interface WorkflowNode {
   tool?: string;
   args?: string;
   condition?: string;
+  position?: { x: number; y: number };
+}
+
+interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
 }
 
 function NodeCard({ node, onDelete, onEdit }: {
@@ -59,6 +66,7 @@ export function WorkflowBuilderPage() {
     { id: 'start', type: 'start', label: 'Start' },
     { id: 'end', type: 'end', label: 'End' },
   ]);
+  const [edges, setEdges] = useState<WorkflowEdge[]>([]);
   const [goalInput, setGoalInput] = useState('');
   const [generating, setGenerating] = useState(false);
   const [running, setRunning] = useState(false);
@@ -84,19 +92,83 @@ export function WorkflowBuilderPage() {
   const generateFromGoal = async () => {
     if (!goalInput.trim()) return;
     setGenerating(true);
+
     try {
+      // Submit as dry_run to get the plan without executing
       const res = await fetch(`${API_BASE}/goals`, {
         method: 'POST',
-        headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal: goalInput, dry_run: true }),
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ goal: goalInput, dry_run: true, autonomy_mode: 'bounded-autonomous' }),
       });
-      if (res.ok) {
-        setNodes([
-          { id: 'start', type: 'start', label: 'Start' },
-          { id: 'step_1', type: 'step', label: goalInput.slice(0, 60), tool: '' },
-          { id: 'end', type: 'end', label: 'End' },
-        ]);
+
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+
+      // Convert the returned plan steps into workflow nodes
+      const steps: string[] = data.plan?.steps || data.structured_plan?.steps || [];
+
+      if (steps.length > 0) {
+        // Build nodes from actual plan
+        const newNodes: WorkflowNode[] = [
+          { id: 'start', type: 'start', label: 'Start', position: { x: 250, y: 50 } },
+          ...steps.slice(0, 20).map((step: string, i: number) => ({
+            id: `step_${i + 1}`,
+            type: 'step' as const,
+            label: step.length > 80 ? step.slice(0, 77) + '...' : step,
+            tool: '',
+            position: { x: 250, y: 150 + i * 100 },
+          })),
+          { id: 'end', type: 'end', label: 'End', position: { x: 250, y: 150 + steps.length * 100 } },
+        ];
+
+        // Build edges: linear flow
+        const newEdges: WorkflowEdge[] = newNodes.slice(0, -1).map((node, i) => ({
+          id: `e_${i}`,
+          source: node.id,
+          target: newNodes[i + 1].id,
+        }));
+
+        setNodes(newNodes);
+        setEdges(newEdges);
+      } else {
+        // Fallback: poll for plan (goal may be async)
+        const goalId = data.goal_id;
+        if (goalId) {
+          // Wait briefly then check events for plan
+          await new Promise(r => setTimeout(r, 2000));
+          const evtRes = await fetch(`${API_BASE}/goals/${goalId}/events`, {
+            headers: { 'X-API-Key': apiKey },
+          });
+          if (evtRes.ok) {
+            const events = await evtRes.json();
+            const planEvt = events.find((e: { type: string; payload?: { steps?: string[] } }) =>
+              e.type === 'plan_created' || e.type === 'step_planned'
+            );
+            const planSteps: string[] = planEvt?.payload?.steps || [];
+            setNodes([
+              { id: 'start', type: 'start', label: 'Start' },
+              ...(planSteps.length > 0
+                ? planSteps.map((s: string, i: number) => ({
+                    id: `step_${i}`,
+                    type: 'step' as const,
+                    label: s.slice(0, 60),
+                    tool: '',
+                  }))
+                : [{ id: 'step_1', type: 'step' as const, label: goalInput.slice(0, 60), tool: '' }]
+              ),
+              { id: 'end', type: 'end', label: 'End' },
+            ]);
+          }
+        }
       }
+    } catch (err) {
+      console.error('Workflow generation failed:', err);
+      // Minimal fallback on complete failure
+      setNodes([
+        { id: 'start', type: 'start', label: 'Start' },
+        { id: 'step_1', type: 'step', label: goalInput.slice(0, 60), tool: '' },
+        { id: 'end', type: 'end', label: 'End' },
+      ]);
     } finally {
       setGenerating(false);
     }
@@ -132,6 +204,7 @@ export function WorkflowBuilderPage() {
       steps: nodes.filter(n => n.type === 'step').map(n => ({
         id: n.id, description: n.label, tool: n.tool,
       })),
+      edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target })),
     };
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');

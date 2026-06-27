@@ -1,0 +1,16 @@
+use_default_settings: true
+general:
+  debug: false
+  instance_name: "AgentVerse Search"
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+server:
+  secret_key: "agentverse-searxng-secret"
+  base_url: "http://localhost:8081/"
+  port: 8080
+  bind_address: "0.0.0.0"
+ui:
+  static_use_hash: true

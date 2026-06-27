@@ -16,12 +16,17 @@ from app.tenancy.context import TenantContext
 class OptimizationSuggestion:
     suggestion_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     category: str = ""  # "prompt" | "tool_selection" | "retry_strategy" | "context_size"
+    # change_type drives the actual mutation in apply_suggestion():
+    #   "improve_planner_prompt" | "improve_executor_prompt" | "add_domain_context"
+    #   | "increase_iterations" | "add_tool_access"
+    change_type: str = ""
     description: str = ""
     before: str = ""
     after: str = ""
     confidence: float = 0.0
     applied: bool = False
     rejected: bool = False
+    tenant_id: str = ""
 
 
 class SelfOptimizer:
@@ -111,20 +116,76 @@ class SelfOptimizer:
         tenant_ctx: TenantContext,
         agent_config: dict | None = None,
     ) -> bool:
-        """Apply a suggestion, optionally recording the agent config change."""
-        for s in self._suggestions.get(tenant_ctx.tenant_id, []):
-            if s.suggestion_id == suggestion_id:
-                if s.rejected:
-                    return False
-                s.applied = True
-                self._applied_changes.setdefault(tenant_ctx.tenant_id, []).append({
-                    "suggestion_id": suggestion_id,
-                    "category": s.category,
-                    "description": s.description,
-                    "applied_config": s.after if agent_config is None else str(agent_config),
-                })
-                return True
-        return False
+        """Apply a suggestion, mutating agent_config where applicable."""
+        suggestions = self._suggestions.get(tenant_ctx.tenant_id, [])
+        suggestion = next(
+            (s for s in suggestions if s.suggestion_id == suggestion_id), None
+        )
+        if suggestion is None or suggestion.rejected:
+            return False
+
+        suggestion.applied = True
+
+        # Actually apply the change based on change_type
+        change_type = suggestion.change_type
+
+        # 1. Prompt improvement — append to agent's goal_template and register A/B variant
+        if change_type in (
+            "improve_planner_prompt",
+            "improve_executor_prompt",
+            "add_domain_context",
+        ):
+            if agent_config is not None and "goal_template" in agent_config:
+                existing = agent_config.get("goal_template", "")
+                if suggestion.after and suggestion.after not in existing:
+                    agent_config["goal_template"] = existing + f"\n\n{suggestion.after}"
+
+            # Register as a prompt variant for A/B testing
+            try:
+                from app.intelligence.prompt_optimizer import PromptVariant
+                from app.intelligence import prompt_optimizer as _po
+
+                variant = PromptVariant(
+                    variant_id=suggestion.suggestion_id,
+                    name=f"opt_{suggestion.suggestion_id[:8]}",
+                    prompt_text=suggestion.after or "",
+                    prompt_key=(
+                        "planner" if "planner" in change_type else "executor"
+                    ),
+                )
+                _po._VARIANTS[variant.variant_id] = variant
+            except Exception:
+                pass
+
+        # 2. Increase max_iterations
+        elif change_type == "increase_iterations":
+            if agent_config is not None:
+                try:
+                    agent_config["max_iterations"] = int(suggestion.after or "5")
+                except ValueError:
+                    agent_config["max_iterations"] = 5
+
+        # 3. Add tool access — append connector_id
+        elif change_type == "add_tool_access":
+            if agent_config is not None:
+                tool_name = suggestion.after or ""
+                existing_connectors = list(agent_config.get("connector_ids", []))
+                if tool_name and tool_name not in existing_connectors:
+                    agent_config["connector_ids"] = existing_connectors + [tool_name]
+
+        # Track the applied change
+        import datetime as _dt
+
+        self._applied_changes.setdefault(tenant_ctx.tenant_id, []).append({
+            "suggestion_id": suggestion_id,
+            "change_type": change_type,
+            "before": suggestion.before,
+            "after": suggestion.after,
+            "applied_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "agent_config_mutated": agent_config is not None,
+        })
+
+        return True
 
     def get_applied_changes(self, *, tenant_ctx: TenantContext) -> list[dict]:
         """Return list of applied configuration changes for this tenant."""

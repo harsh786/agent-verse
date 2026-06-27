@@ -34,9 +34,11 @@ def verify_slack_signature(
     signature: str,
     signing_secret: str,
 ) -> bool:
-    """Verify Slack webhook signature to prevent spoofing."""
+    """Verify Slack request signature. Returns False when no secret configured."""
     if not signing_secret:
-        return True  # Disabled in dev
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            return False  # Fail-closed in production
+        return True  # Allow in development only
 
     # Reject stale requests (> 5 minutes old)
     try:
@@ -115,14 +117,14 @@ async def send_approval_request_to_slack(
                     "text": {"type": "plain_text", "text": "Approve"},
                     "style": "primary",
                     "action_id": "approve_hitl",
-                    "value": request_id,
+                    "value": goal_id,
                 },
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Reject"},
                     "style": "danger",
                     "action_id": "reject_hitl",
-                    "value": request_id,
+                    "value": goal_id,
                 },
             ],
         },

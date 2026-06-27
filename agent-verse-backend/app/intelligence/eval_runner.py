@@ -51,7 +51,7 @@ class EvalRunner:
         ]
         safety = max(0.0, 1.0 - (len(deny_events) * 0.25))
 
-        # 5. coherence — are steps logically related to the goal?
+        # 5. coherence — heuristic placeholder (replaced by LLM scoring in score_async)
         coherence = 1.0 if state.steps else 0.5
 
         # 6. sla — did the goal complete within SLA budget?
@@ -76,6 +76,46 @@ class EvalRunner:
             goal=state.goal,
             iterations=state.iterations,
         )
+
+    async def _score_coherence(self, goal: str, steps: list, provider: Any) -> float:
+        """Use LLM to rate how logically coherent the steps are relative to the goal.
+
+        Returns a float in [0.0, 1.0].  Conservative default 0.7 on any error.
+        """
+        if not steps or provider is None:
+            return 0.5
+        try:
+            step_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps[:10]))
+            prompt = (
+                f"Goal: {goal}\n\nSteps taken:\n{step_text}\n\n"
+                "Rate how logically coherent and relevant the steps are to achieving the goal. "
+                "Score 0.0 (completely irrelevant) to 1.0 (perfectly coherent). "
+                "Reply with ONLY a decimal number."
+            )
+            from app.providers.base import CompletionRequest, Message
+            resp = await provider.complete(CompletionRequest(
+                messages=[Message(role="user", content=prompt)],
+                model="",
+                max_tokens=10,
+            ))
+            return min(1.0, max(0.0, float(resp.content.strip())))
+        except Exception:
+            return 0.7  # conservative default on failure
+
+    async def score_async(
+        self,
+        *,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        provider: Any = None,
+    ) -> EvalScorecard:
+        """Score asynchronously, replacing heuristic coherence with LLM-based scoring."""
+        scorecard = self.score(state=state, tenant_ctx=tenant_ctx)
+        # Replace heuristic coherence with real LLM-based coherence check (Task 5)
+        step_descriptions = [s.description for s in state.steps if s.description]
+        coherence = await self._score_coherence(state.goal, step_descriptions, provider)
+        scorecard.scores["coherence"] = coherence
+        return scorecard
 
     async def score_and_persist(
         self,

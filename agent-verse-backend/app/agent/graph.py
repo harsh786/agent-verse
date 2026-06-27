@@ -54,7 +54,7 @@ from app.observability.metrics import (
     track_tool_call,
 )
 from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message
+from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
@@ -175,6 +175,8 @@ class AgentGraph:
         self._tracer = _otel_trace.get_tracer(__name__)
         self._db_session_factory: Any = None  # Set by main.py after construction
         self._rpa_executor: Any = None  # Set externally to dispatch RPA tool calls directly
+        self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
+        self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -294,10 +296,13 @@ class AgentGraph:
             except Exception:
                 pass
 
-        # 2. Long-term memory
+        # 2. Long-term memory — async pgvector recall when embedder available (Task 4)
         if self._long_term_memory is not None:
-            ltm = self._long_term_memory.recall(
-                query=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+            ltm = await self._long_term_memory.recall_async(
+                query=agent_state.goal,
+                tenant_ctx=tenant_ctx,
+                top_k=3,
+                embedder=self._embedder,
             )
             if ltm:
                 ltm_text = "\n".join(f"- {m.content}" for m in ltm)
@@ -381,9 +386,17 @@ class AgentGraph:
             user_content += "\n\n" + "\n\n".join(extra_parts)
 
         # Determine system content — prepend agent system_prompt if present
+        # Use PromptOptimizer variant when wired (Task 7)
+        from app.intelligence.prompt_optimizer import PromptOptimizer as _PromptOptimizer
+        _plan_optimizer = getattr(self, "_prompt_optimizer", None)
+        if _plan_optimizer is not None:
+            _plan_variant = _plan_optimizer.select_variant("planner")
+            _planner_prompt = _plan_variant.prompt_text if _plan_variant is not None else PLANNER_SYSTEM
+        else:
+            _planner_prompt = PLANNER_SYSTEM
         agent_system_prompt = agent_state.context.get("system_prompt", "")
         system_content = (
-            f"{agent_system_prompt}\n\n{PLANNER_SYSTEM}" if agent_system_prompt else PLANNER_SYSTEM
+            f"{agent_system_prompt}\n\n{_planner_prompt}" if agent_system_prompt else _planner_prompt
         )
 
         # Determine planning model via model_router if wired
@@ -599,7 +612,7 @@ class AgentGraph:
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
         """12-step per-step pipeline mirroring AgentLoop._execute."""
-        tool_name = _extract_tool_name(step)
+        tool_name = self._extract_tool_name(step)
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
 
@@ -612,12 +625,24 @@ class AgentGraph:
                 return "Duplicate step, returning cached result."
             self._dedup_cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
 
-        # 3b. Smart context fetch (per-step RAG)
+        # 3b. Generate step embedding for semantic RAG retrieval (Task 2)
+        step_embedding: list[float] | None = None
+        if self._embedder is not None:
+            try:
+                from app.providers.base import EmbedRequest
+                _embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
+                if _embed_resp.embeddings:
+                    step_embedding = _embed_resp.embeddings[0]
+            except Exception:
+                pass  # embedder unavailable — RAG still works via keyword fallback
+
+        # 3c. Smart context fetch (per-step RAG)
         step_context = await smart_context_fetch(
             goal=state.goal,
             step=step,
             tenant_ctx=tenant_ctx,
             knowledge_store=self._knowledge_store,
+            query_embedding=step_embedding,
         )
 
         # 4. Circuit breaker
@@ -720,12 +745,37 @@ class AgentGraph:
         content = f"Step: {step}"
         if context_parts:
             content += "\n\n" + "\n\n".join(context_parts)
+
+        # Collect available tools for structured tool calling (Task 1)
+        _tool_defs: list[ToolDefinition] = []
+        _tc_ctx = state.context.get("tool_context")
+        if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
+            for _t in _tc_ctx.tools:
+                _tool_defs.append(ToolDefinition(
+                    name=(
+                        f"{_t.server_name}.{_t.name}"
+                        if hasattr(_t, "server_name")
+                        else _t.name
+                    ),
+                    description=getattr(_t, "description", ""),
+                    input_schema=getattr(_t, "input_schema", {}),
+                ))
+
+        # Select executor system prompt via PromptOptimizer if wired (Task 7)
+        _executor_prompt = EXECUTOR_SYSTEM
+        _exec_optimizer = getattr(self, "_prompt_optimizer", None)
+        if _exec_optimizer is not None:
+            _exec_variant = _exec_optimizer.select_variant("executor")
+            if _exec_variant is not None:
+                _executor_prompt = _exec_variant.prompt_text
+
         req = CompletionRequest(
             messages=[
-                Message(role="system", content=EXECUTOR_SYSTEM),
+                Message(role="system", content=_executor_prompt),
                 Message(role="user", content=content),
             ],
             model="claude-opus-4-8",
+            tools=_tool_defs,
         )
         try:
             async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
@@ -758,7 +808,22 @@ class AgentGraph:
         raw_output = resp.content
         raw_output_sanitized = False
 
-        tool_call = extract_tool_call(raw_output)
+        # Prefer structured tool_calls from provider; fall back to text parsing (Task 1)
+        _structured_tcs: list[dict[str, Any]] = resp.tool_calls if resp.tool_calls else []
+        if _structured_tcs:
+            _first_stc = _structured_tcs[0]
+            _stc_name = _first_stc.get("name") or _first_stc.get("tool_name", "")
+            _stc_args = _first_stc.get("input") or _first_stc.get("arguments") or {}
+            if not isinstance(_stc_args, dict):
+                _stc_args = {}
+            tool_call = ToolCall(tool=_stc_name, arguments=_stc_args) if _stc_name else None
+            # Update tool_name from structured response (Task 3)
+            if _stc_name:
+                tool_name = self._extract_tool_name(
+                    step, tool_calls_result=[{"tool_name": _stc_name}]
+                )
+        else:
+            tool_call = extract_tool_call(raw_output)
         if tool_call is not None:
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
@@ -1040,11 +1105,14 @@ class AgentGraph:
                 inverse=_get_inverse_fn(_rb_tool, _rb_args),
             )
 
-        # 11. Decision trace for explainability
+        # 11. Decision trace for explainability — real LLM output (Task 6)
+        _reasoning_text = raw_output[:500] if raw_output else "No output"
+        if tool_call is not None and getattr(tool_call, "tool", None):
+            _reasoning_text = f"Used tool '{tool_call.tool}': {raw_output[:300]}"
         trace = DecisionTrace(
             action=step,
-            reasoning="Executed step via LLM executor",
-            evidence=[raw_output[:200]],
+            reasoning=_reasoning_text,
+            evidence=[raw_output[:300]],
             alternatives=[],
             confidence=0.8,
         )
@@ -1137,7 +1205,9 @@ class AgentGraph:
                 )
             # Score the completed goal
             if self._eval_runner is not None:
-                scorecard = self._eval_runner.score(state=agent_state, tenant_ctx=tenant_ctx)
+                scorecard = await self._eval_runner.score_async(
+                    state=agent_state, tenant_ctx=tenant_ctx, provider=self._executor
+                )
                 agent_state.context["eval_scorecard"] = scorecard
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
@@ -1325,6 +1395,30 @@ class AgentGraph:
                 "checkpoint_load_failed", goal_id=goal_id, error=str(exc)
             )
             return None
+
+    def _extract_tool_name(self, step: str, tool_calls_result: list | None = None) -> str:
+        """Extract tool name — prefers structured tool_calls, then registry, then heuristic.
+
+        Args:
+            step: The step description text.
+            tool_calls_result: Structured tool call dicts from resp.tool_calls, if available.
+
+        Returns the first tool_name from tool_calls_result when provided (no text parsing).
+        Falls back to checking self._tool_context.tools for a name that appears in the step,
+        then to the module-level heuristic (_extract_tool_name).
+        """
+        # Prefer structured tool name (Task 1+3)
+        if tool_calls_result:
+            return tool_calls_result[0].get("tool_name", "llm_call")
+        # Check known tool names from the tool registry
+        tc = self._tool_context
+        if tc is not None and hasattr(tc, "tools"):
+            step_lower = step.lower()
+            for _t in tc.tools:
+                if hasattr(_t, "name") and _t.name.lower() in step_lower:
+                    return _t.name
+        # Final fallback to module-level heuristic
+        return _extract_tool_name(step)
 
     async def _persist_decision_trace(
         self, trace: Any, state: Any, tenant_ctx: Any

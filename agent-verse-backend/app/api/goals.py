@@ -70,6 +70,21 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
         exec_ctx["persistence_mode"] = True
         exec_ctx["persistence_config"] = body.persistence_config.model_dump()
 
+    # ── Debate mode: run multi-agent consensus before goal execution ──────────
+    if body.workflow_mode == "debate":
+        provider = getattr(request.app.state, "_app_provider", None)
+        if provider is not None:
+            try:
+                from app.agent.debate import DebateOrchestrator
+                rounds = int(exec_ctx.get("debate_rounds", 2))
+                orchestrator = DebateOrchestrator(provider=provider, rounds=rounds)
+                debate_result = await orchestrator.run(goal=body.goal)
+                exec_ctx["debate_consensus"] = debate_result.winning_proposal
+                exec_ctx["debate_confidence"] = debate_result.consensus_level
+                exec_ctx["debate_winning_agent"] = debate_result.winning_agent
+            except Exception:
+                pass  # Fall back to normal execution if debate fails
+
     result: dict[str, Any] = await svc.submit_goal(
         goal=body.goal,
         priority=body.priority,
