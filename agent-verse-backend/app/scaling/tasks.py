@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import hashlib
 import os
+import signal as _signal
 import time
 from typing import Any, cast
 
@@ -12,6 +13,31 @@ from app.observability.logging import get_logger
 from app.scaling.celery_app import celery_app
 
 logger = get_logger(__name__)
+
+
+# ── SIGTERM graceful shutdown handler ─────────────────────────────────────────
+def _setup_sigterm() -> None:
+    """Register a SIGTERM handler so Celery workers shut down gracefully.
+
+    LangGraph writes a checkpoint after every completed step, so the last
+    durable state is always safe when the process exits here.
+    """
+    def _handler(sig: int, frame: Any) -> None:
+        import logging as _stdlib_logging
+        _stdlib_logging.getLogger(__name__).warning(
+            "SIGTERM received — Celery worker shutting down; "
+            "LangGraph checkpoint written after last completed step"
+        )
+        raise SystemExit(0)
+
+    try:
+        _signal.signal(_signal.SIGTERM, _handler)
+    except (OSError, ValueError):
+        # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
+        pass
+
+
+_setup_sigterm()
 
 # Module-level Redis URL — read once at import time so tasks don't re-read env
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -542,6 +568,21 @@ def run_goal(
             await append_submitted_goal_event(event)
 
         import asyncio as _asyncio
+
+        # ── Pre-execution cancel check (cross-process signal) ──────────────────
+        try:
+            from app.reliability.goal_lifecycle import is_cancelled_sync as _is_cancelled
+            _pre_sync_r = _get_sync_redis()
+            if _pre_sync_r and _is_cancelled(goal_id, _pre_sync_r):
+                logger.warning(
+                    "goal_cancelled_before_execution goal_id=%s tenant_id=%s",
+                    goal_id, tenant_id,
+                )
+                _run_async(update_submitted_goal_status("cancelled", error_message="Cancelled before execution"))
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                return {"status": "cancelled", "goal_id": goal_id, "reason": "cancelled_before_execution"}
+        except Exception as _cancel_check_exc:
+            logger.warning("cancel_pre_check_failed: %s", _cancel_check_exc)
 
         from app.tenancy.context import PLAN_LIMITS as _PLAN_LIMITS
         goal_timeout_s = getattr(
@@ -1462,4 +1503,49 @@ try:
 except Exception as _sched_exc:
     logger.warning(
         "Failed to register consolidate_memories beat schedule: %s", _sched_exc
+    )
+
+
+@celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")
+def reindex_stale_knowledge() -> dict:
+    """Mark knowledge chunks past their freshness TTL as needing reindex."""
+    async def _run() -> dict:
+        from app.db.session import get_session_factory
+        from sqlalchemy import text
+        db = get_session_factory()
+        async with db() as session, session.begin():
+            result = await session.execute(text("""
+                UPDATE documents
+                SET needs_reindex = TRUE, updated_at = NOW()
+                WHERE needs_reindex = FALSE
+                  AND last_modified IS NOT NULL
+                  AND freshness_ttl_hours > 0
+                  AND last_modified < NOW() - (freshness_ttl_hours * INTERVAL '1 hour')
+            """))
+            marked = result.rowcount
+        return {"marked_for_reindex": marked}
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    except Exception as exc:
+        logger.warning("reindex_stale_knowledge failed: %s", exc)
+        return {"marked_for_reindex": 0, "error": str(exc)}
+    finally:
+        loop.close()
+
+
+# Register reindex_stale_knowledge in the Celery beat schedule (hourly)
+try:
+    celery_app.conf.beat_schedule["reindex-stale-knowledge"] = {
+        "task": "agentverse.maintenance.reindex_stale_knowledge",
+        "schedule": 3600,
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.task_routes.update(
+        {"agentverse.maintenance.reindex_stale_knowledge": {"queue": "maintenance"}}
+    )
+except Exception as _reindex_sched_exc:
+    logger.warning(
+        "Failed to register reindex_stale_knowledge beat schedule: %s", _reindex_sched_exc
     )

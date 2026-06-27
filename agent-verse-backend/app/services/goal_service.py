@@ -94,21 +94,102 @@ class GoalRecord:
 
 
 def _resolve_checkpointer(app_state: Any) -> Any:
-    """Safely extract a valid LangGraph checkpointer from app_state.
+    """Return the best available checkpointer. Logs a WARNING if falling back to MemorySaver.
 
-    Returns None when app_state is absent, the attribute is unset, or the
-    value is not a genuine BaseCheckpointSaver (e.g. a test MagicMock).
+    Priority:
+      1. app_state.langgraph_checkpointer (only if it's a real BaseCheckpointSaver)
+      2. AsyncRedisSaver built from REDIS_URL / settings.redis_url
+      3. Sync RedisSaver (same URL)
+      4. MemorySaver with a WARNING about durability loss
     """
-    if app_state is None:
-        return None
+    import logging as _logging
+    import os
+    from langgraph.checkpoint.memory import MemorySaver
+
+    _std_logger = _logging.getLogger(__name__)
+
+    # If app_state already has a real (non-memory) checkpointer use it —
+    # validate it's a genuine BaseCheckpointSaver (guards against MagicMock in tests).
     cp = getattr(app_state, "langgraph_checkpointer", None)
-    if cp is None:
-        return None
-    try:
-        from langgraph.checkpoint.base import BaseCheckpointSaver
-        return cp if isinstance(cp, BaseCheckpointSaver) else None
-    except Exception:
-        return None
+    if cp is not None and not isinstance(cp, MemorySaver):
+        try:
+            from langgraph.checkpoint.base import BaseCheckpointSaver
+            if isinstance(cp, BaseCheckpointSaver):
+                return cp
+        except Exception:
+            pass
+
+    # Try to build from env REDIS_URL.
+    # Use isinstance(str) guard: prevents MagicMock attrs on test app_state objects.
+    redis_url: str = os.getenv("REDIS_URL", "")
+    if not redis_url:
+        _settings = getattr(app_state, "settings", None) if app_state is not None else None
+        if _settings is not None:
+            _url_attr = getattr(_settings, "redis_url", None)
+            if isinstance(_url_attr, str) and _url_attr:
+                redis_url = _url_attr
+
+    if redis_url:
+        # AsyncRedisSaver (preferred).
+        # NOTE: from_conn_string() may return an async context manager in some
+        # langgraph-checkpoint-redis versions; validate the return value is a real
+        # BaseCheckpointSaver before using it, otherwise fall through to sync saver.
+        try:
+            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS
+            from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+            _saver = AsyncRedisSaver.from_conn_string(redis_url)
+            if not isinstance(_saver, _BCS):
+                raise TypeError(
+                    f"AsyncRedisSaver.from_conn_string returned {type(_saver).__name__}, "
+                    "not a BaseCheckpointSaver — needs async with pattern"
+                )
+            try:
+                _loop = asyncio.get_running_loop()
+                _loop.create_task(_saver.setup())
+            except RuntimeError:
+                pass
+            _svc_logger.info("checkpointer_redis_async_wired")
+            return _saver
+        except Exception:
+            pass
+        # Sync RedisSaver (fallback).
+        try:
+            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
+            from langgraph.checkpoint.redis import RedisSaver
+            _saver2 = RedisSaver.from_conn_string(redis_url)
+            if not isinstance(_saver2, _BCS2):
+                raise TypeError(
+                    f"RedisSaver.from_conn_string returned {type(_saver2).__name__}, "
+                    "not a BaseCheckpointSaver"
+                )
+            _svc_logger.info("checkpointer_redis_sync_wired")
+            return _saver2
+        except Exception as _e2:
+            _msg = (
+                f"redis_saver_unavailable redis_url={redis_url[:30]} "
+                f"error={str(_e2)} "
+                "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"
+            )
+            _svc_logger.warning(
+                "redis_saver_unavailable_falling_back_to_memory",
+                redis_url=redis_url[:30],
+                error=str(_e2),
+                impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — install langgraph-checkpoint-redis",
+            )
+            _std_logger.warning(_msg)
+    else:
+        _msg2 = (
+            "no_redis_url_using_memory_saver "
+            "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART "
+            "set REDIS_URL environment variable"
+        )
+        _svc_logger.warning(
+            "no_redis_url_using_memory_saver",
+            impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",
+        )
+        _std_logger.warning(_msg2)
+
+    return MemorySaver()
 
 
 def _make_agent_loop() -> Any:
@@ -193,6 +274,60 @@ class GoalService:
         self._goal_durations: dict[str, list[float]] = {}
         # Time-based eviction: track last eviction timestamp.
         self._last_eviction_time: float = time.monotonic()
+
+    # ── P1.3: HITL rejection subscriber ──────────────────────────────────────
+
+    def start_hitl_rejection_subscriber(self, redis_url: str) -> None:
+        """Start the HITL rejection note subscriber as a background asyncio task."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._subscribe_hitl_rejections(redis_url),
+                name="hitl-rejection-subscriber",
+            )
+            _svc_logger.info("hitl_rejection_subscriber_scheduled", redis_url=redis_url[:30])
+        except RuntimeError:
+            _svc_logger.warning("hitl_rejection_subscriber_no_loop")
+
+    async def _subscribe_hitl_rejections(self, redis_url: str) -> None:
+        """Subscribe to HITL rejection notifications and store note for next plan cycle."""
+        import json
+
+        import redis.asyncio as aioredis
+
+        while True:
+            try:
+                async with aioredis.from_url(redis_url, decode_responses=True) as r:
+                    pubsub = r.pubsub()
+                    await pubsub.psubscribe("hitl_rejected:*")
+                    _svc_logger.info("hitl_rejection_subscriber_started")
+                    async for msg in pubsub.listen():
+                        if msg.get("type") != "pmessage":
+                            continue
+                        try:
+                            data = json.loads(msg["data"])
+                            goal_id = data.get("goal_id", "")
+                            note = data.get("note", "")
+                            if goal_id and goal_id in self._goals:
+                                record = self._goals[goal_id]
+                                record.hitl_rejection_note = note
+                                record.events.append({
+                                    "type": "hitl_rejected",
+                                    "note": note,
+                                    "ts": __import__("datetime").datetime.now(
+                                        __import__("datetime").timezone.utc
+                                    ).isoformat(),
+                                })
+                                _svc_logger.info(
+                                    "hitl_rejection_note_stored", goal_id=goal_id
+                                )
+                        except Exception as exc:
+                            _svc_logger.warning(
+                                "hitl_rejection_message_parse_failed", error=str(exc)
+                            )
+            except Exception as exc:
+                _svc_logger.warning("hitl_rejection_subscriber_error", error=str(exc))
+                await asyncio.sleep(5)
 
     def _track_db_task(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
@@ -1449,6 +1584,13 @@ class GoalService:
         record = self._get_record(goal_id, tenant_ctx)
         if record.task is not None and not record.task.done():
             record.task.cancel()
+
+        # Signal via Redis for cross-process Celery workers
+        redis = getattr(self, "_redis", None)
+        if redis is not None:
+            from app.reliability.goal_lifecycle import signal_cancel
+            await signal_cancel(goal_id, redis)
+
         record.status = GoalStatus.CANCELLED
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
         await self._dispatch_event(goal_id, cancelled_event, tenant_ctx=tenant_ctx)
@@ -1465,14 +1607,11 @@ class GoalService:
         record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
 
-        # Publish pause signal to Redis so Celery workers can observe it
+        # Signal via Redis for cross-process Celery workers
         redis = getattr(self, "_redis", None)
         if redis is not None:
-            try:
-                await redis.publish(f"goal_pause:{goal_id}", "pause")
-                await redis.set(f"goal_paused:{goal_id}", "1", ex=3600)  # flag for polling
-            except Exception as exc:
-                _svc_logger.warning("pause_publish_failed", goal_id=goal_id, error=str(exc))
+            from app.reliability.goal_lifecycle import signal_pause
+            await signal_pause(goal_id, redis)
 
         return {"goal_id": goal_id, "status": "paused"}
 
