@@ -20,8 +20,10 @@ from app.civilization.models import (
     SpawnVerdict,
 )
 from app.observability.logging import get_logger
+from app.observability.tracing import get_tracer
 
 logger = get_logger(__name__)
+_tracer = get_tracer(__name__)
 
 
 class Governor:
@@ -69,43 +71,50 @@ class Governor:
         tenant_ctx: Any,
     ) -> SpawnVerdict:
         """Evaluate and record a spawn request. Returns verdict."""
-        # Gather live metrics
-        metrics = await self._get_live_metrics()
+        with _tracer.start_as_current_span("civ.governor.evaluate_spawn") as span:
+            span.set_attribute("civilization_id", self._civilization_id)
+            span.set_attribute("depth", depth)
+            span.set_attribute("requester_agent_id", requester_agent_id)
+            span.set_attribute("requested_capability", requested_capability[:100])
 
-        ctx = SpawnContext(
-            civilization_id=self._civilization_id,
-            tenant_id=self._tenant_id,
-            requester_agent_id=requester_agent_id,
-            requested_capability=requested_capability,
-            goal_text=goal_text,
-            depth=depth,
-            current_total_agents=metrics["total_agents"],
-            current_concurrent_agents=metrics["concurrent_agents"],
-            civilization_budget_spent_usd=metrics["budget_spent_usd"],
-            spawn_rate_last_min=metrics["spawn_rate_last_min"],
-            parent_budget_usd=parent_budget_usd,
-            parent_policy_ids=parent_policy_ids,
-        )
+            # Gather live metrics
+            metrics = await self._get_live_metrics()
 
-        verdict = evaluate_spawn(ctx, self._constitution)
+            ctx = SpawnContext(
+                civilization_id=self._civilization_id,
+                tenant_id=self._tenant_id,
+                requester_agent_id=requester_agent_id,
+                requested_capability=requested_capability,
+                goal_text=goal_text,
+                depth=depth,
+                current_total_agents=metrics["total_agents"],
+                current_concurrent_agents=metrics["concurrent_agents"],
+                civilization_budget_spent_usd=metrics["budget_spent_usd"],
+                spawn_rate_last_min=metrics["spawn_rate_last_min"],
+                parent_budget_usd=parent_budget_usd,
+                parent_policy_ids=parent_policy_ids,
+            )
 
-        # Audit the verdict regardless
-        await self._audit_spawn(
-            requester_agent_id=requester_agent_id,
-            requested_capability=requested_capability,
-            goal_text=goal_text,
-            verdict=verdict,
-        )
+            verdict = evaluate_spawn(ctx, self._constitution)
+            span.set_attribute("decision", verdict.decision.value)
 
-        logger.info(
-            "governor_spawn_verdict",
-            civilization_id=self._civilization_id,
-            decision=verdict.decision.value,
-            reason=verdict.reason,
-            depth=depth,
-        )
+            # Audit the verdict regardless
+            await self._audit_spawn(
+                requester_agent_id=requester_agent_id,
+                requested_capability=requested_capability,
+                goal_text=goal_text,
+                verdict=verdict,
+            )
 
-        return verdict
+            logger.info(
+                "governor_spawn_verdict",
+                civilization_id=self._civilization_id,
+                decision=verdict.decision.value,
+                reason=verdict.reason,
+                depth=depth,
+            )
+
+            return verdict
 
     async def spawn_agent(
         self,
@@ -508,6 +517,13 @@ class Governor:
         goal_text: str,
         verdict: SpawnVerdict,
     ) -> None:
+        from app.civilization.metrics import record_spawn
+        record_spawn(
+            tenant_id=self._tenant_id,
+            civilization_id=self._civilization_id,
+            decision=verdict.decision.value,
+        )
+
         if self._db is None:
             return
         try:

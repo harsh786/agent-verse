@@ -165,6 +165,8 @@ class LearningPipeline:
                          "reason": "below rejection threshold"},
                 db=self._db, redis=self._redis,
             )
+            from app.civilization.metrics import record_learning_outcome
+            record_learning_outcome(tenant_id=self._tenant_id, outcome="rejected")
             return "rejected"
 
         # Validate
@@ -186,6 +188,8 @@ class LearningPipeline:
                              "eval_score": eval_score},
                     db=self._db, redis=self._redis,
                 )
+                from app.civilization.metrics import record_learning_outcome
+                record_learning_outcome(tenant_id=self._tenant_id, outcome="promoted")
                 return "promoted"
 
         return "validated"
