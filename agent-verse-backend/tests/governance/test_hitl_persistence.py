@@ -83,7 +83,7 @@ def test_approve_resolves_event() -> None:
 
     ok = gateway.approve(req_id, approver="alice", tenant_ctx=tenant)
 
-    assert ok is True
+    assert ok  # _AwaitableBool is truthy on success
     assert req.status == ApprovalStatus.APPROVED
     assert req._event.is_set()
 

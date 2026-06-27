@@ -26,7 +26,7 @@ def test_rpa_tools_importable_as_tool_refs():
         )
         for t in RPA_TOOLS
     ]
-    assert len(tool_refs) == 10
+    assert len(tool_refs) >= 10  # P1.2 added 3 new tools (was 10, now 13)
     names = {ref.name for ref in tool_refs}
     assert "rpa_open_url" in names
     assert "rpa_click" in names

@@ -57,6 +57,41 @@ class UrlIngestRequest(BaseModel):
     source_type: str = "web"  # web|github|confluence|jira|slack
 
 
+class GitHubIngestRequest(BaseModel):
+    collection_id: str
+    owner: str
+    repo: str
+    branch: str = "HEAD"
+    max_files: int = 300
+
+
+class ConfluenceIngestRequest(BaseModel):
+    collection_id: str
+    base_url: str
+    space_key: str
+    token: str
+    user: str
+    max_pages: int = 1000
+
+
+class JiraIngestRequest(BaseModel):
+    collection_id: str
+    base_url: str
+    project_key: str
+    token: str
+    user: str
+    jql_extra: str = ""
+    max_issues: int = 500
+
+
+class SlackIngestRequest(BaseModel):
+    collection_id: str
+    channel_id: str
+    token: str
+    channel_name: str = ""
+    max_messages: int = 500
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -723,4 +758,209 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         "source_type": body.source_type,
         "chunks_ingested": doc_count,
         "total_chars": len(content),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — structured source ingestors (PDF, DOCX, GitHub, Confluence, etc.)
+# ---------------------------------------------------------------------------
+
+async def _ingest_chunks_from_source(
+    store: KnowledgeStore,
+    chunks: list[dict],
+    collection_id: str,
+    tenant_ctx: Any,
+    embedder: Any,
+) -> int:
+    """Embed and ingest a list of chunk dicts returned by an ingestor."""
+    from app.providers.base import embed_texts
+    ingested = 0
+    for chunk_data in chunks:
+        content = chunk_data.get("content", "")
+        if not content.strip():
+            continue
+        embedding: list[float] = []
+        if embedder:
+            try:
+                embeddings = await embed_texts([content], provider=embedder)
+                embedding = embeddings[0]
+            except Exception:
+                pass
+        rag_chunk = Chunk(
+            document_id=_uuid.uuid4().hex,
+            content=content,
+            embedding=embedding,
+            chunk_index=ingested,
+            metadata={
+                k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()
+            } | {
+                "source_url": chunk_data.get("source_url", ""),
+                "source_type": chunk_data.get("source_type", ""),
+                "source_doc_id": chunk_data.get("source_doc_id", ""),
+                "page_number": str(chunk_data.get("page_number") or ""),
+            },
+        )
+        try:
+            store.ingest_chunk(rag_chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
+            ingested += 1
+        except Exception:
+            pass
+    return ingested
+
+
+@router.post("/ingest/pdf", status_code=201)
+async def ingest_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    collection_id: str = Form(...),
+    source_url: str = Form(default=""),
+) -> dict[str, Any]:
+    """Ingest a PDF file into a knowledge collection with page-level citation metadata."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    content_bytes = await file.read()
+    filename = file.filename or "uploaded.pdf"
+
+    from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
+    ingestor = PdfIngestor()
+    chunks = ingestor.extract_chunks(
+        content=content_bytes,
+        filename=filename,
+        source_url=source_url or f"file://{filename}",
+    )
+
+    ingested = await _ingest_chunks_from_source(store, chunks, collection_id, tenant, embedder)
+    return {"chunks_ingested": ingested, "source": filename, "source_type": "pdf"}
+
+
+@router.post("/ingest/docx", status_code=201)
+async def ingest_docx(
+    request: Request,
+    file: UploadFile = File(...),
+    collection_id: str = Form(...),
+    source_url: str = Form(default=""),
+) -> dict[str, Any]:
+    """Ingest a DOCX file into a knowledge collection."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    content_bytes = await file.read()
+    filename = file.filename or "uploaded.docx"
+
+    from app.knowledge.ingestors.docx_ingestor import DocxIngestor
+    ingestor = DocxIngestor()
+    chunks = ingestor.extract_chunks(
+        content=content_bytes,
+        filename=filename,
+        source_url=source_url or f"file://{filename}",
+    )
+
+    ingested = await _ingest_chunks_from_source(store, chunks, collection_id, tenant, embedder)
+    return {"chunks_ingested": ingested, "source": filename, "source_type": "docx"}
+
+
+@router.post("/ingest/github", status_code=202)
+async def ingest_github(
+    request: Request, body: GitHubIngestRequest
+) -> dict[str, Any]:
+    """Ingest a GitHub repository into a knowledge collection via GitHub REST API."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    from app.knowledge.ingestors.github_ingestor import GitHubIngestor
+    ingestor = GitHubIngestor()
+    chunks = await ingestor.ingest_repo(
+        body.owner, body.repo,
+        branch=body.branch,
+        max_files=body.max_files,
+    )
+
+    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    return {
+        "chunks_ingested": ingested,
+        "source": f"github:{body.owner}/{body.repo}",
+        "source_type": "github",
+    }
+
+
+@router.post("/ingest/confluence", status_code=202)
+async def ingest_confluence(
+    request: Request, body: ConfluenceIngestRequest
+) -> dict[str, Any]:
+    """Ingest a Confluence space into a knowledge collection."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
+    ingestor = ConfluenceIngestor(
+        base_url=body.base_url,
+        token=body.token,
+        user=body.user,
+    )
+    chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
+
+    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    return {
+        "chunks_ingested": ingested,
+        "source": f"confluence:{body.space_key}",
+        "source_type": "confluence",
+    }
+
+
+@router.post("/ingest/jira", status_code=202)
+async def ingest_jira(
+    request: Request, body: JiraIngestRequest
+) -> dict[str, Any]:
+    """Ingest Jira project issues into a knowledge collection."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    from app.knowledge.ingestors.jira_ingestor import JiraIngestor
+    ingestor = JiraIngestor(
+        base_url=body.base_url,
+        token=body.token,
+        user=body.user,
+    )
+    chunks = await ingestor.ingest_project(
+        body.project_key,
+        jql_extra=body.jql_extra,
+        max_issues=body.max_issues,
+    )
+
+    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    return {
+        "chunks_ingested": ingested,
+        "source": f"jira:{body.project_key}",
+        "source_type": "jira",
+    }
+
+
+@router.post("/ingest/slack", status_code=202)
+async def ingest_slack(
+    request: Request, body: SlackIngestRequest
+) -> dict[str, Any]:
+    """Ingest a Slack channel's message history into a knowledge collection."""
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    from app.knowledge.ingestors.slack_ingestor import SlackIngestor
+    ingestor = SlackIngestor(token=body.token)
+    chunks = await ingestor.ingest_channel(
+        body.channel_id,
+        channel_name=body.channel_name,
+        max_messages=body.max_messages,
+    )
+
+    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    return {
+        "chunks_ingested": ingested,
+        "source": f"slack:{body.channel_id}",
+        "source_type": "slack",
     }

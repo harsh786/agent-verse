@@ -476,6 +476,15 @@ class AgentGraph:
             f"{agent_system_prompt}\n\n{_planner_prompt}" if agent_system_prompt else _planner_prompt
         )
 
+        # P1.3: Inject HITL rejection note so planner avoids repeating the rejected action
+        rejection_note: str = agent_state.context.get("hitl_rejection_note", "")
+        if rejection_note:
+            system_content += (
+                f"\n\n[IMPORTANT — Previous Action REJECTED by Human Operator]\n"
+                f"Rejection reason: {rejection_note}\n"
+                f"Do NOT repeat the rejected action. Replan with a different approach."
+            )
+
         # Phase 5: inject live tool schemas from MCP registry into system prompt
         tool_context_text = ""
         if self._mcp_client is not None and tenant_ctx is not None:
@@ -831,10 +840,10 @@ class AgentGraph:
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
             elif policy_result == PolicyResult.REQUIRE_APPROVAL and self._hitl_gateway is not None:
-                req_id = self._hitl_gateway.request_approval(
+                req_id = str(self._hitl_gateway.request_approval(
                     goal_id=state.goal_id, action=step, risk_level="high",
                     tenant_ctx=tenant_ctx,
-                )
+                ))
                 _hitl_already_requested = True
                 if self._autonomy_mode == "supervised":
                     await self._emit(
@@ -854,12 +863,12 @@ class AgentGraph:
         if not _hitl_already_requested and self._hitl_gateway is not None:
             risk = "high" if any(kw in step.lower() for kw in _HIGH_RISK_KEYWORDS) else "low"
             if risk == "high":
-                req_id = self._hitl_gateway.request_approval(
+                req_id = str(self._hitl_gateway.request_approval(
                     goal_id=state.goal_id,
                     action=step,
                     risk_level=risk,
                     tenant_ctx=tenant_ctx,
-                )
+                ))
                 if self._autonomy_mode == "supervised":
                     # Actually BLOCK until a human approves or rejects
                     await self._emit(
@@ -1174,12 +1183,12 @@ class AgentGraph:
                             raw_output = error
                             raw_output_sanitized = True
                         else:
-                            req_id = self._hitl_gateway.request_approval(
+                            req_id = str(self._hitl_gateway.request_approval(
                                 goal_id=state.goal_id,
                                 action=tool_ref.name,
                                 risk_level=tool_risk,
                                 tenant_ctx=tenant_ctx,
-                            )
+                            ))
                             await self._emit(
                                 {
                                     "type": "waiting_approval",

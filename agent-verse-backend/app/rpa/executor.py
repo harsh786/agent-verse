@@ -34,6 +34,8 @@ class RPAExecutor:
         self._artifact_store = artifact_store
         self._session_manager = session_manager
         self._vision_provider = vision_provider
+        # P1.2: Vault credential injector (set externally or at construction time)
+        self._credential_injector: Any = None
 
     @staticmethod
     def _check_playwright() -> bool:
@@ -57,6 +59,16 @@ class RPAExecutor:
         start = time.monotonic()
         sid = session_id or uuid.uuid4().hex
         ephemeral = session_id is None
+
+        # P1.2: Resolve vault:// credential references before dispatching to Playwright
+        if self._credential_injector is not None:
+            try:
+                arguments = await self._credential_injector.resolve_arguments(arguments)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "credential_injection_failed error=%s", exc
+                )
 
         if self._playwright_available and self._session_manager:
             result = await self._execute_with_playwright(
@@ -662,4 +674,30 @@ class RPAExecutor:
         output_fn = sim_outputs.get(tool_name)
         if output_fn:
             return RPAResult(success=True, output=output_fn(arguments))
+
+        # P1.2: New RPA tools — CAPTCHA detection, human help, network idle
+        if tool_name == "rpa_detect_captcha":
+            return RPAResult(
+                success=True,
+                output="captcha_detected: false",
+                duration_ms=50,
+            )
+
+        if tool_name == "rpa_request_human_help":
+            reason = arguments.get("reason", "Assistance required")
+            takeover_url = "/rpa/live"
+            return RPAResult(
+                success=True,
+                output=f"Human help requested: {reason}. Takeover URL: {takeover_url}",
+                duration_ms=10,
+            )
+
+        if tool_name == "rpa_wait_for_network_idle":
+            timeout_ms = int(arguments.get("timeout_ms", 10000))
+            return RPAResult(
+                success=True,
+                output=f"Network idle (simulated, timeout: {timeout_ms}ms)",
+                duration_ms=timeout_ms // 10,
+            )
+
         return RPAResult(success=False, error=f"Unknown RPA tool: {tool_name}")

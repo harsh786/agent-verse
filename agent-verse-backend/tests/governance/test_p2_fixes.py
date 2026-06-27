@@ -36,7 +36,7 @@ def test_single_person_approval_works_as_before():
     req_id = gw.request_approval(goal_id="g2", action="read",
                                   risk_level="low", tenant_ctx=CTX)
     result = gw.approve(req_id, approver="alice", note="", tenant_ctx=CTX)
-    assert result is True
+    assert result  # _AwaitableBool is truthy on success
     req = gw.get_request(req_id, tenant_ctx=CTX)
     assert req is not None
     assert req.status == ApprovalStatus.APPROVED

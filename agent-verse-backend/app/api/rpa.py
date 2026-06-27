@@ -129,3 +129,51 @@ async def close_session(request: Request, session_id: str) -> None:
     ok = await store.close(session_id, tenant_id=tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+# P1.2: Human takeover endpoint
+class TakeoverRequest(BaseModel):
+    reason: str = "Operator requested assistance"
+
+
+@router.post("/sessions/{session_id}/takeover")
+async def request_human_takeover(
+    request: Request, session_id: str, body: TakeoverRequest
+) -> dict:
+    """Request a human operator to take over an RPA session."""
+    tenant = _require_tenant(request)
+    store = _session_store(request)
+    if store is None:
+        raise HTTPException(503, "Session store not available")
+
+    session = await store.get(session_id, tenant_id=tenant.tenant_id)
+    if session is None:
+        raise HTTPException(404, f"RPA session {session_id} not found")
+
+    # Store takeover request in Redis for UI polling
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is not None:
+        import json
+        from datetime import UTC, datetime
+        await redis.set(
+            f"rpa_human_needed:{session_id}",
+            json.dumps({
+                "reason": body.reason,
+                "session_id": session_id,
+                "tenant_id": tenant.tenant_id,
+                "requested_at": datetime.now(UTC).isoformat(),
+            }),
+            ex=3600,
+        )
+
+    frontend_url = getattr(
+        getattr(request.app.state, "settings", None), "frontend_url", "http://localhost:5173"
+    )
+
+    return {
+        "session_id": session_id,
+        "status": "awaiting_human",
+        "reason": body.reason,
+        "live_url": f"{frontend_url}/rpa/sessions/{session_id}/live",
+        "message": "Human operator has been notified. Please check the live session URL.",
+    }

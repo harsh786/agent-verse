@@ -623,6 +623,106 @@ async def clear_emergency_stop(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P1.3: Email approval link handlers (signed URLs from approval emails)
+# ---------------------------------------------------------------------------
+
+@router.get("/hitl/{request_id}/approve")
+async def email_approve_link(
+    request: Request, request_id: str, sig: str = ""
+) -> dict[str, Any]:
+    """Handle one-click approve link from HITL approval email.
+
+    Validates HMAC signature and approves the request on behalf of the email recipient.
+    """
+    from app.integrations.email.approval_sender import _verify
+
+    if not sig or not _verify(request_id, "approve", sig):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid or expired approval link")
+
+    gateway = getattr(request.app.state, "hitl_gateway", None)
+    if gateway is None:
+        raise HTTPException(status_code=503, detail="HITL gateway not available")
+
+    # Find the request across all tenants (email links are tenant-scoped via the signature)
+    matching_req = None
+    for (tid, rid), req in gateway._requests.items():
+        if rid == request_id:
+            matching_req = (tid, req)
+            break
+
+    if matching_req is None:
+        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
+
+    tenant_id, req_obj = matching_req
+    from app.tenancy.context import PlanTier, TenantContext
+    fake_ctx = TenantContext(
+        tenant_id=tenant_id,
+        plan=PlanTier.ENTERPRISE,
+        api_key_id="email-link-approver",
+    )
+
+    ok = gateway.approve(request_id, approver="email-link", tenant_ctx=fake_ctx)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Approval request is no longer pending")
+
+    return {
+        "request_id": request_id,
+        "status": "approved",
+        "approver": "email-link",
+        "message": "Action approved via email link.",
+    }
+
+
+@router.get("/hitl/{request_id}/reject")
+async def email_reject_link(
+    request: Request, request_id: str, sig: str = ""
+) -> dict[str, Any]:
+    """Handle one-click reject link from HITL approval email.
+
+    Validates HMAC signature and rejects the request.
+    """
+    from app.integrations.email.approval_sender import _verify
+
+    if not sig or not _verify(request_id, "reject", sig):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid or expired rejection link")
+
+    gateway = getattr(request.app.state, "hitl_gateway", None)
+    if gateway is None:
+        raise HTTPException(status_code=503, detail="HITL gateway not available")
+
+    # Find the request across all tenants
+    matching_req = None
+    for (tid, rid), req in gateway._requests.items():
+        if rid == request_id:
+            matching_req = (tid, req)
+            break
+
+    if matching_req is None:
+        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
+
+    tenant_id, req_obj = matching_req
+    from app.tenancy.context import PlanTier, TenantContext
+    fake_ctx = TenantContext(
+        tenant_id=tenant_id,
+        plan=PlanTier.ENTERPRISE,
+        api_key_id="email-link-approver",
+    )
+
+    ok = await gateway.reject(request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Approval request is no longer pending")
+
+    return {
+        "request_id": request_id,
+        "status": "rejected",
+        "approver": "email-link",
+        "message": "Action rejected via email link.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Endpoints — legal hold
 # ---------------------------------------------------------------------------
 
