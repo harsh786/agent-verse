@@ -1712,3 +1712,136 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
             raise
 
     return _run_async(_run())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CIVILIZATION TASKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(name="app.scaling.tasks.civilization_tick")
+def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
+    """Periodic tick for a civilization — breach check, auto-retire, learning step."""
+    async def _run() -> dict:
+        try:
+            from app.db.session import get_session_factory
+            from app.civilization.orchestrator import CivilizationOrchestrator
+            from app.civilization.models import Constitution
+            from app.civilization.governor import Governor
+            from app.civilization.society import Society
+            from app.civilization.bus import CivilizationBus
+            from app.civilization.blackboard import Blackboard
+            from app.civilization.learning import LearningPipeline
+            import json, os
+
+            db = get_session_factory()
+            redis_url = os.getenv("REDIS_URL", "")
+            redis = None
+            if redis_url:
+                import redis.asyncio as aioredis
+                redis = aioredis.from_url(redis_url, decode_responses=True)
+
+            # Load constitution from DB
+            constitution = Constitution()  # defaults; overridden by DB data below
+            try:
+                from sqlalchemy import text
+                async with db() as session:
+                    row = (await session.execute(text(
+                        "SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"
+                    ), {"id": civilization_id, "tid": tenant_id})).fetchone()
+                if row and row[0]:
+                    data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                    constitution = Constitution.from_dict(data)
+            except Exception:
+                pass
+
+            from app.tenancy.context import TenantContext, PlanTier
+            tenant_ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="tick")
+
+            governor = Governor(
+                constitution=constitution, civilization_id=civilization_id,
+                tenant_id=tenant_id, db_session_factory=db, redis=redis,
+            )
+            society = Society(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                db_session_factory=db,
+            )
+            bus = CivilizationBus(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                db_session_factory=db, redis=redis,
+            )
+            blackboard = Blackboard(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                db_session_factory=db, bus=bus,
+            )
+            learning = LearningPipeline(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                db_session_factory=db, redis=redis,
+            )
+
+            orchestrator = CivilizationOrchestrator(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                constitution=constitution, governor=governor, society=society,
+                bus=bus, blackboard=blackboard, learning_pipeline=learning,
+                db_session_factory=db, redis=redis, tenant_ctx=tenant_ctx,
+            )
+
+            result = await orchestrator.tick()
+            if redis:
+                await redis.aclose()
+            return result
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("civilization_tick_failed", extra={"error": str(exc)})
+            return {"error": str(exc)}
+
+    import asyncio
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="app.scaling.tasks.civilization_learning_step")
+def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
+    """Run one step of the learning pipeline for a civilization."""
+    async def _run() -> dict:
+        try:
+            from app.db.session import get_session_factory
+            from app.civilization.learning import LearningPipeline
+            db = get_session_factory()
+            pipeline = LearningPipeline(
+                civilization_id=civilization_id, tenant_id=tenant_id,
+                db_session_factory=db,
+            )
+            return await pipeline.run_step()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("civilization_learning_failed", extra={"error": str(exc)})
+            return {"error": str(exc)}
+
+    import asyncio
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations")
+def discover_and_tick_civilizations() -> dict:
+    """Discover all active civilizations and enqueue tick tasks for each."""
+    async def _run() -> dict:
+        try:
+            from app.db.session import get_session_factory
+            from sqlalchemy import text
+            db = get_session_factory()
+            async with db() as session:
+                rows = (await session.execute(text(
+                    "SELECT id, tenant_id FROM civilizations WHERE status = 'active'"
+                ))).fetchall()
+
+            count = 0
+            for row in rows:
+                civilization_tick.delay(row[0], row[1])
+                count += 1
+            return {"civilizations_ticked": count}
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("civilization_discovery_failed", extra={"error": str(exc)})
+            return {"error": str(exc)}
+
+    import asyncio
+    return asyncio.run(_run())

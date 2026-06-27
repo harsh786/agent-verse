@@ -65,6 +65,10 @@ celery_app.conf.update(
         "agentverse.goals.run_goal_dlq": {"queue": "goals_dlq"},
         "agentverse.schedules.*": {"queue": "schedules"},
         "agentverse.maintenance.*": {"queue": "maintenance"},
+        # Civilization tasks
+        "app.scaling.tasks.civilization_tick": {"queue": "maintenance"},
+        "app.scaling.tasks.civilization_learning_step": {"queue": "maintenance"},
+        "app.scaling.tasks.discover_and_tick_civilizations": {"queue": "maintenance"},
     },
     beat_schedule={
         "mcp-health-check-every-30s": {
@@ -116,6 +120,11 @@ celery_app.conf.update(
         "purge-expired-artifacts-daily": {
             "task": "agentverse.maintenance.purge_expired_artifacts",
             "schedule": 86400,  # daily
+            "options": {"queue": "maintenance"},
+        },
+        "civilization-discovery-every-30s": {
+            "task": "app.scaling.tasks.discover_and_tick_civilizations",
+            "schedule": 30,
             "options": {"queue": "maintenance"},
         },
     },
