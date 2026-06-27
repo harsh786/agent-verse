@@ -26,6 +26,7 @@ def test_make_agent_loop_for_tenant_uses_audit_log_from_app_state() -> None:
     app_state = MagicMock()
     app_state.audit_log = audit
     app_state.cost_controller = cost
+    app_state.redis_cost_controller = None  # No Redis controller: should fall back to cost_controller
     app_state.hitl_gateway = HITLGateway()
     app_state.knowledge_store = None
     app_state.long_term_memory = None

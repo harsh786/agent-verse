@@ -41,3 +41,82 @@ export interface SubmitGoalOptions {
   persistence_mode?: boolean;
   workflow_mode?: string;
 }
+
+export interface CreateAgentRequest {
+  name: string;
+  autonomy_mode?: string;
+  goal_template?: string;
+  description?: string;
+  tools?: string[];
+  model?: string;
+}
+
+export interface AgentSnapshot {
+  snapshot_id: string;
+  agent_id: string;
+  created_at: string;
+  config: Record<string, unknown>;
+}
+
+export interface Schedule {
+  schedule_id: string;
+  name: string;
+  cron?: string;
+  goal_template: string;
+  enabled: boolean;
+  next_run_at?: string;
+  created_at: string;
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  cron: string;
+  goal_template: string;
+  agent_id?: string;
+  enabled?: boolean;
+}
+
+export interface Memory {
+  memory_id: string;
+  content: string;
+  tags?: string[];
+  created_at: string;
+}
+
+export interface SearchResult {
+  document_id: string;
+  content: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConnectorSpec {
+  name: string;
+  description: string;
+  auth_type: string;
+  default_url: string;
+}
+
+export interface ConnectorTestResult {
+  server_id: string;
+  reachable: boolean;
+  latency_ms?: number;
+  error?: string;
+}
+
+export interface GoalMetrics {
+  active_goals: number;
+  total_goals: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  cost_today_usd: number;
+  goals_today: number;
+}
+
+export interface CostMetrics {
+  total_cost_usd: number;
+  cost_by_day: Array<{ date: string; cost_usd: number }>;
+  cost_by_model: Record<string, number>;
+  daily_budget_usd: number;
+  budget_utilization: number;
+}

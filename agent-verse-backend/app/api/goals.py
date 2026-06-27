@@ -34,6 +34,8 @@ class GoalRequest(BaseModel):
     dry_run: bool = False
     agent_id: str | None = None
     workflow_mode: str = "single_agent"
+    # Debate mode: number of debate rounds before consensus
+    debate_rounds: int = Field(default=2, ge=1, le=10)
     # Persistence mode: keep trying until goal is achieved
     persistence_mode: bool = False
     persistence_config: PersistenceConfigRequest = Field(
@@ -72,11 +74,12 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
 
     # ── Debate mode: run multi-agent consensus before goal execution ──────────
     if body.workflow_mode == "debate":
+        exec_ctx["debate_rounds"] = body.debate_rounds
         provider = getattr(request.app.state, "_app_provider", None)
         if provider is not None:
             try:
                 from app.agent.debate import DebateOrchestrator
-                rounds = int(exec_ctx.get("debate_rounds", 2))
+                rounds = body.debate_rounds
                 orchestrator = DebateOrchestrator(provider=provider, rounds=rounds)
                 debate_result = await orchestrator.run(goal=body.goal)
                 exec_ctx["debate_consensus"] = debate_result.winning_proposal
@@ -361,7 +364,9 @@ async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     # Query DB for traces
-    db = getattr(request.app.state, "db_session_factory", None)
+    # db_session_factory is not on app.state — get it from the session module
+    from app.db.session import get_session_factory
+    db = get_session_factory()
     if db is None:
         # Fall back to in-memory context
         return []

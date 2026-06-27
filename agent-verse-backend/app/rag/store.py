@@ -281,7 +281,8 @@ class KnowledgeStore:
     async def sync_from_db(self) -> int:
         """Load collections and chunks from PostgreSQL into memory.
 
-        Returns the number of new chunks loaded.
+        Only loads data for active tenants, with safety caps to prevent
+        unbounded memory growth. Returns the number of new chunks loaded.
         Returns 0 immediately when no ``db_session_factory`` is configured.
         """
         if self._db is None:
@@ -291,12 +292,18 @@ class KnowledgeStore:
 
             from app.db.models.knowledge import Document
             from app.db.models.knowledge import KnowledgeCollection as KCModel
+            from app.db.models.tenant import Tenant
             from app.rag.models import Chunk, KnowledgeCollection
 
             loaded = 0
             async with self._db() as session:
-                # Load collections first
-                col_result = await session.execute(select(KCModel))
+                # Load collections — only for active tenants, with safety cap
+                col_result = await session.execute(
+                    select(KCModel)
+                    .join(Tenant, KCModel.tenant_id == Tenant.id)
+                    .where(Tenant.is_active == True)  # noqa: E712
+                    .limit(10_000)
+                )
                 collections = col_result.scalars().all()
                 for c in collections:
                     col = KnowledgeCollection(
@@ -310,27 +317,35 @@ class KnowledgeStore:
                     if key not in self._data:
                         self._data[key] = _CollectionStore(collection=col)
 
-                # Load chunks and add to their collection stores
-                doc_result = await session.execute(select(Document))
-                docs = doc_result.scalars().all()
-                for d in docs:
-                    key = (d.tenant_id, d.collection_id)
-                    cstore = self._data.get(key)
-                    if cstore is not None:
-                        existing_ids = {c.chunk_id for c in cstore.chunks}
-                        if d.id not in existing_ids:
-                            chunk = Chunk(
-                                document_id=d.id,
-                                content=d.content,
-                                embedding=list(d.embedding) if d.embedding is not None else [],
-                                chunk_index=d.chunk_index or 0,
-                                chunk_id=d.id,
-                                metadata=dict(d.doc_metadata or {}),
-                            )
-                            cstore.chunks.append(chunk)
-                            loaded += 1
+                # Load documents — only for loaded collections, with safety cap
+                if collections:
+                    col_ids = [c.id for c in collections]
+                    doc_result = await session.execute(
+                        select(Document)
+                        .where(Document.collection_id.in_(col_ids))
+                        .limit(100_000)  # Safety cap: 100K docs max
+                    )
+                    docs = doc_result.scalars().all()
+                    for d in docs:
+                        key = (d.tenant_id, d.collection_id)
+                        cstore = self._data.get(key)
+                        if cstore is not None:
+                            existing_ids = {c.chunk_id for c in cstore.chunks}
+                            if d.id not in existing_ids:
+                                chunk = Chunk(
+                                    document_id=d.id,
+                                    content=d.content,
+                                    embedding=list(d.embedding) if d.embedding is not None else [],
+                                    chunk_index=d.chunk_index or 0,
+                                    chunk_id=d.id,
+                                    metadata=dict(d.doc_metadata or {}),
+                                )
+                                cstore.chunks.append(chunk)
+                                loaded += 1
 
-            _log.info("Synced %d chunks from DB into KnowledgeStore", loaded)
+            _log.info(
+                "Synced %d chunks from DB into KnowledgeStore (active tenants only)", loaded
+            )
             return loaded
         except Exception as exc:
             _log.warning("DB knowledge sync failed: %s", exc)

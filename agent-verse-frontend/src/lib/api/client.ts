@@ -22,8 +22,11 @@ const getApiKey = (): string => {
 };
 
 export const setApiKey = (key: string): void => {
-  sessionStorage.setItem("av_api_key", key);
-  localStorage.setItem("av_api_key", key); // backward compat
+  if (key) {
+    sessionStorage.setItem("av_api_key", key);
+    // Remove from localStorage (migration: don't persist API keys to disk)
+    localStorage.removeItem("av_api_key");
+  }
 };
 
 async function request<T>(
@@ -119,8 +122,12 @@ export const goalsApi = {
     request<GoalResponse>(`/goals/${id}/pause`, { method: "POST" }),
   resume: (id: string) =>
     request<GoalResponse>(`/goals/${id}/resume`, { method: "POST" }),
-  getEvents: (id: string) =>
-    request<GoalEvent[]>(`/goals/${id}/stream`),
+  // Returns the persisted event log for a goal (non-streaming DB records).
+  // For real-time streaming use the useGoalStream hook (EventSource).
+  getEventLog: async (id: string): Promise<GoalEvent[]> => {
+    const goal = await request<GoalResponse & { events?: GoalEvent[] }>(`/goals/${id}`);
+    return goal?.events ?? [];
+  },
   getEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`),
 };

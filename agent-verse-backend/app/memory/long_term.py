@@ -93,6 +93,34 @@ class LongTermMemoryStore:
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
         return [mid]
 
+    async def extract_from_goal_async(
+        self,
+        *,
+        goal: str,
+        result: str,
+        tenant_ctx: "TenantContext",
+        db: Any = None,
+        embedder: Any = None,
+    ) -> "LongTermMemory":
+        """Extract a learning from a completed goal and persist it.
+
+        Adds to the in-memory cache immediately (same-session recall) AND
+        persists to DB via store_async so the learning survives restarts.
+        """
+        content = f"Goal: {goal[:200]} → Result: {result[:200]}"
+        memory = LongTermMemory(
+            content=content,
+            source_goal_id="",
+            memory_type="success_pattern",
+            confidence=0.8,
+            tags=["auto-extracted"],
+        )
+        # In-memory store (immediate availability for current session)
+        self._memories.setdefault(tenant_ctx.tenant_id, []).append(memory)
+        # Async DB persistence (survives restarts)
+        await self.store_async(memory=memory, tenant_ctx=tenant_ctx, db=db, embedder=embedder)
+        return memory
+
     async def store_async(
         self,
         *,

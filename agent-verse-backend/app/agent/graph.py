@@ -341,6 +341,12 @@ class AgentGraph:
             or agent_state.error_message
             or "No specific failure information available."
         )
+        _reflect_model = ""
+        if self._model_router is not None:
+            try:
+                _reflect_model = self._model_router.model_for("reflection") or ""
+            except Exception:
+                pass
         req = CompletionRequest(
             messages=[
                 Message(role="system", content=REFLECTION_SYSTEM),
@@ -349,7 +355,7 @@ class AgentGraph:
                     content=f"Goal: {agent_state.goal}\nFailed steps:\n{failed_summary}",
                 ),
             ],
-            model="claude-opus-4-8",
+            model=_reflect_model,
         )
         resp = await self._planner.complete(req)
         agent_state.verification_feedback = resp.content
@@ -1055,7 +1061,7 @@ class AgentGraph:
                         if isinstance(result, dict):
                             raw_output_text = str(result.get("content") or result.get("result") or "")
                         if self._guardrail_checker and raw_output_text:
-                            pii_issues = self._guardrail_checker.check_output(raw_output_text)
+                            pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
                             if pii_issues:
                                 await self._emit({
                                     "type": "pii_redacted",

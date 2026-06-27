@@ -141,14 +141,15 @@ class AgentVerseClient:
             GoalTimeoutError: if ``timeout`` seconds elapse before completion.
             GoalFailedError: if the goal reaches ``failed`` status.
         """
-        deadline = asyncio.get_event_loop().time() + timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         while True:
             goal = await self.get_goal(goal_id)
             if goal.status in _TERMINAL_STATUSES:
                 if goal.status == GoalStatus.FAILED:
                     raise GoalFailedError(goal_id, goal.error or "unknown error")
                 return goal
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 raise GoalTimeoutError(goal_id, timeout)
             await asyncio.sleep(min(_POLL_INTERVAL, remaining))

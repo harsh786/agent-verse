@@ -132,8 +132,8 @@ class RedisCostController:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         return f"cost:daily:{tenant_id}:{today}"
 
-    def _goal_key(self, goal_id: str) -> str:
-        return f"cost:goal:{goal_id}"
+    def _goal_key(self, goal_id: str, tenant_id: str = "") -> str:
+        return f"cost:goal:{tenant_id}:{goal_id}"
 
     async def _get_ttl_to_midnight(self) -> int:
         """Seconds until next UTC midnight."""
@@ -152,8 +152,8 @@ class RedisCostController:
         cfg = self._tenant_configs.get(tenant_ctx.tenant_id, BudgetConfig())
 
         try:
-            # Record goal-level cost
-            goal_key = self._goal_key(goal_id)
+            # Record goal-level cost (namespaced by tenant to prevent cross-tenant leakage)
+            goal_key = self._goal_key(goal_id, tenant_ctx.tenant_id)
             goal_total = await self._redis.incrbyfloat(goal_key, cost_usd)
             await self._redis.expire(goal_key, 86400)  # 24h TTL
 

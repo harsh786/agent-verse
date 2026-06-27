@@ -1,4 +1,20 @@
-import type { Agent, Connector, Goal, GoalEvent, SubmitGoalOptions } from './types.js';
+import type {
+  Agent,
+  AgentSnapshot,
+  Connector,
+  ConnectorSpec,
+  ConnectorTestResult,
+  CostMetrics,
+  CreateAgentRequest,
+  CreateScheduleRequest,
+  Goal,
+  GoalEvent,
+  GoalMetrics,
+  Memory,
+  Schedule,
+  SearchResult,
+  SubmitGoalOptions,
+} from './types.js';
 import { AgentVerseError, AuthError, GoalFailedError, GoalTimeoutError, NotFoundError } from './errors.js';
 
 export class AgentVerseClient {
@@ -112,6 +128,14 @@ export class AgentVerseClient {
     return this.request<Agent>('POST', '/agents', { name, goal_template: goalTemplate, ...extra });
   }
 
+  async getAgent(agentId: string): Promise<Agent> {
+    return this.request<Agent>('GET', `/agents/${agentId}`);
+  }
+
+  async updateAgent(agentId: string, data: Partial<CreateAgentRequest>): Promise<Agent> {
+    return this.request<Agent>('PUT', `/agents/${agentId}`, data);
+  }
+
   async listAgents(): Promise<Agent[]> {
     const data = await this.request<Agent[] | { agents: Agent[] }>('GET', '/agents');
     return Array.isArray(data) ? data : (data as { agents: Agent[] }).agents ?? [];
@@ -119,6 +143,18 @@ export class AgentVerseClient {
 
   async deleteAgent(agentId: string): Promise<void> {
     await this.request('DELETE', `/agents/${agentId}`);
+  }
+
+  async snapshotAgent(agentId: string): Promise<AgentSnapshot> {
+    return this.request<AgentSnapshot>('POST', `/agents/${agentId}/snapshot`);
+  }
+
+  async listAgentVersions(agentId: string): Promise<AgentSnapshot[]> {
+    return this.request<AgentSnapshot[]>('GET', `/agents/${agentId}/versions`);
+  }
+
+  async rollbackAgent(agentId: string, snapshotId: string): Promise<Agent> {
+    return this.request<Agent>('POST', `/agents/${agentId}/rollback/${snapshotId}`);
   }
 
   // ── Connectors ───────────────────────────────────────────────────────────
@@ -135,5 +171,64 @@ export class AgentVerseClient {
     return this.request<Connector>('POST', '/connectors', {
       name, url, auth_type: authType, auth_config: authConfig,
     });
+  }
+
+  async deleteConnector(serverId: string): Promise<void> {
+    await this.request('DELETE', `/connectors/${serverId}`);
+  }
+
+  async testConnector(serverId: string): Promise<ConnectorTestResult> {
+    return this.request<ConnectorTestResult>('POST', `/connectors/${serverId}/test`);
+  }
+
+  async getConnectorCatalog(): Promise<ConnectorSpec[]> {
+    return this.request<ConnectorSpec[]>('GET', '/connectors/catalog');
+  }
+
+  // ── Schedules ────────────────────────────────────────────────────────────
+
+  async listSchedules(): Promise<Schedule[]> {
+    return this.request<Schedule[]>('GET', '/schedules');
+  }
+
+  async createSchedule(data: CreateScheduleRequest): Promise<Schedule> {
+    return this.request<Schedule>('POST', '/schedules', data);
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    await this.request('DELETE', `/schedules/${scheduleId}`);
+  }
+
+  async createScheduleNl(command: string): Promise<Schedule> {
+    return this.request<Schedule>('POST', '/schedules/nl', { command });
+  }
+
+  // ── Memory ───────────────────────────────────────────────────────────────
+
+  async recallMemory(query: string, limit = 10): Promise<Memory[]> {
+    return this.request<Memory[]>('GET', `/memory/recall?q=${encodeURIComponent(query)}&limit=${limit}`);
+  }
+
+  async storeMemory(content: string, tags?: string[]): Promise<Memory> {
+    return this.request<Memory>('POST', '/memory', { content, tags });
+  }
+
+  // ── Knowledge ────────────────────────────────────────────────────────────
+
+  async searchKnowledge(collectionId: string, query: string, limit = 10): Promise<SearchResult[]> {
+    return this.request<SearchResult[]>(
+      'GET',
+      `/knowledge/search?collection_id=${collectionId}&q=${encodeURIComponent(query)}&limit=${limit}`,
+    );
+  }
+
+  // ── Analytics ────────────────────────────────────────────────────────────
+
+  async getGoalMetrics(days = 30): Promise<GoalMetrics> {
+    return this.request<GoalMetrics>('GET', `/analytics/goals?days=${days}`);
+  }
+
+  async getCostMetrics(days = 30): Promise<CostMetrics> {
+    return this.request<CostMetrics>('GET', `/analytics/cost?days=${days}`);
   }
 }

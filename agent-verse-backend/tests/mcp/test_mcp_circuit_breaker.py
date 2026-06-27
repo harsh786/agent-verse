@@ -69,10 +69,18 @@ def client(registry):
 
 
 def test_get_circuit_breaker_returns_none_without_redis(client):
-    """_get_circuit_breaker returns None when _redis is not set."""
+    """_get_circuit_breaker returns a local CircuitBreaker (not None) when _redis is None.
+
+    Since H13 fix: when Redis is unavailable, a local in-memory CircuitBreaker is created
+    per tenant so that tenant isolation is maintained even without Redis.
+    """
+    from app.reliability.circuit_breaker import CircuitBreaker
+
     assert client._redis is None
     cb = client._get_circuit_breaker("server1")
-    assert cb is None
+    # With Redis absent, a local CircuitBreaker is returned (not None)
+    assert cb is not None
+    assert isinstance(cb, CircuitBreaker)
 
 
 def test_get_circuit_breaker_returns_instance_with_redis(client):
@@ -155,7 +163,9 @@ async def test_call_tool_raises_circuit_breaker_open_error(registry):
     mock_cb = AsyncMock()
     mock_cb.can_call_async = AsyncMock(return_value=False)
     mcp._redis = FakeRedis()  # enable CB path
-    mcp._circuit_breakers[server_id] = mock_cb
+    # Key is now tenant-prefixed: "{tenant_id}:{server_id}"
+    tenant_id = _CTX.tenant_id
+    mcp._circuit_breakers[f"{tenant_id}:{server_id}"] = mock_cb
 
     with pytest.raises(CircuitBreakerOpenError):
         await mcp.call_tool(

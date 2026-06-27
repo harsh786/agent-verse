@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
+import os
 import time
 from typing import Any, cast
 
@@ -11,6 +12,31 @@ from app.observability.logging import get_logger
 from app.scaling.celery_app import celery_app
 
 logger = get_logger(__name__)
+
+# ── Module-level Redis connection pool — initialized once per worker process ──
+# Sync pool is safe to share across all task invocations; it does not bind to
+# any asyncio event loop.  Async redis clients are created per-task because
+# each Celery task's _run_async() call creates a fresh event loop.
+
+_REDIS_POOL: Any = None
+
+
+def _get_redis_pool() -> Any:
+    """Get or create a module-level Redis connection pool."""
+    global _REDIS_POOL
+    if _REDIS_POOL is None:
+        import redis
+        _redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        _REDIS_POOL = redis.ConnectionPool.from_url(
+            _redis_url, decode_responses=True, max_connections=10
+        )
+    return _REDIS_POOL
+
+
+def _get_sync_redis() -> Any:
+    """Get a synchronous Redis client using the module-level pool."""
+    import redis
+    return redis.Redis(connection_pool=_get_redis_pool())
 
 # Capture original AgentLoop class at import time for monkey-patch detection.
 # When tests replace app.agent.loop.AgentLoop with a mock, we detect this
@@ -851,15 +877,15 @@ def check_mcp_health() -> dict[str, Any]:
             import json as _json
             import time as _time
 
-            import redis as _sync_redis
-
-            client = _sync_redis.from_url(_redis_url, decode_responses=True)
+            client = _get_sync_redis()
             # Find all registered MCP server keys: mcp:servers:{tenant_id}:{server_id}
             # or mcp:servers:{tenant_id} (registry stores a JSON map)
-            keys = client.keys("mcp:servers:*")
+            # NEW: non-blocking iterative SCAN instead of blocking O(N) KEYS
+            keys = list(client.scan_iter(match="mcp:servers:*", count=100))
+            keys = keys[:50]  # safety cap
 
             import httpx as _httpx
-            for key in keys[:50]:  # Cap at 50 to avoid overload
+            for key in keys:
                 parts = key.split(":")
                 tenant_id = parts[2] if len(parts) >= 3 else "unknown"
 
@@ -903,7 +929,6 @@ def check_mcp_health() -> dict[str, Any]:
                         "name": sdata.get("name", server_id) if isinstance(sdata, dict) else server_id,
                     })
 
-            client.close()
         except Exception as exc:
             results.append({"status": "error", "reason": str(exc)})
         return results

@@ -81,7 +81,7 @@ services:
       target: runtime
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "worker",
-              "--loglevel=info", "-Q", "goals,schedules,maintenance",
+              "--loglevel=info", "-Q", "goals,schedules,maintenance,goals_dlq",
               "--concurrency=4", "--max-tasks-per-child=100"]
     environment:
       <<: *common-env
@@ -103,7 +103,7 @@ services:
       target: runtime
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "beat",
-              "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+              "--loglevel=info", "--scheduler=redbeat.RedBeatScheduler"]
     environment:
       <<: *common-env
     depends_on:

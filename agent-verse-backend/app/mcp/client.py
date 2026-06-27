@@ -69,6 +69,7 @@ class MCPClient:
         registry: MCPRegistry,
         timeout: float = 30.0,
         secret_resolver: SecretResolver | None = None,
+        redis: Any = None,
     ) -> None:
         self._registry = registry
         self._timeout = timeout
@@ -80,7 +81,7 @@ class MCPClient:
         )
         # Circuit breaker support — wired externally by setting _redis
         self._circuit_breakers: dict[str, Any] = {}
-        self._redis: Any = None
+        self._redis: Any = redis
         # OAuth manager — wired externally
         self._oauth_manager: Any = None
 
@@ -103,26 +104,29 @@ class MCPClient:
                 positional_count += 1
         return positional_count >= 2
 
-    def _get_circuit_breaker(self, server_id: str) -> Any:
-        """Return (or create) a RedisCircuitBreaker for the given server.
-
-        Returns None when Redis is not configured so the call path is unaffected.
-        """
-        if self._redis is None:
-            return None
-        if server_id not in self._circuit_breakers:
-            try:
-                from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
-                self._circuit_breakers[server_id] = RedisCircuitBreaker(
-                    redis_client=self._redis,
-                    tenant_id="",
-                    tool_name=f"mcp:{server_id}",
+    def _get_circuit_breaker(self, server_id: str, tenant_id: str = "") -> Any:
+        """Get or create a per-tenant circuit breaker for a server."""
+        cb_key = f"{tenant_id}:{server_id}"
+        if cb_key not in self._circuit_breakers:
+            if self._redis is not None:
+                try:
+                    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+                    self._circuit_breakers[cb_key] = RedisCircuitBreaker(
+                        redis_client=self._redis,
+                        tenant_id=tenant_id,
+                        tool_name=f"mcp:{server_id}",
+                        failure_threshold=5,
+                        cooldown_seconds=60.0,
+                    )
+                except Exception:
+                    return None
+            else:
+                from app.reliability.circuit_breaker import CircuitBreaker
+                self._circuit_breakers[cb_key] = CircuitBreaker(
                     failure_threshold=5,
                     cooldown_seconds=60.0,
                 )
-            except Exception:
-                return None
-        return self._circuit_breakers[server_id]
+        return self._circuit_breakers[cb_key]
 
     async def _resolve_auth_value(
         self, value: Any, tenant_ctx: TenantContext | None
@@ -370,7 +374,7 @@ class MCPClient:
             CircuitBreakerOpenError: If the circuit breaker for this server is open.
         """
         # Circuit breaker check — raises CircuitBreakerOpenError if open
-        cb = self._get_circuit_breaker(server_id)
+        cb = self._get_circuit_breaker(server_id, tenant_id=getattr(tenant_ctx, "tenant_id", ""))
         if cb is not None:
             try:
                 if not await cb.can_call_async():

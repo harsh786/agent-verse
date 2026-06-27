@@ -82,6 +82,9 @@ class GoalRecord:
     subscribers: list[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=list)
     started_monotonic: float = field(default_factory=lambda: _monotonic())
     terminal_metrics_recorded: bool = False
+    # Timestamp when the goal entered a terminal state (complete/failed/cancelled).
+    # Used by _evict_stale_goals() to avoid evicting goals that just finished.
+    completed_at: str | None = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -210,14 +213,16 @@ class GoalService:
                             to_evict.append(goal_id)
                     except Exception:
                         pass
-                elif not completed_at:
-                    # No timestamp — count as stale if terminal
-                    to_evict.append(goal_id)
+                # else: no timestamp yet — skip (don't evict; goal might have just completed)
         for gid in to_evict:
             del self._goals[gid]
             _GOAL_PAUSE_EVENTS.pop(gid, None)
         self._sweep_pause_events()
         return len(to_evict)
+
+    async def _evict_async(self) -> int:
+        """Async wrapper so eviction runs in the event loop without thread race."""
+        return self._evict_stale_goals()
 
     def _sweep_pause_events(self) -> int:
         """Remove pause events for goals that are no longer tracked."""
@@ -225,6 +230,43 @@ class GoalService:
         for gid in stale:
             _GOAL_PAUSE_EVENTS.pop(gid, None)
         return len(stale)
+
+    async def _check_daily_goal_limit_redis(self, tenant_ctx: TenantContext) -> None:
+        """Atomic Redis-based daily goal counter — works across all replicas.
+
+        Falls back to in-memory count when Redis is unavailable.
+        Raises PlanLimitExceededError (HTTP 429) when the limit is reached.
+        """
+        from app.tenancy.limits import check_daily_goal_limit
+
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            # Fall back to in-memory count (single-process mode)
+            today_prefix = datetime.now(UTC).strftime("%Y-%m-%d")
+            daily_count = sum(
+                1 for r in self._goals.values()
+                if r.tenant_id == tenant_ctx.tenant_id
+                and r.created_at.startswith(today_prefix)
+            )
+            check_daily_goal_limit(tenant_ctx, daily_count)
+            return
+
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        key = f"daily_goals:{tenant_ctx.tenant_id}:{today}"
+
+        try:
+            # Peek at current count (don't increment yet — increment after validation)
+            current = int(await redis.get(key) or 0)
+            check_daily_goal_limit(tenant_ctx, current)
+            # Passed — increment atomically
+            await redis.incr(key)
+            # Set TTL to end of day + buffer
+            now = datetime.now(UTC)
+            end_of_day = datetime(now.year, now.month, now.day, 23, 59, 59, tzinfo=UTC)
+            ttl = int((end_of_day - now).total_seconds()) + 3600
+            await redis.expire(key, ttl)
+        except Exception:
+            raise
 
     async def _recover_interrupted_goals(self) -> int:
         """Re-enqueue goals that were executing when the process died.
@@ -374,13 +416,25 @@ class GoalService:
 
         # ── Pull services from app.state ─────────────────────────────────────────
         audit_log = getattr(app_state, "audit_log", None) if app_state else self._audit_log
-        cost_controller = getattr(app_state, "cost_controller", None) if app_state else None
+        # Prefer RedisCostController (cross-replica) over in-memory CostController
+        cost_controller = (
+            getattr(app_state, "redis_cost_controller", None)
+            or getattr(app_state, "cost_controller", None)
+        ) if app_state else None
         hitl_gateway = getattr(app_state, "hitl_gateway", None) if app_state else self._hitl
         knowledge_store = getattr(app_state, "knowledge_store", None) if app_state else None
         long_term_memory = getattr(app_state, "long_term_memory", None) if app_state else None
         eval_runner = getattr(app_state, "eval_runner", None) if app_state else None
         policy_engine = getattr(app_state, "policy_engine", None) if app_state else None
         mcp_client = self._get_mcp_client()
+
+        # ── Extract RAG/routing/intelligence services from app.state ─────────────
+        _embedder = getattr(app_state, "embedder", None) if app_state else None
+        _semantic_cache = getattr(app_state, "semantic_cache", None) if app_state else None
+        _model_router = getattr(app_state, "model_router", None) if app_state else None
+        _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
+        # Agent-level feature flags — read from agent config when available
+        _agent_config: dict[str, Any] = {}
 
         graph = AgentGraph(
             planner=provider,
@@ -398,9 +452,21 @@ class GoalService:
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             policy_engine=policy_engine,
+            # RAG / intelligence services
+            embedder=_embedder,
+            semantic_cache=_semantic_cache,
+            model_router=_model_router,
+            # Agent feature flags
+            enable_cot=_agent_config.get("enable_cot", False),
+            enable_reflection=_agent_config.get("enable_reflection", False),
+            enable_goal_tree=_agent_config.get("enable_goal_tree", False),
+            autonomy_mode=_agent_config.get("autonomy_mode", "bounded-autonomous"),
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
             checkpointer=_resolve_checkpointer(app_state),
         )
+        # Wire attributes that are set externally (not constructor params)
+        graph._db_session_factory = self._db
+        graph._prompt_optimizer = _prompt_optimizer
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)
         graph._rpa_executor = _rpa_exec
@@ -634,6 +700,7 @@ class GoalService:
         etype = sanitized_event.get("type")
         if etype == "goal_complete":
             record.status = GoalStatus.COMPLETE
+            record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "completed")
             # Persist status update to PostgreSQL in the background.
             if self._db is not None:
@@ -717,6 +784,7 @@ class GoalService:
                 )
         elif etype == "goal_failed":
             record.status = GoalStatus.FAILED
+            record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "failed")
             if self._db is not None:
                 self._track_db_task(
@@ -730,6 +798,7 @@ class GoalService:
                 )
         elif etype == "goal_cancelled":
             record.status = GoalStatus.CANCELLED
+            record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "cancelled")
         # Decrement the per-tenant concurrent-goal counter for every terminal event.
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
@@ -963,15 +1032,8 @@ class GoalService:
             span.set_attribute("goal", goal[:100])
             self._validate_agent_id(agent_id, tenant_ctx)
 
-            # Enforce daily goal limit per plan tier
-            from app.tenancy.limits import check_daily_goal_limit
-            today_prefix = datetime.now(UTC).strftime("%Y-%m-%d")
-            daily_count = sum(
-                1 for r in self._goals.values()
-                if r.tenant_id == tenant_ctx.tenant_id
-                and r.created_at.startswith(today_prefix)
-            )
-            check_daily_goal_limit(tenant_ctx, daily_count)
+            # Enforce daily goal limit per plan tier (Redis-backed for multi-process safety)
+            await self._check_daily_goal_limit_redis(tenant_ctx)
 
             # Check and atomically increment the concurrent-goal counter.
             # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
@@ -1017,8 +1079,8 @@ class GoalService:
             self._goals[goal_id] = record
 
             # Every 500 submissions, evict stale terminal goals to prevent OOM.
-            if len(self._goals) % 500 == 0:
-                asyncio.create_task(asyncio.to_thread(self._evict_stale_goals))
+            if len(self._goals) % 500 == 0 and len(self._goals) > 0:
+                asyncio.create_task(self._evict_async())
 
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
@@ -1127,6 +1189,15 @@ class GoalService:
                 await self._dispatch_event(
                     goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx
                 )
+                # Don't count dry-runs against the daily Redis limit — decrement it back
+                _redis_for_dry = getattr(self, "_redis", None)
+                if _redis_for_dry is not None:
+                    try:
+                        _today = datetime.now(UTC).strftime("%Y-%m-%d")
+                        _dry_key = f"daily_goals:{tenant_ctx.tenant_id}:{_today}"
+                        await _redis_for_dry.decr(_dry_key)
+                    except Exception:
+                        pass
 
         return {
             "goal_id": goal_id,
@@ -1200,7 +1271,62 @@ class GoalService:
         }
 
     async def get_metrics(self, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """Return aggregated metrics for the tenant's goals."""
+        """Return aggregated metrics for the tenant's goals — reads from DB when available."""
+        # Try DB-backed metrics first (works correctly in Celery/multi-process mode)
+        if self._db is not None:
+            try:
+                from sqlalchemy import text
+                async with self._db() as session:
+                    row = (await session.execute(text("""
+                        SELECT
+                          COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
+                          COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
+                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,
+                          COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,
+                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,
+                          COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
+                        FROM goals WHERE tenant_id = :tid
+                    """), {"tid": tenant_ctx.tenant_id})).fetchone()
+
+                    if row:
+                        completed = row[0] or 0
+                        failed = row[1] or 0
+                        active = row[2] or 0
+                        cancelled = row[3] or 0
+                        terminal = completed + failed + cancelled
+                        cost_today_usd = 0.0
+                        cost_ctrl = (
+                            getattr(self._app_state, "redis_cost_controller", None)
+                            or getattr(self._app_state, "cost_controller", None)
+                        ) if self._app_state else None
+                        if cost_ctrl is not None:
+                            try:
+                                _cost_val = cost_ctrl.get_tenant_cost_today(tenant_ctx)
+                                if hasattr(_cost_val, "__await__"):
+                                    cost_today_usd = await _cost_val
+                                else:
+                                    cost_today_usd = float(_cost_val or 0)
+                            except Exception:
+                                cost_today_usd = 0.0
+                        return {
+                            "active_goals": active,
+                            "completed_goals": completed,
+                            "failed_goals": failed,
+                            "cancelled_goals": cancelled,
+                            "completed_today": row[4] or 0,
+                            "submitted_today": row[6] or 0,
+                            "success_rate": round(completed / terminal, 3) if terminal > 0 else 0.0,
+                            "avg_latency_ms": round(float(row[5] or 0), 1),
+                            "cost_today_usd": cost_today_usd,
+                            # Legacy fields for backward compat
+                            "total_goals": completed + failed + active + cancelled,
+                            "goals_today": row[6] or 0,
+                        }
+            except Exception as exc:
+                _svc_logger.warning("get_metrics_db_failed", error=str(exc))
+
+        # Fallback: in-memory calculation
         today = datetime.now(UTC).date().isoformat()
         active_goals = 0
         total_goals = 0
@@ -1290,6 +1416,16 @@ class GoalService:
         _GOAL_PAUSE_EVENTS[goal_id] = asyncio.Event()
         record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
+
+        # Publish pause signal to Redis so Celery workers can observe it
+        redis = getattr(self, "_redis", None)
+        if redis is not None:
+            try:
+                await redis.publish(f"goal_pause:{goal_id}", "pause")
+                await redis.set(f"goal_paused:{goal_id}", "1", ex=3600)  # flag for polling
+            except Exception as exc:
+                _svc_logger.warning("pause_publish_failed", goal_id=goal_id, error=str(exc))
+
         return {"goal_id": goal_id, "status": "paused"}
 
     async def resume_goal(
@@ -1429,6 +1565,27 @@ class GoalService:
     ) -> list[dict[str, Any]]:
         """Return audit log entries for *goal_id* (tenant-validated)."""
         self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+        # Prefer DB query (works across all processes / Celery workers)
+        if hasattr(self._audit_log, "query_db"):
+            try:
+                db_entries = await self._audit_log.query_db(
+                    tenant_ctx=tenant_ctx,
+                    goal_id=goal_id,
+                    limit=500,
+                )
+                return [
+                    {
+                        "event_id": e.event_id,
+                        "goal_id": e.goal_id,
+                        "tool_name": e.tool_name,
+                        "outcome": e.outcome,
+                        "created_at": e.created_at,
+                    }
+                    for e in db_entries
+                ]
+            except Exception:
+                pass
+        # Fallback to in-memory
         entries = self._audit_log.query(tenant_ctx=tenant_ctx, goal_id=goal_id)
         return [
             {

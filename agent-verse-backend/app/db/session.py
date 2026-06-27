@@ -16,8 +16,18 @@ from app.core.config import get_settings
 
 
 def _make_engine(database_url: str | None = None) -> AsyncEngine:
-    url = database_url or get_settings().database_url
-    return create_async_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    settings = get_settings()
+    url = database_url or settings.database_url
+    return create_async_engine(
+        url,
+        pool_pre_ping=getattr(settings, "db_pool_pre_ping", True),
+        pool_size=getattr(settings, "db_pool_size", 10),
+        max_overflow=getattr(settings, "db_max_overflow", 20),
+        pool_timeout=getattr(settings, "db_pool_timeout", 30),
+        pool_recycle=getattr(settings, "db_pool_recycle", 1800),
+        # Disable prepared statement caching for PgBouncer transaction mode
+        connect_args={"statement_cache_size": 0},
+    )
 
 
 def _make_session_factory(database_url: str | None = None) -> async_sessionmaker[AsyncSession]:
