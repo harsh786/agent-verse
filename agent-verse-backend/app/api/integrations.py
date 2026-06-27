@@ -153,7 +153,7 @@ async def slack_events(
                 if action_id == "approve_hitl":
                     hitl.approve(request_id, approver=approver, tenant_ctx=ctx)
                 elif action_id == "reject_hitl":
-                    hitl.reject(request_id, approver=approver, tenant_ctx=ctx)
+                    await hitl.reject(request_id, approver=approver, tenant_ctx=ctx)
 
     return {"ok": True}
 

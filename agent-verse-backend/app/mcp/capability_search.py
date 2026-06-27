@@ -22,6 +22,14 @@ class ToolMatch:
     description: str
     score: float
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "server_id": self.server_id,
+            "tool_name": self.tool_name,
+            "description": self.description,
+            "score": round(self.score, 4),
+        }
+
 
 class CapabilitySearch:
     """Find tools matching a natural-language capability query.
@@ -30,12 +38,36 @@ class CapabilitySearch:
 
         search = CapabilitySearch()                          # keyword mode
         search = CapabilitySearch(embedder=my_provider)      # semantic mode
+        search = CapabilitySearch(tools=my_tools, embedder=my_provider)  # pre-loaded
 
     Both modes return a ranked list of :class:`ToolMatch` objects.
     """
 
-    def __init__(self, *, embedder: Any = None) -> None:
+    def __init__(self, *, tools: Any = None, embedder: Any = None) -> None:
         self._embedder = embedder
+        self._tools: list[dict[str, Any]] | None = (
+            self._normalize_tools(tools) if tools is not None else None
+        )
+
+    # ── normalisation ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_tools(tools: Any) -> list[dict[str, Any]]:
+        """Coerce a mixed list of dicts or ToolDefinition objects to dicts."""
+        result: list[dict[str, Any]] = []
+        for t in tools:
+            if isinstance(t, dict):
+                result.append(t)
+            else:
+                result.append(
+                    {
+                        "name": getattr(t, "name", ""),
+                        "description": getattr(t, "description", ""),
+                        "server_id": getattr(t, "server_id", ""),
+                        "input_schema": getattr(t, "input_schema", {}),
+                    }
+                )
+        return result
 
     # ── cosine similarity ─────────────────────────────────────────────────────
 
@@ -72,9 +104,9 @@ class CapabilitySearch:
     async def search(
         self,
         query: str,
-        tools: list[dict[str, Any]],
+        tools: list[Any] | None = None,
         *,
-        tenant_ctx: TenantContext,
+        tenant_ctx: TenantContext | None = None,
         top_k: int = 5,
         threshold: float = 0.0,
     ) -> list[ToolMatch]:
@@ -85,8 +117,10 @@ class CapabilitySearch:
         query:
             Natural-language description of the desired capability.
         tools:
-            Flat list of tool dicts (each with at least ``name`` and
-            ``description`` keys, optionally ``server_id``).
+            Flat list of tool dicts or ToolDefinition objects (each with at
+            least ``name`` and ``description`` keys / attributes, optionally
+            ``server_id``).  When omitted, the tools passed to ``__init__``
+            are used.
         tenant_ctx:
             The calling tenant — results are scoped to the supplied tools
             so tenant isolation is the caller's responsibility.
@@ -95,14 +129,22 @@ class CapabilitySearch:
         threshold:
             Minimum score for a tool to appear in results.
         """
-        if not tools:
+        # Resolve tool list: explicit argument > stored in __init__ > empty.
+        if tools is not None:
+            resolved: list[dict[str, Any]] = self._normalize_tools(tools)
+        elif self._tools is not None:
+            resolved = self._tools
+        else:
+            resolved = []
+
+        if not resolved:
             return []
 
         if self._embedder is not None:
             return await self._search_semantic(
-                query, tools, top_k=top_k, threshold=threshold
+                query, resolved, top_k=top_k, threshold=threshold
             )
-        return self._search_keyword(query, tools, top_k=top_k, threshold=threshold)
+        return self._search_keyword(query, resolved, top_k=top_k, threshold=threshold)
 
     def _search_keyword(
         self,

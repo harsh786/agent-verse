@@ -88,7 +88,7 @@ def test_approve_resolves_event() -> None:
     assert req._event.is_set()
 
 
-def test_reject_resolves_event() -> None:
+async def test_reject_resolves_event() -> None:
     """reject() must set the asyncio.Event so waiters unblock."""
     gateway = HITLGateway()
     tenant = _tenant()
@@ -100,7 +100,7 @@ def test_reject_resolves_event() -> None:
     assert req is not None
     assert not req._event.is_set()
 
-    ok = gateway.reject(req_id, approver="bob", note="too risky", tenant_ctx=tenant)
+    ok = await gateway.reject(req_id, approver="bob", note="too risky", tenant_ctx=tenant)
 
     assert ok is True
     assert req.status == ApprovalStatus.REJECTED

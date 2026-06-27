@@ -16,6 +16,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "software",
         "description": "Fix JIRA bugs labeled prod-down and open a PR",
         "connectors": ["github", "jira", "sentry"],
+        "required_connectors": ["github", "jira", "sentry"],
         "trigger_type": "webhook",
         "autonomy_mode": "bounded-autonomous",
         "author": "AgentVerse",
@@ -28,6 +29,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "devops",
         "description": "Roll back last deploy if error rate > 2% for 5 min",
         "connectors": ["datadog", "github"],
+        "required_connectors": ["datadog", "github"],
         "trigger_type": "event",
         "autonomy_mode": "supervised",
         "author": "AgentVerse",
@@ -40,6 +42,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "testing",
         "description": "Generate and run E2E tests for the checkout flow nightly",
         "connectors": ["github"],
+        "required_connectors": ["github"],
         "trigger_type": "cron",
         "autonomy_mode": "fully-autonomous",
         "author": "AgentVerse",
@@ -54,6 +57,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "hr",
         "description": "Onboard new engineers end-to-end",
         "connectors": ["slack", "jira"],
+        "required_connectors": ["slack", "jira"],
         "trigger_type": "event",
         "autonomy_mode": "supervised",
         "author": "AgentVerse",
@@ -69,6 +73,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "sales",
         "description": "Follow up with leads idle 7+ days",
         "connectors": ["salesforce"],
+        "required_connectors": ["salesforce"],
         "trigger_type": "interval",
         "autonomy_mode": "bounded-autonomous",
         "author": "AgentVerse",
@@ -83,6 +88,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "support",
         "description": "Triage new tickets, draft replies, escalate P1s",
         "connectors": ["slack", "jira"],
+        "required_connectors": ["slack", "jira"],
         "trigger_type": "webhook",
         "autonomy_mode": "bounded-autonomous",
         "author": "AgentVerse",
@@ -98,6 +104,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "software",
         "description": "Automatically review open PRs, post inline comments, and request changes",
         "connectors": ["github", "jira"],
+        "required_connectors": ["github", "jira"],
         "trigger_type": "webhook",
         "autonomy_mode": "bounded-autonomous",
         "author": "AgentVerse",
@@ -113,6 +120,7 @@ _BUILTIN_TEMPLATES = [
         "domain": "devops",
         "description": "Detect production incidents, page on-call, open Jira tickets, and post status updates",
         "connectors": ["datadog", "slack", "jira"],
+        "required_connectors": ["datadog", "slack", "jira"],
         "trigger_type": "event",
         "autonomy_mode": "supervised",
         "author": "AgentVerse",
@@ -176,11 +184,42 @@ class Marketplace:
         template_id: str,
         params: dict[str, Any],
         tenant_ctx: TenantContext,
-    ) -> DeployedTemplate:
-        """Deploy a template as a live agent for the tenant."""
+        registry: Any = None,
+    ) -> Any:
+        """Deploy a template as a live agent for the tenant.
+
+        If *registry* is provided, validates that all required connectors are
+        registered for the tenant before proceeding. Returns a failure dict
+        (not DeployedTemplate) when required connectors are missing.
+        """
         template = self.get_template(template_id=template_id)
         if template is None:
             raise ValueError(f"Template {template_id} not found")
+
+        # Validate required connectors when a registry is available
+        missing_connectors: list[str] = []
+        if registry is not None:
+            required = template.get("required_connectors", [])
+            for required_connector in required:
+                try:
+                    servers = await registry.list_servers(tenant_ctx=tenant_ctx)
+                    server_names = {
+                        getattr(s, "name", "").lower() for s in servers
+                    }
+                    if required_connector.lower() not in server_names:
+                        missing_connectors.append(required_connector)
+                except Exception:
+                    pass
+
+        if missing_connectors:
+            return {
+                "status": "failed",
+                "reason": f"Required connectors not registered: {missing_connectors}",
+                "required_connectors": missing_connectors,
+                "next_step": (
+                    f"Register these connectors first: {', '.join(missing_connectors)}"
+                ),
+            }
 
         agent_id: str
         if self._agent_store is not None:

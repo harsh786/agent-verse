@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
@@ -728,4 +728,200 @@ async def import_openapi_connector(
         "name": connector_name,
         "tools_imported": len(tools),
         "base_url": body.base_url,
+    }
+
+
+# ── Capability Registry API ───────────────────────────────────────────────────
+
+
+@router.get("/capabilities")
+async def list_capabilities(request: Request, q: str = "") -> list[dict]:
+    """List all discovered tool capabilities for this tenant."""
+    tenant_ctx = _require_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        from app.db.session import get_session_factory
+        db = get_session_factory()
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        async with db() as session:
+            async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+                sql = (
+                    "SELECT tool_name, connector_id, description, risk_level, "
+                    "health_status, success_rate, avg_latency_ms "
+                    "FROM tool_capabilities WHERE tenant_id = :tid"
+                )
+                params: dict = {"tid": tenant_ctx.tenant_id}
+                if q:
+                    sql += " AND (tool_name ILIKE :q OR description ILIKE :q)"
+                    params["q"] = f"%{q}%"
+                result = await session.execute(text(sql), params)
+                rows = result.fetchall()
+        return [
+            {
+                "tool_name": r[0],
+                "connector_id": r[1],
+                "description": r[2],
+                "risk_level": r[3],
+                "health_status": r[4],
+                "success_rate": round(r[5], 3),
+                "avg_latency_ms": round(r[6], 1),
+            }
+            for r in rows
+        ]
+    except Exception:
+        # Fall back to catalog when DB unavailable
+        from app.mcp.catalog import CONNECTOR_CATALOG
+        return [
+            {
+                "tool_name": c.name,
+                "connector_id": c.name,
+                "description": c.description,
+                "risk_level": "unknown",
+                "health_status": "unknown",
+            }
+            for c in CONNECTOR_CATALOG[:20]
+        ]
+
+
+@router.get("/capabilities/search")
+async def search_capabilities(request: Request, q: str = Query(...)) -> dict:
+    """Semantic + keyword search over discovered capabilities."""
+    tenant_ctx = _require_tenant(request)
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+
+    all_tools: list = []
+    if mcp_client is not None:
+        try:
+            all_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
+        except Exception:
+            pass
+
+    from app.mcp.capability_search import CapabilitySearch
+    embedder = getattr(request.app.state, "embedder", None)
+    search = CapabilitySearch(tools=all_tools, embedder=embedder)
+    results = await search.search(q, top_k=10)
+    return {
+        "query": q,
+        "results": [r.to_dict() if hasattr(r, "to_dict") else r for r in results],
+    }
+
+
+@router.post("/{server_id}/discover")
+async def discover_connector_tools(request: Request, server_id: str) -> dict:
+    """Discover and persist all tools from a registered connector."""
+    tenant_ctx = _require_tenant(request)
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+    if mcp_client is None:
+        raise HTTPException(503, "MCP client not available")
+
+    try:
+        tools = await mcp_client.discover_tools(
+            server_id=server_id, tenant_ctx=tenant_ctx
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"Discovery failed: {exc}")
+
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        from app.db.session import get_session_factory
+        db = get_session_factory()
+
+    saved = 0
+    if db is not None:
+        try:
+            import json
+            import uuid
+
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                for tool in tools:
+                    await session.execute(
+                        text(
+                            """
+                            INSERT INTO tool_capabilities
+                                (id, tenant_id, connector_id, tool_name,
+                                 description, input_schema, risk_level,
+                                 last_discovered)
+                            VALUES
+                                (:id, :tid, :cid, :name,
+                                 :desc, :schema::jsonb, :risk,
+                                 NOW())
+                            ON CONFLICT (tenant_id, connector_id, tool_name)
+                            DO UPDATE SET
+                                description    = EXCLUDED.description,
+                                input_schema   = EXCLUDED.input_schema,
+                                last_discovered = NOW(),
+                                updated_at     = NOW()
+                            """
+                        ),
+                        {
+                            "id": uuid.uuid4().hex,
+                            "tid": tenant_ctx.tenant_id,
+                            "cid": server_id,
+                            "name": getattr(tool, "name", str(tool)),
+                            "desc": getattr(tool, "description", ""),
+                            "schema": json.dumps(
+                                getattr(tool, "input_schema", {})
+                            ),
+                            "risk": getattr(tool, "risk_level", "low"),
+                        },
+                    )
+                    saved += 1
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "tool_capability_persist_failed: %s", exc
+            )
+
+    return {
+        "server_id": server_id,
+        "tools_discovered": len(tools),
+        "tools_saved": saved,
+    }
+
+
+@router.get("/capabilities/missing")
+async def missing_capabilities(
+    request: Request, goal: str = Query(...)
+) -> dict:
+    """Identify capabilities needed for a goal but not yet available."""
+    tenant_ctx = _require_tenant(request)
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+
+    available_tools: list = []
+    if mcp_client is not None:
+        try:
+            available_tools = await mcp_client.discover_all_tools(
+                tenant_ctx=tenant_ctx
+            )
+        except Exception:
+            pass
+
+    available_names = {getattr(t, "name", "") for t in available_tools}
+
+    suggestions: list[dict] = []
+    goal_lower = goal.lower()
+    for spec in CONNECTOR_CATALOG:
+        name_words = spec.name.lower().replace("-", " ").replace("_", " ")
+        if name_words in goal_lower or spec.name.lower() in goal_lower:
+            if spec.name not in available_names:
+                suggestions.append(
+                    {
+                        "connector": spec.name,
+                        "category": "integration",
+                        "install_hint": (
+                            f"Register the {spec.name} connector "
+                            "to enable this capability"
+                        ),
+                    }
+                )
+
+    return {
+        "goal": goal,
+        "available_tool_count": len(available_tools),
+        "missing_connectors": suggestions[:5],
+        "can_proceed": len(suggestions) == 0 or len(available_tools) > 0,
     }

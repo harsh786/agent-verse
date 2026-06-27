@@ -46,6 +46,19 @@ services:
         limits:
           memory: 512M
 
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build:
       context: ..
@@ -55,8 +68,8 @@ services:
     environment:
       <<: *common-env
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:

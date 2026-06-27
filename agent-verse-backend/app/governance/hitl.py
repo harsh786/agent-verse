@@ -53,6 +53,8 @@ class HITLGateway:
         self._timeout = timeout_seconds
         self._notification_service: Any = None
         self._db_session_factory: Any = None
+        # Redis client for publishing rejection notes (set by create_app lifespan)
+        self._redis: Any = None
 
     def request_approval(
         self,
@@ -179,11 +181,11 @@ class HITLGateway:
             req._event.set()  # Unblock waiting agent
         return True
 
-    def reject(
+    async def reject(
         self,
         request_id: str,
         *,
-        approver: str,
+        approver: str = "",
         note: str = "",
         tenant_ctx: TenantContext,
     ) -> bool:
@@ -194,6 +196,25 @@ class HITLGateway:
         req.approver = approver
         req.note = note
         req._event.set()  # Unblock waiting agent
+
+        # Phase 12: Publish rejection with note so goal_service can forward to planner
+        if self._redis is not None:
+            try:
+                import json
+                from datetime import UTC, datetime
+                await self._redis.publish(
+                    f"hitl_rejected:{req.goal_id}",
+                    json.dumps({
+                        "request_id": request_id,
+                        "goal_id": req.goal_id,
+                        "note": note,
+                        "rejected_by": getattr(tenant_ctx, "api_key_id", "unknown"),
+                        "ts": datetime.now(UTC).isoformat(),
+                    })
+                )
+            except Exception:
+                pass
+
         return True
 
     def list_pending(self, *, tenant_ctx: TenantContext) -> list[ApprovalRequest]:

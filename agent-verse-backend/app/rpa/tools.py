@@ -60,6 +60,73 @@ RPA_TOOLS: tuple[dict[str, Any], ...] = (
             "properties": {"name": {"type": "string"}},
         },
     },
+    {
+        "name": "rpa_wait_for_text",
+        "description": "Wait until specific text appears on the page (timeout-based polling).",
+        "risk": "read",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "timeout_ms": {"type": "integer"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "rpa_select_option",
+        "description": "Select a value from a <select> dropdown element by value or label.",
+        "risk": "high",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string"},
+                "value": {"type": "string"},
+            },
+            "required": ["selector", "value"],
+        },
+    },
+    {
+        "name": "rpa_upload_file",
+        "description": "Upload a file to an input[type=file] element.",
+        "risk": "high",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string"},
+                "file_path": {"type": "string"},
+            },
+            "required": ["selector", "file_path"],
+        },
+    },
+    {
+        "name": "rpa_download_file",
+        "description": "Click a download link and save the file as an artifact.",
+        "risk": "high",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string"},
+            },
+            "required": ["selector"],
+        },
+    },
+    {
+        "name": "rpa_submit_form",
+        "description": "Fill multiple form fields and submit the form.",
+        "risk": "high",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field_values": {
+                    "type": "object",
+                    "description": "Mapping of CSS selector to value",
+                },
+                "submit_selector": {"type": "string"},
+            },
+            "required": ["field_values"],
+        },
+    },
 )
 
 _RISK_BY_TOOL = {str(tool["name"]): str(tool["risk"]) for tool in RPA_TOOLS}

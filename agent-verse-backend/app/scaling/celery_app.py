@@ -63,6 +63,11 @@ celery_app.conf.update(
             "schedule": 300.0,  # every 5 minutes
             "options": {"queue": "maintenance"},
         },
+        "detect-stuck-goals-every-15min": {
+            "task": "agentverse.maintenance.detect_stuck_goals",
+            "schedule": 900,  # every 15 minutes
+            "options": {"queue": "maintenance"},
+        },
         "execute-retention-policy": {
             "task": "app.scaling.tasks.execute_retention_policy",
             "schedule": crontab(hour=3, minute=0),  # 3 AM UTC daily

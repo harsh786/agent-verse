@@ -42,6 +42,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
 from app.api.analytics import router as analytics_router
+from app.api.replay import router as replay_router
 from app.api.training_export import router as training_export_router
 from app.api.integrations import router as integrations_router
 from app.api.agents import AgentStore
@@ -707,6 +708,18 @@ def create_app(
     app.state.oauth_manager = _oauth_manager
     app.state.agent_store = _agent_store
     app.state.meta_agent = _meta_agent
+    # ── Phase 3: Agent Router (auto-routes goals when agent_id is omitted) ────
+    try:
+        from app.agent.router import AgentRouter
+        _agent_router = AgentRouter(
+            agent_store=_agent_store,
+            llm_provider=_app_provider,
+        )
+        app.state.agent_router = _agent_router
+        logger.info("agent_router_registered")
+    except Exception as _ar_exc:
+        logger.warning("agent_router_init_failed", error=str(_ar_exc))
+        app.state.agent_router = None
     # Governance
     app.state.hitl_gateway = _hitl
     app.state.audit_log = _audit_log
@@ -808,10 +821,12 @@ def create_app(
     app.include_router(integrations_router)
     # Analytics
     app.include_router(analytics_router)
+    # Replay (goal execution timeline)
+    app.include_router(replay_router)
     # Training data export (intelligence)
     app.include_router(training_export_router)
 
-    configure_tracing(app, settings)
+    configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 
     return app
 

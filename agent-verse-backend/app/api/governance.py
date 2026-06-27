@@ -341,7 +341,7 @@ async def reject_request(
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
-    ok = gateway.reject(
+    ok = await gateway.reject(
         request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
     )
     if not ok:
@@ -471,35 +471,183 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Request models — legal hold
+# ---------------------------------------------------------------------------
+
+class LegalHoldRequest(BaseModel):
+    reason: str
+    expires_at: str | None = None  # ISO datetime
+
+
+# ---------------------------------------------------------------------------
+# Helpers — DB session factory
+# ---------------------------------------------------------------------------
+
+def _get_db(request: Request) -> Any:
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        try:
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+        except Exception:
+            pass
+    return db
+
+
+# ---------------------------------------------------------------------------
 # Endpoints — emergency stop
 # ---------------------------------------------------------------------------
 
 @router.post("/emergency-stop")
-async def emergency_stop(
-    request: Request,
-    _rbac: None = Depends(require_role("admin")),
-) -> dict[str, Any]:
-    """Pause all running goals for this tenant immediately."""
-    tenant = _require_tenant(request)
-    svc = getattr(request.app.state, "goal_service", None)
-    if svc is None:
-        raise HTTPException(503, "Goal service not available")
-    from app.agent.state import GoalStatus
-    goals = svc._goals
-    stopped = 0
-    for goal_id, record in goals.items():
-        if record.tenant_id != tenant.tenant_id:
-            continue
-        if record.status in {GoalStatus.EXECUTING, GoalStatus.PLANNING}:
-            if record.task and not record.task.done():
-                record.task.cancel()
-            record.status = GoalStatus.CANCELLED
-            stopped += 1
-    return {"stopped_goals": stopped, "tenant_id": tenant.tenant_id}
+async def emergency_stop(request: Request) -> dict:
+    """Immediately cancel all running and queued goals for this tenant.
+
+    Use for: security incidents, runaway agents, cost overruns.
+    This is irreversible — cancelled goals must be resubmitted.
+    """
+    ctx = _require_tenant(request)
+
+    # 1. Cancel all running in-memory goals via GoalService
+    goal_service = getattr(request.app.state, "goal_service", None)
+    cancelled_goals = []
+    if goal_service is not None:
+        try:
+            # Get all running goals for this tenant
+            running = [
+                gid for gid, record in goal_service._goals.items()
+                if getattr(record, "tenant_id", "") == ctx.tenant_id
+                and str(getattr(record, "status", "")).lower() not in (
+                    "complete", "completed", "failed", "cancelled"
+                )
+            ]
+            for goal_id in running:
+                try:
+                    await goal_service.cancel_goal(goal_id=goal_id, tenant_ctx=ctx)
+                    cancelled_goals.append(goal_id)
+                except Exception:
+                    pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("emergency_stop_cancel_failed: %s", exc)
+
+    # 2. Publish emergency stop signal to Redis so Celery workers abort
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is not None:
+        try:
+            import json
+            from datetime import UTC, datetime
+            await redis.publish(
+                "emergency_stop",
+                json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()})
+            )
+            # Also set a flag that Celery workers can poll
+            await redis.set(
+                f"emergency_stop:{ctx.tenant_id}",
+                "1",
+                ex=300  # 5 minute window
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("emergency_stop_redis_failed: %s", exc)
+
+    # 3. Reject all pending HITL approvals
+    hitl = getattr(request.app.state, "hitl_gateway", None)
+    rejected_approvals = []
+    if hitl is not None:
+        try:
+            pending = hitl.list_pending(tenant_ctx=ctx)
+            for approval in pending:
+                try:
+                    await hitl.reject(
+                        approval.request_id,
+                        tenant_ctx=ctx,
+                        note="Emergency stop activated by operator",
+                    )
+                    rejected_approvals.append(approval.request_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # 4. Log to audit trail
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is not None:
+        try:
+            from app.governance.audit import AuditEvent
+            from app.governance.permissions import ActionLevel
+            from app.tenancy.context import PlanTier, TenantContext as _TC
+            _audit_ctx = _TC(
+                tenant_id=ctx.tenant_id,
+                plan=PlanTier.FREE,
+                api_key_id=getattr(ctx, "api_key_id", ""),
+            )
+            audit_log.record(AuditEvent(
+                goal_id="emergency_stop",
+                tool_name="emergency_stop",
+                action_level=ActionLevel.DENY,
+                outcome="stop_activated",
+                api_key_id=getattr(ctx, "api_key_id", ""),
+                note=(
+                    f"cancelled_goals={len(cancelled_goals)},"
+                    f"rejected_approvals={len(rejected_approvals)}"
+                ),
+            ), tenant_ctx=_audit_ctx)
+        except Exception:
+            pass
+
+    return {
+        "status": "emergency_stop_activated",
+        "tenant_id": ctx.tenant_id,
+        "cancelled_goals": len(cancelled_goals),
+        "cancelled_goal_ids": cancelled_goals[:20],
+        "rejected_approvals": len(rejected_approvals),
+        "celery_signal_sent": redis is not None,
+        "message": (
+            "All running goals cancelled. "
+            "Celery workers will abort in-progress tasks."
+        ),
+    }
 
 
 @router.delete("/emergency-stop")
-async def resume_emergency_stop(request: Request) -> dict[str, Any]:
-    """Resume accepting new goals after emergency stop."""
-    tenant = _require_tenant(request)
-    return {"status": "resumed", "tenant_id": tenant.tenant_id}
+async def clear_emergency_stop(request: Request) -> dict:
+    """Clear the emergency stop signal to allow new goals to be submitted."""
+    ctx = _require_tenant(request)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is not None:
+        try:
+            await redis.delete(f"emergency_stop:{ctx.tenant_id}")
+        except Exception:
+            pass
+    return {"status": "cleared", "tenant_id": ctx.tenant_id}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — legal hold
+# ---------------------------------------------------------------------------
+
+@router.post("/legal-hold")
+async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
+    """Place a legal hold on tenant data to prevent retention deletion."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(503, "Database not available")
+    import uuid
+    from sqlalchemy import text
+    async with db() as session, session.begin():
+        await session.execute(text("""
+            INSERT INTO legal_holds (id, tenant_id, reason, expires_at, created_by)
+            VALUES (:id, :tid, :reason, :exp, :by)
+        """), {
+            "id": uuid.uuid4().hex,
+            "tid": ctx.tenant_id,
+            "reason": body.reason,
+            "exp": body.expires_at,
+            "by": getattr(ctx, "api_key_id", "unknown"),
+        })
+    return {
+        "status": "legal_hold_placed",
+        "tenant_id": ctx.tenant_id,
+        "reason": body.reason,
+    }

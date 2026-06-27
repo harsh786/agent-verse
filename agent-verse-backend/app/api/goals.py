@@ -7,7 +7,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -88,12 +88,43 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
             except Exception:
                 pass  # Fall back to normal execution if debate fails
 
+    # ── Auto-routing: call AgentRouter when agent_id is not specified ─────────
+    agent_id = body.agent_id
+    if not agent_id:
+        agent_router = getattr(request.app.state, "agent_router", None)
+        if agent_router is not None:
+            agent_store = getattr(request.app.state, "agent_store", None)
+            if agent_store is not None:
+                try:
+                    agents = await agent_store.list_async(tenant_ctx=tenant)
+                    decision = await agent_router.route(
+                        goal=body.goal,
+                        tenant_ctx=tenant,
+                        available_agents=agents,
+                    )
+                    agent_id = decision.agent_id
+                    # Inject routing decision into execution context
+                    exec_ctx["routing_decision"] = decision.to_dict()
+                    # For needs_human_choice mode, return immediately with the decision
+                    if decision.mode == "needs_human_choice":
+                        return {
+                            "status": "needs_agent_selection",
+                            "routing": decision.to_dict(),
+                            "message": (
+                                "Multiple agents could handle this goal. "
+                                "Please select one."
+                            ),
+                        }
+                except Exception as _re:
+                    import logging
+                    logging.getLogger(__name__).warning("agent_router_failed: %s", _re)
+
     result: dict[str, Any] = await svc.submit_goal(
         goal=body.goal,
         priority=body.priority,
         dry_run=body.dry_run,
         tenant_ctx=tenant,
-        agent_id=body.agent_id,
+        agent_id=agent_id,
         workflow_mode=body.workflow_mode,
         execution_context=exec_ctx,
     )
@@ -136,6 +167,26 @@ async def get_cost_metrics(request: Request) -> dict[str, Any]:
             if budget_cfg.per_tenant_daily_usd > 0 else 0.0
         ),
     }
+
+
+@router.get("/route")
+async def preview_routing(
+    request: Request,
+    goal: str = Query(..., description="Goal text to route"),
+) -> dict:
+    """Preview routing decision for a goal without executing it."""
+    tenant = _require_tenant(request)
+    agent_router = getattr(request.app.state, "agent_router", None)
+    agent_store = getattr(request.app.state, "agent_store", None)
+    if agent_router is None:
+        return {"mode": "no_router", "reason": "Agent router not configured"}
+    agents: list = []
+    if agent_store is not None:
+        agents = await agent_store.list_async(tenant_ctx=tenant)
+    decision = await agent_router.route(
+        goal=goal, tenant_ctx=tenant, available_agents=agents
+    )
+    return decision.to_dict()
 
 
 @router.get("/{goal_id}")

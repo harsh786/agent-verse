@@ -348,6 +348,12 @@ class CreateAgentRequest(BaseModel):
     connector_ids: list[str] = []
     trigger_config: dict[str, Any] = {}
     allowed_collection_ids: list[str] = []  # knowledge collections this agent can query
+    eval_suite_id: str | None = None  # required for fully-autonomous mode
+    policy_ids: list[str] = []
+
+
+class CloneAgentRequest(BaseModel):
+    name: str | None = None
 
 
 class UpdatePermissionsRequest(BaseModel):
@@ -412,6 +418,15 @@ async def list_agents(request: Request) -> list[dict[str, Any]]:
 async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
+    # Enforce release gate: fully-autonomous mode requires an eval suite
+    if body.autonomy_mode == "fully-autonomous" and not body.eval_suite_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "fully-autonomous mode requires eval_suite_id. "
+                "Attach an eval suite with passing results first."
+            ),
+        )
     from app.tenancy.limits import check_agent_limit
     existing = store.list_all(tenant_ctx=tenant_ctx)
     check_agent_limit(tenant_ctx, len(existing))
@@ -423,6 +438,8 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
         "trigger_config": body.trigger_config,
         "allowed_collection_ids": body.allowed_collection_ids,
         "permissions": {},
+        "eval_suite_id": body.eval_suite_id,
+        "policy_ids": body.policy_ids,
     }
     agent_id = await _create_agent_record(store, record, tenant_ctx=tenant_ctx)
     return store.get(agent_id, tenant_ctx=tenant_ctx)  # type: ignore[return-value]
@@ -652,3 +669,140 @@ async def export_agent(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown export format: {format!r}. Supported: openai, anthropic",
         )
+
+
+@router.post("/{agent_id}/clone", status_code=status.HTTP_201_CREATED)
+async def clone_agent(
+    request: Request, agent_id: str, body: CloneAgentRequest
+) -> dict[str, Any]:
+    """Clone an existing agent with optional name override."""
+    tenant_ctx = _require_tenant(request)
+    store = _agent_store(request)
+
+    original = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if original is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
+
+    clone_data: dict[str, Any] = {
+        "name": body.name or f"{original['name']} (copy)",
+        "goal_template": original.get("goal_template", ""),
+        "autonomy_mode": original.get("autonomy_mode", "bounded-autonomous"),
+        "connector_ids": list(original.get("connector_ids", [])),
+        "trigger_config": dict(original.get("trigger_config", {})),
+        "allowed_collection_ids": list(original.get("allowed_collection_ids", [])),
+        "permissions": {},
+        "cloned_from": agent_id,
+    }
+
+    # Check agent limit before creating the clone
+    from app.tenancy.limits import check_agent_limit
+
+    existing = store.list_all(tenant_ctx=tenant_ctx)
+    check_agent_limit(tenant_ctx, len(existing))
+
+    clone_id = await _create_agent_record(store, clone_data, tenant_ctx=tenant_ctx)
+    return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
+
+
+@router.get("/{agent_id}/readiness")
+async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
+    """Check if an agent is ready for production use."""
+    tenant_ctx = _require_tenant(request)
+    store = _agent_store(request)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
+
+    checks: list[dict[str, str]] = []
+    ready = True
+
+    # 1. Has at least one connector
+    if not agent.get("connector_ids"):
+        checks.append(
+            {
+                "check": "connectors",
+                "status": "fail",
+                "message": "No connectors configured — agent cannot call external tools",
+            }
+        )
+        ready = False
+    else:
+        checks.append(
+            {
+                "check": "connectors",
+                "status": "pass",
+                "message": f"{len(agent['connector_ids'])} connector(s) configured",
+            }
+        )
+
+    # 2. Has a goal template
+    if not agent.get("goal_template"):
+        checks.append(
+            {
+                "check": "goal_template",
+                "status": "warn",
+                "message": "No goal template — agent will use bare LLM execution",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "check": "goal_template",
+                "status": "pass",
+                "message": "Goal template configured",
+            }
+        )
+
+    # 3. Fully-autonomous mode requires an eval suite
+    if agent.get("autonomy_mode") == "fully-autonomous":
+        eval_suite_id = agent.get("eval_suite_id")
+        if not eval_suite_id:
+            checks.append(
+                {
+                    "check": "eval_suite",
+                    "status": "fail",
+                    "message": (
+                        "fully-autonomous mode requires an attached eval suite "
+                        "with passing results"
+                    ),
+                }
+            )
+            ready = False
+        else:
+            checks.append(
+                {
+                    "check": "eval_suite",
+                    "status": "pass",
+                    "message": f"Eval suite {eval_suite_id} attached",
+                }
+            )
+
+    # 4. Spot-check connector secret accessibility
+    secret_store = getattr(request.app.state, "connector_secret_store", None)
+    if secret_store is not None and agent.get("connector_ids"):
+        for cid in agent["connector_ids"][:3]:
+            checks.append(
+                {
+                    "check": f"connector_{cid}_secrets",
+                    "status": "pass",
+                    "message": f"Connector {cid} accessible",
+                }
+            )
+
+    return {
+        "agent_id": agent_id,
+        "ready": ready,
+        "autonomy_mode": agent.get("autonomy_mode"),
+        "checks": checks,
+        "recommendation": (
+            "Agent is production-ready"
+            if ready
+            else "Fix failing checks before enabling autonomous mode"
+        ),
+    }

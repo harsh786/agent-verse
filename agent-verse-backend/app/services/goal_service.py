@@ -86,6 +86,8 @@ class GoalRecord:
     # Timestamp when the goal entered a terminal state (complete/failed/cancelled).
     # Used by _evict_stale_goals() to avoid evicting goals that just finished.
     completed_at: str | None = None
+    # Phase 12: rejection note from HITL operator — passed to planner for replanning
+    hitl_rejection_note: str = ""
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -1476,6 +1478,11 @@ class GoalService:
             record.status = GoalStatus.FAILED
             record.execution_context["hitl_rejected"] = True
             record.execution_context["hitl_feedback"] = feedback
+            # Phase 12: Store rejection note so agent graph can use it for replanning.
+            # The graph should read agent_state.context.get("hitl_rejection_note")
+            # and inject it into the reflection prompt.
+            record.hitl_rejection_note = feedback
+            record.execution_context["hitl_rejection_note"] = feedback
             await self._dispatch_event(
                 goal_id,
                 {"type": "goal_failed", "reason": f"HITL rejected: {feedback}"},
@@ -1638,7 +1645,7 @@ class GoalService:
         if action == "approve":
             ok = self._hitl.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
         elif action == "reject":
-            ok = self._hitl.reject(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
+            ok = await self._hitl.reject(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
         else:
             ok = False
         return {"request_id": request_id, "action": action, "accepted": ok}

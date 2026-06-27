@@ -146,6 +146,9 @@ class MCPClient:
         self, *, server_id: str, tenant_ctx: TenantContext
     ) -> list[ToolDefinition]:
         """Discover available tools on a registered MCP server."""
+        if not server_id:
+            logger.warning("discover_tools called with empty server_id")
+            return []
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
             return []
@@ -369,6 +372,23 @@ class MCPClient:
         Raises:
             CircuitBreakerOpenError: If the circuit breaker for this server is open.
         """
+        # Input validation
+        if not server_id:
+            return ToolCallResult(
+                tool_name=tool_name or "",
+                success=False,
+                error="server_id must not be empty",
+            )
+        if not tool_name:
+            return ToolCallResult(
+                tool_name="",
+                success=False,
+                error="tool_name must not be empty",
+                server_id=server_id,
+            )
+        if not isinstance(arguments, dict):
+            arguments = {}
+
         # Circuit breaker check — raises CircuitBreakerOpenError if open
         cb = self._get_circuit_breaker(server_id, tenant_id=getattr(tenant_ctx, "tenant_id", ""))
         if cb is not None:

@@ -222,6 +222,154 @@ class RPAExecutor:
                     artifact_name=artifact_name,
                 )
 
+            elif tool_name == "rpa_wait_for_text":
+                text = arguments.get("text", "")
+                if not text:
+                    return RPAResult(success=False, error="text argument required")
+                timeout = int(arguments.get("timeout_ms", 10000))
+                try:
+                    locator = page.get_by_text(text, exact=False)
+                    await locator.wait_for(timeout=timeout)
+                    session.touch()
+                    return RPAResult(
+                        success=True,
+                        output=f"Text '{text}' appeared on page",
+                    )
+                except Exception:
+                    content = await page.content()
+                    if text in content:
+                        session.touch()
+                        return RPAResult(
+                            success=True,
+                            output=f"Text '{text}' found in page content",
+                        )
+                    return RPAResult(
+                        success=False,
+                        error=f"Text '{text}' did not appear within {timeout}ms",
+                    )
+
+            elif tool_name == "rpa_select_option":
+                selector = arguments.get("selector", "")
+                value = arguments.get("value", "")
+                if not selector:
+                    return RPAResult(success=False, error="selector argument required")
+                try:
+                    selected = await page.select_option(selector, value=value)
+                    if not selected:
+                        selected = await page.select_option(selector, label=value)
+                    session.touch()
+                    return RPAResult(
+                        success=True,
+                        output=f"Selected '{value}' in element '{selector}'",
+                    )
+                except Exception as exc:
+                    return RPAResult(
+                        success=False,
+                        error=f"Could not select '{value}' in '{selector}': {exc}",
+                    )
+
+            elif tool_name == "rpa_upload_file":
+                import os
+                selector = arguments.get("selector", "")
+                file_path = arguments.get("file_path", "")
+                if not selector:
+                    return RPAResult(success=False, error="selector argument required")
+                if not file_path:
+                    return RPAResult(success=False, error="file_path argument required")
+                if not os.path.exists(file_path):
+                    return RPAResult(
+                        success=False,
+                        error=f"File not found: {file_path}",
+                    )
+                try:
+                    await page.set_input_files(selector, file_path)
+                    filename = os.path.basename(file_path)
+                    session.touch()
+                    return RPAResult(
+                        success=True,
+                        output=f"Uploaded file '{filename}' to '{selector}'",
+                    )
+                except Exception as exc:
+                    return RPAResult(success=False, error=str(exc))
+
+            elif tool_name == "rpa_download_file":
+                import os
+                import tempfile
+                selector = arguments.get("selector", "")
+                if not selector:
+                    return RPAResult(success=False, error="selector argument required")
+                try:
+                    async with page.expect_download() as download_info:
+                        await page.click(selector)
+                    download = await download_info.value
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=f"_{download.suggested_filename}"
+                    ) as f:
+                        tmp_path = f.name
+                    await download.save_as(tmp_path)
+                    artifact_url = tmp_path
+                    if self._artifact_store is not None:
+                        try:
+                            with open(tmp_path, "rb") as f:
+                                content = f.read()
+                            artifact_url = await self._artifact_store.store_bytes(
+                                content=content,
+                                filename=download.suggested_filename,
+                                content_type="application/octet-stream",
+                                tenant_id=session_id or "rpa",
+                            )
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                    size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                    session.touch()
+                    return RPAResult(
+                        success=True,
+                        output=f"Downloaded '{download.suggested_filename}' ({size} bytes)",
+                        artifact_url=artifact_url,
+                        artifact_name=download.suggested_filename,
+                    )
+                except Exception as exc:
+                    return RPAResult(success=False, error=str(exc))
+
+            elif tool_name == "rpa_submit_form":
+                field_values: dict = arguments.get("field_values", {})
+                submit_selector = arguments.get(
+                    "submit_selector", "button[type=submit]"
+                )
+                filled: list[str] = []
+                try:
+                    for sel, value in field_values.items():
+                        element = page.locator(sel)
+                        tag = await element.evaluate("el => el.tagName.toLowerCase()")
+                        input_type = await element.evaluate("el => el.type || ''")
+                        if tag == "select":
+                            await page.select_option(sel, value=str(value))
+                        elif input_type in ("checkbox", "radio"):
+                            if value:
+                                await element.check()
+                            else:
+                                await element.uncheck()
+                        else:
+                            await element.fill(str(value))
+                        filled.append(sel)
+                    try:
+                        await page.click(submit_selector)
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception:
+                        await page.keyboard.press("Enter")
+                    session.touch()
+                    return RPAResult(
+                        success=True,
+                        output=f"Filled {len(filled)} fields and submitted form",
+                    )
+                except Exception as exc:
+                    return RPAResult(success=False, error=str(exc))
+
             else:
                 return await self._execute_simulation(
                     tool_name=tool_name, arguments=arguments
@@ -339,6 +487,148 @@ class RPAExecutor:
                         artifact_name=artifact_name,
                     )
 
+                elif tool_name == "rpa_wait_for_text":
+                    text = arguments.get("text", "")
+                    if not text:
+                        return RPAResult(success=False, error="text argument required")
+                    timeout = int(arguments.get("timeout_ms", 10000))
+                    try:
+                        locator = page.get_by_text(text, exact=False)
+                        await locator.wait_for(timeout=timeout)
+                        return RPAResult(
+                            success=True,
+                            output=f"Text '{text}' appeared on page",
+                        )
+                    except Exception:
+                        content = await page.content()
+                        if text in content:
+                            return RPAResult(
+                                success=True,
+                                output=f"Text '{text}' found in page content",
+                            )
+                        return RPAResult(
+                            success=False,
+                            error=f"Text '{text}' did not appear within {timeout}ms",
+                        )
+
+                elif tool_name == "rpa_select_option":
+                    selector = arguments.get("selector", "")
+                    value = arguments.get("value", "")
+                    if not selector:
+                        return RPAResult(success=False, error="selector argument required")
+                    try:
+                        selected = await page.select_option(selector, value=value)
+                        if not selected:
+                            selected = await page.select_option(selector, label=value)
+                        return RPAResult(
+                            success=True,
+                            output=f"Selected '{value}' in element '{selector}'",
+                        )
+                    except Exception as exc:
+                        return RPAResult(
+                            success=False,
+                            error=f"Could not select '{value}' in '{selector}': {exc}",
+                        )
+
+                elif tool_name == "rpa_upload_file":
+                    import os
+                    selector = arguments.get("selector", "")
+                    file_path = arguments.get("file_path", "")
+                    if not selector:
+                        return RPAResult(success=False, error="selector argument required")
+                    if not file_path:
+                        return RPAResult(success=False, error="file_path argument required")
+                    if not os.path.exists(file_path):
+                        return RPAResult(
+                            success=False,
+                            error=f"File not found: {file_path}",
+                        )
+                    try:
+                        await page.set_input_files(selector, file_path)
+                        filename = os.path.basename(file_path)
+                        return RPAResult(
+                            success=True,
+                            output=f"Uploaded file '{filename}' to '{selector}'",
+                        )
+                    except Exception as exc:
+                        return RPAResult(success=False, error=str(exc))
+
+                elif tool_name == "rpa_download_file":
+                    import os
+                    import tempfile
+                    selector = arguments.get("selector", "")
+                    if not selector:
+                        return RPAResult(success=False, error="selector argument required")
+                    try:
+                        async with page.expect_download() as download_info:
+                            await page.click(selector)
+                        download = await download_info.value
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=f"_{download.suggested_filename}"
+                        ) as f:
+                            tmp_path = f.name
+                        await download.save_as(tmp_path)
+                        artifact_url = tmp_path
+                        if self._artifact_store is not None:
+                            try:
+                                with open(tmp_path, "rb") as f:
+                                    content = f.read()
+                                artifact_url = await self._artifact_store.store_bytes(
+                                    content=content,
+                                    filename=download.suggested_filename,
+                                    content_type="application/octet-stream",
+                                    tenant_id="rpa",
+                                )
+                            except Exception:
+                                pass
+                            finally:
+                                try:
+                                    os.unlink(tmp_path)
+                                except Exception:
+                                    pass
+                        size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                        return RPAResult(
+                            success=True,
+                            output=f"Downloaded '{download.suggested_filename}' ({size} bytes)",
+                            artifact_url=artifact_url,
+                            artifact_name=download.suggested_filename,
+                        )
+                    except Exception as exc:
+                        return RPAResult(success=False, error=str(exc))
+
+                elif tool_name == "rpa_submit_form":
+                    field_values: dict = arguments.get("field_values", {})
+                    submit_selector = arguments.get(
+                        "submit_selector", "button[type=submit]"
+                    )
+                    filled: list[str] = []
+                    try:
+                        for sel, value in field_values.items():
+                            element = page.locator(sel)
+                            tag = await element.evaluate("el => el.tagName.toLowerCase()")
+                            input_type = await element.evaluate("el => el.type || ''")
+                            if tag == "select":
+                                await page.select_option(sel, value=str(value))
+                            elif input_type in ("checkbox", "radio"):
+                                if value:
+                                    await element.check()
+                                else:
+                                    await element.uncheck()
+                            else:
+                                await element.fill(str(value))
+                            filled.append(sel)
+                        try:
+                            await page.click(submit_selector)
+                            await page.wait_for_load_state("networkidle", timeout=10000)
+                        except Exception:
+                            await page.keyboard.press("Enter")
+                        return RPAResult(
+                            success=True,
+                            output=f"Filled {len(filled)} fields and submitted form",
+                        )
+                    except Exception as exc:
+                        return RPAResult(success=False, error=str(exc))
+
                 else:
                     return await self._execute_simulation(
                         tool_name=tool_name, arguments=arguments
@@ -362,6 +652,11 @@ class RPAExecutor:
             "rpa_type": lambda a: f"[simulated] Typed '{a.get('text', '')}' into {a.get('selector', '?')}",
             "rpa_extract_text": lambda a: f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>",
             "rpa_screenshot": lambda a: f"[simulated] Screenshot captured: {a.get('name', 'screenshot')}",
+            "rpa_wait_for_text": lambda a: f"[simulated] wait_for_text: Text '{a.get('text', '?')}' appeared on page",
+            "rpa_select_option": lambda a: f"[simulated] Selected '{a.get('value', '?')}' in '{a.get('selector', '?')}'",
+            "rpa_upload_file": lambda a: f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'",
+            "rpa_download_file": lambda a: f"[simulated] Downloaded file from '{a.get('selector', '?')}'",
+            "rpa_submit_form": lambda a: f"[simulated] Filled {len(a.get('field_values', {}))} fields and submitted form",
         }
 
         output_fn = sim_outputs.get(tool_name)
