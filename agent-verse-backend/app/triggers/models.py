@@ -22,6 +22,10 @@ class TriggerType(enum.StrEnum):
     EVENT = "event"
     REST = "rest"
     ONCE = "once"
+    FILE_DROP = "file_drop"
+    ALERTMANAGER = "alertmanager"
+    DATADOG = "datadog"
+    PAGERDUTY = "pagerduty"
 
 
 @dataclass
