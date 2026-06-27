@@ -434,6 +434,28 @@ class AgentGraph:
             f"{agent_system_prompt}\n\n{_planner_prompt}" if agent_system_prompt else _planner_prompt
         )
 
+        # Phase 5: inject live tool schemas from MCP registry into system prompt
+        tool_context_text = ""
+        if self._mcp_client is not None and tenant_ctx is not None:
+            try:
+                all_tools = await self._mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
+                if all_tools:
+                    tool_lines = []
+                    for t in all_tools[:20]:  # cap at 20 tools to stay within context
+                        schema_str = ""
+                        if hasattr(t, "input_schema") and t.input_schema:
+                            schema_str = (
+                                f" | schema: "
+                                f"{json.dumps(t.input_schema, separators=(',', ':'))[:200]}"
+                            )
+                        tool_lines.append(
+                            f"  - {t.name}: {t.description[:100]}{schema_str}"
+                        )
+                    tool_context_text = "\n\n[Available tools]\n" + "\n".join(tool_lines)
+            except Exception as _tc_exc:
+                self._logger.warning("tool_schema_injection_failed", error=str(_tc_exc))
+        system_content = system_content + tool_context_text
+
         # Determine planning model via model_router if wired
         planning_model = "claude-opus-4-8"
         if self._model_router is not None:
@@ -474,6 +496,11 @@ class AgentGraph:
         if not plan:
             plan = [resp.content]
             _plan_display = plan
+
+        # Phase 5: validate that plan steps reference known tools
+        _tool_warnings = await self._validate_plan_tools(_plan_display, tenant_ctx)
+        for _warn in _tool_warnings:
+            self._logger.warning("plan_tool_validation", warning=_warn)
 
         agent_state.plan = _plan_display
         await self._emit({"type": "plan_ready", "steps": _plan_display, "iteration": iteration})
@@ -1753,6 +1780,33 @@ class AgentGraph:
                 )
         except Exception as exc:
             self._logger.warning("self_optimization_trigger_failed", error=str(exc))
+
+    async def _validate_plan_tools(
+        self, steps: list[str], tenant_ctx: Any
+    ) -> list[str]:
+        """Warn about steps that reference unknown tools.
+
+        Scans each step description for underscore-separated words that look
+        like tool names (e.g. ``search_issues``, ``create_pr``) and checks
+        them against the live MCP registry.  Returns a list of warning strings
+        so the caller can log them without blocking plan execution.
+        """
+        if self._mcp_client is None:
+            return []
+        try:
+            all_tools = await self._mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
+            known = {t.name for t in all_tools}
+            warnings: list[str] = []
+            for step in steps:
+                words = step.lower().split()
+                for word in words:
+                    if "_" in word and len(word) > 5 and word not in known:
+                        warnings.append(
+                            f"Step '{step[:50]}' may reference unknown tool '{word}'"
+                        )
+            return warnings
+        except Exception:
+            return []
 
 # ---------------------------------------------------------------------------
 # Module-level helpers

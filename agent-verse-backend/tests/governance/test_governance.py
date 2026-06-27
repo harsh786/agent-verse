@@ -177,12 +177,12 @@ def test_hitl_approve_changes_status() -> None:
     assert req.status == ApprovalStatus.APPROVED
 
 
-def test_hitl_reject_changes_status() -> None:
+async def test_hitl_reject_changes_status() -> None:
     gateway = HITLGateway()
     req_id = gateway.request_approval(
         goal_id="gid-1", action="delete prod db", risk_level="critical", tenant_ctx=_CTX
     )
-    gateway.reject(req_id, approver="security@example.com", note="Never", tenant_ctx=_CTX)
+    await gateway.reject(req_id, approver="security@example.com", note="Never", tenant_ctx=_CTX)
     req = gateway.get_request(req_id, tenant_ctx=_CTX)
     assert req is not None
     assert req.status == ApprovalStatus.REJECTED

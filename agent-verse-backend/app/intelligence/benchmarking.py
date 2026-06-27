@@ -11,6 +11,20 @@ from app.tenancy.context import TenantContext
 
 
 @dataclass
+class BenchmarkRun:
+    """A single benchmark run record."""
+    suite_name: str
+    score: float
+    tenant_id: str = "global"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.created_at:
+            self.created_at = datetime.now(UTC).isoformat()
+
+
+@dataclass
 class AgentBenchmark:
     agent_id: str
     tenant_id: str
@@ -35,11 +49,14 @@ class AgentBenchmark:
 
 
 class BenchmarkStore:
-    """In-memory benchmark store (production: DB table with time-series)."""
+    """Benchmark store with DB persistence and in-memory cache."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_session_factory: Any = None) -> None:
+        self._db = db_session_factory
         # {tenant_id: {agent_id: AgentBenchmark}}
         self._benchmarks: dict[str, dict[str, AgentBenchmark]] = defaultdict(dict)
+        # In-memory cache for BenchmarkRun records
+        self._runs: dict[str, list[BenchmarkRun]] = {}
 
     def record_eval(
         self,
@@ -105,3 +122,50 @@ class BenchmarkStore:
                 overall = sum(bench.avg_scores.values()) / max(len(bench.avg_scores), 1)
                 results.append({**bench.to_dict(), "overall_avg": round(overall, 3)})
         return sorted(results, key=lambda x: x.get("overall_avg", 0), reverse=True)
+
+    async def record_run_async(self, run: BenchmarkRun) -> None:
+        """Persist benchmark run to DB and update in-memory cache."""
+        if self._db is not None:
+            try:
+                import json
+                import uuid
+                from sqlalchemy import text
+                async with self._db() as session, session.begin():
+                    await session.execute(text("""
+                        INSERT INTO benchmark_runs
+                            (id, tenant_id, suite_name, score, metadata, created_at)
+                        VALUES (:id, :tid, :suite, :score, :meta::jsonb, NOW())
+                    """), {
+                        "id": uuid.uuid4().hex,
+                        "tid": getattr(run, "tenant_id", "global"),
+                        "suite": run.suite_name,
+                        "score": run.score,
+                        "meta": json.dumps(getattr(run, "metadata", {})),
+                    })
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("benchmark_persist_failed: %s", exc)
+
+        # Also keep in-memory cache
+        self._runs.setdefault(run.suite_name, []).append(run)
+
+    async def load_history_from_db(self, suite_name: str, limit: int = 100) -> list[dict]:
+        """Load historical benchmark runs from DB."""
+        if self._db is None:
+            return []
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                rows = (await session.execute(text("""
+                    SELECT id, suite_name, score, metadata, created_at
+                    FROM benchmark_runs
+                    WHERE suite_name = :suite
+                    ORDER BY created_at DESC LIMIT :lim
+                """), {"suite": suite_name, "lim": limit})).fetchall()
+            return [
+                {"id": r[0], "suite_name": r[1], "score": float(r[2]),
+                 "metadata": r[3] or {}, "created_at": r[4].isoformat() if r[4] else ""}
+                for r in rows
+            ]
+        except Exception:
+            return []

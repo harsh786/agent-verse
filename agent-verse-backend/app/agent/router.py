@@ -24,9 +24,20 @@ class RoutingDecision:
     """Result of routing a goal to the best-fit agent."""
 
     agent_id: str | None
-    confidence: float
+    reason: str
+    confidence: float = 0.0
+    mode: str = "single_agent"  # single_agent|multi_agent|needs_new_agent|needs_human_choice
+    candidate_agents: list[dict] = field(default_factory=list)
     all_scores: list[AgentScore] = field(default_factory=list)
-    reason: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "agent_id": self.agent_id,
+            "reason": self.reason,
+            "confidence": round(self.confidence, 3),
+            "mode": self.mode,
+            "candidate_agents": self.candidate_agents,
+        }
 
 
 class AgentRouter:
@@ -108,7 +119,7 @@ class AgentRouter:
                 model="",
             )
             resp = await provider.complete(req)
-            import re, json
+            import json
             m = re.search(r'\{[\s\S]*\}', resp.content)
             if m:
                 data = json.loads(m.group())
@@ -130,15 +141,38 @@ class AgentRouter:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    async def route(self, goal: str, tenant_ctx: TenantContext) -> RoutingDecision:
+    async def route(
+        self,
+        goal: str,
+        tenant_ctx: TenantContext,
+        available_agents: list[dict[str, Any]] | None = None,
+    ) -> RoutingDecision:
         """Pick the best-fit agent for *goal*.
+
+        Parameters
+        ----------
+        goal:
+            Natural-language goal text.
+        tenant_ctx:
+            Tenant context used for scoping agent lookup and history.
+        available_agents:
+            Pre-fetched list of agent dicts.  When *None* the router falls
+            back to ``self._agent_store.list_all()``.
 
         Returns a :class:`RoutingDecision` with ``agent_id=None`` when no
         agent achieves a composite score ≥ 0.3.
         """
-        agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+        if available_agents is None:
+            agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+        else:
+            agents = available_agents
+
         if not agents:
-            return RoutingDecision(agent_id=None, confidence=0.0, reason="no_agents")
+            return RoutingDecision(
+                agent_id=None,
+                reason="no_agents",
+                confidence=0.0,
+            )
 
         scores: list[AgentScore] = []
         for agent in agents:
@@ -179,14 +213,33 @@ class AgentRouter:
         if best.score < 0.3:
             return RoutingDecision(
                 agent_id=None,
+                reason="low_confidence",
                 confidence=best.score,
                 all_scores=scores,
-                reason="low_confidence",
             )
+
+        # Determine mode: needs_human_choice when top two agents are very close
+        mode = "single_agent"
+        candidate_agents: list[dict] = []
+        if len(scores) >= 2:
+            second_best = scores[1]
+            if second_best.score >= 0.3 and (best.score - second_best.score) < 0.1:
+                mode = "needs_human_choice"
+                candidate_agents = [
+                    {
+                        "agent_id": s.agent_id,
+                        "agent_name": s.agent_name,
+                        "score": round(s.score, 3),
+                    }
+                    for s in scores
+                    if s.score >= 0.3
+                ]
 
         return RoutingDecision(
             agent_id=best.agent_id,
-            confidence=best.score,
-            all_scores=scores,
             reason="routed",
+            confidence=best.score,
+            mode=mode,
+            candidate_agents=candidate_agents,
+            all_scores=scores,
         )

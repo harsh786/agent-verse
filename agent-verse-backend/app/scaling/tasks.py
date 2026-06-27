@@ -260,6 +260,19 @@ def run_goal(
         api_key_id="celery-worker",
     )
 
+    # Phase 11: Check emergency stop before executing — honours operator kill switch
+    _stop_key = f"emergency_stop:{tenant_id}"
+    _lock_r = _get_sync_redis()
+    try:
+        if _lock_r and _lock_r.get(_stop_key):
+            logger.warning(
+                "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s",
+                goal_id, tenant_id,
+            )
+            return {"status": "blocked", "reason": "Emergency stop active for tenant"}
+    except Exception as _es_exc:
+        logger.warning("emergency_stop_check_failed: %s", _es_exc)
+
     goal_bridge: Any = None
     event_store: Any = None
     try:

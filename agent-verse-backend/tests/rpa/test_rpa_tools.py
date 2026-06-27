@@ -15,13 +15,16 @@ from app.rpa.tools import RPA_TOOLS, classify_rpa_tool_risk
 def test_rpa_tool_definitions_include_expected_tools() -> None:
     tools_by_name = {tool["name"]: tool for tool in RPA_TOOLS}
 
-    assert set(tools_by_name) == {
+    expected_original = {
         "rpa_open_url",
         "rpa_click",
         "rpa_type",
         "rpa_extract_text",
         "rpa_screenshot",
     }
+    assert expected_original.issubset(set(tools_by_name)), (
+        f"Original 5 tools must still be present; missing: {expected_original - set(tools_by_name)}"
+    )
     assert tools_by_name["rpa_open_url"]["risk"] == "low"
     assert tools_by_name["rpa_click"]["risk"] == "high"
     assert tools_by_name["rpa_type"]["risk"] == "high"
@@ -239,7 +242,7 @@ def test_execute_rpa_tool_returns_failure_for_unknown_tool() -> None:
 
 def test_rpa_tools_metadata() -> None:
     """All RPA tools have the required metadata fields."""
-    assert len(RPA_TOOLS) == 5
+    assert len(RPA_TOOLS) == 10
     for tool in RPA_TOOLS:
         assert "name" in tool, f"Tool missing 'name': {tool}"
         assert "description" in tool, f"Tool missing 'description': {tool}"

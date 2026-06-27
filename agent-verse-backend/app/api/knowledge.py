@@ -51,6 +51,12 @@ class OpenAPIIngestRequest(BaseModel):
     source_url: str = ""
 
 
+class UrlIngestRequest(BaseModel):
+    collection_id: str
+    url: str
+    source_type: str = "web"  # web|github|confluence|jira|slack
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -619,4 +625,102 @@ async def ingest_openapi(
         "endpoints_ingested": chunks_created,
         "collection_id": body.collection_id,
         "source_url": body.source_url,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — URL-based connector ingestion (Phase 9)
+# ---------------------------------------------------------------------------
+
+@router.post("/ingest/url", status_code=201)
+async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
+    """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
+    tenant_ctx = _require_tenant(request)
+    store = _knowledge_store(request)
+
+    content = ""
+    metadata: dict[str, Any] = {"source_url": body.url, "source_type": body.source_type}
+
+    try:
+        if body.source_type == "web":
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(body.url, headers={"User-Agent": "AgentVerse/1.0"})
+                resp.raise_for_status()
+                raw = resp.text
+                import re
+                content = re.sub(r'<[^>]+>', ' ', raw)
+                content = re.sub(r'\s+', ' ', content).strip()[:50000]
+                title_match = re.search(r'<title[^>]*>(.*?)</title>', raw, re.IGNORECASE)
+                metadata["title"] = title_match.group(1) if title_match else body.url
+
+        elif body.source_type == "github":
+            raw_url = body.url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+            import httpx
+            headers: dict[str, str] = {}
+            import os as _os
+            if (token := _os.getenv("GITHUB_TOKEN")):
+                headers["Authorization"] = f"Bearer {token}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(raw_url, headers=headers)
+                resp.raise_for_status()
+                content = resp.text[:100000]
+            metadata["filename"] = body.url.split("/")[-1]
+
+        else:
+            raise HTTPException(400, f"Source type '{body.source_type}' not yet supported for URL ingestion. Supported: web, github")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to fetch content from URL: {exc}")
+
+    if not content.strip():
+        raise HTTPException(422, "No content extracted from URL")
+
+    # Chunk and ingest
+    from app.rag.chunker import Chunk as _CChunk
+    from app.rag.chunker import SemanticChunker
+    chunker = SemanticChunker(max_chars=512, overlap_chars=64)
+    src_type = "text"
+    chunks = chunker.chunk(content, source_type=src_type)
+    if not chunks and content.strip():
+        chunks = [_CChunk(content=content.strip(), start_char=0, end_char=len(content))]
+
+    embedder = getattr(request.app.state, "embedder", None)
+    from app.providers.base import EmbedRequest, embed_texts
+    from app.rag.models import Chunk as RagChunk
+    import uuid as _uuid_mod
+
+    doc_id = _uuid_mod.uuid4().hex
+    doc_count = 0
+    for idx, chunk in enumerate(chunks):
+        if not chunk.content.strip():
+            continue
+        embedding: list[float] = []
+        if embedder:
+            try:
+                embeddings = await embed_texts([chunk.content], provider=embedder)
+                embedding = embeddings[0]
+            except Exception:
+                pass
+        rag_chunk = RagChunk(
+            document_id=doc_id,
+            content=chunk.content,
+            embedding=embedding,
+            chunk_index=idx,
+            metadata={**{k: str(v) for k, v in metadata.items()}, "source_type": body.source_type},
+        )
+        try:
+            store.ingest_chunk(rag_chunk, collection_id=body.collection_id, tenant_ctx=tenant_ctx)
+            doc_count += 1
+        except Exception:
+            pass
+
+    return {
+        "collection_id": body.collection_id,
+        "source_url": body.url,
+        "source_type": body.source_type,
+        "chunks_ingested": doc_count,
+        "total_chars": len(content),
     }

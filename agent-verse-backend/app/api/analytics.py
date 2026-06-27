@@ -132,6 +132,13 @@ async def agent_analytics(
     }
 
 
+@router.get("/observability/spans")
+async def get_spans(request: Request, limit: int = 50) -> list[dict]:
+    """Get recent in-process trace spans (dev mode when OTLP not configured)."""
+    from app.observability.tracing import get_recent_spans
+    return get_recent_spans(limit=limit)
+
+
 def _get_aggregator(request: Request):  # type: ignore[return]
     from app.analytics.aggregator import GoalAnalyticsAggregator
     goal_service = getattr(request.app.state, "goal_service", None)

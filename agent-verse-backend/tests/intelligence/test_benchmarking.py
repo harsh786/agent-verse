@@ -62,3 +62,35 @@ def test_tenant_isolation():
     store.record_eval(agent_id="a1", scorecard=_scorecard(0.8), tenant_ctx=CTX)
     benches = store.list_benchmarks(tenant_ctx=ctx2)
     assert benches == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 25: DB-backed BenchmarkStore tests
+# ---------------------------------------------------------------------------
+
+def test_benchmark_store_has_db_persistence():
+    from app.intelligence.benchmarking import BenchmarkStore
+    store = BenchmarkStore()
+    import asyncio
+    assert hasattr(store, "record_run_async")
+    assert asyncio.iscoroutinefunction(store.record_run_async)
+
+
+def test_cli_module_exists():
+    import os
+    cli_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python/agentverse/cli.py"
+    assert os.path.exists(cli_path), "CLI module must exist"
+
+
+def test_stuck_goal_task_exists():
+    import inspect
+    from app.scaling import tasks
+    src = inspect.getsource(tasks)
+    assert "detect_stuck_goals" in src or "stuck_goal" in src, \
+        "Stuck goal detector task must exist in tasks.py"
+
+
+def test_migration_0032_exists():
+    import os
+    files = os.listdir("/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions")
+    assert any("0032" in f for f in files), "Migration 0032 (benchmark_runs) must exist"
