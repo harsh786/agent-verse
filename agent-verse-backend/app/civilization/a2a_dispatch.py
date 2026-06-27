@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from app.observability.logging import get_logger
