@@ -161,6 +161,66 @@ async def _inverse_slack_send_message(args: dict, mcp_client: Any) -> None:
         )
 
 
+async def _inverse_github_create_issue(args: dict, mcp_client: Any) -> None:
+    """Close/delete a GitHub issue that was created by the forward tool call."""
+    issue_number = (
+        args.get("issue_number")
+        or args.get("number")
+        or (
+            args.get("result", {}).get("issue_number")
+            if isinstance(args.get("result"), dict)
+            else None
+        )
+        or (
+            args.get("result", {}).get("number")
+            if isinstance(args.get("result"), dict)
+            else None
+        )
+    )
+    owner = args.get("owner", "")
+    repo = args.get("repo", "")
+    server_id = args.get("server_id", "builtin-github")
+
+    if not all([owner, repo, issue_number]) or not mcp_client:
+        logger.info(
+            "github_rollback_skipped reason=no_issue_number_or_owner_repo args=%s", args
+        )
+        return
+    try:
+        from app.tenancy.context import PlanTier, TenantContext
+
+        ctx = TenantContext(
+            tenant_id=args.get("tenant_id", "rollback"),
+            plan=PlanTier.FREE,
+            api_key_id="rollback",
+        )
+        await mcp_client.call_tool(
+            server_id=server_id,
+            tool_name="github_close_issue",
+            arguments={
+                "owner": owner,
+                "repo": repo,
+                "issue_number": issue_number,
+                "state": "closed",
+            },
+            tenant_ctx=ctx,
+        )
+        logger.info(
+            "github_issue_rolled_back owner=%s repo=%s issue_number=%s",
+            owner,
+            repo,
+            issue_number,
+        )
+    except Exception as exc:
+        logger.warning(
+            "github_rollback_failed owner=%s repo=%s issue_number=%s error=%s",
+            owner,
+            repo,
+            issue_number,
+            str(exc),
+        )
+
+
 # Register all built-in inverses
 register_inverse("jira:create_issue", _inverse_jira_create_issue)
 register_inverse("jira_create_issue", _inverse_jira_create_issue)
@@ -168,3 +228,5 @@ register_inverse("confluence:create_page", _inverse_confluence_create_page)
 register_inverse("confluence_create_page", _inverse_confluence_create_page)
 register_inverse("slack:send_message", _inverse_slack_send_message)
 register_inverse("slack_send_message", _inverse_slack_send_message)
+register_inverse("github:create_issue", _inverse_github_create_issue)
+register_inverse("github_create_issue", _inverse_github_create_issue)

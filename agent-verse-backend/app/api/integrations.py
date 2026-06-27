@@ -291,6 +291,132 @@ async def zapier_trigger(
     }
 
 
+# ── Alertmanager Event Bus ─────────────────────────────────────────────────────
+
+
+class AlertmanagerPayload(BaseModel):
+    alerts: list[dict] = []
+    groupLabels: dict = {}
+    commonAnnotations: dict = {}
+    externalURL: str = ""
+    status: str = "firing"
+
+
+@router.post("/events/alertmanager")
+async def receive_alertmanager_event(
+    request: Request,
+    payload: AlertmanagerPayload,
+) -> dict:
+    """Receive Alertmanager webhook and create goals for firing alerts."""
+    goal_service = getattr(request.app.state, "goal_service", None)
+    created_goals: list[str] = []
+
+    for alert in payload.alerts:
+        if alert.get("status") != "firing":
+            continue
+        alertname = alert.get("labels", {}).get("alertname", "Unknown Alert")
+        severity = alert.get("labels", {}).get("severity", "warning")
+        annotations = alert.get("annotations", {})
+        summary = annotations.get("summary", alertname)
+
+        goal_text = (
+            f"Alert: {alertname} (severity={severity})\n"
+            f"Summary: {summary}\n"
+            f"Investigate and resolve this {severity} alert."
+        )
+
+        if goal_service is not None:
+            try:
+                from app.tenancy.context import PlanTier, TenantContext
+
+                alert_tenant = os.getenv("ALERTMANAGER_TENANT_ID", "")
+                if not alert_tenant:
+                    continue
+                tenant_ctx = TenantContext(
+                    tenant_id=alert_tenant,
+                    plan=PlanTier.PROFESSIONAL,
+                    api_key_id="alertmanager",
+                )
+                result = await goal_service.submit_goal(goal=goal_text, tenant_ctx=tenant_ctx)
+                created_goals.append(result.get("goal_id", ""))
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "alertmanager_goal_create_failed: %s", exc
+                )
+
+    return {
+        "received": len(payload.alerts),
+        "goals_created": len(created_goals),
+        "goal_ids": created_goals,
+    }
+
+
+# ── Datadog Event Bus ──────────────────────────────────────────────────────────
+
+
+class DatadogWebhookPayload(BaseModel):
+    title: str = ""
+    text: str = ""
+    alert_type: str = "info"
+    event_type: str = ""
+    id: str = ""
+
+
+@router.post("/events/datadog")
+async def receive_datadog_event(
+    request: Request,
+    payload: DatadogWebhookPayload,
+) -> dict:
+    """Receive Datadog webhook events and create goals for critical alerts."""
+    secret = os.getenv("DATADOG_WEBHOOK_SECRET", "")
+    if secret:
+        import hashlib
+        import hmac
+
+        body = await request.body()
+        sig = request.headers.get("X-Datadog-Signature", "")
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            from fastapi import HTTPException
+
+            raise HTTPException(401, "Invalid Datadog signature")
+
+    if payload.alert_type not in ("error", "critical", "warning"):
+        return {
+            "status": "ignored",
+            "reason": f"alert_type={payload.alert_type} not critical",
+        }
+
+    goal_service = getattr(request.app.state, "goal_service", None)
+    goal_id: str | None = None
+    if goal_service is not None:
+        goal_text = f"Datadog Alert: {payload.title}\n{payload.text[:500]}"
+        dd_tenant = os.getenv("DATADOG_TENANT_ID", "")
+        if dd_tenant:
+            try:
+                from app.tenancy.context import PlanTier, TenantContext
+
+                ctx = TenantContext(
+                    tenant_id=dd_tenant,
+                    plan=PlanTier.PROFESSIONAL,
+                    api_key_id="datadog",
+                )
+                result = await goal_service.submit_goal(goal=goal_text, tenant_ctx=ctx)
+                goal_id = result.get("goal_id")
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning("datadog_goal_failed: %s", exc)
+
+    return {
+        "status": "processed",
+        "goal_id": goal_id,
+        "alert_type": payload.alert_type,
+    }
+
+
 @router.get("/zapier/goals")
 async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
     """Zapier polling trigger — returns recently completed goals."""
