@@ -134,6 +134,8 @@ class AgentGraph:
         # Goal-tree decomposition
         enable_goal_tree: bool = False,
         goal_tree_threshold: int = 4,  # decompose when plan >= this many steps
+        # LangGraph checkpointer (RedisSaver when available, else MemorySaver)
+        checkpointer: Any | None = None,
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -163,7 +165,7 @@ class AgentGraph:
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
         self._hitl_timeout: float = 300.0
-        self._checkpointer = MemorySaver()
+        self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -182,19 +184,36 @@ class AgentGraph:
         g: StateGraph[GraphState, Any, Any, Any] = StateGraph(GraphState)
         g.add_node("initialize", self._node_initialize)
         g.add_node("rag_retrieval", self._node_rag_retrieval)
+        # Add think node before plan when CoT enabled (Fix 2)
+        if self._enable_cot:
+            g.add_node("think", self._node_think)
         g.add_node("plan", self._node_plan)
         g.add_node("execute", self._node_execute)
         g.add_node("verify", self._node_verify)
+        # Add reflect node when reflection enabled (Fix 2)
+        if self._enable_reflection:
+            g.add_node("reflect", self._node_reflect)
+
         g.add_edge(START, "initialize")
         g.add_edge("initialize", "rag_retrieval")
-        g.add_edge("rag_retrieval", "plan")
+        # CoT: rag_retrieval → think → plan; otherwise rag_retrieval → plan
+        if self._enable_cot:
+            g.add_edge("rag_retrieval", "think")
+            g.add_edge("think", "plan")
+        else:
+            g.add_edge("rag_retrieval", "plan")
         g.add_edge("plan", "execute")
         g.add_edge("execute", "verify")
-        g.add_conditional_edges(
-            "verify",
-            self._route,
-            {"complete": END, "replan": "plan", "max_iter": END, "waiting_human": END},
-        )
+        # Reflection: reflect → plan edge so re-plan follows reflection
+        if self._enable_reflection:
+            g.add_edge("reflect", "plan")
+
+        routing_map: dict[str, Any] = {
+            "complete": END, "replan": "plan", "max_iter": END, "waiting_human": END,
+        }
+        if self._enable_reflection:
+            routing_map["reflect"] = "reflect"
+        g.add_conditional_edges("verify", self._route, routing_map)
         return g.compile(checkpointer=self._checkpointer)
 
     def _sanitize_tool_raw_output(self, value: object) -> str:
@@ -464,43 +483,115 @@ class AgentGraph:
                 # Fall through to normal execution if goal-tree fails
                 await self._emit({"type": "goal_tree_error", "error": str(exc)})
 
-        # Pre-scan plan for structured parallel steps and emit events
+        # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
+        import asyncio as _asyncio
+        from app.agent.structured_plan import StructuredPlan as _SP, StructuredStep as _SS
+
+        _structured: _SP | None = None
         for _entry in plan:
             try:
                 _parsed = json.loads(_entry)
                 if isinstance(_parsed, dict) and "steps" in _parsed:
-                    from app.agent.structured_plan import StructuredPlan as _SP
-                    _sp = _SP.from_llm_response(_entry)
-                    for _wave in _sp.execution_waves():
-                        if len(_wave) > 1:
-                            await self._emit({
-                                "type": "steps_parallel_start",
-                                "steps": [s.description for s in _wave],
-                                "wave_size": len(_wave),
-                            })
+                    _structured = _SP.from_llm_response(_entry)
+                    break
             except Exception:
                 pass
 
-        for step_index, step_desc in enumerate(plan):
-            step = StepResult(description=step_desc, status=StepStatus.RUNNING)
-            agent_state.steps.append(step)
-            await self._emit({"type": "step_started", "step": step_desc})
+        if _structured is None:
+            # Plain string steps — treat as sequential (each depends on the previous)
+            _structured = _SP(steps=[
+                _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                for i, sd in enumerate(plan)
+            ])
 
-            with self._tracer.start_as_current_span("agentverse.step.execute") as span:
-                span.set_attribute("step.description", step_desc[:200])
-                try:
-                    output = await self._execute_step(step_desc, agent_state, tenant_ctx)
-                except PermissionError as exc:
-                    agent_state.status = GoalStatus.FAILED
-                    agent_state.error_message = str(exc)
-                    step.status = StepStatus.FAILED
-                    step.error = str(exc)
-                    raise  # re-raise so LangGraph propagates it out of ainvoke
+        waves = _structured.execution_waves()
+        step_global_index = 0
+
+        for wave_idx, wave in enumerate(waves):
+            if len(wave) == 1:
+                # Single step — execute normally
+                step_desc = wave[0].description
+                step = StepResult(description=step_desc, status=StepStatus.RUNNING)
+                agent_state.steps.append(step)
+                await self._emit({"type": "step_started", "step": step_desc})
+
+                with self._tracer.start_as_current_span("agentverse.step.execute") as span:
+                    span.set_attribute("step.description", step_desc[:200])
+                    try:
+                        if self._semantic_cache is not None:
+                            output = await self._execute_step_with_cache(
+                                step_desc, agent_state, tenant_ctx
+                            )
+                        else:
+                            output = await self._execute_step(step_desc, agent_state, tenant_ctx)
+                    except PermissionError as exc:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = str(exc)
+                        step.status = StepStatus.FAILED
+                        step.error = str(exc)
+                        raise  # re-raise so LangGraph propagates it out of ainvoke
 
                 step.output = output
                 step.status = StepStatus.COMPLETE
                 await self._emit({"type": "step_complete", "step": step_desc, "output": output})
-            await self._write_checkpoint(agent_state.goal_id, step_index, agent_state, tenant_ctx)
+                await self._write_checkpoint(
+                    agent_state.goal_id, step_global_index, agent_state, tenant_ctx
+                )
+                step_global_index += 1
+
+            else:
+                # Multiple independent steps — execute in parallel via asyncio.gather
+                await self._emit({
+                    "type": "steps_parallel_start",
+                    "wave": wave_idx,
+                    "steps": [s.description for s in wave],
+                    "count": len(wave),
+                })
+
+                # Pre-create StepResult objects before parallel execution to maintain order
+                parallel_steps: list[StepResult] = []
+                for s in wave:
+                    sr = StepResult(description=s.description, status=StepStatus.RUNNING)
+                    agent_state.steps.append(sr)
+                    await self._emit({"type": "step_started", "step": s.description})
+                    parallel_steps.append(sr)
+
+                async def _run_wave_step(
+                    desc: str, sr: StepResult
+                ) -> None:
+                    try:
+                        if self._semantic_cache is not None:
+                            out = await self._execute_step_with_cache(
+                                desc, agent_state, tenant_ctx
+                            )
+                        else:
+                            out = await self._execute_step(desc, agent_state, tenant_ctx)
+                        sr.output = out
+                        sr.status = StepStatus.COMPLETE
+                        await self._emit({"type": "step_complete", "step": desc, "output": out})
+                    except PermissionError as exc:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = str(exc)
+                        sr.status = StepStatus.FAILED
+                        sr.error = str(exc)
+                        raise
+
+                await _asyncio.gather(*[
+                    _run_wave_step(wave[i].description, parallel_steps[i])
+                    for i in range(len(wave))
+                ])
+
+                for i in range(len(wave)):
+                    await self._write_checkpoint(
+                        agent_state.goal_id, step_global_index + i, agent_state, tenant_ctx
+                    )
+                step_global_index += len(wave)
+
+                await self._emit({
+                    "type": "steps_parallel_complete",
+                    "wave": wave_idx,
+                    "count": len(wave),
+                })
 
         return {"agent_state": agent_state}
 
@@ -1078,6 +1169,9 @@ class AgentGraph:
                     agent_state.status = GoalStatus.WAITING_HUMAN
                     return "waiting_human"
 
+        # Use reflection node on verify failure when reflection is enabled (Fix 2)
+        if self._enable_reflection:
+            return "reflect"
         return "replan"
 
     # ------------------------------------------------------------------

@@ -71,6 +71,18 @@ class HITLGateway:
         req._expires_at_dt = datetime.now(UTC) + timedelta(seconds=self._timeout)
         self._requests[(tenant_ctx.tenant_id, req.request_id)] = req
 
+        # Persist to DB (fire-and-forget, Fix 4)
+        if self._db_session_factory is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+                    )
+            except Exception:
+                pass
+
         # Dispatch notification (fire and forget)
         if self._notification_service is not None:
             import asyncio
@@ -90,6 +102,34 @@ class HITLGateway:
                 pass
 
         return req.request_id
+
+    async def _db_persist_approval_request(
+        self, req: ApprovalRequest, tenant_id: str
+    ) -> None:
+        """Persist new approval request to DB (Fix 4)."""
+        if self._db_session_factory is None:
+            return
+        try:
+            from sqlalchemy import text
+            async with self._db_session_factory() as session, session.begin():
+                await session.execute(
+                    text(
+                        """INSERT INTO approval_requests
+                            (id, tenant_id, goal_id, action, risk_level, status, created_at)
+                            VALUES (:id, :tid, :gid, :action, :risk, 'pending', NOW())
+                            ON CONFLICT (id) DO NOTHING"""
+                    ),
+                    {
+                        "id": req.request_id,
+                        "tid": tenant_id,
+                        "gid": req.goal_id,
+                        "action": req.action,
+                        "risk": req.risk_level,
+                    },
+                )
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("hitl_db_persist_failed", error=str(exc))
 
     async def wait_for_approval(
         self,

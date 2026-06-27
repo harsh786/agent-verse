@@ -456,14 +456,16 @@ async def test_agent_card_endpoint(real_app):
 
 async def test_a2a_send_and_get_task(client_and_key):
     c, key = client_and_key
-    task_id = f"ext-task-{uuid.uuid4().hex[:8]}"
     r = await c.post(
         "/a2a/tasks",
-        json={"task_id": task_id, "goal": "analyze the data", "context": {}},
+        json={"goal": "analyze the data", "context": {}},
         headers={"X-API-Key": key},
     )
-    assert r.status_code == 200
-    r2 = await c.get(f"/a2a/tasks/{task_id}", headers={"X-API-Key": key})
+    assert r.status_code in (200, 202)
+    # Use task_id returned by server (new impl generates its own UUID)
+    returned_task_id = r.json().get("task_id")
+    assert returned_task_id, f"Expected task_id in response, got: {r.json()}"
+    r2 = await c.get(f"/a2a/tasks/{returned_task_id}", headers={"X-API-Key": key})
     assert r2.status_code == 200
 
 
