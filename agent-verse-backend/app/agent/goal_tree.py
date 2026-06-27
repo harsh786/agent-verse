@@ -90,6 +90,49 @@ async def execute_sub_goal(
     return sub_goal
 
 
+async def _synthesize_goal_tree_results(
+    original_goal: str,
+    sub_results: list[dict],  # [{"goal": str, "result": str, "success": bool}, ...]
+    provider: Any,
+) -> str:
+    """Synthesize sub-goal results into a coherent final answer using LLM.
+
+    Falls back to joining successful results when no provider is supplied or
+    when the LLM call fails.
+    """
+    import logging as _logging
+
+    if not sub_results or provider is None:
+        successful = [r["result"] for r in sub_results if r.get("success")]
+        return "\n\n".join(successful) if successful else "All sub-goals failed."
+
+    try:
+        from app.providers.base import CompletionRequest, Message
+
+        results_text = "\n\n".join([
+            f"Sub-task: {r['goal']}\nResult: {r['result'][:400]}"
+            for r in sub_results
+            if r.get("success")
+        ])
+        prompt = (
+            f"Original goal: {original_goal}\n\n"
+            f"Sub-task results:\n{results_text}\n\n"
+            "Synthesize a clear, concise, actionable answer to the original goal "
+            "based on all sub-task results. Be specific."
+        )
+        model = getattr(provider, "_default_model", "")
+        resp = await provider.complete(CompletionRequest(
+            messages=[Message(role="user", content=prompt)],
+            model=model,
+            max_tokens=2000,
+        ))
+        return resp.content
+    except Exception as exc:
+        _logging.getLogger(__name__).warning("goal_tree_synthesis_failed: %s", exc)
+        successful = [r["result"] for r in sub_results if r.get("success")]
+        return "\n\n".join(successful) if successful else "Sub-goal synthesis failed."
+
+
 async def execute_goal_tree(
     goal: str,
     *,
@@ -102,6 +145,8 @@ async def execute_goal_tree(
     """Decompose goal → build dependency DAG → execute with parallelism.
 
     Returns list of completed SubGoal objects in topological order.
+    The final element (when sub-goals succeed) is a synthesis SubGoal whose
+    ``result`` contains the LLM-synthesized answer to the original goal.
     """
     decomp = await decompose_goal(goal, planner, tenant_ctx, parent_goal_id)
     if not decomp.should_decompose or not decomp.sub_goals:
@@ -144,5 +189,29 @@ async def execute_goal_tree(
             results.append(sg)
             if sg in remaining:
                 remaining.remove(sg)
+
+    # LLM synthesis step: merge sub-goal results into one coherent answer
+    sub_results = [
+        {
+            "goal": sg.description,
+            "result": sg.result or sg.error or "",
+            "success": not bool(sg.error),
+        }
+        for sg in results
+    ]
+    synthesized_text = await _synthesize_goal_tree_results(
+        original_goal=goal,
+        sub_results=sub_results,
+        provider=planner,
+    )
+    synthesis_sg = SubGoal(
+        sub_goal_id="synthesis",
+        description="Synthesized result",
+        parent_goal_id=parent_goal_id,
+        depends_on=[sg.sub_goal_id for sg in results],
+        result=synthesized_text,
+        status=GoalStatus.COMPLETE,
+    )
+    results.append(synthesis_sg)
 
     return results

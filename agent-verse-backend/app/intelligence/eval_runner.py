@@ -22,8 +22,9 @@ class EvalRunner:
         max_iter = 15.0
         iter_efficiency = max(0.0, 1.0 - (state.iterations - 1) / max_iter)
 
-        # Get accumulated LLM cost from state context
-        llm_cost_usd = state.context.get("total_cost_usd", 0.0) if state.context else 0.0
+        # Get accumulated LLM cost from state context (guard against non-dict context)
+        _ctx = getattr(state, "context", None)
+        llm_cost_usd = float(_ctx.get("total_cost_usd", 0.0)) if isinstance(_ctx, dict) else 0.0
         # Cost efficiency: 1.0 if cost is zero, scales down to 0 at $2.00
         cost_efficiency = max(0.0, 1.0 - llm_cost_usd / 2.0) if llm_cost_usd > 0 else 1.0
 
@@ -119,19 +120,27 @@ class EvalRunner:
 
     async def score_and_persist(
         self,
-        *,
         state: AgentState,
         tenant_ctx: TenantContext,
-        db_session_factory: Any = None,
+        *,
+        provider: Any = None,
+        db: Any = None,
     ) -> EvalScorecard:
-        """Score and write result to the evaluations DB table."""
-        scorecard = self.score(state=state, tenant_ctx=tenant_ctx)
-        if db_session_factory is not None:
+        """Score AND persist results to the evaluations table.
+
+        Calls ``score_async`` (which includes LLM-based coherence scoring) and
+        then writes the result to the ``evaluations`` DB table so scores survive
+        restarts and are queryable for dashboards / self-optimisation.
+        """
+        # Score with LLM-based coherence (replaces heuristic)
+        scorecard = await self.score_async(state=state, tenant_ctx=tenant_ctx, provider=provider)
+        # Persist to DB
+        if db is not None:
             try:
                 import uuid
 
                 from sqlalchemy import text
-                async with db_session_factory() as session, session.begin():
+                async with db() as session, session.begin():
                     await session.execute(
                         text("""INSERT INTO evaluations
                             (id, goal_id, tenant_id, score_task_completion, score_efficiency,

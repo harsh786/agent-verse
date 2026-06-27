@@ -13,6 +13,7 @@ a crashed goal can be resumed by re-invoking with the same thread_id.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -24,7 +25,7 @@ from typing import Any, TypedDict
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, EXECUTOR_SYSTEM, PLANNER_SYSTEM, REFLECTION_SYSTEM, VERIFIER_SYSTEM
+from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, EXECUTOR_SYSTEM, PLANNER_SYSTEM, REFLECTION_SYSTEM, STRUCTURED_PLANNER_SYSTEM, VERIFIER_SYSTEM
 from app.agent.sanitization import (
     sanitize_event,
     sanitize_event_value,
@@ -181,6 +182,7 @@ class AgentGraph:
         self._rpa_executor: Any = None  # Set externally to dispatch RPA tool calls directly
         self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
         self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
+        self._self_optimizer: Any = None    # Settable from outside; SelfOptimizer instance
         # Track fire-and-forget background tasks to prevent GC before completion
         self._background_tasks: set[Any] = set()
         from app.observability.logging import get_logger as _get_logger
@@ -275,14 +277,24 @@ class AgentGraph:
         tenant_ctx: TenantContext = state["tenant_ctx"]
         context_parts: list[str] = []
 
-        # 1. Execution memory: recall past winning plans
+        # 1. Execution memory: recall past winning plans (DB-backed async recall, BUG 2 fix)
         if self._exec_memory is not None:
-            memories = self._exec_memory.recall(
-                goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
-            )
-            if memories:
+            exec_plans: list[dict] = []
+            try:
+                exec_plans = await self._exec_memory.recall_async(
+                    agent_state.goal,
+                    tenant_id=tenant_ctx.tenant_id,
+                    db=self._db_session_factory,
+                    limit=3,
+                )
+            except Exception as _em_exc:
+                self._logger.warning("exec_memory_recall_failed", error=str(_em_exc))
+                exec_plans = self._exec_memory.recall(
+                    goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                )
+            if exec_plans:
                 mem_text = "\n".join(
-                    f"- Past plan: {m.get('plan', [])}" for m in memories
+                    f"- Past plan: {m.get('plan', [])}" for m in exec_plans
                 )
                 context_parts.append(f"[Past winning plans]\n{mem_text}")
 
@@ -409,10 +421,14 @@ class AgentGraph:
         from app.intelligence.prompt_optimizer import PromptOptimizer as _PromptOptimizer
         _plan_optimizer = getattr(self, "_prompt_optimizer", None)
         if _plan_optimizer is not None:
-            _plan_variant = _plan_optimizer.select_variant("planner")
+            _plan_variant = _plan_optimizer.select_variant("planner", tenant_id=tenant_ctx.tenant_id)
             _planner_prompt = _plan_variant.prompt_text if _plan_variant is not None else PLANNER_SYSTEM
+            # Store variant ID for A/B feedback in verify node (BUG 4 fix)
+            if _plan_variant is not None:
+                agent_state.context["planner_variant_id"] = _plan_variant.variant_id
         else:
-            _planner_prompt = PLANNER_SYSTEM
+            # Use structured planner when goal-tree is enabled for dependency-aware parallel execution
+            _planner_prompt = STRUCTURED_PLANNER_SYSTEM if self._enable_goal_tree else PLANNER_SYSTEM
         agent_system_prompt = agent_state.context.get("system_prompt", "")
         system_content = (
             f"{agent_system_prompt}\n\n{_planner_prompt}" if agent_system_prompt else _planner_prompt
@@ -439,12 +455,28 @@ class AgentGraph:
             resp = await self._planner.complete(req)
             record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
         parsed = _parse_json(resp.content, key="steps")
-        plan: list[str] = parsed.get("steps", [resp.content])
+        raw_steps = parsed.get("steps", [resp.content])
+
+        # Handle structured format (list of dicts from STRUCTURED_PLANNER_SYSTEM)
+        # vs plain string steps (list of str from PLANNER_SYSTEM)
+        if raw_steps and isinstance(raw_steps[0], dict):
+            # Structured: pass full JSON as single entry so _node_execute can parse
+            # it via StructuredPlan.from_llm_response (dependency-aware parallel waves)
+            plan = [resp.content]
+            _plan_display = [
+                str(s.get("description", s.get("id", f"step{i}")))
+                for i, s in enumerate(raw_steps)
+            ]
+        else:
+            plan = [str(s) for s in raw_steps] if raw_steps else [resp.content]
+            _plan_display = plan
+
         if not plan:
             plan = [resp.content]
+            _plan_display = plan
 
-        agent_state.plan = plan
-        await self._emit({"type": "plan_ready", "steps": plan, "iteration": iteration})
+        agent_state.plan = _plan_display
+        await self._emit({"type": "plan_ready", "steps": _plan_display, "iteration": iteration})
         return {"agent_state": agent_state, "plan": plan, "iteration": iteration}
 
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
@@ -810,12 +842,20 @@ class AgentGraph:
             if _exec_variant is not None:
                 _executor_prompt = _exec_variant.prompt_text
 
+        # Resolve executor model via model_router when available (Bug 3 fix)
+        _exec_model = ""
+        if self._model_router is not None:
+            try:
+                _exec_model = self._model_router.model_for("execution") or ""
+            except Exception:
+                pass
+
         req = CompletionRequest(
             messages=[
                 Message(role="system", content=_executor_prompt),
                 Message(role="user", content=content),
             ],
-            model="claude-opus-4-8",
+            model=_exec_model,
             tools=_tool_defs,
         )
 
@@ -1128,6 +1168,22 @@ class AgentGraph:
                                     "tool": getattr(tool_call, "tool", "") if tool_call else "",
                                     "issues": pii_issues,
                                 })
+                                if self._audit_log is not None:
+                                    try:
+                                        self._audit_log.record(
+                                            AuditEvent(
+                                                goal_id=state.goal_id,
+                                                tool_name="guardrail_checker",
+                                                action_level=ActionLevel.ALLOW_LOG,
+                                                outcome="pii_redacted",
+                                                step_id=state.steps[-1].step_id if state.steps else "",
+                                                api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                                                note=f"issues_count={len(pii_issues)} step={step[:100]}",
+                                            ),
+                                            tenant_ctx=tenant_ctx,
+                                        )
+                                    except Exception:
+                                        pass
                         raw_result_output = self._sanitize_tool_raw_output(result.output)
                         raw_result_error = self._sanitize_tool_raw_output(result.error)
                         await self._emit(
@@ -1237,18 +1293,46 @@ class AgentGraph:
     async def _execute_step_with_cache(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
-        """Execute a step, returning a cached result when the semantic cache hits."""
+        """Execute a step, returning a cached result when the semantic cache hits.
+
+        Uses the Redis-backed async get/set API (not the in-process lookup/store API)
+        so cache hits are shared across all workers/replicas for the same tenant.
+        """
+        _cache_embedding: list[float] | None = None
         if self._semantic_cache is not None and self._embedder is not None:
-            from app.providers.base import EmbedRequest
-            embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
-            embedding = embed_resp.embeddings[0] if embed_resp.embeddings else []
-            cached = self._semantic_cache.lookup(
-                query_embedding=embedding, tenant_ctx=tenant_ctx
-            )
-            if cached is not None:
-                await self._emit({"type": "cache_hit", "step": step})
-                return cached
-        return await self._execute_step(step, state, tenant_ctx)
+            try:
+                from app.providers.base import EmbedRequest
+                _cache_embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
+                _cache_embedding = (
+                    _cache_embed_resp.embeddings[0] if _cache_embed_resp.embeddings else None
+                )
+                if _cache_embedding:
+                    _sem_cache_hit = await self._semantic_cache.get(
+                        query=step,
+                        embedding=_cache_embedding,
+                        tenant_id=tenant_ctx.tenant_id,
+                    )
+                    if _sem_cache_hit is not None:
+                        await self._emit({"type": "cache_hit", "step": step})
+                        return _sem_cache_hit
+            except Exception:
+                _cache_embedding = None
+
+        raw_output = await self._execute_step(step, state, tenant_ctx)
+
+        # Store result in Redis-backed cache for future cross-replica hits
+        if self._semantic_cache is not None and _cache_embedding is not None:
+            try:
+                await self._semantic_cache.set(
+                    query=step,
+                    embedding=_cache_embedding,
+                    response=raw_output,
+                    tenant_id=tenant_ctx.tenant_id,
+                )
+            except Exception:
+                pass
+
+        return raw_output
 
     async def _node_verify(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
@@ -1258,6 +1342,13 @@ class AgentGraph:
         summary = "\n".join(
             f"- {s.description}: {s.output}" for s in agent_state.steps[-5:]
         )
+        # Resolve verifier model via model_router when available (Bug 3 fix)
+        _verify_model = ""
+        if self._model_router is not None:
+            try:
+                _verify_model = self._model_router.model_for("verification") or ""
+            except Exception:
+                pass
         req = CompletionRequest(
             messages=[
                 Message(role="system", content=VERIFIER_SYSTEM),
@@ -1266,49 +1357,126 @@ class AgentGraph:
                     content=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
                 ),
             ],
-            model="claude-opus-4-8",
+            model=_verify_model,
         )
         with self._tracer.start_as_current_span("agentverse.verify") as span:
             span.set_attribute("verify.iteration", agent_state.iterations)
             _verify_start = time.monotonic()
             resp = await self._verifier.complete(req)
             record_verify_duration(time.monotonic() - _verify_start)
-        parsed = _parse_json(resp.content)
+        # Bug 1 fix: use _parse_verifier_response which handles JSON and text formats
+        parsed = _parse_verifier_response(resp.content)
         success: bool = bool(parsed.get("success", False))
         reason: str = self._sanitize_tool_raw_output(parsed.get("reason", ""))
+        # Store retry flag for routing: True = can replan, False = permanently blocked
+        retry: bool = bool(parsed.get("retry", True)) if not success else True
+        agent_state.context["verification_retry"] = retry
 
         agent_state.verification_success = success
         agent_state.verification_feedback = reason
         await self._emit({"type": "verification_done", "success": success, "reason": reason})
 
         if success:
-            # Record winning plan in execution memory
+            # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
             if self._exec_memory is not None:
-                self._exec_memory.record(
+                self._exec_memory.record(  # sync: immediate in-memory update
                     goal=agent_state.goal,
                     plan=agent_state.plan,
                     tenant_ctx=tenant_ctx,
                 )
-            # Auto-extract long-term learnings
+                # Async DB persistence — only when a DB session factory is available
+                if self._db_session_factory is not None:
+                    _em_task = asyncio.create_task(
+                        self._exec_memory.record_async(
+                            goal=agent_state.goal,
+                            plan=agent_state.plan,
+                            success=True,
+                            tenant_id=tenant_ctx.tenant_id,
+                            db=self._db_session_factory,
+                        )
+                    )
+                    self._background_tasks.add(_em_task)
+                    _em_task.add_done_callback(self._background_tasks.discard)
+
+            # Auto-extract long-term learnings (sync in-memory + async DB, BUG 1 fix)
             if self._long_term_memory is not None:
                 step_outputs = " ".join(
                     s.output[:100] for s in agent_state.steps if s.output
                 )
+                # Sync extract: immediate in-memory update (same-session recall)
                 self._long_term_memory.extract_from_goal(
                     goal=agent_state.goal,
                     result=step_outputs,
                     goal_id=agent_state.goal_id,
                     tenant_ctx=tenant_ctx,
                 )
-            # Score the completed goal
+                # Async DB persistence via extract_from_goal_async (BUG 1 fix)
+                if self._db_session_factory is not None:
+                    _ltm_task = asyncio.create_task(
+                        self._long_term_memory.extract_from_goal_async(
+                            goal=agent_state.goal,
+                            result=step_outputs[:500],
+                            tenant_ctx=tenant_ctx,
+                            db=self._db_session_factory,
+                            embedder=self._embedder,
+                        )
+                    )
+                    self._background_tasks.add(_ltm_task)
+                    _ltm_task.add_done_callback(
+                        lambda t: t.exception() and self._logger.warning(
+                            "ltm_persist_failed", error=str(t.exception())
+                        )
+                    )
+                    _ltm_task.add_done_callback(self._background_tasks.discard)
+
+            # Score the completed goal — persists eval to DB (BUG 3 fix)
+            scorecard = None
             if self._eval_runner is not None:
-                scorecard = await self._eval_runner.score_async(
-                    state=agent_state, tenant_ctx=tenant_ctx, provider=self._executor
+                scorecard = await self._eval_runner.score_and_persist(
+                    agent_state,
+                    tenant_ctx,
+                    provider=self._verifier,
+                    db=self._db_session_factory,
                 )
                 agent_state.context["eval_scorecard"] = scorecard
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
+        else:
+            scorecard = None
+
+        # Feed eval result back to PromptOptimizer for A/B learning (BUG 4 fix)
+        if scorecard is not None and hasattr(agent_state, "context"):
+            _planner_variant_id = agent_state.context.get("planner_variant_id")
+            _avg_score = scorecard.average_score()
+            _won = _avg_score >= 0.7
+            if self._prompt_optimizer is not None and _planner_variant_id:
+                try:
+                    self._prompt_optimizer.record_result(
+                        variant_id=_planner_variant_id,
+                        eval_score=_avg_score,
+                    )
+                    _po_task = asyncio.create_task(
+                        self._prompt_optimizer.persist_outcome(
+                            _planner_variant_id, won=_won, db=self._db_session_factory
+                        )
+                    )
+                    self._background_tasks.add(_po_task)
+                    _po_task.add_done_callback(self._background_tasks.discard)
+                except Exception:
+                    pass
+
+        # Trigger self-optimization when a goal scores poorly (BUG 5 fix)
+        if (
+            self._self_optimizer is not None
+            and scorecard is not None
+            and scorecard.average_score() < 0.5
+        ):
+            _so_task = asyncio.create_task(
+                self._trigger_self_optimization(agent_state, scorecard, tenant_ctx)
+            )
+            self._background_tasks.add(_so_task)
+            _so_task.add_done_callback(self._background_tasks.discard)
 
         return {"agent_state": agent_state}
 
@@ -1326,6 +1494,17 @@ class AgentGraph:
 
         if agent_state.verification_success:
             return "complete"
+
+        # Bug 1 fix: when verifier says retry=False, permanently fail rather than replan
+        _v_retry: bool = bool(agent_state.context.get("verification_retry", True))
+        if not _v_retry:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = (
+                agent_state.verification_feedback
+                or "Goal permanently failed: cannot be retried."
+            )
+            record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
+            return "max_iter"
 
         iteration: int = state.get("iteration", 0)
         if iteration >= self._max_iterations:
@@ -1548,6 +1727,32 @@ class AgentGraph:
             from app.observability.logging import get_logger
             get_logger(__name__).warning("decision_trace_persist_failed", error=str(exc))
 
+    async def _trigger_self_optimization(
+        self, state: Any, scorecard: Any, tenant_ctx: Any
+    ) -> None:
+        """Trigger self-optimization when a goal scores poorly (BUG 5 fix).
+
+        Called as a fire-and-forget task from ``_node_verify`` whenever a
+        successfully-scored goal falls below the 0.5 average-score threshold.
+        Suggestions are recorded internally and can be reviewed via the
+        SelfOptimizer REST API.
+        """
+        try:
+            suggestions = self._self_optimizer.analyze_and_suggest(
+                goal=getattr(state, "goal", ""),
+                scorecard=scorecard,
+                error_log=getattr(state, "error_message", "") or "",
+                tenant_ctx=tenant_ctx,
+            )
+            if suggestions:
+                self._logger.info(
+                    "self_optimization_suggestions",
+                    count=len(suggestions),
+                    goal_id=getattr(state, "goal_id", ""),
+                    score=scorecard.average_score(),
+                )
+        except Exception as exc:
+            self._logger.warning("self_optimization_trigger_failed", error=str(exc))
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -1564,6 +1769,48 @@ def _parse_json(text: str, key: str | None = None) -> dict[str, Any]:
         if key == "steps":
             return {"steps": [text]}
         return {"success": True, "reason": text}
+
+
+def _parse_verifier_response(text: str) -> dict[str, Any]:
+    """Parse verifier LLM response — handles both JSON and legacy text formats.
+
+    JSON format (preferred — produced by updated VERIFIER_SYSTEM):
+        {"success": true, "reason": "..."}
+        {"success": false, "reason": "...", "retry": true}
+        {"success": false, "reason": "...", "retry": false}
+
+    Legacy text format (fallback for old/non-compliant responses):
+        "SUCCESS: <reason>"
+        "RETRY: <gap>"
+        "FAIL: <reason>"
+    """
+    clean = re.sub(r"```(?:json)?\n?", "", text).strip()
+
+    # 1. Try JSON first (preferred path after VERIFIER_SYSTEM update)
+    try:
+        obj: dict[str, Any] = json.loads(clean)
+        return obj
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Parse legacy text formats: SUCCESS/RETRY/FAIL
+    upper = clean.upper()
+    if upper.startswith("SUCCESS"):
+        reason = re.sub(r"^SUCCESS\s*[:\-]\s*", "", clean, flags=re.IGNORECASE)
+        return {"success": True, "reason": reason, "retry": False}
+    elif upper.startswith("RETRY"):
+        reason = re.sub(r"^RETRY\s*[:\-]\s*", "", clean, flags=re.IGNORECASE)
+        return {"success": False, "reason": reason, "retry": True}
+    elif upper.startswith("FAIL"):
+        reason = re.sub(r"^FAIL\s*[:\-]\s*", "", clean, flags=re.IGNORECASE)
+        return {"success": False, "reason": reason, "retry": False}
+
+    # 3. Unknown format — infer from negative keywords
+    lower = clean.lower()
+    inferred_success = not any(
+        w in lower for w in ["fail", "error", "not ", "missing", "incomplete", "retry"]
+    )
+    return {"success": inferred_success, "reason": clean}
 
 
 def _extract_tool_name(step: str) -> str:

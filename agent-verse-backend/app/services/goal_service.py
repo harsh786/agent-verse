@@ -957,6 +957,17 @@ class GoalService:
                     record.execution_context['provider_warning'] = (
                         "No real LLM provider configured. Results are simulated."
                     )
+
+            # Guarantee tool_context is always available: fall back to building
+            # a basic context (RPA tools) when the caller didn't pass one.
+            if tool_context is None:
+                try:
+                    tool_context = await self._build_tool_context(
+                        agent_id=None, tenant_ctx=tenant_ctx
+                    )
+                except Exception as _tc_exc:
+                    _svc_logger.warning("tool_context_build_failed", error=str(_tc_exc))
+
             initial_context: dict[str, Any] = {}
             if tool_context is not None:
                 initial_context["tool_prompt"] = tool_context.to_prompt_block()

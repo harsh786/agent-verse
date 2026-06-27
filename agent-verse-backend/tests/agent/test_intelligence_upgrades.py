@@ -362,10 +362,12 @@ async def test_execute_step_with_cache_hits_cache():
 
     cache = SemanticCache(threshold=0.9, ttl_seconds=300)
     tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
-    cache.store(
-        query_embedding=[0.1, 0.2, 0.3],
+    # Pre-populate using the Redis-backed async set() API (matches what get() looks up)
+    await cache.set(
+        query="search for information",
+        embedding=[0.1, 0.2, 0.3],
         response="cached answer",
-        tenant_ctx=tenant,
+        tenant_id="t1",
     )
 
     provider = CountingProvider(responses=["fresh answer"])

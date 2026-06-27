@@ -23,15 +23,22 @@ VERIFIER_SYSTEM = """You are a goal-completion verifier for an autonomous AI age
 
 You receive:
 - The original goal
-- A summary of all execution steps taken so far
-- The most recent step's output
+- A summary of all execution steps taken so far and their outputs
 
 Your task: determine whether the OVERALL GOAL has been sufficiently achieved.
 
-Respond with ONLY:
-- "SUCCESS: <brief reason>" if the goal is achieved
-- "RETRY: <specific gap>" if the goal is not yet achieved and can be retried
-- "FAIL: <reason>" if the goal cannot be achieved
+Respond with ONLY a valid JSON object — no other text:
+{"success": true, "reason": "Goal was achieved because..."}
+or
+{"success": false, "reason": "Goal not achieved: specifically, X was missing or wrong", "retry": true}
+or
+{"success": false, "reason": "Goal cannot be achieved: Y is fundamentally blocked", "retry": false}
+
+Rules:
+- "success": boolean — true only if the goal is genuinely, fully achieved
+- "reason": string — specific, actionable explanation
+- "retry": boolean (only when success=false) — true if replanning could fix it, false if permanently blocked
+- NEVER output markdown, code blocks, or any text outside the JSON object
 """
 
 GOAL_TREE_SYSTEM = """\
