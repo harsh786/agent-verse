@@ -175,7 +175,7 @@ def get_builtin_server_configs() -> list[dict]:
         microsoft_onedrive_server,
     )
 
-    return [
+    raw_configs = [
         # ── Original ──────────────────────────────────────────────────────────
         {
             "server_id": "builtin-github",
@@ -1321,6 +1321,18 @@ def get_builtin_server_configs() -> list[dict]:
             "requires_env": ["ONEDRIVE_ACCESS_TOKEN"],
         },
     ]
+
+    # Deduplicate: later entries (more complete implementations) win over earlier ones.
+    seen: dict[str, int] = {}
+    deduplicated: list[dict] = []
+    for cfg in raw_configs:
+        sid = cfg["server_id"]
+        if sid in seen:
+            deduplicated[seen[sid]] = cfg  # overwrite with the later, better entry
+        else:
+            seen[sid] = len(deduplicated)
+            deduplicated.append(cfg)
+    return deduplicated
 
 
 async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
