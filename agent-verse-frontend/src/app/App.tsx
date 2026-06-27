@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
+
+const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 import { AuthPage } from "@/features/auth/AuthPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { GoalsListPage } from "@/features/goals/GoalsListPage";
@@ -119,6 +121,8 @@ export default function App() {
         <Route path="simulation" element={<SimulationPage />} />
         <Route path="audit" element={<AuditExplorerPage />} />
         <Route path="rpa/live" element={<RpaLivePage />} />
+        <Route path="civilization" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
+        <Route path="civilization/:id" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
       </Route>
     </Routes>
   );

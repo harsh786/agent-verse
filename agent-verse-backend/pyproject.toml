@@ -102,6 +102,8 @@ filterwarnings = [
     # asyncpg GC cleanup — unclosed connections are harmless in tests (pool teardown timing).
     "ignore::ResourceWarning:asyncpg.*",
     "ignore::ResourceWarning",
+    # asyncpg cancel-coroutine GC noise (Connection._cancel never awaited on teardown).
+    "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 
 [tool.coverage.report]

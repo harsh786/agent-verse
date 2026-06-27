@@ -60,6 +60,9 @@ export class ApiError extends Error {
   }
 }
 
+/** Public alias for use in feature-level API modules (e.g. civilizationApi). */
+export const apiFetch = request;
+
 // ── Goals ────────────────────────────────────────────────────────────────────
 
 export interface GoalRequest {

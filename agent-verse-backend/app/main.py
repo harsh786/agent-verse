@@ -42,6 +42,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
 from app.api.analytics import router as analytics_router
+from app.api.civilization import router as civilization_router
 from app.api.replay import router as replay_router
 from app.api.training_export import router as training_export_router
 from app.api.integrations import router as integrations_router
@@ -855,6 +856,9 @@ def create_app(
     app.include_router(replay_router)
     # Training data export (intelligence)
     app.include_router(training_export_router)
+    # Civilization (Agent Civilization — feature-flagged at request time)
+    app.include_router(civilization_router)
+    logger.info("civilization_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

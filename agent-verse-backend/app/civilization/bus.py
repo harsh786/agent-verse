@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from app.observability.logging import get_logger
 
