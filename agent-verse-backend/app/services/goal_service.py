@@ -372,26 +372,50 @@ class GoalService:
                             event_type = data.get("type", "")
                             payload = data.get("payload", {})
 
-                            if goal_id and goal_id in self._goals:
-                                record = self._goals[goal_id]
-                                # Feed into SSE subscriber queues
-                                event = {
-                                    "type": event_type,
-                                    "payload": payload,
-                                    "goal_id": goal_id,
-                                    "tenant_id": tenant_id,
-                                }
-                                dead = []
-                                for q in list(record.subscribers):
+                            if goal_id:
+                                record = self._goals.get(goal_id)
+                                if record is None:
+                                    # Create stub record for goals executed by Celery workers
+                                    # that haven't been synced to this API process yet
                                     try:
-                                        q.put_nowait(event)
-                                    except Exception:
-                                        dead.append(q)
-                                for q in dead:
-                                    try:
-                                        record.subscribers.remove(q)
-                                    except Exception:
-                                        pass
+                                        record = GoalRecord(
+                                            goal_id=goal_id,
+                                            goal_text="",  # Will be filled when DB syncs
+                                            status=GoalStatus.EXECUTING,
+                                            tenant_id=tenant_id,
+                                            priority="normal",
+                                            dry_run=False,
+                                            created_at="",
+                                        )
+                                        self._goals[goal_id] = record
+                                        self._logger.debug(
+                                            "created_stub_goal_record_for_bridge",
+                                            goal_id=goal_id,
+                                        )
+                                    except Exception as exc:
+                                        self._logger.warning(
+                                            "bridge_stub_creation_failed", error=str(exc)
+                                        )
+
+                                if record is not None:
+                                    # Feed into SSE subscriber queues
+                                    event = {
+                                        "type": event_type,
+                                        "payload": payload,
+                                        "goal_id": goal_id,
+                                        "tenant_id": tenant_id,
+                                    }
+                                    dead = []
+                                    for q in list(record.subscribers):
+                                        try:
+                                            q.put_nowait(event)
+                                        except Exception:
+                                            dead.append(q)
+                                    for q in dead:
+                                        try:
+                                            record.subscribers.remove(q)
+                                        except Exception:
+                                            pass
                         except Exception as exc:
                             self._logger.warning(
                                 "celery_event_bridge_parse_failed", error=str(exc)
@@ -670,10 +694,22 @@ class GoalService:
                         "agent_config_load_failed", agent_id=agent_id, error=str(_ae)
                     )
 
+        # Extract per-agent execution settings (FIX 4)
+        _max_iterations = int(_agent_config.get("max_iterations", 15))
+        _model_override = str(_agent_config.get("model_override", "") or "")
+
+        # Apply model override to the model router before building the graph
+        if _model_override and _model_router is not None:
+            try:
+                _model_router.set_override(_model_override)
+            except Exception:
+                pass  # Model router may not support override — use default
+
         graph = AgentGraph(
             planner=provider,
             executor=provider,
             verifier=provider,
+            max_iterations=_max_iterations,
             audit_log=audit_log,
             cost_controller=cost_controller,
             hitl_gateway=hitl_gateway,

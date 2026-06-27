@@ -60,11 +60,11 @@ def test_slack_server_tool_definitions() -> None:
 def test_builtin_registry_wiring_returns_correct_count() -> None:
     """get_builtin_server_configs() returns all catalog entries regardless of env vars.
 
-    3 original (github, postgres, slack) + 12 PM connectors = 15 total.
+    3 original (github, postgres, slack) + 12 PM connectors + 11 new servers = 26+ total.
     """
     import os
 
-    # Ensure none of the env vars are set so active count is 0
+    # Ensure none of the env vars are set so only zero-requirement servers are active
     for key in [
         "GITHUB_TOKEN", "POSTGRES_MCP_URL", "SLACK_BOT_TOKEN",
         "JIRA_BASE_URL", "CONFLUENCE_BASE_URL", "ASANA_ACCESS_TOKEN",
@@ -77,23 +77,29 @@ def test_builtin_registry_wiring_returns_correct_count() -> None:
     from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
     configs = get_builtin_server_configs()
-    # 3 original + 12 PM connectors = 15 total
+    # 3 original + 12 PM connectors + 11 new servers = 26 total minimum
     assert len(configs) >= 15, (
         f"Expected at least 15 configs (3 original + 12 PM), got {len(configs)}"
     )
 
-    # With no env vars, active count should be 0
+    # With no env vars, only servers that have no required env vars can be active.
+    # docker_server intentionally requires no env vars (uses Docker socket).
     active = [
         c
         for c in configs
         if all(os.getenv(e, "") for e in c.get("requires_env", []))
     ]
     assert isinstance(active, list)
-    assert len(active) == 0
+    # Only zero-requirement servers (e.g. Docker) can be active without env vars.
+    zero_req_servers = {c["server_id"] for c in configs if not c.get("requires_env", [])}
+    assert set(c["server_id"] for c in active) == zero_req_servers, (
+        f"Only zero-requirement servers should be active with no env vars; "
+        f"got: {[c['server_id'] for c in active]}"
+    )
 
 
 def test_builtin_registry_wiring_active_with_env_var(monkeypatch) -> None:
-    """Setting GITHUB_TOKEN makes the GitHub server active."""
+    """Setting GITHUB_TOKEN makes the GitHub server active (alongside zero-req servers)."""
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
     # Re-import to pick up env change
@@ -106,8 +112,16 @@ def test_builtin_registry_wiring_active_with_env_var(monkeypatch) -> None:
         for c in configs
         if all(os.getenv(e, "") for e in c.get("requires_env", []))
     ]
-    assert len(active) == 1
-    assert active[0]["server_id"] == "builtin-github"
+    active_ids = {c["server_id"] for c in active}
+    # GitHub must be active when GITHUB_TOKEN is set
+    assert "builtin-github" in active_ids, (
+        f"builtin-github must be active when GITHUB_TOKEN is set; active: {active_ids}"
+    )
+    # No unexpected token-dependent servers should be active
+    token_requiring = {c["server_id"] for c in active if c.get("requires_env")}
+    assert token_requiring == {"builtin-github"}, (
+        f"Only builtin-github should require env vars and be active; got: {token_requiring}"
+    )
 
 
 def test_each_builtin_config_has_handler() -> None:

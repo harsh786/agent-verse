@@ -173,6 +173,20 @@ def get_builtin_server_configs() -> list[dict]:
         dropbox_server,
         box_server,
         microsoft_onedrive_server,
+        # ── AWS ───────────────────────────────────────────────────────────────
+        aws_cloudwatch_server,
+        aws_iam_server,
+        aws_lambda_server,
+        aws_s3_server,
+        # ── Azure DevOps ──────────────────────────────────────────────────────
+        azure_devops_server,
+        # ── Cloud & Infrastructure ────────────────────────────────────────────
+        digitalocean_server,
+        docker_server,
+        heroku_server,
+        kubernetes_server,
+        netlify_server,
+        vercel_server,
     )
 
     raw_configs = [
@@ -1319,6 +1333,97 @@ def get_builtin_server_configs() -> list[dict]:
             "tool_definitions": microsoft_onedrive_server.TOOL_DEFINITIONS,
             "handler": microsoft_onedrive_server.call_tool,
             "requires_env": ["ONEDRIVE_ACCESS_TOKEN"],
+        },
+        # ── AWS ──────────────────────────────────────────────────────────────
+        {
+            "server_id": "builtin-aws-cloudwatch",
+            "name": "AWS CloudWatch",
+            "description": "AWS CloudWatch metrics, alarms, and log insights",
+            "tool_definitions": aws_cloudwatch_server.TOOL_DEFINITIONS,
+            "handler": aws_cloudwatch_server.call_tool,
+            "requires_env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        },
+        {
+            "server_id": "builtin-aws-iam",
+            "name": "AWS IAM",
+            "description": "AWS IAM users, roles, policies, and access management",
+            "tool_definitions": aws_iam_server.TOOL_DEFINITIONS,
+            "handler": aws_iam_server.call_tool,
+            "requires_env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        },
+        {
+            "server_id": "builtin-aws-lambda",
+            "name": "AWS Lambda",
+            "description": "AWS Lambda function invocation and management",
+            "tool_definitions": aws_lambda_server.TOOL_DEFINITIONS,
+            "handler": aws_lambda_server.call_tool,
+            "requires_env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        },
+        {
+            "server_id": "builtin-aws-s3",
+            "name": "AWS S3",
+            "description": "AWS S3 bucket and object management",
+            "tool_definitions": aws_s3_server.TOOL_DEFINITIONS,
+            "handler": aws_s3_server.call_tool,
+            "requires_env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        },
+        # ── Azure DevOps ──────────────────────────────────────────────────────
+        {
+            "server_id": "builtin-azure-devops",
+            "name": "Azure DevOps",
+            "description": "Azure DevOps repos, pipelines, work items, and boards",
+            "tool_definitions": azure_devops_server.TOOL_DEFINITIONS,
+            "handler": azure_devops_server.call_tool,
+            "requires_env": ["AZURE_DEVOPS_TOKEN", "AZURE_DEVOPS_ORG"],
+        },
+        # ── Cloud & Infrastructure ────────────────────────────────────────────
+        {
+            "server_id": "builtin-digitalocean",
+            "name": "DigitalOcean",
+            "description": "DigitalOcean droplets, Kubernetes clusters, and databases",
+            "tool_definitions": digitalocean_server.TOOL_DEFINITIONS,
+            "handler": digitalocean_server.call_tool,
+            "requires_env": ["DIGITALOCEAN_TOKEN"],
+        },
+        {
+            "server_id": "builtin-docker",
+            "name": "Docker",
+            "description": "Docker containers, images, volumes, and networks",
+            "tool_definitions": docker_server.TOOL_DEFINITIONS,
+            "handler": docker_server.call_tool,
+            "requires_env": [],
+        },
+        {
+            "server_id": "builtin-heroku",
+            "name": "Heroku",
+            "description": "Heroku apps, dynos, add-ons, and deployments",
+            "tool_definitions": heroku_server.TOOL_DEFINITIONS,
+            "handler": heroku_server.call_tool,
+            "requires_env": ["HEROKU_API_KEY"],
+        },
+        {
+            "server_id": "builtin-kubernetes",
+            "name": "Kubernetes",
+            "description": "Kubernetes pods, deployments, services, and namespaces",
+            "tool_definitions": kubernetes_server.TOOL_DEFINITIONS,
+            "handler": kubernetes_server.call_tool,
+            "requires_env": ["KUBE_API_SERVER", "KUBE_TOKEN"],
+        },
+        {
+            "server_id": "builtin-netlify",
+            "name": "Netlify",
+            "description": "Netlify sites, deploys, functions, and DNS management",
+            "tool_definitions": netlify_server.TOOL_DEFINITIONS,
+            "handler": netlify_server.call_tool,
+            "requires_env": ["NETLIFY_ACCESS_TOKEN"],
+        },
+        {
+            "server_id": "builtin-vercel",
+            "name": "Vercel",
+            "description": "Vercel deployments, projects, domains, and env vars",
+            "tool_definitions": vercel_server.TOOL_DEFINITIONS,
+            "handler": vercel_server.call_tool,
+            "requires_env": ["VERCEL_TOKEN"],
         },
     ]
 

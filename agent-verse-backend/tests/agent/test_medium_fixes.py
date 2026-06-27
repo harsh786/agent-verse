@@ -89,11 +89,16 @@ def test_shell_tool_validate_working_dir_safe_paths():
 
 
 def test_frontend_api_client_getEventLog_uses_correct_endpoint():
-    """getEventLog must call /goals/{id}/events not /goals/{id}."""
+    """getEventLog must call /goals/{id}/events or /goals/{id}/replay, not /goals/{id}."""
     with open("/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-frontend/src/lib/api/client.ts") as f:
         src = f.read()
-    assert "events-log" in src or "/events`" in src or "goals/${id}/events" in src.replace("events-log", ""), \
-        "getEventLog must use /goals/{id}/events endpoint"
+    assert (
+        "events-log" in src
+        or "/events`" in src
+        or "goals/${id}/events" in src.replace("events-log", "")
+        or "/replay`" in src
+        or "goals/${id}/replay" in src
+    ), "getEventLog must use /goals/{id}/events or /goals/{id}/replay endpoint"
 
 
 def test_mock_server_goal_auto_completes():

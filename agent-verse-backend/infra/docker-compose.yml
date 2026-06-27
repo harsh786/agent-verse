@@ -180,6 +180,21 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: "false"
+      # ── LLM providers — set at least one for real goal execution ──
+      # ANTHROPIC_API_KEY: sk-ant-...
+      # OPENAI_API_KEY: sk-...
+      # VOYAGE_API_KEY: pa-...
+      # ── Integration env vars ─────────────────────────────────────
+      # A2A_TENANT_ID: ""
+      # SLACK_TENANT_ID: ""
+      # ALERTMANAGER_TENANT_ID: ""
+      # DATADOG_TENANT_ID: ""
     depends_on:
       redis:
         condition: service_healthy
@@ -196,6 +211,21 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: "false"
+      # ── LLM providers — set at least one for real goal execution ──
+      # ANTHROPIC_API_KEY: sk-ant-...
+      # OPENAI_API_KEY: sk-...
+      # VOYAGE_API_KEY: pa-...
+      # ── Integration env vars ─────────────────────────────────────
+      # A2A_TENANT_ID: ""
+      # SLACK_TENANT_ID: ""
+      # ALERTMANAGER_TENANT_ID: ""
+      # DATADOG_TENANT_ID: ""
     depends_on:
       redis:
         condition: service_healthy
@@ -214,7 +244,7 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 10s
       retries: 3

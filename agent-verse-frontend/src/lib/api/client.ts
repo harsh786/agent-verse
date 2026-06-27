@@ -122,9 +122,11 @@ export const goalsApi = {
     request<GoalResponse>(`/goals/${id}/pause`, { method: "POST" }),
   resume: (id: string) =>
     request<GoalResponse>(`/goals/${id}/resume`, { method: "POST" }),
-  // Returns the persisted event log for a goal (non-streaming DB records).
+  // Returns the persisted event log for a goal via the replay endpoint.
   // For real-time streaming use the useGoalStream hook (EventSource).
-  getEventLog: (id: string) => request<GoalEvent[]>(`/goals/${id}/events`),
+  getEventLog: (id: string) =>
+    request<{ timeline: GoalEvent[] }>(`/goals/${id}/replay`)
+      .then((data) => data?.timeline ?? []),
   getEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`),
 };

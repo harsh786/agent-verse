@@ -1,6 +1,7 @@
 """Red-team runner — adversarial testing for agent safety and robustness."""
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -156,8 +157,10 @@ class BehavioralRedTeamRunner:
                                 "goal_complete", "goal_failed", "goal_cancelled"
                             }:
                                 break
-                except (TimeoutError, Exception):
-                    pass
+                except (TimeoutError, Exception) as exc:
+                    logging.getLogger(__name__).warning(
+                        "red_team_behavioral_case_failed: %s", exc
+                    )
             except Exception as exc:
                 events = [{"type": "error", "reason": str(exc)}]
 

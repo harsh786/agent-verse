@@ -4,16 +4,22 @@ import type {
   Connector,
   ConnectorSpec,
   ConnectorTestResult,
+  ConsentRecord,
   CostMetrics,
   CreateAgentRequest,
   CreateScheduleRequest,
+  EvalScorecard,
+  GdprExportJob,
   Goal,
   GoalEvent,
   GoalMetrics,
+  GoldenTask,
   Memory,
+  RolloutGateResult,
   Schedule,
   SearchResult,
   SubmitGoalOptions,
+  ToolReliabilityStats,
   UpdateAgentRequest,
 } from './types.js';
 import { AgentVerseError, AuthError, GoalFailedError, GoalTimeoutError, NotFoundError } from './errors.js';
@@ -280,5 +286,49 @@ export class AgentVerseClient {
 
   async getCostMetrics(days = 30): Promise<CostMetrics> {
     return this.request<CostMetrics>('GET', `/analytics/cost?days=${days}`);
+  }
+
+  // ── Tool reliability ──────────────────────────────────────────────────────
+
+  async getToolReliability(): Promise<ToolReliabilityStats[]> {
+    return this.request<ToolReliabilityStats[]>('GET', '/memory/tool-reliability');
+  }
+
+  // ── Agent rollout gate ────────────────────────────────────────────────────
+
+  async checkRolloutGate(agentId: string, evalSuiteId?: string): Promise<RolloutGateResult> {
+    const params = evalSuiteId ? `?eval_suite_id=${evalSuiteId}` : '';
+    return this.request<RolloutGateResult>('GET', `/agents/${agentId}/rollout-gate${params}`);
+  }
+
+  // ── Consent management ────────────────────────────────────────────────────
+
+  async recordConsent(purpose: string, legalBasis?: string): Promise<ConsentRecord> {
+    return this.request<ConsentRecord>('POST', '/compliance/consent', {
+      purpose,
+      legal_basis: legalBasis ?? 'legitimate_interest',
+    });
+  }
+
+  // ── Async GDPR export ─────────────────────────────────────────────────────
+
+  async startGdprExport(): Promise<GdprExportJob> {
+    return this.request<GdprExportJob>('POST', '/compliance/export/start');
+  }
+
+  async getGdprExportStatus(jobId: string): Promise<GdprExportJob> {
+    return this.request<GdprExportJob>('GET', `/compliance/export/jobs/${jobId}`);
+  }
+
+  // ── Golden tasks ──────────────────────────────────────────────────────────
+
+  async listGoldenTasks(evalSuiteId: string): Promise<GoldenTask[]> {
+    return this.request<GoldenTask[]>('GET', `/eval/golden-tasks?eval_suite_id=${evalSuiteId}`);
+  }
+
+  // ── Goal evaluation ───────────────────────────────────────────────────────
+
+  async getGoalEvaluation(goalId: string): Promise<EvalScorecard> {
+    return this.request<EvalScorecard>('GET', `/goals/${goalId}/evaluation`);
   }
 }

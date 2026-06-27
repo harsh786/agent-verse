@@ -140,3 +140,50 @@ export interface CostMetrics {
   daily_budget_usd: number;
   budget_utilization: number;
 }
+
+export interface RolloutGateResult {
+  gate_passed: boolean;
+  reason: string;
+  run_count: number;
+  pass_rate: number;
+  avg_score: number;
+  min_pass_rate_required: number;
+}
+
+export interface ToolReliabilityStats {
+  tool_name: string;
+  success_count: number;
+  failure_count: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  last_used_at: string | null;
+}
+
+export interface GoldenTask {
+  task_id: string;
+  goal: string;
+  expected_output_contains: string;
+  min_score: number;
+  tags: string[];
+}
+
+export interface ConsentRecord {
+  consent_id: string;
+  purpose: string;
+  status: string;
+}
+
+export interface GdprExportJob {
+  job_id: string;
+  status: string;
+  poll_url?: string;
+  download_url?: string;
+}
+
+export interface EvalScorecard {
+  goal_id: string;
+  score: number;
+  passed: boolean;
+  criteria: Array<{ name: string; passed: boolean; score: number }>;
+  evaluated_at: string;
+}

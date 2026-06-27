@@ -473,6 +473,18 @@ async def get_connector_health_history(
         return []
 
 
+def _default_redirect_uri(request: Request) -> str:
+    """Derive the OAuth callback redirect URI from settings or the request base URL."""
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None:
+        frontend_url = getattr(settings, "frontend_url", "") or ""
+        if frontend_url:
+            return f"{frontend_url.rstrip('/')}/connectors/oauth/callback"
+    # Fallback to request base URL
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/connectors/oauth/callback"
+
+
 @router.get("/oauth/start")
 async def oauth_start(request: Request, server_id: str) -> dict[str, Any]:
     """Start OAuth PKCE flow — returns the authorization URL with PKCE challenge."""
@@ -543,9 +555,12 @@ async def oauth_callback(
     code: str = "",
     state: str = "",
     server_id: str = "",
-    redirect_uri: str = "http://localhost:8000/connectors/oauth/callback",
+    redirect_uri: str = "",  # No hardcoded default — derived from settings or base URL
 ) -> dict[str, Any]:
     """OAuth callback — exchange authorization code for access tokens via PKCE."""
+    # Derive redirect_uri if not provided by the caller
+    if not redirect_uri:
+        redirect_uri = _default_redirect_uri(request)
     tenant_ctx = _require_tenant(request)
 
     # Get the OAuth manager from app state
