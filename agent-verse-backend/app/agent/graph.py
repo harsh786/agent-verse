@@ -648,11 +648,24 @@ class AgentGraph:
 
         waves = _structured.execution_waves()
         step_global_index = 0
+        # P1.1: Track completed StructuredStep objects for condition evaluation
+        _completed_steps: dict[str, Any] = {}
 
         for wave_idx, wave in enumerate(waves):
-            if len(wave) == 1:
-                # Single step — execute normally
-                step_desc = wave[0].description
+            # P1.1: Filter out steps whose condition evaluates to False
+            eligible_steps = [s for s in wave if s.should_execute(_completed_steps)]
+            if not eligible_steps:
+                self._logger.info(
+                    "wave_all_steps_skipped_by_condition",
+                    wave=wave_idx,
+                    skipped=[s.id for s in wave],
+                )
+                continue
+
+            if len(eligible_steps) == 1:
+                # Single step — execute normally (with loop support if configured)
+                struct_step = eligible_steps[0]
+                step_desc = struct_step.description
                 step = StepResult(description=step_desc, status=StepStatus.RUNNING)
                 agent_state.steps.append(step)
                 await self._emit({"type": "step_started", "step": step_desc})
@@ -660,7 +673,12 @@ class AgentGraph:
                 with self._tracer.start_as_current_span("agentverse.step.execute") as span:
                     span.set_attribute("step.description", step_desc[:200])
                     try:
-                        if self._semantic_cache is not None:
+                        if struct_step.loop_until is not None:
+                            # P1.1: Loop execution
+                            output = await self._execute_step_with_loop(
+                                struct_step, agent_state, tenant_ctx
+                            )
+                        elif self._semantic_cache is not None:
                             output = await self._execute_step_with_cache(
                                 step_desc, agent_state, tenant_ctx
                             )
@@ -675,6 +693,10 @@ class AgentGraph:
 
                 step.output = output
                 step.status = StepStatus.COMPLETE
+                # P1.1: Update StructuredStep runtime state for condition evaluation
+                struct_step.output = output
+                struct_step.status = "complete"
+                _completed_steps[struct_step.id] = struct_step
                 await self._emit({"type": "step_complete", "step": step_desc, "output": output})
                 await self._write_checkpoint(
                     agent_state.goal_id, step_global_index, agent_state, tenant_ctx
@@ -686,13 +708,13 @@ class AgentGraph:
                 await self._emit({
                     "type": "steps_parallel_start",
                     "wave": wave_idx,
-                    "steps": [s.description for s in wave],
-                    "count": len(wave),
+                    "steps": [s.description for s in eligible_steps],
+                    "count": len(eligible_steps),
                 })
 
                 # Pre-create StepResult objects before parallel execution to maintain order
                 parallel_steps: list[StepResult] = []
-                for s in wave:
+                for s in eligible_steps:
                     sr = StepResult(description=s.description, status=StepStatus.RUNNING)
                     agent_state.steps.append(sr)
                     await self._emit({"type": "step_started", "step": s.description})
@@ -730,9 +752,9 @@ class AgentGraph:
 
                 tasks = [
                     _asyncio.create_task(
-                        _run_wave_step(wave[i].description, parallel_steps[i])
+                        _run_wave_step(eligible_steps[i].description, parallel_steps[i])
                     )
-                    for i in range(len(wave))
+                    for i in range(len(eligible_steps))
                 ]
                 try:
                     await _asyncio.gather(*tasks)
@@ -743,19 +765,80 @@ class AgentGraph:
                     await _asyncio.gather(*tasks, return_exceptions=True)
                     raise
 
-                for i in range(len(wave)):
+                # P1.1: Update StructuredStep runtime state for parallel steps
+                for i, struct_step_par in enumerate(eligible_steps):
+                    struct_step_par.output = parallel_steps[i].output
+                    struct_step_par.status = (
+                        "complete" if parallel_steps[i].status == StepStatus.COMPLETE else "failed"
+                    )
+                    _completed_steps[struct_step_par.id] = struct_step_par
+
+                for i in range(len(eligible_steps)):
                     await self._write_checkpoint(
                         agent_state.goal_id, step_global_index + i, agent_state, tenant_ctx
                     )
-                step_global_index += len(wave)
+                step_global_index += len(eligible_steps)
 
                 await self._emit({
                     "type": "steps_parallel_complete",
                     "wave": wave_idx,
-                    "count": len(wave),
+                    "count": len(eligible_steps),
                 })
 
         return {"agent_state": agent_state}
+
+    async def _execute_step_with_loop(
+        self,
+        step: Any,
+        agent_state: AgentState,
+        tenant_ctx: TenantContext,
+    ) -> str:
+        """Execute a step with loop-until support (P1.1).
+
+        Calls ``_execute_step`` repeatedly until ``loop_until`` evaluates to True
+        or ``max_loop_iter`` is exceeded. Uses exponential backoff between iterations.
+        """
+        for iteration in range(step.max_loop_iter):
+            step.iterations_used = iteration + 1
+            output = await self._execute_step(step.description, agent_state, tenant_ctx)
+            step.output = output
+
+            try:
+                done = bool(
+                    eval(  # noqa: S307
+                        step.loop_until,
+                        {"__builtins__": {}, "len": len, "str": str},
+                        {"output": output, "iteration": iteration + 1, "iterations": iteration + 1},
+                    )
+                )
+            except Exception:
+                done = True  # On eval error, exit loop
+
+            if done:
+                self._logger.info(
+                    "loop_step_completed",
+                    step_id=step.id,
+                    iterations=step.iterations_used,
+                )
+                return output
+
+            if iteration < step.max_loop_iter - 1:
+                delay = min(2 ** iteration, 30)  # exponential backoff, max 30s
+                self._logger.info(
+                    "loop_step_retry",
+                    step_id=step.id,
+                    iteration=iteration + 1,
+                    next_delay_s=delay,
+                )
+                await asyncio.sleep(delay)
+
+        # Max iterations reached
+        self._logger.warning(
+            "loop_step_max_iterations_reached",
+            step_id=step.id,
+            max=step.max_loop_iter,
+        )
+        return step.output  # Return last output
 
     async def _execute_step(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
