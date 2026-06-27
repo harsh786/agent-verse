@@ -74,8 +74,11 @@ async def test_execute_goal_tree_parallel() -> None:
         graph_factory=make_graph,
     )
 
-    assert len(sub_goals) == 2
+    # 2 original sub-goals + 1 LLM synthesis sub-goal appended by execute_goal_tree
+    assert len(sub_goals) == 3
     assert all(sg.status == GoalStatus.COMPLETE for sg in sub_goals)
+    # The last entry is the synthesis result
+    assert sub_goals[-1].sub_goal_id == "synthesis"
 
 
 async def test_execute_goal_tree_sequential_deps() -> None:
@@ -107,10 +110,13 @@ async def test_execute_goal_tree_sequential_deps() -> None:
         graph_factory=make_graph,
     )
 
-    assert len(sub_goals) == 2
+    # 2 original sub-goals + 1 LLM synthesis sub-goal appended by execute_goal_tree
+    assert len(sub_goals) == 3
     sg_ids = [sg.sub_goal_id for sg in sub_goals]
     # sg1 must appear before sg2 in results (topological order)
     assert sg_ids.index("sg1") < sg_ids.index("sg2")
+    # synthesis is always last
+    assert sg_ids[-1] == "synthesis"
 
 
 async def test_execute_goal_tree_no_decompose_returns_empty() -> None:

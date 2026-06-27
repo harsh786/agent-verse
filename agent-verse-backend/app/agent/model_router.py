@@ -84,6 +84,10 @@ class ModelRouter:
             "verification": self._config.verification_model,
             "embedding": self._config.embedding_model,
             "classification": self._config.execution_model,  # reuse execution model
+            # Reflection and chain-of-thought reasoning need planning-tier quality
+            "reflection": self._config.planning_model,
+            "think": self._config.planning_model,
+            "thinking": self._config.planning_model,
         }
         model = mapping.get(task_type, "")
         if not model:

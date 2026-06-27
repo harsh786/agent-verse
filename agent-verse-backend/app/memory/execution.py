@@ -80,22 +80,31 @@ class ExecutionMemory:
     async def record_async(
         self,
         *,
-        goal_text: str,
+        goal: str,
         plan: list[str],
         success: bool,
-        tenant_ctx: TenantContext,
-        db: object = None,
+        tenant_id: str,
+        db: Any = None,
     ) -> None:
-        """Record to both in-memory dict and PostgreSQL."""
+        """Record to both in-memory dict and PostgreSQL.
+
+        Uses ``tenant_id`` (str) directly so callers don't need a TenantContext
+        object.  Also updates ``_plans`` so that the synchronous ``recall()``
+        method can still find newly-persisted entries in the same session.
+        """
         from datetime import UTC, datetime
-        tid = tenant_ctx.tenant_id
+        tid = tenant_id
         entry: dict[str, object] = {
-            "goal_text": goal_text,
+            "goal_text": goal,
+            "goal": goal,
             "plan": plan,
             "success": success,
             "recorded_at": datetime.now(UTC).isoformat(),
         }
         self._memories.setdefault(tid, []).append(entry)
+        # Also update _plans so sync recall() can find entries in the same session
+        if success:
+            self._plans.setdefault(tid, []).append({"goal": goal, "plan": plan})
         # Keep only last 100 in memory per tenant
         if len(self._memories[tid]) > 100:
             self._memories[tid] = self._memories[tid][-100:]
@@ -113,7 +122,7 @@ class ExecutionMemory:
                         (id, tenant_id, goal_text, plan, success, created_at)
                         VALUES (:id, :tid, :goal, :plan, :success, NOW())"""),
                     {"id": uuid.uuid4().hex, "tid": tid,
-                     "goal": goal_text[:500], "plan": json.dumps(plan), "success": success}
+                     "goal": goal[:500], "plan": json.dumps(plan), "success": success}
                 )
         except Exception as exc:
             from app.observability.logging import get_logger

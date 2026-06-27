@@ -5,6 +5,8 @@ Any service that speaks the OpenAI Chat Completions + Embeddings API works here.
 
 from __future__ import annotations
 
+import json
+
 from app.providers.base import (
     CompletionRequest,
     CompletionResponse,
@@ -90,7 +92,15 @@ class OpenAICompatibleProvider:
         tool_calls = []
         if choice.message.tool_calls:
             tool_calls = [
-                {"name": tc.function.name, "input": tc.function.arguments, "id": tc.id}
+                {
+                    "name": tc.function.name,
+                    "input": (
+                        json.loads(tc.function.arguments)
+                        if tc.function.arguments
+                        else {}
+                    ) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {}),
+                    "id": tc.id,
+                }
                 for tc in choice.message.tool_calls
             ]
 
