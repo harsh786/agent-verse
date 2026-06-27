@@ -45,6 +45,10 @@ dependencies = [
     "pyyaml>=6.0",
     # email-to-goal IMAP listener
     "aioimaplib>=1.1",
+    # async SMTP for notification service
+    "aiosmtplib>=3.0",
+    # LangGraph Redis checkpointer for persistent agent state across replicas
+    "langgraph-checkpoint-redis>=0.0.1",
 ]
 
 [project.scripts]

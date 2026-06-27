@@ -221,10 +221,14 @@ class TenantService:
         tenant = self._tenants.get(key["tenant_id"])
         if tenant is None:
             return None
+        # API key holders are the tenant owner — grant them admin role by default
+        # so they can access all RBAC-protected endpoints for their own tenant.
+        key_roles: tuple[str, ...] = tuple(key.get("roles", ("admin",))) or ("admin",)
         return TenantContext(
             tenant_id=tenant["tenant_id"],
             plan=PlanTier(tenant["plan"]),
             api_key_id=key_id,
+            roles=key_roles,
         )
 
     # ── DB persistence helpers ────────────────────────────────────────────────

@@ -369,6 +369,16 @@ def create_app(
                 _llm_store = LLMConfigStore(redis_client=real_redis)
                 set_llm_config_store(_llm_store)
                 app.state.llm_config_store = _llm_store
+                # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7)
+                try:
+                    from langgraph.checkpoint.redis import RedisSaver
+                    _redis_url_for_saver = settings.redis_url
+                    if _redis_url_for_saver:
+                        _checkpointer = RedisSaver.from_conn_string(_redis_url_for_saver)
+                        app.state.langgraph_checkpointer = _checkpointer
+                        logger.info("redis_saver_checkpointer_wired")
+                except (ImportError, Exception) as _exc:
+                    logger.warning("redis_saver_unavailable", error=str(_exc))
             else:
                 # Pool didn't provide a Redis client; fall back to a direct
                 # connection from REDIS_URL (e.g. when using a minimal pool config).

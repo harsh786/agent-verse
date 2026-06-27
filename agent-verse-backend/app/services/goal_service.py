@@ -83,6 +83,24 @@ class GoalRecord:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
+def _resolve_checkpointer(app_state: Any) -> Any:
+    """Safely extract a valid LangGraph checkpointer from app_state.
+
+    Returns None when app_state is absent, the attribute is unset, or the
+    value is not a genuine BaseCheckpointSaver (e.g. a test MagicMock).
+    """
+    if app_state is None:
+        return None
+    cp = getattr(app_state, "langgraph_checkpointer", None)
+    if cp is None:
+        return None
+    try:
+        from langgraph.checkpoint.base import BaseCheckpointSaver
+        return cp if isinstance(cp, BaseCheckpointSaver) else None
+    except Exception:
+        return None
+
+
 def _make_agent_loop() -> Any:
     """Construct an AgentGraph backed by FakeProvider (no real LLM required)."""
     try:
@@ -260,6 +278,8 @@ class GoalService:
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             policy_engine=policy_engine,
+            # Use RedisSaver when available for cross-replica state persistence (Fix 7)
+            checkpointer=_resolve_checkpointer(app_state),
         )
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)

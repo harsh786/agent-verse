@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.governance.audit import AuditLog
@@ -13,6 +13,7 @@ from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import HITLGateway
 from app.governance.policies import Policy, PolicyEngine
 from app.tenancy.context import TenantContext
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 
@@ -300,7 +301,10 @@ async def list_approvals(request: Request) -> list[dict[str, Any]]:
 
 @router.post("/approvals/{request_id}/approve")
 async def approve_request(
-    request: Request, request_id: str, body: ApproveRejectRequest
+    request: Request,
+    request_id: str,
+    body: ApproveRejectRequest,
+    _rbac: None = Depends(require_role("approver")),
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
@@ -317,7 +321,10 @@ async def approve_request(
 
 @router.post("/approvals/{request_id}/reject")
 async def reject_request(
-    request: Request, request_id: str, body: ApproveRejectRequest
+    request: Request,
+    request_id: str,
+    body: ApproveRejectRequest,
+    _rbac: None = Depends(require_role("approver")),
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
@@ -379,7 +386,9 @@ async def get_budget(request: Request) -> dict[str, Any]:
 
 @router.put("/budget")
 async def set_budget(
-    request: Request, body: SetBudgetRequest
+    request: Request,
+    body: SetBudgetRequest,
+    _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     configs = _budget_config(request)
@@ -435,7 +444,10 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 @router.post("/emergency-stop")
-async def emergency_stop(request: Request) -> dict[str, Any]:
+async def emergency_stop(
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Pause all running goals for this tenant immediately."""
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "goal_service", None)

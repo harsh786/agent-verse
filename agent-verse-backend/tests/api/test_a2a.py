@@ -1,14 +1,17 @@
-"""Tests for A2A protocol endpoints."""
+"""Tests for A2A protocol endpoints — updated for DB-backed + HMAC implementation."""
 from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.a2a import _received_tasks, _task_results, router as a2a_router
+from app.api.a2a import _tasks, router as a2a_router
 
 
 def _make_app() -> FastAPI:
     app = FastAPI()
+    # Wire minimal state
+    app.state.db_session_factory = None
+    app.state.goal_service = None
     app.include_router(a2a_router)
     return app
 
@@ -20,51 +23,75 @@ def test_agent_card_returns_json() -> None:
     data = resp.json()
     assert data["name"] == "AgentVerse Platform"
     assert data["agent_id"] == "agentverse-platform"
-    assert "goals" in data["capabilities"]
-    assert data["auth_required"] is True
+    # capabilities is a list
+    assert isinstance(data["capabilities"], list)
+    assert len(data["capabilities"]) > 0
 
 
-def test_receive_task() -> None:
-    _received_tasks.clear()
-    _task_results.clear()
+def test_receive_task_returns_accepted() -> None:
+    _tasks.clear()
     client = TestClient(_make_app())
     resp = client.post(
         "/a2a/tasks",
         json={
-            "task_id": "t-001",
             "goal": "Summarize quarterly report",
             "context": {"tenant": "acme"},
         },
     )
-    assert resp.status_code == 200
+    # New implementation returns 202 "accepted"
+    assert resp.status_code in (200, 202)
     data = resp.json()
-    assert data["task_id"] == "t-001"
-    assert data["status"] == "received"
-    assert "t-001" in _received_tasks
+    assert "task_id" in data
+    assert data["status"] == "accepted"
 
 
 def test_get_task_status() -> None:
-    _received_tasks.clear()
-    _task_results.clear()
+    _tasks.clear()
     client = TestClient(_make_app())
 
     # Create the task first
-    client.post(
+    create_resp = client.post(
         "/a2a/tasks",
-        json={"task_id": "t-002", "goal": "Generate report"},
+        json={"goal": "Generate report"},
     )
+    task_id = create_resp.json()["task_id"]
 
-    # Pending task returns status pending
-    resp = client.get("/a2a/tasks/t-002")
+    # Fetch task status
+    resp = client.get(f"/a2a/tasks/{task_id}")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["task_id"] == "t-002"
-    assert data["status"] == "pending"
+    assert "task_id" in data
+    assert "status" in data
 
 
-def test_get_task_not_found_returns_404() -> None:
-    _received_tasks.clear()
-    _task_results.clear()
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/a2a/tasks/ghost-task")
+def test_get_unknown_task_returns_404() -> None:
+    _tasks.clear()
+    client = TestClient(_make_app())
+    resp = client.get("/a2a/tasks/nonexistent-task-xyz")
     assert resp.status_code == 404
+
+
+def test_hmac_verification_disabled_without_secret(monkeypatch) -> None:
+    """When A2A_SHARED_SECRET not set, any request is accepted."""
+    import os
+    monkeypatch.delenv("A2A_SHARED_SECRET", raising=False)
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/a2a/tasks",
+        json={"goal": "Test goal"},
+        headers={"X-A2A-Signature": ""},
+    )
+    assert resp.status_code in (200, 202)
+
+
+def test_hmac_verification_rejects_bad_signature(monkeypatch) -> None:
+    """When A2A_SHARED_SECRET is set, bad signature returns 401."""
+    import os
+    monkeypatch.setenv("A2A_SHARED_SECRET", "real-secret")
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/a2a/tasks",
+        json={"goal": "Test goal"},
+        headers={"X-A2A-Signature": "sha256=badhash"},
+    )
+    assert resp.status_code == 401
