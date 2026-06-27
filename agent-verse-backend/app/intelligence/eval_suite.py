@@ -267,8 +267,8 @@ class EvalSuiteRunner:
                         events.append(evt)
                         if evt.get("type") in {"goal_complete", "goal_failed", "goal_cancelled"}:
                             break
-            except (TimeoutError, Exception):
-                pass
+            except (TimeoutError, Exception) as exc:
+                logger.warning("eval_task_execution_failed: %s", exc)
         except Exception as exc:
             return GoldenTaskResult(
                 task_id=task.task_id, goal=task.goal, passed=False,

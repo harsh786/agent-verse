@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -187,8 +188,10 @@ class ComplianceController:
                         }
                         for r in _rows
                     ]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "compliance_goals_db_export_failed: %s", exc
+                    )
             else:
                 try:
                     goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
@@ -200,8 +203,10 @@ class ComplianceController:
                                 "status": str(getattr(record, "status", "")),
                                 "created_at": getattr(record, "created_at", ""),
                             })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "compliance_goals_memory_export_failed: %s", exc
+                    )
 
         audit_data: list[dict[str, Any]] = []
         if self._audit_log is not None:
@@ -216,8 +221,10 @@ class ComplianceController:
                     }
                     for e in entries[:100]  # Cap at 100 for export
                 ]
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "compliance_audit_export_failed: %s", exc
+                )
 
         agents_data: list[dict[str, Any]] = []
         if self._agent_store is not None:
@@ -226,8 +233,10 @@ class ComplianceController:
                 agents_data = [
                     {"agent_id": a.get("agent_id"), "name": a.get("name")} for a in agents
                 ]
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "compliance_agents_export_failed: %s", exc
+                )
 
         schedules_data: list[dict[str, Any]] = []
         if self._schedule_store is not None:
@@ -237,8 +246,10 @@ class ComplianceController:
                     {"schedule_id": s.get("schedule_id"), "goal_id": s.get("goal_id")}
                     for s in schedules
                 ]
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "compliance_schedules_export_failed: %s", exc
+                )
 
         req.payload = {
             "tenant_id": tenant_ctx.tenant_id,
@@ -373,8 +384,10 @@ class ComplianceController:
                     text("DELETE FROM deleted_tenants WHERE tenant_id = :tid"),
                     {"tid": tenant_ctx.tenant_id},
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "compliance_deletion_tracking_failed: %s", exc
+            )
 
         total = sum(v for v in deleted_counts.values() if isinstance(v, int))
         return {

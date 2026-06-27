@@ -387,3 +387,103 @@ class AgentVerseClient:
         resp = await self._client().get(f"/goals/{goal_id}/replay")
         self._raise_for_status(resp)
         return resp.json()  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Tool reliability
+    # ------------------------------------------------------------------
+
+    async def get_tool_reliability(self) -> list[dict]:
+        """Get tool reliability statistics for this tenant."""
+        return await self._request("GET", "/memory/tool-reliability")
+
+    # ------------------------------------------------------------------
+    # Agent rollout gate
+    # ------------------------------------------------------------------
+
+    async def check_rollout_gate(self, agent_id: str, eval_suite_id: str = "") -> dict:
+        """Check if agent meets eval pass rate for production rollout."""
+        params = f"?eval_suite_id={eval_suite_id}" if eval_suite_id else ""
+        return await self._request("GET", f"/agents/{agent_id}/rollout-gate{params}")
+
+    # ------------------------------------------------------------------
+    # Agent versioning (snapshot / rollback)
+    # ------------------------------------------------------------------
+
+    async def snapshot_agent(self, agent_id: str) -> dict:
+        """Create a version snapshot of an agent's current config."""
+        return await self._request("POST", f"/agents/{agent_id}/snapshot")
+
+    async def list_agent_versions(self, agent_id: str) -> list[dict]:
+        """List all version snapshots of an agent."""
+        return await self._request("GET", f"/agents/{agent_id}/versions")
+
+    async def rollback_agent(self, agent_id: str, snapshot_id: str) -> dict:
+        """Rollback agent to a previous version snapshot."""
+        return await self._request("POST", f"/agents/{agent_id}/rollback/{snapshot_id}")
+
+    # ------------------------------------------------------------------
+    # Consent management
+    # ------------------------------------------------------------------
+
+    async def record_consent(
+        self, purpose: str, legal_basis: str = "legitimate_interest"
+    ) -> dict:
+        """Record tenant consent for data processing."""
+        return await self._request(
+            "POST",
+            "/compliance/consent",
+            json={"purpose": purpose, "legal_basis": legal_basis},
+        )
+
+    async def revoke_consent(self, purpose: str) -> dict:
+        """Revoke previously granted consent."""
+        return await self._request("DELETE", f"/compliance/consent/{purpose}")
+
+    # ------------------------------------------------------------------
+    # Async GDPR export
+    # ------------------------------------------------------------------
+
+    async def start_gdpr_export(self) -> dict:
+        """Start async GDPR data export job."""
+        return await self._request("POST", "/compliance/export/start")
+
+    async def get_gdpr_export_status(self, job_id: str) -> dict:
+        """Poll status of GDPR data export job."""
+        return await self._request("GET", f"/compliance/export/jobs/{job_id}")
+
+    # ------------------------------------------------------------------
+    # Golden tasks
+    # ------------------------------------------------------------------
+
+    async def list_golden_tasks(self, eval_suite_id: str) -> list[dict]:
+        """List golden tasks for an eval suite."""
+        return await self._request(
+            "GET", f"/eval/golden-tasks?eval_suite_id={eval_suite_id}"
+        )
+
+    async def create_golden_task(
+        self,
+        eval_suite_id: str,
+        goal: str,
+        expected_output_contains: str = "",
+        min_score: float = 0.8,
+    ) -> dict:
+        """Create a golden task for regression testing."""
+        return await self._request(
+            "POST",
+            "/eval/golden-tasks",
+            json={
+                "eval_suite_id": eval_suite_id,
+                "goal": goal,
+                "expected_output_contains": expected_output_contains,
+                "min_score": min_score,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Goal evaluation
+    # ------------------------------------------------------------------
+
+    async def get_goal_evaluation(self, goal_id: str) -> dict:
+        """Get eval scorecard for a completed goal."""
+        return await self._request("GET", f"/goals/{goal_id}/evaluation")
