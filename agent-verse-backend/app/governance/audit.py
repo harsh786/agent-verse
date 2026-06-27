@@ -109,6 +109,104 @@ class AuditLog:
             events = [e for e in events if e.tool_name == tool_name]
         return list(events)[:limit]
 
+    async def query_db(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        goal_id: str | None = None,
+        tool_name: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> list[AuditEvent]:
+        """Read audit events directly from PostgreSQL with full filter + pagination.
+
+        This is the production path — always reads from DB, never from the
+        in-memory cache. Falls back to the in-memory cache only when DB is
+        unavailable.
+        """
+        if self._db is None:
+            return self.query(
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
+                tool_name=tool_name,
+                limit=limit,
+            )
+
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            conditions = ["tenant_id = :tid"]
+            params: dict[str, Any] = {
+                "tid": tenant_ctx.tenant_id,
+                "limit": limit,
+                "offset": offset,
+            }
+
+            if goal_id:
+                conditions.append("goal_id = :gid")
+                params["gid"] = goal_id
+            if tool_name:
+                conditions.append("tool_name = :tname")
+                params["tname"] = tool_name
+            if start_time:
+                conditions.append("created_at >= :start_time::timestamptz")
+                params["start_time"] = start_time
+            if end_time:
+                conditions.append("created_at <= :end_time::timestamptz")
+                params["end_time"] = end_time
+
+            where_clause = " AND ".join(conditions)
+            sql = f"""
+                SELECT id, goal_id, tool_name, action_level, outcome,
+                       step_id, approver, note, created_at
+                FROM audit_log
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+            """
+
+            async with self._db() as session, sqlalchemy_rls_context(
+                session, tenant_ctx.tenant_id
+            ):
+                result = await session.execute(text(sql), params)
+                rows = result.fetchall()
+
+            events: list[AuditEvent] = []
+            for row in rows:
+                try:
+                    level = ActionLevel(row[3]) if row[3] else ActionLevel.ALLOW
+                except ValueError:
+                    level = ActionLevel.ALLOW_LOG
+
+                events.append(
+                    AuditEvent(
+                        event_id=row[0],
+                        goal_id=row[1] or "",
+                        tool_name=row[2] or "",
+                        action_level=level,
+                        outcome=row[4] or "",
+                        step_id=row[5] or "",
+                        approver=row[6],
+                        note=row[7] or "",
+                    )
+                )
+
+            return events
+
+        except Exception as exc:
+            _log.warning("audit_query_db_failed", error=str(exc))
+            # Fall back to in-memory on DB failure
+            return self.query(
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
+                tool_name=tool_name,
+                limit=limit,
+            )
+
     async def sync_from_db(self, *, tenant_id: str | None = None) -> int:
         """Load audit entries from PostgreSQL into memory.
 
