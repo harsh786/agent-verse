@@ -30,6 +30,21 @@ class Policy:
     scope: str = "global"
     allowed_hours_utc: tuple[int, int] | None = None  # (start_hour, end_hour) UTC
     allowed_weekdays: list[int] | None = None  # 0=Monday ... 6=Sunday
+    tenant_id: str = ""
+
+
+@dataclass
+class GovernancePolicy:
+    """Lightweight policy record used for tenant-scoped policy isolation.
+
+    This is distinct from :class:`Policy` (which drives the engine evaluation
+    logic) and serves as a simple data holder for per-tenant policy records.
+    """
+
+    name: str
+    action: str
+    tool_pattern: str = ""
+    tenant_id: str = ""
 
 
 class PolicyEngine:

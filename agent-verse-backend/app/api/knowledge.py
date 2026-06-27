@@ -135,13 +135,42 @@ async def create_collection(
 async def delete_collection(request: Request, collection_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
-    key = (tenant_ctx.tenant_id, collection_id)
-    if key not in store._data:  # type: ignore[attr-defined]
+
+    # Verify collection exists and belongs to this tenant
+    collection = store.get_collection(collection_id, tenant_ctx=tenant_ctx)
+    if collection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Collection {collection_id} not found",
         )
-    del store._data[key]  # type: ignore[attr-defined]
+
+    # Delete from DB: chunks first (FK constraint), then the collection row
+    db = getattr(store, "_db", None)
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(
+                    text(
+                        "DELETE FROM documents "
+                        "WHERE collection_id = :cid AND tenant_id = :tid"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+                await session.execute(
+                    text(
+                        "DELETE FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("delete_collection_db_failed: %s", exc)
+
+    # Remove from in-memory cache
+    key = (tenant_ctx.tenant_id, collection_id)
+    store._data.pop(key, None)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +457,9 @@ async def _ingest_repo_background(
     embedder: Any,
     tenant_ctx: Any,
 ) -> None:
+    import asyncio
     import pathlib
     import shutil
-    import subprocess
     import tempfile
 
     from app.observability.logging import get_logger
@@ -440,13 +469,25 @@ async def _ingest_repo_background(
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
     try:
-        # Clone using git (open source)
-        result = subprocess.run(
-            ["git", "clone", "--depth=1", "--branch", branch, repo_url, tmpdir],
-            capture_output=True, text=True, timeout=120,
+        # Clone using git — non-blocking async subprocess
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth=1", "--branch", branch, repo_url, tmpdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            logger.warning("repo_clone_failed", repo=repo_url, error=result.stderr[:200])
+        try:
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("repo_clone_timeout", repo=repo_url)
+            return
+
+        if proc.returncode != 0:
+            logger.warning(
+                "repo_clone_failed",
+                repo=repo_url,
+                error=(stderr or b"").decode("utf-8", errors="replace")[:200],
+            )
             return
 
         chunker = SemanticChunker(max_chars=512, overlap_chars=64)

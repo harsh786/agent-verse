@@ -129,24 +129,24 @@ def test_audit_log_is_append_only() -> None:
 
 # ── CostController ────────────────────────────────────────────────────────────
 
-def test_cost_controller_allows_within_budget() -> None:
+async def test_cost_controller_allows_within_budget() -> None:
     ctrl = CostController(BudgetConfig(per_goal_usd=1.0, per_tenant_daily_usd=100.0))
-    allowed = ctrl.check_and_record(goal_id="gid-1", cost_usd=0.50, tenant_ctx=_CTX)
+    allowed = await ctrl.check_and_record(goal_id="gid-1", cost_usd=0.50, tenant_ctx=_CTX)
     assert allowed is True
 
 
-def test_cost_controller_blocks_over_goal_budget() -> None:
+async def test_cost_controller_blocks_over_goal_budget() -> None:
     ctrl = CostController(BudgetConfig(per_goal_usd=0.10, per_tenant_daily_usd=100.0))
-    ctrl.check_and_record(goal_id="gid-1", cost_usd=0.08, tenant_ctx=_CTX)
-    allowed = ctrl.check_and_record(goal_id="gid-1", cost_usd=0.05, tenant_ctx=_CTX)
+    await ctrl.check_and_record(goal_id="gid-1", cost_usd=0.08, tenant_ctx=_CTX)
+    allowed = await ctrl.check_and_record(goal_id="gid-1", cost_usd=0.05, tenant_ctx=_CTX)
     assert allowed is False
 
 
-def test_cost_controller_tenant_isolation() -> None:
+async def test_cost_controller_tenant_isolation() -> None:
     ctrl = CostController(BudgetConfig(per_goal_usd=0.10, per_tenant_daily_usd=100.0))
-    ctrl.check_and_record(goal_id="gid-1", cost_usd=0.09, tenant_ctx=_CTX)
+    await ctrl.check_and_record(goal_id="gid-1", cost_usd=0.09, tenant_ctx=_CTX)
     # Same goal_id but different tenant — should be allowed
-    allowed = ctrl.check_and_record(goal_id="gid-1", cost_usd=0.09, tenant_ctx=_CTX_B)
+    allowed = await ctrl.check_and_record(goal_id="gid-1", cost_usd=0.09, tenant_ctx=_CTX_B)
     assert allowed is True
 
 

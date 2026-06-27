@@ -131,20 +131,21 @@ export function WorkflowBuilderPage() {
         setNodes(newNodes);
         setEdges(newEdges);
       } else {
-        // Fallback: poll for plan (goal may be async)
+        // Fallback: poll for plan via the goal detail endpoint
         const goalId = data.goal_id;
         if (goalId) {
-          // Wait briefly then check events for plan
+          // Wait briefly then fetch goal detail which includes execution context
           await new Promise(r => setTimeout(r, 2000));
-          const evtRes = await fetch(`${API_BASE}/goals/${goalId}/events`, {
+          const evtRes = await fetch(`${API_BASE}/goals/${goalId}`, {
             headers: { 'X-API-Key': apiKey },
           });
           if (evtRes.ok) {
-            const events = await evtRes.json();
-            const planEvt = events.find((e: { type: string; payload?: { steps?: string[] } }) =>
-              e.type === 'plan_created' || e.type === 'step_planned'
-            );
-            const planSteps: string[] = planEvt?.payload?.steps || [];
+            const goalData = await evtRes.json();
+            // Plan may be in execution_context.plan or structured_plan
+            const planSteps: string[] =
+              goalData?.execution_context?.plan?.steps ??
+              goalData?.structured_plan?.steps ??
+              [];
             setNodes([
               { id: 'start', type: 'start', label: 'Start' },
               ...(planSteps.length > 0

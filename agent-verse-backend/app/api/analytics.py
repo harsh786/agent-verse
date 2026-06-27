@@ -84,12 +84,25 @@ async def cost_analytics(
     total = sum(t["cost_usd"] for t in trends)
     tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
     tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    tenant_ctx = tenant
     m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
+
+    # Use GoalService's accurate cost_today_usd rather than summing the 30-day total
+    goal_service = getattr(request.app.state, "goal_service", None) if request else None
+    if goal_service is not None and tenant_ctx is not None:
+        try:
+            gm = await goal_service.get_metrics(tenant_ctx=tenant_ctx)
+            cost_today = gm.get("cost_today_usd", 0.0)
+        except Exception:
+            cost_today = 0.0
+    else:
+        cost_today = 0.0
+
     return {
         "period_days": days,
         "bucket": bucket,
         "total_cost_usd": round(total, 6),
-        "cost_today_usd": round(total, 6),  # frontend compat
+        "cost_today_usd": round(cost_today, 6),  # accurate today-only value
         "goals_today": m.total,
         "total_goals": m.total,
         "avg_cost_per_goal": round(total / max(m.total, 1), 6),

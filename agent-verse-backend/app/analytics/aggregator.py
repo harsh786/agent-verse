@@ -184,8 +184,8 @@ class GoalAnalyticsAggregator:
         tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for g in goals:
             for evt in getattr(g, "events", []):
-                if evt.get("type") in ("tool_call", "tool_result"):
-                    tool_name = evt.get("tool_name", "unknown")
+                if evt.get("type") in ("tool_call_complete", "tool_call_failed", "step_complete"):
+                    tool_name = evt.get("tool", evt.get("tool_name", "unknown"))
                     tool_calls[tool_name].append(evt)
 
         results: list[ToolMetrics] = []

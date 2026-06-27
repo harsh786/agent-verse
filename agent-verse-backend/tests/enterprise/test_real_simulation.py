@@ -11,10 +11,10 @@ from app.tenancy.context import TenantContext, PlanTier
 _CTX = TenantContext(tenant_id="sim-test", plan=PlanTier.FREE, api_key_id="k1")
 
 
-def test_simulation_with_mock_tools():
+async def test_simulation_with_mock_tools():
     """SimulationRunner returns a complete run with steps in the result."""
     runner = SimulationRunner()
-    run = runner.start(
+    run = await runner.start(
         goal="Fetch GitHub issues and create Jira tickets",
         mock_tools={
             "github:list_issues": [{"id": 1, "title": "Bug fix"}],
@@ -28,14 +28,14 @@ def test_simulation_with_mock_tools():
     assert "steps" in run.result or "simulated_steps" in run.result
 
 
-def test_simulation_steps_match_mock_tools():
+async def test_simulation_steps_match_mock_tools():
     """Each provided mock_tool produces a corresponding step in the result."""
     mock_tools = {
         "github:list_issues": [{"id": 1}],
         "jira:create_issue": {"id": "PROJ-1"},
     }
     runner = SimulationRunner()
-    run = runner.start(goal="test", mock_tools=mock_tools, tenant_ctx=_CTX)
+    run = await runner.start(goal="test", mock_tools=mock_tools, tenant_ctx=_CTX)
 
     steps = run.result.get("steps", run.result.get("simulated_steps", []))
     tool_names = [s.get("tool") for s in steps if s.get("tool")]
@@ -43,18 +43,18 @@ def test_simulation_steps_match_mock_tools():
         assert tool in tool_names, f"Expected step for tool {tool}"
 
 
-def test_simulation_empty_mock_tools():
+async def test_simulation_empty_mock_tools():
     """Simulation works even with no mock tools; still produces a result."""
     runner = SimulationRunner()
-    run = runner.start(goal="Do something", mock_tools={}, tenant_ctx=_CTX)
+    run = await runner.start(goal="Do something", mock_tools={}, tenant_ctx=_CTX)
     assert run.status in ("complete", "completed")
     assert run.result is not None
 
 
-def test_simulation_get():
+async def test_simulation_get():
     """Can retrieve a simulation run by ID."""
     runner = SimulationRunner()
-    run = runner.start(goal="test retrieval", mock_tools={}, tenant_ctx=_CTX)
+    run = await runner.start(goal="test retrieval", mock_tools={}, tenant_ctx=_CTX)
     fetched = runner.get(run_id=run.run_id, tenant_ctx=_CTX)
     assert fetched is not None
     assert fetched.run_id == run.run_id
@@ -66,11 +66,11 @@ def test_simulation_get_nonexistent_returns_none():
     assert result is None
 
 
-def test_simulation_list_runs():
+async def test_simulation_list_runs():
     """list_runs returns all started runs."""
     runner = SimulationRunner()
-    run1 = runner.start(goal="first", mock_tools={}, tenant_ctx=_CTX)
-    run2 = runner.start(goal="second", mock_tools={}, tenant_ctx=_CTX)
+    run1 = await runner.start(goal="first", mock_tools={}, tenant_ctx=_CTX)
+    run2 = await runner.start(goal="second", mock_tools={}, tenant_ctx=_CTX)
     all_runs = runner.list_runs(tenant_ctx=_CTX)
     run_ids = [r.run_id for r in all_runs]
     assert run1.run_id in run_ids

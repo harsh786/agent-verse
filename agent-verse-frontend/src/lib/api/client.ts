@@ -10,9 +10,21 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 /** Exported alias for use in feature pages. */
 export const API_BASE = API_BASE_URL;
 
-function getApiKey(): string {
-  return localStorage.getItem("av_api_key") ?? "";
-}
+// NOTE: sessionStorage is less vulnerable than localStorage (cleared on tab close)
+// Production: use httpOnly cookie set by the backend auth endpoint
+const getApiKey = (): string => {
+  // Prefer sessionStorage (not persisted across browser restarts)
+  return (
+    sessionStorage.getItem("av_api_key") ??
+    localStorage.getItem("av_api_key") ?? // backward compat
+    ""
+  );
+};
+
+export const setApiKey = (key: string): void => {
+  sessionStorage.setItem("av_api_key", key);
+  localStorage.setItem("av_api_key", key); // backward compat
+};
 
 async function request<T>(
   path: string,

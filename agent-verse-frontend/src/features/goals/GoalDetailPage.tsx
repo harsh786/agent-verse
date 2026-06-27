@@ -166,7 +166,9 @@ export function GoalDetailPage() {
   const approveMutation = useMutation({
     mutationFn: () => {
       if (!pendingApproval) throw new Error("No pending approval request found");
-      return governanceApi.approve(pendingApproval.request_id, tenantId, approvalNote);
+      // Use a meaningful approver identifier rather than the raw tenantId
+      const approverName = `user:${tenantId?.slice(0, 8) ?? "unknown"}`;
+      return governanceApi.approve(pendingApproval.request_id, approverName, approvalNote);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["goal", goalId] });
@@ -177,7 +179,8 @@ export function GoalDetailPage() {
   const rejectMutation = useMutation({
     mutationFn: () => {
       if (!pendingApproval) throw new Error("No pending approval request found");
-      return governanceApi.reject(pendingApproval.request_id, tenantId, approvalNote);
+      const approverName = `user:${tenantId?.slice(0, 8) ?? "unknown"}`;
+      return governanceApi.reject(pendingApproval.request_id, approverName, approvalNote);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["goal", goalId] });

@@ -269,8 +269,7 @@ class GoalPersistenceEngine:
                 attempt.iterations_used = getattr(state, "iterations", 0)
                 attempt.cost_usd = getattr(state, "context", {}).get("total_cost_usd", 0.0)
                 attempt.success = getattr(state, "verification_success", False) or (
-                    getattr(state, "status", None) and
-                    str(getattr(state, "status", "")).endswith("COMPLETE")
+                    str(getattr(state, "status", "")).lower() in ("complete", "completed", "success")
                 )
 
                 if attempt.success:

@@ -333,6 +333,121 @@ class TenantService:
         except Exception as exc:
             logging.getLogger(__name__).warning("DB revoke api_key failed: %s", exc)
 
+    # ── SSO JIT provisioning ──────────────────────────────────────────────────
+
+    async def get_tenant_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
+        """Find a tenant by their SSO subject identifier (Keycloak sub claim)."""
+        # Check in-memory first
+        for tenant in self._tenants.values():
+            if tenant.get("sso_sub") == sso_sub:
+                return tenant
+
+        # Check DB
+        if self._db is not None:
+            try:
+                from sqlalchemy import text
+                async with self._db() as session:
+                    row = (
+                        await session.execute(
+                            text(
+                                "SELECT id, name, email, plan, sso_sub "
+                                "FROM tenants WHERE sso_sub = :sub LIMIT 1"
+                            ),
+                            {"sub": sso_sub},
+                        )
+                    ).fetchone()
+                    if row:
+                        return {
+                            "tenant_id": str(row[0]),
+                            "name": row[1],
+                            "email": row[2],
+                            "plan": row[3],
+                            "sso_sub": row[4],
+                        }
+            except Exception as exc:
+                logging.getLogger(__name__).warning("sso_lookup_failed: %s", exc)
+        return None
+
+    async def create_tenant_from_sso(
+        self,
+        *,
+        sso_sub: str,
+        email: str,
+        name: str,
+        plan: str = "starter",
+    ) -> dict[str, Any]:
+        """JIT-provision a new tenant from an SSO login."""
+        plan_map = {
+            "free": PlanTier.FREE,
+            "starter": PlanTier.STARTER,
+            "professional": PlanTier.PROFESSIONAL,
+            "enterprise": PlanTier.ENTERPRISE,
+        }
+        plan_tier = plan_map.get(plan.lower(), PlanTier.STARTER)
+
+        tenant_id = uuid.uuid4().hex
+        api_key = f"av_{uuid.uuid4().hex}"
+        api_key_id = "sso-jit"  # default; overwritten if DB persist succeeds
+
+        # Persist to DB
+        if self._db is not None:
+            try:
+                from sqlalchemy import text
+                async with self._db() as session, session.begin():
+                    await session.execute(
+                        text(
+                            "INSERT INTO tenants (id, name, email, plan, created_at, is_active) "
+                            "VALUES (:id, :name, :email, :plan, NOW(), TRUE) "
+                            "ON CONFLICT (id) DO NOTHING"
+                        ),
+                        {
+                            "id": tenant_id,
+                            "name": name,
+                            "email": email,
+                            "plan": plan_tier.value,
+                        },
+                    )
+                    # Store sso_sub if the column exists
+                    try:
+                        await session.execute(
+                            text("UPDATE tenants SET sso_sub = :sub WHERE id = :id"),
+                            {"sub": sso_sub, "id": tenant_id},
+                        )
+                    except Exception:
+                        pass  # sso_sub column may not exist yet
+
+                    # Create initial API key
+                    key_hash = _hash_key(api_key)
+                    api_key_id = uuid.uuid4().hex
+                    await session.execute(
+                        text(
+                            "INSERT INTO api_keys (id, tenant_id, key_hash, name, created_at) "
+                            "VALUES (:id, :tid, :hash, :kname, NOW())"
+                        ),
+                        {
+                            "id": api_key_id,
+                            "tid": tenant_id,
+                            "hash": key_hash,
+                            "kname": "SSO auto-provisioned",
+                        },
+                    )
+            except Exception as exc:
+                logging.getLogger(__name__).warning("sso_tenant_create_failed: %s", exc)
+
+        tenant: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "name": name,
+            "email": email,
+            "plan": plan_tier.value,
+            "api_key": api_key,
+            "api_key_id": api_key_id,
+            "sso_sub": sso_sub,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        self._tenants[tenant_id] = tenant
+        self._email_index[email.lower()] = tenant_id
+        return tenant
+
     async def sync_from_db(self) -> int:
         """Load tenants and API keys from PostgreSQL into memory on startup.
 

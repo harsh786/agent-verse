@@ -38,7 +38,7 @@ async def cost_check(
     """
     if controller is None:
         return True
-    return controller.check_and_record(
+    return await controller.check_and_record(
         goal_id=goal_id,
         cost_usd=estimated_cost,
         tenant_ctx=tenant_ctx,
