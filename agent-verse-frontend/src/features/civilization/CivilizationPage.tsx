@@ -12,9 +12,13 @@ import { CivilizationMetrics } from './CivilizationMetrics';
 import { BlackboardFeed } from './BlackboardFeed';
 import { LearningLedger } from './LearningLedger';
 import { ControlBar } from './ControlBar';
+import { AgentInspectorDrawer } from './AgentInspectorDrawer';
+import { DebateViewer } from './DebateViewer';
+import { ConstitutionEditor } from './ConstitutionEditor';
+import { SpawnLineageTimeline } from './SpawnLineageTimeline';
 import type { CivilizationEvent, Civilization } from '../../lib/api/civilizationApi';
 
-type Panel = 'map' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'replay';
+type Panel = 'map' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
 
 function CivilizationList() {
   const { data: civilizations, isLoading, error } = useQuery({
@@ -121,7 +125,7 @@ function CivilizationList() {
 function CivilizationTheater({ civId }: { civId: string }) {
   const qc = useQueryClient();
   const [activePanel, setActivePanel] = useState<Panel>('map');
-  const [, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<CivilizationEvent[]>([]);
 
   const { data: civ } = useQuery({
@@ -157,6 +161,13 @@ function CivilizationTheater({ civId }: { civId: string }) {
     refetchInterval: 5000,
   });
 
+  const { data: debates } = useQuery({
+    queryKey: ['civilization-debates', civId],
+    queryFn: () => civilizationApi.getDebates(civId),
+    enabled: activePanel === 'debates',
+    refetchInterval: 5000,
+  });
+
   const handleEvent = useCallback((evt: CivilizationEvent) => {
     setLiveEvents(prev => [...prev.slice(-50), evt]);
     // Invalidate graph on spawn/retire
@@ -184,153 +195,162 @@ function CivilizationTheater({ civId }: { civId: string }) {
   };
 
   const TABS: { key: Panel; label: string }[] = [
-    { key: 'map', label: '\u{1F310} Overview' },
-    { key: 'blackboard', label: '\u{1F4CB} Blackboard' },
-    { key: 'learnings', label: '\u{1F9E0} Learnings' },
-    { key: 'spawns', label: '\u{1F331} Spawns' },
-    { key: 'debates', label: '\u2696\uFE0F Debates' },
-    { key: 'replay', label: '\u23EA Replay' },
+    { key: 'map', label: '🌐 Map & Metrics' },
+    { key: 'blackboard', label: '📋 Blackboard' },
+    { key: 'learnings', label: '🧠 Learning Ledger' },
+    { key: 'spawns', label: '🌱 Spawn Audit' },
+    { key: 'debates', label: '⚖️ Debates' },
+    { key: 'constitution', label: '⚙️ Constitution' },
+    { key: 'replay', label: '⏪ Replay' },
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link to="/civilization" className="text-gray-400 hover:text-gray-600 text-sm">
-            &#8592; Civilizations
-          </Link>
-          <span className="text-gray-300">/</span>
-          <div>
-            <h1 className="text-lg font-bold leading-tight">{civ?.name ?? 'Civilization'}</h1>
-            <div className="text-xs text-gray-400">Agent Civilization Theater</div>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`} />
-          <span className="text-xs text-gray-500">{connected ? 'Live' : 'Reconnecting...'}</span>
-          {civ?.metrics && (
-            <div className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-1">
-              {civ.metrics.active_members} active &middot; {civ.metrics.total_members} total
+    <>
+      <div className="flex flex-col h-screen bg-gray-50">
+        {/* Header */}
+        <div className="bg-white border-b px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link to="/civilization" className="text-gray-400 hover:text-gray-600 text-sm">
+              &#8592; Civilizations
+            </Link>
+            <span className="text-gray-300">/</span>
+            <div>
+              <h1 className="text-lg font-bold leading-tight">{civ?.name ?? 'Civilization'}</h1>
+              <div className="text-xs text-gray-400">Agent Civilization Theater</div>
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Control Bar */}
-      <ControlBar
-        civilizationId={civId}
-        status={civ?.status ?? 'active'}
-        onPause={handlePause}
-        onResume={handleResume}
-        onSubmitGoal={handleSubmitGoal}
-      />
-
-      {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left: Map (always visible) */}
-        <div className="flex-1 min-w-0 relative">
-          <div className="h-full">
-            <CivilizationMap
-              nodes={graph?.nodes ?? []}
-              edges={graph?.edges ?? []}
-              onNodeClick={setSelectedAgentId}
-              liveEvents={liveEvents}
-            />
           </div>
-          {/* Live event ticker */}
-          {liveEvents.length > 0 && (
-            <div className="absolute bottom-3 left-3 right-3 bg-black/60 text-white text-xs rounded p-2 max-h-16 overflow-hidden pointer-events-none">
-              {liveEvents.slice(-3).reverse().map((e, i) => (
-                <div key={`${e.id}-${i}`} className="truncate opacity-80">
-                  {e.ts?.slice(11, 19)} &middot; <span className="font-medium">{e.type}</span>
-                  {(e.payload as Record<string, unknown>)?.agent_id
-                    ? ` \u00b7 ${String((e.payload as Record<string, unknown>).agent_id).slice(0, 8)}`
-                    : ''}
-                </div>
+          <div className="flex items-center gap-3">
+            <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`} />
+            <span className="text-xs text-gray-500">{connected ? 'Live' : 'Reconnecting...'}</span>
+            {civ?.metrics && (
+              <div className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-1">
+                {civ.metrics.active_members} active &middot; {civ.metrics.total_members} total
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Control Bar */}
+        <ControlBar
+          civilizationId={civId}
+          status={civ?.status ?? 'active'}
+          onPause={handlePause}
+          onResume={handleResume}
+          onSubmitGoal={handleSubmitGoal}
+          onAdjustBudget={async (newBudget) => {
+            await civilizationApi.control(civId, 'set_budget', { budget_usd: newBudget });
+            void qc.invalidateQueries({ queryKey: ['civilization', civId] });
+          }}
+          currentBudget={civ?.constitution?.total_budget_usd}
+        />
+
+        {/* Main content */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Left: Map (always visible) */}
+          <div className="flex-1 min-w-0 relative">
+            <div className="h-full">
+              <CivilizationMap
+                nodes={graph?.nodes ?? []}
+                edges={graph?.edges ?? []}
+                onNodeClick={setSelectedAgentId}
+                liveEvents={liveEvents}
+              />
+            </div>
+            {/* Live event ticker */}
+            {liveEvents.length > 0 && (
+              <div className="absolute bottom-3 left-3 right-3 bg-black/60 text-white text-xs rounded p-2 max-h-16 overflow-hidden pointer-events-none">
+                {liveEvents.slice(-3).reverse().map((e, i) => (
+                  <div key={`${e.id}-${i}`} className="truncate opacity-80">
+                    {e.ts?.slice(11, 19)} &middot; <span className="font-medium">{e.type}</span>
+                    {(e.payload as Record<string, unknown>)?.agent_id
+                      ? ` \u00b7 ${String((e.payload as Record<string, unknown>).agent_id).slice(0, 8)}`
+                      : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Detail panels */}
+          <div className="w-96 border-l bg-white flex flex-col">
+            {/* Tabs */}
+            <div className="flex border-b overflow-x-auto scrollbar-none">
+              {TABS.map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActivePanel(tab.key)}
+                  className={`px-3 py-2 text-xs whitespace-nowrap transition-colors ${
+                    activePanel === tab.key
+                      ? 'border-b-2 border-blue-600 text-blue-600 font-medium'
+                      : 'text-gray-500 hover:text-gray-800'
+                  }`}
+                >
+                  {tab.label}
+                </button>
               ))}
             </div>
-          )}
-        </div>
 
-        {/* Right: Detail panels */}
-        <div className="w-96 border-l bg-white flex flex-col">
-          {/* Tabs */}
-          <div className="flex border-b overflow-x-auto scrollbar-none">
-            {TABS.map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setActivePanel(tab.key)}
-                className={`px-3 py-2 text-xs whitespace-nowrap transition-colors ${
-                  activePanel === tab.key
-                    ? 'border-b-2 border-blue-600 text-blue-600 font-medium'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Panel content */}
-          <div className="flex-1 overflow-y-auto p-3">
-            {activePanel === 'map' && civ?.metrics && (
-              <CivilizationMetrics metrics={civ.metrics} />
-            )}
-            {activePanel === 'map' && !civ?.metrics && (
-              <div className="text-sm text-gray-400 text-center py-8">
-                Metrics will appear once agents are running.
-              </div>
-            )}
-            {activePanel === 'blackboard' && (
-              <BlackboardFeed entries={blackboard ?? []} />
-            )}
-            {activePanel === 'learnings' && (
-              <LearningLedger records={learnings ?? []} />
-            )}
-            {activePanel === 'spawns' && (
-              <div className="space-y-2">
-                {(spawns ?? []).length === 0 && (
-                  <div className="text-sm text-gray-400 text-center py-4">No spawn requests yet</div>
-                )}
-                {(spawns ?? []).map(s => (
-                  <div key={s.id} className="border rounded p-2 text-xs">
-                    <div className="flex justify-between mb-1">
-                      <span className={`px-1.5 py-0.5 rounded font-medium ${
-                        s.decision === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>{s.decision}</span>
-                      <span className="text-gray-400">{s.created_at?.slice(11, 19)}</span>
+            {/* Panel content */}
+            <div className="flex-1 overflow-y-auto p-3">
+              {activePanel === 'map' && civ?.metrics && (
+                <CivilizationMetrics metrics={civ.metrics} />
+              )}
+              {activePanel === 'map' && !civ?.metrics && (
+                <div className="text-sm text-gray-400 text-center py-8">
+                  Metrics will appear once agents are running.
+                </div>
+              )}
+              {activePanel === 'blackboard' && (
+                <BlackboardFeed entries={blackboard ?? []} />
+              )}
+              {activePanel === 'learnings' && (
+                <LearningLedger records={learnings ?? []} />
+              )}
+              {activePanel === 'spawns' && (
+                <SpawnLineageTimeline spawns={spawns ?? []} />
+              )}
+              {activePanel === 'debates' && (
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                <DebateViewer debates={(debates ?? []) as any[]} />
+              )}
+              {activePanel === 'constitution' && civ && (
+                <ConstitutionEditor
+                  constitution={civ.constitution}
+                  onSave={async (newConst) => {
+                    await civilizationApi.updateConstitution(civId, newConst);
+                    void qc.invalidateQueries({ queryKey: ['civilization', civId] });
+                  }}
+                />
+              )}
+              {activePanel === 'replay' && (
+                <div className="space-y-1">
+                  {liveEvents.length === 0 && (
+                    <div className="text-sm text-gray-400 text-center py-4">
+                      Live events will appear here.
                     </div>
-                    <div className="text-gray-600">{s.requested_capability}</div>
-                    <div className="text-gray-400 mt-0.5">{s.reason}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {activePanel === 'debates' && (
-              <div className="text-sm text-gray-400 text-center py-8">
-                Debate viewer — coming soon.
-              </div>
-            )}
-            {activePanel === 'replay' && (
-              <div className="space-y-1">
-                {liveEvents.length === 0 && (
-                  <div className="text-sm text-gray-400 text-center py-4">
-                    Live events will appear here.
-                  </div>
-                )}
-                {liveEvents.map((e, i) => (
-                  <div key={`${e.id}-${i}`} className="flex gap-2 text-xs border-b pb-1">
-                    <span className="text-gray-400 whitespace-nowrap">{e.ts?.slice(11, 19)}</span>
-                    <span className="text-blue-600 font-medium">{e.type}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+                  )}
+                  {liveEvents.map((e, i) => (
+                    <div key={`${e.id}-${i}`} className="flex gap-2 text-xs border-b pb-1">
+                      <span className="text-gray-400 whitespace-nowrap">{e.ts?.slice(11, 19)}</span>
+                      <span className="text-blue-600 font-medium">{e.type}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Agent Inspector slide-over */}
+      {selectedAgentId && (
+        <AgentInspectorDrawer
+          civilizationId={civId}
+          agentId={selectedAgentId}
+          onClose={() => setSelectedAgentId(null)}
+        />
+      )}
+    </>
   );
 }
 

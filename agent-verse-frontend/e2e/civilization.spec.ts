@@ -354,7 +354,7 @@ test.describe('Agent Civilization', () => {
       }
     );
 
-    await page.getByText('⏸ Pause Civilization').click();
+    await page.locator('button').filter({ hasText: 'Pause Civilization' }).click();
     await page.waitForTimeout(500);
     expect(pauseCalled).toBe(true);
   });
