@@ -167,17 +167,14 @@ class CredentialVault:
         """
         return self._fernet.decrypt(ciphertext.encode()).decode()
 
-    async def rotate_key(self, new_master_key: bytes, db: Any = None) -> dict:
+    async def rotate_key(self, new_master_key: bytes, db: Any = None, redis: Any = None) -> dict:
         """Re-encrypt all stored secrets with a new master key.
 
-        Process:
-        1. Decrypt each secret with old key
-        2. Re-encrypt with new key
-        3. Update Redis store atomically
-        4. Record key version in DB
-
-        This is atomic per-secret. A crash mid-rotation is recoverable
-        because we can retry with either the old or new key.
+        Process (atomic per-secret):
+        1. Scan all connector secret keys in Redis
+        2. For each key: decrypt with old Fernet, re-encrypt with new Fernet, write back
+        3. Record key version in DB
+        4. Update self._key to new key
         """
         from app.observability.logging import get_logger
         logger = get_logger(__name__)
@@ -188,8 +185,57 @@ class CredentialVault:
         rotated = 0
         failed = 0
 
-        # This is a simplified rotation — in production you'd iterate all Redis keys.
-        # For now, just record the new key version and return.
+        if redis is not None:
+            try:
+                # Build new Fernet from the new master key
+                import base64 as _b64
+                from cryptography.fernet import Fernet as _Fernet
+                from cryptography.hazmat.primitives import hashes as _hashes
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as _PBKDF2
+
+                _kdf_new = _PBKDF2(
+                    algorithm=_hashes.SHA256(),
+                    length=32,
+                    salt=b"agentverse-vault",
+                    iterations=480000,
+                )
+                fernet_key_new = _b64.urlsafe_b64encode(_kdf_new.derive(new_master_key))
+                fernet_new = _Fernet(fernet_key_new)
+
+                # Use existing self._fernet as fernet_old (holds the current encryption key)
+                fernet_old = self._fernet
+
+                # Scan all connector secret keys
+                keys = []
+                async for key in redis.scan_iter(match="mcp:connector_secrets:*", count=200):
+                    keys.append(key)
+
+                for key in keys:
+                    try:
+                        encrypted = await redis.get(key)
+                        if not encrypted:
+                            continue
+
+                        # Decrypt with old key
+                        raw = encrypted.encode() if isinstance(encrypted, str) else encrypted
+                        plaintext = fernet_old.decrypt(raw)
+
+                        # Re-encrypt with new key
+                        new_encrypted = fernet_new.encrypt(plaintext).decode()
+                        await redis.set(key, new_encrypted)
+                        rotated += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "secret_rotation_failed_for_key", key=key, error=str(exc)
+                        )
+                        failed += 1
+            except Exception as exc:
+                logger.warning("vault_key_rotation_redis_scan_failed", error=str(exc))
+
+        # Update self._key so from_byok-style callers have the new raw key
+        self._key = new_master_key
+
+        # Record in DB
         if db is not None:
             try:
                 import uuid
@@ -197,21 +243,19 @@ class CredentialVault:
                 from sqlalchemy import text
                 key_hash = _hashlib.sha256(new_master_key).hexdigest()[:16] + "..."
                 async with db() as session, session.begin():
-                    # Retire existing current key
                     await session.execute(text(
                         "UPDATE vault_key_versions SET is_current = FALSE, retired_at = NOW() "
                         "WHERE is_current = TRUE"
                     ))
-                    # Add new key version
                     await session.execute(text("""
                         INSERT INTO vault_key_versions (id, key_hash, activated_at, is_current)
                         VALUES (:id, :hash, NOW(), TRUE)
                     """), {"id": uuid.uuid4().hex, "hash": key_hash})
-                logger.info("vault_key_rotated", key_hash=key_hash)
+                logger.info("vault_key_rotated", rotated=rotated, failed=failed)
             except Exception as exc:
                 logger.warning("vault_key_version_record_failed", error=str(exc))
 
-        return {"rotated_secrets": rotated, "failed": failed, "status": "key_version_updated"}
+        return {"rotated_secrets": rotated, "failed": failed, "status": "rotation_complete"}
 
     @classmethod
     def from_byok(cls, customer_key: bytes) -> "CredentialVault":

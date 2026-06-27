@@ -13,11 +13,13 @@ import type {
   Goal,
   GoalEvent,
   GoalMetrics,
+  GoalTimeline,
   GoldenTask,
   Memory,
   RolloutGateResult,
   Schedule,
   SearchResult,
+  SimulationResult,
   SubmitGoalOptions,
   ToolReliabilityStats,
   UpdateAgentRequest,
@@ -330,5 +332,48 @@ export class AgentVerseClient {
 
   async getGoalEvaluation(goalId: string): Promise<EvalScorecard> {
     return this.request<EvalScorecard>('GET', `/goals/${goalId}/evaluation`);
+  }
+
+  // ── Simulation (Phase 20) ─────────────────────────────────────────────────
+
+  async simulate(goal: string, agentId?: string): Promise<SimulationResult> {
+    return this.request<SimulationResult>('POST', '/enterprise/simulate', {
+      goal,
+      agent_id: agentId,
+      dry_run: true,
+    });
+  }
+
+  // ── Replay (Phase 20) ─────────────────────────────────────────────────────
+
+  async replayGoal(goalId: string): Promise<GoalTimeline> {
+    return this.request<GoalTimeline>('GET', `/goals/${goalId}/replay`);
+  }
+
+  // ── HITL (Phase 20) ───────────────────────────────────────────────────────
+
+  async getPendingApprovals(): Promise<any[]> {
+    return this.request<any[]>('GET', '/governance/hitl/pending');
+  }
+
+  async approveRequest(requestId: string, note?: string): Promise<void> {
+    await this.request<void>('POST', `/governance/hitl/${requestId}/approve`, {
+      note: note ?? '',
+    });
+  }
+
+  async rejectRequest(requestId: string, reason?: string): Promise<void> {
+    await this.request<void>('POST', `/governance/hitl/${requestId}/reject`, {
+      reason: reason ?? '',
+    });
+  }
+
+  // ── Emergency controls (Phase 20) ────────────────────────────────────────
+
+  async emergencyStop(): Promise<{ cancelled_goals: number; status: string }> {
+    return this.request<{ cancelled_goals: number; status: string }>(
+      'POST',
+      '/governance/emergency-stop',
+    );
   }
 }

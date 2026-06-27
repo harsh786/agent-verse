@@ -193,6 +193,69 @@ def _get_llm_provider(tenant_id: str) -> Any:
     return None
 
 
+async def _run_with_signals(
+    agent_runner: Any,
+    goal: str,
+    tenant_ctx: Any,
+    event_callback: Any,
+    goal_id: str,
+) -> Any:
+    """Run agent_runner.run() while periodically polling pause/cancel signals.
+
+    Polls every 5 seconds. On cancel → raises GoalCancelledError.
+    On pause → cancels the current run task and waits until resumed, then restarts.
+    """
+    from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
+
+    sync_r = _get_sync_redis()
+
+    run_task = asyncio.create_task(
+        agent_runner.run(
+            goal=goal,
+            tenant_ctx=tenant_ctx,
+            event_callback=event_callback,
+        )
+    )
+
+    while not run_task.done():
+        await asyncio.sleep(5)
+        # Re-check: task may have completed during the sleep
+        if run_task.done():
+            break
+        if sync_r:
+            if is_cancelled_sync(goal_id, sync_r):
+                run_task.cancel()
+                try:
+                    await run_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise GoalCancelledError(f"Goal {goal_id} cancelled during execution")
+
+            if is_paused_sync(goal_id, sync_r):
+                # Pause: cancel current run and wait for resume signal
+                run_task.cancel()
+                try:
+                    await run_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                logger.info("goal_paused_in_worker goal_id=%s", goal_id)
+                while is_paused_sync(goal_id, sync_r):
+                    await asyncio.sleep(5)
+                    if is_cancelled_sync(goal_id, sync_r):
+                        raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+                logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
+                # Re-run from checkpoint (AgentGraph will resume from last durable state)
+                run_task = asyncio.create_task(
+                    agent_runner.run(
+                        goal=goal,
+                        tenant_ctx=tenant_ctx,
+                        event_callback=event_callback,
+                    )
+                )
+
+    return await run_task
+
+
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)
 def run_goal_dlq(
     self: Any,
@@ -605,12 +668,14 @@ def run_goal(
         try:
             state = _run_async(
                 _asyncio.wait_for(
-                    _agent_runner.run(
-                        goal=effective_goal,
-                        tenant_ctx=tenant_ctx,
-                        event_callback=worker_event_callback,
+                    _run_with_signals(
+                        _agent_runner,
+                        effective_goal,
+                        tenant_ctx,
+                        worker_event_callback,
+                        goal_id,
                     ),
-                    timeout=float(goal_timeout_s)
+                    timeout=float(goal_timeout_s),
                 )
             )
         except TimeoutError:

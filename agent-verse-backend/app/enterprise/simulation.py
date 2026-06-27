@@ -5,12 +5,15 @@ registered tools with mock implementations.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from app.tenancy.context import TenantContext
+
+logger = logging.getLogger(__name__)
 
 # Human-readable labels for known tool names
 _TOOL_ACTIONS: dict[str, str] = {
@@ -33,10 +36,15 @@ class MockMCPClient:
     """MCP client that returns pre-configured mock responses.
 
     Used in simulation to test agent behavior without real tool calls.
+    Accepts either ``mock_tools`` or ``mock_responses`` for backward compat.
     """
 
-    def __init__(self, mock_tools: dict[str, Any]) -> None:
-        self._mocks = mock_tools
+    def __init__(
+        self,
+        mock_tools: dict[str, Any] | None = None,
+        mock_responses: dict[str, Any] | None = None,
+    ) -> None:
+        self._mocks = mock_responses or mock_tools or {}
 
     async def discover_tools(self, server_id: str, tenant_ctx: Any) -> list:
         return []
@@ -72,6 +80,13 @@ class SimulationRun:
     status: str = "pending"
     result: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # Phase 13: extended fields for full-pipeline simulation output
+    steps_executed: list[dict[str, Any]] = field(default_factory=list)
+    tools_called: list[str] = field(default_factory=list)
+    mock_tools_used: list[str] = field(default_factory=list)
+    cost_estimate: float = 0.0
+    used_real_llm: bool = False
+    risk_level: str = ""
 
 
 class SimulationRunner:
@@ -79,22 +94,144 @@ class SimulationRunner:
 
     def __init__(self) -> None:
         self._runs: dict[str, SimulationRun] = {}
+        self._provider: Any = None
 
     async def start(
         self,
         *,
         goal: str,
+        mock_tools: dict[str, Any] | None = None,
+        tenant_ctx: Any = None,
+        provider: Any = None,
+        app_state: Any = None,
+    ) -> SimulationRun:
+        """Run a goal through the FULL AgentGraph pipeline with mocked tool responses.
+
+        Tries the full AgentGraph pipeline first (gives accurate simulation including
+        real LLM planning, policy evaluation, HITL gate identification, and tool risk
+        classification) then falls back to the stub planner when no provider is available.
+        """
+        run_id = uuid.uuid4().hex
+        _mock_tools = mock_tools or {}
+
+        # Build a mock MCP client that returns pre-configured responses
+        mock_client = MockMCPClient(mock_responses=_mock_tools)
+
+        # Resolve provider: explicit arg > app_state > stored
+        _provider = (
+            provider
+            or (getattr(app_state, "_app_provider", None) if app_state else None)
+            or self._provider
+        )
+
+        # Try full AgentGraph pipeline
+        try:
+            from app.agent.graph import AgentGraph
+
+            if _provider is None:
+                # No LLM available — use stub simulation
+                return await self._stub_simulation(
+                    goal=goal, run_id=run_id, mock_tools=_mock_tools,
+                    tenant_ctx=tenant_ctx, provider=None,
+                )
+
+            graph = AgentGraph(
+                planner=_provider,
+                executor=_provider,
+                verifier=_provider,
+                mcp_client=mock_client,
+                audit_log=getattr(app_state, "audit_log", None) if app_state else None,
+                cost_controller=(
+                    getattr(app_state, "cost_controller", None) if app_state else None
+                ),
+                policy_engine=(
+                    getattr(app_state, "policy_engine", None) if app_state else None
+                ),
+            )
+
+            if tenant_ctx is None:
+                from app.tenancy.context import PlanTier
+                tenant_ctx = TenantContext(
+                    tenant_id="simulation",
+                    plan=PlanTier.ENTERPRISE,
+                    api_key_id="sim",
+                )
+
+            result = await graph.run(
+                goal=goal,
+                tenant_ctx=tenant_ctx,
+                initial_context={"dry_run": True, "simulation": True},
+            )
+
+            steps_raw = getattr(result, "steps", []) or []
+            tools_called = [
+                str(getattr(s, "tool", ""))
+                for s in steps_raw
+                if getattr(s, "tool", "")
+            ]
+            steps_executed = [
+                {
+                    "description": getattr(s, "description", ""),
+                    "tool": str(getattr(s, "tool", "") or ""),
+                    "output": str(getattr(s, "output", "") or ""),
+                }
+                for s in steps_raw
+            ]
+
+            run = SimulationRun(
+                run_id=run_id,
+                goal=goal,
+                mock_tools=_mock_tools,
+                status="complete",
+                steps_executed=steps_executed,
+                tools_called=tools_called,
+                mock_tools_used=list(_mock_tools.keys()),
+                cost_estimate=round(len(steps_raw) * 0.001, 4),
+                used_real_llm=True,
+                risk_level="simulated",
+                result={
+                    "goal": goal,
+                    "status": "completed",
+                    "steps": [
+                        {"step": s["description"], "tool": s["tool"], "output": s["output"]}
+                        for s in steps_executed
+                    ],
+                    "cost_usd": round(len(steps_raw) * 0.001, 4),
+                    "iterations": len(steps_raw),
+                    "message": f"Simulation complete: {len(steps_raw)} steps",
+                    "simulated_steps": [s["description"] for s in steps_executed],
+                    "outcome": "success (simulated)",
+                    "side_effects": [],
+                    "mock_tools_used": list(_mock_tools.keys()),
+                    "note": "Simulation complete — no real tools were called",
+                    "used_real_llm": True,
+                },
+            )
+            self._runs[run_id] = run
+            return run
+
+        except Exception as exc:
+            logger.warning("simulation_full_pipeline_failed: %s", exc)
+            return await self._stub_simulation(
+                goal=goal, run_id=run_id, mock_tools=_mock_tools,
+                tenant_ctx=tenant_ctx, provider=provider,
+            )
+
+    async def _stub_simulation(
+        self,
+        *,
+        goal: str,
+        run_id: str,
         mock_tools: dict[str, Any],
-        tenant_ctx: TenantContext,
+        tenant_ctx: Any = None,
         provider: Any = None,
     ) -> SimulationRun:
-        run = SimulationRun(goal=goal, mock_tools=mock_tools)
+        """Stub simulation using keyword-based planning (no real LLM required)."""
+        run = SimulationRun(run_id=run_id, goal=goal, mock_tools=mock_tools)
         run.status = "running"
 
         if provider is not None:
-            # Use real LLM with MockMCPClient for tool responses
             try:
-                _mock_mcp = MockMCPClient(mock_tools)
                 from app.providers.base import CompletionRequest, Message
 
                 req = CompletionRequest(
@@ -114,11 +251,7 @@ class SimulationRunner:
                     resp = await provider.complete(req)
                     used_real_llm = True
                 except Exception as exc:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "simulation_llm_failed: %s", str(exc)
-                    )
-                    used_real_llm = False
+                    logger.warning("simulation_llm_failed: %s", exc)
                     resp = None
 
                 if used_real_llm and resp is not None:
@@ -151,7 +284,7 @@ class SimulationRunner:
         executed_steps: list[dict[str, Any]] = []
         for step in steps_with_tools:
             tool_name = step.get("tool")
-            output: str | None = None
+            output: str
 
             if tool_name and tool_name in mock_tools:
                 mock_resp = mock_tools[tool_name]
@@ -169,6 +302,14 @@ class SimulationRunner:
             )
 
         run.status = "completed"
+        run.steps_executed = [
+            {"description": s["step"], "tool": s.get("tool") or "", "output": s.get("output", "")}
+            for s in executed_steps
+        ]
+        run.tools_called = [s["tool"] for s in executed_steps if s.get("tool")]
+        run.mock_tools_used = list(mock_tools.keys())
+        run.cost_estimate = round(len(executed_steps) * 0.001, 4)
+        run.used_real_llm = provider is not None
         run.result = {
             # New fields (frontend)
             "goal": goal,
@@ -185,7 +326,7 @@ class SimulationRunner:
             "note": "Simulation complete — no real tools were called",
             "used_real_llm": provider is not None,
         }
-        self._runs[run.run_id] = run
+        self._runs[run_id] = run
         return run
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -228,3 +369,4 @@ class SimulationRunner:
 
     def list_runs(self, *, tenant_ctx: TenantContext) -> list[SimulationRun]:
         return list(self._runs.values())
+

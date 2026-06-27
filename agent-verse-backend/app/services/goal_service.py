@@ -705,6 +705,46 @@ class GoalService:
             except Exception:
                 pass  # Model router may not support override — use default
 
+        # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
+        from app.reliability.circuit_breaker import CircuitBreaker
+        from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+
+        _circuit_breakers: dict[str, Any] = {}
+        _redis_for_cb = getattr(app_state, "_rate_limiter_redis", None) if app_state else None
+
+        # Pre-wire a circuit breaker per connector the agent uses
+        if _agent_config.get("connector_ids"):
+            for _cid in list(_agent_config["connector_ids"])[:10]:
+                _cid_str = str(_cid)
+                if _redis_for_cb is not None:
+                    _circuit_breakers[_cid_str] = RedisCircuitBreaker(
+                        redis_client=_redis_for_cb,
+                        tenant_id=tenant_ctx.tenant_id,
+                        tool_name=f"mcp:{_cid_str}",
+                        failure_threshold=5,
+                        cooldown_seconds=60,
+                    )
+                else:
+                    _circuit_breakers[_cid_str] = CircuitBreaker(
+                        failure_threshold=5,
+                        cooldown_seconds=60,
+                    )
+
+        # Always wire a circuit breaker for the LLM provider
+        if _redis_for_cb is not None:
+            _circuit_breakers["llm"] = RedisCircuitBreaker(
+                redis_client=_redis_for_cb,
+                tenant_id=tenant_ctx.tenant_id,
+                tool_name="llm_provider",
+                failure_threshold=3,
+                cooldown_seconds=120,
+            )
+        else:
+            _circuit_breakers["llm"] = CircuitBreaker(
+                failure_threshold=3,
+                cooldown_seconds=120,
+            )
+
         graph = AgentGraph(
             planner=provider,
             executor=provider,
@@ -722,6 +762,8 @@ class GoalService:
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             policy_engine=policy_engine,
+            # Phase 22: per-connector circuit breakers
+            circuit_breakers=_circuit_breakers,
             # Execution memory (H-3)
             exec_memory=exec_memory,
             # RAG / intelligence services
@@ -746,9 +788,32 @@ class GoalService:
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)
         graph._rpa_executor = _rpa_exec
+        # Phase 25: Wire self-optimizer for automatic improvement on poor performance
+        from app.intelligence.self_optimization import SelfOptimizer
+        _self_optimizer = getattr(app_state, "self_optimizer", None) if app_state else None
+        if _self_optimizer is None:
+            _self_optimizer = SelfOptimizer()
+        graph._self_optimizer = _self_optimizer
         return graph
-
     # ── private helpers ───────────────────────────────────────────────────────
+
+    async def _submit_single_goal(
+        self,
+        *,
+        goal: str,
+        agent_id: str | None,
+        tenant_ctx: TenantContext,
+        priority: str,
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        """Submit a goal for a specific agent, bypassing routing (used by multi-agent mode)."""
+        return await self.submit_goal(
+            goal=goal,
+            priority=priority,
+            dry_run=dry_run,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+        )
 
     def _get_record(self, goal_id: str, tenant_ctx: TenantContext) -> GoalRecord:
         """Fetch and tenant-validate a :class:`GoalRecord`."""
@@ -1392,6 +1457,38 @@ class GoalService:
                                 agent_id=agent_id,
                                 confidence=decision.confidence,
                             )
+                        # Phase 2: Multi-agent goal spawning — parallel independent executions
+                        if decision.mode == "multi_agent" and decision.candidate_agents:
+                            _ma_tasks = []
+                            for _cand in decision.candidate_agents[:3]:
+                                _cand_agent_id = _cand.get("agent_id")
+                                if not _cand_agent_id:
+                                    continue
+                                _ma_tasks.append(
+                                    self._submit_single_goal(
+                                        goal=goal,
+                                        agent_id=_cand_agent_id,
+                                        tenant_ctx=tenant_ctx,
+                                        priority=priority,
+                                        dry_run=dry_run,
+                                    )
+                                )
+                            if len(_ma_tasks) > 1:
+                                _ma_results = await asyncio.gather(
+                                    *_ma_tasks, return_exceptions=True
+                                )
+                                _ma_valid = [
+                                    r for r in _ma_results
+                                    if isinstance(r, dict) and "goal_id" in r
+                                ]
+                                if _ma_valid:
+                                    return {
+                                        "mode": "multi_agent",
+                                        "goal_ids": [r["goal_id"] for r in _ma_valid],
+                                        "primary_goal_id": _ma_valid[0]["goal_id"],
+                                        "goal_id": _ma_valid[0]["goal_id"],
+                                        "agents": [r.get("agent_id") for r in _ma_valid],
+                                    }
                     except Exception as exc:
                         _svc_logger.warning("agent_router_failed", error=str(exc))
 
