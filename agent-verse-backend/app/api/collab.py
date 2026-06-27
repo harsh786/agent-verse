@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 
 from app.collab.agent_collab import AgentCollabSession, CollabRound
-from app.collab.store import CollaborationStore
+from app.collab.store import CollaborationStore, VersionConflictError
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/collab", tags=["collaboration"])
@@ -34,6 +34,7 @@ class OperationRequest(BaseModel):
     position: int | None = None
     text: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    expected_version: int | None = None  # For optimistic concurrency
 
     def to_operation(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"type": self.type, **self.metadata}
@@ -141,14 +142,28 @@ async def append_operation(
     request: Request, session_id: str, body: OperationRequest
 ) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
-    if await _store(request).get_session(tenant_ctx=tenant_ctx, session_id=session_id) is None:
+    store = _store(request)
+    try:
+        return await store.append_operation(
+            tenant_ctx=tenant_ctx,
+            session_id=session_id,
+            operation=body.to_operation(),
+            author=body.author,
+            expected_version=body.expected_version,
+        )
+    except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
-    return await _store(request).append_operation(
-        tenant_ctx=tenant_ctx,
-        session_id=session_id,
-        operation=body.to_operation(),
-        author=body.author,
-    )
+    except VersionConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "version_conflict",
+                "message": str(e),
+                "current_version": e.current_version,
+                "expected_version": e.expected_version,
+                "hint": "Fetch the latest session state and retry with current_version as expected_version",
+            },
+        )
 
 
 @router.post("/sessions/{session_id}/rounds", status_code=201)

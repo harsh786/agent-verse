@@ -239,6 +239,8 @@ async def create_policy(
     }
     registry.setdefault(tenant_ctx.tenant_id, {})[policy_id] = record
     await _db_create_policy(request, tenant_ctx.tenant_id, record)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="created")
     return record
 
 
@@ -268,6 +270,8 @@ async def delete_policy(request: Request, policy_id: str) -> None:
     ]
     del tenant_policies[policy_id]
     await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="deleted")
 
 
 @router.post("/policies/simulate")

@@ -72,11 +72,16 @@ class PromptOptimizer:
         prompt_key: str,
         name: str,
         prompt_text: str,
-        is_control: bool = False,
         *,
         tenant_id: str = "global",
+        is_control: bool = False,
+        db: Any = None,
     ) -> PromptVariant:
-        """Register a new prompt variant for A/B testing."""
+        """Register a new prompt variant for A/B testing.
+
+        If *db* is provided (an async session factory), the variant is also
+        persisted to ``prompt_variants`` as a fire-and-forget task.
+        """
         variant_id = str(uuid.uuid4())
         variant = PromptVariant(
             variant_id=variant_id,
@@ -89,7 +94,126 @@ class PromptOptimizer:
         self._variants.setdefault(tenant_id, {})[variant_id] = variant
         if is_control:
             self._active.setdefault(tenant_id, {})[prompt_key] = variant_id
+
+        # Persist to DB if available (fire-and-forget)
+        if db is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.persist_variant(variant, tenant_id, db))
+            except RuntimeError:
+                pass  # Not in async context — caller can persist separately
+
         return variant
+
+    # ------------------------------------------------------------------
+    # DB / Redis persistence
+    # ------------------------------------------------------------------
+
+    def set_redis(self, redis: Any) -> None:
+        """Set Redis client for cache invalidation between replicas."""
+        self._redis = redis
+
+    async def invalidate_cache(self) -> None:
+        """Publish cache invalidation to other replicas."""
+        if getattr(self, "_redis", None) is None:
+            return
+        try:
+            await self._redis.publish("prompt_variant_invalidate", "reload")
+        except Exception:
+            pass
+
+    async def persist_variant(self, variant: PromptVariant, tenant_id: str, db: Any) -> None:
+        """Persist a variant to the prompt_variants table."""
+        if db is None:
+            return
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(text("""
+                    INSERT INTO prompt_variants
+                        (id, tenant_id, prompt_key, variant_name, prompt_text, is_control,
+                         win_count, loss_count, is_active, created_at, updated_at)
+                    VALUES
+                        (:id, :tid, :key, :name, :text, :ctrl, 0, 0, TRUE, NOW(), NOW())
+                    ON CONFLICT (tenant_id, prompt_key, variant_name)
+                    DO UPDATE SET
+                        prompt_text = EXCLUDED.prompt_text,
+                        is_control  = EXCLUDED.is_control,
+                        is_active   = TRUE,
+                        updated_at  = NOW()
+                """), {
+                    "id": variant.variant_id,
+                    "tid": tenant_id,
+                    "key": variant.prompt_key,
+                    "name": variant.name,
+                    "text": variant.prompt_text,
+                    "ctrl": variant.is_control,
+                })
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("prompt_variant_persist_failed: %s", exc)
+
+    async def persist_outcome(self, variant_id: str, won: bool, db: Any) -> None:
+        """Update win/loss counts in DB after A/B test result."""
+        if db is None:
+            return
+        try:
+            from sqlalchemy import text
+            col = "win_count" if won else "loss_count"
+            async with db() as session, session.begin():
+                await session.execute(
+                    text(f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"),
+                    {"id": variant_id}
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("prompt_outcome_persist_failed: %s", exc)
+
+    async def load_from_db(self, db: Any) -> int:
+        """Load all active variants from DB into in-process cache.
+
+        Call at startup and after Redis invalidation.
+        Returns count of variants loaded.
+        """
+        if db is None:
+            return 0
+        try:
+            from sqlalchemy import text
+            async with db() as session:
+                rows = (await session.execute(text("""
+                    SELECT id, tenant_id, prompt_key, variant_name, prompt_text,
+                           is_control, win_count, loss_count
+                    FROM prompt_variants
+                    WHERE is_active = TRUE
+                    ORDER BY tenant_id, prompt_key, is_control DESC
+                """))).fetchall()
+
+            # Clear and rebuild from DB
+            self._variants.clear()
+            for row in rows:
+                vid, tid, key, name, text_val, ctrl, wins, losses = row
+                v = PromptVariant(
+                    variant_id=vid,
+                    prompt_key=key,
+                    name=name,
+                    prompt_text=text_val or "",
+                    is_control=bool(ctrl),
+                )
+                # Store win/loss on the variant if the dataclass supports it
+                if hasattr(v, "win_count"):
+                    v.win_count = wins or 0
+                if hasattr(v, "loss_count"):
+                    v.loss_count = losses or 0
+                self._variants.setdefault(tid, {})[vid] = v
+
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("prompt_variants_loaded", count=len(rows))
+            return len(rows)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("prompt_variants_load_failed: %s", exc)
+            return 0
 
     def select_variant(
         self, prompt_key: str, *, tenant_id: str = "global"

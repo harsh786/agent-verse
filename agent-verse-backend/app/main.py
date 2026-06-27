@@ -612,9 +612,63 @@ def create_app(
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):
                     _sem_cache._redis = redis_for_runtime
 
+                # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
+                try:
+                    from app.intelligence.prompt_optimizer import _default_optimizer as _opt
+                    _opt.set_redis(redis_for_runtime)
+                    app.state.prompt_optimizer = _opt
+                except Exception as _opt_exc:
+                    logger.warning("prompt_optimizer_redis_wire_failed", error=str(_opt_exc))
+
+                # ── RedisBulkheadRegistry: distributed per-tenant concurrency ──────
+                try:
+                    from app.reliability.bulkhead import RedisBulkheadRegistry
+                    _bulkhead_registry = RedisBulkheadRegistry(
+                        redis=redis_for_runtime,
+                        default_max_concurrent=20,
+                    )
+                    app.state.bulkhead_registry = _bulkhead_registry
+                    logger.info("redis_bulkhead_registry_wired")
+                except Exception as _bh_exc:
+                    logger.warning("bulkhead_registry_wire_failed", error=str(_bh_exc))
+
+                # ── Policy pub/sub: propagate policy changes to all replicas ────────
+                try:
+                    from app.governance.policies import start_policy_subscriber
+                    app.state._policy_pubsub_redis = redis_for_runtime
+                    app.state._policy_pubsub_task = start_policy_subscriber(
+                        redis_url=str(settings.redis_url),
+                        engine=_policy_engine,
+                        db=db_factory,
+                    )
+                    logger.info("policy_pubsub_subscriber_started")
+                except Exception as _ps_exc:
+                    logger.warning("policy_pubsub_start_failed", error=str(_ps_exc))
+
+            # ── PromptOptimizer: load variants from DB (all replicas on startup) ──
+            try:
+                from app.intelligence.prompt_optimizer import _default_optimizer as _opt_db
+                loaded_variants = await _opt_db.load_from_db(db_factory)
+                logger.info("prompt_variants_loaded_from_db", count=loaded_variants)
+            except Exception as _pv_exc:
+                logger.warning("prompt_variants_load_failed", error=str(_pv_exc))
+
+            # ── HITLGateway: restore pending approvals from DB on startup ──────────
+            try:
+                _hitl_restored = await _hitl.startup_restore(db=db_factory)
+                logger.info("hitl_startup_restore_complete", count=_hitl_restored)
+            except Exception as _hitl_exc:
+                logger.warning("hitl_startup_restore_failed", error=str(_hitl_exc))
+
             try:
                 yield
             finally:
+                # Cancel pub/sub background task on shutdown
+                if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
+                    _ps_task.cancel()
+                    import contextlib
+                    with contextlib.suppress(Exception):
+                        await _ps_task
                 await active.shutdown()
         else:
             yield

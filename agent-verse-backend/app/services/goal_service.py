@@ -440,6 +440,7 @@ class GoalService:
         _semantic_cache = getattr(app_state, "semantic_cache", None) if app_state else None
         _model_router = getattr(app_state, "model_router", None) if app_state else None
         _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
+        _bulkhead_registry = getattr(app_state, "bulkhead_registry", None) if app_state else None
         # Agent-level feature flags — read from agent config when available
         _agent_config: dict[str, Any] = {}
 
@@ -463,6 +464,8 @@ class GoalService:
             embedder=_embedder,
             semantic_cache=_semantic_cache,
             model_router=_model_router,
+            # Distributed per-tenant concurrency bulkhead
+            bulkhead_registry=_bulkhead_registry,
             # Agent feature flags
             enable_cot=_agent_config.get("enable_cot", False),
             enable_reflection=_agent_config.get("enable_reflection", False),
