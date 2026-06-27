@@ -272,6 +272,19 @@ class Governor:
                 )
             except Exception as exc:
                 logger.warning("governor_pause_redis_failed", error=str(exc))
+        # GAP 2: Emit CIVILIZATION_PAUSED event
+        try:
+            from app.civilization.events import CivEventType, emit_event
+            await emit_event(
+                civilization_id=self._civilization_id,
+                tenant_id=self._tenant_id,
+                event_type=CivEventType.CIVILIZATION_PAUSED,
+                payload={"reason": "operator_request"},
+                db=self._db,
+                redis=self._redis,
+            )
+        except Exception:
+            pass
 
     async def resume(self) -> None:
         """Resume a paused civilization."""
@@ -283,6 +296,19 @@ class Governor:
                 )
             except Exception as exc:
                 logger.warning("governor_resume_redis_failed", error=str(exc))
+        # GAP 2: Emit CIVILIZATION_RESUMED event
+        try:
+            from app.civilization.events import CivEventType, emit_event
+            await emit_event(
+                civilization_id=self._civilization_id,
+                tenant_id=self._tenant_id,
+                event_type=CivEventType.CIVILIZATION_RESUMED,
+                payload={"reason": "operator_request"},
+                db=self._db,
+                redis=self._redis,
+            )
+        except Exception:
+            pass
 
     def is_paused_sync(self, redis_sync: Any) -> bool:
         """Synchronous check for Celery workers."""
@@ -475,6 +501,27 @@ class Governor:
 
     async def _auto_pause(self, reasons: list[str]) -> None:
         await self.pause()
+        # GAP 2: Emit BREACH_DETECTED and CIVILIZATION_PAUSED events
+        try:
+            from app.civilization.events import CivEventType, emit_event
+            await emit_event(
+                civilization_id=self._civilization_id,
+                tenant_id=self._tenant_id,
+                event_type=CivEventType.BREACH_DETECTED,
+                payload={"reasons": reasons, "action": "auto_paused"},
+                db=self._db,
+                redis=self._redis,
+            )
+            await emit_event(
+                civilization_id=self._civilization_id,
+                tenant_id=self._tenant_id,
+                event_type=CivEventType.CIVILIZATION_PAUSED,
+                payload={"reason": "breach_detected", "reasons": reasons},
+                db=self._db,
+                redis=self._redis,
+            )
+        except Exception as exc:
+            logger.warning("governor_pause_event_failed", error=str(exc))
         # Raise HITL if configured
         if self._hitl is not None:
             try:
@@ -525,6 +572,34 @@ class Governor:
         )
 
         if self._db is None:
+            # Even without DB, still record in audit log if available
+            if self._audit_log is not None:
+                try:
+                    from app.governance.audit import AuditEvent
+                    from app.governance.permissions import ActionLevel
+                    from app.tenancy.context import PlanTier, TenantContext
+                    self._audit_log.record(
+                        AuditEvent(
+                            goal_id=f"spawn_{self._civilization_id}",
+                            tool_name="civilization_spawn",
+                            action_level=ActionLevel.ALLOW_LOG,
+                            outcome=verdict.decision.value,
+                            note=(
+                                f"requester={requester_agent_id[:50]} "
+                                f"cap={requested_capability[:100]} "
+                                f"reason={verdict.reason[:200]}"
+                            ),
+                            api_key_id="governor",
+                        ),
+                        tenant_ctx=TenantContext(
+                            tenant_id=self._tenant_id,
+                            plan=PlanTier.ENTERPRISE,
+                            api_key_id="governor",
+                        ),
+                    )
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("governor_audit_log_failed: %s", exc)
             return
         try:
             import json
@@ -550,3 +625,32 @@ class Governor:
                 })
         except Exception as exc:
             logger.warning("governor_audit_spawn_failed", error=str(exc))
+
+        # GAP 1: Record in AuditLog for compliance trail
+        if self._audit_log is not None:
+            try:
+                from app.governance.audit import AuditEvent
+                from app.governance.permissions import ActionLevel
+                from app.tenancy.context import PlanTier, TenantContext
+                self._audit_log.record(
+                    AuditEvent(
+                        goal_id=f"spawn_{self._civilization_id}",
+                        tool_name="civilization_spawn",
+                        action_level=ActionLevel.ALLOW_LOG,
+                        outcome=verdict.decision.value,
+                        note=(
+                            f"requester={requester_agent_id[:50]} "
+                            f"cap={requested_capability[:100]} "
+                            f"reason={verdict.reason[:200]}"
+                        ),
+                        api_key_id="governor",
+                    ),
+                    tenant_ctx=TenantContext(
+                        tenant_id=self._tenant_id,
+                        plan=PlanTier.ENTERPRISE,
+                        api_key_id="governor",
+                    ),
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("governor_audit_log_failed: %s", exc)

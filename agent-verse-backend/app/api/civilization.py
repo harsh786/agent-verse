@@ -24,6 +24,12 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/civilizations", tags=["civilization"])
 
 
+# ── Error helpers ───────────────────────────────────────────────────────────
+
+def _civilization_not_found(civ_id: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"Civilization {civ_id} not found")
+
+
 # ── Guards ─────────────────────────────────────────────────────────────────
 
 def _require_tenant(request: Request) -> Any:
@@ -139,6 +145,30 @@ def _build_orchestrator(
         redis=redis,
     )
 
+    # GAP 5: Wire DebateOrchestrator from app.state._app_provider
+    debate_orch = None
+    try:
+        provider = getattr(request.app.state, "_app_provider", None)
+        if provider is not None:
+            from app.agent.debate import DebateOrchestrator
+            debate_orch = DebateOrchestrator(provider=provider)
+    except Exception:
+        pass
+
+    # GAP 5: Wire SupervisorAgent
+    supervisor = None
+    try:
+        provider = getattr(request.app.state, "_app_provider", None)
+        if provider is not None:
+            from app.agent.supervisor import SupervisorAgent
+            goal_svc = getattr(request.app.state, "goal_service", None)
+            supervisor = SupervisorAgent(
+                planner_provider=provider,
+                goal_service=goal_svc,
+            )
+    except Exception:
+        pass
+
     return CivilizationOrchestrator(
         civilization_id=civilization_id,
         tenant_id=tenant_id,
@@ -149,7 +179,8 @@ def _build_orchestrator(
         blackboard=blackboard,
         learning_pipeline=learning,
         goal_service=getattr(request.app.state, "goal_service", None),
-        debate_orchestrator=None,  # wired separately if available
+        debate_orchestrator=debate_orch,
+        supervisor_agent=supervisor,
         db_session_factory=db,
         redis=redis,
         tenant_ctx=tenant_ctx,
@@ -671,9 +702,24 @@ async def control_civilization(
         await governor.resume()
         return {"status": "active", "civilization_id": civ_id}
     elif action == "throttle":
-        # Throttle is acknowledged but the rate limit is constitution-level;
-        # return ok so callers can integrate without breaking.
-        return {"status": "ok", "action": action, "params": body.params}
+        # GAP 8: Actually update spawn_rate_limit_per_min in the constitution
+        rate = body.params.get("spawn_rate_limit_per_min")
+        if rate is not None:
+            constitution_data["spawn_rate_limit_per_min"] = int(rate)
+            try:
+                from sqlalchemy import text
+                async with db() as session, session.begin():
+                    await session.execute(text(
+                        "UPDATE civilizations SET constitution=:c::jsonb, updated_at=NOW() "
+                        "WHERE id=:id AND tenant_id=:tid"
+                    ), {
+                        "c": json.dumps(constitution_data),
+                        "id": civ_id,
+                        "tid": tenant_ctx.tenant_id,
+                    })
+            except Exception:
+                pass
+        return {"status": "ok", "action": action, "spawn_rate_limit_per_min": rate}
     elif action == "adjust_budget":
         new_budget = body.params.get("total_budget_usd")
         if new_budget is not None:
