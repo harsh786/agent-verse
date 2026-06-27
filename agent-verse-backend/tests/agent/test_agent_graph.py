@@ -283,15 +283,14 @@ async def test_circuit_breaker_half_open_probe() -> None:
 
 
 async def test_real_embedding_fallback_no_provider() -> None:
-    """embed_texts returns unit-norm vectors when no provider given."""
+    """embed_texts returns empty embeddings when no provider given (Fix 1.6)."""
     from app.providers.base import embed_texts
 
     result = await embed_texts(["hello world", "foo bar"])
     assert len(result) == 2
     for vec in result:
-        assert len(vec) == 768
-        norm = math.sqrt(sum(x * x for x in vec))
-        assert abs(norm - 1.0) < 0.01  # unit norm
+        # Must be empty list, not random noise (Fix 1.6 — no random vectors)
+        assert vec == []
 
 
 def test_write_checkpoint_without_db_does_not_raise() -> None:

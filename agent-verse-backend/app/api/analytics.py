@@ -9,6 +9,14 @@ from fastapi import APIRouter, Query, Request
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
+def _require_tenant(request: Request) -> Any:
+    from fastapi import HTTPException
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return ctx
+
+
 @router.get("/goals")
 async def goal_analytics(
     days: int = Query(30, ge=1, le=365),
@@ -16,7 +24,9 @@ async def goal_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    m = agg.goal_metrics(days=days, agent_id=agent_id)
+    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
+    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    m = await agg.goal_metrics(tenant_id=tenant_id, days=days, agent_id=agent_id)
     return {
         "period_days": days,
         "total": m.total,
@@ -72,7 +82,9 @@ async def cost_analytics(
     agg = _get_aggregator(request)
     trends = agg.cost_trends(days=days, bucket=bucket)
     total = sum(t["cost_usd"] for t in trends)
-    m = agg.goal_metrics(days=days)
+    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
+    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
     return {
         "period_days": days,
         "bucket": bucket,
@@ -110,4 +122,5 @@ async def agent_analytics(
 def _get_aggregator(request: Request):  # type: ignore[return]
     from app.analytics.aggregator import GoalAnalyticsAggregator
     goal_service = getattr(request.app.state, "goal_service", None)
-    return GoalAnalyticsAggregator(goal_service)
+    db = getattr(request.app.state, "db_session_factory", None)
+    return GoalAnalyticsAggregator(goal_service=goal_service, db=db)

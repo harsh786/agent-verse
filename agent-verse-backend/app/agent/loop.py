@@ -294,9 +294,10 @@ class AgentLoop:
 
         # ── Step 10: Record rollback point ───────────────────────────────────
         if self._rollback_engine is not None:
+            from app.reliability.tool_inverses import get_inverse_fn
             self._rollback_engine.register(
                 action=step,
-                inverse=lambda: None,  # placeholder; real inverse comes from tool adapters
+                inverse=get_inverse_fn(tool_name, {}),
             )
 
         # ── Step 11: Stream event — handled by caller via event_callback ─────

@@ -82,8 +82,9 @@ def _fallback_embedding(dim: int = _EMBEDDING_DIM) -> list[float]:
         status_code=503,
         detail=(
             "Embedding provider not configured. "
-            "Set VOYAGE_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY to use knowledge features. "
-            "Or set SENTENCE_TRANSFORMERS_MODEL=all-MiniLM-L6-v2 for local embeddings."
+            "Set one of: VOYAGE_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY "
+            "(cloud embeddings) or SENTENCE_TRANSFORMERS_MODEL=all-MiniLM-L6-v2 "
+            "(local CPU embeddings via sentence-transformers)."
         )
     )
 

@@ -18,6 +18,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _default_redirect_uri() -> str:
+    """Build the default OAuth redirect URI from the FRONTEND_URL env var."""
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    return f"{frontend_url}/auth/callback"
+
+
 @router.get("/config")
 async def get_sso_config() -> dict[str, Any]:
     """Return SSO configuration so the frontend knows where to redirect."""
@@ -39,10 +45,12 @@ async def get_sso_config() -> dict[str, Any]:
 
 @router.get("/login")
 async def sso_login(
-    redirect_uri: str = "http://localhost:5173/auth/callback",
+    redirect_uri: str = "",  # No default — require explicit or fall back to env var
     state: str = "",
 ) -> RedirectResponse:
     """Redirect to Keycloak login page."""
+    if not redirect_uri:
+        redirect_uri = _default_redirect_uri()
     from app.auth.keycloak import authorization_endpoint, _client_id
 
     import urllib.parse
@@ -60,9 +68,11 @@ async def sso_login(
 @router.post("/token")
 async def exchange_token(
     code: str,
-    redirect_uri: str = "http://localhost:5173/auth/callback",
+    redirect_uri: str = "",  # No default — require explicit or fall back to env var
 ) -> dict[str, Any]:
     """Exchange authorization code for access + refresh tokens."""
+    if not redirect_uri:
+        redirect_uri = _default_redirect_uri()
     from app.auth.keycloak import token_endpoint, _client_id
 
     client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET", "agentverse-dev-secret")

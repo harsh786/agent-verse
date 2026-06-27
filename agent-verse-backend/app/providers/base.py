@@ -100,20 +100,18 @@ class LLMProvider(Protocol):
 async def embed_texts(
     texts: list[str], provider: LLMProvider | None = None
 ) -> list[list[float]]:
-    """Embed texts using the given provider, or return random unit-norm vectors as fallback."""
-    import math
-    import random
+    """Embed texts using the given provider, or return empty embeddings as fallback.
 
+    Callers must handle empty embeddings (``[]``) gracefully — they indicate
+    that no real embedder is configured. Random noise vectors are never returned
+    as they silently corrupt RAG retrieval quality.
+    """
     if provider is not None:
         try:
             resp = await provider.embed(EmbedRequest(texts=texts))
             return resp.embeddings
         except NotImplementedError:
-            pass  # provider doesn't support embedding -- fall through to random
-    # Fallback: random unit-norm vectors (768-dim)
-    results = []
-    for _ in texts:
-        raw = [random.gauss(0, 1) for _ in range(768)]
-        mag = math.sqrt(sum(x * x for x in raw))
-        results.append([x / mag for x in raw] if mag > 0 else raw)
-    return results
+            pass  # provider doesn't support embedding -- fall through to empty
+    # No real provider configured — return empty embeddings instead of random noise.
+    # Callers must handle empty embeddings gracefully.
+    return [[] for _ in texts]

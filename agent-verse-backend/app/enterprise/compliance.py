@@ -9,6 +9,7 @@ Provides:
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -28,12 +29,20 @@ class DataExportRequest:
 
 
 class ComplianceController:
-    """In-memory compliance controller (production uses PostgreSQL)."""
+    """GDPR/SOC2/PCI-DSS compliance controller.
+
+    Export requests and deletion records are persisted to PostgreSQL
+    (compliance_requests / deleted_tenants tables from migration 0026).
+    Falls back to in-process dicts when DB is not configured.
+    """
 
     def __init__(self) -> None:
+        # In-memory fallbacks (dev / test mode without DB)
         self._export_requests: dict[str, DataExportRequest] = {}
         self._deleted_tenants: set[str] = set()
-        # Optional service references injected via configure_services()
+        # Optional DB session factory injected via configure_services()
+        self._db: Any = None
+        # Optional service references
         self._goal_service: Any = None
         self._audit_log: Any = None
         self._tenant_service: Any = None
@@ -50,6 +59,7 @@ class ComplianceController:
         agent_store: Any = None,
         schedule_store: Any = None,
         knowledge_store: Any = None,
+        db: Any = None,
     ) -> None:
         """Inject service references for comprehensive data export."""
         self._goal_service = goal_service
@@ -58,8 +68,94 @@ class ComplianceController:
         self._agent_store = agent_store
         self._schedule_store = schedule_store
         self._knowledge_store = knowledge_store
+        if db is not None:
+            self._db = db
 
-    def request_data_export(self, *, tenant_ctx: TenantContext) -> DataExportRequest:
+    # ── internal DB helpers ────────────────────────────────────────────────────
+
+    async def _db_save_request(self, req: DataExportRequest) -> None:
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text(
+                        """INSERT INTO compliance_requests
+                           (request_id, tenant_id, status, download_url, payload, created_at)
+                           VALUES (:rid, :tid, :status, :url, :payload::jsonb, NOW())
+                           ON CONFLICT (request_id) DO UPDATE
+                             SET status = EXCLUDED.status,
+                                 download_url = EXCLUDED.download_url,
+                                 payload = EXCLUDED.payload"""
+                    ),
+                    {
+                        "rid": req.request_id,
+                        "tid": req.tenant_id,
+                        "status": req.status,
+                        "url": req.download_url,
+                        "payload": json.dumps(req.payload),
+                    },
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("compliance_request_save_failed: %s", exc)
+
+    async def _db_load_request(
+        self, request_id: str, tenant_id: str
+    ) -> DataExportRequest | None:
+        if self._db is None:
+            return None
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT request_id, tenant_id, status, download_url, payload, created_at "
+                            "FROM compliance_requests "
+                            "WHERE request_id = :rid AND tenant_id = :tid"
+                        ),
+                        {"rid": request_id, "tid": tenant_id},
+                    )
+                ).fetchone()
+            if row is None:
+                return None
+            rid, tid, status, url, payload, created_at = row
+            req = DataExportRequest(
+                request_id=rid,
+                tenant_id=tid,
+                status=status,
+                download_url=url or "",
+                created_at=created_at.isoformat() if created_at else "",
+                payload=payload if isinstance(payload, dict) else json.loads(payload or "{}"),
+            )
+            return req
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("compliance_request_load_failed: %s", exc)
+            return None
+
+    async def _db_save_deletion(self, tenant_id: str) -> None:
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text(
+                        "INSERT INTO deleted_tenants (tenant_id, requested_at) "
+                        "VALUES (:tid, NOW()) ON CONFLICT (tenant_id) DO NOTHING"
+                    ),
+                    {"tid": tenant_id},
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("deletion_save_failed: %s", exc)
+
+    # ── public API ─────────────────────────────────────────────────────────────
+
+    async def request_data_export(self, *, tenant_ctx: TenantContext) -> DataExportRequest:
         """GDPR right-of-access — collect and return all tenant data."""
         req = DataExportRequest(tenant_id=tenant_ctx.tenant_id)
         req.status = "ready"
@@ -67,18 +163,45 @@ class ComplianceController:
         # Collect data from injected services
         goals_data: list[dict[str, Any]] = []
         if self._goal_service is not None:
-            try:
-                goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
-                for gid, record in goal_records.items():
-                    if getattr(record, "tenant_id", "") == tenant_ctx.tenant_id:
-                        goals_data.append({
-                            "goal_id": gid,
-                            "goal_text": getattr(record, "goal_text", ""),
-                            "status": str(getattr(record, "status", "")),
-                            "created_at": getattr(record, "created_at", ""),
-                        })
-            except Exception:
-                pass
+            db = getattr(self._goal_service, "_db_session_factory", None)
+            if db is not None:
+                try:
+                    from sqlalchemy import text as _text
+                    async with db() as _sess:
+                        _rows = (
+                            await _sess.execute(
+                                _text(
+                                    "SELECT id, goal_text, status, created_at "
+                                    "FROM goals WHERE tenant_id = :tid "
+                                    "ORDER BY created_at DESC LIMIT 500"
+                                ),
+                                {"tid": tenant_ctx.tenant_id},
+                            )
+                        ).fetchall()
+                    goals_data = [
+                        {
+                            "goal_id": r[0],
+                            "goal_text": r[1],
+                            "status": r[2],
+                            "created_at": r[3].isoformat() if r[3] else "",
+                        }
+                        for r in _rows
+                    ]
+                except Exception:
+                    pass
+            else:
+                try:
+                    goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
+                    for gid, record in goal_records.items():
+                        if getattr(record, "tenant_id", "") == tenant_ctx.tenant_id:
+                            goals_data.append({
+                                "goal_id": gid,
+                                "goal_text": getattr(record, "goal_text", ""),
+                                "status": str(getattr(record, "status", "")),
+                                "created_at": getattr(record, "created_at", ""),
+                            })
+                except Exception:
+                    pass
 
         audit_data: list[dict[str, Any]] = []
         if self._audit_log is not None:
@@ -136,19 +259,30 @@ class ComplianceController:
             },
         }
         req.download_url = f"/compliance/export/{req.request_id}/download"
+
+        # Persist to DB (best-effort); also keep in memory as fallback
+        await self._db_save_request(req)
         self._export_requests[req.request_id] = req
         return req
 
-    def get_export_status(
+    async def get_export_status(
         self, *, request_id: str, tenant_ctx: TenantContext
     ) -> DataExportRequest | None:
+        # DB first
+        if self._db is not None:
+            req = await self._db_load_request(request_id, tenant_ctx.tenant_id)
+            if req is not None:
+                self._export_requests[request_id] = req  # refresh cache
+                return req
+        # In-memory fallback
         req = self._export_requests.get(request_id)
         if req is None or req.tenant_id != tenant_ctx.tenant_id:
             return None
         return req
 
-    def request_data_deletion(self, *, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """GDPR right-to-erasure. Marks tenant for deletion."""
+    async def request_data_deletion(self, *, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """GDPR right-to-erasure. Records intent and schedules DB deletion in 30 days."""
+        await self._db_save_deletion(tenant_ctx.tenant_id)
         self._deleted_tenants.add(tenant_ctx.tenant_id)
         return {
             "tenant_id": tenant_ctx.tenant_id,
@@ -171,11 +305,11 @@ class ComplianceController:
             "retention_days": retention_days,
         }
 
-    def get_export_payload(
+    async def get_export_payload(
         self, *, request_id: str, tenant_ctx: TenantContext
     ) -> dict[str, Any] | None:
         """Return the raw export payload dict for a ready export request."""
-        req = self.get_export_status(request_id=request_id, tenant_ctx=tenant_ctx)
+        req = await self.get_export_status(request_id=request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != "ready":
             return None
         return req.payload
@@ -208,8 +342,10 @@ class ComplianceController:
             "documents", "knowledge_collections",
             "mcp_credentials", "oauth_tokens", "mcp_servers",
             "execution_memory", "long_term_memory",
+            "agent_snapshots",
             "agent_permissions", "agents",
             "schedules",
+            "compliance_requests",
             "goals",
             "api_keys",
             # Parent last
@@ -230,12 +366,20 @@ class ComplianceController:
                 except Exception as exc:
                     deleted_counts[table] = f"skipped: {exc}"
 
+        # Also remove from deleted_tenants tracking table
+        try:
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("DELETE FROM deleted_tenants WHERE tenant_id = :tid"),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+        except Exception:
+            pass
+
         total = sum(v for v in deleted_counts.values() if isinstance(v, int))
         return {
             "tenant_id": tenant_ctx.tenant_id,
-            "deleted_at": __import__("datetime").datetime.now(
-                __import__("datetime").timezone.utc
-            ).isoformat(),
+            "deleted_at": datetime.now(UTC).isoformat(),
             "total_rows_deleted": total,
             "tables": deleted_counts,
         }

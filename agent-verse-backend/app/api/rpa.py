@@ -88,7 +88,7 @@ async def list_sessions(request: Request) -> list[dict[str, Any]]:
         store = RPASessionStore()
         request.app.state.rpa_session_store = store
 
-    sessions = store.list_active(tenant_id=tenant.tenant_id)
+    sessions = await store.list_active(tenant_id=tenant.tenant_id)
     return [
         {
             "session_id": s.session_id,
@@ -110,7 +110,7 @@ async def create_session(request: Request) -> dict[str, Any]:
         store = RPASessionStore()
         request.app.state.rpa_session_store = store
 
-    session = store.create(tenant_id=tenant.tenant_id)
+    session = await store.create(tenant_id=tenant.tenant_id)
     return {
         "session_id": session.session_id,
         "status": session.status,
@@ -126,6 +126,6 @@ async def close_session(request: Request, session_id: str) -> None:
     if store is None:
         return
 
-    ok = store.close(session_id, tenant_id=tenant.tenant_id)
+    ok = await store.close(session_id, tenant_id=tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")

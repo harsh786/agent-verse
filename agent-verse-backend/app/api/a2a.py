@@ -21,13 +21,31 @@ router = APIRouter(tags=["a2a"])
 # In-memory fallback (used when DB not available)
 _tasks: dict[str, dict[str, Any]] = {}
 
+# ── startup check: warn loudly when HMAC auth is disabled ─────────────────────
+import os as _os
+
+if not _os.getenv("A2A_SHARED_SECRET", ""):
+    logger.warning(
+        "a2a_hmac_disabled",
+        message=(
+            "A2A_SHARED_SECRET is not set — incoming A2A tasks are accepted without "
+            "authentication. Set this env var in production to enable HMAC-SHA256 "
+            "request signing."
+        ),
+    )
+
 
 def _get_a2a_secret() -> str:
     return os.getenv("A2A_SHARED_SECRET", "")
 
 
 def _verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
-    """Verify HMAC-SHA256 signature of incoming A2A task."""
+    """Verify HMAC-SHA256 signature of incoming A2A task.
+
+    When ``A2A_SHARED_SECRET`` is not set the check is bypassed in dev mode.
+    A warning is logged at import time (see module-level check below) so operators
+    are always aware when auth is disabled.
+    """
     if not secret:
         return True  # Disabled in dev
     if not signature:
@@ -169,7 +187,10 @@ async def receive_a2a_task(
 
     # Get tenant context for A2A tasks
     from app.tenancy.context import PlanTier, TenantContext
-    a2a_tenant_id = os.getenv("A2A_TENANT_ID", "a2a-system")
+
+    a2a_tenant_id = os.getenv("A2A_TENANT_ID", "")
+    if not a2a_tenant_id:
+        raise HTTPException(503, "A2A integration requires A2A_TENANT_ID env var to be set.")
     tenant_ctx = TenantContext(
         tenant_id=a2a_tenant_id,
         plan=PlanTier.PROFESSIONAL,

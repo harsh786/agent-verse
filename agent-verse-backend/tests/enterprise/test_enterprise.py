@@ -18,9 +18,10 @@ T = TenantContext(tenant_id="ent-test", plan=PlanTier.ENTERPRISE, api_key_id="ek
 # Compliance
 # ---------------------------------------------------------------------------
 
-def test_compliance_export_request() -> None:
+@pytest.mark.asyncio
+async def test_compliance_export_request() -> None:
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     assert req.status == "ready"
     assert req.tenant_id == T.tenant_id
     assert req.download_url.startswith("/compliance/export/")
@@ -28,21 +29,23 @@ def test_compliance_export_request() -> None:
     assert req.request_id  # non-empty
 
     # Should be retrievable by request_id
-    fetched = cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
+    fetched = await cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
     assert fetched is not None
     assert fetched.request_id == req.request_id
 
 
-def test_compliance_export_wrong_tenant_returns_none() -> None:
+@pytest.mark.asyncio
+async def test_compliance_export_wrong_tenant_returns_none() -> None:
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     other = TenantContext(tenant_id="other-tenant", plan=PlanTier.STARTER, api_key_id="k2")
-    assert cc.get_export_status(request_id=req.request_id, tenant_ctx=other) is None
+    assert await cc.get_export_status(request_id=req.request_id, tenant_ctx=other) is None
 
 
-def test_compliance_data_deletion() -> None:
+@pytest.mark.asyncio
+async def test_compliance_data_deletion() -> None:
     cc = ComplianceController()
-    result = cc.request_data_deletion(tenant_ctx=T)
+    result = await cc.request_data_deletion(tenant_ctx=T)
     assert result["deletion_scheduled"] is True
     assert result["tenant_id"] == T.tenant_id
     assert "scheduled_at" in result
@@ -58,10 +61,11 @@ def test_compliance_residency() -> None:
     assert res["tenant_id"] == T.tenant_id
 
 
-def test_compliance_retention_sweep_no_old_records() -> None:
+@pytest.mark.asyncio
+async def test_compliance_retention_sweep_no_old_records() -> None:
     cc = ComplianceController()
     # All records are fresh — nothing should be swept
-    cc.request_data_export(tenant_ctx=T)
+    await cc.request_data_export(tenant_ctx=T)
     result = cc.retention_sweep(retention_days=90)
     assert result["records_swept"] == 0
     assert result["retention_days"] == 90

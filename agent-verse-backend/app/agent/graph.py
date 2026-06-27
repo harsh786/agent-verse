@@ -1029,7 +1029,16 @@ class AgentGraph:
 
         # 10. Record rollback point
         if self._rollback_engine is not None:
-            self._rollback_engine.register(action=step, inverse=lambda: None)
+            from app.reliability.tool_inverses import get_inverse_fn as _get_inverse_fn
+            _rb_tool = tool_name
+            _rb_args: dict[str, Any] = {}
+            if tool_call is not None and tool_call.arguments:
+                _rb_tool = tool_call.tool or tool_name
+                _rb_args = dict(tool_call.arguments)
+            self._rollback_engine.register(
+                action=step,
+                inverse=_get_inverse_fn(_rb_tool, _rb_args),
+            )
 
         # 11. Decision trace for explainability
         trace = DecisionTrace(

@@ -1,6 +1,7 @@
 """Tests for GoalAnalyticsAggregator."""
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -31,7 +32,7 @@ def test_goal_metrics_success_rate():
         "g3": _make_mock_goal("failed"),
     }
     agg = GoalAnalyticsAggregator(svc)
-    m = agg.goal_metrics(days=30)
+    m = asyncio.run(agg.goal_metrics(days=30))
     assert m.total == 3
     assert m.completed == 2
     assert m.failed == 1

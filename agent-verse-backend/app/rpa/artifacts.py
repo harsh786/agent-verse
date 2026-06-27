@@ -88,6 +88,21 @@ class MinIOArtifactStore:
         self._secret_key = secret_key or _os.getenv("MINIO_SECRET_KEY", "minioadmin")
         self._prefix = prefix.rstrip("/")
 
+        import logging as _logging
+
+        if self._access_key == "minioadmin" and self._secret_key == "minioadmin":
+            _env = _os.getenv("ENVIRONMENT", "development")
+            if _env == "production":
+                _logging.getLogger(__name__).error(
+                    "SECURITY: MinIO is using default credentials 'minioadmin'. "
+                    "Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY in production!"
+                )
+            else:
+                _logging.getLogger(__name__).warning(
+                    "MinIO using default dev credentials. "
+                    "Set MINIO_ACCESS_KEY and MINIO_SECRET_KEY for production."
+                )
+
     def _key(self, artifact_id: str, name: str) -> str:
         parts = [self._prefix, artifact_id, name]
         return "/".join(p for p in parts if p)
