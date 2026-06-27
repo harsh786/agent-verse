@@ -13,6 +13,9 @@ from app.scaling.celery_app import celery_app
 
 logger = get_logger(__name__)
 
+# Module-level Redis URL — read once at import time so tasks don't re-read env
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 # ── Module-level Redis connection pool — initialized once per worker process ──
 # Sync pool is safe to share across all task invocations; it does not bind to
 # any asyncio event loop.  Async redis clients are created per-task because
@@ -37,6 +40,23 @@ def _get_sync_redis() -> Any:
     """Get a synchronous Redis client using the module-level pool."""
     import redis
     return redis.Redis(connection_pool=_get_redis_pool())
+
+
+async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
+    """Decrement the concurrent-goal counter in Redis after a Celery goal finishes.
+
+    Celery workers never call ``_dispatch_event`` in the API process, so the
+    counter must be decremented explicitly here at every terminal exit of
+    ``run_goal``.
+    """
+    try:
+        import redis.asyncio as aioredis
+        from app.tenancy.limits import decrement_concurrent_goals
+        r = aioredis.from_url(redis_url, decode_responses=True)
+        await decrement_concurrent_goals(tenant_id=tenant_id, redis=r)
+        await r.aclose()
+    except Exception as exc:
+        logger.warning("counter_decrement_failed: %s", exc)
 
 # Capture original AgentLoop class at import time for monkey-patch detection.
 # When tests replace app.agent.loop.AgentLoop with a mock, we detect this
@@ -368,6 +388,8 @@ def run_goal(
                 _run_async(_lock_redis.aclose())
             except Exception:
                 pass
+        # Decrement concurrent-goal counter — dry-run goals still terminate
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
         return {
             "status": "complete",
             "goal_id": goal_id,
@@ -493,6 +515,7 @@ def run_goal(
                     "Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
                 )
             ))
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": "failed",
                 "goal_id": goal_id,
@@ -527,6 +550,7 @@ def run_goal(
             _run_async(mark_worker_failed(
                 TimeoutError(f"Goal timed out after {goal_timeout_s}s")
             ))
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": "failed", "goal_id": goal_id,
                 "reason": f"timeout after {goal_timeout_s}s",
@@ -539,6 +563,8 @@ def run_goal(
                 started_monotonic=started_monotonic,
                 priority=priority,
             )
+        # Decrement concurrent-goal counter — goal has reached terminal state
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
         result = {
             "status": state.status.value,
             "goal_id": goal_id,
@@ -581,6 +607,8 @@ def run_goal(
             _run_async(mark_worker_failed(
                 RuntimeError(f"Goal {goal_id} exceeded max retries, routed to DLQ")
             ))
+            # Decrement counter — goal is permanently done
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "dead_lettered", "goal_id": goal_id}
     finally:
         # Release distributed lock
@@ -866,83 +894,139 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
 def check_mcp_health() -> dict[str, Any]:
     """Periodic MCP server health check — pings /health on all active servers."""
 
-    async def _check_servers() -> list[dict[str, Any]]:
-        """Ping every registered MCP server across all active tenants."""
+    async def _run() -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        checked = 0
+
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        if not redis_url:
+            return {"servers_checked": 0, "results": [], "status": "skipped", "reason": "no_redis"}
+
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(redis_url, decode_responses=True)
+
+        try:
+            # Scan for all MCP server keys written by MCPRegistry:
+            # key pattern: mcp:servers:{tenant_id}:{server_id}
+            async for key in r.scan_iter(match="mcp:servers:*:*", count=100):
+                if checked >= 50:
+                    break
+                checked += 1
+                try:
+                    raw = await r.get(key)
+                    if not raw:
+                        continue
+                    try:
+                        from app.mcp.registry import MCPServerConfig
+                        cfg = MCPServerConfig.model_validate_json(raw)
+                    except Exception as parse_exc:
+                        results.append({
+                            "key": key, "status": "parse_error", "error": str(parse_exc)
+                        })
+                        continue
+                    # Simple health check: GET {base_url}/health
+                    import httpx
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        try:
+                            resp = await client.get(
+                                f"{cfg.base_url}/health", follow_redirects=True
+                            )
+                            results.append({
+                                "server": cfg.name,
+                                "status": "ok",
+                                "code": resp.status_code,
+                            })
+                        except Exception as http_exc:
+                            results.append({
+                                "server": cfg.name,
+                                "status": "error",
+                                "error": str(http_exc)[:200],
+                            })
+                except Exception as exc:
+                    results.append({"key": key, "status": "error", "error": str(exc)[:200]})
+        finally:
+            await r.aclose()
+
+        return {
+            "servers_checked": checked,
+            "results": results[:20],
+        }
+
+    async def _fallback() -> dict[str, Any]:
+        """Fallback: scan the old flat-dict key structure for backward compatibility."""
         results: list[dict[str, Any]] = []
         try:
-            _redis_url = celery_app.conf.broker_url or ""
-            if not _redis_url:
-                return [{"status": "skipped", "reason": "no Redis configured"}]
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            if not redis_url:
+                return {"servers_checked": 0, "results": [], "status": "skipped"}
 
-            import json as _json
             import time as _time
-
-            client = _get_sync_redis()
-            # Find all registered MCP server keys: mcp:servers:{tenant_id}:{server_id}
-            # or mcp:servers:{tenant_id} (registry stores a JSON map)
-            # NEW: non-blocking iterative SCAN instead of blocking O(N) KEYS
-            keys = list(client.scan_iter(match="mcp:servers:*", count=100))
-            keys = keys[:50]  # safety cap
-
             import httpx as _httpx
-            for key in keys:
-                parts = key.split(":")
-                tenant_id = parts[2] if len(parts) >= 3 else "unknown"
+            import redis.asyncio as aioredis
 
-                raw = client.get(key)
-                if not raw:
-                    continue
+            r = aioredis.from_url(redis_url, decode_responses=True)
+            try:
+                keys = []
+                async for k in r.scan_iter(match="mcp:servers:*", count=100):
+                    keys.append(k)
+                    if len(keys) >= 50:
+                        break
 
-                try:
-                    data = _json.loads(raw)
-                except Exception:
-                    continue
-
-                if not isinstance(data, dict):
-                    continue
-
-                # Registry stores: {server_id: {url, name, status, ...}}
-                for server_id, sdata in data.items():
-                    url = sdata.get("url", "") if isinstance(sdata, dict) else ""
-                    if not url:
+                import json as _json
+                for key in keys:
+                    raw = await r.get(key)
+                    if not raw:
                         continue
-
-                    t0 = _time.monotonic()
                     try:
-                        async with _httpx.AsyncClient(timeout=3.0) as http:
-                            resp = await http.get(f"{url.rstrip('/')}/health")
-                        latency_ms = round((_time.monotonic() - t0) * 1000)
-                        status = "healthy" if resp.status_code < 400 else "degraded"
-                        error = None
-                    except Exception as exc:
-                        latency_ms = round((_time.monotonic() - t0) * 1000)
-                        status = "unreachable"
-                        error = str(exc)[:200]
-
-                    results.append({
-                        "server_id": server_id,
-                        "tenant_id": tenant_id,
-                        "url": url,
-                        "status": status,
-                        "latency_ms": latency_ms,
-                        "error": error,
-                        "name": sdata.get("name", server_id) if isinstance(sdata, dict) else server_id,
-                    })
-
+                        data = _json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    for server_id, sdata in data.items():
+                        url = sdata.get("url", "") if isinstance(sdata, dict) else ""
+                        if not url:
+                            continue
+                        t0 = _time.monotonic()
+                        try:
+                            async with _httpx.AsyncClient(timeout=3.0) as http:
+                                resp = await http.get(f"{url.rstrip('/')}/health")
+                            latency_ms = round((_time.monotonic() - t0) * 1000)
+                            status = "healthy" if resp.status_code < 400 else "degraded"
+                            results.append({
+                                "server_id": server_id,
+                                "url": url,
+                                "status": status,
+                                "latency_ms": latency_ms,
+                            })
+                        except Exception as exc:
+                            results.append({
+                                "server_id": server_id,
+                                "url": url,
+                                "status": "unreachable",
+                                "error": str(exc)[:200],
+                            })
+            finally:
+                await r.aclose()
         except Exception as exc:
             results.append({"status": "error", "reason": str(exc)})
-        return results
+        return {"servers_checked": len(results), "results": results[:20]}
 
     event_loop = asyncio.new_event_loop()
     try:
-        results = event_loop.run_until_complete(_check_servers())
+        try:
+            result = event_loop.run_until_complete(_run())
+        except Exception:
+            # MCPServerConfig import may fail (e.g. mcp module not available)
+            result = event_loop.run_until_complete(_fallback())
     finally:
         event_loop.close()
 
     return {
         "status": "ok",
-        "checked_at": datetime.datetime.utcnow().isoformat(),
-        "servers_checked": len(results),
+        "checked_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "servers_checked": result.get("servers_checked", 0),
+        "results": result.get("results", []),
     }
 
 

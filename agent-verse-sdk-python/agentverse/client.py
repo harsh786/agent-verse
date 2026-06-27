@@ -134,8 +134,52 @@ class AgentVerseClient:
         self._raise_for_status(resp)
         return Goal.model_validate(resp.json())
 
-    async def wait_for_goal(self, goal_id: str, timeout: float = 300.0) -> Goal:
+    async def wait_for_goal(
+        self, goal_id: str, timeout: float = 300.0
+    ) -> Goal:
+        """Wait for a goal to complete using SSE streaming for efficiency.
+
+        Falls back to polling via ``_wait_for_goal_polling`` when the SSE
+        stream ends without a terminal event.
+
+        Raises:
+            GoalTimeoutError: if ``timeout`` seconds elapse before completion.
+            GoalFailedError: if the goal reaches ``failed`` status.
+        """
+        try:
+            async for event in self.stream_goal(goal_id, timeout=timeout):
+                etype = event.type if hasattr(event, "type") else event.get("type", "")
+                if etype in ("goal_complete", "goal_finished"):
+                    return await self.get_goal(goal_id)
+                elif etype in ("goal_failed", "goal_error"):
+                    goal = await self.get_goal(goal_id)
+                    reason = (
+                        event.data.get("reason", "unknown")
+                        if hasattr(event, "data")
+                        else event.get("reason", "unknown")
+                    )
+                    raise GoalFailedError(goal_id, reason)
+        except (TimeoutError, asyncio.TimeoutError):
+            goal = await self.get_goal(goal_id)
+            if goal.status in _TERMINAL_STATUSES:
+                if goal.status == GoalStatus.FAILED:
+                    raise GoalFailedError(goal_id, goal.error or "unknown error")
+                return goal
+            raise GoalTimeoutError(goal_id, timeout)
+        except (GoalFailedError, GoalTimeoutError):
+            raise
+        except Exception:
+            # SSE not available or connection error — fall back to polling
+            return await self._wait_for_goal_polling(goal_id, timeout=timeout)
+        # Stream ended without a terminal event — check final status
+        return await self.get_goal(goal_id)
+
+    async def _wait_for_goal_polling(
+        self, goal_id: str, timeout: float = 300.0
+    ) -> Goal:
         """Poll until goal reaches a terminal state (completed/failed/cancelled).
+
+        Kept as a fallback for environments where SSE is not available.
 
         Raises:
             GoalTimeoutError: if ``timeout`` seconds elapse before completion.

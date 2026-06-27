@@ -178,6 +178,10 @@ class AgentGraph:
         self._rpa_executor: Any = None  # Set externally to dispatch RPA tool calls directly
         self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
         self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
+        # Track fire-and-forget background tasks to prevent GC before completion
+        self._background_tasks: set[Any] = set()
+        from app.observability.logging import get_logger as _get_logger
+        self._logger = _get_logger(__name__)
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -324,7 +328,7 @@ class AgentGraph:
                 Message(role="user", content=f"Goal: {agent_state.goal}"),
             ],
             model=(
-                self._model_router.route("think", state.get("tenant_ctx"))
+                self._model_router.model_for("think")
                 if self._model_router is not None
                 else ""
             ),
@@ -581,6 +585,9 @@ class AgentGraph:
                     await self._emit({"type": "step_started", "step": s.description})
                     parallel_steps.append(sr)
 
+                # Lock to protect shared agent_state mutations across concurrent coroutines
+                _state_lock = _asyncio.Lock()
+
                 async def _run_wave_step(
                     desc: str, sr: StepResult
                 ) -> None:
@@ -591,14 +598,21 @@ class AgentGraph:
                             )
                         else:
                             out = await self._execute_step(desc, agent_state, tenant_ctx)
-                        sr.output = out
-                        sr.status = StepStatus.COMPLETE
+                        async with _state_lock:
+                            sr.output = out
+                            sr.status = StepStatus.COMPLETE
                         await self._emit({"type": "step_complete", "step": desc, "output": out})
                     except PermissionError as exc:
-                        agent_state.status = GoalStatus.FAILED
-                        agent_state.error_message = str(exc)
-                        sr.status = StepStatus.FAILED
-                        sr.error = str(exc)
+                        async with _state_lock:
+                            agent_state.status = GoalStatus.FAILED
+                            agent_state.error_message = str(exc)
+                            sr.status = StepStatus.FAILED
+                            sr.error = str(exc)
+                        raise
+                    except Exception as exc:
+                        async with _state_lock:
+                            sr.status = StepStatus.FAILED
+                            sr.error = str(exc)
                         raise
 
                 tasks = [
@@ -1144,7 +1158,15 @@ class AgentGraph:
         # Persist decision trace to DB
         if self._db_session_factory and hasattr(trace, "trace_id"):
             import asyncio as _asyncio
-            _asyncio.create_task(self._persist_decision_trace(trace, state, tenant_ctx))
+            _task = _asyncio.create_task(self._persist_decision_trace(trace, state, tenant_ctx))
+            _task.add_done_callback(
+                lambda t: (not t.cancelled() and t.exception()) and self._logger.warning(
+                    "decision_trace_persist_failed", error=str(t.exception())
+                )
+            )
+            # Hold a strong reference so the GC doesn't collect the task before it finishes
+            self._background_tasks.add(_task)
+            _task.add_done_callback(self._background_tasks.discard)
 
         # 12. Audit log
         if self._audit_log is not None:
@@ -1155,6 +1177,11 @@ class AgentGraph:
                     action_level=ActionLevel.ALLOW_LOG,
                     outcome="step_complete",
                     step_id=state.steps[-1].step_id if state.steps else "",
+                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                    request_id=(
+                        state.context.get("request_id")
+                        or state.context.get("execution_context", {}).get("request_id")
+                    ),
                 ),
                 tenant_ctx=tenant_ctx,
             )

@@ -102,13 +102,28 @@ class OutboundWebhookService:
                     import hashlib
                     import hmac
                     import json
-                    body = json.dumps(payload)
-                    sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+                    # Compute HMAC on the exact bytes that will be sent.
+                    # sort_keys=True with compact separators ensures byte-for-byte
+                    # consistency regardless of dict insertion order.
+                    body_bytes = json.dumps(
+                        payload, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                    sig = hmac.new(
+                        secret.encode(), body_bytes, hashlib.sha256
+                    ).hexdigest()
                     headers["X-Webhook-Signature"] = f"sha256={sig}"
 
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=payload, headers=headers)
-                    resp.raise_for_status()
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.post(
+                            url,
+                            content=body_bytes,
+                            headers=headers,
+                        )
+                        resp.raise_for_status()
+                else:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.post(url, json=payload, headers=headers)
+                        resp.raise_for_status()
 
                 delivery.status = "delivered"
                 delivery.delivered_at = datetime.now(UTC).isoformat()

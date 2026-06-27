@@ -19,6 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.tenancy.context import TenantContext
 
+# Module-level dict — process-local, not serialized to Redis.
+# Holds callable handlers for built-in servers so they survive Redis round-trips.
+_BUILTIN_HANDLER_REGISTRY: dict[str, Any] = {}
+
 
 class AuthType(enum.StrEnum):
     BEARER = "bearer"
@@ -80,6 +84,16 @@ class MCPRegistry:
     def __init__(self, redis: Any) -> None:
         self._redis = redis
 
+    @staticmethod
+    def register_builtin_handler(server_id: str, handler: Any) -> None:
+        """Register a handler callable for a built-in server. Process-local only."""
+        _BUILTIN_HANDLER_REGISTRY[server_id] = handler
+
+    @staticmethod
+    def get_builtin_handler(server_id: str) -> Any | None:
+        """Return the process-local built-in handler for server_id, or None."""
+        return _BUILTIN_HANDLER_REGISTRY.get(server_id)
+
     def _server_key(self, tenant_id: str, server_id: str) -> str:
         return f"mcp:servers:{tenant_id}:{server_id}"
 
@@ -111,12 +125,21 @@ class MCPRegistry:
         return server_id
 
     async def get(self, server_id: str, *, tenant_ctx: TenantContext) -> MCPServerConfig | None:
-        """Fetch a server config by ID; returns None if not found or cross-tenant."""
+        """Fetch a server config by ID; returns None if not found or cross-tenant.
+
+        Re-attaches the process-local built-in handler after deserializing from
+        Redis, because ``builtin_handler`` is excluded from JSON serialization.
+        """
         key = self._server_key(tenant_ctx.tenant_id, server_id)
         raw: str | None = await self._redis.get(key)
         if raw is None:
             return None
-        return MCPServerConfig.model_validate_json(raw)
+        cfg = MCPServerConfig.model_validate_json(raw)
+        # Re-attach builtin handler from process-local registry (lost on Redis round-trip)
+        handler = _BUILTIN_HANDLER_REGISTRY.get(server_id)
+        if handler is not None:
+            cfg.builtin_handler = handler
+        return cfg
 
     async def list_servers(self, *, tenant_ctx: TenantContext) -> list[MCPServerConfig]:
         """Return all servers registered for this tenant."""

@@ -77,6 +77,10 @@ class PolicyEngine:
 
     def evaluate(self, tool_name: str, *, tenant_ctx: TenantContext) -> PolicyResult:
         for policy in self._policies:
+            # Skip policies belonging to other tenants
+            policy_tenant = getattr(policy, "tenant_id", "")
+            if policy_tenant and policy_tenant != tenant_ctx.tenant_id:
+                continue
             if not self._is_within_time_window(policy):
                 continue  # Time window not active, skip this policy
             for pattern in policy.denied_tools:

@@ -81,7 +81,8 @@ async def check_and_increment_concurrent_goals(
     """Raise PlanLimitExceededError if tenant is at concurrent goal limit.
     Atomically increments counter if OK.
 
-    Uses Redis INCR with TTL as a safety net.
+    Uses an atomic Lua script (INCR → check → DECR if over limit) to prevent
+    the TOCTOU race that exists between a non-atomic GET and INCR.
     """
     _concurrent_limits = {
         "free": 2,
@@ -92,15 +93,28 @@ async def check_and_increment_concurrent_goals(
     plan_str = tenant_ctx.plan.value if hasattr(tenant_ctx.plan, "value") else str(tenant_ctx.plan)
     limit = _concurrent_limits.get(plan_str, 20)
     key = f"concurrent_goals:{tenant_ctx.tenant_id}"
+
+    # Atomic Lua: INCR first, set TTL, then DECR and return 0 if over limit.
+    # This eliminates the race window that existed between GET and INCR.
+    _lua_script = """
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local current = tonumber(redis.call('INCR', key))
+redis.call('EXPIRE', key, ttl)
+if current > limit then
+    redis.call('DECR', key)
+    return 0
+end
+return current
+"""
     try:
-        current = int(await redis.get(key) or 0)
-        if current >= limit:
+        result = await redis.eval(_lua_script, 1, key, limit, 3600)
+        if result == 0:
             raise PlanLimitExceededError(
                 f"Concurrent goal limit ({limit}) reached for plan '{plan_str}'. "
                 f"Wait for a running goal to complete before submitting another."
             )
-        await redis.incr(key)
-        await redis.expire(key, 3600)  # Safety TTL: 1 hour
     except PlanLimitExceededError:
         raise
     except Exception:

@@ -189,5 +189,18 @@ class RedisCostController:
         except Exception:
             return 0.0
 
+    async def check_and_record(
+        self,
+        *,
+        tenant_ctx: Any,
+        goal_id: str,
+        cost_usd: float,
+        tool_name: str = "",
+    ) -> bool:
+        """Drop-in alias matching CostController.check_and_record signature."""
+        return await self.check_and_record_async(
+            tenant_ctx=tenant_ctx, goal_id=goal_id, cost_usd=cost_usd
+        )
+
     def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
         self._tenant_configs[tenant_id] = budget

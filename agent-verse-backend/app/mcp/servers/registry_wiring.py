@@ -44,7 +44,7 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
     import logging
     import os
 
-    from app.mcp.registry import MCPServerConfig
+    from app.mcp.registry import MCPRegistry, MCPServerConfig
 
     count = 0
     for cfg in get_builtin_server_configs():
@@ -61,6 +61,10 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
                     builtin_handler=cfg["handler"],
                 )
                 await registry.register(server_config, tenant_ctx=tenant_ctx)
+                # Also register handler in the process-local registry so it
+                # survives Redis serialization round-trips (builtin_handler is
+                # excluded from JSON).
+                MCPRegistry.register_builtin_handler(cfg["server_id"], cfg["handler"])
                 count += 1
             except Exception as exc:
                 logging.getLogger(__name__).warning(
