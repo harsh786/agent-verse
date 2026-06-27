@@ -165,6 +165,7 @@ class CivilizationOrchestrator:
                     execution_context={
                         "civilization_id": self._civ_id,
                         "orchestrator_goal_id": goal_id,
+                        "parent_goal_id": goal_id,  # For cost rollup
                     },
                 )
                 result_goal_id = result.get("goal_id", goal_id)
@@ -266,6 +267,13 @@ class CivilizationOrchestrator:
             payload=result,
         )
 
+        # GAP 4: Record debate metric
+        try:
+            from app.civilization.metrics import civ_debates_total
+            civ_debates_total().labels(tenant_id=self._tenant_id).inc()
+        except Exception:
+            pass
+
         return result
 
     async def tick(self) -> dict:
@@ -300,7 +308,26 @@ class CivilizationOrchestrator:
             except Exception as exc:
                 logger.warning("orchestrator_tick_retire_failed", error=str(exc))
 
-        # 3. Learning pipeline step
+        # 3. Sync reputation from eval scores (GAP 3)
+        try:
+            rep_updated = await self.sync_reputation_from_evals()
+            results["reputation_updated"] = rep_updated
+        except Exception as exc:
+            logger.warning("orchestrator_tick_reputation_failed", error=str(exc))
+
+        # 4. Record active agent count in Prometheus (GAP 4)
+        try:
+            from app.civilization.metrics import record_agents_active
+            metrics_data = await self._society.get_metrics()
+            record_agents_active(
+                tenant_id=self._tenant_id,
+                civilization_id=self._civ_id,
+                count=metrics_data.get("active_members", 0),
+            )
+        except Exception:
+            pass
+
+        # 5. Learning pipeline step
         if self._learning is not None:
             try:
                 learn_result = await self._learning.run_step()
@@ -325,3 +352,40 @@ class CivilizationOrchestrator:
                 else {}
             ),
         }
+
+    async def sync_reputation_from_evals(self) -> int:
+        """Pull recent eval scores and update member reputation via EWMA.
+
+        Called during tick. Reads evaluations joined with goals where
+        agent_id matches a civilization member.
+        """
+        if self._db is None:
+            return 0
+        updated = 0
+        try:
+            from sqlalchemy import text
+            # Get recent eval scores per agent (last 24h)
+            async with self._db() as session:
+                rows = (await session.execute(text("""
+                    SELECT g.agent_id, AVG(e.average_score) as avg_score, COUNT(*) as cnt
+                    FROM evaluations e
+                    JOIN goals g ON e.goal_id = g.id
+                    WHERE g.tenant_id = :tid
+                      AND e.created_at > NOW() - INTERVAL '24 hours'
+                      AND g.agent_id IS NOT NULL
+                    GROUP BY g.agent_id
+                """), {"tid": self._tenant_id})).fetchall()
+
+            members = await self._society.load_members()
+            member_ids = {m["agent_id"] for m in members}
+
+            for row in rows:
+                agent_id, avg_score, cnt = row
+                if agent_id in member_ids and avg_score is not None:
+                    await self._society.update_reputation(
+                        agent_id=agent_id, new_score=float(avg_score)
+                    )
+                    updated += 1
+        except Exception as exc:
+            logger.warning("orchestrator_sync_reputation_failed", error=str(exc))
+        return updated
