@@ -128,7 +128,8 @@ def test_result_processor_truncates_long_output() -> None:
     proc = ResultProcessor(max_length=100)
     raw = "x" * 500
     result = proc.process(raw)
-    assert len(result) <= 110  # some slack for truncation marker
+    # max_length=100 chars + truncation marker ("...[truncated]" = 14 chars) = 114 max
+    assert len(result) <= 115  # slack for truncation marker length
 
 
 def test_result_processor_passes_through_clean_output() -> None:

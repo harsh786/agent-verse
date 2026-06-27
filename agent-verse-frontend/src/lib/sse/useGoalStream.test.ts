@@ -57,3 +57,43 @@ describe('useGoalStream', () => {
     expect(result.current.events[0].type).toBe('goal_started');
   });
 });
+
+describe('useGoalStream API key source', () => {
+  it('reads from sessionStorage first', () => {
+    sessionStorage.setItem('av_api_key', 'session-key-123');
+    localStorage.removeItem('av_api_key');
+
+    const key = sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
+    expect(key).toBe('session-key-123');
+    sessionStorage.removeItem('av_api_key');
+  });
+
+  it('falls back to localStorage for backward compatibility', () => {
+    sessionStorage.removeItem('av_api_key');
+    localStorage.setItem('av_api_key', 'local-key-456');
+
+    const key = sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
+    expect(key).toBe('local-key-456');
+    localStorage.removeItem('av_api_key');
+  });
+
+  it('hook uses sessionStorage key when both are set', async () => {
+    sessionStorage.setItem('av_api_key', 'session-wins');
+    localStorage.setItem('av_api_key', 'local-loses');
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      body: null,
+    } as Response);
+
+    renderHook(() => useGoalStream('goal-session'));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('session-wins');
+
+    sessionStorage.removeItem('av_api_key');
+    localStorage.removeItem('av_api_key');
+  });
+});

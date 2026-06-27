@@ -310,6 +310,7 @@ def create_app(
     _embedder: Any = None
     _openai_key = os.getenv("OPENAI_API_KEY", "")
     _voyage_key = os.getenv("VOYAGE_API_KEY", "")
+    _anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     if _voyage_key:
         try:
             from app.providers.voyage_provider import VoyageProvider
@@ -343,6 +344,15 @@ def create_app(
         except Exception as _exc:
             logger.warning("local_embed_provider_failed", error=str(_exc))
     # app.state.embedder is set after app = FastAPI(...)
+
+    # Wire ModelRouter: selects optimal model per task type based on available provider
+    from app.agent.model_router import ModelRouter
+    try:
+        _mr_provider = "openai" if _openai_key else ("anthropic" if _anthropic_key else "anthropic")
+        _model_router: Any = ModelRouter(provider_name=_mr_provider)
+    except Exception as _mr_exc:
+        _model_router = None
+        logger.warning("model_router_init_failed", error=str(_mr_exc))
 
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
@@ -597,6 +607,11 @@ def create_app(
                 if _rpa_ss is not None:
                     _rpa_ss._redis = redis_for_runtime
 
+                # SemanticCache: wire Redis so cache is shared across all workers.
+                _sem_cache = getattr(app.state, "semantic_cache", None)
+                if _sem_cache is not None and hasattr(_sem_cache, "_redis"):
+                    _sem_cache._redis = redis_for_runtime
+
             try:
                 yield
             finally:
@@ -628,6 +643,7 @@ def create_app(
     app.state.manage_pools = manage_pools
     app.state.health = registry
     app.state.embedder = _embedder
+    app.state.model_router = _model_router
     # Core services
     app.state.tenant_service = _tenant_svc
     app.state.goal_service = _goal_svc

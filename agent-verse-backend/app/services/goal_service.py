@@ -54,6 +54,7 @@ _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELL
 # TTL for completed/failed/cancelled goals in the in-memory cache.
 # They are safe to evict because they are already persisted in the DB.
 _COMPLETED_GOAL_TTL_SECONDS = 3600  # 1 hour
+_EVICTION_INTERVAL_SECONDS = 60  # evict at most once every 60 seconds
 
 
 def _monotonic() -> float:
@@ -110,16 +111,16 @@ def _resolve_checkpointer(app_state: Any) -> Any:
 
 def _make_agent_loop() -> Any:
     """Construct an AgentGraph backed by FakeProvider (no real LLM required)."""
-    try:
-        from app.agent.graph import AgentGraph
-        from app.intelligence.guardrails import GuardrailChecker
-        from app.reliability.dedup import DeduplicationCache
-        from app.reliability.result_processor import ResultProcessor
-        from app.reliability.rollback import RollbackEngine
+    from app.agent.graph import AgentGraph
+    from app.intelligence.guardrails import GuardrailChecker
+    from app.reliability.dedup import DeduplicationCache
+    from app.reliability.result_processor import ResultProcessor
+    from app.reliability.rollback import RollbackEngine
 
-        planner = FakeProvider(responses=['{"steps": ["Complete the requested task"]}'])
-        executor = FakeProvider(responses=["Task executed successfully"])
-        verifier = FakeProvider(responses=['{"success": true, "reason": "Goal achieved"}'])
+    planner = FakeProvider(responses=['{"steps": ["Complete the requested task"]}'])
+    executor = FakeProvider(responses=["Task executed successfully"])
+    verifier = FakeProvider(responses=['{"success": true, "reason": "Goal achieved"}'])
+    try:
         return AgentGraph(
             planner=planner,
             executor=executor,
@@ -129,12 +130,16 @@ def _make_agent_loop() -> Any:
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
         )
-    except Exception:
-        # Fallback to while-loop implementation if AgentGraph fails to construct
-        planner = FakeProvider(responses=['{"steps": ["Complete the requested task"]}'])
-        executor = FakeProvider(responses=["Task executed successfully"])
-        verifier = FakeProvider(responses=['{"success": true, "reason": "Goal achieved"}'])
-        return AgentLoop(planner=planner, executor=executor, verifier=verifier)
+    except Exception as exc:
+        _svc_logger.error(
+            "agentgraph_construction_failed",
+            error=str(exc),
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Failed to construct AgentGraph: {exc}. "
+            "Check provider configuration (ANTHROPIC_API_KEY or OPENAI_API_KEY)."
+        ) from exc
 
 
 def _fake_provider() -> Any:
@@ -184,6 +189,8 @@ class GoalService:
         self._eval_scores: dict[str, Any] = {}
         # Per-tenant list of completed goal durations (seconds) for latency metrics.
         self._goal_durations: dict[str, list[float]] = {}
+        # Time-based eviction: track last eviction timestamp.
+        self._last_eviction_time: float = time.monotonic()
 
     def _track_db_task(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
@@ -1078,8 +1085,10 @@ class GoalService:
             )
             self._goals[goal_id] = record
 
-            # Every 500 submissions, evict stale terminal goals to prevent OOM.
-            if len(self._goals) % 500 == 0 and len(self._goals) > 0:
+            # Time-based eviction: evict stale terminal goals to prevent OOM.
+            now = time.monotonic()
+            if now - self._last_eviction_time > _EVICTION_INTERVAL_SECONDS:
+                self._last_eviction_time = now
                 asyncio.create_task(self._evict_async())
 
             # Fix 6: record that a new goal has been started.
@@ -1725,11 +1734,10 @@ class GoalService:
                 row = result.scalar_one_or_none()
             if row is None:
                 return None
-            status = (
-                GoalStatus(row.status)
-                if row.status in GoalStatus._value2member_map_
-                else GoalStatus.PLANNING
-            )
+            try:
+                status = GoalStatus(row.status)
+            except ValueError:
+                status = GoalStatus.PLANNING
             record = GoalRecord(
                 goal_id=row.id,
                 goal_text=row.goal_text,
@@ -1862,14 +1870,14 @@ class GoalService:
                     goals = result.scalars().all()
                     for g in goals:
                         if g.id not in self._goals:
+                            try:
+                                _g_status = GoalStatus(g.status)
+                            except ValueError:
+                                _g_status = GoalStatus.PLANNING
                             record = GoalRecord(
                                 goal_id=g.id,
                                 goal_text=g.goal_text,
-                                status=(
-                                    GoalStatus(g.status)
-                                    if g.status in GoalStatus._value2member_map_
-                                    else GoalStatus.PLANNING
-                                ),
+                                status=_g_status,
                                 tenant_id=g.tenant_id,
                                 priority=g.priority,
                                 dry_run=g.dry_run,

@@ -6,11 +6,11 @@ Provides web automation capabilities when no API is available:
 - Click elements, type text, scroll
 - Extract text content
 
-Security: Runs in an isolated context with:
-- Network limited to target domain only
-- No access to local filesystem
-- Automatic cleanup after each session
-- Timeout enforcement (default 30s per action)
+Note: Network is NOT restricted — RPA tasks have full internet access.
+Callers are responsible for enforcing domain-level access policies at the
+application layer if network isolation is required.
+Automatic cleanup after each session and timeout enforcement (default 30s
+per action) are in place.
 """
 from __future__ import annotations
 

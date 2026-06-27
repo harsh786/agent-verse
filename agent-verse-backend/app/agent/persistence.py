@@ -124,9 +124,9 @@ class GoalPersistenceEngine:
         """Exponential backoff with jitter: base * 2^attempt ± 20% jitter."""
         raw = self._config.base_backoff_seconds * (2 ** (attempt_number - 1))
         capped = min(raw, self._config.max_backoff_seconds)
-        # Add ±20% jitter to avoid thundering herd
+        # Add 0–20% additive jitter to avoid thundering herd
         import random
-        jitter = capped * random.uniform(-0.2, 0.2)
+        jitter = capped * random.uniform(0, 0.2)
         return max(1.0, capped + jitter)
 
     def _build_enriched_goal(

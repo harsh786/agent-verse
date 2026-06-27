@@ -216,17 +216,30 @@ async def smart_context_fetch(
                 if allowed:
                     allowed_collections = list(allowed)
 
+        # Enumerate collections via the public API (works with DB-loaded knowledge)
+        try:
+            collections = knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+            collection_ids = [c.collection_id for c in collections]
+        except Exception:
+            collection_ids = []
+
         # Search collections for this tenant (filtered if agent has bindings)
         all_results = []
-        for (tid, cid), _ in knowledge_store._data.items():
-            if tid != tenant_ctx.tenant_id:
+        query_text = step or goal
+        for collection_id in collection_ids[:3]:  # cap at 3 collections
+            if allowed_collections is not None and collection_id not in allowed_collections:
                 continue
-            if allowed_collections is not None and cid not in allowed_collections:
+            try:
+                results = await knowledge_store.hybrid_search_db(
+                    query_text,
+                    query_embedding,
+                    collection_id,
+                    tenant_ctx,
+                    top_k=3,
+                )
+                all_results.extend(results)
+            except Exception:
                 continue
-            results = knowledge_store.hybrid_search(
-                step, query_embedding, cid, tenant_ctx, top_k=3
-            )
-            all_results.extend(results)
 
         if not all_results:
             return ""

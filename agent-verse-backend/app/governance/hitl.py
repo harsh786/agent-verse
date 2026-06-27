@@ -75,31 +75,29 @@ class HITLGateway:
         if self._db_session_factory is not None:
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
-                        self._db_persist_approval_request(req, tenant_ctx.tenant_id)
-                    )
-            except Exception:
-                pass
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+                )
+            except RuntimeError:
+                pass  # No running loop (shouldn't happen in async context)
 
         # Dispatch notification (fire and forget)
         if self._notification_service is not None:
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
-                        self._notification_service.notify_approval_required(
-                            request_id=req.request_id,
-                            goal_id=goal_id,
-                            action=action,
-                            risk_level=risk_level,
-                            tenant_id=tenant_ctx.tenant_id,
-                        )
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._notification_service.notify_approval_required(
+                        request_id=req.request_id,
+                        goal_id=goal_id,
+                        action=action,
+                        risk_level=risk_level,
+                        tenant_id=tenant_ctx.tenant_id,
                     )
-            except Exception:
-                pass
+                )
+            except RuntimeError:
+                pass  # No running loop (shouldn't happen in async context)
 
         return req.request_id
 

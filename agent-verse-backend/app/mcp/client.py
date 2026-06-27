@@ -200,13 +200,9 @@ class MCPClient:
         """Discover all tools across all registered servers for this tenant."""
         all_tools: list[ToolDefinition] = []
         try:
-            # Access internal Redis index to enumerate server IDs for this tenant.
-            server_ids: set[str] = await self._registry._redis.smembers(
-                self._registry._index_key(tenant_ctx.tenant_id)
-            )
-            for sid in server_ids:
-                # Real Redis returns bytes; the in-memory stub returns str.
-                sid_str = sid.decode() if isinstance(sid, bytes) else str(sid)
+            # Use public API instead of accessing private _redis directly.
+            records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
+            for sid_str, _ in records:
                 tools = await self.discover_tools(server_id=sid_str, tenant_ctx=tenant_ctx)
                 all_tools.extend(tools)
         except Exception as exc:

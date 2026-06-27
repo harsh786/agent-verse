@@ -30,7 +30,9 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   useEffect(() => {
     if (!goalId) return;
 
-    const apiKey = localStorage.getItem("av_api_key") ?? "";
+    const apiKey = sessionStorage.getItem("av_api_key")
+      ?? localStorage.getItem("av_api_key")
+      ?? "";
     const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
     const url = `${API_BASE_URL}/goals/${goalId}/stream`;
 

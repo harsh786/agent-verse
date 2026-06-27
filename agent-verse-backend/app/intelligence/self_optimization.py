@@ -142,8 +142,7 @@ class SelfOptimizer:
 
             # Register as a prompt variant for A/B testing
             try:
-                from app.intelligence.prompt_optimizer import PromptVariant
-                from app.intelligence import prompt_optimizer as _po
+                from app.intelligence.prompt_optimizer import PromptVariant, _default_optimizer
 
                 variant = PromptVariant(
                     variant_id=suggestion.suggestion_id,
@@ -153,7 +152,13 @@ class SelfOptimizer:
                         "planner" if "planner" in change_type else "executor"
                     ),
                 )
-                _po._VARIANTS[variant.variant_id] = variant
+                _default_optimizer.register_variant(
+                    prompt_key=variant.prompt_key,
+                    name=variant.name,
+                    prompt_text=variant.prompt_text,
+                    is_control=False,
+                    tenant_id=tenant_ctx.tenant_id,
+                )
             except Exception:
                 pass
 

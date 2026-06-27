@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { governanceApi, ApprovalRequest } from "@/lib/api/client";
+import { useAuthStore } from "../../stores/auth";
 import { CheckCircle, XCircle, Loader2, Inbox } from "lucide-react";
 
 // ── ApprovalsPage ─────────────────────────────────────────────────────────────
@@ -9,6 +10,8 @@ export function ApprovalsPage() {
   const qc = useQueryClient();
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [actionPending, setActionPending] = useState<string | null>(null);
+  const { tenantId } = useAuthStore();
+  const approverId = tenantId ? `user:${tenantId.slice(0, 12)}` : "ui-user";
 
   const {
     data: approvals = [],
@@ -24,7 +27,7 @@ export function ApprovalsPage() {
 
   const approveMutation = useMutation({
     mutationFn: ({ requestId, note }: { requestId: string; note: string }) =>
-      governanceApi.approve(requestId, "ui-user", note),
+      governanceApi.approve(requestId, approverId, note),
     onMutate: ({ requestId }) => setActionPending(requestId),
     onSettled: () => {
       setActionPending(null);
@@ -34,7 +37,7 @@ export function ApprovalsPage() {
 
   const rejectMutation = useMutation({
     mutationFn: ({ requestId, note }: { requestId: string; note: string }) =>
-      governanceApi.reject(requestId, "ui-user", note),
+      governanceApi.reject(requestId, approverId, note),
     onMutate: ({ requestId }) => setActionPending(requestId),
     onSettled: () => {
       setActionPending(null);

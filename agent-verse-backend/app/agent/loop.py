@@ -243,7 +243,7 @@ class AgentLoop:
         # ── Step 5: Circuit breaker ("llm" key) ──────────────────────────────
         if self._circuit_breakers is not None:
             breaker = self._circuit_breakers.get("llm")
-            if breaker is not None and not breaker.is_closed():
+            if breaker is not None and not breaker.can_call():
                 return "Circuit open, step skipped."
 
         # ── Step 6: Governance check ─────────────────────────────────────────
