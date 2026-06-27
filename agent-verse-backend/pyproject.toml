@@ -49,6 +49,7 @@ dependencies = [
     "aiosmtplib>=3.0",
     # LangGraph Redis checkpointer for persistent agent state across replicas
     "langgraph-checkpoint-redis>=0.0.1",
+    "boto3>=1.40.61",
 ]
 
 [project.scripts]

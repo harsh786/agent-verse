@@ -18,6 +18,7 @@ dependencies = [
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },
+    { name = "boto3" },
     { name = "celery", extra = ["redis"] },
     { name = "celery-redbeat" },
     { name = "croniter" },
@@ -88,6 +89,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "anthropic", specifier = ">=0.50.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "boto3", specifier = ">=1.40.61" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4.0" },
     { name = "celery-redbeat", specifier = ">=2.3.0" },
     { name = "croniter", specifier = ">=1.4.0" },
@@ -139,6 +141,7 @@ name = "agentverse-sdk"
 version = "0.1.0"
 source = { directory = "../agent-verse-sdk-python" }
 dependencies = [
+    { name = "click" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
@@ -153,6 +156,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "pydantic", specifier = ">=2.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
