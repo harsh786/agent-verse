@@ -1,0 +1,47 @@
+name: 'AgentVerse Run Goal'
+description: 'Submit and wait for an AgentVerse goal from GitHub Actions'
+author: 'AgentVerse'
+
+branding:
+  icon: 'zap'
+  color: 'purple'
+
+inputs:
+  api-key:
+    description: 'AgentVerse API key'
+    required: true
+  goal:
+    description: 'Goal text to execute'
+    required: true
+  base-url:
+    description: 'AgentVerse API base URL'
+    required: false
+    default: 'http://localhost:8000'
+  wait-timeout:
+    description: 'Seconds to wait for goal completion'
+    required: false
+    default: '300'
+  fail-on-error:
+    description: 'Fail the workflow step if the goal fails'
+    required: false
+    default: 'true'
+
+outputs:
+  goal-id:
+    description: 'The submitted goal ID'
+  status:
+    description: 'Final goal status'
+  result:
+    description: 'Goal result text (truncated to 2000 chars)'
+  cost-usd:
+    description: 'LLM cost incurred by the goal'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    AGENTVERSE_API_KEY: ${{ inputs.api-key }}
+    AGENTVERSE_BASE_URL: ${{ inputs.base-url }}
+    AGENTVERSE_GOAL: ${{ inputs.goal }}
+    AGENTVERSE_TIMEOUT: ${{ inputs.wait-timeout }}
+    AGENTVERSE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}

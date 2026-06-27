@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentverse-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.backend.env.ENVIRONMENT | quote }}
+  LOG_LEVEL: {{ .Values.backend.env.LOG_LEVEL | quote }}
+  DEFAULT_LLM_PROVIDER: {{ .Values.backend.env.DEFAULT_LLM_PROVIDER | quote }}
+  CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otlpEndpoint | quote }}
+  METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}

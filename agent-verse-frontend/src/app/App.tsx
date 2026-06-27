@@ -23,6 +23,9 @@ import { EvalPage } from "@/features/eval/EvalPage";
 import { MarketplacePage } from "@/features/marketplace/MarketplacePage";
 import { EnterprisePage } from "@/features/enterprise/EnterprisePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { WorkflowBuilderPage } from "@/features/workflow-builder/WorkflowBuilderPage";
+import { PlaygroundPage } from "@/features/playground/PlaygroundPage";
+import { AnalyticsDashboardPage } from "@/features/analytics/AnalyticsDashboardPage";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -107,6 +110,9 @@ export default function App() {
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="enterprise" element={<EnterprisePage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="workflow-builder" element={<WorkflowBuilderPage />} />
+        <Route path="playground" element={<PlaygroundPage />} />
+        <Route path="analytics" element={<AnalyticsDashboardPage />} />
       </Route>
     </Routes>
   );

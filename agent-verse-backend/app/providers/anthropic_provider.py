@@ -126,6 +126,31 @@ class AnthropicProvider:
             stop_reason=response.stop_reason or "end_turn",
         )
 
+    async def stream_complete(self, request: CompletionRequest):
+        """Stream completion tokens one by one via the Anthropic streaming API."""
+        model = request.model or self._default_model
+        messages = []
+        for m in request.messages:
+            if m.role == "system":
+                continue
+            messages.append({"role": m.role, "content": m.content})
+        system_prompt = request.system or next(
+            (m.content for m in request.messages if m.role == "system"), None
+        )
+        try:
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+            }
+            if system_prompt:
+                kwargs["system"] = system_prompt
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except Exception as exc:
+            yield f"[stream error: {exc}]"
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         # Anthropic does not currently offer an embedding API.
         # This raises to ensure callers use a dedicated embedder (Voyage AI, etc.)

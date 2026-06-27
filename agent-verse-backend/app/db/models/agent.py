@@ -33,6 +33,7 @@ class Agent(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     goal_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     autonomy_mode: Mapped[str] = mapped_column(
         String(50), nullable=False, default="bounded-autonomous"
     )

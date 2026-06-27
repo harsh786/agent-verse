@@ -7,6 +7,9 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
+/** Exported alias for use in feature pages. */
+export const API_BASE = API_BASE_URL;
+
 function getApiKey(): string {
   return localStorage.getItem("av_api_key") ?? "";
 }

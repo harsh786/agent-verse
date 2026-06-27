@@ -3,7 +3,8 @@ import { clsx } from "clsx";
 import {
   LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen,
   Shield, Users, Activity, BarChart3, ShoppingBag, Building,
-  Settings, ChevronLeft, Zap, CheckSquare, DollarSign
+  Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
+  GitBranch, FlaskConical, BarChart2
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -64,11 +65,14 @@ export function Sidebar() {
     {
       heading: "Enterprise",
       items: [
-        { to: "/marketplace",       icon: ShoppingBag, label: "Marketplace"      },
-        { to: "/observability",     icon: Activity,    label: "Observability"    },
-        { to: "/observability/cost", icon: DollarSign, label: "Cost Dashboard"   },
-        { to: "/eval",              icon: BarChart3,   label: "Eval"             },
-        { to: "/enterprise",        icon: Building,    label: "Enterprise"       },
+        { to: "/marketplace",         icon: ShoppingBag, label: "Marketplace"       },
+        { to: "/observability",        icon: Activity,    label: "Observability"     },
+        { to: "/observability/cost",   icon: DollarSign,  label: "Cost Dashboard"    },
+        { to: "/eval",                 icon: BarChart3,   label: "Eval"              },
+        { to: "/enterprise",           icon: Building,    label: "Enterprise"        },
+        { to: "/analytics",            icon: BarChart2,   label: "Analytics"         },
+        { to: "/workflow-builder",     icon: GitBranch,   label: "Workflow Builder"  },
+        { to: "/playground",           icon: FlaskConical, label: "Playground"       },
       ],
     },
   ];

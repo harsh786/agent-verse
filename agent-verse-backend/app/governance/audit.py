@@ -100,13 +100,14 @@ class AuditLog:
         tenant_ctx: TenantContext,
         goal_id: str | None = None,
         tool_name: str | None = None,
+        limit: int = 1000,
     ) -> list[AuditEvent]:
         events = self._log.get(tenant_ctx.tenant_id, [])
         if goal_id is not None:
             events = [e for e in events if e.goal_id == goal_id]
         if tool_name is not None:
             events = [e for e in events if e.tool_name == tool_name]
-        return list(events)
+        return list(events)[:limit]
 
     async def sync_from_db(self, *, tenant_id: str | None = None) -> int:
         """Load audit entries from PostgreSQL into memory.

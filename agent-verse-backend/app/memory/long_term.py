@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from app.tenancy.context import TenantContext
 
@@ -91,3 +92,47 @@ class LongTermMemoryStore:
         )
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
         return [mid]
+
+    async def store_async(
+        self, *, memory: "LongTermMemory", tenant_ctx: Any, db: Any = None
+    ) -> str:
+        """Async store — persists to DB if available, always updates in-memory."""
+        mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
+        if db is not None:
+            try:
+                import json as _json
+                from sqlalchemy import text
+                async with db() as session, session.begin():
+                    await session.execute(
+                        text(
+                            """INSERT INTO long_term_memory
+                                (id, tenant_id, content, memory_type, confidence,
+                                 source_goal_id, tags)
+                                VALUES (:id, :tid, :content, :mtype, :conf, :sgid, :tags)
+                                ON CONFLICT DO NOTHING"""
+                        ),
+                        {
+                            "id": mid,
+                            "tid": tenant_ctx.tenant_id,
+                            "content": memory.content,
+                            "mtype": memory.memory_type,
+                            "conf": getattr(memory, "confidence", 1.0),
+                            "sgid": getattr(memory, "source_goal_id", ""),
+                            "tags": _json.dumps(getattr(memory, "tags", [])),
+                        },
+                    )
+            except Exception as exc:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("ltm_db_write_failed", error=str(exc))
+        return mid
+
+    async def recall_async(
+        self,
+        query: str,
+        tenant_ctx: Any,
+        top_k: int = 5,
+        db: Any = None,
+    ) -> list:
+        """Async recall — falls back to in-memory keyword search."""
+        # DB semantic search (pgvector) is not implemented yet; use in-memory.
+        return self.recall(query=query, tenant_ctx=tenant_ctx, top_k=top_k)

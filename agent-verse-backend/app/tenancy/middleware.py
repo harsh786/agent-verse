@@ -36,6 +36,7 @@ _BYPASS_PREFIXES = (
     "/auth/callback",   # SSO OAuth2 callback
     "/auth/config",     # frontend SSO config discovery
     "/auth/token",      # authorization code exchange
+    "/integrations/",   # integration webhooks use their own auth (Slack sig, Zapier secret)
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]

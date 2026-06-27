@@ -9,11 +9,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.core.errors import ConflictError, NotFoundError, PlatformError
 from app.providers.vault import get_vault
 from app.tenancy.context import TenantContext
+from app.tenancy.rbac import VALID_ROLES
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -247,3 +248,249 @@ async def set_llm_config(
         },
         status_code=200,
     )
+
+
+# ── RBAC: Role management ─────────────────────────────────────────────────────
+
+class CreateRoleRequest(BaseModel):
+    user_id: str
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}, got {v!r}")
+        return v
+
+
+@router.get("/me/roles")
+async def list_roles(
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> list[dict]:
+    """List all user role assignments for this tenant."""
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import select
+
+        from app.db.models.rbac import UserRole
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session:
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                result = await session.execute(
+                    select(UserRole).where(UserRole.tenant_id == ctx.tenant_id)
+                )
+                rows = result.scalars().all()
+        return [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "role": r.role,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/me/roles", status_code=201)
+async def create_role(
+    request: Request,
+    body: CreateRoleRequest,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> dict:
+    """Assign a role to a user within this tenant."""
+    import uuid
+
+    db = getattr(request.app.state, "db_session_factory", None)
+    role_id = uuid.uuid4().hex
+    if db is None:
+        return {
+            "id": role_id,
+            "user_id": body.user_id,
+            "role": body.role,
+            "tenant_id": ctx.tenant_id,
+        }
+    try:
+        from app.db.models.rbac import UserRole
+        from app.db.rls import sqlalchemy_rls_context
+
+        row = UserRole(
+            id=role_id,
+            tenant_id=ctx.tenant_id,
+            user_id=body.user_id,
+            role=body.role,
+        )
+        async with db() as session, session.begin():
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                session.add(row)
+        return {
+            "id": role_id,
+            "user_id": body.user_id,
+            "role": body.role,
+            "tenant_id": ctx.tenant_id,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/me/roles/{role_id}", status_code=204)
+async def delete_role(
+    request: Request,
+    role_id: str,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> None:
+    """Remove a role assignment."""
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return
+    try:
+        from sqlalchemy import select
+
+        from app.db.models.rbac import UserRole
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, session.begin():
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                result = await session.execute(
+                    select(UserRole).where(
+                        UserRole.id == role_id,
+                        UserRole.tenant_id == ctx.tenant_id,
+                    )
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    raise HTTPException(
+                        status_code=404, detail="Role assignment not found"
+                    )
+                await session.delete(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── IP Allowlist management ───────────────────────────────────────────────────
+
+class CreateIPAllowlistRequest(BaseModel):
+    cidr: str
+    description: str = ""
+
+    @field_validator("cidr")
+    @classmethod
+    def validate_cidr(cls, v: str) -> str:
+        import ipaddress
+
+        try:
+            ipaddress.ip_network(v, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"Invalid CIDR: {v!r}") from exc
+        return v
+
+
+@router.get("/me/ip-allowlist")
+async def list_ip_allowlist(
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> list[dict]:
+    """List all IP allowlist entries for this tenant."""
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import select
+
+        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session:
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                result = await session.execute(
+                    select(IPAllowlistEntry).where(
+                        IPAllowlistEntry.tenant_id == ctx.tenant_id
+                    )
+                )
+                rows = result.scalars().all()
+        return [
+            {
+                "id": r.id,
+                "cidr": r.cidr,
+                "description": r.description,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/me/ip-allowlist", status_code=201)
+async def create_ip_allowlist_entry(
+    request: Request,
+    body: CreateIPAllowlistRequest,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> dict:
+    """Add a CIDR range to this tenant's IP allowlist."""
+    import uuid
+
+    db = getattr(request.app.state, "db_session_factory", None)
+    entry_id = uuid.uuid4().hex
+    if db is None:
+        return {"id": entry_id, "cidr": body.cidr, "description": body.description}
+    try:
+        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.rls import sqlalchemy_rls_context
+
+        row = IPAllowlistEntry(
+            id=entry_id,
+            tenant_id=ctx.tenant_id,
+            cidr=body.cidr,
+            description=body.description,
+        )
+        async with db() as session, session.begin():
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                session.add(row)
+        return {"id": entry_id, "cidr": body.cidr, "description": body.description}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/me/ip-allowlist/{entry_id}", status_code=204)
+async def delete_ip_allowlist_entry(
+    request: Request,
+    entry_id: str,
+    ctx: TenantContext = Depends(_require_tenant),
+) -> None:
+    """Remove a CIDR entry from this tenant's IP allowlist."""
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return
+    try:
+        from sqlalchemy import select
+
+        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, session.begin():
+            async with sqlalchemy_rls_context(session, ctx.tenant_id):
+                result = await session.execute(
+                    select(IPAllowlistEntry).where(
+                        IPAllowlistEntry.id == entry_id,
+                        IPAllowlistEntry.tenant_id == ctx.tenant_id,
+                    )
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    raise HTTPException(
+                        status_code=404, detail="Allowlist entry not found"
+                    )
+                await session.delete(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

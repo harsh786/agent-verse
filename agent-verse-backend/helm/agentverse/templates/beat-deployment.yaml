@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-beat
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-beat
+    component: beat
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.beat.replicas }}
+  selector:
+    matchLabels:
+      app: agentverse-beat
+  template:
+    metadata:
+      labels:
+        app: agentverse-beat
+        component: beat
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: beat
+          image: {{ include "agentverse.workerImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.scaling.celery_app
+            - beat
+            - --scheduler=redbeat.RedBeatScheduler
+            - --loglevel=info
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: redis-url
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: database-url
+          resources:
+            {{- toYaml .Values.beat.resources | nindent 12 }}

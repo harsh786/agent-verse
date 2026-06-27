@@ -1,10 +1,14 @@
+# RedBeat HA Beat: allows 2 replicas safely — only one fires each task.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentverse-beat
   namespace: agentverse
+  labels:
+    app: agentverse-beat
+    component: beat
 spec:
-  replicas: 1  # MUST be 1 — only one scheduler
+  replicas: 2   # HA with RedBeat distributed lock (was 1)
   selector:
     matchLabels:
       app: agentverse-beat
@@ -13,30 +17,35 @@ spec:
       labels:
         app: agentverse-beat
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: beat
-          image: agentverse-backend:latest
+          image: ghcr.io/agentverse/backend:latest
           command:
-            - "celery"
-            - "-A"
-            - "app.scaling.celery_app"
-            - "beat"
-            - "--loglevel=info"
-          envFrom:
-            - configMapRef:
-                name: agentverse-config
-            - secretRef:
-                name: agentverse-secrets
+            - celery
+            - -A
+            - app.scaling.celery_app
+            - beat
+            - --scheduler=redbeat.RedBeatScheduler
+            - --loglevel=info
           env:
-            - name: AGENTVERSE_DB_SCHEDULE_DISCOVERY
-              value: "true"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: redis-url
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: database-url
           resources:
             requests:
-              memory: "128Mi"
-              cpu: "100m"
+              cpu: 50m
+              memory: 128Mi
             limits:
-              memory: "256Mi"
-              cpu: "250m"
+              cpu: 200m
+              memory: 256Mi
           livenessProbe:
             exec:
               command:
@@ -44,6 +53,6 @@ spec:
                 - -c
                 - "pgrep -f 'celery.*beat' > /dev/null"
             initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 5
+            periodSeconds: 60
+            timeoutSeconds: 10
             failureThreshold: 3

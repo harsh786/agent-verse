@@ -347,5 +347,89 @@ def manifest_cmd(
         raise typer.Exit(1)
 
 
+@app.command(name="dev")
+def dev_server(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
+    reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable hot-reload"),
+) -> None:
+    """Start a zero-config local dev server with FakeProvider (no API keys needed).
+
+    Uses:
+      - FakeProvider for LLM (deterministic, free)
+      - SQLite at /tmp/agentverse-dev.db
+      - In-memory Redis stub via fakeredis
+      - Auto hot-reload on code changes
+    """
+    import subprocess
+    import sys
+
+    typer.echo("\n  AgentVerse Dev Server")
+    typer.echo("  " + "-" * 43)
+    typer.echo(f"  URL:       http://localhost:{port}")
+    typer.echo("  Docs:      http://localhost:{}/docs".format(port))
+    typer.echo("  LLM:       FakeProvider (no API key required)")
+    typer.echo("  Database:  SQLite  /tmp/agentverse-dev.db")
+    typer.echo("  Cache:     fakeredis (in-memory)")
+    typer.echo(f"  Reload:    {'enabled' if reload else 'disabled'}")
+    typer.echo("  " + "-" * 43 + "\n")
+
+    env = {
+        **os.environ,
+        "ENVIRONMENT": "development",
+        "DATABASE_URL": "sqlite+aiosqlite:////tmp/agentverse-dev.db",
+        "REDIS_URL": "fakeredis://",
+        "DEFAULT_LLM_PROVIDER": "fake",
+        "DEBUG": "true",
+    }
+
+    cmd = [
+        sys.executable, "-m", "uvicorn",
+        "app.main:create_app",
+        "--factory",
+        f"--port={port}",
+        "--log-level=debug",
+    ]
+    if reload:
+        cmd.append("--reload")
+
+    try:
+        subprocess.run(cmd, env=env, check=True)
+    except KeyboardInterrupt:
+        typer.echo("\n  Dev server stopped.")
+    except subprocess.CalledProcessError as exc:
+        typer.echo(f"\n  Server exited with code {exc.returncode}", err=True)
+        raise typer.Exit(exc.returncode)
+
+
+@app.command(name="test")
+def run_tests(
+    test_file: str = typer.Argument(..., help="Path to a Python test file using AgentTestHarness"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run agent goal tests using the AgentTestHarness framework.
+
+    Example test file::
+
+        # my_agent_test.py
+        from app.testing.harness import AgentTestHarness
+
+        async def test_summarise_readme():
+            h = AgentTestHarness()
+            h.mock_tool("read_file", returns={"content": "Hello world"})
+            await h.run_goal("Summarise README.md")
+            h.assert_goal_completed()
+            h.assert_tool_called("read_file")
+    """
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-m", "pytest", test_file, "-p", "no:warnings"]
+    if verbose:
+        cmd.append("-v")
+
+    result = subprocess.run(cmd, check=False)
+    raise typer.Exit(result.returncode)
+
+
 if __name__ == "__main__":
     app()
