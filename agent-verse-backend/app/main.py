@@ -54,6 +54,7 @@ from app.api.connectors import router as connectors_router
 from app.api.enterprise import (
     intelligence_router,
     marketplace_router,
+    compliance_router,
 )
 from app.api.enterprise import (
     router as enterprise_router,
@@ -820,6 +821,8 @@ def create_app(
     app.include_router(enterprise_router)
     app.include_router(marketplace_router)
     app.include_router(intelligence_router)
+    # P2.10: Async GDPR export + consent management
+    app.include_router(compliance_router)
     # Perception
     app.include_router(perception_router)
     # Integrations (Slack, Zapier, email triggers)
