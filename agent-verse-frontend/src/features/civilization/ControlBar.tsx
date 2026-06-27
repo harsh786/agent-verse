@@ -6,11 +6,15 @@ interface Props {
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
   onSubmitGoal: (goal: string) => Promise<void>;
+  onAdjustBudget?: (newBudget: number) => Promise<void>;
+  currentBudget?: number;
 }
 
-export function ControlBar({ status, onPause, onResume, onSubmitGoal }: Props) {
+export function ControlBar({ status, onPause, onResume, onSubmitGoal, onAdjustBudget }: Props) {
   const [goal, setGoal] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showBudget, setShowBudget] = useState(false);
+  const [budgetValue, setBudgetValue] = useState('');
 
   const handleSubmit = async () => {
     if (!goal.trim()) return;
@@ -24,7 +28,7 @@ export function ControlBar({ status, onPause, onResume, onSubmitGoal }: Props) {
   };
 
   return (
-    <div className="flex items-center gap-3 p-3 bg-gray-50 border-b">
+    <div className="flex items-center gap-3 p-3 bg-gray-50 border-b flex-wrap">
       {/* Goal input */}
       <input
         value={goal}
@@ -39,7 +43,7 @@ export function ControlBar({ status, onPause, onResume, onSubmitGoal }: Props) {
         disabled={submitting || !goal.trim() || status === 'paused'}
         className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-40"
       >
-        {submitting ? 'Submitting...' : '\u25b6 Run'}
+        {submitting ? 'Submitting...' : '▶ Run'}
       </button>
 
       {/* Pause / Resume */}
@@ -48,15 +52,51 @@ export function ControlBar({ status, onPause, onResume, onSubmitGoal }: Props) {
           onClick={() => void onResume()}
           className="px-3 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700 font-medium"
         >
-          &#9654; Resume
+          ▶ Resume
         </button>
       ) : (
         <button
           onClick={() => void onPause()}
           className="px-3 py-1.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 font-medium"
         >
-          &#9646;&#9646; Pause Civilization
+          ⏸ Pause Civilization
         </button>
+      )}
+
+      {/* Budget adjustment */}
+      {onAdjustBudget && (
+        <>
+          <button
+            onClick={() => setShowBudget(!showBudget)}
+            className="px-2 py-1.5 bg-gray-100 text-gray-600 text-xs rounded hover:bg-gray-200"
+            title="Adjust budget"
+          >
+            💰
+          </button>
+          {showBudget && (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                value={budgetValue}
+                onChange={e => setBudgetValue(e.target.value)}
+                placeholder="New budget $"
+                className="w-24 px-2 py-1 text-xs border rounded"
+              />
+              <button
+                onClick={async () => {
+                  if (onAdjustBudget && budgetValue) {
+                    await onAdjustBudget(parseFloat(budgetValue));
+                    setShowBudget(false);
+                    setBudgetValue('');
+                  }
+                }}
+                className="px-2 py-1 bg-blue-600 text-white text-xs rounded"
+              >
+                Set
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Status indicator */}
