@@ -37,7 +37,9 @@ class ToolContext:
         """Find a tool by unqualified name or by Server.tool_name."""
         if "." not in name:
             matches = [tool for tool in self.tools if tool.name == name]
-            return matches[0] if len(matches) == 1 else None
+            if matches:
+                return matches[0]  # Return first registered (most recently discovered)
+            return None
 
         server_name, tool_name = name.split(".", 1)
         server_name_lower = server_name.lower()

@@ -47,7 +47,8 @@ def test_tool_context_finds_unique_tools_by_name_or_server_qualified_name() -> N
     )
     context = ToolContext(connectors=[], tools=[github_tool, slack_tool])
 
-    assert context.find_tool("search") is None
+    # H-5 fix: duplicate names now return the FIRST registered tool, not None
+    assert context.find_tool("search") is github_tool
     assert context.find_tool("Slack.search") is slack_tool
     assert context.find_tool("slack.search") is slack_tool
     assert context.find_tool("missing") is None

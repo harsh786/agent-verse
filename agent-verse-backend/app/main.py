@@ -95,6 +95,7 @@ from app.intelligence.self_optimization import SelfOptimizer
 from app.mcp.client import MCPClient
 from app.mcp.oauth import OAuthFlowManager
 from app.mcp.registry import MCPRegistry
+from app.memory.execution import ExecutionMemory
 from app.memory.long_term import LongTermMemoryStore
 from app.observability.health import HealthCheck, HealthRegistry
 from app.observability.logging import configure_logging, get_logger
@@ -304,6 +305,8 @@ def create_app(
     _marketplace = Marketplace(agent_store=_agent_store)
     _self_optimizer = SelfOptimizer()
     _notification_service = NotificationService()
+    # H-3: ExecutionMemory — wired with DB in lifespan
+    _exec_memory = ExecutionMemory()
 
     # Wire embedder: use VoyageProvider if VOYAGE_API_KEY set,
     # OpenAICompatibleProvider if OPENAI_API_KEY set,
@@ -512,6 +515,13 @@ def create_app(
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
+            # H-3: Wire DB into ExecutionMemory for persistence
+            _exec_memory._db = db_factory
+            app.state.exec_memory = _exec_memory
+
+            # H-4: Wire agent store directly into goal_service for agent config loading
+            _goal_svc_with_db._agent_store = _agent_store_with_db
+
             # Wire DB session factory into AgentRouter for history scoring
             _agent_router_state = getattr(app.state, "agent_router", None)
             if _agent_router_state is not None:
@@ -667,6 +677,16 @@ def create_app(
             except Exception as _hitl_exc:
                 logger.warning("hitl_startup_restore_failed", error=str(_hitl_exc))
 
+            # ── C-1: Start Celery→SSE event bridge when Redis is available ────────
+            if redis_for_runtime is not None and settings.redis_url:
+                _bridge_svc = getattr(app.state, "goal_service", None)
+                if _bridge_svc is not None and hasattr(_bridge_svc, "start_celery_event_bridge"):
+                    try:
+                        _bridge_svc.start_celery_event_bridge(str(settings.redis_url))
+                        logger.info("celery_event_bridge_started")
+                    except Exception as _bridge_exc:
+                        logger.warning("celery_event_bridge_start_failed", error=str(_bridge_exc))
+
             try:
                 yield
             finally:
@@ -738,6 +758,8 @@ def create_app(
     app.state.knowledge_store = _knowledge_store
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
+    # H-3: ExecutionMemory on app.state
+    app.state.exec_memory = _exec_memory
     # Intelligence
     app.state.eval_runner = _eval_runner
     app.state.eval_suite_runner = _eval_suite_runner
