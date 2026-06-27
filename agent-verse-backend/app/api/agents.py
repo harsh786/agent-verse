@@ -1107,6 +1107,47 @@ async def create_agent_credential(
     }
 
 
+@router.get("/{agent_id}/rollout-gate")
+async def check_rollout_gate(
+    request: Request,
+    agent_id: str,
+    eval_suite_id: str = "",
+    min_pass_rate: float = 0.8,
+) -> dict[str, Any]:
+    """Check if an agent meets the eval pass rate required for production rollout."""
+    tenant_ctx = _require_tenant(request)
+    store = _agent_store(request)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
+
+    db = getattr(store, "_db", None)
+    if db is None:
+        return {
+            "gate_passed": False,
+            "reason": "No database available. Connect a DB to use the rollout gate.",
+            "run_count": 0,
+            "pass_rate": 0.0,
+            "avg_score": 0.0,
+            "agent_id": agent_id,
+        }
+
+    from app.intelligence.eval_suite import check_agent_rollout_gate
+
+    result = await check_agent_rollout_gate(
+        agent_id=agent_id,
+        eval_suite_id=eval_suite_id or agent.get("eval_suite_id", ""),
+        tenant_id=tenant_ctx.tenant_id,
+        db=db,
+        min_pass_rate=min_pass_rate,
+    )
+    result["agent_id"] = agent_id
+    return result
+
+
 @router.get("/{agent_id}/readiness")
 async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
     """Check if an agent is ready for production use."""

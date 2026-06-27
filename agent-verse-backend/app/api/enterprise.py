@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 marketplace_router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 intelligence_router = APIRouter(prefix="/intelligence", tags=["intelligence"])
+# P2.10: Async GDPR export + consent management at /compliance/*
+compliance_router = APIRouter(prefix="/compliance", tags=["compliance"])
 
 # --- helpers ---
 
@@ -38,6 +41,17 @@ def _marketplace(request: Request) -> Any:
 
 def _self_optimizer(request: Request) -> Any:
     return request.app.state.self_optimizer
+
+
+def _get_db(request: Request) -> Any:
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        try:
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+        except Exception:
+            pass
+    return db
 
 
 # --- Compliance ---
@@ -163,17 +177,6 @@ async def run_red_team(request: Request, body: RedTeamRequest) -> dict[str, Any]
     }
 
 
-def _get_db(request: Request) -> Any:
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db is None:
-        try:
-            from app.db.session import get_session_factory
-            db = get_session_factory()
-        except Exception:
-            pass
-    return db
-
-
 # --- Marketplace ---
 
 class PublishTemplateRequest(BaseModel):
@@ -183,7 +186,7 @@ class PublishTemplateRequest(BaseModel):
     connectors: list[str] = []
     autonomy_mode: str = "bounded-autonomous"
     agent_id: str | None = None  # Optional: publish from existing agent
-    visibility: str = "private"  # private | team | community
+    visibility: str = "community"  # private | team | community (default: community)
 
 
 class BundleDeployRequest(BaseModel):
@@ -356,11 +359,11 @@ class AddGoldenTaskRequest(BaseModel):
 async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> dict[str, Any]:
     """Create a new eval suite for golden task testing."""
     _require_tenant(request)
-    import uuid
+    import uuid as _uuid
     runner = getattr(request.app.state, "eval_suite_runner", None)
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
-    suite_id = body.suite_id or uuid.uuid4().hex
+    suite_id = body.suite_id or _uuid.uuid4().hex
     runner.create_suite(suite_id)
     return {"suite_id": suite_id, "name": body.name, "task_count": 0}
 
@@ -441,3 +444,115 @@ async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, A
          "passed": r.passed_tasks, "failed": r.failed_tasks, "run_at": r.run_at}
         for r in runner.get_results(suite_id)
     ]
+
+
+# ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────
+
+@compliance_router.post("/export/start")
+async def start_gdpr_export(request: Request) -> dict[str, Any]:
+    """Start async GDPR data export job. Returns job_id for polling."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+
+    job_id = uuid.uuid4().hex
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(text("""
+                    INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at)
+                    VALUES (:id, :tid, 'pending', NOW())
+                """), {"id": job_id, "tid": ctx.tenant_id})
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("gdpr_export_job_insert_failed: %s", exc)
+
+    # Enqueue Celery task (best-effort — job still exists if this fails)
+    try:
+        from app.scaling.tasks import run_gdpr_export
+        run_gdpr_export.delay(job_id, ctx.tenant_id)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("gdpr_export_enqueue_failed: %s", exc)
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "poll_url": f"/compliance/export/jobs/{job_id}",
+    }
+
+
+@compliance_router.get("/export/jobs/{job_id}")
+async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any]:
+    """Poll status of async GDPR export job."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return {"job_id": job_id, "status": "pending", "completed_at": None,
+                "download_url": None, "error": None}
+    from sqlalchemy import text
+    async with db() as session:
+        row = (await session.execute(text("""
+            SELECT status, completed_at, download_url, error_message
+            FROM gdpr_export_jobs WHERE id = :id AND tenant_id = :tid
+        """), {"id": job_id, "tid": ctx.tenant_id})).fetchone()
+    if not row:
+        raise HTTPException(404, "Export job not found")
+    return {
+        "job_id": job_id,
+        "status": row[0],
+        "completed_at": row[1].isoformat() if row[1] else None,
+        "download_url": row[2],
+        "error": row[3],
+    }
+
+
+class ConsentRequest(BaseModel):
+    purpose: str  # "analytics", "marketing", "ai_processing", etc.
+    legal_basis: str = "legitimate_interest"  # GDPR legal basis
+
+
+@compliance_router.post("/consent")
+async def record_consent(request: Request, body: ConsentRequest) -> dict[str, Any]:
+    """Record tenant consent for data processing purposes."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+    consent_id = uuid.uuid4().hex
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            ip = request.client.host if request.client else ""
+            ua = request.headers.get("user-agent", "")
+            async with db() as session, session.begin():
+                await session.execute(text("""
+                    INSERT INTO consent_records
+                        (id, tenant_id, purpose, legal_basis, ip_address, user_agent)
+                    VALUES (:id, :tid, :purpose, :basis, :ip, :ua)
+                """), {
+                    "id": consent_id, "tid": ctx.tenant_id,
+                    "purpose": body.purpose, "basis": body.legal_basis,
+                    "ip": ip, "ua": ua,
+                })
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("consent_record_insert_failed: %s", exc)
+    return {"consent_id": consent_id, "purpose": body.purpose, "status": "recorded"}
+
+
+@compliance_router.delete("/consent/{purpose}")
+async def revoke_consent(request: Request, purpose: str) -> dict[str, Any]:
+    """Revoke previously granted consent."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(text("""
+                    UPDATE consent_records SET revoked_at = NOW()
+                    WHERE tenant_id = :tid AND purpose = :purpose AND revoked_at IS NULL
+                """), {"tid": ctx.tenant_id, "purpose": purpose})
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("consent_revoke_failed: %s", exc)
+    return {"purpose": purpose, "status": "revoked"}

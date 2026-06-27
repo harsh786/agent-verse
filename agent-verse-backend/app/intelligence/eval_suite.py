@@ -375,3 +375,144 @@ class EvalSuiteRunner:
                 logging.getLogger(__name__).warning("eval_persist_failed: %s", exc)
 
         return output
+
+
+# ---------------------------------------------------------------------------
+# P2.6: Golden task CRUD helpers (DB-backed)
+# ---------------------------------------------------------------------------
+
+async def add_golden_task(
+    *, eval_suite_id: str, task: "GoldenTask", tenant_id: str, db: Any
+) -> str:
+    """Persist a golden task to DB."""
+    import json
+
+    from sqlalchemy import text
+
+    # expected_output_contains is stored internally as a list; join for TEXT column
+    contains_str = (
+        task.expected_output_contains[0]
+        if task.expected_output_contains
+        else ""
+    )
+
+    async with db() as session, session.begin():
+        tid = task.task_id or uuid.uuid4().hex
+        await session.execute(
+            text("""
+                INSERT INTO golden_tasks
+                    (id, eval_suite_id, tenant_id, goal, expected_output_contains,
+                     expected_tool_calls, forbidden_tools, min_score, tags, created_at)
+                VALUES (:id, :suite, :tid, :goal, :expected, :tools::jsonb,
+                        :forbidden::jsonb, :min_score, :tags::jsonb, NOW())
+                ON CONFLICT (id) DO UPDATE SET goal = EXCLUDED.goal
+            """),
+            {
+                "id": tid,
+                "suite": eval_suite_id,
+                "tid": tenant_id,
+                "goal": task.goal,
+                "expected": contains_str,
+                "tools": json.dumps(task.expected_tool_calls),
+                "forbidden": json.dumps(task.forbidden_tools),
+                "min_score": task.min_score,
+                "tags": json.dumps(task.tags),
+            },
+        )
+    return tid
+
+
+async def get_golden_tasks(
+    *, eval_suite_id: str, tenant_id: str, db: Any
+) -> list["GoldenTask"]:
+    """Load golden tasks for a suite from DB."""
+    from sqlalchemy import text
+
+    async with db() as session:
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT id, goal, expected_output_contains, expected_tool_calls,
+                           forbidden_tools, min_score, tags
+                    FROM golden_tasks
+                    WHERE eval_suite_id = :sid AND tenant_id = :tid
+                    ORDER BY created_at ASC
+                """),
+                {"sid": eval_suite_id, "tid": tenant_id},
+            )
+        ).fetchall()
+    return [
+        GoldenTask(
+            task_id=r[0],
+            goal=r[1],
+            expected_output_contains=r[2] or "",
+            expected_tool_calls=r[3] or [],
+            forbidden_tools=r[4] or [],
+            min_score=float(r[5] or 0.8),
+            tags=r[6] or [],
+        )
+        for r in rows
+    ]
+
+
+async def check_agent_rollout_gate(
+    *,
+    agent_id: str,
+    eval_suite_id: str,
+    tenant_id: str,
+    db: Any,
+    min_pass_rate: float = 0.8,
+) -> dict:
+    """Check if an agent meets the eval pass rate required for production rollout."""
+    from sqlalchemy import text
+
+    async with db() as session:
+        row = (
+            await session.execute(
+                text("""
+                    SELECT AVG(average_score) as avg_score,
+                           COUNT(*) as run_count,
+                           SUM(CASE WHEN average_score >= 0.8 THEN 1 ELSE 0 END) as passing
+                    FROM evaluations e
+                    JOIN goals g ON e.goal_id = g.id
+                    WHERE g.agent_id = :aid AND g.tenant_id = :tid
+                      AND e.created_at > NOW() - INTERVAL '30 days'
+                """),
+                {"aid": agent_id, "tid": tenant_id},
+            )
+        ).fetchone()
+
+    if not row or not row[1]:
+        return {
+            "gate_passed": False,
+            "reason": (
+                "No evaluation data found. "
+                "Run eval suite before enabling fully-autonomous mode."
+            ),
+            "run_count": 0,
+            "pass_rate": 0.0,
+            "avg_score": 0.0,
+        }
+
+    run_count = int(row[1] or 0)
+    passing = int(row[2] or 0)
+    pass_rate = passing / run_count if run_count > 0 else 0.0
+    avg_score = float(row[0] or 0)
+    gate_passed = pass_rate >= min_pass_rate and run_count >= 5
+
+    return {
+        "gate_passed": gate_passed,
+        "reason": (
+            f"Pass rate {pass_rate:.1%} meets {min_pass_rate:.1%} threshold"
+            if gate_passed
+            else (
+                f"Pass rate {pass_rate:.1%} below {min_pass_rate:.1%} threshold "
+                f"(need at least "
+                f"{max(0, round(min_pass_rate * run_count) - passing)} more passing runs)"
+            )
+        ),
+        "run_count": run_count,
+        "pass_rate": pass_rate,
+        "avg_score": avg_score,
+        "min_pass_rate_required": min_pass_rate,
+    }

@@ -347,3 +347,43 @@ class AgentVerseClient:
         """Delete / deregister a connector."""
         resp = await self._client().delete(f"/connectors/{server_id}")
         self._raise_for_status(resp)
+
+    # ------------------------------------------------------------------
+    # Schedules
+    # ------------------------------------------------------------------
+
+    async def list_schedules(self) -> list:
+        """List all schedules for the current tenant."""
+        resp = await self._client().get("/schedules")
+        self._raise_for_status(resp)
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("schedules", [])
+
+    async def create_schedule(
+        self,
+        goal: str,
+        trigger_type: str = "cron",
+        cron_expression: str = "",
+        interval_seconds: int = 0,
+        agent_id: str | None = None,
+    ) -> dict:
+        """Create a new goal schedule."""
+        payload: dict = {
+            "goal_template": goal,
+            "trigger_type": trigger_type,
+            "cron_expression": cron_expression,
+            "interval_seconds": interval_seconds,
+        }
+        if agent_id:
+            payload["agent_id"] = agent_id
+        return await self._request("POST", "/schedules", json=payload)
+
+    # ------------------------------------------------------------------
+    # Goal replay / logs
+    # ------------------------------------------------------------------
+
+    async def get_goal_replay(self, goal_id: str) -> dict:
+        """Fetch the full execution replay timeline for a goal."""
+        resp = await self._client().get(f"/goals/{goal_id}/replay")
+        self._raise_for_status(resp)
+        return resp.json()  # type: ignore[no-any-return]
