@@ -16,6 +16,7 @@ export interface GoalEvent {
   success?: boolean;
   reason?: string;
   ts?: string;
+  payload?: unknown;
   [key: string]: unknown;
 }
 
@@ -186,4 +187,25 @@ export interface EvalScorecard {
   passed: boolean;
   criteria: Array<{ name: string; passed: boolean; score: number }>;
   evaluated_at: string;
+}
+
+// Phase 20: Simulation and timeline types
+
+export interface SimulationResult {
+  run_id: string;
+  goal: string;
+  status: string;
+  steps_executed: Array<{ description: string; tool: string; output: string }>;
+  tools_called: string[];
+  cost_estimate: number;
+  used_real_llm: boolean;
+}
+
+export interface GoalTimeline {
+  goal_id: string;
+  goal_text: string;
+  status: string;
+  timeline: GoalEvent[];
+  steps: Array<{ step_index: number; description: string; status: string; output?: string }>;
+  evaluations: Array<{ scores: Record<string, number>; average_score: number }>;
 }
