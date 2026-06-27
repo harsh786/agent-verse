@@ -44,11 +44,31 @@ export interface SubmitGoalOptions {
 
 export interface CreateAgentRequest {
   name: string;
-  autonomy_mode?: string;
   goal_template?: string;
-  description?: string;
-  tools?: string[];
-  model?: string;
+  autonomy_mode?: 'supervised' | 'bounded-autonomous' | 'fully-autonomous';
+  connector_ids?: string[];
+  trigger_config?: Record<string, any>;
+  allowed_collection_ids?: string[];
+  eval_suite_id?: string | null;
+  policy_ids?: string[];
+  system_prompt?: string;        // new — matches backend
+  model_override?: string;       // new — renamed from model to match backend
+  max_iterations?: number;       // new
+  timeout_seconds?: number;      // new
+}
+
+export interface UpdateAgentRequest {
+  name?: string;
+  goal_template?: string;
+  autonomy_mode?: string;
+  connector_ids?: string[];
+  system_prompt?: string;
+  model_override?: string;
+  max_iterations?: number;
+  timeout_seconds?: number;
+  allowed_collection_ids?: string[];
+  eval_suite_id?: string | null;
+  policy_ids?: string[];
 }
 
 export interface AgentSnapshot {

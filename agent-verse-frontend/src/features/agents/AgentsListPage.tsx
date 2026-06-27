@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 
@@ -53,6 +54,7 @@ const AUTONOMY_MODES = ['all', 'supervised', 'bounded-autonomous', 'fully-autono
 
 export function AgentsListPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [nlCommand, setNlCommand] = useState('');
@@ -202,7 +204,10 @@ export function AgentsListPage() {
               {filtered.map((agent) => (
                 <tr
                   key={agent.agent_id}
-                  className="hover:bg-accent/50 transition-colors"
+                  onClick={() => navigate(`/agents/${agent.agent_id}`)}
+                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  role="button"
+                  aria-label={`View agent ${agent.name}`}
                 >
                   <td className="px-4 py-3 font-medium">{agent.name}</td>
                   <td className="px-4 py-3">
@@ -224,13 +229,27 @@ export function AgentsListPage() {
                       : '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => deleteMutation.mutate(agent.agent_id)}
-                      disabled={deleteMutation.isPending}
-                      className="text-destructive hover:opacity-70 text-sm disabled:opacity-40 transition-opacity"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/agents/${agent.agent_id}`);
+                        }}
+                        className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                      >
+                        View
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteMutation.mutate(agent.agent_id);
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="text-red-500 hover:text-red-700 text-sm disabled:opacity-40 transition-opacity"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

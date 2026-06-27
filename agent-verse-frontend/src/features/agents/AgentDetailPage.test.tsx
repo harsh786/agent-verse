@@ -14,10 +14,7 @@ const MOCK_AGENT = {
   status: 'active',
   created_at: '2025-01-01T00:00:00Z',
   default_model: 'gpt-4o',
-  connector_requirements: [
-    { type: 'github', optional: false },
-    { type: 'jira', optional: true },
-  ],
+  connector_ids: ['github', 'jira'],
 };
 
 function renderPage(agentId = 'agent-001') {

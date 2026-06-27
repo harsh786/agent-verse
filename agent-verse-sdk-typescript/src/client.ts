@@ -14,6 +14,7 @@ import type {
   Schedule,
   SearchResult,
   SubmitGoalOptions,
+  UpdateAgentRequest,
 } from './types.js';
 import { AgentVerseError, AuthError, GoalFailedError, GoalTimeoutError, NotFoundError } from './errors.js';
 
@@ -132,8 +133,18 @@ export class AgentVerseClient {
     return this.request<Agent>('GET', `/agents/${agentId}`);
   }
 
-  async updateAgent(agentId: string, data: Partial<CreateAgentRequest>): Promise<Agent> {
+  async updateAgent(agentId: string, data: UpdateAgentRequest): Promise<Agent> {
     return this.request<Agent>('PUT', `/agents/${agentId}`, data);
+  }
+
+  async runAgent(agentId: string, goal: string, options?: {
+    dryRun?: boolean;
+    autonomyMode?: string;
+  }): Promise<Goal> {
+    return this.submitGoal(goal, {
+      agent_id: agentId,
+      dry_run: options?.dryRun,
+    });
   }
 
   async listAgents(): Promise<Agent[]> {

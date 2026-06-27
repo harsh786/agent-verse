@@ -42,10 +42,9 @@ async function createSnapshot(apiKey: string, agentId: string): Promise<{ snapsh
 }
 
 async function rollbackAgent(apiKey: string, agentId: string, snapshotId: string) {
-  const res = await fetch(`${API_BASE}/agents/${agentId}/rollback`, {
+  const res = await fetch(`${API_BASE}/agents/${agentId}/rollback/${snapshotId}`, {
     method: "POST",
-    headers: hdrs(apiKey),
-    body: JSON.stringify({ snapshot_id: snapshotId }),
+    headers: { "X-API-Key": apiKey },
   });
   if (!res.ok) throw new Error(`Failed to rollback: ${res.statusText}`);
   return res.json();
@@ -61,7 +60,7 @@ async function exportAgentFormat(apiKey: string, agentId: string, format: string
 
 async function updateAgent(apiKey: string, agentId: string, patch: Record<string, unknown>) {
   const res = await fetch(`${API_BASE}/agents/${agentId}`, {
-    method: "PATCH",
+    method: "PUT",
     headers: hdrs(apiKey),
     body: JSON.stringify(patch),
   });
@@ -81,6 +80,10 @@ export function AgentDetailPage() {
   const [exportMsg, setExportMsg] = useState("");
   const [snapshotMsg, setSnapshotMsg] = useState("");
   const [versionOpen, setVersionOpen] = useState(false);
+  const [readiness, setReadiness] = useState<any>(null);
+  const [testGoal, setTestGoal] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string>('');
 
   const {
     data: agent,
@@ -150,6 +153,31 @@ export function AgentDetailPage() {
     }
   };
 
+  const checkReadiness = async () => {
+    const resp = await fetch(`${API_BASE}/agents/${agentId}/readiness`, {
+      headers: { 'X-API-Key': apiKey },
+    });
+    if (resp.ok) setReadiness(await resp.json());
+  };
+
+  const handleTestAgent = async () => {
+    if (!testGoal.trim()) return;
+    setTesting(true);
+    try {
+      const resp = await fetch(`${API_BASE}/goals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ goal: testGoal, agent_id: agentId, dry_run: true }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setTestResult(`Goal submitted: ${data.goal_id}. Plan: ${JSON.stringify(data.plan || data.execution_context || {}, null, 2)}`);
+      }
+    } finally {
+      setTesting(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-40" data-testid="loading">
@@ -194,6 +222,12 @@ export function AgentDetailPage() {
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={checkReadiness}
+              className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+            >
+              Check Readiness
+            </button>
+            <button
               onClick={() => {
                 setEditing((v) => !v);
                 setEditForm({
@@ -209,6 +243,22 @@ export function AgentDetailPage() {
             </button>
           </div>
         </div>
+
+        {/* Readiness widget */}
+        {readiness && (
+          <div className="mt-4 p-4 border rounded bg-gray-50">
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`w-3 h-3 rounded-full ${readiness.ready ? 'bg-green-500' : 'bg-red-500'}`} />
+              <span className="font-medium">{readiness.ready ? 'Production Ready' : 'Not Ready'}</span>
+            </div>
+            {readiness.checks?.map((check: any, i: number) => (
+              <div key={i} className="flex items-center gap-2 text-sm text-gray-600 py-1">
+                <span>{check.status === 'pass' ? '✓' : '✗'}</span>
+                <span>{check.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Edit form */}
         {editing && (
@@ -258,6 +308,31 @@ export function AgentDetailPage() {
             </div>
           </div>
         )}
+
+        {/* Test Agent */}
+        <div className="mt-4 border-t pt-4">
+          <h3 className="font-medium mb-2 text-sm">Test Agent</h3>
+          <div className="flex gap-2">
+            <input
+              value={testGoal}
+              onChange={(e) => setTestGoal(e.target.value)}
+              placeholder="Enter a test goal..."
+              className="flex-1 px-3 py-2 border rounded text-sm"
+            />
+            <button
+              onClick={handleTestAgent}
+              disabled={testing || !testGoal.trim()}
+              className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50"
+            >
+              {testing ? 'Testing...' : 'Test (Dry Run)'}
+            </button>
+          </div>
+          {testResult && (
+            <pre className="mt-2 p-3 bg-gray-100 rounded text-xs overflow-auto max-h-40">
+              {testResult}
+            </pre>
+          )}
+        </div>
       </div>
 
       {/* Metadata */}
@@ -275,19 +350,16 @@ export function AgentDetailPage() {
       </div>
 
       {/* Connectors */}
-      {Array.isArray(agent.connector_requirements) && agent.connector_requirements.length > 0 && (
+      {Array.isArray(agent.connector_ids) && agent.connector_ids.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-3" data-testid="connector-list">
-            Required Connectors
+            Connector IDs
           </h2>
-          <div className="space-y-2">
-            {(agent.connector_requirements as any[]).map((c: any, i: number) => (
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="font-mono">{c.type ?? c}</span>
-                {c.optional && (
-                  <span className="text-xs text-muted-foreground">optional</span>
-                )}
-              </div>
+          <div className="flex flex-wrap gap-2">
+            {(agent.connector_ids as string[]).map((cid: string) => (
+              <span key={cid} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
+                {cid}
+              </span>
             ))}
           </div>
         </div>
