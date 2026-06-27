@@ -58,6 +58,36 @@ def _add_console_span_processor(provider: Any, service_name: str) -> None:
     provider.add_span_processor(SimpleSpanProcessor(_in_memory_exporter))
 
 
+def get_tracer(name: str) -> Any:
+    """Get a named OTel tracer.  No-ops gracefully when OTel is not installed."""
+    try:
+        from opentelemetry import trace
+        return trace.get_tracer(name)
+    except Exception:
+        return _NoOpTracer()
+
+
+class _NoOpTracer:
+    """Fallback tracer when opentelemetry is unavailable (tests, minimal envs)."""
+
+    def start_as_current_span(self, name: str, **_kwargs: Any) -> Any:  # noqa: ANN401
+        return _NoOpSpanContext()
+
+
+class _NoOpSpanContext:
+    def __enter__(self) -> _NoOpSpanContext:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        pass
+
+    def set_attribute(self, key: str, value: object) -> None:  # noqa: ARG002
+        pass
+
+    def record_exception(self, exc: Exception) -> None:  # noqa: ARG002
+        pass
+
+
 def get_recent_spans(limit: int = 100) -> list[dict]:
     """Get recently recorded in-process spans for debugging."""
     if _in_memory_exporter is None:
