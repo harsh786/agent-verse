@@ -51,7 +51,7 @@ export function GoalsListPage() {
         goal,
         dry_run: dryRun,
         agent_id: selectedAgentId === "auto" ? undefined : selectedAgentId,
-        workflow_mode: selectedAgentId === "auto" ? "auto_route" : "single_agent",
+        workflow_mode: "single_agent",  // routing happens via agent_id=None, not workflow_mode
       }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["goals"] });

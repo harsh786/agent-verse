@@ -48,7 +48,7 @@ class DocumentParserTool:
         filename: str = "document",
     ) -> dict:
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, self._parse_sync, file_path, content_bytes, filename
         )
 
