@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio  # noqa: F401  (used in SSE generators)
+import json as _json
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
@@ -436,8 +440,138 @@ async def reject_request(
 
 
 # ---------------------------------------------------------------------------
-# Endpoints — audit log
+# Endpoints — real-time SSE streams (additive; wrap existing Redis pub/sub)
 # ---------------------------------------------------------------------------
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+# Event types relevant to the approvals UI (forwarded from platform_events).
+_APPROVAL_EVENT_TYPES = {
+    "waiting_approval",
+    "approval_granted",
+    "goal_complete",
+    "goal_failed",
+}
+
+
+def _pending_snapshot(gateway: HITLGateway, tenant_ctx: TenantContext) -> dict[str, Any]:
+    pending = gateway.list_pending(tenant_ctx=tenant_ctx)
+    return {
+        "type": "approvals_snapshot",
+        "pending": [
+            {
+                "request_id": r.request_id,
+                "goal_id": r.goal_id,
+                "action": r.action,
+                "risk_level": r.risk_level,
+                "status": r.status,
+            }
+            for r in pending
+        ],
+    }
+
+
+async def _tail_redis_channel(
+    redis: Any, channel: str, allowed_types: set[str] | None
+) -> AsyncGenerator[str, None]:
+    """Yield SSE frames from a Redis pub/sub channel. Closes cleanly on cancel."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(channel)
+    try:
+        async for message in pubsub.listen():
+            if message.get("type") != "message":
+                continue
+            raw = message.get("data")
+            try:
+                event = _json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if allowed_types is not None and event.get("type") not in allowed_types:
+                continue
+            yield f"data: {_json.dumps(event)}\n\n"
+    finally:
+        with __import__("contextlib").suppress(Exception):
+            await pubsub.unsubscribe(channel)
+        with __import__("contextlib").suppress(Exception):
+            await pubsub.close()
+
+
+@router.get("/approvals/stream")
+async def stream_approvals(request: Request) -> StreamingResponse:
+    """SSE stream of HITL approval activity.
+
+    Emits an ``approvals_snapshot`` event with current pending requests, then
+    tails the ``platform_events:{tenant_id}`` Redis channel and forwards
+    approval-relevant events. When Redis is unavailable, emits the snapshot
+    then ``stream_unavailable``.
+    """
+    tenant_ctx: TenantContext = _require_tenant(request)
+    gateway = _hitl(request)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+
+    async def gen() -> AsyncGenerator[str, None]:
+        yield f"data: {_json.dumps(_pending_snapshot(gateway, tenant_ctx))}\n\n"
+        if redis is None:
+            yield f'data: {_json.dumps({"type": "stream_unavailable"})}\n\n'
+            return
+        channel = f"platform_events:{tenant_ctx.tenant_id}"
+        async for frame in _tail_redis_channel(redis, channel, _APPROVAL_EVENT_TYPES):
+            yield frame
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.get("/policies/stream")
+async def stream_policies(request: Request) -> StreamingResponse:
+    """SSE stream of policy changes.
+
+    Emits a ``policies_snapshot``, then tails the ``policy_changes`` Redis
+    channel (filtered to this tenant). When Redis is unavailable, emits the
+    snapshot then ``stream_unavailable``.
+    """
+    tenant_ctx: TenantContext = _require_tenant(request)
+    db_policies = await _db_list_policies(request, tenant_ctx.tenant_id)
+    if not db_policies:
+        registry = _policy_registry(request)
+        db_policies = list(registry.get(tenant_ctx.tenant_id, {}).values())
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+
+    async def gen() -> AsyncGenerator[str, None]:
+        snapshot: dict[str, Any] = {"type": "policies_snapshot", "policies": db_policies}
+        yield f"data: {_json.dumps(snapshot)}\n\n"
+        if redis is None:
+            yield f'data: {_json.dumps({"type": "stream_unavailable"})}\n\n'
+            return
+        pubsub = redis.pubsub()
+        await pubsub.subscribe("policy_changes")
+        try:
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                raw = message.get("data")
+                try:
+                    event = _json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+                except Exception:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("tenant_id") != tenant_ctx.tenant_id:
+                    continue
+                out: dict[str, Any] = {"type": "policy_changed", **event}
+                yield f"data: {_json.dumps(out)}\n\n"
+        finally:
+            with __import__("contextlib").suppress(Exception):
+                await pubsub.unsubscribe("policy_changes")
+            with __import__("contextlib").suppress(Exception):
+                await pubsub.close()
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 @router.get("/audit")
 async def query_audit(
@@ -551,6 +685,18 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
         {"channel_id": c.channel_id, "type": c.channel_type, "enabled": c.enabled}
         for c in svc.get_channels(tenant.tenant_id)
     ]
+
+
+@router.delete("/notifications/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_notification_channel(request: Request, channel_id: str) -> None:
+    """Delete a notification channel by ID."""
+    tenant = _require_tenant(request)
+    svc = getattr(request.app.state, "notification_service", None)
+    if svc is None:
+        raise HTTPException(404, "Notification channel not found")
+    removed = svc.remove_channel(channel_id, tenant.tenant_id)
+    if not removed:
+        raise HTTPException(404, "Notification channel not found")
 
 
 # ---------------------------------------------------------------------------
@@ -834,3 +980,30 @@ async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
         "tenant_id": ctx.tenant_id,
         "reason": body.reason,
     }
+
+
+@router.get("/legal-holds")
+async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
+    """List active legal holds for this tenant (empty when DB unavailable)."""
+    ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            rows = (await session.execute(text(
+                "SELECT id, reason, expires_at, created_by "
+                "FROM legal_holds WHERE tenant_id = :tid ORDER BY id"
+            ), {"tid": ctx.tenant_id})).fetchall()
+        return [
+            {
+                "id": r[0],
+                "reason": r[1],
+                "expires_at": r[2].isoformat() if r[2] else None,
+                "created_by": r[3],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState, lazy, Suspense } from "react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -31,6 +32,16 @@ import { AnalyticsDashboardPage } from "@/features/analytics/AnalyticsDashboardP
 import SimulationPage from "@/features/simulation/SimulationPage";
 import AuditExplorerPage from "@/features/audit/AuditExplorerPage";
 import RpaLivePage from "@/features/rpa/RpaLivePage";
+import { MemoryExplorerPage } from "@/features/memory/MemoryExplorerPage";
+import { ArtifactsBrowserPage } from "@/features/artifacts/ArtifactsBrowserPage";
+import { ToolsPage } from "@/features/tools/ToolsPage";
+import { IntegrationsPage } from "@/features/integrations/IntegrationsPage";
+import { TrainingExportPage } from "@/features/training/TrainingExportPage";
+import { PerceptionPage } from "@/features/perception/PerceptionPage";
+import { A2APage } from "@/features/a2a/A2APage";
+import { NotificationCenterPage } from "@/features/notifications/NotificationCenterPage";
+import { RbacPage } from "@/features/rbac/RbacPage";
+import { CompliancePage } from "@/features/compliance/CompliancePage";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -90,7 +101,9 @@ export default function App() {
         path="/"
         element={
           <RequireAuth>
-            <AppLayout />
+            <ErrorBoundary>
+              <AppLayout />
+            </ErrorBoundary>
           </RequireAuth>
         }
       >
@@ -121,6 +134,16 @@ export default function App() {
         <Route path="simulation" element={<SimulationPage />} />
         <Route path="audit" element={<AuditExplorerPage />} />
         <Route path="rpa/live" element={<RpaLivePage />} />
+        <Route path="memory" element={<MemoryExplorerPage />} />
+        <Route path="artifacts" element={<ArtifactsBrowserPage />} />
+        <Route path="tools" element={<ToolsPage />} />
+        <Route path="integrations" element={<IntegrationsPage />} />
+        <Route path="training-export" element={<TrainingExportPage />} />
+        <Route path="perception" element={<PerceptionPage />} />
+        <Route path="a2a" element={<A2APage />} />
+        <Route path="notifications" element={<NotificationCenterPage />} />
+        <Route path="rbac" element={<RbacPage />} />
+        <Route path="compliance" element={<CompliancePage />} />
         <Route path="civilization" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
         <Route path="civilization/:id" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
       </Route>

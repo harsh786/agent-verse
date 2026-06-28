@@ -6,6 +6,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { ApprovalsPage } from './ApprovalsPage';
 
+// Mock useEventStream so SSE doesn't interfere with fetch mocks
+vi.mock('@/lib/sse/useEventStream', () => ({
+  useEventStream: (_path: string | null, opts?: { onEvent?: (e: { type: string }) => void }) => {
+    // Simulate a pushed event after mount in a controlled way
+    setTimeout(() => opts?.onEvent?.({ type: 'waiting_approval' }), 0);
+    return { events: [], connected: true };
+  },
+}));
+
 const PENDING_APPROVAL = {
   request_id: 'req-001',
   goal_id: 'goal-abc',
@@ -27,6 +36,18 @@ function renderPage() {
   );
 }
 
+let invalidateSpy: ReturnType<typeof vi.fn>;
+
+function renderPageWithSpy() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  invalidateSpy = vi.spyOn(qc, 'invalidateQueries') as unknown as ReturnType<typeof vi.fn>;
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter><ApprovalsPage /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe('ApprovalsPage', () => {
   beforeEach(() => {
     useAuthStore.setState({
@@ -40,14 +61,12 @@ describe('ApprovalsPage', () => {
     vi.restoreAllMocks();
   });
 
-  // Test 1: Renders "Approval Inbox" heading
   test('renders "Approval Inbox" heading', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderPage();
     expect(screen.getByText('Approval Inbox')).toBeInTheDocument();
   });
 
-  // Test 2: Shows pending count badge when approvals exist
   test('shows pending count badge when approvals exist', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
@@ -62,7 +81,6 @@ describe('ApprovalsPage', () => {
     });
   });
 
-  // Test 3: Shows empty state when no pending approvals
   test('shows empty state when no pending approvals', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
@@ -78,7 +96,6 @@ describe('ApprovalsPage', () => {
     expect(screen.getByText('No pending approval requests.')).toBeInTheDocument();
   });
 
-  // Test 4: Approve button calls approve API
   test('approve button calls approve API', async () => {
     const user = userEvent.setup();
     let callCount = 0;
@@ -100,7 +117,6 @@ describe('ApprovalsPage', () => {
     });
   });
 
-  // Test 5: Reject button calls reject API
   test('reject button calls reject API', async () => {
     const user = userEvent.setup();
     let rejectCalled = false;
@@ -122,10 +138,19 @@ describe('ApprovalsPage', () => {
     });
   });
 
-  // Test 6: Shows loading state
   test('shows loading state while fetching', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderPage();
     expect(screen.getByTestId('loading')).toBeInTheDocument();
+  });
+
+  test('invalidates approvals query when a stream event arrives', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderPageWithSpy();
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['approvals'] })),
+    );
   });
 });

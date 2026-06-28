@@ -31,7 +31,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   const abortRef = useRef<AbortController | null>(null);
   const onEventRef = useRef(opts?.onEvent);
   const retryCountRef = useRef(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   onEventRef.current = opts?.onEvent;
 
@@ -143,7 +143,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
 
     return () => {
       // Cancel any pending retry timer and abort the in-flight request
-      clearTimeout(retryTimerRef.current);
+      clearTimeout(retryTimerRef.current ?? undefined);
       abortRef.current?.abort();
       abortRef.current = null;
       setConnected(false);

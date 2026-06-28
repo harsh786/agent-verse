@@ -338,6 +338,8 @@ export const governanceApi = {
     request<Policy>("/governance/policies", { method: "POST", body: JSON.stringify(data) }),
   deletePolicy: (id: string) => request<void>(`/governance/policies/${id}`, { method: "DELETE" }),
   getPendingApprovals: () => request<ApprovalRequest[]>("/governance/hitl/pending"),
+  approvalsStreamPath: () => "/governance/approvals/stream",
+  policiesStreamPath: () => "/governance/policies/stream",
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -464,16 +466,377 @@ export const analyticsApi = {
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
-export interface Memory {
-  memory_id: string;
+export interface MemoryEntry {
+  id: string;
   content: string;
-  tags?: string[];
+  memory_type: string;
+  confidence: number;
+  tags: string[];
   created_at: string;
 }
 
+export interface RecallResult {
+  content: string;
+  confidence: number;
+  memory_type: string;
+  source: string;
+}
+
+export interface ToolReliabilityRow {
+  tool_name: string;
+  total_calls: number;
+  failures: number;
+  success_rate: number;
+  [key: string]: unknown;
+}
+
 export const memoryApi = {
+  list: (opts: { limit?: number; memoryType?: string } = {}) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts.limit ?? 50));
+    if (opts.memoryType) params.set("memory_type", opts.memoryType);
+    return request<MemoryEntry[]>(`/memory?${params.toString()}`);
+  },
   recall: (query: string, limit = 10) =>
-    request<Memory[]>(`/memory/recall?q=${encodeURIComponent(query)}&limit=${limit}`),
-  store: (data: { content: string; tags?: string[] }) =>
-    request<Memory>("/memory", { method: "POST", body: JSON.stringify(data) }),
+    request<{ query: string; results: RecallResult[] }>(
+      `/memory/recall?q=${encodeURIComponent(query)}&limit=${limit}`
+    ).then((d) => d.results ?? []),
+  delete: (id: string) =>
+    request<{ deleted: string; status: string }>(`/memory/${id}`, { method: "DELETE" }),
+  toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
+};
+
+// ── Artifacts ──────────────────────────────────────────────────────────────────
+
+export interface Artifact {
+  id: string;
+  name: string;
+  artifact_type: string;
+  storage_uri: string;
+  content_type: string;
+  size_bytes: number;
+  goal_id: string;
+  created_at: string;
+}
+
+export const artifactsApi = {
+  list: (opts: { goalId?: string; artifactType?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.goalId) params.set("goal_id", opts.goalId);
+    if (opts.artifactType) params.set("artifact_type", opts.artifactType);
+    params.set("limit", String(opts.limit ?? 50));
+    return request<Artifact[]>(`/artifacts?${params.toString()}`);
+  },
+  get: (id: string) => request<Artifact>(`/artifacts/${id}`),
+  delete: (id: string) => request<void>(`/artifacts/${id}`, { method: "DELETE" }),
+};
+
+// ── Tools ──────────────────────────────────────────────────────────────────────
+
+const encodePath = (p: string): string =>
+  p.split("/").map(encodeURIComponent).join("/");
+
+export interface ExecuteCodeResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  success: boolean;
+  timed_out: boolean;
+  execution_time_ms: number;
+}
+
+export interface WorkspaceFile {
+  name: string;
+  path: string;
+  size_bytes?: number;
+  is_dir?: boolean;
+  [key: string]: unknown;
+}
+
+export const toolsApi = {
+  executeCode: (
+    code: string,
+    language: "python" | "javascript" | "bash" = "python",
+    timeout = 30
+  ) =>
+    request<ExecuteCodeResult>("/tools/execute-code", {
+      method: "POST",
+      body: JSON.stringify({ code, language, timeout }),
+    }),
+  listFiles: (directory = ".") =>
+    request<WorkspaceFile[]>(`/tools/files?directory=${encodeURIComponent(directory)}`),
+  readFile: (path: string) =>
+    request<{ path: string; content: string; success: boolean }>(`/tools/files/${encodePath(path)}`),
+  writeFile: (path: string, content: string) =>
+    request<{ path: string; bytes_written: number; success: boolean }>(
+      `/tools/files/${encodePath(path)}`,
+      { method: "POST", body: JSON.stringify({ content }) }
+    ),
+  deleteFile: (path: string) =>
+    request<void>(`/tools/files/${encodePath(path)}`, { method: "DELETE" }),
+  sendEmail: (body: {
+    to: string | string[];
+    subject: string;
+    body: string;
+    from_addr?: string;
+  }) =>
+    request<Record<string, unknown>>("/tools/email/send", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+// ── Training export ──────────────────────────────────────────────────────────
+
+function parseFilename(disposition: string | null, fallback: string): string {
+  if (!disposition) return fallback;
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  return match ? match[1] : fallback;
+}
+
+export const trainingApi = {
+  export: async (opts: {
+    format: "openai" | "anthropic";
+    minScore?: number;
+    limit?: number;
+  }): Promise<{ blob: Blob; filename: string; count: number }> => {
+    const params = new URLSearchParams();
+    params.set("format", opts.format);
+    params.set("min_score", String(opts.minScore ?? 0.8));
+    params.set("limit", String(opts.limit ?? 1000));
+    const apiKey = getApiKey();
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["X-API-Key"] = apiKey;
+    const res = await fetch(
+      `${API_BASE_URL}/intelligence/export-training-data?${params.toString()}`,
+      { method: "POST", headers }
+    );
+    if (!res.ok) {
+      throw new ApiError(res.status, res.statusText);
+    }
+    const blob = await res.blob();
+    return {
+      blob,
+      filename: parseFilename(
+        res.headers.get("Content-Disposition"),
+        `training_${opts.format}.jsonl`
+      ),
+      count: Number(res.headers.get("X-Training-Examples") ?? 0),
+    };
+  },
+};
+
+// ── Perception ─────────────────────────────────────────────────────────────────
+
+export interface PerceptionStatus {
+  playwright_available: boolean;
+  vision_available: boolean;
+  browser_actions: string[];
+  image_formats: string[];
+}
+
+export const perceptionApi = {
+  status: () => request<PerceptionStatus>("/perception/status"),
+  screenshot: (url: string, fullPage = false) =>
+    request<{ success: boolean; url: string; screenshot_b64: string; error: string | null }>(
+      "/perception/screenshot",
+      { method: "POST", body: JSON.stringify({ url, full_page: fullPage }) }
+    ),
+  analyze: (body: { screenshot_b64?: string; url?: string; question?: string }) =>
+    request<{ analysis: string; question: string; screenshot_provided: boolean }>(
+      "/perception/analyze",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  extract: (url: string, selector = "body") =>
+    request<{
+      success: boolean;
+      url: string;
+      selector: string;
+      text: string;
+      char_count: number;
+      error: string | null;
+    }>("/perception/extract", {
+      method: "POST",
+      body: JSON.stringify({ url, selector }),
+    }),
+};
+
+// ── A2A (read-only) ──────────────────────────────────────────────────────────
+
+export interface AgentCard {
+  agent_id: string;
+  name: string;
+  version: string;
+  description: string;
+  endpoint: string;
+  authentication: { scheme: string; header: string; note: string };
+  capabilities: string[];
+  supported_task_types: string[];
+}
+
+export interface A2ATask {
+  task_id: string;
+  goal: string;
+  status: string;
+  result?: string;
+  callback_url?: string;
+  created_at?: string;
+}
+
+export const a2aApi = {
+  agentCard: () => request<AgentCard>("/.well-known/agent.json"),
+  getTask: (taskId: string) => request<A2ATask>(`/a2a/tasks/${taskId}`),
+};
+
+// ── Integrations (inbound webhooks; config + delivery visibility) ──────────────
+
+export interface ZapierCompletedGoal {
+  id?: string;
+  goal_id?: string;
+  goal?: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+export const integrationsApi = {
+  zapierCompletedGoals: () =>
+    request<ZapierCompletedGoal[]>("/integrations/zapier/goals"),
+};
+
+// ── Governance real-time helpers + Audit ──────────────────────────────────────
+
+export interface AuditEvent {
+  event_id: string;
+  goal_id: string;
+  tool_name: string;
+  action_level: string;
+  outcome: string;
+  step_id?: string;
+  approver?: string;
+  note?: string;
+}
+
+export interface AuditQuery {
+  goal_id?: string;
+  tool_name?: string;
+  limit?: number;
+  offset?: number;
+  start_time?: string;
+  end_time?: string;
+}
+
+export const auditApi = {
+  query: (q: AuditQuery = {}) => {
+    const params = new URLSearchParams();
+    if (q.goal_id) params.set("goal_id", q.goal_id);
+    if (q.tool_name) params.set("tool_name", q.tool_name);
+    params.set("limit", String(q.limit ?? 200));
+    if (q.offset) params.set("offset", String(q.offset));
+    if (q.start_time) params.set("start_time", q.start_time);
+    if (q.end_time) params.set("end_time", q.end_time);
+    return request<AuditEvent[]>(`/governance/audit?${params.toString()}`);
+  },
+};
+
+// ── Notifications ──────────────────────────────────────────────────────────────
+
+export interface NotificationChannel {
+  channel_id: string;
+  type: string;
+  enabled: boolean;
+}
+
+export interface CreateNotificationChannelRequest {
+  channel_type: string; // "slack" | "webhook" | "teams"
+  config: Record<string, unknown>;
+}
+
+export const notificationsApi = {
+  list: () => request<NotificationChannel[]>("/governance/notifications"),
+  create: (body: CreateNotificationChannelRequest) =>
+    request<{ channel_id: string; type: string; status: string }>(
+      "/governance/notifications",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  delete: (channelId: string) =>
+    request<void>(`/governance/notifications/${channelId}`, { method: "DELETE" }),
+};
+
+// ── RBAC: roles + IP allowlist ─────────────────────────────────────────────────
+
+export interface RoleAssignment {
+  id: string;
+  user_id: string;
+  role: string;
+  created_at?: string;
+}
+
+export interface IpAllowlistEntry {
+  id: string;
+  cidr: string;
+  description: string;
+  created_at?: string;
+}
+
+export const rbacApi = {
+  listRoles: () => request<RoleAssignment[]>("/tenants/me/roles"),
+  createRole: (userId: string, role: string) =>
+    request<RoleAssignment>("/tenants/me/roles", {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId, role }),
+    }),
+  deleteRole: (roleId: string) =>
+    request<void>(`/tenants/me/roles/${roleId}`, { method: "DELETE" }),
+  listIpAllowlist: () => request<IpAllowlistEntry[]>("/tenants/me/ip-allowlist"),
+  addIpAllowlist: (cidr: string, description = "") =>
+    request<IpAllowlistEntry>("/tenants/me/ip-allowlist", {
+      method: "POST",
+      body: JSON.stringify({ cidr, description }),
+    }),
+  deleteIpAllowlist: (entryId: string) =>
+    request<void>(`/tenants/me/ip-allowlist/${entryId}`, { method: "DELETE" }),
+};
+
+// ── Compliance: legal hold + GDPR export + consent ─────────────────────────────
+
+export interface LegalHold {
+  id: string;
+  reason: string;
+  expires_at: string | null;
+  created_by: string;
+}
+
+export interface GdprExportJob {
+  job_id: string;
+  status: string; // "pending" | "running" | "complete" | "failed"
+  completed_at: string | null;
+  download_url: string | null;
+  error: string | null;
+}
+
+export interface ConsentRecord {
+  consent_id: string;
+  purpose: string;
+  status: string;
+}
+
+export const complianceApi = {
+  listLegalHolds: () => request<LegalHold[]>("/governance/legal-holds"),
+  startGdprExport: () =>
+    request<{ job_id: string; status: string; poll_url: string }>(
+      "/compliance/export/start",
+      { method: "POST" },
+    ),
+  getGdprExportStatus: (jobId: string) =>
+    request<GdprExportJob>(`/compliance/export/jobs/${jobId}`),
+  recordConsent: (purpose: string, legalBasis = "legitimate_interest") =>
+    request<ConsentRecord>(
+      "/compliance/consent",
+      { method: "POST", body: JSON.stringify({ purpose, legal_basis: legalBasis }) },
+    ),
+  revokeConsent: (purpose: string) =>
+    request<{ purpose: string; status: string }>(
+      `/compliance/consent/${purpose}`,
+      { method: "DELETE" },
+    ),
 };

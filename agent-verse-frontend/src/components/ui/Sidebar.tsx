@@ -4,7 +4,9 @@ import {
   LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen,
   Shield, Users, Activity, BarChart3, ShoppingBag, Building,
   Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
-  GitBranch, FlaskConical, BarChart2, Globe
+  GitBranch, FlaskConical, BarChart2, Globe,
+  Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
+  Bell, KeyRound, FileLock
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -59,21 +61,37 @@ export function Sidebar() {
       items: [
         { to: "/governance", icon: Shield,      label: "Governance"  },
         { to: "/approvals",  icon: CheckSquare, label: "Approvals",  badge: pendingCount > 0 ? pendingCount : undefined },
+        { to: "/notifications", icon: Bell,     label: "Notifications" },
+        { to: "/rbac",       icon: KeyRound,    label: "Access Control" },
+        { to: "/compliance", icon: FileLock,    label: "Compliance"  },
+        { to: "/audit",      icon: Activity,    label: "Audit Log"   },
         { to: "/settings",   icon: Settings,    label: "Settings"    },
       ],
     },
     {
       heading: "Enterprise",
       items: [
-        { to: "/marketplace",         icon: ShoppingBag, label: "Marketplace"       },
-        { to: "/observability",        icon: Activity,    label: "Observability"     },
-        { to: "/observability/cost",   icon: DollarSign,  label: "Cost Dashboard"    },
-        { to: "/eval",                 icon: BarChart3,   label: "Eval"              },
-        { to: "/enterprise",           icon: Building,    label: "Enterprise"        },
-        { to: "/analytics",            icon: BarChart2,   label: "Analytics"         },
-        { to: "/workflow-builder",     icon: GitBranch,   label: "Workflow Builder"  },
-        { to: "/playground",           icon: FlaskConical, label: "Playground"       },
-        { to: "/civilization",         icon: Globe,        label: "Civilization"     },
+        { to: "/marketplace",         icon: ShoppingBag,  label: "Marketplace"       },
+        { to: "/observability",        icon: Activity,     label: "Observability"     },
+        { to: "/observability/cost",   icon: DollarSign,   label: "Cost Dashboard"    },
+        { to: "/eval",                 icon: BarChart3,    label: "Eval"              },
+        { to: "/enterprise",           icon: Building,     label: "Enterprise"        },
+        { to: "/analytics",            icon: BarChart2,    label: "Analytics"         },
+        { to: "/workflow-builder",     icon: GitBranch,    label: "Workflow Builder"  },
+        { to: "/playground",           icon: FlaskConical, label: "Playground"        },
+        { to: "/civilization",         icon: Globe,        label: "Civilization"      },
+      ],
+    },
+    {
+      heading: "Tooling",
+      items: [
+        { to: "/tools",           icon: Wrench,        label: "Tools"           },
+        { to: "/memory",          icon: Brain,         label: "Memory"          },
+        { to: "/artifacts",       icon: FileBox,       label: "Artifacts"       },
+        { to: "/integrations",    icon: Webhook,       label: "Integrations"    },
+        { to: "/perception",      icon: Eye,           label: "Perception"      },
+        { to: "/training-export", icon: GraduationCap, label: "Training Export" },
+        { to: "/a2a",             icon: Network,       label: "A2A"             },
       ],
     },
   ];

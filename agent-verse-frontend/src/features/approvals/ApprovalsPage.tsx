@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { governanceApi, ApprovalRequest } from "@/lib/api/client";
 import { useAuthStore } from "../../stores/auth";
 import { CheckCircle, XCircle, Loader2, Inbox } from "lucide-react";
+import { useEventStream } from "@/lib/sse/useEventStream";
 
 // ── ApprovalsPage ─────────────────────────────────────────────────────────────
 
@@ -20,7 +21,12 @@ export function ApprovalsPage() {
   } = useQuery<ApprovalRequest[]>({
     queryKey: ["approvals"],
     queryFn: () => governanceApi.listApprovals(),
-    refetchInterval: 5_000,
+    refetchInterval: 30_000,
+  });
+
+  // Live update: invalidate the query whenever the SSE stream pushes an event
+  useEventStream(governanceApi.approvalsStreamPath(), {
+    onEvent: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
   });
 
   const pending = approvals.filter((a) => a.status === "pending");
@@ -63,7 +69,7 @@ export function ApprovalsPage() {
           </p>
         </div>
         <div className="text-xs text-muted-foreground">
-          Auto-refreshes every 5s
+          Live updates
         </div>
       </div>
 
