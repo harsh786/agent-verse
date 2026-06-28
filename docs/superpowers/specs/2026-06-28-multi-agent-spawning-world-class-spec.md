@@ -818,3 +818,374 @@ const GoalLineageTree = lazy(() => import("@/features/goals/GoalLineageTree").th
 <Route path="goals/multi-agent" element={<Suspense fallback={<LoadingSpinner/>}><MultiAgentLauncherPage /></Suspense>} />
 <Route path="goals/:goalId/lineage" element={<Suspense fallback={<LoadingSpinner/>}><GoalLineageTree /></Suspense>} />
 ```
+
+---
+
+## 8. Amendments — World-Class Completeness Fixes
+
+### 8.1 PostgreSQL FROM DUAL Bug Fix (Section 3.4)
+
+The `GET /goals/{id}/lineage` query in Section 3.4 uses `FROM DUAL`, which is Oracle syntax.
+PostgreSQL does not have a `DUAL` table. Replace the UNION query:
+
+```sql
+-- WRONG (Oracle / MySQL syntax — will fail on PostgreSQL):
+-- SELECT null, null, :root_id, null, null, null, null, 0, NOW(), '' FROM DUAL
+
+-- CORRECT (PostgreSQL uses VALUES for literal rows):
+SELECT
+    gl.id, gl.root_goal_id, gl.parent_goal_id, gl.child_goal_id,
+    gl.parent_agent_id, gl.child_agent_id, gl.civilization_id,
+    gl.spawn_reason, gl.depth, gl.spawned_at, gl.tenant_id
+FROM goal_lineage gl
+WHERE gl.root_goal_id = :root_id AND gl.tenant_id = :tid
+
+UNION ALL
+
+-- Inject the root node as a synthetic row so the tree always has a root:
+SELECT
+    'root' AS id,
+    :root_id AS root_goal_id,
+    NULL AS parent_goal_id,
+    :root_id AS child_goal_id,
+    NULL AS parent_agent_id,
+    NULL AS child_agent_id,
+    NULL AS civilization_id,
+    '' AS spawn_reason,
+    0 AS depth,
+    NOW() AS spawned_at,
+    :tid AS tenant_id
+
+ORDER BY depth ASC
+```
+
+The root node row is filtered out of the `nodes` array in Python (where `id = 'root'`) and used
+only to ensure the lineage graph always has a visible root even if `goal_lineage` contains no
+rows yet (e.g., for goals submitted before migration 0050).
+
+---
+
+### 8.2 GoalLineageTree — Concrete D3 Implementation (replaces Section 4.3 comment-only useEffect)
+
+Replace the `// Build hierarchy... // Apply d3.hierarchy...` comment block in `GoalLineageTree`
+with a working imperative SVG renderer. This avoids the `d3-hierarchy` import dependency by
+doing the layout manually:
+
+```typescript
+useEffect(() => {
+  if (!lineage || !svgRef.current || lineage.nodes.length === 0) return;
+
+  // Build adjacency map for simple parent-child traversal
+  const nodeMap = new Map(
+    lineage.nodes.map(n => [n.goal_id, { ...n, children: [] as any[] }])
+  );
+  const roots: any[] = [];
+
+  lineage.edges.forEach(e => {
+    const parent = nodeMap.get(e.parent);
+    const child = nodeMap.get(e.child);
+    if (parent && child) parent.children.push(child);
+  });
+
+  lineage.nodes.forEach(n => {
+    if (!lineage.edges.some(e => e.child === n.goal_id)) {
+      roots.push(nodeMap.get(n.goal_id));
+    }
+  });
+
+  const rootData = roots[0] ?? { goal_id: lineage.root_goal_id, children: [] };
+
+  const svg = svgRef.current;
+  svg.innerHTML = "";
+
+  const NODE_W = 180, NODE_H = 60, H_GAP = 40, V_GAP = 80;
+
+  // Manual recursive tree layout (avoids d3-hierarchy import complexity)
+  const positioned: Array<{ node: any; x: number; y: number }> = [];
+
+  function layout(node: any, depth: number, xOffset: number): number {
+    const children = node.children ?? [];
+    if (children.length === 0) {
+      positioned.push({ node, x: xOffset, y: depth * (NODE_H + V_GAP) });
+      return xOffset + NODE_W + H_GAP;
+    }
+    const startX = xOffset;
+    let nextX = xOffset;
+    children.forEach((child: any) => {
+      nextX = layout(child, depth + 1, nextX);
+    });
+    const centerX = (startX + nextX - H_GAP - NODE_W) / 2;
+    positioned.push({ node, x: centerX, y: depth * (NODE_H + V_GAP) });
+    return nextX;
+  }
+
+  layout(rootData, 0, 0);
+
+  const totalW = Math.max(...positioned.map(p => p.x + NODE_W)) + 40;
+  const totalH = Math.max(...positioned.map(p => p.y + NODE_H)) + 40;
+  svg.setAttribute("width", String(totalW));
+  svg.setAttribute("height", String(totalH));
+  svg.setAttribute("viewBox", `0 0 ${totalW} ${totalH}`);
+
+  const posMap = new Map(positioned.map(p => [p.node.goal_id, p]));
+
+  const STATUS_FILL: Record<string, string> = {
+    complete: "#dcfce7",
+    completed: "#dcfce7",
+    executing: "#dbeafe",
+    planning: "#fef3c7",
+    failed: "#fee2e2",
+    cancelled: "#f3f4f6",
+  };
+
+  // Draw edges first (so nodes render on top)
+  lineage.edges.forEach(e => {
+    const parent = posMap.get(e.parent);
+    const child = posMap.get(e.child);
+    if (!parent || !child) return;
+
+    const px = parent.x + NODE_W / 2;
+    const py = parent.y + NODE_H;
+    const cx = child.x + NODE_W / 2;
+    const cy = child.y;
+
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      `M${px},${py} C${px},${py + V_GAP / 2} ${cx},${cy - V_GAP / 2} ${cx},${cy}`
+    );
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "hsl(var(--border))");
+    path.setAttribute("stroke-width", "1.5");
+    svg.appendChild(path);
+  });
+
+  // Draw nodes
+  positioned.forEach(({ node, x, y }) => {
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.style.cursor = "pointer";
+    g.addEventListener("click", () => navigate(`/goals/${node.goal_id}`));
+
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", String(y));
+    rect.setAttribute("width", String(NODE_W));
+    rect.setAttribute("height", String(NODE_H));
+    rect.setAttribute("rx", "8");
+    rect.setAttribute("fill", STATUS_FILL[node.status] ?? "#f9fafb");
+    rect.setAttribute("stroke", "hsl(var(--border))");
+    rect.setAttribute("stroke-width", "1.5");
+
+    const agentText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    agentText.setAttribute("x", String(x + 10));
+    agentText.setAttribute("y", String(y + 20));
+    agentText.setAttribute("font-size", "11");
+    agentText.setAttribute("font-weight", "600");
+    agentText.setAttribute("fill", "#111827");
+    agentText.textContent = (node.agent_name ?? node.goal_id).slice(0, 22);
+
+    const costText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    costText.setAttribute("x", String(x + 10));
+    costText.setAttribute("y", String(y + 38));
+    costText.setAttribute("font-size", "10");
+    costText.setAttribute("fill", "#6b7280");
+    costText.textContent = `$${(node.cost_usd ?? 0).toFixed(4)} · ${node.status}`;
+
+    g.appendChild(rect);
+    g.appendChild(agentText);
+    g.appendChild(costText);
+    svg.appendChild(g);
+  });
+}, [lineage, zoom, navigate]);
+```
+
+---
+
+### 8.3 SupervisorAgent — Define `_emit_event` and `_write_lineage` (Section 3.2)
+
+Section 3.2 calls `await self._emit_event(...)` and `await self._write_lineage(...)` but does
+not define them. Add these methods to `SupervisorAgent`:
+
+**`_emit_event`:**
+```python
+async def _emit_event(self, goal_id: str, event: dict) -> None:
+    """Emit an SSE event to the parent goal's stream via GoalService pub/sub.
+    Non-critical — supervisor continues if this fails.
+    """
+    if not goal_id or self._goal_service is None:
+        return
+    try:
+        # Delegates to GoalService's internal SSE broadcast mechanism
+        await self._goal_service._broadcast_event(goal_id=goal_id, event=event)
+    except Exception:
+        pass
+```
+
+**`_write_lineage`:**
+```python
+async def _write_lineage(
+    self,
+    parent_goal_id: str,
+    child_goal_id: str,
+    spawn_reason: str,
+    tenant_id: str,
+) -> None:
+    """Persist parent→child relationship to goal_lineage DB table.
+    Resolves root_goal_id by chasing the lineage chain upward one level.
+    Non-critical — supervisor continues if this fails.
+    """
+    db = getattr(self._goal_service, "_db", None)
+    if db is None:
+        return
+    import uuid
+    from sqlalchemy import text as _t
+    try:
+        async with db() as session:
+            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("""
+                INSERT INTO goal_lineage
+                    (id, root_goal_id, parent_goal_id, child_goal_id,
+                     tenant_id, depth, spawn_reason)
+                VALUES (
+                    :id,
+                    COALESCE(
+                        (SELECT root_goal_id FROM goal_lineage
+                         WHERE child_goal_id = :parent AND tenant_id = :tid
+                         LIMIT 1),
+                        :parent
+                    ),
+                    :parent, :child, :tid,
+                    COALESCE(
+                        (SELECT depth + 1 FROM goal_lineage
+                         WHERE child_goal_id = :parent AND tenant_id = :tid
+                         LIMIT 1),
+                        1
+                    ),
+                    :reason
+                )
+                ON CONFLICT (child_goal_id) DO NOTHING
+            """), {
+                "id": str(uuid.uuid4()),
+                "parent": parent_goal_id,
+                "child": child_goal_id,
+                "tid": tenant_id,
+                "reason": spawn_reason[:200],
+            })
+            await session.commit()
+    except Exception:
+        pass
+```
+
+`_goal_service` must be passed to `SupervisorAgent.__init__` and stored as `self._goal_service`.
+If the supervisor is constructed without a goal_service (e.g., in tests), both helpers are
+no-ops.
+
+---
+
+### 8.4 N+1 Polling Fix — SubAgentGanttView Batch Fetch (Section 4.2)
+
+The current `SubAgentGanttView` implementation issues one HTTP request per sub-goal ID:
+```typescript
+// Current — N individual requests:
+await Promise.allSettled(subGoalIds.map(id => goalsApi.get(id)))
+```
+
+This is N+1 for large supervisor plans. Replace with a single batch call when the endpoint
+exists, falling back to bounded parallel fetches:
+
+```typescript
+queryFn: async () => {
+  // Prefer the batch sub-goals endpoint (single DB query, no N+1):
+  if (goalsApi.getSubGoals) {
+    const data = await goalsApi.getSubGoals(parentGoalId);
+    return data.sub_goals ?? [];
+  }
+  // Fallback: bounded parallel fetches (cap at 10 to limit blast radius)
+  const results = await Promise.allSettled(
+    subGoalIds.slice(0, 10).map(id => goalsApi.get(id).catch(() => null))
+  );
+  return results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
+    .map(r => r.value);
+},
+```
+
+The `GET /goals/{id}/sub-goals` endpoint defined in Section 3.4 resolves all children in a
+single `JOIN goals ON goal_lineage.child_goal_id = goals.goal_id WHERE parent_goal_id = ?`
+query, eliminating the N+1 entirely once the backend is deployed.
+
+---
+
+### 8.5 Mobile Responsiveness, Error States, and Motion
+
+#### Mobile Responsiveness
+
+**SubAgentGanttView:**
+```typescript
+// Cost column hidden on small screens:
+<LiveCostTicker
+  currentCost={goal.cost_usd ?? 0}
+  isRunning={isLive}
+  className="text-[10px] hidden sm:block"  // hide on mobile
+/>
+// Summary bar switches to column layout:
+<div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-muted-foreground gap-1">
+```
+
+**GoalLineageTree SVG:**
+```typescript
+// Set preserveAspectRatio so the tree scales on narrow viewports:
+svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+// Wrap the SVG in a scrollable container:
+<div className="flex-1 overflow-auto bg-background" style={{ cursor: "grab" }}>
+  <svg ref={svgRef} ... />
+</div>
+```
+
+#### Error / Empty States
+
+**SubAgentGanttView — no sub-agents yet:**
+```typescript
+if (subGoals.length === 0 && !isLoading) {
+  return (
+    <EmptyState
+      title="No sub-agents yet"
+      description="Sub-agents will appear here once the supervisor decomposes the goal"
+    />
+  );
+}
+```
+
+**GoalLineageTree — no lineage data:**
+```typescript
+if (!lineage || lineage.nodes.length === 0) {
+  return (
+    <EmptyState
+      icon={GitBranch}
+      title="No lineage data"
+      description="This goal has no spawn lineage recorded"
+    />
+  );
+}
+```
+
+**MultiAgentLauncherPage — network error on submit:**
+```typescript
+onError: (e) => toast({ kind: "error", message: "Failed to submit multi-agent goal" }),
+```
+
+#### prefers-reduced-motion
+
+Add to `agent-verse-frontend/src/index.css` (same block as civilization spec Section 9.7):
+```css
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-in-from-left,
+  .strategy-card-hover,
+  .gantt-bar-fill,
+  .lineage-node-entrance {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+```

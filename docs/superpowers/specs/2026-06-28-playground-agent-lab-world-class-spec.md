@@ -985,3 +985,225 @@ test("streaming feed renders step events in order", async () => { ... });
 // E2E: agent-lab.spec.ts
 test("Pre-Flight → Live Sim → Score complete workflow", async ({ page }) => { ... });
 ```
+
+---
+
+## 8. Amendments — World-Class Completeness Fixes
+
+### FIX: Async generator monkey-patch → callback injection
+
+The `instrumented_execute` approach is architecturally broken. Replace with callback injection:
+
+```python
+# In app/enterprise/simulation.py SimulationRunner.run_streaming():
+# INSTEAD OF monkey-patching graph._node_execute,
+# Pass a step_callback to AgentGraph constructor:
+
+# First, modify AgentGraph to accept optional callbacks:
+# In app/agent/graph.py __init__:
+#   self._step_callback = kwargs.get("step_callback", None)
+# In _node_execute(), BEFORE returning:
+#   if self._step_callback:
+#       asyncio.create_task(self._step_callback("step_completed", step_data))
+
+# Then in run_streaming:
+step_events: asyncio.Queue = asyncio.Queue()
+
+async def step_callback(event_type: str, data: dict):
+    await step_events.put({"type": event_type, **data})
+
+graph = AgentGraph(
+    goal=body.goal,
+    tenant_ctx=tenant_ctx,
+    mcp_client=mock_client,
+    provider=self._provider,
+    step_callback=step_callback,  # <-- NEW PARAMETER
+    max_iterations=body.max_steps,
+)
+
+# Run graph and yield from queue simultaneously:
+graph_task = asyncio.create_task(graph.run())
+while not graph_task.done() or not step_events.empty():
+    try:
+        event = await asyncio.wait_for(step_events.get(), timeout=0.1)
+        yield event
+    except asyncio.TimeoutError:
+        pass
+final_state = await graph_task
+yield {"type": "simulation_complete", "final_status": str(final_state.status), ...}
+```
+
+### FIX: EventSource POST → fetch-based SSE
+
+The frontend cannot use native `EventSource` with POST. Use the same fetch-based SSE pattern as `useGoalStream.ts`:
+
+```typescript
+// In LiveSimTab.tsx:
+async function startStreaming(goal: string, mockTools: Record<string, unknown>, agentId?: string) {
+  const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
+  setStreaming(true);
+  clearSession();
+
+  const abortController = new AbortController();
+  abortControllerRef.current = abortController;
+
+  try {
+    const response = await fetch(`${API_BASE}/enterprise/simulation/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey,
+      },
+      body: JSON.stringify({ goal, mock_tools: mockTools, agent_id: agentId || undefined }),
+      signal: abortController.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`Simulation failed: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const event = JSON.parse(line.slice(6)) as SimulationEvent;
+            appendEvent(event);
+          } catch {}
+        }
+      }
+    }
+  } catch (e) {
+    if (!(e instanceof DOMException && e.name === "AbortError")) {
+      toast({ kind: "error", message: `Simulation error: ${String(e)}` });
+    }
+  } finally {
+    setStreaming(false);
+  }
+}
+
+// Add cleanup:
+useEffect(() => {
+  return () => abortControllerRef.current?.abort();
+}, []);
+```
+
+### FIX: MockMCPClient.was_hit() definition
+
+```python
+# In app/enterprise/simulation.py MockMCPClient:
+def __init__(self, mock_tools: dict[str, Any]):
+    self._mock_tools = mock_tools
+    self._hit_tools: set[str] = set()  # track which tools were actually hit
+
+async def call_tool(self, server_id: str, tool_name: str, arguments: dict) -> dict:
+    full_name = f"{server_id}.{tool_name}"
+    for key in [full_name, tool_name]:
+        if key in self._mock_tools:
+            self._hit_tools.add(key)
+            return self._mock_tools[key]
+    return {"result": f"[simulated: no mock configured for {full_name}]", "simulated": True}
+
+def was_hit(self, tool_name: str | None) -> bool:
+    """Return True if this tool name was served from the mock dictionary."""
+    if not tool_name:
+        return False
+    return tool_name in self._hit_tools or any(
+        tool_name == k.split(".")[-1] for k in self._hit_tools
+    )
+```
+
+### FIX: EvalPage redirect specification
+
+```typescript
+// src/features/eval/EvalPage.tsx — add redirect at top of component:
+import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+export function EvalPage() {
+  const navigate = useNavigate();
+  useEffect(() => { navigate("/lab?tab=score", { replace: true }); }, []);
+  return null;
+}
+// Also add App.tsx route preservation:
+<Route path="eval" element={<Navigate to="/lab?tab=score" replace />} />
+```
+
+### FIX: Auth on streaming SSE endpoint
+
+```python
+# The streaming endpoint MUST validate auth before returning the Response:
+@router.post("/simulation/stream")
+async def stream_simulation(request: Request, body: StreamingSimulationRequest) -> StreamingResponse:
+    ctx = _require_tenant(request)  # ← Auth check happens BEFORE the generator
+    runner = _simulation_runner(request)
+    if runner is None:
+        raise HTTPException(503, "Simulation runner not available")
+
+    # Capture these BEFORE entering generator (prevents dependency injection issues in streaming context):
+    tenant_id = ctx.tenant_id
+    goal = body.goal
+    mock_tools = body.mock_tools
+    max_steps = body.max_steps
+
+    async def generate():
+        # Use captured values, not request/ctx which may be invalid in generator context
+        async for event in runner.run_streaming(goal=goal, mock_tools=mock_tools, ...):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", ...)
+```
+
+### FIX: simulation_info event type in TypeScript
+
+```typescript
+// In SimulationEventType union, add:
+export type SimulationEventType =
+  | "simulation_started" | "simulation_info" | "step_started" | "step_completed"  // ← add simulation_info
+  | "mock_tool_called" | "tool_not_mocked" | "simulation_complete" | "simulation_error";
+```
+
+### FIX: Animation implementations (prose → code)
+
+```css
+/* Eval radar reveal: */
+@keyframes radarAxisExtend {
+  from { stroke-dashoffset: 100; opacity: 0; }
+  to   { stroke-dashoffset: 0; opacity: 1; }
+}
+/* Apply to each PolarRadiusAxis line with animation-delay: {axisIndex * 50}ms */
+
+/* Simulation complete summary: */
+@keyframes summarySlideDown {
+  from { transform: translateY(-24px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+.animate-summary-in { animation: summarySlideDown 300ms ease-out forwards; }
+```
+
+### ADD: Missing empty states + prefers-reduced-motion
+
+```
+Empty states:
+- StreamingFeed before first simulation:
+  <EmptyState icon={FlaskConical} title="Run a simulation" description="Results stream in step by step. Configure your mock tools on the right, then hit Run." />
+- PreFlightTab before submit:
+  <EmptyState icon={Shield} title="Pre-flight check" description="Enter a goal above to analyze governance policies and see the execution plan before running." />
+- ScoreTab eval history with no data:
+  <EmptyState icon={BarChart3} title="No eval history" description="Run goals with an agent to start building an eval history." />
+
+prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .animate-step-in, .animate-mock-bounce, .animate-cost-flash, .animate-summary-in {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+```
