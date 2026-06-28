@@ -408,7 +408,7 @@ export const schedulesApi = {
     request<Schedule>("/schedules", { method: "POST", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/schedules/${id}`, { method: "DELETE" }),
   createNl: (command: string) =>
-    request<Schedule>("/schedules/nl", { method: "POST", body: JSON.stringify({ command }) }),
+    request<Schedule>("/nl/schedule", { method: "POST", body: JSON.stringify({ command }) }),
 };
 
 // ── Analytics ────────────────────────────────────────────────────────────────
@@ -432,7 +432,7 @@ export const analyticsApi = {
   getGoalMetrics: (days = 30) =>
     request<GoalMetrics>(`/analytics/goals?days=${days}`),
   getCostMetrics: (days = 30) =>
-    request<CostMetrics>(`/analytics/cost?days=${days}`),
+    request<CostMetrics>(`/analytics/costs?days=${days}`),
   getEvalMetrics: (days = 30) =>
     request<EvalMetrics>(`/analytics/evals?days=${days}`),
 };
