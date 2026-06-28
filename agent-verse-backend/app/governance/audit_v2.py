@@ -318,6 +318,21 @@ class AuditFlusher:
                 await self._send_to_dlq(events_to_insert)
                 return 0
 
+    async def run(self) -> None:
+        """Background loop: flush WAL every WAL_FLUSH_INTERVAL seconds.
+
+        Intended to be launched as an asyncio.create_task() during lifespan.
+        Runs indefinitely until the task is cancelled on shutdown.
+        """
+        import asyncio as _asyncio_wal
+
+        while True:
+            try:
+                await self.flush()
+            except Exception as exc:
+                logger.error("audit_flusher_loop_error", error=str(exc))
+            await _asyncio_wal.sleep(WAL_FLUSH_INTERVAL)
+
     async def _send_to_dlq(self, events: list[dict[str, Any]]) -> None:
         pipeline = self._redis.pipeline(transaction=False)
         for e in events:

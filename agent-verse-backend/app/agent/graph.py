@@ -25,7 +25,14 @@ from typing import Any, TypedDict
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, EXECUTOR_SYSTEM, PLANNER_SYSTEM, REFLECTION_SYSTEM, STRUCTURED_PLANNER_SYSTEM, VERIFIER_SYSTEM
+from app.agent.prompts import (
+    CHAIN_OF_THOUGHT_SYSTEM,
+    EXECUTOR_SYSTEM,
+    PLANNER_SYSTEM,
+    REFLECTION_SYSTEM,
+    STRUCTURED_PLANNER_SYSTEM,
+    VERIFIER_SYSTEM,
+)
 from app.agent.sanitization import (
     sanitize_event,
     sanitize_event_value,
@@ -490,7 +497,6 @@ class AgentGraph:
 
         # Determine system content — prepend agent system_prompt if present
         # Use PromptOptimizer variant when wired (Task 7)
-        from app.intelligence.prompt_optimizer import PromptOptimizer as _PromptOptimizer
         _plan_optimizer = getattr(self, "_prompt_optimizer", None)
         if _plan_optimizer is not None:
             _plan_variant = _plan_optimizer.select_variant("planner", tenant_id=tenant_ctx.tenant_id)
@@ -657,7 +663,9 @@ class AgentGraph:
 
         # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
         import asyncio as _asyncio
-        from app.agent.structured_plan import StructuredPlan as _SP, StructuredStep as _SS
+
+        from app.agent.structured_plan import StructuredPlan as _SP
+        from app.agent.structured_plan import StructuredStep as _SS
 
         _structured: _SP | None = None
         for _entry in plan:
@@ -804,7 +812,7 @@ class AgentGraph:
                 ]
                 try:
                     await _asyncio.gather(*tasks)
-                except (PermissionError, Exception) as exc:
+                except (PermissionError, Exception):
                     for t in tasks:
                         if not t.done():
                             t.cancel()
@@ -1179,6 +1187,35 @@ class AgentGraph:
         else:
             tool_call = extract_tool_call(raw_output)
         if tool_call is not None:
+            # GuardrailEngine v2: evaluate tool arguments BEFORE the MCP call
+            _guardrail_engine_v2 = (
+                getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
+            )
+            if _guardrail_engine_v2 is not None:
+                try:
+                    from app.intelligence.guardrail_engine import GuardrailContext as _GCtx
+                    _ge_ctx = _GCtx(
+                        tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+                        goal_id=state.goal_id or "",
+                        agent_id=self._agent_id or "",
+                        domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                    )
+                    _ge_args_result = await _guardrail_engine_v2.evaluate_tool_args(
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments or {},
+                        context=_ge_ctx,
+                    )
+                    if not _ge_args_result.allowed:
+                        _ge_viol = _ge_args_result.violations[0] if _ge_args_result.violations else None
+                        raise PermissionError(
+                            f"Guardrail blocked tool call '{tool_name}': "
+                            f"{_ge_viol.matched_pattern if _ge_viol else 'policy violation'}"
+                        )
+                except PermissionError:
+                    raise
+                except Exception as _ge_exc:
+                    self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
+
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
                 error = self._sanitize_tool_raw_output("MCP client unavailable")
@@ -1212,8 +1249,8 @@ class AgentGraph:
                         and tool_call.tool == "civilization_spawn"
                     ):
                         try:
-                            from app.civilization.spawn_tool import execute_spawn_tool
                             from app.civilization.governor import Governor
+                            from app.civilization.spawn_tool import execute_spawn_tool
                             _gov_kwargs: dict[str, Any] = {
                                 "civilization_id": self._civilization_id,
                                 "tenant_id": tenant_ctx.tenant_id,
@@ -1513,6 +1550,29 @@ class AgentGraph:
             output_issues = self._guardrail_checker.check_output(output=raw_output)
             if output_issues:
                 raw_output = f"[Output redacted by guardrails: {'; '.join(output_issues)}]"
+
+        # GuardrailEngine v2: scan output for PII/secrets/cloud-destruction patterns
+        _guardrail_engine_v2_out = (
+            getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
+        )
+        if _guardrail_engine_v2_out is not None and raw_output:
+            try:
+                from app.intelligence.guardrail_engine import GuardrailContext as _GCtxOut
+                _ge_out_ctx = _GCtxOut(
+                    tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+                    goal_id=state.goal_id or "",
+                    agent_id=self._agent_id or "",
+                    domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                )
+                _ge_out_result = await _guardrail_engine_v2_out.evaluate_tool_output(
+                    tool_name=tool_name,
+                    output=str(raw_output),
+                    context=_ge_out_ctx,
+                )
+                if _ge_out_result.redacted_content:
+                    raw_output = _ge_out_result.redacted_content
+            except Exception as _ge_out_exc:
+                self._logger.warning("guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc))
 
         # 10. Record rollback point
         if self._rollback_engine is not None:

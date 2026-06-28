@@ -7,6 +7,7 @@ import hashlib
 import os
 import signal as _signal
 import time
+from datetime import UTC
 from typing import Any, cast
 
 from app.observability.logging import get_logger
@@ -77,6 +78,7 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
     """
     try:
         import redis.asyncio as aioredis
+
         from app.tenancy.limits import decrement_concurrent_goals
         r = aioredis.from_url(redis_url, decode_responses=True)
         await decrement_concurrent_goals(tenant_id=tenant_id, redis=r)
@@ -1094,6 +1096,7 @@ def check_mcp_health() -> dict[str, Any]:
                 return {"servers_checked": 0, "results": [], "status": "skipped"}
 
             import time as _time
+
             import httpx as _httpx
             import redis.asyncio as aioredis
 
@@ -1528,8 +1531,9 @@ async def _do_check_email_goals() -> dict[str, Any]:
 def consolidate_memories_task() -> dict:
     """Consolidate and deduplicate long-term memories older than 7 days."""
     async def _run() -> dict:
-        from app.db.session import get_session_factory
         from sqlalchemy import text
+
+        from app.db.session import get_session_factory
 
         db = get_session_factory()
         results: dict = {}
@@ -1589,8 +1593,9 @@ except Exception as _sched_exc:
 def reindex_stale_knowledge() -> dict:
     """Mark knowledge chunks past their freshness TTL as needing reindex."""
     async def _run() -> dict:
-        from app.db.session import get_session_factory
         from sqlalchemy import text
+
+        from app.db.session import get_session_factory
         db = get_session_factory()
         async with db() as session, session.begin():
             result = await session.execute(text("""
@@ -1634,8 +1639,9 @@ except Exception as _reindex_sched_exc:
 def purge_expired_artifacts() -> dict:
     """Delete artifacts past their expiry date from DB (MinIO lifecycle handles storage)."""
     async def _run() -> dict:
-        from app.db.session import get_session_factory
         from sqlalchemy import text
+
+        from app.db.session import get_session_factory
         db = get_session_factory()
         async with db() as session, session.begin():
             result = await session.execute(text(
@@ -1653,8 +1659,9 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     in gdpr_export_jobs with status='complete' and a download_url.
     """
     async def _run() -> dict[str, Any]:
-        from app.db.session import get_session_factory
         from sqlalchemy import text
+
+        from app.db.session import get_session_factory
         db = get_session_factory()
         try:
             # Collect all tenant data
@@ -1673,11 +1680,11 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
 
             import json
             import uuid as _uuid
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             export_data = {
                 "tenant_id": tenant_id,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "exported_at": datetime.now(UTC).isoformat(),
                 "goals": [
                     {"id": str(r[0]), "text": str(r[1]), "status": str(r[2])}
                     for r in goals
@@ -1724,15 +1731,17 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
     """Periodic tick for a civilization — breach check, auto-retire, learning step."""
     async def _run() -> dict:
         try:
-            from app.db.session import get_session_factory
-            from app.civilization.orchestrator import CivilizationOrchestrator
-            from app.civilization.models import Constitution
-            from app.civilization.governor import Governor
-            from app.civilization.society import Society
-            from app.civilization.bus import CivilizationBus
+            import json
+            import os
+
             from app.civilization.blackboard import Blackboard
+            from app.civilization.bus import CivilizationBus
+            from app.civilization.governor import Governor
             from app.civilization.learning import LearningPipeline
-            import json, os
+            from app.civilization.models import Constitution
+            from app.civilization.orchestrator import CivilizationOrchestrator
+            from app.civilization.society import Society
+            from app.db.session import get_session_factory
 
             db = get_session_factory()
             redis_url = os.getenv("REDIS_URL", "")
@@ -1755,7 +1764,7 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             except Exception:
                 pass
 
-            from app.tenancy.context import TenantContext, PlanTier
+            from app.tenancy.context import PlanTier, TenantContext
             tenant_ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="tick")
 
             governor = Governor(
@@ -1804,8 +1813,8 @@ def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
     """Run one step of the learning pipeline for a civilization."""
     async def _run() -> dict:
         try:
-            from app.db.session import get_session_factory
             from app.civilization.learning import LearningPipeline
+            from app.db.session import get_session_factory
             db = get_session_factory()
             pipeline = LearningPipeline(
                 civilization_id=civilization_id, tenant_id=tenant_id,
@@ -1832,8 +1841,8 @@ def warm_jwks_cache() -> dict:
 
     async def _run() -> dict:
         try:
-            from app.db.session import get_session_factory
             from app.auth.agent_identity import _build_jwks  # type: ignore[import]
+            from app.db.session import get_session_factory
             db = get_session_factory()
             jwks_keys = await _build_jwks(db)
             import redis as _redis
@@ -1854,22 +1863,103 @@ def create_guardrail_partitions() -> dict:
     return {"status": "noop"}
 
 
-@celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="maintenance")
+@celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
 def enforce_hitl_sla() -> dict:
-    """Check pending HITL approvals past SLA and escalate/auto-reject."""
-    return {"status": "noop"}
+    """Check pending HITL approvals past SLA deadline and escalate or auto-resolve."""
+    async def _run() -> dict:
+        try:
+            from sqlalchemy import text as _t
+
+            from app.db.session import get_session_factory
+
+            db = get_session_factory()
+            enforced = 0
+            async with db() as session:
+                overdue = (
+                    await session.execute(
+                        _t("""
+                            SELECT id, tenant_id, request_id, sla_deadline_at, escalation_action
+                            FROM hitl_approval_requests
+                            WHERE status = 'pending'
+                              AND sla_deadline_at IS NOT NULL
+                              AND sla_deadline_at < NOW()
+                            LIMIT 100
+                        """)
+                    )
+                ).fetchall()
+                for row in overdue:
+                    await session.execute(
+                        _t("""
+                            UPDATE hitl_approval_requests
+                            SET status = 'sla_escalated', resolved_at = NOW()
+                            WHERE id = :id
+                        """),
+                        {"id": row[0]},
+                    )
+                    enforced += 1
+                await session.commit()
+            return {"enforced": enforced}
+        except Exception as exc:
+            return {"error": str(exc), "enforced": 0}
+
+    return asyncio.run(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.flush_audit_wal", queue="maintenance")
 def flush_audit_wal() -> dict:
-    """Flush Redis WAL buffer to Postgres for audit_log_v2 entries."""
-    return {"status": "noop"}
+    """Drain Redis WAL buffer to Postgres audit_events table."""
+    async def _run() -> dict:
+        try:
+            import redis.asyncio as aioredis
+
+            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+            from app.db.session import get_session_factory
+            from app.governance.audit_v2 import AuditFlusher
+
+            flusher = AuditFlusher(redis=r, db=get_session_factory())
+            flushed = await flusher.flush()
+            await r.aclose()
+            return {"flushed": flushed}
+        except Exception as exc:
+            return {"error": str(exc), "flushed": 0}
+
+    return asyncio.run(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
 def scan_cost_anomalies() -> dict:
-    """Run hourly anomaly detection for all active tenants' cost patterns."""
-    return {"status": "noop"}
+    """Hourly anomaly scan for all tenants with recent cost activity."""
+    async def _run() -> dict:
+        try:
+            import redis.asyncio as aioredis
+
+            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+            from app.intelligence.cost_tracker import CostTracker
+
+            tracker = CostTracker(redis=r)
+            anomalies_found = 0
+
+            # Discover tenants with recent cost activity via Redis key scan
+            keys = await r.keys("cost:daily:*")
+            tenant_ids: set[str] = set()
+            for key in keys:
+                parts = key.decode().split(":") if isinstance(key, bytes) else key.split(":")
+                if len(parts) >= 3:
+                    tenant_ids.add(parts[2])
+
+            for tenant_id in list(tenant_ids)[:50]:  # cap at 50 tenants per run
+                try:
+                    anomalies = await tracker.detect_anomaly(tenant_id)
+                    anomalies_found += len(anomalies)
+                except Exception:
+                    pass
+
+            await r.aclose()
+            return {"tenants_scanned": len(tenant_ids), "anomalies_found": anomalies_found}
+        except Exception as exc:
+            return {"error": str(exc), "anomalies_found": 0}
+
+    return asyncio.run(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
@@ -1892,8 +1982,9 @@ def discover_and_tick_civilizations() -> dict:
     """Discover all active civilizations and enqueue tick tasks for each."""
     async def _run() -> dict:
         try:
-            from app.db.session import get_session_factory
             from sqlalchemy import text
+
+            from app.db.session import get_session_factory
             db = get_session_factory()
             async with db() as session:
                 rows = (await session.execute(text(

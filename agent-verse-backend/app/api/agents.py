@@ -429,7 +429,7 @@ class CreateAgentRequest(BaseModel):
     domain_metadata: dict[str, Any] = {}
 
     @model_validator(mode="after")
-    def _validate_domain_metadata(self) -> "CreateAgentRequest":
+    def _validate_domain_metadata(self) -> CreateAgentRequest:
         """Legal agents must have bar_number in domain_metadata."""
         if self.domain_context == "legal" and "bar_number" not in self.domain_metadata:
             raise ValueError(
@@ -1073,91 +1073,130 @@ async def clone_agent(
     return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
 
 
-class AgentCredentialRequest(BaseModel):
-    connector_id: str
-    secret_ref: str  # Vault reference e.g. vault://connectors/<server_id>/api_key
+# ── Agent Identity / JWT Service-Account Credentials ─────────────────────────
+
+
+class IssueCredentialRequest(BaseModel):
+    key_type: str = Field(default="service_account")
+    scopes: list[str] = Field(default_factory=list)
+    expires_in_days: int | None = Field(default=90, ge=1, le=3650)
+    description: str = Field(default="")
 
 
 @router.get("/{agent_id}/credentials")
-async def list_agent_credentials(request: Request, agent_id: str) -> list[dict[str, Any]]:
-    """List per-agent connector credentials (secret refs only — never raw secrets)."""
-    tenant_ctx = _require_tenant(request)
-    store = _agent_store(request)
-    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
-    if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found")
-
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db is None:
+async def list_agent_credentials(agent_id: str, request: Request) -> list[dict[str, Any]]:
+    """List service-account credentials for an agent (public keys only — private keys never returned)."""
+    tenant = _require_tenant(request)
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    if svc is None:
         return []
     try:
-        from sqlalchemy import text
-        async with db() as session:
-            rows = (await session.execute(
-                text(
-                    "SELECT id, connector_id, secret_ref, created_at "
-                    "FROM agent_connector_credentials "
-                    "WHERE agent_id = :aid AND tenant_id = :tid"
-                ),
-                {"aid": agent_id, "tid": tenant_ctx.tenant_id},
-            )).fetchall()
-        return [
-            {
-                "id": r[0],
-                "agent_id": agent_id,
-                "connector_id": r[1],
-                "secret_ref": r[2],
-                "created_at": r[3].isoformat() if r[3] else "",
-            }
-            for r in rows
-        ]
+        return await svc.list_credentials(agent_id=agent_id, tenant_id=tenant.tenant_id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(500, f"Failed to list credentials: {exc}") from exc
 
 
 @router.post("/{agent_id}/credentials", status_code=status.HTTP_201_CREATED)
-async def create_agent_credential(
-    request: Request, agent_id: str, body: AgentCredentialRequest
+async def issue_agent_credential(
+    agent_id: str, request: Request, body: IssueCredentialRequest
 ) -> dict[str, Any]:
-    """Store a per-agent connector credential reference."""
-    tenant_ctx = _require_tenant(request)
-    store = _agent_store(request)
-    agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
-    if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found")
+    """Issue a new RS256 service-account credential for an agent.
 
-    cred_id = uuid.uuid4().hex
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db is not None:
+    The private key is returned ONCE in the response — save it immediately.
+    """
+    tenant = _require_tenant(request)
+
+    # Rate limit: max 10 credential requests per minute per agent
+    redis_client = getattr(request.app.state, "_rate_limiter_redis", None)
+    if redis_client:
         try:
-            from sqlalchemy import text
-            async with db() as session, session.begin():
-                await session.execute(
-                    text("""
-                        INSERT INTO agent_connector_credentials
-                            (id, agent_id, connector_id, tenant_id, secret_ref)
-                        VALUES (:id, :aid, :cid, :tid, :ref)
-                        ON CONFLICT (agent_id, connector_id, tenant_id) DO UPDATE
-                            SET secret_ref = EXCLUDED.secret_ref
-                    """),
-                    {
-                        "id": cred_id,
-                        "aid": agent_id,
-                        "cid": body.connector_id,
-                        "tid": tenant_ctx.tenant_id,
-                        "ref": body.secret_ref,
-                    },
+            rl_key = f"cred_rl:{agent_id}:{tenant.tenant_id}"
+            count = await redis_client.incr(rl_key)
+            if count == 1:
+                await redis_client.expire(rl_key, 60)
+            if count > 10:
+                raise HTTPException(
+                    429,
+                    "Too many credential requests",
+                    headers={"Retry-After": "60"},
                 )
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Non-fatal: rate limit check failed, continue
 
-    return {
-        "id": cred_id,
-        "agent_id": agent_id,
-        "connector_id": body.connector_id,
-        "secret_ref": body.secret_ref,
-        "status": "stored",
-    }
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    if svc is None:
+        raise HTTPException(503, "Agent identity service not available")
+    try:
+        result = await svc.issue_credential(
+            agent_id=agent_id,
+            tenant_id=tenant.tenant_id,
+            created_by=tenant.api_key_id,
+            scopes=body.scopes,
+            key_type=body.key_type,
+            expires_in_days=body.expires_in_days,
+            description=body.description,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to issue credential: {exc}") from exc
+
+
+@router.delete("/{agent_id}/credentials/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_agent_credential(
+    agent_id: str, key_id: str, request: Request
+) -> None:
+    """Immediately revoke a service-account credential by key_id."""
+    tenant = _require_tenant(request)
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    if svc is None:
+        raise HTTPException(503, "Agent identity service not available")
+    revoked = await svc.revoke_credential(key_id=key_id, tenant_id=tenant.tenant_id)
+    if not revoked:
+        raise HTTPException(404, f"Credential {key_id} not found or already revoked")
+
+
+@router.post("/{agent_id}/token")
+async def exchange_agent_token(agent_id: str, request: Request) -> dict[str, Any]:
+    """Exchange a service-account key for a short-lived RS256 JWT (15 minutes).
+
+    Provide the key_id in the X-Agent-Key-Id header, query param, or request body.
+    """
+    tenant = _require_tenant(request)
+
+    # Read key_id from header, query param, or request body
+    key_id = request.headers.get("X-Agent-Key-Id") or request.query_params.get("key_id")
+    if not key_id:
+        try:
+            body = await request.json()
+            key_id = body.get("key_id")
+        except Exception:
+            pass
+    if not key_id:
+        raise HTTPException(422, "key_id required in X-Agent-Key-Id header or request body")
+
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    if svc is None:
+        raise HTTPException(503, "Agent identity service not available")
+
+    token = await svc.issue_agent_jwt(
+        agent_id=agent_id, key_id=key_id, tenant_id=tenant.tenant_id
+    )
+    if token is None:
+        raise HTTPException(404, "Credential not found, expired, or revoked")
+
+    from datetime import datetime
+
+    from jose import jwt as _jwt
+
+    try:
+        claims = _jwt.get_unverified_claims(token)
+        exp = datetime.fromtimestamp(claims.get("exp", 0), tz=UTC).isoformat()
+    except Exception:
+        exp = None
+
+    return {"token": token, "expires_at": exp, "token_type": "Bearer"}
 
 
 @router.get("/{agent_id}/rollout-gate")
