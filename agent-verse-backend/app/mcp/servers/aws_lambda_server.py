@@ -8,7 +8,6 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 from typing import Any
@@ -101,6 +100,20 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import boto3  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": "boto3 not installed. Run: pip install boto3",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 def _client(service: str) -> Any:
     import boto3  # type: ignore[import]
 
@@ -113,6 +126,15 @@ def _client(service: str) -> Any:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        import boto3  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return {
+            "error": "boto3 not installed. Run: pip install boto3",
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
+
     def _sync() -> dict[str, Any]:
         try:
             if tool_name == "lambda_list_functions":

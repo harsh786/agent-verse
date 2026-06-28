@@ -133,22 +133,16 @@ class LearningPipeline:
         eval_score = None
         if self._eval_runner is not None:
             try:
-                # Use a lightweight eval: score the candidate as a response to itself
-                # In production, this would be scored against the originating task outcome
-                state = _FakeScoringState(goal=candidate_text, steps=[])
-                from app.tenancy.context import TenantContext, PlanTier
-                fake_ctx = TenantContext(
-                    tenant_id=self._tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="learning"
+                # Use coherence scoring directly instead of full pipeline with empty steps.
+                # Passing candidate_text as a "step" lets _score_coherence assess quality
+                # when a real LLM provider is available; falls back to 0.5 gracefully.
+                provider = getattr(self._eval_runner, "_provider", None)
+                coherence_score = await self._eval_runner._score_coherence(
+                    goal=candidate_text,
+                    steps=[candidate_text],  # candidate text as a single proxy step
+                    provider=provider,
                 )
-                scorecard = await self._eval_runner.score_and_persist(
-                    state, fake_ctx, db=self._db
-                )
-                if hasattr(scorecard, "average_score") and callable(scorecard.average_score):
-                    eval_score = scorecard.average_score()
-                elif hasattr(scorecard, "average_score"):
-                    eval_score = float(scorecard.average_score or 0.5)
-                else:
-                    eval_score = 0.5
+                eval_score = coherence_score
             except Exception as exc:
                 logger.warning("learning_eval_failed", candidate_id=candidate_id, error=str(exc))
                 eval_score = 0.5  # Default on eval failure

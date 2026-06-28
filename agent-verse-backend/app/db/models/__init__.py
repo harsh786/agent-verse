@@ -42,6 +42,7 @@ from app.db.models.civilization import (  # noqa: E402
     CivilizationLearning,
     CivilizationEvent,
 )
+from app.db.models.workflow import Workflow  # noqa: E402
 
 __all__ = [
     "Base",
@@ -86,4 +87,6 @@ __all__ = [
     "BusMessage",
     "CivilizationLearning",
     "CivilizationEvent",
+    # workflows
+    "Workflow",
 ]

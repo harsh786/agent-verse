@@ -136,6 +136,20 @@ def _db_name(url: str, arguments: dict[str, Any]) -> str:
     return path if path else "test"
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import motor  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": "motor not installed. Run: pip install motor",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     url = os.getenv("MONGODB_MCP_URL", "")
     if not url:
@@ -215,7 +229,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             client.close()
 
     except ImportError:
-        return {"error": "motor not installed: pip install motor"}
+        return {
+            "error": "motor not installed. Run: pip install motor",
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
     except Exception as exc:
         logger.exception("mongodb_call_tool_error tool=%s", tool_name)
         return {"error": str(exc)}

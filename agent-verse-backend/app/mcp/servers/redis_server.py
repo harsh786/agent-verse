@@ -138,6 +138,20 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import redis  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": "redis not installed. Run: pip install redis[asyncio]",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     url = os.getenv("REDIS_MCP_URL", "")
     if not url:
@@ -208,7 +222,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             await client.aclose()
 
     except ImportError:
-        return {"error": "redis not installed: pip install redis[asyncio]"}
+        return {
+            "error": "redis not installed. Run: pip install redis[asyncio]",
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
     except Exception as exc:
         logger.exception("redis_call_tool_error tool=%s", tool_name)
         return {"error": str(exc)}

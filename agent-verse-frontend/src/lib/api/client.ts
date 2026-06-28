@@ -39,12 +39,19 @@ async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const { ssoMode, accessToken } = useAuthStore.getState();
   const apiKey = getApiKey();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string> | undefined),
   };
-  if (apiKey) headers["X-API-Key"] = apiKey;
+  // SSO mode: send Keycloak JWT as a Bearer token; the backend middleware
+  // validates it and resolves the tenant without an API key.
+  if (ssoMode && accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  } else if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+  }
 
   let res: Response;
   try {
@@ -875,22 +882,22 @@ export interface EvalSuiteResult {
 }
 
 export const evalSuitesApi = {
-  listSuites: () => request<EvalSuite[]>("/eval/suites"),
+  listSuites: () => request<EvalSuite[]>("/intelligence/eval-suites"),
   createSuite: (name: string, description?: string) =>
-    request<EvalSuite>("/eval/suites", {
+    request<EvalSuite>("/intelligence/eval-suites", {
       method: "POST",
       body: JSON.stringify({ name, description }),
     }),
-  getSuite: (id: string) => request<EvalSuite>(`/eval/suites/${id}`),
+  getSuite: (id: string) => request<EvalSuite>(`/intelligence/eval-suites/${id}`),
   addTask: (suiteId: string, task: { input: string; expected_output?: string; tags?: string[] }) =>
-    request<void>(`/eval/suites/${suiteId}/tasks`, {
+    request<void>(`/intelligence/eval-suites/${suiteId}/tasks`, {
       method: "POST",
       body: JSON.stringify(task),
     }),
   runSuite: (id: string) =>
-    request<{ run_id: string }>(`/eval/suites/${id}/run`, { method: "POST" }),
+    request<{ run_id: string }>(`/intelligence/eval-suites/${id}/run`, { method: "POST" }),
   getSuiteResults: (id: string) =>
-    request<EvalSuiteResult[]>(`/eval/suites/${id}/results`),
+    request<EvalSuiteResult[]>(`/intelligence/eval-suites/${id}/results`),
 };
 
 // ── Workflows (Phase-6) ────────────────────────────────────────────────────────
@@ -918,4 +925,82 @@ export const workflowsApi = {
       `/workflows/${id}/run${dryRun ? "?dry_run=true" : ""}`,
       { method: "POST" }
     ),
+};
+
+// ── Simulation (governance sandbox) ──────────────────────────────────────────
+
+export interface SimulationSummary {
+  allowed_tools: string[];
+  denied_tools: string[];
+  requires_approval: string[];
+  would_block_execution: boolean;
+  hitl_approvals_needed: number;
+}
+
+export interface SimulationResult {
+  goal: string;
+  summary?: SimulationSummary;
+  policy_checks?: Array<{ tool: string; result: string }>;
+  plan?: { steps: string[] };
+}
+
+export const simulationApi = {
+  runGovernance: (goal: string) =>
+    request<{ summary: SimulationSummary; policy_checks: Array<{ tool: string; result: string }> }>(
+      "/governance/simulate",
+      { method: "POST", body: JSON.stringify({ goal }) }
+    ),
+  runDryRun: (goal: string) =>
+    request<{ steps?: string[]; plan?: { steps: string[] } }>(
+      "/goals",
+      { method: "POST", body: JSON.stringify({ goal, dry_run: true }) }
+    ),
+};
+
+// ── Enterprise (data residency + compliance export) ───────────────────────────
+
+export interface DataResidencyInfo {
+  region: string;
+  data_center?: string;
+  compliance_frameworks?: string[];
+  description?: string;
+}
+
+export interface EnterpriseExportResult {
+  download_url?: string;
+  expires_at?: string;
+  size_bytes?: number;
+  message?: string;
+}
+
+export const enterpriseApi = {
+  getResidency: () => request<DataResidencyInfo>("/enterprise/data-residency"),
+  listRegions: () => request<DataResidencyInfo[]>("/enterprise/regions"),
+  exportData: () =>
+    request<EnterpriseExportResult>("/enterprise/compliance/export", { method: "POST" }),
+  purgeData: () =>
+    request<{ message: string }>("/enterprise/purge", { method: "DELETE" }),
+};
+
+// ── Playground (agent simulation with mock tools) ─────────────────────────────
+
+export interface PlaygroundStep {
+  step: string;
+  tool?: string;
+  output?: string;
+}
+
+export interface PlaygroundResult {
+  status: string;
+  steps: PlaygroundStep[];
+  cost_usd?: number;
+  message?: string;
+}
+
+export const playgroundApi = {
+  simulate: (goal: string, mockTools: Record<string, unknown>) =>
+    request<PlaygroundResult>("/enterprise/simulation", {
+      method: "POST",
+      body: JSON.stringify({ goal, mock_tools: mockTools }),
+    }),
 };

@@ -1,43 +1,15 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Download, Trash2, Globe, AlertTriangle } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
-
-interface ResidencyInfo {
-  region: string;
-  data_center?: string;
-  compliance_frameworks?: string[];
-  description?: string;
-}
-
-interface ExportResult {
-  download_url?: string;
-  expires_at?: string;
-  size_bytes?: number;
-  message?: string;
-}
-
-const hdrs = (apiKey: string) => ({
-  'X-API-Key': apiKey,
-  'Content-Type': 'application/json',
-});
-
-async function apiFetch<T>(apiKey: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { headers: hdrs(apiKey), ...init });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
-}
+import { enterpriseApi, DataResidencyInfo, EnterpriseExportResult } from '@/lib/api/client';
 
 // ── Export section ────────────────────────────────────────────────────────────
 
-function ExportSection({ apiKey }: { apiKey: string }) {
-  const [result, setResult] = useState<ExportResult | null>(null);
+function ExportSection() {
+  const [result, setResult] = useState<EnterpriseExportResult | null>(null);
 
   const mutation = useMutation({
-    mutationFn: () => apiFetch<ExportResult>(apiKey, '/enterprise/compliance/export'),
+    mutationFn: () => enterpriseApi.exportData(),
     onSuccess: (data) => setResult(data),
   });
 
@@ -101,14 +73,13 @@ function ExportSection({ apiKey }: { apiKey: string }) {
 
 // ── Delete section ────────────────────────────────────────────────────────────
 
-function DeleteSection({ apiKey }: { apiKey: string }) {
+function DeleteSection() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [deleted, setDeleted] = useState(false);
 
   const mutation = useMutation({
-    mutationFn: () =>
-      apiFetch<void>(apiKey, '/enterprise/compliance/delete', { method: 'POST' }),
+    mutationFn: () => enterpriseApi.purgeData(),
     onSuccess: () => {
       setDeleted(true);
       setShowConfirm(false);
@@ -192,11 +163,10 @@ function DeleteSection({ apiKey }: { apiKey: string }) {
 
 // ── Residency section ─────────────────────────────────────────────────────────
 
-function ResidencySection({ apiKey }: { apiKey: string }) {
-  const { data: residency, isLoading, error } = useQuery({
+function ResidencySection() {
+  const { data: residency, isLoading, error } = useQuery<DataResidencyInfo>({
     queryKey: ['residency'],
-    queryFn: () => apiFetch<ResidencyInfo>(apiKey, '/enterprise/compliance/residency'),
-    enabled: !!apiKey,
+    queryFn: () => enterpriseApi.getResidency(),
   });
 
   return (
@@ -251,8 +221,6 @@ function ResidencySection({ apiKey }: { apiKey: string }) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export function EnterprisePage() {
-  const apiKey = useAuthStore((s) => s.apiKey);
-
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
@@ -261,9 +229,9 @@ export function EnterprisePage() {
           Compliance, data management, and residency controls
         </p>
       </div>
-      <ExportSection apiKey={apiKey} />
-      <ResidencySection apiKey={apiKey} />
-      <DeleteSection apiKey={apiKey} />
+      <ExportSection />
+      <ResidencySection />
+      <DeleteSection />
     </div>
   );
 }

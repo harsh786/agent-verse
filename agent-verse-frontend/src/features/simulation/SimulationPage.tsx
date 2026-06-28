@@ -1,54 +1,30 @@
 import { useState } from 'react';
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
-
-interface SimulationResult {
-  goal: string;
-  summary?: {
-    allowed_tools: string[];
-    denied_tools: string[];
-    requires_approval: string[];
-    would_block_execution: boolean;
-    hitl_approvals_needed: number;
-  };
-  policy_checks?: Array<{ tool: string; result: string }>;
-  plan?: { steps: string[] };
-}
+import { simulationApi, SimulationResult } from '@/lib/api/client';
 
 export function SimulationPage() {
   const [goal, setGoal] = useState('');
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const apiKey =
-    sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
 
   const runSimulation = async () => {
     if (!goal.trim()) return;
     setLoading(true);
     setError('');
     try {
-      // Simulate governance policies
-      const policyResp = await fetch(`${API_BASE}/governance/simulate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ goal }),
-      });
-      const policyData = policyResp.ok ? await policyResp.json() : {};
+      const [policyResult, planResult] = await Promise.allSettled([
+        simulationApi.runGovernance(goal),
+        simulationApi.runDryRun(goal),
+      ]);
 
-      // Get dry-run plan
-      const planResp = await fetch(`${API_BASE}/goals`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ goal, dry_run: true }),
-      });
-      const planData = planResp.ok ? await planResp.json() : {};
+      const policyData = policyResult.status === 'fulfilled' ? policyResult.value : ({} as any);
+      const planData = planResult.status === 'fulfilled' ? planResult.value : ({} as any);
 
       setResult({
         goal,
         summary: policyData.summary,
         policy_checks: policyData.policy_checks,
-        plan: planData.plan || planData.execution_context?.plan,
+        plan: planData.plan || (planData as any).execution_context?.plan,
       });
     } catch (err) {
       setError(String(err));

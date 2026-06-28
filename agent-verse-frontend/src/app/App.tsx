@@ -6,6 +6,7 @@ import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 import { AuthPage } from "@/features/auth/AuthPage";
+import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { GoalsListPage } from "@/features/goals/GoalsListPage";
 import { GoalDetailPage } from "@/features/goals/GoalDetailPage";
@@ -99,6 +100,8 @@ export default function App() {
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
+      {/* OAuth2 callback — must be public (no auth required) */}
+      <Route path="/auth/callback" element={<SSOCallbackPage />} />
       <Route
         path="/"
         element={
