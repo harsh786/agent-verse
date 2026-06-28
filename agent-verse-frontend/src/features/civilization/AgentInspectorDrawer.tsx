@@ -111,7 +111,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                     </div>
                   );
                 })}
-                {agentConfig.connector_ids && (agentConfig.connector_ids as string[]).length > 0 && (
+                {Array.isArray(agentConfig.connector_ids) && agentConfig.connector_ids.length > 0 && (
                   <div className="text-xs">
                     <div className="text-gray-400 uppercase tracking-wide">Connectors</div>
                     <div className="flex flex-wrap gap-1 mt-0.5">

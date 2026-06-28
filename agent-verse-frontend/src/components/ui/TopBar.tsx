@@ -2,6 +2,7 @@ import { Search, Moon, Sun, LogOut } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useAuthStore } from "@/stores/auth";
 import { useNavigate } from "react-router-dom";
+import { PendingApprovalsBadge } from "@/components/ui/PendingApprovalsBadge";
 
 export function TopBar() {
   const { theme, toggleTheme, openCommandPalette } = useUiStore();
@@ -38,6 +39,9 @@ export function TopBar() {
         <span className="hidden lg:inline text-xs text-muted-foreground font-mono truncate max-w-32">
           {tenantId}
         </span>
+
+        {/* Live pending-approvals counter */}
+        <PendingApprovalsBadge />
 
         {/* Theme toggle */}
         <button
