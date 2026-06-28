@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { GoalsListPage } from './GoalsListPage';
@@ -143,5 +143,37 @@ describe('GoalsListPage', () => {
       dry_run: true,
       workflow_mode: 'single_agent',
     });
+  });
+
+  test('navigates using id when goal_id is absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/agents')) return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.endsWith('/goals') && init?.method === 'POST')
+        return new Response(JSON.stringify({ id: 'g-1', status: 'planning', goal: 'X' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      return new Response(JSON.stringify({ goals: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    function TrackLocation() {
+      const loc = useLocation();
+      return <span data-testid="loc">{loc.pathname}</span>;
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/goals']}>
+          <GoalsListPage />
+          <TrackLocation />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    await userEvent.type(await screen.findByLabelText(/goal text/i), 'do thing');
+    await userEvent.click(screen.getByRole('button', { name: /submit/i }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('/goals/g-1'));
   });
 });
