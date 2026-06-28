@@ -1811,3 +1811,106 @@ class TestPolicyVersionManager:
 # Pricing controls: HITL on price changes > 20% for any SKU
 # Refund limits: HITL on refunds > $500 or >5 items in 24h for one customer
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 4.1 — Fix Pub/Sub timing race (use Redis list BLPOP instead of pub/sub)
+
+```python
+# Replace _wait_for_result() pub/sub with Redis list (persistent):
+async def _wait_for_result(self, request_id: str, timeout: float) -> dict | None:
+    """Wait for approval using Redis list (persistent, no race condition)."""
+    result_key = f"hitl_result:{request_id}"
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        # BLPOP blocks until element available or timeout:
+        result = await self._redis.blpop(result_key, timeout=min(remaining, 5.0))
+        if result:
+            _, data = result
+            return json.loads(data.decode() if isinstance(data, bytes) else data)
+    return None
+
+# publish_resolution() pushes to the list instead of pub/sub:
+async def publish_resolution(self, request_id: str, action: str, approver: str, note: str) -> None:
+    """Publish approval decision — survives race conditions."""
+    payload = json.dumps({"action": action, "approver": approver, "note": note, "request_id": request_id})
+    if self._redis:
+        # RPUSH to list + 24h TTL (no data loss even if agent goroutine hasn't subscribed yet):
+        await self._redis.rpush(f"hitl_result:{request_id}", payload)
+        await self._redis.expire(f"hitl_result:{request_id}", 86400)
+    # Also persist to DB:
+    await self._update_db_resolution(request_id, action, approver, note)
+```
+
+### Amendment 4.2 — Fix deprecated asyncio.get_event_loop().time()
+
+```python
+# Replace: asyncio.get_event_loop().time()
+# With: asyncio.get_running_loop().time()  ← correct for Python 3.10+
+```
+
+### Amendment 4.3 — Fix raw SQL binding in publish_resolution()
+
+```python
+# Use SQLAlchemy text() with proper bindings:
+from sqlalchemy import text as _t
+async with db_factory() as session:
+    await session.execute(_t("""
+        UPDATE hitl_approval_requests
+        SET status = :action, resolved_by = :approver, resolved_at = NOW(), resolution_note = :note
+        WHERE id = :rid
+    """), {"action": action, "approver": approver, "note": note, "rid": request_id})
+    await session.commit()
+```
+
+### Amendment 4.4 — Make default policy FAIL-CLOSED + register Celery SLA task
+
+```python
+# SemanticPolicyEngine default behavior — fail closed for regulated domains:
+def evaluate(self, tool_name: str, tenant_id: str, domain: str = "general") -> PolicyDecision:
+    matching = [p for p in self._policies if self._matches(p, tool_name, tenant_id)]
+    if not matching:
+        # Fail closed for regulated domains:
+        if domain in ("healthcare", "legal", "finance"):
+            return PolicyDecision(action=PolicyAction.REQUIRE_APPROVAL, reason="No policy — default secure in regulated domain")
+        return PolicyDecision(action=PolicyAction.ALLOW, reason="No policy configured")
+    # ... rest of evaluation
+
+# Celery beat task for SLA enforcement:
+@celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
+def enforce_hitl_sla():
+    """Check pending approvals past SLA and escalate/auto-resolve."""
+    import asyncio
+    asyncio.run(_enforce_sla_async())
+
+# Beat schedule: every 5 minutes
+"enforce-hitl-sla": {"task": "app.scaling.tasks.enforce_hitl_sla", "schedule": crontab(minute="*/5")},
+```
+
+### Amendment 4.5 — App.tsx routes + Sidebar + prefers-reduced-motion + toast
+
+```typescript
+// App.tsx: GovernancePage already exists — ensure lazy:
+const GovernancePage = lazy(() => import("@/features/governance/GovernancePage").then(m => ({default: m.GovernancePage})));
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .sla-countdown-drain, .policy-fire-pulse, .approval-card-flip, .batch-approve-flip {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// createPolicy onSuccess: toast({kind:"success", message:"Policy created"})
+// deletePolicy → ConfirmModal + toast on success
+// batchApprove onSuccess: toast({kind:"success", message:`${count} requests approved`})
+// rollbackPolicy onSuccess: toast({kind:"warning", message:"Policy rolled back to version N"})
+
+// Loading states:
+// Pending approvals while loading: <Skeleton className="h-24 rounded-xl" /> × 3
+// Policy list: <Skeleton className="h-14 rounded-lg" /> × 5
+```

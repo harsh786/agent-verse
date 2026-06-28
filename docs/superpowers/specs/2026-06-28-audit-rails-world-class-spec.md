@@ -1479,3 +1479,170 @@ class TestSIEMAdapters:
 #   "pci_scope": "cardholder_data_environment"
 # }
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 5.1 — Implement LEEF adapter (was listed but missing)
+
+```python
+class LEEFAdapter(SIEMAdapter):
+    """Log Event Extended Format adapter for IBM QRadar."""
+
+    LEEF_VERSION = "LEEF:2.0"
+    VENDOR = "AgentVerse"
+    PRODUCT = "AgentVerseOS"
+    VERSION = "1.0"
+
+    async def send(self, event: AuditEvent, config: SIEMConfig) -> None:
+        # Build LEEF header: LEEF:2.0|Vendor|Product|Version|EventID|
+        event_id = event.action_type.replace(".", "_").upper()
+        header = f"{self.LEEF_VERSION}|{self.VENDOR}|{self.PRODUCT}|{self.VERSION}|{event_id}|"
+
+        # Build key-value pairs (LEEF attribute format):
+        attrs = {
+            "devTime": event.created_at.strftime("%b %d %Y %H:%M:%S"),
+            "devTimeFormat": "MMM dd yyyy HH:mm:ss",
+            "sev": {"critical": 10, "high": 8, "medium": 5, "low": 3, "info": 1}.get(event.severity, 5),
+            "src": event.ip_address or "0.0.0.0",
+            "usrName": event.principal_id,
+            "identSrc": event.tenant_id,
+            "resource": event.resource_id,
+            "action": event.action_type,
+            "outcome": event.outcome,
+            "agentID": event.agent_id or "",
+            "goalID": event.goal_id or "",
+            "domainContext": event.domain_context or "general",
+        }
+        leef_line = header + "\t".join(f"{k}={v}" for k, v in attrs.items())
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                config.endpoint,
+                content=leef_line.encode(),
+                headers={"Content-Type": "application/leef"},
+                auth=(config.credentials.get("username", ""), config.credentials.get("password", "")),
+            )
+```
+
+### Amendment 5.2 — Fix hash chain restart gap
+
+```python
+# AuditFlusher: persist prev_hash to Redis so restarts don't break chain
+async def _get_prev_hash(self, tenant_id: str) -> str:
+    """Get last known hash from Redis (persisted across restarts)."""
+    key = f"audit_chain_last_hash:{tenant_id}"
+    if self._redis:
+        stored = await self._redis.get(key)
+        if stored:
+            return stored.decode() if isinstance(stored, bytes) else stored
+    # Redis miss: query DB for last hash
+    async with self._db() as session:
+        row = (await session.execute(_t("""
+            SELECT event_hash FROM audit_events
+            WHERE tenant_id = :tid ORDER BY sequence_number DESC LIMIT 1
+        """), {"tid": tenant_id})).fetchone()
+        if row:
+            return row[0]
+    return ""  # Genesis hash for brand new tenant
+
+async def _persist_hash(self, tenant_id: str, event_hash: str) -> None:
+    """Persist current chain tail to Redis for restart recovery."""
+    if self._redis:
+        await self._redis.setex(f"audit_chain_last_hash:{tenant_id}", 86400 * 7, event_hash)
+```
+
+### Amendment 5.3 — Fix flush shutdown race + DLQ processor
+
+```python
+# Proper graceful shutdown:
+async def shutdown(self) -> None:
+    """Graceful shutdown — flush remaining WAL before exit."""
+    if self._flush_task:
+        self._flush_task.cancel()
+        try:
+            await self._flush_task  # wait for cancellation
+        except asyncio.CancelledError:
+            pass
+    # Final flush after cancellation:
+    await self.flush()
+
+# DLQ processor Celery task:
+@celery_app.task(name="app.scaling.tasks.process_audit_dlq", queue="maintenance")
+def process_audit_dlq():
+    """Retry failed audit events from DLQ."""
+    import asyncio
+    asyncio.run(_process_dlq_async())
+# Beat schedule: every 30 minutes
+```
+
+### Amendment 5.4 — Fix HashChainVerifier to stream instead of load all into memory
+
+```python
+async def verify_range(self, tenant_id: str, from_seq: int, to_seq: int) -> VerificationResult:
+    """Stream-verify hash chain — no OOM at scale."""
+    from sqlalchemy import text as _t
+    broken_links = []
+    prev_hash = ""
+    chunk_size = 1000
+
+    async with self._db() as session:
+        for offset in range(0, to_seq - from_seq, chunk_size):
+            rows = (await session.execute(_t("""
+                SELECT sequence_number, event_hash, prev_hash, tenant_id, action_type, outcome, created_at
+                FROM audit_events
+                WHERE tenant_id = :tid AND sequence_number BETWEEN :from AND :to
+                ORDER BY sequence_number ASC
+                LIMIT :limit OFFSET :offset
+            """), {"tid": tenant_id, "from": from_seq, "to": to_seq, "limit": chunk_size, "offset": offset})).fetchall()
+
+            for row in rows:
+                seq, event_hash, stored_prev, *fields = row
+                # Verify prev_hash chain:
+                if stored_prev != prev_hash:
+                    broken_links.append({"sequence": seq, "expected_prev": prev_hash, "stored_prev": stored_prev})
+                # Verify event_hash:
+                computed = self._compute_hash(seq, stored_prev, *fields)
+                if computed != event_hash:
+                    broken_links.append({"sequence": seq, "hash_mismatch": True})
+                prev_hash = event_hash
+
+    return VerificationResult(verified=len(broken_links) == 0, broken_links=broken_links, events_checked=to_seq - from_seq)
+```
+
+### Amendment 5.5 — Fix metadata not in hash computation + add Celery tasks + App.tsx + toast + prefers-reduced-motion
+
+```python
+# Include metadata in canonical hash form:
+def _compute_hash(self, seq: int, prev_hash: str, tenant_id: str, action_type: str, outcome: str, created_at, metadata: dict) -> str:
+    canonical = json.dumps({
+        "seq": seq, "prev": prev_hash, "tenant": tenant_id,
+        "action": action_type, "outcome": outcome,
+        "ts": created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at),
+        "metadata": metadata,  # ← NOW INCLUDED
+    }, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+# Celery tasks (add to celery_app.py beat_schedule):
+# - "flush-audit-wal" every 10s (already specified)
+# - "process-audit-dlq" every 30min
+# - "create-audit-partitions" monthly
+# - "run-retention-sweep" daily at 02:00 UTC
+```
+
+```typescript
+// App.tsx: AuditExplorerPage already exists — ensure lazy
+// Sidebar: already has /audit
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .audit-row-slide-in, .chain-verify-flash, .legal-hold-lock-appear { animation: none !important; }
+}
+
+// Toast notifications:
+// exportAudit onSuccess: toast({kind:"success", message:"Audit export started — you'll be notified when ready"})
+// placeLegalHold onSuccess: toast({kind:"warning", message:"Legal hold placed — deletion prevented"})
+// releaseLegalHold → ConfirmModal + toast
+// verifChain onSuccess: toast({kind:result.verified?"success":"error", message: result.verified ? "Chain integrity verified ✓" : `${result.broken_links.length} broken links detected!`})
+```

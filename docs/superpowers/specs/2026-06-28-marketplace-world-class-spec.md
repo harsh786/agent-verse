@@ -1597,3 +1597,124 @@ class TestOfficialTemplates:
 # Quick-install collections: "Shopify Starter Pack" installs 5 templates at once
 # Revenue tracking: link template runs to revenue attribution
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 7.1 — Fix _check_scopes() logic bug (or → and)
+
+```python
+# BEFORE (wrong — passes if ONLY high-risk scopes or ONLY no over-requests):
+# passed = len(over_requested) == 0 or len(high_risk) == 0
+
+# AFTER (correct — must satisfy BOTH conditions):
+passed = len(over_requested) == 0 and len(high_risk) == 0
+# Additional check: any single critical scope triggers manual review:
+CRITICAL_SCOPES = {"admin:*", "governance:approve", "agents:delete", "connectors:admin"}
+critical_requested = set(requested_scopes) & CRITICAL_SCOPES
+if critical_requested:
+    findings.append({"type": "critical_scope_requested", "scopes": list(critical_requested), "severity": "high"})
+    passed = False
+```
+
+### Amendment 7.2 — Add RLS to marketplace_templates + fix mcp_tool_definitions
+
+```sql
+-- In migration upgrade():
+ALTER TABLE marketplace_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE marketplace_templates FORCE ROW LEVEL SECURITY;
+-- Public templates visible to all (visibility = 'public' or 'community'):
+CREATE POLICY marketplace_templates_read ON marketplace_templates
+    FOR SELECT USING (
+        visibility IN ('public', 'community')
+        OR tenant_id = current_setting('app.tenant_id', TRUE)  -- own templates always visible
+    );
+-- Only owner can write:
+CREATE POLICY marketplace_templates_write ON marketplace_templates
+    FOR ALL USING (tenant_id = current_setting('app.tenant_id', TRUE))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE));
+```
+
+```python
+# Fix mcp_tool_definitions reference — use actual MCP registry instead of nonexistent table:
+async def _verify_mcp_tools(self, required_scopes: list[str], tenant_ctx) -> list[str]:
+    """Check which required tools/connectors are available via MCP registry."""
+    mcp_registry = getattr(self._app_state, "mcp_registry", None) if self._app_state else None
+    if mcp_registry is None:
+        return []  # Can't verify, assume all available
+    registered = await mcp_registry.list_servers(tenant_ctx=tenant_ctx)
+    registered_ids = {s.server_id for s in registered}
+    return [c for c in required_scopes if c not in registered_ids]
+```
+
+### Amendment 7.3 — Add template versioning + atomic install transaction + rating update
+
+```python
+# In _publish_template() — save version snapshot before update:
+async def _save_version_snapshot(self, template_id: str, config: dict, tenant_id: str, reason: str):
+    from sqlalchemy import text as _t
+    async with self._db() as session:
+        await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+        await session.execute(_t("""
+            INSERT INTO marketplace_template_versions
+            (id, template_id, tenant_id, version, config, reason, created_at)
+            VALUES (:id, :tid, :tenant, :ver, :config, :reason, NOW())
+        """), {"id": str(uuid.uuid4()), "tid": template_id, "tenant": tenant_id,
+               "ver": new_version, "config": json.dumps(config), "reason": reason})
+        await session.commit()
+
+# Atomic install transaction (agent + install record in ONE transaction):
+async def install(self, template_id: str, params: dict, tenant_ctx) -> InstalledTemplate:
+    async with self._db() as session:
+        await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_ctx.tenant_id})
+        # Create agent AND install record atomically:
+        agent_id = str(uuid.uuid4())
+        await session.execute(_t("INSERT INTO agents ..."))
+        await session.execute(_t("INSERT INTO marketplace_installs ..."))
+        await session.execute(_t("UPDATE marketplace_templates SET install_count = install_count + 1 WHERE id = :id"), {"id": template_id})
+        await session.commit()  # ALL or NOTHING
+    return InstalledTemplate(agent_id=agent_id, ...)
+
+# Rating average update after review creation:
+async def _update_rating_avg(self, template_id: str, session):
+    await session.execute(_t("""
+        UPDATE marketplace_templates SET
+            rating_avg = (SELECT AVG(rating::float) FROM marketplace_reviews WHERE template_id = :tid),
+            rating_count = (SELECT COUNT(*) FROM marketplace_reviews WHERE template_id = :tid)
+        WHERE id = :tid
+    """), {"tid": template_id})
+```
+
+### Amendment 7.4 — Embedding Celery task + App.tsx + toast + prefers-reduced-motion
+
+```python
+# Celery task for template embedding (background, non-blocking):
+@celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
+def embed_marketplace_templates():
+    """Embed new/updated templates for semantic search."""
+    import asyncio
+    asyncio.run(_embed_unembedded_templates())
+# Beat schedule: every 15 minutes
+```
+
+```typescript
+// App.tsx: MarketplacePage already exists — ensure lazy
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .template-card-hover-lift, .install-confetti, .star-hover-preview, .search-result-stagger {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// deploy onSuccess: toast({kind:"success", message:`'${template.name}' deployed! View agent →`, action: {label:"View", onClick:()=>navigate(`/agents/${agentId}`)}})
+// publishTemplate onSuccess: toast({kind:"success", message:"Template submitted for security review"})
+// review submission → ConfirmModal "Submit review?" + success toast
+// uninstall → ConfirmModal variant="danger" + toast
+
+// Empty states:
+// Empty catalog: <EmptyState icon={ShoppingBag} title="No templates yet" description="Publish your first agent template to the community." action={<button>Publish Template</button>} />
+// Empty search results: <EmptyState icon={Search} title="No templates found" description="Try different keywords or browse by domain." />
+```

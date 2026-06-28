@@ -1299,3 +1299,150 @@ class TestBudgetEnforcer:
 # Revenue attribution: link agent costs to order value (cost-per-order metric)
 # Seasonal budget scaling: auto-adjust budgets during peak periods (Black Friday)
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 6.1 — Fix _load_budgets() connection leak
+
+```python
+# BEFORE (leaks connection — no async with):
+async def _load_budgets(self, tenant_id: str):
+    session = self._db()
+    result = await session.execute(...)  # ← no context manager!
+
+# AFTER (correct):
+async def _load_budgets(self, tenant_id: str) -> BudgetConfig:
+    async with self._db() as session:  # ← proper async context manager
+        await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+        row = (await session.execute(_t(
+            "SELECT per_goal_usd, per_tenant_daily_usd FROM budget_configs WHERE tenant_id = :tid"
+        ), {"tid": tenant_id})).fetchone()
+    if row:
+        return BudgetConfig(per_goal_usd=float(row[0]), per_tenant_daily_usd=float(row[1]))
+    return BudgetConfig()  # defaults
+```
+
+### Amendment 6.2 — Fix percentile_cont SQLAlchemy syntax
+
+```python
+# BEFORE (invalid SQLAlchemy — percentile_cont can't use .label() columns):
+# func.percentile_cont(0.5).within_group(func.sum(...).label(...))
+
+# AFTER (use raw SQL via text() for ordered-set aggregates):
+from sqlalchemy import text as _t
+async with self._db() as session:
+    row = (await session.execute(_t("""
+        SELECT
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY cost_usd) AS p50_cost,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY cost_usd) AS p95_cost,
+            AVG(cost_usd) AS avg_cost,
+            COUNT(*) AS total_goals
+        FROM cost_ledger
+        WHERE tenant_id = :tid
+          AND created_at >= NOW() - INTERVAL '30 days'
+    """), {"tid": tenant_id})).fetchone()
+```
+
+### Amendment 6.3 — Fix module-level pricing cache (use Redis instead of per-process dict)
+
+```python
+# BEFORE (each worker process has its own stale cache):
+_pricing_cache: dict[str, ModelPricing] = {}
+_pricing_cache_updated: float = 0.0
+
+# AFTER (Redis-backed shared cache, consistent across all workers):
+async def get_model_pricing(model: str, redis, db) -> ModelPricing:
+    """Get pricing from Redis L1 cache (5-min TTL), then DB."""
+    cache_key = f"model_pricing:{model}"
+    if redis:
+        cached = await redis.get(cache_key)
+        if cached:
+            return ModelPricing(**json.loads(cached))
+    # DB fallback:
+    async with db() as session:
+        row = (await session.execute(_t("SELECT input_usd_per_1m, output_usd_per_1m FROM model_pricing WHERE model_id = :m"), {"m": model})).fetchone()
+    if row:
+        pricing = ModelPricing(input_usd_per_1m=float(row[0]), output_usd_per_1m=float(row[1]))
+        if redis:
+            await redis.setex(cache_key, 300, json.dumps(pricing.__dict__))
+        return pricing
+    return ModelPricing(**FALLBACK_PRICING.get(model, {"input_usd_per_1m": 3.0, "output_usd_per_1m": 15.0}))
+
+# Admin endpoint to invalidate pricing cache across all replicas:
+# After PUT /costs/pricing → publish to "pricing_updated" Redis channel
+# All workers subscribe and call: await redis.delete("model_pricing:*")
+```
+
+### Amendment 6.4 — Fix check_and_record(0.0) corrupting budget TTL
+
+```python
+# POST /costs/predict calls check_and_record with cost=0.0 to "peek" at budget
+# This corrupts the Redis key TTL. Fix: separate peek function:
+async def get_budget_status(self, tenant_id: str, goal_id: str) -> dict:
+    """Read-only budget status check — does NOT modify any counters."""
+    daily_key = f"cost:daily:{tenant_id}:{self._today()}"
+    goal_key = f"cost:goal:{goal_id}"
+    daily_spent = float(await self._redis.get(daily_key) or 0)
+    goal_spent = float(await self._redis.get(goal_key) or 0)
+    budget = await self._load_budgets(tenant_id)
+    return {
+        "daily_spent": daily_spent,
+        "daily_limit": budget.per_tenant_daily_usd,
+        "daily_remaining": max(0, budget.per_tenant_daily_usd - daily_spent),
+        "budget_pct_remaining": max(0, 1 - daily_spent / max(budget.per_tenant_daily_usd, 0.01)),
+    }
+
+# CostPredictor.predict() calls get_budget_status() NOT check_and_record(0.0)
+```
+
+### Amendment 6.5 — Define budget alert subscriber + Celery anomaly task + App.tsx + toast + prefers-reduced-motion
+
+```python
+# Budget alert subscriber in main.py lifespan:
+async def _budget_alert_listener():
+    """Subscribe to Redis budget alerts and send via NotificationService."""
+    pubsub = real_redis.pubsub()
+    await pubsub.psubscribe("budget:alert:*")
+    async for message in pubsub.listen():
+        if message["type"] == "pmessage":
+            tenant_id = message["channel"].split(":")[-1].decode()
+            alert_data = json.loads(message["data"])
+            notif_svc = app.state.notification_service
+            await notif_svc.notify_budget_alert(
+                tenant_id=tenant_id,
+                alert_type=alert_data["alert_type"],
+                spent_usd=alert_data["spent_usd"],
+                limit_usd=alert_data["limit_usd"],
+            )
+asyncio.create_task(_budget_alert_listener())
+
+# Celery task for anomaly batch scan:
+@celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
+def scan_cost_anomalies():
+    """Run anomaly detection for all active tenants hourly."""
+    import asyncio
+    asyncio.run(_scan_all_tenant_anomalies())
+# Beat schedule: every hour
+```
+
+```typescript
+// App.tsx: CostDashboardPage already exists — ensure lazy
+// Sidebar: already has /observability/cost
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .budget-gauge-sweep, .cost-spike-alert, .treemap-rectangle-grow, .midnight-reset-sweep {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// updateBudget onSuccess: toast({kind:"success", message:"Budget limits updated"})
+// updatePricing onSuccess: toast({kind:"success", message:"Model pricing refreshed across all replicas"})
+// anomaly detected (SSE): toast({kind:"warning", message:`Cost anomaly: ${alert.message}`})
+
+// Empty states:
+// CostDashboard with no data: <EmptyState icon={DollarSign} title="No cost data yet" description="Submit your first goal to start tracking costs." />
+```

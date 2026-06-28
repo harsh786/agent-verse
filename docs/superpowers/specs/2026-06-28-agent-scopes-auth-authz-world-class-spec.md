@@ -1728,3 +1728,118 @@ class TestDomainRoleTemplates:
 # Seasonal access expansion: time-based ABAC for holiday catalog operations
 # Third-party fulfillment: narrow API key with only goals:read + mcp:read
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 2.1 — Fix _load_from_db bug (returns all tenant roles, not user roles)
+
+```python
+async def _load_from_db(self, user_id: str, tenant_id: str) -> list[str]:
+    """Load roles for a SPECIFIC user in a tenant — not all tenant roles."""
+    from sqlalchemy import text as _t
+    async with self._db() as session:
+        rows = (await session.execute(_t("""
+            SELECT r.role_id, r.default_scopes FROM role_assignments ra
+            JOIN custom_roles r ON r.id = ra.role_id
+            WHERE ra.user_id = :uid AND ra.tenant_id = :tid  -- BOTH conditions required
+              AND (ra.expires_at IS NULL OR ra.expires_at > NOW())
+        """), {"uid": user_id, "tid": tenant_id})).fetchall()  # ← user_id filter was MISSING
+    all_scopes = set()
+    for role_id, default_scopes in rows:
+        all_scopes.update(default_scopes or [])
+        all_scopes.update(await self._expand_inherited_scopes(role_id))
+    return list(all_scopes)
+```
+
+### Amendment 2.2 — Fix middleware Redis staleness (use app.state not constructor injection)
+
+```python
+# ScopeEnforcementMiddleware should read Redis from app.state per-request, not constructor:
+class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        redis = getattr(request.app.state, "_rate_limiter_redis", None)  # ← always current
+        cache = PermissionCache(redis=redis) if redis else None
+        # ... rest of middleware using cache
+```
+
+### Amendment 2.3 — Define cache_warmer.py and scope_seeder.py (referenced in main.py)
+
+```python
+# app/auth/cache_warmer.py
+async def warm_permission_cache(redis, db_factory) -> None:
+    """Pre-warm role cache for recently-active tenants on startup."""
+    from sqlalchemy import text as _t
+    async with db_factory() as session:
+        recent_tenants = (await session.execute(_t("""
+            SELECT DISTINCT tenant_id FROM goals
+            WHERE created_at > NOW() - INTERVAL '1 hour'
+            LIMIT 100
+        """))).scalars().all()
+    # Pre-populate Redis for each recently-active tenant's API keys
+    # (Runs in lifespan, non-blocking)
+
+# app/auth/scope_seeder.py
+async def seed_builtin_scopes(db_factory) -> None:
+    """Ensure builtin roles exist in custom_roles table on first boot."""
+    from sqlalchemy import text as _t
+    BUILTIN_ROLES_SQL = """
+    INSERT INTO custom_roles (id, tenant_id, role_id, display_name, parent_role_id, default_scopes, max_scopes, is_builtin)
+    VALUES
+      ('builtin_admin',    NULL, 'admin',    'Administrator', NULL,    '{"admin:*"}',      '{"admin:*"}',   TRUE),
+      ('builtin_operator', NULL, 'operator', 'Operator',      'admin', '{"goals:*","agents:*","knowledge:*"}', '{"goals:*","agents:*","knowledge:*","connectors:*"}', TRUE),
+      ('builtin_viewer',   NULL, 'viewer',   'Viewer',        NULL,    '{"*.read"}',       '{"*.read"}',    TRUE),
+      ('builtin_approver', NULL, 'approver', 'Approver',      NULL,    '{"governance:hitl"}', '{"governance:hitl","goals:read"}', TRUE)
+    ON CONFLICT (role_id) DO NOTHING;
+    """
+    async with db_factory() as session:
+        await session.execute(_t(BUILTIN_ROLES_SQL))
+        await session.commit()
+```
+
+### Amendment 2.4 — Fix downgrade() to restore api_keys.scopes column
+
+```python
+def downgrade() -> None:
+    # Restore scopes column to api_keys before dropping api_key_scopes:
+    op.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes JSONB DEFAULT '[]'")
+    op.execute("""
+        UPDATE api_keys ak SET scopes = (
+            SELECT jsonb_agg(scope) FROM api_key_scopes aks WHERE aks.api_key_id = ak.id
+        )
+    """)
+    op.execute("DROP TABLE IF EXISTS api_key_scopes CASCADE")
+    op.execute("DROP TABLE IF EXISTS scope_grants CASCADE")
+    op.execute("DROP TABLE IF EXISTS role_assignments CASCADE")
+    op.execute("DROP TABLE IF EXISTS custom_roles CASCADE")
+```
+
+### Amendment 2.5 — App.tsx routes + Sidebar + prefers-reduced-motion + toast
+
+```typescript
+// App.tsx lazy routes:
+const ScopeExplorerPage = lazy(() => import("@/features/settings/ScopeExplorerPage").then(m => ({default: m.ScopeExplorerPage})));
+const RbacPage = lazy(() => ...);  // already exists, ensure it's lazy
+// Routes: <Route path="settings/scopes" element={<Suspense...><ScopeExplorerPage /></Suspense>} />
+
+// Sidebar.tsx — add under Governance section:
+{ to: "/settings/scopes", icon: KeyRound, label: "Scope Explorer" },
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .role-grant-animation, .scope-tree-expand, .d3-role-hierarchy line, .d3-role-hierarchy circle {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// grantRole onSuccess: toast({ kind: "success", message: `Role '${role}' granted to ${userId}` })
+// revokeRole onSuccess: toast({ kind: "warning", message: `Role '${role}' revoked` })
+// createCustomRole onSuccess: toast({ kind: "success", message: "Custom role created" })
+// addScope onSuccess: toast({ kind: "success", message: "Scopes updated" })
+
+// Confirmation dialogs for destructive role operations:
+// Delete role with existing assignments → ConfirmModal:
+// "Delete role 'legal_partner'? 12 users will lose this role."
+```
