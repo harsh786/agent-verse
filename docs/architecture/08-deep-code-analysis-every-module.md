@@ -1623,6 +1623,734 @@ All connectors:
 
 ---
 
+# PART 13: app/scaling/ — Celery Background Processing (Deep Dive)
+
+**Files**: `celery_app.py` (189 lines) + `tasks.py` (2,005 lines)
+
+The scaling package is the async backbone of AgentVerse. Every goal execution, every cron trigger, every maintenance sweep, every audit flush happens through here. Understanding this package is essential to understanding the platform's operational posture.
+
+---
+
+## celery_app.py — The Celery Factory
+
+**Purpose**: Single file that defines the `celery_app` singleton + **all** configuration. Every other module imports from here; there is no other Celery config.
+
+### Worker Configuration
+
+```python
+worker_max_tasks_per_child = 100       # Recycle worker after 100 tasks (memory leak prevention)
+worker_max_memory_per_child = 500_000  # Kill worker at 500 MB RSS (RSS in KB units)
+task_acks_late = True                  # ACK only AFTER task completes, not when received
+task_reject_on_worker_lost = True      # Re-queue if worker crashes mid-task
+worker_prefetch_multiplier = 1         # Fetch only 1 task at a time (prevents hoarding)
+task_default_retry_delay = 30          # Wait 30s before retry attempt
+```
+
+**Why `prefetch_multiplier=1`?** With multiple plan queues, a greedy worker could fetch 4 tasks from `goals.enterprise` and starve `goals.free`. Setting to 1 ensures fair distribution — each worker asks for one task at a time and processes it before fetching the next.
+
+**Why `task_acks_late=True`?** If a worker crash-kills mid-execution, Redis still has the task in-queue (unacknowledged). RabbitMQ/Redis re-delivers it to a healthy worker. Without this, tasks vanish on worker death.
+
+### Per-Plan Queue Routing
+
+```python
+PLAN_QUEUE_MAP = {
+    "free":         "goals.free",
+    "starter":      "goals.starter",
+    "professional": "goals.professional",
+    "enterprise":   "goals.enterprise",
+}
+```
+
+**Deployment pattern**: Enterprise customers deploy dedicated worker pools:
+```bash
+# Enterprise-only workers (dedicated servers)
+celery worker -Q goals.enterprise -c 20
+
+# Free/starter shared workers
+celery worker -Q goals.free,goals.starter -c 4
+```
+
+This means a surge in free-tier signups **cannot** starve an enterprise tenant's goals — they run on physically separate workers.
+
+### Complete Queue Inventory
+
+| Queue | Purpose | Concurrency recommendation |
+|-------|---------|--------------------------|
+| `goals` | Default goal execution (route target before plan-dispatch) | 8-16 |
+| `goals.free` | Free plan goals | 2-4 |
+| `goals.starter` | Starter plan goals | 4-8 |
+| `goals.professional` | Professional plan goals | 8-16 |
+| `goals.enterprise` | Enterprise plan goals (dedicated workers) | 16-32 |
+| `goals.persistence` | Checkpoint persistence tasks | 4 |
+| `goals_dlq` | Dead Letter Queue — failed goals for analysis | 1 |
+| `schedules` | Cron/interval trigger firing | 2 |
+| `maintenance` | All background housekeeping tasks | 4 |
+| `governance` | HITL SLA enforcement | 2 |
+
+### Beat Schedule — All 25 Periodic Tasks
+
+| Beat Entry | Task | Schedule | Queue |
+|-----------|------|----------|-------|
+| `mcp-health-check-every-30s` | `check_mcp_health` | every 30s | maintenance |
+| `fire-due-schedules-every-60s` | `fire_due_schedules` | every 60s | schedules |
+| `record-queue-depths-every-30s` | `record_queue_depths` | every 30s | maintenance |
+| `detect-stuck-goals` | `detect_stuck_goals` | every 5 min | maintenance |
+| `execute-retention-policy` | `execute_retention_policy` | daily 3:00 AM UTC | maintenance |
+| `expire-hitl-approvals` | `expire_hitl_approvals` | every 60s | maintenance |
+| `check-email-goals` | `check_email_goals` | every 60s | maintenance |
+| `drain-goals-dlq-every-5min` | `run_goal_dlq` | every 5 min | goals_dlq |
+| `reindex-stale-knowledge` | `reindex_stale_knowledge` | every 1 hour | maintenance |
+| `purge-expired-artifacts-daily` | `purge_expired_artifacts` | every 24h | maintenance |
+| `civilization-discovery-every-30s` | `discover_and_tick_civilizations` | every 30s | maintenance |
+| `warm-jwks-cache` | `warm_jwks_cache` | every 9 min | maintenance |
+| `create-guardrail-partitions` | `create_guardrail_partitions` | monthly 1st at 2:00 AM | maintenance |
+| `enforce-hitl-sla` | `enforce_hitl_sla` | every 5 min | maintenance |
+| `flush-audit-wal` | `flush_audit_wal` | every 10s | maintenance |
+| `scan-cost-anomalies` | `scan_cost_anomalies` | every hour (top of hour) | maintenance |
+| `embed-marketplace-templates` | `embed_marketplace_templates` | every 15 min | maintenance |
+| `conclude-stale-experiments` | `conclude_stale_experiments` | daily 3:00 AM UTC | maintenance |
+| `expire-stale-documents` | `expire_stale_documents` | daily 1:00 AM UTC | maintenance |
+| `consolidate-memories-daily` | `consolidate_memories_task` | daily 3:00 AM UTC | maintenance |
+| `reindex-stale-knowledge` | `reindex_stale_knowledge` | hourly | maintenance |
+
+### RedBeat HA Scheduler
+
+```python
+celery_app.conf.beat_scheduler = "redbeat.RedBeatScheduler"
+celery_app.conf.redbeat_redis_url = REDIS_URL
+celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"
+celery_app.conf.redbeat_lock_timeout = 300  # 5 minutes
+```
+
+**Why RedBeat matters**: Default Celery beat uses a local file (`celerybeat-schedule`). With 3 beat replicas, all three would fire every task simultaneously → duplicate executions. RedBeat uses a **Redis distributed lock** — only ONE beat replica acquires `agentverse:beat:lock` at a time. The others stand by. If the lock-holder dies, another acquires it within 5 minutes.
+
+---
+
+## tasks.py — All 25 Celery Tasks (2,005 lines)
+
+### Infrastructure Helpers
+
+**`_setup_sigterm()`** (runs at import): Installs a SIGTERM handler that calls `raise SystemExit(0)`. This triggers Python's finally-blocks + asyncio cancellation, which lets LangGraph write its final checkpoint before the process dies. Without this, `docker stop` would SIGTERM → immediate kill → in-flight step lost.
+
+**`_get_redis_pool()` / `_get_sync_redis()`**: Module-level singleton connection pool (max 10 connections). Created once per worker process. Sync Redis clients are safe to share across tasks; async clients must be created per-task because each task uses `asyncio.new_event_loop()`.
+
+**`_run_async(coro)`**: Creates a fresh event loop, runs the coroutine to completion, closes the loop. Used by all sync Celery task functions to call async code. Each invocation creates a new loop (not `asyncio.get_event_loop()`) because Celery workers are not async-native.
+
+**`_get_llm_provider(tenant_id)`**: Loads per-tenant LLM config from Redis key `llm_config:{tenant_id}`. Decrypts the API key via vault. Returns the right `LLMProvider` subclass:
+- `provider=anthropic` → `AnthropicProvider(default_model="claude-opus-4-8")`
+- `provider=openai/groq/together/azure/ollama` → `OpenAICompatibleProvider(base_url=...)`
+- Missing/error → `None` (falls back to env-var-based default provider)
+
+**`_strip_secret_redis_schedule_fields(sched)`**: Strips `webhook_token`, `token`, `password`, `api_key`, `secret` from schedule dicts before writing back to Redis. Prevents credentials from accumulating in Redis keys.
+
+**`_scheduled_goal_id(schedule_key, fire_instance_id)`**: `"sched_" + SHA-256(schedule_key + ":" + fired_at_iso)[:26]`. The deterministic ID prevents duplicate goal submissions if the beat fires twice (network blip, restart race).
+
+---
+
+### Task 1: `run_goal` — The Main Goal Executor
+
+**Registration**: `@celery_app.task(name="app.scaling.tasks.run_goal", bind=True, max_retries=3)`
+
+**Queue routing**: Dispatched to `goals.{plan}` at dispatch time by the API based on `PLAN_QUEUE_MAP[tenant.plan]`. The default route is `goals`; only the `apply_async(queue=...)` override at dispatch time routes to the plan-specific queue.
+
+**What it does** (simplified):
+```
+1. Decrement concurrent-goal counter on exit (always, via finally)
+2. Load LLM provider for tenant from Redis
+3. Build AgentGraph with all 30+ dependencies
+4. Run _run_with_signals(agent_runner, goal, ...) — executes LangGraph
+5. Emit SSE events via Redis pub/sub to all subscribers
+6. Write checkpoint after every step (AsyncRedis → Redis → Memory fallback)
+7. On SIGTERM: graceful shutdown after current step completes
+8. Retry up to 3× on transient failure (exponential backoff: 30s, 60s, 120s)
+```
+
+**Concurrency counter**: Redis key `concurrent_goals:{tenant_id}` tracks live goal count. `_decrement_after_completion()` runs in a `finally` block — decrements even if the task raises. This prevents stuck counters from permanently blocking a tenant.
+
+**Monkey-patch detection**: At import, captures `_REAL_AGENT_LOOP_CLASS = AgentLoop`. If tests replace `app.agent.loop.AgentLoop` with a mock, `run_goal` detects this and uses the mock path (for test compatibility) instead of bypassing to `AgentGraph`.
+
+---
+
+### Task 2: `run_goal_dlq` — Dead Letter Queue Handler
+
+**Registration**: `max_retries=0` — no retries. DLQ tasks already failed 3× in the main queue.
+
+**What it does**: Marks the goal as `failed` in the DB with reason `"max_retries_exceeded"`. Emits a `goal_failed` SSE event. Writes a structured log entry for post-mortem analysis.
+
+**Beat entry**: Runs every 5 minutes to drain any accumulated DLQ entries that didn't get processed immediately.
+
+---
+
+### Task 3: `run_scheduled_goal` — Schedule-Triggered Goal Execution
+
+**Registration**: `bind=True, max_retries=3` — same retry policy as `run_goal`.
+
+**What it does**: Wraps `run_goal.apply_async()` with schedule metadata injected into the goal context. The agent sees the goal as coming from a schedule trigger, not a user API call.
+
+---
+
+### Task 4: `fire_due_schedules` — The Cron Engine
+
+**Registration**: `bind=True, max_retries=3`. Runs every 60s.
+
+**Schedule sources** (dual-source, merged):
+1. **Redis**: Scans `schedule:*` keys written by `ScheduleStore`. Each key is a JSON schedule object.
+2. **PostgreSQL** (opt-in via `AGENTVERSE_DB_SCHEDULE_DISCOVERY=true`): Loads schedules from the `schedules` table.
+
+**Three trigger types**:
+
+| Type | Logic |
+|------|-------|
+| `cron` | `croniter(cron_expression, now+1s).get_prev()` — gets the most recent slot that should have fired. If `last_fired_at < prev_slot` → fire. Dedup via ISO timestamp as `fire_instance_id`. |
+| `interval` | `(now - last_fired_at).total_seconds() >= interval_seconds`. If never fired, fires immediately. |
+| `once` | `fire_at_iso` parsed to UTC datetime. If `now >= fire_at` and `last_fired_at is None` → fire once and never again. |
+
+**Security**: `_strip_secret_redis_schedule_fields()` removes credential fields before writing schedule back to Redis. This prevents accumulation of plaintext secrets in Redis over time.
+
+**Idempotency**: `_scheduled_goal_id(schedule_key, fire_instance_id=fired_at.isoformat())` generates a deterministic goal ID. If `fire_due_schedules` fires twice in the same second, both produce the same goal ID → DB unique constraint rejects the duplicate.
+
+---
+
+### Task 5: `record_queue_depths` — Autoscaling Metrics
+
+**Registration**: every 30s. `bind=True, max_retries=3`.
+
+**What it does**: For each queue in `("goals", "schedules", "maintenance")`:
+```python
+depth = r.llen(queue_name)          # Redis LLEN — O(1) operation
+record_queue_depth(queue, depth)    # Prometheus gauge update
+```
+
+These gauges feed the Grafana autoscaling dashboard. A Kubernetes HPA can scale workers when `goals` depth exceeds a threshold.
+
+---
+
+### Task 6: `check_mcp_health` — MCP Server Watchdog
+
+**Registration**: every 30s. No retries (it's a best-effort health check).
+
+**What it does**:
+1. Scans Redis for `mcp:servers:{tenant_id}:{server_id}` keys
+2. Parses each as `MCPServerConfig`
+3. `GET {base_url}/health` with 5s timeout via httpx
+4. Records result: `{server, status: "ok"|"error", code}`
+5. Cap at 50 servers per run to prevent runaway
+
+**Fallback**: If `MCPServerConfig` import fails (e.g., during test), falls back to scanning `mcp:servers:*` keys with the old flat-dict key structure for backward compatibility.
+
+---
+
+### Task 7: `detect_stuck_goals` — Zombie Goal Reaper
+
+**Registration**: every 5 minutes. `max_retries=0` (detection failures are non-critical).
+
+**What it does** (raw SQL for performance):
+```sql
+UPDATE goals
+SET    status='failed',
+       error_message='Stuck goal: exceeded 60-minute timeout',
+       updated_at=NOW()
+WHERE  status IN ('executing','planning')
+  AND  updated_at < NOW() - INTERVAL '60 minutes'
+RETURNING id
+```
+
+**Why 60 minutes?** The `soft_time_limit` on `run_goal` should kill the Celery task before 60 minutes. This SQL sweep catches goals where the Celery task was killed externally (OOM, `kill -9`, infrastructure failure) without updating the goal status.
+
+---
+
+### Task 8: `execute_retention_policy` — GDPR/Data Lifecycle
+
+**Registration**: daily at 3:00 AM UTC. `max_retries=1`.
+
+**Env var**: `DATA_RETENTION_DAYS` (default: 90).
+
+**Tables purged**:
+- `goal_events` — SSE event stream records
+- `decision_traces` — per-step reasoning traces
+
+**Why only these two?** Goals themselves are retained (business record). Events and traces are operational data with no legal retention requirement. Configurable to 30 days for GDPR-strict deployments.
+
+---
+
+### Task 9: `expire_hitl_approvals` — HITL Timeout Enforcement
+
+**Registration**: every 60s. `max_retries=0`.
+
+**What it does**:
+```sql
+UPDATE approval_requests
+SET    status='timed_out', resolved_at=NOW()
+WHERE  status='pending'
+  AND  expires_at IS NOT NULL
+  AND  expires_at < NOW()
+RETURNING id
+```
+
+When an agent pauses for human approval and nobody responds by `expires_at`, this task auto-resolves the request as `timed_out`. The waiting agent's BLPOP unblocks with a timeout event → agent either retries without approval or fails based on step configuration.
+
+---
+
+### Task 10: `check_email_goals` — Email-to-Goal Inbox
+
+**Registration**: every 60s. `max_retries=1`. **Disabled by default** (`IMAP_ENABLED=false`).
+
+**What it does**: Polls IMAP inbox via `imap_listener.check_and_process_emails()`. Each new email becomes a goal submitted under tenant `IMAP_TENANT_ID` with `PlanTier.PROFESSIONAL`. Subject line → goal text. Useful for: "Email agent@mycompany.com to start a deployment" workflows.
+
+---
+
+### Task 11: `consolidate_memories_task` — Memory Deduplication
+
+**Registration**: daily at 3:00 AM UTC.
+
+**Two operations**:
+1. **Deduplicate**: `DELETE FROM long_term_memory WHERE id NOT IN (SELECT DISTINCT ON (tenant_id, content) id ...)` — keeps the most recent copy of each unique memory content per tenant.
+2. **Expire**: `DELETE FROM long_term_memory WHERE created_at < NOW() - (DATA_RETENTION_DAYS * INTERVAL '1 day')` — prunes old memories.
+
+**Result**: `{duplicates_removed: N, expired_removed: M}`
+
+---
+
+### Task 12: `reindex_stale_knowledge` — Knowledge Freshness
+
+**Registration**: every 1 hour.
+
+**What it does**:
+```sql
+UPDATE documents
+SET    needs_reindex = TRUE, updated_at = NOW()
+WHERE  needs_reindex = FALSE
+  AND  last_modified IS NOT NULL
+  AND  freshness_ttl_hours > 0
+  AND  last_modified < NOW() - (freshness_ttl_hours * INTERVAL '1 hour')
+```
+
+Documents with `freshness_ttl_hours > 0` are flagged for reindex when their content age exceeds the TTL. The ingestion pipeline (called separately) picks up `needs_reindex=TRUE` docs and re-embeds them.
+
+---
+
+### Task 13: `purge_expired_artifacts` — Storage Cleanup
+
+**Registration**: daily (every 86,400s).
+
+**What it does**: `DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()`. The MinIO lifecycle policy handles actual S3-compatible object deletion; this task keeps the DB in sync.
+
+---
+
+### Task 14: `run_gdpr_export` — GDPR Data Portability
+
+**Registration**: on-demand only (triggered by `POST /compliance/gdpr/export`). `max_retries=1`.
+
+**What it does**:
+1. `SELECT id, goal_text, status, created_at FROM goals WHERE tenant_id=:tid LIMIT 10000`
+2. `SELECT event_id, goal_id, tool_name, outcome FROM audit_log WHERE tenant_id=:tid LIMIT 10000`
+3. Serializes to JSON: `{tenant_id, exported_at, goals: [...], audit_entries: [...]}`
+4. Generates `download_url = /compliance/export/{uuid}/download`
+5. `UPDATE gdpr_export_jobs SET status='complete', download_url=...`
+
+The download endpoint serves the JSON. On failure, sets `status='failed'` with error message.
+
+---
+
+### Tasks 15–17: Civilization Tasks
+
+**`civilization_tick(civilization_id, tenant_id)`**: Triggered per-civilization. Loads `Constitution` from DB. Instantiates full `CivilizationOrchestrator` with Governor, Society, Bus, Blackboard, LearningPipeline. Calls `orchestrator.tick()` → breach check, reputation update, knowledge promotion.
+
+**`civilization_learning_step(civilization_id, tenant_id)`**: Runs `LearningPipeline.run_step()` — advances one candidate knowledge item through validation or rejection.
+
+**`discover_and_tick_civilizations()`**: Every 30s. `SELECT id, tenant_id FROM civilizations WHERE status='active'`. For each → `civilization_tick.delay(id, tenant_id)`. This ensures every active civilization gets periodic maintenance without needing explicit scheduling per-civilization.
+
+---
+
+### Task 18: `warm_jwks_cache` — JWKS Precompute
+
+**Registration**: every 9 minutes (TTL is 10 minutes — 1-minute safety margin).
+
+**What it does**: Calls `_build_jwks(db)` → queries all agent credentials from DB → builds JWK objects from stored public keys → `SETEX "jwks:cache" 600 <json>`. 
+
+**Why 9 minutes?** The JWKS endpoint sets `Cache-Control: max-age=600`. If a client caches for 10 minutes, the beat task refreshes before the cache expires on the server, preventing the 10-second gap where a new key isn't yet cached.
+
+---
+
+### Task 19: `enforce_hitl_sla` — HITL Escalation
+
+**Registration**: every 5 minutes. Queue: `governance`.
+
+**What it does**:
+```sql
+SELECT id, tenant_id, request_id, sla_deadline_at, escalation_action
+FROM   hitl_approval_requests
+WHERE  status = 'pending'
+  AND  sla_deadline_at IS NOT NULL
+  AND  sla_deadline_at < NOW()
+LIMIT  100;
+-- Then for each:
+UPDATE hitl_approval_requests
+SET    status = 'sla_escalated', resolved_at = NOW()
+WHERE  id = :id
+```
+
+SLA-breached approvals are marked `sla_escalated`. The future `escalation_action` field (e.g., `"notify_manager"`, `"auto_approve"`) drives downstream notification hooks.
+
+---
+
+### Task 20: `flush_audit_wal` — Audit WAL Drainer
+
+**Registration**: every 10 seconds. This is the most frequently scheduled task.
+
+**What it does**: `AuditFlusher(redis=r, db=db_factory).flush()` → reads from Redis list `audit_wal:{tenant_id}` → bulk-INSERTs into `audit_events` Postgres table → deletes flushed entries.
+
+**At-least-once guarantee**: Redis RPUSH happens before the tool call returns. Even if the API process crashes after pushing but before the flush task runs, the event survives in Redis until `flush_audit_wal` picks it up.
+
+---
+
+### Task 21: `scan_cost_anomalies` — Cost Anomaly Detection
+
+**Registration**: every hour (top of hour via `crontab(minute="0")`).
+
+**What it does**:
+1. `KEYS cost:daily:*` → extracts `tenant_id` from each key
+2. For each tenant (capped at 50 per run): `CostTracker.detect_anomaly(tenant_id)`
+3. Anomalies are logged/stored; future work: emit alerts via notification service
+
+**Cap at 50 tenants**: Prevents a 1-hour task from scanning 10,000 tenants and exceeding its own time budget.
+
+---
+
+### Tasks 22–25: Stub Tasks (noop — reserved for future implementation)
+
+| Task | Schedule | Future purpose |
+|------|----------|----------------|
+| `create_guardrail_partitions` | Monthly 1st at 2AM | Create next 3 months of `guardrail_events` partitions |
+| `embed_marketplace_templates` | Every 15 min | Embed unembedded marketplace templates for semantic search |
+| `conclude_stale_experiments` | Daily 3AM | Conclude A/B prompt optimization experiments >30 days old |
+| `expire_stale_documents` | Daily 1AM | Delete knowledge chunks past `freshness_ttl_hours` |
+
+These are registered in the beat schedule but return `{"status": "noop"}`. The beat schedule entry ensures they can be activated without a deployment change — just replace the body.
+
+---
+
+# PART 14: app/rpa/ — Browser Automation with Playwright (Deep Dive)
+
+**Files**: `executor.py` (703 lines) + `session_manager.py` (261 lines) + `circuit_breaker.py`
+
+The RPA package enables agents to control real web browsers. It uses open-source **Playwright** (Chromium) — not Selenium, not cloud browser services. This means it runs entirely within the Docker stack.
+
+---
+
+## executor.py — RPAExecutor
+
+### `RPAResult` Dataclass
+
+Every RPA operation returns:
+```python
+@dataclass
+class RPAResult:
+    success: bool
+    output: str = ""              # Human-readable description of what happened
+    artifact_url: str | None = None  # data:image/png;base64,... OR MinIO URI
+    artifact_name: str | None = None # filename (e.g. "screenshot.png")
+    duration_ms: float = 0.0     # Wall-clock time for the operation
+    error: str | None = None     # Error message if success=False
+```
+
+### Three Execution Modes
+
+The executor selects its mode at call time based on what's available:
+
+```
+if playwright_installed AND session_manager provided:
+    → Mode 1: Stateful session (BrowserSessionManager)
+elif playwright_installed:
+    → Mode 2: Standalone (fresh browser per call)
+else:
+    → Mode 3: Simulation (mock responses, 100ms delay)
+```
+
+**Mode 1 — Stateful Session** (production path for multi-step workflows):
+- Calls `session_manager.get_or_create(session_id, tenant_id)` → reuses live `page` object
+- Page state (cookies, auth, DOM) persists across calls: `rpa_open_url` → `rpa_click` → `rpa_extract_text` all share one logged-in browser
+- `session.touch()` updates `last_used_at` after every operation
+- Credential injection runs before dispatch: `vault://crm-password` → real secret
+
+**Mode 2 — Standalone** (single-operation or session_manager unavailable):
+- `async with async_playwright() as p:` → new Chromium process per call
+- Browser closed in `finally` block regardless of success/failure
+- No state between calls — good for one-shot screenshot operations
+
+**Mode 3 — Simulation** (Playwright not installed, or test environments):
+- `await asyncio.sleep(0.1)` — simulates execution time
+- Lambda dict maps each tool to a descriptive mock output
+- Returns `success=True` always (except unknown tool names)
+- Used in CI test environments where Playwright is not installed
+
+### Credential Injection
+
+Before any browser operation:
+```python
+if self._credential_injector is not None:
+    arguments = await self._credential_injector.resolve_arguments(arguments)
+```
+
+This replaces `vault://` URI references in arguments:
+```python
+# Before injection:
+{"selector": "#password", "text": "vault://stripe-api-key"}
+# After injection:
+{"selector": "#password", "text": "sk_live_REAL_KEY_HERE"}
+```
+
+The agent never sees the real credential value — it only ever writes `vault://secret-name` in its tool calls.
+
+### Vision Analysis on Screenshots
+
+When `_vision_provider` is set and `rpa_screenshot` is called:
+```python
+_ba = BrowserAgent(vision_provider=self._vision_provider)
+vision_analysis = await _ba.analyze_screenshot(
+    b64_screenshot,
+    "Describe the main content and purpose of this page."
+)
+output += f"\nVision analysis: {vision_analysis}"
+```
+
+The agent receives both the screenshot artifact and a text description of what the page shows. This enables agents to make decisions based on visual content without needing hardcoded selectors.
+
+---
+
+### All 12 RPA Tools — Complete Reference
+
+#### `rpa_open_url` — Navigate Browser
+```python
+arguments: {"url": "https://app.salesforce.com"}
+```
+- `page.goto(url, wait_until="domcontentloaded", timeout=15000)`
+- Returns: `"Navigated to https://... — title: Salesforce Dashboard"`
+- Session: `session.current_url = url` (tracked for debugging)
+
+#### `rpa_click` — Click Element
+```python
+arguments: {"selector": "#submit-btn"}
+# OR
+arguments: {"text": "Create Opportunity"}
+# OR
+arguments: {"url": "https://...", "selector": "#btn"}  # navigate + click
+```
+- CSS selector: `page.click(selector, timeout=5000)`
+- Text match: `page.get_by_text(text, exact=False).first.click(timeout=5000)`
+- **Auto-screenshot**: Always captures a screenshot after click, returned as `artifact_url`
+- Returns: `"Clicked: #submit-btn"` + screenshot data URI
+
+#### `rpa_type` — Type Text Into Input
+```python
+arguments: {"selector": "#search-input", "text": "quarterly revenue"}
+```
+- `page.fill(selector, text, timeout=5000)` — fills the input (not key-by-key, instant fill)
+- Use `page.type()` for key-by-key simulation (not exposed, deliberate — `fill()` is more reliable)
+
+#### `rpa_extract_text` — Read Page Content
+```python
+arguments: {"selector": ".invoice-total"}  # default: "body"
+```
+- `page.inner_text(selector, timeout=5000)`
+- Capped at **5,000 characters** to prevent oversized tool outputs
+- Returns the visible text content (not HTML, not hidden text)
+
+#### `rpa_screenshot` — Capture Visual State
+```python
+arguments: {"name": "before-submit", "url": "https://..."}
+```
+**Full pipeline**:
+1. `page.screenshot()` → PNG bytes
+2. If `artifact_store` available: `artifact_store.write_bytes(goal_id, "before-submit.png", bytes)` → MinIO URI
+3. If `vision_provider` available: `BrowserAgent.analyze_screenshot()` → text description
+4. Returns: `artifact_url` (MinIO URI or `data:image/png;base64,...`) + optional vision analysis
+
+#### `rpa_wait_for_text` — Wait for Dynamic Content
+```python
+arguments: {"text": "Payment confirmed", "timeout_ms": 15000}
+```
+- **Primary**: `page.get_by_text(text, exact=False).wait_for(timeout=timeout_ms)`
+- **Fallback**: If locator fails, checks `page.content()` for text substring (handles dynamically injected text outside Playwright's locator tree)
+- Use case: waiting for async operations (payment processing, file upload completion)
+
+#### `rpa_select_option` — Choose Dropdown Option
+```python
+arguments: {"selector": "#country-select", "value": "United States"}
+```
+- **Primary**: `page.select_option(selector, value=value)` — match by option `value` attribute
+- **Fallback**: `page.select_option(selector, label=value)` — match by displayed text
+- Handles both `value="US"` and `label="United States"` automatically
+
+#### `rpa_upload_file` — Attach File to Input
+```python
+arguments: {"selector": "input[type=file]", "file_path": "/tmp/invoice.pdf"}
+```
+- Validates file exists before attempting upload
+- `page.set_input_files(selector, file_path)` — Playwright's native file input handler
+- Works with drag-and-drop file inputs too (Playwright handles the abstraction)
+
+#### `rpa_download_file` — Download via Browser
+```python
+arguments: {"selector": "#export-csv-btn"}
+```
+**Pipeline**:
+1. `async with page.expect_download() as download_info:` → intercepts download dialog
+2. `await page.click(selector)` — triggers the download
+3. `download.save_as(tempfile)` → saves to temp path
+4. If `artifact_store`: uploads to MinIO, gets permanent URI
+5. Returns: `"Downloaded 'report.csv' (45231 bytes)"` + `artifact_url`
+
+#### `rpa_submit_form` — Fill and Submit Forms
+```python
+arguments: {
+    "field_values": {
+        "#first-name": "John",
+        "#country": "US",        # select element → select_option
+        "#agree-checkbox": True, # checkbox → check/uncheck
+    },
+    "submit_selector": "button[type=submit]"
+}
+```
+**Smart field type detection** for each field:
+```python
+tag = await element.evaluate("el => el.tagName.toLowerCase()")
+input_type = await element.evaluate("el => el.type || ''")
+if tag == "select":          page.select_option(sel, value=str(value))
+elif input_type == "checkbox": element.check() or element.uncheck()
+else:                         element.fill(str(value))
+```
+**Submit fallback**: If `page.click(submit_selector)` fails → `page.keyboard.press("Enter")`.
+
+#### `rpa_detect_captcha` — CAPTCHA Detection (simulation-only)
+```python
+# Returns: {"success": True, "output": "captcha_detected: false"}
+```
+Production implementation would use `page.query_selector('[class*=captcha], iframe[src*=recaptcha]')`.
+
+#### `rpa_request_human_help` — Human Takeover Request
+```python
+arguments: {"reason": "CAPTCHA requires human verification"}
+# Returns: {"success": True, "output": "Human help requested... Takeover URL: /rpa/live"}
+```
+The agent can call this when it hits a blocker. The frontend `/rpa/sessions/:id/live` page shows the live browser stream for the human to take over.
+
+#### `rpa_wait_for_network_idle` — Wait for API Calls to Complete
+```python
+arguments: {"timeout_ms": 5000}
+# Simulation returns immediately; production would call page.wait_for_load_state("networkidle")
+```
+
+---
+
+### Browser Configuration
+
+```python
+browser = await p.chromium.launch(headless=self._headless)  # headless=True in prod
+context = await browser.new_context(
+    viewport={"width": 1280, "height": 720},
+    user_agent="AgentVerse-RPA/1.0",
+)
+```
+
+**Why 1280×720?** Covers 95%+ of responsive breakpoints without triggering mobile layouts. The user-agent string is honest (doesn't impersonate a real browser) but unlikely to trigger bot-detection on legitimate business applications.
+
+---
+
+## session_manager.py — BrowserSessionManager
+
+### `BrowserSession` Dataclass
+
+Each live browser session holds:
+```python
+@dataclass
+class BrowserSession:
+    session_id: str
+    tenant_id: str
+    created_at: float       # monotonic timestamp
+    last_used_at: float     # updated on every touch()
+    current_url: str        # last navigated URL (for debugging)
+    _playwright: Any        # async_playwright() context
+    _browser: Any           # chromium browser instance
+    _context: Any           # browser context (cookies, storage)
+    _page: Any              # the active page object
+
+    @property
+    def is_alive(self) -> bool:
+        return self._browser is not None
+```
+
+### Session Lifecycle
+
+```
+get_or_create(session_id, tenant_id)
+    ├── if existing and is_alive: touch() → return  (REUSE PATH)
+    ├── if tenant_active >= max_per_tenant (5):
+    │       evict LRU session (asyncio.create_task(old.close()) — non-blocking)
+    └── _create_session():
+            async_playwright().start()
+            chromium.launch(headless=True)
+            browser.new_context(viewport=1280×720, user_agent="AgentVerse-RPA/1.0")
+            context.new_page()
+            → registers in Redis: SETEX rpa_session:{tenant_id}:{session_id} 3600
+```
+
+### Per-Tenant Session Cap
+
+- Default: `max_sessions_per_tenant = 5`
+- On cap breach: find oldest session by `last_used_at` → `asyncio.create_task(old.close())` — eviction is **non-blocking** (the current call doesn't wait for the browser to close)
+- Edge case: if all 5 slots are taken AND the oldest can't be evicted: returns a stub `BrowserSession(session_id, tenant_id)` with `_browser=None`. All subsequent tool calls fall through to simulation mode.
+
+### Idle Session Cleanup
+
+```python
+async def cleanup_expired(self) -> int:
+    cutoff = time.monotonic() - self._max_idle  # default: 300s = 5 minutes
+    # close sessions idle longer than cutoff
+```
+
+Called periodically by the background task or by the RPA session API endpoint. Returns count of sessions closed.
+
+### Redis Session Registry
+
+Two purposes:
+1. **Cross-restart visibility**: If the API process restarts, `list_active_from_redis()` shows sessions that were active before the restart (they may still be alive in another process or may have died).
+2. **Multi-replica listing**: Frontend hits `GET /rpa/sessions` → API queries Redis → lists all sessions across all replicas.
+
+```python
+key = f"rpa_session:{tenant_id}:{session_id}"
+SETEX key 3600 json.dumps({session_id, tenant_id, created_at, current_url})
+```
+
+TTL of 3600s (1 hour) ensures stale Redis entries clean themselves up even if the browser session was closed without calling `_deregister_from_redis()`.
+
+---
+
+### How Agents Use RPA
+
+A real multi-step CRM workflow in the agent loop:
+
+```
+Step 1: Plan — "Log into Salesforce and create an opportunity"
+Step 2: Execute — rpa_open_url(url="https://login.salesforce.com", session_id="abc123")
+        → Returns: "Navigated to https://... — title: Salesforce Login"
+Step 3: Execute — rpa_type(selector="#username", text="vault://sf-username", session_id="abc123")
+        → Credential injector: text = resolved_from_vault
+        → Returns: "Typed into #username"
+Step 4: Execute — rpa_type(selector="#password", text="vault://sf-password", session_id="abc123")
+Step 5: Execute — rpa_click(selector="#Login", session_id="abc123")
+        → Returns: "Clicked: #Login" + screenshot (logged-in dashboard)
+Step 6: Execute — rpa_click(text="New Opportunity", session_id="abc123")
+Step 7: Execute — rpa_submit_form(field_values={"#opp-name": "Q4 Deal", "#amount": "50000"})
+Step 8: Execute — rpa_screenshot(name="opportunity-created", session_id="abc123")
+        → Returns: MinIO URI + vision analysis: "Shows Opportunity record with status: Open"
+Step 9: Verify — Screenshot confirms opportunity exists → SUCCESS
+```
+
+All 8 steps share the same `session_id="abc123"` → single Chromium browser process, one authenticated session. Without `BrowserSessionManager`, each step would re-open Salesforce and re-authenticate.
+
+---
+
 # Summary: The Complete Capability Map
 
 | Module Family | Capabilities | Lines of Code |
@@ -1633,12 +2361,12 @@ All connectors:
 | `intelligence/` — Learning | Eval scoring, self-optimization, prompt A/B testing, benchmarking, guardrails, cost tracking | ~4,000 |
 | `rag/` + `memory/` — Knowledge | Hybrid search, chunking, evaluation, execution memory, long-term memory, tool reliability | ~2,500 |
 | `mcp/` — Connectivity | Registry, client, 119 connectors, capability search, OAuth | ~25,000 |
-| `rpa/` — Browser Automation | 20 Playwright operations, session management, credential injection, vision | ~1,500 |
+| `rpa/` — Browser Automation | 12 Playwright tools, 3 execution modes, session management, credential injection, vision analysis | ~1,500 |
 | `auth/` — Identity & Security | Agent identity, SAML 2.0, SCIM 2.0, scope enforcement, permission cache, IP allowlist | ~2,000 |
 | `enterprise/` — Enterprise | Marketplace, simulation, compliance, red team | ~3,500 |
 | `services/` — Orchestration | Goal lifecycle, tenant management, notifications, event queue | ~4,000 |
 | `providers/` — LLM Abstraction | Anthropic, OpenAI, Gemini, Voyage, Fake, vault | ~1,500 |
 | `reliability/` — Fault Tolerance | Circuit breaker, rollback, bulkhead, deduplication | ~800 |
 | `collab/` + `perception/` | Collaboration sessions, browser agent, page analysis | ~800 |
-| `scaling/` — Background Processing | Celery tasks (2,005 lines!), queue routing, scheduled jobs | ~2,500 |
+| `scaling/` — Background Processing | 25 Celery tasks, 10 queues, 25 beat entries, RedBeat HA, per-plan isolation | ~2,500 |
 | **TOTAL** | **~70,000 lines of production Python** | |
