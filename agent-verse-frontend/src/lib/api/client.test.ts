@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { analyticsApi, schedulesApi } from '@/lib/api/client';
+import { analyticsApi, schedulesApi, agentsApi } from '@/lib/api/client';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -19,4 +19,16 @@ test('createNl calls /nl/schedule', async () => {
   const f = mockOk({ schedule_id: 's1', name: 'n', goal_template: 'g', enabled: true, created_at: '' });
   await schedulesApi.createNl('every day at 9am');
   expect(String(f.mock.calls[0][0])).toContain('/nl/schedule');
+});
+
+test('createNl posts command+autorun to /agents/create', async () => {
+  const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ agent_id: 'a1', name: 'X', autonomy_mode: 'bounded-autonomous' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } })
+  );
+  await agentsApi.createNl('make a triage bot', false);
+  const [url, init] = f.mock.calls[0];
+  expect(String(url)).toContain('/agents/create');
+  expect(init?.method).toBe('POST');
+  expect(JSON.parse(String(init?.body))).toEqual({ command: 'make a triage bot', autorun: false });
 });
