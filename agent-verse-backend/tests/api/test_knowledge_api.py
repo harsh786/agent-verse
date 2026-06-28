@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
+from app.providers.fake import FakeProvider
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
@@ -18,6 +19,7 @@ _VALID_KEY = "av_test_ragkey"
 def _make_app(
     knowledge_store: KnowledgeStore | None = None,
     semantic_cache: SemanticCache | None = None,
+    embedder: object | None = None,
 ) -> FastAPI:
     app = FastAPI()
 
@@ -29,6 +31,9 @@ def _make_app(
     app.include_router(knowledge_router)
     app.state.knowledge_store = knowledge_store or KnowledgeStore()
     app.state.semantic_cache = semantic_cache or SemanticCache()
+    # Provide a FakeProvider so search endpoints have an embedder available.
+    # Tests that explicitly want no embedder can pass embedder=None explicitly.
+    app.state.embedder = embedder if embedder is not None else FakeProvider(embed_dim=768)
     return app
 
 

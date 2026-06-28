@@ -1211,7 +1211,10 @@ class GoalService:
             decompose_on_failure=cfg_data.get("decompose_on_failure", True),
         )
 
-        engine = GoalPersistenceEngine(config=config)
+        engine = GoalPersistenceEngine(
+            config=config,
+            db=getattr(self, "_db_session_factory", None),
+        )
 
         def agent_factory() -> Any:
             # Set agent knowledge collection IDs for graph RAG

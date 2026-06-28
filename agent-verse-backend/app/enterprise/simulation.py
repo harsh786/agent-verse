@@ -5,11 +5,12 @@ registered tools with mock implementations.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, AsyncIterator
 
 from app.tenancy.context import TenantContext
 
@@ -45,6 +46,7 @@ class MockMCPClient:
         mock_responses: dict[str, Any] | None = None,
     ) -> None:
         self._mocks = mock_responses or mock_tools or {}
+        self._hit_tools: set[str] = set()
 
     async def discover_tools(self, server_id: str, tenant_ctx: Any) -> list:
         return []
@@ -63,6 +65,8 @@ class MockMCPClient:
         full_key = f"{server_id}.{tool_name}"
         mock = self._mocks.get(full_key) or self._mocks.get(key)
         if mock is not None:
+            self._hit_tools.add(full_key)
+            self._hit_tools.add(key)
             content = mock if isinstance(mock, str) else __import__("json").dumps(mock)
             return {"content": [{"type": "text", "text": content}], "simulated": True}
         return {
@@ -70,6 +74,14 @@ class MockMCPClient:
                          "text": f"[simulated: no mock for {tool_name}]"}],
             "simulated": True,
         }
+
+    def was_hit(self, tool_name: str | None) -> bool:
+        """Return True if this tool was called during simulation."""
+        if not tool_name:
+            return False
+        return tool_name in self._hit_tools or any(
+            tool_name == k.split(".")[-1] for k in self._hit_tools
+        )
 
 
 @dataclass
@@ -330,6 +342,129 @@ class SimulationRunner:
         return run
 
     # ── Private helpers ────────────────────────────────────────────────────────
+
+    async def run_streaming(
+        self,
+        *,
+        goal: str,
+        mock_tools: dict[str, Any] | None = None,
+        tenant_ctx: Any = None,
+        agent_override: dict[str, Any] | None = None,
+        max_steps: int = 10,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Async generator yielding SSE-style events as simulation executes.
+
+        Uses a callback-injection approach: registers a step_callback on
+        AgentGraph and drains events from a queue while the graph runs.
+        Falls back to stub simulation if no LLM provider is available.
+        """
+        run_id = uuid.uuid4().hex[:12]
+        _mock_tools = mock_tools or {}
+        mock_client = MockMCPClient(mock_tools=_mock_tools)
+
+        yield {"type": "simulation_started", "run_id": run_id, "goal": goal[:100]}
+
+        if tenant_ctx is None:
+            from app.tenancy.context import PlanTier
+            tenant_ctx = TenantContext(
+                tenant_id="simulation", plan=PlanTier.ENTERPRISE, api_key_id="sim"
+            )
+
+        # Fallback: stub simulation without LLM
+        if self._provider is None:
+            yield {
+                "type": "simulation_info",
+                "message": "Running stub simulation (no LLM provider configured)",
+            }
+            stub_plan = self._build_plan(goal, _mock_tools)
+            for i, step_def in enumerate(stub_plan[:max_steps]):
+                await asyncio.sleep(0.05)
+                step_desc = step_def.get("description", f"Step {i + 1}")
+                tool_name = step_def.get("tool")
+                yield {"type": "step_started", "step_number": i + 1, "description": step_desc}
+                await asyncio.sleep(0.1)
+                mock_hit = tool_name is not None and tool_name in _mock_tools
+                mock_output = (
+                    str(_mock_tools.get(tool_name, ""))[:200]
+                    if mock_hit
+                    else f"[simulated: {step_desc}]"
+                )
+                yield {
+                    "type": "step_completed",
+                    "step_number": i + 1,
+                    "output": mock_output,
+                    "tool_called": tool_name,
+                    "mock_hit": mock_hit,
+                    "cost_increment": 0.001,
+                }
+            yield {
+                "type": "simulation_complete",
+                "run_id": run_id,
+                "total_steps": len(stub_plan[:max_steps]),
+                "total_cost": len(stub_plan[:max_steps]) * 0.001,
+                "used_real_llm": False,
+                "final_status": "complete",
+            }
+            return
+
+        # Real simulation: use AgentGraph with step_callback injection
+        try:
+            from app.agent.graph import AgentGraph
+
+            step_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            step_counter: list[int] = [0]
+            total_cost: list[float] = [0.0]
+
+            async def step_callback(event_type: str, data: dict[str, Any]) -> None:
+                await step_events.put({"type": event_type, **data})
+
+            graph = AgentGraph(
+                planner=self._provider,
+                executor=self._provider,
+                verifier=self._provider,
+                mcp_client=mock_client,
+                max_iterations=max_steps,
+                step_callback=step_callback,
+            )
+
+            graph_task = asyncio.create_task(
+                graph.run(
+                    goal=goal,
+                    tenant_ctx=tenant_ctx,
+                    initial_context={"dry_run": True, "simulation": True},
+                )
+            )
+
+            while not graph_task.done() or not step_events.empty():
+                try:
+                    event = await asyncio.wait_for(step_events.get(), timeout=0.1)
+                    if event.get("type") == "step_started":
+                        step_counter[0] += 1
+                        event["step_number"] = step_counter[0]
+                    elif event.get("type") == "step_completed":
+                        cost_inc = event.get("cost_increment", 0.0)
+                        total_cost[0] += cost_inc
+                        event["step_number"] = step_counter[0]
+                        event.setdefault("mock_hit", mock_client.was_hit(event.get("tool_called")))
+                    yield event
+                except asyncio.TimeoutError:
+                    pass
+
+            final_state = await graph_task
+            yield {
+                "type": "simulation_complete",
+                "run_id": run_id,
+                "total_steps": step_counter[0],
+                "total_cost": total_cost[0],
+                "used_real_llm": True,
+                "final_status": (
+                    final_state.status.value
+                    if hasattr(final_state.status, "value")
+                    else str(final_state.status)
+                ),
+            }
+        except Exception as exc:
+            yield {"type": "simulation_error", "message": str(exc)[:300]}
 
     def _build_plan(self, goal: str, mock_tools: dict[str, Any]) -> list[dict[str, Any]]:
         """Build a keyword-based execution plan for the simulated goal."""

@@ -55,8 +55,9 @@ async def test_compliance_data_deletion() -> None:
 def test_compliance_residency() -> None:
     cc = ComplianceController()
     res = cc.get_data_residency(tenant_ctx=T)
-    assert res["gdpr_compliant"] is True
-    assert res["soc2_type2"] is True
+    # FIX: these must not be hardcoded True — regulatory assertions require real evidence
+    assert res["gdpr_compliant"] is False
+    assert res["soc2_type2"] is False
     assert "primary_region" in res
     assert res["tenant_id"] == T.tenant_id
 

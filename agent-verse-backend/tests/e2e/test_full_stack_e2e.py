@@ -21,10 +21,15 @@ from app.main import create_app
 def real_app():
     """A fully wired app instance shared across tests in this module."""
     import os
+    from app.providers.fake import FakeProvider
 
     # Ensure A2A_TENANT_ID is set so the a2a endpoint works in tests
     os.environ.setdefault("A2A_TENANT_ID", "e2e-test-tenant")
     app = create_app()
+    # Set up a fake embedder so knowledge base search works without a real provider.
+    # FakeProvider generates deterministic sin-wave vectors for testing.
+    if app.state.embedder is None:
+        app.state.embedder = FakeProvider()
     return app
 
 

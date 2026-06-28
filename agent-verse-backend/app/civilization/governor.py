@@ -238,9 +238,12 @@ class Governor:
                 if active_count <= self._constitution.min_viable_roster:
                     break  # Keep minimum viable roster
                 member_id, agent_id, reputation, last_active = row
+                # Fix timezone-aware comparison: ensure both sides are UTC-aware
+                if last_active is not None and last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=UTC)
                 should_retire = (
                     (reputation is not None and reputation < self._constitution.reputation_floor) or
-                    (last_active is not None and last_active < idle_cutoff.replace(tzinfo=None))
+                    (last_active is not None and last_active < idle_cutoff)
                 )
                 if should_retire:
                     await self._retire_member(member_id, agent_id)

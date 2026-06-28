@@ -46,8 +46,8 @@ def _client_id() -> str:
 
 
 def _sso_enabled() -> bool:
-    from app.core.config import get_settings
-    return get_settings().sso_enabled
+    import os as _os
+    return _os.environ.get("SSO_ENABLED", "false").lower() in ("true", "1", "yes")
 
 
 def jwks_uri() -> str:
@@ -178,10 +178,20 @@ async def resolve_tenant_from_jwt(
     except ValueError:
         plan = PlanTier.FREE
 
+    # Look up the real DB key record so api_key_id is a genuine persisted key,
+    # not the ephemeral ghost "sso:{sub[:16]}" string.
+    real_key_id = f"sso:{sub[:16]}"  # safe fallback
+    try:
+        key_record = await tenant_service.get_key_by_sso_sub(sso_sub=sub)
+        if key_record and key_record.get("key_id"):
+            real_key_id = key_record["key_id"]
+    except Exception as exc:
+        logger.debug("sso_key_lookup_failed", error=str(exc))
+
     return TenantContext(
         tenant_id=tenant_id,
         plan=plan,
-        api_key_id=f"sso:{sub[:16]}",
+        api_key_id=real_key_id,
     )
 
 

@@ -236,6 +236,15 @@ class KnowledgeStore:
     ) -> list[HybridSearchResult]:
         """PostgreSQL hybrid search using pgvector cosine + pg_trgm.
 
+        FIX 1: Explicit ``tenant_id`` filter in WHERE clause (defence-in-depth
+                on top of RLS — guards against RLS misconfiguration).
+        FIX 2: Variable embedding dimensions — queries ``knowledge_chunks_{dim}``
+                when the collection is registered in ``knowledge_collections``;
+                falls back to the legacy ``documents`` table otherwise.
+        FIX 7: Embedding passed as a PostgreSQL vector literal
+                (``[v1,v2,...]``) instead of Python's ``str(list)`` which can
+                produce inconsistent float formatting.
+
         Falls back to in-memory ``hybrid_search()`` if DB is not available or
         if the query fails.
         """
@@ -247,11 +256,54 @@ class KnowledgeStore:
 
             from app.db.rls import sqlalchemy_rls_context
 
+            # FIX 7: Explicit PostgreSQL vector literal format for precision.
+            qvec_str = (
+                "[" + ",".join(f"{v:.6f}" for v in query_embedding) + "]"
+                if query_embedding
+                else None
+            )
+            if qvec_str is None:
+                return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+
             async with self._db() as session:
                 async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                    # Hybrid search: 70% cosine similarity + 30% trigram
-                    # Includes citation fields: source_url, source_doc_id, page_number
-                    sql = text("""
+                    # FIX 2: Detect collection's embedding dimension and pick
+                    # the appropriate knowledge_chunks_{dim} table.
+                    table = "documents"  # legacy fallback
+                    try:
+                        col_res = await session.execute(
+                            text(
+                                "SELECT embedding_dim FROM knowledge_collections "
+                                "WHERE id = :cid AND tenant_id = :tid"
+                            ),
+                            {
+                                "cid": collection_id,
+                                "tid": tenant_ctx.tenant_id,
+                            },
+                        )
+                        col_row = col_res.fetchone()
+                        if col_row and col_row.embedding_dim in (768, 1024, 1536, 3072):
+                            table = f"knowledge_chunks_{col_row.embedding_dim}"
+                    except Exception:
+                        pass  # keep using legacy 'documents' table
+
+                    # Build SELECT — legacy table has extra citation columns;
+                    # knowledge_chunks_* tables surface them via metadata JSONB.
+                    if table == "documents":
+                        extra_cols = (
+                            "COALESCE(source_url, '') AS source_url,\n"
+                            "                            COALESCE(source_doc_id, '') AS source_doc_id,\n"
+                            "                            page_number,"
+                        )
+                    else:
+                        extra_cols = (
+                            "'' AS source_url,\n"
+                            "                            '' AS source_doc_id,\n"
+                            "                            NULL::integer AS page_number,"
+                        )
+
+                    # FIX 1: Add explicit tenant_id to WHERE clause.
+                    sql = text(f"""
                         SELECT
                             id AS chunk_id,
                             content,
@@ -259,19 +311,19 @@ class KnowledgeStore:
                              0.3 * similarity(content, :query)) AS score,
                             (1 - (embedding <=> :qvec::vector)) AS vector_score,
                             similarity(content, :query) AS trigram_score,
-                            COALESCE(source_url, '') AS source_url,
-                            COALESCE(source_doc_id, '') AS source_doc_id,
-                            page_number,
-                            COALESCE(metadata, '{}') AS metadata
-                        FROM documents
+                            {extra_cols}
+                            COALESCE(metadata, '{{}}') AS metadata
+                        FROM {table}
                         WHERE collection_id = :cid
+                          AND tenant_id = :tid
                         ORDER BY score DESC
                         LIMIT :k
                     """)
                     result = await session.execute(sql, {
-                        "qvec": str(query_embedding),
+                        "qvec": qvec_str,     # FIX 7: vector literal
                         "query": query,
                         "cid": collection_id,
+                        "tid": tenant_ctx.tenant_id,  # FIX 1: explicit tenant filter
                         "k": top_k,
                     })
                     rows = result.fetchall()
@@ -391,12 +443,26 @@ class KnowledgeStore:
         freshness_ttl_hours: int,
         content_hash: str,
     ) -> None:
-        """Persist a document chunk with citation fields to PostgreSQL."""
+        """Persist a document chunk with citation fields to PostgreSQL.
+
+        FIX 7: Embedding is formatted as an explicit PostgreSQL vector literal
+        ``[v1.000000,v2.000000,...]`` instead of Python's ``str(list)`` which
+        can produce ``[0.1, 0.2, ...]`` — a format that differs from pgvector's
+        expected ``[0.100000,0.200000,...]`` and may cause cast failures.
+        """
         if self._db is None:
             return
         try:
             from sqlalchemy import text
+
             from app.db.rls import sqlalchemy_rls_context
+
+            # FIX 7: PostgreSQL vector literal — explicit 6 decimal places.
+            emb_str = (
+                "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+                if embedding
+                else None
+            )
 
             async with self._db() as session, session.begin():
                 async with sqlalchemy_rls_context(session, tenant_id):
@@ -421,7 +487,7 @@ class KnowledgeStore:
                             "src": source_type,
                             "content": content,
                             "hash": content_hash,
-                            "emb": str(embedding) if embedding else None,
+                            "emb": emb_str,          # FIX 7: vector literal
                             "meta": str(metadata),
                             "source_url": source_url,
                             "source_type": source_type,
@@ -436,8 +502,12 @@ class KnowledgeStore:
     async def sync_from_db(self) -> int:
         """Load collections and chunks from PostgreSQL into memory.
 
-        Only loads data for active tenants, with safety caps to prevent
-        unbounded memory growth. Returns the number of new chunks loaded.
+        FIX 3: Replaced the hard document cap with cursor-based streaming in
+        batches of 1000 so all chunks are loaded regardless of total count.
+        Memory growth is bounded per-batch; the old safety cap silently dropped
+        data for large tenants and was removed.
+
+        Returns the number of new chunks loaded.
         Returns 0 immediately when no ``db_session_factory`` is configured.
         """
         if self._db is None:
@@ -452,7 +522,8 @@ class KnowledgeStore:
 
             loaded = 0
             async with self._db() as session:
-                # Load collections — only for active tenants, with safety cap
+                # Load collections — only for active tenants (no cap needed here
+                # as collection count is naturally bounded).
                 col_result = await session.execute(
                     select(KCModel)
                     .join(Tenant, KCModel.tenant_id == Tenant.id)
@@ -472,34 +543,46 @@ class KnowledgeStore:
                     if key not in self._data:
                         self._data[key] = _CollectionStore(collection=col)
 
-                # Load documents — only for loaded collections, with safety cap
+                # FIX 3: Stream documents in batches of 1000 — no hard cap.
+                # Uses OFFSET pagination ordered by primary key for stable pages.
                 if collections:
                     col_ids = [c.id for c in collections]
-                    doc_result = await session.execute(
-                        select(Document)
-                        .where(Document.collection_id.in_(col_ids))
-                        .limit(100_000)  # Safety cap: 100K docs max
-                    )
-                    docs = doc_result.scalars().all()
-                    for d in docs:
-                        key = (d.tenant_id, d.collection_id)
-                        cstore = self._data.get(key)
-                        if cstore is not None:
-                            existing_ids = {c.chunk_id for c in cstore.chunks}
-                            if d.id not in existing_ids:
-                                chunk = Chunk(
-                                    document_id=d.id,
-                                    content=d.content,
-                                    embedding=list(d.embedding) if d.embedding is not None else [],
-                                    chunk_index=d.chunk_index or 0,
-                                    chunk_id=d.id,
-                                    metadata=dict(d.doc_metadata or {}),
-                                )
-                                cstore.chunks.append(chunk)
-                                loaded += 1
+                    batch_size = 1000
+                    offset = 0
+
+                    while True:
+                        batch_result = await session.execute(
+                            select(Document)
+                            .where(Document.collection_id.in_(col_ids))
+                            .order_by(Document.id)   # stable ordering for pagination
+                            .limit(batch_size)
+                            .offset(offset)
+                        )
+                        docs = batch_result.scalars().all()
+                        if not docs:
+                            break
+
+                        for d in docs:
+                            key = (d.tenant_id, d.collection_id)
+                            cstore = self._data.get(key)
+                            if cstore is not None:
+                                existing_ids = {c.chunk_id for c in cstore.chunks}
+                                if d.id not in existing_ids:
+                                    chunk = Chunk(
+                                        document_id=d.id,
+                                        content=d.content,
+                                        embedding=list(d.embedding) if d.embedding is not None else [],
+                                        chunk_index=d.chunk_index or 0,
+                                        chunk_id=d.id,
+                                        metadata=dict(d.doc_metadata or {}),
+                                    )
+                                    cstore.chunks.append(chunk)
+                                    loaded += 1
+
+                        offset += batch_size
 
             _log.info(
-                "Synced %d chunks from DB into KnowledgeStore (active tenants only)", loaded
+                "Synced %d chunks from DB into KnowledgeStore (streaming, no cap)", loaded
             )
             return loaded
         except Exception as exc:

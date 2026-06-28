@@ -12,6 +12,7 @@ from app.providers.base import (
     CompletionResponse,
     EmbedRequest,
     EmbedResponse,
+    TokenUsage,
 )
 
 
@@ -104,13 +105,20 @@ class OpenAICompatibleProvider:
                 for tc in choice.message.tool_calls
             ]
 
+        _prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+        _completion_tokens = response.usage.completion_tokens if response.usage else 0
         return CompletionResponse(
             content=content,
             model=response.model,
-            input_tokens=response.usage.prompt_tokens if response.usage else 0,
-            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            input_tokens=_prompt_tokens,
+            output_tokens=_completion_tokens,
             tool_calls=tool_calls,
             stop_reason=choice.finish_reason or "stop",
+            usage=TokenUsage(
+                prompt_tokens=_prompt_tokens,
+                completion_tokens=_completion_tokens,
+                total_tokens=_prompt_tokens + _completion_tokens,
+            ),
         )
 
     async def stream_complete(self, request: CompletionRequest):
@@ -142,6 +150,31 @@ class OpenAICompatibleProvider:
             model=response.model,
             total_tokens=response.usage.total_tokens if response.usage else 0,
         )
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed up to 2048 texts in one OpenAI API call (OpenAI batch limit).
+
+        Uses ``text-embedding-3-small`` by default (same as ``embed()``).
+        Splits into batches of 2048 automatically when *texts* is longer.
+        """
+        if not texts:
+            return []
+
+        model = "text-embedding-3-small"
+        all_embeddings: list[list[float]] = []
+        batch_size = 2048  # OpenAI API limit per request
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            response = await self._client.embeddings.create(
+                model=model,
+                input=batch,
+            )
+            # Sort by index to preserve input order (OpenAI may reorder)
+            sorted_data = sorted(response.data, key=lambda e: e.index)
+            all_embeddings.extend(e.embedding for e in sorted_data)
+
+        return all_embeddings
 
     def supports_vision(self) -> bool:
         return self._vision

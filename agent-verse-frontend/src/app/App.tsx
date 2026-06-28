@@ -1,15 +1,27 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState, lazy, Suspense } from "react";
-import { Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
+// ── Lazy-loaded existing pages ───────────────────────────────────────────────
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 const GoalDNAPage = lazy(() => import("@/features/goals/GoalDNAPage").then(m => ({ default: m.GoalDNAPage })));
 const AgentRadarPage = lazy(() => import("@/features/agents/AgentRadarPage").then(m => ({ default: m.AgentRadarPage })));
 const TemplateLibraryPage = lazy(() => import("@/features/templates/TemplateLibraryPage").then(m => ({ default: m.TemplateLibraryPage })));
 const WorkflowBuilderPage = lazy(() => import("@/features/workflow-builder/WorkflowBuilderPage").then(m => ({ default: m.WorkflowBuilderPage })));
+const GoalDiffPage = lazy(() => import("@/features/goals/GoalDiffPage").then(m => ({ default: m.GoalDiffPage })));
+const GhostRunPage = lazy(() => import("@/features/goals/GhostRunPage").then(m => ({ default: m.GhostRunPage })));
+const AgentPersonalityPage = lazy(() => import("@/features/agents/AgentPersonalityPage").then(m => ({ default: m.AgentPersonalityPage })));
+
+// ── New pages (Spec implementations) ────────────────────────────────────────
+const AgentIdentityPage = lazy(() => import("@/features/agents/AgentIdentityPage").then(m => ({ default: m.AgentIdentityPage })));
+const ScopeExplorerPage = lazy(() => import("@/features/settings/ScopeExplorerPage").then(m => ({ default: m.ScopeExplorerPage })));
+const GuardrailCenterPage = lazy(() => import("@/features/settings/GuardrailCenterPage").then(m => ({ default: m.GuardrailCenterPage })));
+const BudgetManagerPage = lazy(() => import("@/features/settings/BudgetManagerPage").then(m => ({ default: m.BudgetManagerPage })));
+const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({ default: m.SelfImprovementPage })));
+const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
 
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
@@ -50,10 +62,8 @@ import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
-const GoalDiffPage = lazy(() => import("@/features/goals/GoalDiffPage").then(m => ({ default: m.GoalDiffPage })));
-const GhostRunPage = lazy(() => import("@/features/goals/GhostRunPage").then(m => ({ default: m.GhostRunPage })));
-const AgentPersonalityPage = lazy(() => import("@/features/agents/AgentPersonalityPage").then(m => ({ default: m.AgentPersonalityPage })));
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -78,14 +88,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
           logout();
           return;
         }
-
         const tenant = await res.json();
         if (tenant.tenant_id !== tenantId) {
           logout();
         }
       } catch {
-        // Keep the session during transient backend/network failures; page queries
-        // will show their own connection errors without destroying credentials.
+        // Keep the session during transient backend/network failures
       } finally {
         if (!cancelled) setIsChecking(false);
       }
@@ -102,6 +110,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   if (isChecking) return null;
   return <>{children}</>;
 }
+
+const spinner = <LoadingSpinner />;
 
 export default function App() {
   return (
@@ -127,10 +137,15 @@ export default function App() {
         <Route path="agents" element={<AgentsListPage />} />
         <Route path="agents/create" element={<AgentCreatePage />} />
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
+        <Route path="agents/:agentId/identity" element={<Suspense fallback={spinner}><AgentIdentityPage /></Suspense>} />
+        <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
+        <Route path="agents/:agentId/radar" element={<Suspense fallback={spinner}><AgentRadarPage /></Suspense>} />
+        <Route path="agents/:agentId/personality" element={<Suspense fallback={spinner}><AgentPersonalityPage /></Suspense>} />
         <Route path="approvals" element={<ApprovalsPage />} />
         <Route path="onboarding" element={<OnboardingPage />} />
         <Route path="connectors/catalog" element={<ConnectorsCatalogPage />} />
         <Route path="connectors" element={<ConnectorsRegisteredPage />} />
+        <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="schedules" element={<SchedulesPage />} />
         <Route path="knowledge" element={<KnowledgePage />} />
         <Route path="governance" element={<GovernancePage />} />
@@ -141,11 +156,12 @@ export default function App() {
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="enterprise" element={<EnterprisePage />} />
         <Route path="settings" element={<SettingsPage />} />
-        <Route path="workflow-builder" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
-            <WorkflowBuilderPage />
-          </Suspense>
-        } />
+        <Route path="settings/scopes" element={<Suspense fallback={spinner}><ScopeExplorerPage /></Suspense>} />
+        <Route path="settings/guardrails" element={<Suspense fallback={spinner}><GuardrailCenterPage /></Suspense>} />
+        <Route path="settings/budgets" element={<Suspense fallback={spinner}><BudgetManagerPage /></Suspense>} />
+        <Route path="self-improvement" element={<Suspense fallback={spinner}><SelfImprovementPage /></Suspense>} />
+        <Route path="lab" element={<Suspense fallback={spinner}><AgentLabPage /></Suspense>} />
+        <Route path="workflow-builder" element={<Suspense fallback={spinner}><WorkflowBuilderPage /></Suspense>} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="analytics" element={<AnalyticsDashboardPage />} />
         <Route path="simulation" element={<SimulationPage />} />
@@ -161,40 +177,12 @@ export default function App() {
         <Route path="notifications" element={<NotificationCenterPage />} />
         <Route path="rbac" element={<RbacPage />} />
         <Route path="compliance" element={<CompliancePage />} />
-        <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
-        <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
-        <Route path="goals/:goalId/dna" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
-            <GoalDNAPage />
-          </Suspense>
-        } />
-        <Route path="goals/:goalId/diff" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
-            <GoalDiffPage />
-          </Suspense>
-        } />
-        <Route path="goals/ghost-run" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
-            <GhostRunPage />
-          </Suspense>
-        } />
-        <Route path="agents/:agentId/radar" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
-            <AgentRadarPage />
-          </Suspense>
-        } />
-        <Route path="agents/:agentId/personality" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
-            <AgentPersonalityPage />
-          </Suspense>
-        } />
-        <Route path="templates" element={
-          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
-            <TemplateLibraryPage />
-          </Suspense>
-        } />
-        <Route path="civilization" element={<Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}><CivilizationPage /></Suspense>} />
-        <Route path="civilization/:id" element={<Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}><CivilizationPage /></Suspense>} />
+        <Route path="goals/:goalId/dna" element={<Suspense fallback={spinner}><GoalDNAPage /></Suspense>} />
+        <Route path="goals/:goalId/diff" element={<Suspense fallback={spinner}><GoalDiffPage /></Suspense>} />
+        <Route path="goals/ghost-run" element={<Suspense fallback={spinner}><GhostRunPage /></Suspense>} />
+        <Route path="templates" element={<Suspense fallback={spinner}><TemplateLibraryPage /></Suspense>} />
+        <Route path="civilization" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
+        <Route path="civilization/:id" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
       </Route>
     </Routes>
   );

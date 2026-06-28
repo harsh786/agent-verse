@@ -1,13 +1,19 @@
-"""Human-In-The-Loop gateway with asyncio.Event-based blocking.
+"""Human-In-The-Loop gateway.
 
-When the agent loop creates an approval request, it waits on an asyncio.Event.
-When a human approves/rejects via the API, the event is set and the agent resumes.
-Timeout escalation: after `timeout_seconds`, the request auto-rejects.
+Dual-mode implementation:
+  * asyncio.Event (in-process) — backward-compatible path used by existing code.
+  * Redis BLPOP (cross-replica) — new path; _wait_for_result / publish_resolution
+    allow approval delivery across any replica in the fleet.
+
+The Redis BLPOP path survives server restarts and works across multiple replicas
+because the approval result is stored in a Redis list (not process memory).
 """
 from __future__ import annotations
 
 import asyncio
 import enum
+import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -129,7 +135,7 @@ class HITLGateway:
         tenant_ctx: TenantContext,
         required_approvers: int = 1,  # P1.3: multi-person approval threshold
         context: dict | None = None,
-    ) -> "ApprovalRequest":
+    ) -> ApprovalRequest:
         """Create an approval request and return it (non-blocking).
 
         The returned ``ApprovalRequest`` is dual-mode:
@@ -241,7 +247,7 @@ class HITLGateway:
         approver: str,
         note: str = "",
         tenant_ctx: TenantContext,
-    ) -> "_AwaitableBool":
+    ) -> _AwaitableBool:
         """Approve a request. Returns an _AwaitableBool (truthy on success).
 
         Works in both sync and async contexts:
@@ -305,6 +311,71 @@ class HITLGateway:
             for (tid, _), req in self._requests.items()
             if tid == tenant_ctx.tenant_id and req.status == ApprovalStatus.PENDING
         ]
+
+    # ------------------------------------------------------------------
+    # Cross-replica HITL delivery (Redis BLPOP)
+    # ------------------------------------------------------------------
+
+    async def _wait_for_result(
+        self, request_id: str, timeout: float
+    ) -> dict[str, Any] | None:
+        """Wait for a HITL result via Redis BLPOP.
+
+        Blocks up to *timeout* seconds by issuing repeated BLPOP calls with a
+        maximum window of 5 s each.  Returns the decoded payload dict on
+        success, or ``None`` on timeout.
+
+        This is the cross-replica safe alternative to ``wait_for_approval``.
+        The approver writes the payload via ``publish_resolution``.
+        """
+        if self._redis is None:
+            return None
+
+        result_key = f"hitl_result:{request_id}"
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                blpop_timeout = min(max(remaining, 0.1), 5.0)
+                result = await self._redis.blpop(result_key, timeout=blpop_timeout)
+                if result:
+                    _, data = result
+                    return json.loads(data.decode() if isinstance(data, bytes) else data)
+            except Exception as exc:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning("hitl_blpop_error", error=str(exc))
+                break
+
+        return None
+
+    async def publish_resolution(
+        self,
+        request_id: str,
+        action: str,
+        approver: str,
+        note: str = "",
+    ) -> None:
+        """Publish a HITL resolution to the Redis list consumed by _wait_for_result.
+
+        Sets a 24-hour TTL so the key is garbage-collected automatically.
+        Safe to call even when Redis is unavailable — errors are logged only.
+        """
+        payload = json.dumps({"action": action, "approver": approver, "note": note})
+        if self._redis is not None:
+            try:
+                result_key = f"hitl_result:{request_id}"
+                await self._redis.rpush(result_key, payload)
+                await self._redis.expire(result_key, 86400)  # 24 h
+            except Exception as exc:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "hitl_publish_resolution_error", error=str(exc)
+                )
 
     def expire_timed_out_requests(self) -> list[str]:
         """Check all pending requests and auto-reject those past _expires_at_dt."""

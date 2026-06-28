@@ -69,13 +69,16 @@ def test_compliance_configure_services_wires_references():
 
 
 def test_compliance_residency():
-    """get_data_residency returns GDPR and SOC2 compliance fields."""
+    """get_data_residency returns region fields; compliance is no longer hardcoded."""
     cc = ComplianceController()
     residency = cc.get_data_residency(tenant_ctx=T)
-    assert residency["gdpr_compliant"] is True
+    # FIX: gdpr_compliant and soc2_type2 must NOT be hardcoded True.
+    # They must be False (unclaimed) to avoid false regulatory assertions.
+    assert residency["gdpr_compliant"] is False, "gdpr_compliant must not be hardcoded True"
+    assert residency["soc2_type2"] is False, "soc2_type2 must not be hardcoded True"
     assert "primary_region" in residency
-    assert residency["soc2_type2"] is True
     assert residency["tenant_id"] == T.tenant_id
+    assert "note" in residency  # Points to dynamic compliance endpoint
 
 
 @pytest.mark.asyncio

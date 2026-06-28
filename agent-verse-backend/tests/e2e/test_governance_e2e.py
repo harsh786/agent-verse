@@ -90,7 +90,7 @@ async def test_hitl_gateway_full_lifecycle() -> None:
         note="Looks good",
         tenant_ctx=TENANT,
     )
-    assert approved is True
+    assert approved == True  # noqa: E712 — _AwaitableBool defines __eq__ with bool
 
     req = hitl.get_request(req_id, tenant_ctx=TENANT)
     assert req is not None

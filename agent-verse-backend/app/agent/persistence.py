@@ -10,7 +10,6 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -76,9 +75,10 @@ class GoalPersistenceEngine:
     strategies until success, human escalation, or permanent failure.
     """
 
-    def __init__(self, config: PersistenceConfig | None = None) -> None:
+    def __init__(self, config: PersistenceConfig | None = None, db: Any = None) -> None:
         self._config = config or PersistenceConfig()
         self._attempts: list[AttemptRecord] = []
+        self._db = db  # Optional async session factory for DB persistence
 
     @property
     def attempts(self) -> list[AttemptRecord]:
@@ -171,6 +171,77 @@ class GoalPersistenceEngine:
             )
         return original_goal
 
+    async def _write_attempt_start(
+        self,
+        goal_id: str,
+        tenant_id: str,
+        attempt_num: int,
+        strategy: str,
+        enriched_goal: str,
+        backoff: int,
+    ) -> str:
+        """Write attempt start record to DB. Returns attempt record ID."""
+        attempt_id = str(uuid.uuid4())
+        if self._db is None:
+            return attempt_id
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                await session.execute(_t("""
+                    INSERT INTO goal_attempts
+                        (id, goal_id, tenant_id, attempt_number, strategy,
+                         enriched_goal, started_at, backoff_seconds)
+                    VALUES (:id, :goal, :tenant, :num, :strat, :goal_text, NOW(), :backoff)
+                """), {
+                    "id": attempt_id,
+                    "goal": goal_id,
+                    "tenant": tenant_id,
+                    "num": attempt_num,
+                    "strat": strategy,
+                    "goal_text": enriched_goal[:2000],
+                    "backoff": backoff,
+                })
+                await session.commit()
+        except Exception as exc:
+            logger.warning("attempt_write_failed", error=str(exc))
+        return attempt_id
+
+    async def _write_attempt_end(
+        self,
+        attempt_id: str,
+        tenant_id: str,
+        succeeded: bool,
+        failure_reason: str,
+        iterations: int,
+        cost_usd: float,
+    ) -> None:
+        """Update attempt record with completion data."""
+        if self._db is None or not attempt_id:
+            return
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                await session.execute(_t("""
+                    UPDATE goal_attempts
+                    SET ended_at = NOW(),
+                        succeeded = :ok,
+                        failure_reason = :reason,
+                        iterations_used = :iters,
+                        cost_usd = :cost
+                    WHERE id = :id
+                """), {
+                    "id": attempt_id,
+                    "ok": succeeded,
+                    "reason": failure_reason[:500] if failure_reason else "",
+                    "iters": iterations,
+                    "cost": cost_usd,
+                })
+                await session.commit()
+        except Exception as exc:
+            logger.warning("attempt_update_failed", error=str(exc))
+
     async def run(
         self,
         *,
@@ -178,6 +249,7 @@ class GoalPersistenceEngine:
         agent_factory: Any,  # Callable[[], AgentGraph] or AgentGraph instance
         tenant_ctx: Any,
         event_callback: Any = None,
+        goal_id: str = "",
     ) -> tuple[bool, list[AttemptRecord]]:
         """Run goal with persistence until success, escalation, or exhaustion.
 
@@ -186,6 +258,7 @@ class GoalPersistenceEngine:
             agent_factory: Callable that returns a fresh AgentGraph/AgentLoop per attempt
             tenant_ctx: TenantContext
             event_callback: Async callback for SSE events
+            goal_id: Optional goal ID for DB persistence writes
 
         Returns:
             (success: bool, attempts: list[AttemptRecord])
@@ -193,6 +266,7 @@ class GoalPersistenceEngine:
         config = self._config
         session_start = time.monotonic()
         last_failure = ""
+        tenant_id = getattr(tenant_ctx, "tenant_id", "")
 
         async def emit(event: dict) -> None:
             if event_callback and config.emit_retry_events:
@@ -243,6 +317,17 @@ class GoalPersistenceEngine:
             self._attempts.append(attempt)
 
             enriched_goal = self._build_enriched_goal(goal, strategy, last_failure)
+            backoff_used = 0 if attempt_number == 1 else int(self._backoff_seconds(attempt_number - 1))
+
+            # Write attempt start to DB
+            _db_attempt_id = await self._write_attempt_start(
+                goal_id=goal_id,
+                tenant_id=tenant_id,
+                attempt_num=attempt_number,
+                strategy=str(strategy),
+                enriched_goal=enriched_goal,
+                backoff=backoff_used,
+            )
 
             await emit({
                 "type": "persistence_attempt_start",
@@ -272,6 +357,16 @@ class GoalPersistenceEngine:
                     str(getattr(state, "status", "")).lower() in ("complete", "completed", "success")
                 )
 
+                # Write attempt end to DB
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=attempt.success,
+                    failure_reason=attempt.failure_reason,
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
+
                 if attempt.success:
                     await emit({
                         "type": "persistence_goal_achieved",
@@ -292,6 +387,16 @@ class GoalPersistenceEngine:
                                "verification failed"
                 attempt.failure_reason = last_failure
 
+                # Write failure end to DB
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=False,
+                    failure_reason=last_failure,
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
+
                 await emit({
                     "type": "persistence_attempt_failed",
                     "attempt": attempt_number,
@@ -308,12 +413,28 @@ class GoalPersistenceEngine:
             except asyncio.CancelledError:
                 attempt.failure_reason = "cancelled"
                 attempt.ended_at = datetime.now(UTC).isoformat()
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=False,
+                    failure_reason="cancelled",
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
                 await emit({"type": "persistence_cancelled", "attempt": attempt_number})
                 raise
             except Exception as exc:
                 attempt.failure_reason = str(exc)[:200]
                 attempt.ended_at = datetime.now(UTC).isoformat()
                 last_failure = str(exc)
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=False,
+                    failure_reason=str(exc)[:500],
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
                 await emit({
                     "type": "persistence_attempt_error",
                     "attempt": attempt_number,

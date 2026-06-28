@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.tenancy.context import TenantContext
@@ -425,6 +425,17 @@ class CreateAgentRequest(BaseModel):
     model_override: str = ""
     max_iterations: int = 15
     timeout_seconds: int = 300
+    domain_context: str = "general"
+    domain_metadata: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _validate_domain_metadata(self) -> "CreateAgentRequest":
+        """Legal agents must have bar_number in domain_metadata."""
+        if self.domain_context == "legal" and "bar_number" not in self.domain_metadata:
+            raise ValueError(
+                "Legal agents require 'bar_number' in domain_metadata"
+            )
+        return self
 
 
 # FIX 2: new update request model
@@ -537,6 +548,8 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
         "model_override": body.model_override,
         "max_iterations": body.max_iterations,
         "timeout_seconds": body.timeout_seconds,
+        "domain_context": body.domain_context,
+        "domain_metadata": body.domain_metadata,
     }
     agent_id = await _create_agent_record(store, record, tenant_ctx=tenant_ctx)
 

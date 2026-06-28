@@ -76,6 +76,13 @@ class FakeProvider:
             total_tokens=sum(len(t.split()) for t in request.texts),
         )
 
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Return deterministic batch embeddings for testing."""
+        return [
+            [math.sin(i + idx) for i in range(self._embed_dim)]
+            for idx, _ in enumerate(texts)
+        ]
+
     def supports_vision(self) -> bool:
         return self._vision
 

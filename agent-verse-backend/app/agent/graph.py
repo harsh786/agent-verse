@@ -140,6 +140,11 @@ class AgentGraph:
         checkpointer: Any | None = None,
         # Distributed bulkhead registry (RedisBulkheadRegistry or None)
         bulkhead_registry: Any = None,
+        # Cost tracker for real token-based cost recording
+        cost_tracker: Any | None = None,
+        # Step callback for streaming simulation (called after each step)
+        step_callback: Any | None = None,
+        **kwargs: Any,
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -171,6 +176,8 @@ class AgentGraph:
         self._hitl_timeout: float = 300.0
         self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
         self._bulkhead_registry = bulkhead_registry
+        self._cost_tracker = cost_tracker
+        self._step_callback = step_callback
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -187,6 +194,13 @@ class AgentGraph:
         self._background_tasks: set[Any] = set()
         # Agent knowledge collection binding — set externally by goal_service after construction
         self._agent_collection_ids: list[str] = []
+        # Civilization spawn tool support — set when civilization_id is in initial_context
+        self._civilization_id: str | None = None
+        self._civilization_spawn_enabled: bool = False
+        # Goal service reference — set externally for spawn tool dispatch
+        self._goal_service: Any = None
+        # Tenant context reference — set during run()
+        self._tenant_ctx_ref: Any = None
         from app.observability.logging import get_logger as _get_logger
         self._logger = _get_logger(__name__)
 
@@ -698,6 +712,22 @@ class AgentGraph:
                 struct_step.status = "complete"
                 _completed_steps[struct_step.id] = struct_step
                 await self._emit({"type": "step_complete", "step": step_desc, "output": output})
+                # Invoke step_callback for streaming simulation support
+                if self._step_callback is not None:
+                    try:
+                        import asyncio as _asyncio_cb
+                        _asyncio_cb.create_task(self._step_callback("step_completed", {
+                            "description": step_desc,
+                            "tool_called": self._extract_tool_name(step_desc),
+                            "output": output[:500] if output else "",
+                            "cost_increment": (
+                                agent_state.context.get("last_step_cost", 0.0)
+                                if isinstance(agent_state.context, dict)
+                                else 0.0
+                            ),
+                        }))
+                    except Exception:
+                        pass
                 await self._write_checkpoint(
                     agent_state.goal_id, step_global_index, agent_state, tenant_ctx
                 )
@@ -1088,6 +1118,31 @@ class AgentGraph:
             )
             if not ok:
                 return "Step skipped: budget exceeded."
+
+        # 1b. Record ACTUAL token cost via CostTracker when usage is available
+        if self._cost_tracker is not None and getattr(resp, "usage", None) is not None:
+            try:
+                from app.intelligence.cost_tracker import calculate_cost as _calc_cost
+                _model_name = resp.model if hasattr(resp, "model") and resp.model else _exec_model
+                _real_cost = _calc_cost(
+                    _model_name,
+                    resp.usage.prompt_tokens,
+                    resp.usage.completion_tokens,
+                )
+                state.context["total_cost_usd"] = (
+                    state.context.get("total_cost_usd", 0.0) + _real_cost
+                )
+                await self._cost_tracker.record_llm_usage(
+                    model=_model_name,
+                    prompt_tokens=resp.usage.prompt_tokens,
+                    completion_tokens=resp.usage.completion_tokens,
+                    tenant_ctx=tenant_ctx,
+                    goal_id=state.goal_id or "",
+                    agent_id=state.context.get("agent_id"),
+                    role="executor",
+                )
+            except Exception as _ct_exc:
+                self._logger.warning("cost_tracker_record_failed", error=str(_ct_exc))
         raw_output = resp.content
         raw_output_sanitized = False
 
@@ -1134,6 +1189,58 @@ class AgentGraph:
                     else None
                 )
                 if tool_ref is None:
+                    # Check if it's a civilization spawn tool call
+                    if (
+                        self._civilization_spawn_enabled
+                        and self._civilization_id
+                        and tool_call.tool == "civilization_spawn"
+                    ):
+                        try:
+                            from app.civilization.spawn_tool import execute_spawn_tool
+                            from app.civilization.governor import Governor
+                            _gov_kwargs: dict[str, Any] = {
+                                "civilization_id": self._civilization_id,
+                                "tenant_id": tenant_ctx.tenant_id,
+                            }
+                            if self._db_session_factory is not None:
+                                _gov_kwargs["db_session_factory"] = self._db_session_factory
+                            _civ_const_placeholder = None
+                            try:
+                                from app.civilization.models import Constitution
+                                _civ_const_placeholder = Constitution()
+                            except Exception:
+                                pass
+                            if _civ_const_placeholder is not None:
+                                _gov_kwargs["constitution"] = _civ_const_placeholder
+                            governor = Governor(**_gov_kwargs)
+                            spawn_result = await execute_spawn_tool(
+                                arguments=tool_call.arguments or {},
+                                governor=governor,
+                                goal_service=self._goal_service,
+                                tenant_ctx=tenant_ctx,
+                            )
+                            raw_output = str(spawn_result)
+                            await self._emit({
+                                "type": "child_agent_spawned",
+                                "parent_agent_id": getattr(state, "agent_id", ""),
+                                "child_agent_id": spawn_result.get("agent_id"),
+                                "child_goal_id": spawn_result.get("goal_id"),
+                                "depth": spawn_result.get("depth", 0),
+                                "capability": (tool_call.arguments or {}).get("requested_capability", ""),
+                            })
+                            raw_output_sanitized = True
+                            record_tool_call(
+                                tool_call.tool, "civilization", "success",
+                                time.monotonic() - tool_call_started,
+                            )
+                        except Exception as _spawn_exc:
+                            raw_output = f"Civilization spawn error: {_spawn_exc}"
+                            await self._emit({
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": str(_spawn_exc),
+                            })
+                            raw_output_sanitized = True
                     # Check if it's a built-in RPA tool (rpa_open_url, rpa_click, etc.)
                     from app.rpa.tools import RPA_TOOLS as _RPA_TOOLS
                     _rpa_tool_names = {str(t["name"]) for t in _RPA_TOOLS}
@@ -1716,6 +1823,13 @@ class AgentGraph:
                 span.set_attribute("tenant.id", tenant_ctx.tenant_id)
 
                 self._event_callback = event_callback
+                # Extract civilization_id from initial_context for spawn tool support
+                if initial_context and isinstance(initial_context, dict):
+                    civ_id = initial_context.get("civilization_id")
+                    if civ_id:
+                        self._civilization_id = civ_id
+                        self._civilization_spawn_enabled = True
+                self._tenant_ctx_ref = tenant_ctx
                 thread_id = uuid.uuid4().hex
                 config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 

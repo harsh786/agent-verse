@@ -41,6 +41,7 @@ async def test_rejected_candidate_never_reaches_ltm():
     mock_scorecard = MagicMock()
     mock_scorecard.average_score = MagicMock(return_value=0.2)  # Below rejection threshold
     mock_eval.score_and_persist = AsyncMock(return_value=mock_scorecard)
+    mock_eval._score_coherence = AsyncMock(return_value=0.2)  # Returns float directly
 
     pipeline = _make_pipeline(ltm=mock_ltm, eval_runner=mock_eval)
 
@@ -61,6 +62,7 @@ async def test_high_score_candidate_promoted_to_ltm():
     mock_scorecard = MagicMock()
     mock_scorecard.average_score = MagicMock(return_value=0.9)  # Above promotion threshold
     mock_eval.score_and_persist = AsyncMock(return_value=mock_scorecard)
+    mock_eval._score_coherence = AsyncMock(return_value=0.9)  # Returns float directly
 
     pipeline = _make_pipeline(ltm=mock_ltm, eval_runner=mock_eval)
     pipeline._set_candidate_status = AsyncMock()
@@ -84,6 +86,7 @@ async def test_medium_score_validated_not_promoted():
     # Between rejection (0.35) and promotion (0.7) thresholds
     mock_scorecard.average_score = MagicMock(return_value=0.55)
     mock_eval.score_and_persist = AsyncMock(return_value=mock_scorecard)
+    mock_eval._score_coherence = AsyncMock(return_value=0.55)  # Returns float directly
 
     pipeline = _make_pipeline(ltm=mock_ltm, eval_runner=mock_eval)
     pipeline._set_candidate_status = AsyncMock()

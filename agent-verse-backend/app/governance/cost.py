@@ -69,9 +69,7 @@ class CostController:
     async def _reset_if_new_day_atomic(self, tenant_id: str) -> None:
         """Atomic daily reset using a per-tenant lock."""
         async with self._locks[f"reset:{tenant_id}"]:
-            from datetime import date  # noqa: PLC0415
-
-            today = date.today().isoformat()
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
             if self._last_reset_date.get(tenant_id) != today:
                 if self._last_reset_date.get(tenant_id) is not None:
                     self._daily_totals[tenant_id] = 0.0
@@ -188,6 +186,37 @@ class RedisCostController:
             return float(val) if val else 0.0
         except Exception:
             return 0.0
+
+    async def get_budget_status(
+        self, tenant_id: str, goal_id: str | None = None
+    ) -> dict[str, Any]:
+        """Pure READ operation — never modifies Redis counters (Amendment 6.4).
+
+        Safe to call from prediction endpoints and dashboards.  Uses GET (not
+        INCRBYFLOAT) so it cannot corrupt TTLs or counter values.
+        """
+        daily_key = self._daily_key(tenant_id)
+        goal_key = f"cost:goal:{tenant_id}:{goal_id}" if goal_id else None
+
+        try:
+            daily_spent = float(await self._redis.get(daily_key) or 0)
+            goal_spent = (
+                float(await self._redis.get(goal_key) or 0) if goal_key else 0.0
+            )
+        except Exception:
+            daily_spent = 0.0
+            goal_spent = 0.0
+
+        cfg = self._tenant_configs.get(tenant_id, BudgetConfig())
+        remaining = max(0.0, cfg.per_tenant_daily_usd - daily_spent)
+
+        return {
+            "daily_spent": daily_spent,
+            "daily_limit": cfg.per_tenant_daily_usd,
+            "daily_remaining": remaining,
+            "budget_pct_remaining": remaining / max(cfg.per_tenant_daily_usd, 0.01),
+            "goal_spent": goal_spent,
+        }
 
     async def check_and_record(
         self,

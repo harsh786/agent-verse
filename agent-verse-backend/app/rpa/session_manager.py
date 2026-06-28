@@ -251,3 +251,11 @@ class BrowserSessionManager:
             return result
         except Exception:
             return self.list_active(tenant_id=tenant_id)
+
+    def get_page(self, session_id: str) -> Any:
+        """Return the live Playwright page for a session, or None if not found."""
+        # Search across all tenants since we only have session_id here
+        for (sid, tid), session in self._sessions.items():
+            if sid == session_id and session.is_alive:
+                return getattr(session, "_page", None) or getattr(session, "page", None)
+        return None

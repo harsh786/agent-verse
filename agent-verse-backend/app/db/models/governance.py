@@ -1,11 +1,13 @@
-"""SQLAlchemy ORM models for governance: audit log and approval requests."""
+"""SQLAlchemy ORM models for governance: audit log, approval requests, policy versions."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models import Base
@@ -57,3 +59,33 @@ class ApprovalRequest(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class PolicyVersion(Base):
+    """Immutable snapshot of a policy at a given version number (migration 0056)."""
+
+    __tablename__ = "policy_versions"
+
+    id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    policy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rules: Mapped[Any] = mapped_column(JSONB, nullable=False, default=list)
+    metadata_: Mapped[Any] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    parent_policy_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+

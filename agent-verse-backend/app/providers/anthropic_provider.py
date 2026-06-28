@@ -13,6 +13,7 @@ from app.providers.base import (
     CompletionResponse,
     EmbedRequest,
     EmbedResponse,
+    TokenUsage,
 )
 
 
@@ -124,6 +125,14 @@ class AnthropicProvider:
             output_tokens=response.usage.output_tokens,
             tool_calls=tool_calls,
             stop_reason=response.stop_reason or "end_turn",
+            usage=TokenUsage(
+                prompt_tokens=getattr(response.usage, "input_tokens", 0),
+                completion_tokens=getattr(response.usage, "output_tokens", 0),
+                total_tokens=(
+                    getattr(response.usage, "input_tokens", 0)
+                    + getattr(response.usage, "output_tokens", 0)
+                ),
+            ),
         )
 
     async def stream_complete(self, request: CompletionRequest):

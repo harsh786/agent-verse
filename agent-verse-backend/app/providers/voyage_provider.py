@@ -54,6 +54,29 @@ class VoyageProvider:
         embeddings: list[list[float]] = result.embeddings
         return EmbedResponse(embeddings=embeddings)
 
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed up to 96 texts in one Voyage API call (Voyage batch limit).
+
+        Splits into batches of 96 automatically when *texts* is longer.
+        """
+        import asyncio
+
+        if not texts:
+            return []
+
+        all_embeddings: list[list[float]] = []
+        batch_size = 96  # Voyage AI API limit per request
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda b=batch: self._client.embed(b, model=self._model),
+            )
+            all_embeddings.extend(result.embeddings)
+
+        return all_embeddings
+
     def supports_vision(self) -> bool:
         return False
 
@@ -95,6 +118,19 @@ class LocalEmbedProvider:
             lambda: self._model.encode(request.texts).tolist(),
         )
         return EmbedResponse(embeddings=embeddings)
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed multiple texts using the local sentence-transformers model."""
+        import asyncio
+
+        if not texts:
+            return []
+
+        embeddings = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self._model.encode(texts).tolist(),
+        )
+        return embeddings
 
     def supports_vision(self) -> bool:
         return False

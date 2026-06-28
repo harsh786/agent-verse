@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # --- feature flags ---
     civilization_enabled: bool = False
 
+    # --- Agent Civilization ---
+    civilization_max_agents_per_tenant: int = 50
+    civilization_max_spawn_depth: int = 5
+    civilization_default_budget_usd: float = 10.0
+    civilization_tick_interval_seconds: int = 30
+
     # --- SSO / Keycloak ---
     frontend_url: str = "http://localhost:5173"
     sso_enabled: bool = False

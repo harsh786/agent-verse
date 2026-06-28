@@ -4,19 +4,32 @@ Policies layer on top of the permission matrix:
   - A policy declares lists of denied tools.
   - Multiple policies stack (most restrictive wins).
   - Tool matching supports exact names or glob prefixes.
+
+v2 additions (migration 0056):
+  - PolicyVersionManager — every mutation creates an immutable snapshot.
+  - Timezone-aware time windows via ``zoneinfo``.
+  - Fail-closed semantics for regulated domains (healthcare/legal/finance).
+  - SemanticPolicyRule type for LLM-judge evaluation.
 """
 
 from __future__ import annotations
 
 import enum
 import fnmatch
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from app.tenancy.context import TenantContext
 
 if TYPE_CHECKING:
     import asyncio
+
+# Domains that require a human approval when NO policy matches (fail-closed).
+REGULATED_DOMAINS: frozenset[str] = frozenset(
+    {"healthcare", "hipaa", "legal", "finance", "sox", "fintech", "pci"}
+)
 
 
 class PolicyResult(enum.StrEnum):
@@ -32,9 +45,10 @@ class Policy:
     denied_tools: list[str] = field(default_factory=list)
     approval_tools: list[str] = field(default_factory=list)
     scope: str = "global"
-    allowed_hours_utc: tuple[int, int] | None = None  # (start_hour, end_hour) UTC
-    allowed_weekdays: list[int] | None = None  # 0=Monday ... 6=Sunday
+    allowed_hours_utc: tuple[int, int] | None = None  # (start_hour, end_hour)
+    allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
     tenant_id: str = ""
+    timezone: str = "UTC"  # IANA timezone name (e.g. "America/New_York")
     # Supplementary fields populated when reloading from DB
     action: str = ""
     tool_pattern: str = ""
@@ -68,11 +82,20 @@ class PolicyEngine:
         self._policies.append(policy)
 
     def _is_within_time_window(self, policy: Policy) -> bool:
-        """Returns True if current UTC time is within policy's allowed window."""
-        from datetime import UTC, datetime
+        """Returns True if current time (in policy.timezone) is within policy's allowed window."""
         if policy.allowed_hours_utc is None and policy.allowed_weekdays is None:
             return True  # No time restriction
-        now = datetime.now(UTC)
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(policy.timezone or "UTC")
+        except Exception:
+
+            tz = UTC  # type: ignore[assignment]
+
+        from datetime import datetime
+
+        now = datetime.now(tz)
         if policy.allowed_weekdays is not None:
             if now.weekday() not in policy.allowed_weekdays:
                 return False
@@ -193,7 +216,7 @@ class PolicyEngine:
 
     @classmethod
     async def subscribe_to_changes(
-        cls, redis_url: str, engine: "PolicyEngine", db: Any
+        cls, redis_url: str, engine: PolicyEngine, db: Any
     ) -> None:
         """Long-running coroutine: subscribe to policy_changes channel and reload on message.
 
@@ -202,7 +225,9 @@ class PolicyEngine:
         """
         import asyncio
         import json
+
         import redis.asyncio as aioredis
+
         from app.observability.logging import get_logger
 
         logger = get_logger(__name__)
@@ -237,8 +262,8 @@ class PolicyEngine:
 
 
 def start_policy_subscriber(
-    redis_url: str, engine: "PolicyEngine", db: Any
-) -> "asyncio.Task[None]":
+    redis_url: str, engine: PolicyEngine, db: Any
+) -> asyncio.Task[None]:
     """Start the policy change subscriber as a background task.
     Call this from main.py lifespan after Redis is available.
     Returns the task so it can be cancelled on shutdown.
@@ -248,3 +273,251 @@ def start_policy_subscriber(
         PolicyEngine.subscribe_to_changes(redis_url, engine, db),
         name="policy_pubsub_subscriber",
     )
+
+
+# ---------------------------------------------------------------------------
+# Domain fail-closed helper
+# ---------------------------------------------------------------------------
+
+
+def evaluate_with_domain_failsafe(
+    tool_name: str,
+    domain: str | None = None,
+) -> PolicyResult:
+    """Return REQUIRE_APPROVAL when no policy matches but domain is regulated.
+
+    This implements the "fail-closed" posture required for healthcare, legal,
+    and finance deployments:
+      - If domain is regulated and no explicit policy grants access → REQUIRE_APPROVAL
+      - Otherwise → ALLOW (standard behavior)
+
+    This function is a convenience wrapper; the full engine should be used when
+    policies are available (see PolicyEngine.evaluate).
+    """
+    if domain and domain.lower() in REGULATED_DOMAINS:
+        return PolicyResult.REQUIRE_APPROVAL
+    return PolicyResult.ALLOW
+
+
+# ---------------------------------------------------------------------------
+# PolicyVersionManager
+# ---------------------------------------------------------------------------
+
+
+class PolicyVersionManager:
+    """Manages the version lifecycle for policies stored in policy_versions.
+
+    Every mutation (create / update / soft-delete) writes an immutable snapshot
+    row, enabling:
+      - Full audit history of policy changes
+      - Point-in-time rollback to any previous version
+      - Compliance-grade change tracking (SOX, HIPAA, GDPR)
+    """
+
+    # ------------------------------------------------------------------
+    # Write operations
+    # ------------------------------------------------------------------
+
+    async def create_policy(
+        self,
+        db: Any,
+        tenant_id: str,
+        name: str,
+        rules: list[dict[str, Any]],
+        description: str = "",
+        change_summary: str = "Initial version",
+        changed_by: str | None = None,
+        parent_policy_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a brand-new policy at version 1."""
+        policy_id = str(uuid.uuid4())
+        pv = await self._insert_version(
+            db,
+            tenant_id=tenant_id,
+            policy_id=policy_id,
+            version_number=1,
+            name=name,
+            rules=rules,
+            description=description,
+            is_active=True,
+            change_summary=change_summary,
+            changed_by=changed_by,
+            parent_policy_id=parent_policy_id,
+        )
+        await db.commit()
+        return pv
+
+    async def update_policy(
+        self,
+        db: Any,
+        tenant_id: str,
+        policy_id: str,
+        updates: dict[str, Any],
+        change_summary: str,
+        changed_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically deactivate the current version and create the next one."""
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
+
+        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+
+        result = await db.execute(
+            select(PolicyVersion).where(
+                PolicyVersion.policy_id == policy_id,
+                PolicyVersion.is_active.is_(True),
+            )
+        )
+        current = result.scalar_one_or_none()
+        if not current:
+            raise ValueError(f"Policy {policy_id} not found")
+
+        # Deactivate current version
+        await db.execute(
+            sa_update(PolicyVersion)
+            .where(PolicyVersion.id == current.id)
+            .values(is_active=False)
+        )
+
+        new_version = await self._insert_version(
+            db,
+            tenant_id=tenant_id,
+            policy_id=policy_id,
+            version_number=current.version_number + 1,
+            name=updates.get("name", current.name),
+            rules=updates.get("rules", current.rules),
+            description=updates.get("description", current.description),
+            is_active=True,
+            change_summary=change_summary,
+            changed_by=changed_by,
+            parent_policy_id=(
+                str(current.parent_policy_id) if current.parent_policy_id else None
+            ),
+        )
+        await db.commit()
+        return new_version
+
+    async def rollback(
+        self,
+        db: Any,
+        tenant_id: str,
+        policy_id: str,
+        target_version: int,
+        reason: str,
+        rolled_back_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new version that is a copy of a historical snapshot."""
+        from sqlalchemy import func, select
+        from sqlalchemy import update as sa_update
+
+        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+
+        target_result = await db.execute(
+            select(PolicyVersion).where(
+                PolicyVersion.policy_id == policy_id,
+                PolicyVersion.version_number == target_version,
+            )
+        )
+        target = target_result.scalar_one_or_none()
+        if not target:
+            raise ValueError(
+                f"Version {target_version} not found for policy {policy_id}"
+            )
+
+        # Deactivate current active version
+        await db.execute(
+            sa_update(PolicyVersion)
+            .where(
+                PolicyVersion.policy_id == policy_id,
+                PolicyVersion.is_active.is_(True),
+            )
+            .values(is_active=False)
+        )
+
+        # Determine next version number
+        max_result = await db.execute(
+            select(func.max(PolicyVersion.version_number)).where(
+                PolicyVersion.policy_id == policy_id
+            )
+        )
+        max_ver = max_result.scalar() or 0
+
+        new_version = await self._insert_version(
+            db,
+            tenant_id=tenant_id,
+            policy_id=policy_id,
+            version_number=max_ver + 1,
+            name=target.name,
+            rules=target.rules,
+            description=target.description,
+            is_active=True,
+            change_summary=f"Rollback to v{target_version}: {reason}",
+            changed_by=rolled_back_by,
+        )
+        await db.commit()
+        return new_version
+
+    # ------------------------------------------------------------------
+    # Read operations
+    # ------------------------------------------------------------------
+
+    async def get_version_history(
+        self,
+        db: Any,
+        tenant_id: str,
+        policy_id: str,
+    ) -> list[Any]:
+        """Return all version snapshots for a policy, oldest first."""
+        from sqlalchemy import select
+
+        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+
+        result = await db.execute(
+            select(PolicyVersion)
+            .where(PolicyVersion.policy_id == policy_id)
+            .order_by(PolicyVersion.version_number)
+        )
+        return result.scalars().all()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _insert_version(
+        self,
+        db: Any,
+        *,
+        tenant_id: str,
+        policy_id: str,
+        version_number: int,
+        name: str,
+        rules: list[dict[str, Any]],
+        description: str | None,
+        is_active: bool,
+        change_summary: str | None,
+        changed_by: str | None = None,
+        parent_policy_id: str | None = None,
+    ) -> dict[str, Any]:
+        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+
+        pv = PolicyVersion(
+            tenant_id=tenant_id,
+            policy_id=policy_id,
+            version_number=version_number,
+            name=name,
+            description=description,
+            rules=rules,
+            is_active=is_active,
+            parent_policy_id=parent_policy_id,
+            change_summary=change_summary,
+            changed_by=changed_by,
+        )
+        db.add(pv)
+        await db.flush()
+        return {
+            "id": str(pv.id),
+            "policy_id": policy_id,
+            "version_number": version_number,
+            "name": name,
+            "is_active": is_active,
+        }
