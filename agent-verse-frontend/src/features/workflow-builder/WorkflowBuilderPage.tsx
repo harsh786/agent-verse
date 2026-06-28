@@ -1,289 +1,376 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Play, Download, Plus, Trash2 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
-import { API_BASE } from '@/lib/api/client';
+/**
+ * World-class visual workflow builder using @xyflow/react.
+ * Drag-drop nodes, connect them, configure inline, save, run.
+ */
+import { useState, useCallback, useRef } from 'react';
+import {
+  ReactFlow, Background, Controls, MiniMap, BackgroundVariant,
+  addEdge, useNodesState, useEdgesState, type Node, type Edge, type Connection,
+  MarkerType,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAuthStore } from '../../stores/auth';
+import { toast } from '../../stores/toast';
+import { workflowsApi } from '../../lib/api/client';
 
-interface WorkflowNode {
-  id: string;
-  type: 'start' | 'step' | 'decision' | 'end';
+// ─── Node Types ──────────────────────────────────────────────────────────────
+
+const NODE_COLORS: Record<string, string> = {
+  trigger:        'bg-green-100 border-green-400 text-green-800',
+  tool_call:      'bg-blue-100 border-blue-400 text-blue-800',
+  agent_step:     'bg-purple-100 border-purple-400 text-purple-800',
+  decision:       'bg-yellow-100 border-yellow-400 text-yellow-800',
+  parallel:       'bg-orange-100 border-orange-400 text-orange-800',
+  loop:           'bg-cyan-100 border-cyan-400 text-cyan-800',
+  human_approval: 'bg-red-100 border-red-400 text-red-800',
+  delay:          'bg-slate-100 border-slate-400 text-slate-700',
+  end:            'bg-gray-100 border-gray-400 text-gray-700',
+};
+
+const NODE_ICONS: Record<string, string> = {
+  trigger: '▶', tool_call: '🔧', agent_step: '🤖', decision: '❓',
+  parallel: '⫸', loop: '↻', human_approval: '👤', delay: '⏱', end: '⬛',
+};
+
+interface WorkflowNodeData {
+  type: string;
   label: string;
-  tool?: string;
-  args?: string;
-  condition?: string;
-  position?: { x: number; y: number };
+  subtitle?: string;
+  status?: string | null;
+  [key: string]: unknown;
 }
 
-interface WorkflowEdge {
-  id: string;
-  source: string;
-  target: string;
-}
-
-function NodeCard({ node, onDelete, onEdit }: {
-  node: WorkflowNode;
-  onDelete: () => void;
-  onEdit: (updates: Partial<WorkflowNode>) => void;
-}) {
-  const colors: Record<string, string> = {
-    start: 'bg-green-100 border-green-400',
-    step: 'bg-blue-100 border-blue-400',
-    decision: 'bg-yellow-100 border-yellow-400',
-    end: 'bg-red-100 border-red-400',
-  };
+function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: boolean }) {
+  const color = NODE_COLORS[data.type] ?? 'bg-gray-100 border-gray-300';
   return (
-    <div className={`border-2 rounded-xl p-3 ${colors[node.type]} relative min-w-[180px]`}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-bold uppercase text-muted-foreground">{node.type}</span>
-        {node.type !== 'start' && node.type !== 'end' && (
-          <button onClick={onDelete} className="text-red-500 hover:text-red-700">
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        )}
+    <div className={`rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
+      <div className="flex items-center gap-1.5 font-semibold mb-0.5">
+        <span>{NODE_ICONS[data.type] ?? '◻'}</span>
+        <span className="truncate">{String(data.label)}</span>
       </div>
-      <input
-        value={node.label}
-        onChange={e => onEdit({ label: e.target.value })}
-        className="text-sm font-medium w-full bg-transparent border-b border-current/30 outline-none"
-        placeholder="Step description..."
-      />
-      {node.type === 'step' && (
-        <input
-          value={node.tool || ''}
-          onChange={e => onEdit({ tool: e.target.value })}
-          className="text-xs text-muted-foreground w-full bg-transparent mt-1 outline-none"
-          placeholder="Tool: e.g. jira.search_issues"
-        />
+      {data.subtitle && <div className="text-[10px] opacity-60 truncate">{String(data.subtitle)}</div>}
+      {data.status && (
+        <div className={`mt-1 text-[10px] font-medium ${
+          data.status === 'running'  ? 'text-blue-600'  :
+          data.status === 'complete' ? 'text-green-600' :
+          data.status === 'failed'   ? 'text-red-600'   : 'opacity-50'
+        }`}>● {data.status}</div>
       )}
     </div>
   );
 }
 
+const NODE_TYPES = { workflow: WorkflowNode };
+
+// ─── Palette ─────────────────────────────────────────────────────────────────
+
+const PALETTE_NODES = [
+  { type: 'trigger',        label: 'Trigger / Start'   },
+  { type: 'tool_call',      label: 'Tool Call'          },
+  { type: 'agent_step',     label: 'Agent Step'         },
+  { type: 'decision',       label: 'Decision / Branch'  },
+  { type: 'parallel',       label: 'Parallel Fan-out'   },
+  { type: 'loop',           label: 'Loop / Map'         },
+  { type: 'human_approval', label: 'Human Approval'     },
+  { type: 'delay',          label: 'Delay / Wait'       },
+  { type: 'end',            label: 'End'                },
+];
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export function WorkflowBuilderPage() {
-  const apiKey = useAuthStore(s => s.apiKey);
-  const navigate = useNavigate();
-  const [nodes, setNodes] = useState<WorkflowNode[]>([
-    { id: 'start', type: 'start', label: 'Start' },
-    { id: 'end', type: 'end', label: 'End' },
-  ]);
-  const [edges, setEdges] = useState<WorkflowEdge[]>([]);
-  const [goalInput, setGoalInput] = useState('');
+  const { apiKey } = useAuthStore();
+  const qc = useQueryClient();
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [workflowName, setWorkflowName] = useState('My Workflow');
+  const [currentWfId, setCurrentWfId] = useState<string | null>(null);
+  const [nlGoal, setNlGoal] = useState('');
   const [generating, setGenerating] = useState(false);
   const [running, setRunning] = useState(false);
+  const [runOutput, setRunOutput] = useState<string>('');
+  const nodeCounter = useRef(1);
 
-  const addNode = (type: WorkflowNode['type']) => {
-    const id = `node_${Date.now()}`;
-    setNodes(prev => {
-      const endIdx = prev.findIndex(n => n.id === 'end');
-      const newNodes = [...prev];
-      newNodes.splice(endIdx, 0, { id, type, label: `New ${type}`, tool: '' });
-      return newNodes;
-    });
-  };
+  const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
-  const deleteNode = (id: string) => {
-    setNodes(prev => prev.filter(n => n.id !== id));
-  };
+  const { data: savedWorkflows } = useQuery({
+    queryKey: ['workflows'],
+    queryFn: () => workflowsApi.list(),
+    enabled: !!apiKey,
+  });
 
-  const editNode = (id: string, updates: Partial<WorkflowNode>) => {
-    setNodes(prev => prev.map(n => n.id === id ? { ...n, ...updates } : n));
-  };
+  const addNode = useCallback((type: string, label: string) => {
+    const id = `node_${nodeCounter.current++}`;
+    setNodes((nds) => [
+      ...nds,
+      {
+        id, type: 'workflow',
+        position: { x: 200 + Math.random() * 200, y: 100 + Math.random() * 200 },
+        data: { type, label, subtitle: '', status: null } satisfies WorkflowNodeData,
+      },
+    ]);
+  }, [setNodes]);
 
-  const generateFromGoal = async () => {
-    if (!goalInput.trim()) return;
+  const onConnect = useCallback((connection: Connection) => {
+    setEdges((eds) =>
+      addEdge({
+        ...connection,
+        markerEnd: { type: MarkerType.ArrowClosed },
+        style: { stroke: '#6366f1', strokeWidth: 2 },
+      }, eds)
+    );
+  }, [setEdges]);
+
+  const generateFromNL = async () => {
+    if (!nlGoal.trim()) return;
     setGenerating(true);
-
     try {
-      // Submit as dry_run to get the plan without executing
-      const res = await fetch(`${API_BASE}/goals`, {
+      const r = await fetch(`${API_BASE}/goals`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ goal: goalInput, dry_run: true, autonomy_mode: 'bounded-autonomous' }),
+        body: JSON.stringify({ goal: nlGoal, dry_run: true }),
       });
-
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      const data = await res.json();
-
-      // Convert the returned plan steps into workflow nodes
-      const steps: string[] = data.plan?.steps || data.structured_plan?.steps || [];
-
+      const data = await r.json();
+      const steps: string[] = data?.plan?.steps ?? data?.execution_context?.plan?.steps ?? [];
       if (steps.length > 0) {
-        // Build nodes from actual plan
-        const newNodes: WorkflowNode[] = [
-          { id: 'start', type: 'start', label: 'Start', position: { x: 250, y: 50 } },
-          ...steps.slice(0, 20).map((step: string, i: number) => ({
-            id: `step_${i + 1}`,
-            type: 'step' as const,
-            label: step.length > 80 ? step.slice(0, 77) + '...' : step,
-            tool: '',
+        const newNodes: Node[] = [
+          { id: 'start', type: 'workflow', position: { x: 250, y: 50 }, data: { type: 'trigger', label: 'Start', subtitle: nlGoal.slice(0, 40) } satisfies WorkflowNodeData },
+          ...steps.slice(0, 10).map((step: string, i: number) => ({
+            id: `step_${i}`, type: 'workflow' as const,
             position: { x: 250, y: 150 + i * 100 },
+            data: { type: 'tool_call', label: step.slice(0, 40), subtitle: '' } satisfies WorkflowNodeData,
           })),
-          { id: 'end', type: 'end', label: 'End', position: { x: 250, y: 150 + steps.length * 100 } },
+          { id: 'end', type: 'workflow', position: { x: 250, y: 200 + steps.length * 100 }, data: { type: 'end', label: 'End' } satisfies WorkflowNodeData },
         ];
-
-        // Build edges: linear flow
-        const newEdges: WorkflowEdge[] = newNodes.slice(0, -1).map((node, i) => ({
-          id: `e_${i}`,
-          source: node.id,
-          target: newNodes[i + 1].id,
+        const newEdges: Edge[] = newNodes.slice(0, -1).map((n, i) => ({
+          id: `e_${i}`, source: n.id, target: newNodes[i + 1].id,
+          markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 },
         }));
-
         setNodes(newNodes);
         setEdges(newEdges);
+        toast({ kind: 'success', message: `Generated ${steps.length} steps from your goal` });
       } else {
-        // Fallback: poll for plan via the goal detail endpoint
-        const goalId = data.goal_id;
-        if (goalId) {
-          // Wait briefly then fetch goal detail which includes execution context
-          await new Promise(r => setTimeout(r, 2000));
-          const evtRes = await fetch(`${API_BASE}/goals/${goalId}`, {
-            headers: { 'X-API-Key': apiKey },
-          });
-          if (evtRes.ok) {
-            const goalData = await evtRes.json();
-            // Plan may be in execution_context.plan or structured_plan
-            const planSteps: string[] =
-              goalData?.execution_context?.plan?.steps ??
-              goalData?.structured_plan?.steps ??
-              [];
-            setNodes([
-              { id: 'start', type: 'start', label: 'Start' },
-              ...(planSteps.length > 0
-                ? planSteps.map((s: string, i: number) => ({
-                    id: `step_${i}`,
-                    type: 'step' as const,
-                    label: s.slice(0, 60),
-                    tool: '',
-                  }))
-                : [{ id: 'step_1', type: 'step' as const, label: goalInput.slice(0, 60), tool: '' }]
-              ),
-              { id: 'end', type: 'end', label: 'End' },
-            ]);
-          }
-        }
+        toast({ kind: 'error', message: 'No steps returned — try a more specific goal' });
       }
-    } catch (err) {
-      console.error('Workflow generation failed:', err);
-      // Minimal fallback on complete failure
-      setNodes([
-        { id: 'start', type: 'start', label: 'Start' },
-        { id: 'step_1', type: 'step', label: goalInput.slice(0, 60), tool: '' },
-        { id: 'end', type: 'end', label: 'End' },
-      ]);
+    } catch {
+      toast({ kind: 'error', message: 'Failed to generate workflow' });
     } finally {
       setGenerating(false);
     }
   };
 
-  const runWorkflow = async () => {
-    const stepsText = nodes
-      .filter(n => n.type === 'step')
-      .map(n => n.tool ? `${n.label} (${n.tool})` : n.label)
-      .join(', ');
-    const goal = `Execute workflow: ${stepsText}`;
-    setRunning(true);
+  const save = async () => {
+    const definition = {
+      steps: nodes.map((n) => ({
+        id: n.id, type: (n.data as WorkflowNodeData).type,
+        label: (n.data as WorkflowNodeData).label, position: n.position,
+      })),
+      edges: edges.map((e) => ({ source: e.source, target: e.target })),
+    };
     try {
-      const res = await fetch(`${API_BASE}/goals`, {
-        method: 'POST',
-        headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, dry_run: false }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        navigate(`/goals/${data.goal_id}`);
+      if (currentWfId) {
+        await workflowsApi.update(currentWfId, { name: workflowName, definition });
+      } else {
+        const data = await workflowsApi.create({ name: workflowName, definition });
+        setCurrentWfId(data.id);
       }
+      qc.invalidateQueries({ queryKey: ['workflows'] });
+      toast({ kind: 'success', message: 'Workflow saved' });
+    } catch {
+      toast({ kind: 'error', message: 'Failed to save workflow' });
+    }
+  };
+
+  const run = async (dryRun = false) => {
+    if (!currentWfId) {
+      await save();
+      toast({ kind: 'info', message: 'Saved — click Run again to execute.' });
+      return;
+    }
+    setRunning(true);
+    setRunOutput('');
+    try {
+      const data = await workflowsApi.run(currentWfId, dryRun);
+      setRunOutput(JSON.stringify(data, null, 2));
+      if (dryRun) {
+        setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: 'complete' } })));
+      }
+      toast({ kind: 'success', message: dryRun ? 'Dry run complete' : 'Workflow started' });
+    } catch {
+      toast({ kind: 'error', message: 'Run failed' });
     } finally {
       setRunning(false);
     }
   };
 
-  const exportWorkflow = () => {
-    const manifest = {
-      name: 'Custom Workflow',
-      version: '1.0.0',
-      description: goalInput || 'Manually built workflow',
-      steps: nodes.filter(n => n.type === 'step').map(n => ({
-        id: n.id, description: n.label, tool: n.tool,
-      })),
-      edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target })),
+  const loadWorkflow = async (id: string) => {
+    const data = await workflowsApi.get(id);
+    setCurrentWfId(id);
+    setWorkflowName(data.name);
+    const def = (data.definition ?? {}) as {
+      steps?: Array<{ id: string; type: string; label: string; position?: { x: number; y: number } }>;
+      edges?: Array<{ source: string; target: string }>;
     };
-    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'workflow.json';
-    a.click();
+    if (def.steps) {
+      setNodes(def.steps.map((s) => ({
+        id: s.id, type: 'workflow' as const,
+        position: s.position ?? { x: 200, y: 200 },
+        data: { type: s.type, label: s.label, subtitle: '' } satisfies WorkflowNodeData,
+      })));
+      setEdges((def.edges ?? []).map((e, i) => ({
+        id: `e_${i}`, source: e.source, target: e.target,
+        markerEnd: { type: MarkerType.ArrowClosed },
+        style: { stroke: '#6366f1', strokeWidth: 2 },
+      })));
+    }
   };
 
+  const isEmpty = nodes.length === 0;
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Workflow Builder</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Build multi-step agent workflows visually
-        </p>
-      </div>
-
-      {/* Goal input for auto-generation */}
-      <div className="bg-card border border-border rounded-xl p-4 flex gap-3">
-        <input
-          value={goalInput}
-          onChange={e => setGoalInput(e.target.value)}
-          placeholder="Describe your goal to auto-generate a workflow..."
-          className="flex-1 border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
-        />
-        <button
-          onClick={generateFromGoal}
-          disabled={!goalInput.trim() || generating}
-          className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm disabled:opacity-50"
-        >
-          {generating ? 'Generating…' : '✨ Auto-Generate'}
-        </button>
-      </div>
-
+    <div className="flex flex-col h-screen bg-background">
       {/* Toolbar */}
-      <div className="flex gap-2 flex-wrap">
-        <button onClick={() => addNode('step')}
-          className="flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-lg text-sm hover:bg-accent">
-          <Plus className="h-3.5 w-3.5" /> Add Step
-        </button>
-        <button onClick={() => addNode('decision')}
-          className="flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-lg text-sm hover:bg-accent">
-          <Plus className="h-3.5 w-3.5" /> Add Decision
-        </button>
-        <div className="ml-auto flex gap-2">
-          <button onClick={exportWorkflow}
-            className="flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-lg text-sm hover:bg-accent">
-            <Download className="h-3.5 w-3.5" /> Export
-          </button>
-          <button onClick={runWorkflow} disabled={running}
-            className="flex items-center gap-2 bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-green-700 disabled:opacity-50">
-            <Play className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run Workflow'}
-          </button>
-        </div>
+      <div className="flex items-center gap-3 px-4 py-2 border-b bg-card">
+        <input
+          value={workflowName}
+          onChange={(e) => setWorkflowName(e.target.value)}
+          aria-label="Workflow name"
+          className="font-semibold text-sm bg-transparent border-b border-transparent hover:border-muted-foreground focus:border-primary focus:outline-none w-48"
+        />
+        <div className="flex-1" />
+        {savedWorkflows && savedWorkflows.length > 0 && (
+          <select
+            onChange={(e) => { if (e.target.value) loadWorkflow(e.target.value); }}
+            className="text-xs border rounded px-2 py-1 bg-background"
+            defaultValue=""
+            aria-label="Load saved workflow"
+          >
+            <option value="">Load saved…</option>
+            {savedWorkflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        )}
+        <button onClick={() => { setNodes([]); setEdges([]); setCurrentWfId(null); setWorkflowName('My Workflow'); }} className="text-xs px-2 py-1 border rounded hover:bg-muted">New</button>
+        <button onClick={save} className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+        <button onClick={() => run(true)} disabled={running} className="text-xs px-3 py-1 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50">Dry Run</button>
+        <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">{running ? 'Running…' : '▶ Run'}</button>
       </div>
 
-      {/* Workflow canvas */}
-      <div className="bg-card border border-border rounded-xl p-6">
-        <div className="flex flex-col items-center gap-3">
-          {nodes.map((node, i) => (
-            <div key={node.id} className="flex flex-col items-center gap-1">
-              <NodeCard
-                node={node}
-                onDelete={() => deleteNode(node.id)}
-                onEdit={updates => editNode(node.id, updates)}
-              />
-              {i < nodes.length - 1 && (
-                <div className="w-px h-6 bg-border" />
-              )}
-            </div>
-          ))}
-        </div>
-        {nodes.filter(n => n.type === 'step').length === 0 && (
-          <div className="text-center text-sm text-muted-foreground mt-4">
-            Add steps using the toolbar above, or describe a goal to auto-generate.
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left: Node Palette */}
+        <div className="w-48 border-r bg-card flex flex-col shrink-0">
+          <div className="p-2 text-xs font-semibold text-muted-foreground border-b">Node Palette</div>
+          <div className="p-2 border-b">
+            <textarea
+              value={nlGoal}
+              onChange={(e) => setNlGoal(e.target.value)}
+              rows={2}
+              aria-label="Natural language workflow description"
+              className="w-full text-xs border rounded p-1 resize-none bg-background"
+              placeholder="Describe workflow…"
+            />
+            <button
+              onClick={generateFromNL}
+              disabled={generating || !nlGoal.trim()}
+              className="w-full mt-1 text-xs bg-purple-600 text-white rounded py-1 disabled:opacity-50"
+            >{generating ? '…' : '✨ Generate'}</button>
           </div>
-        )}
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {PALETTE_NODES.map((n) => (
+              <button
+                key={n.type}
+                onClick={() => addNode(n.type, n.label)}
+                aria-label={`Add ${n.label} node`}
+                className={`w-full text-left text-xs p-2 rounded border ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity`}
+              >{NODE_ICONS[n.type]} {n.label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Center: Canvas */}
+        <div className="flex-1 relative">
+          {isEmpty && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground pointer-events-none z-10">
+              <div className="text-5xl mb-3">🔧</div>
+              <div className="text-lg font-medium">Build your workflow</div>
+              <div className="text-sm mt-1">Add nodes from the palette or generate from natural language</div>
+            </div>
+          )}
+          <ReactFlow
+            nodes={nodes} edges={edges}
+            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={(_, node) => setSelectedNode(node)}
+            onPaneClick={() => setSelectedNode(null)}
+            nodeTypes={NODE_TYPES}
+            fitView snapToGrid snapGrid={[16, 16]}
+            deleteKeyCode="Backspace"
+          >
+            <Background variant={BackgroundVariant.Dots} gap={16} />
+            <Controls />
+            <MiniMap style={{ background: '#f8fafc' }} />
+          </ReactFlow>
+        </div>
+
+        {/* Right: Inspector */}
+        <div className="w-64 border-l bg-card flex flex-col shrink-0">
+          <div className="p-2 text-xs font-semibold text-muted-foreground border-b">
+            {selectedNode ? 'Node Inspector' : 'Inspector'}
+          </div>
+          {selectedNode ? (
+            <div className="p-3 space-y-3 text-xs">
+              <div>
+                <label htmlFor="node-label" className="text-muted-foreground block mb-1">Label</label>
+                <input
+                  id="node-label"
+                  value={String((selectedNode.data as WorkflowNodeData).label ?? '')}
+                  onChange={(e) => {
+                    setNodes((nds) => nds.map((n) => n.id === selectedNode.id ? { ...n, data: { ...n.data, label: e.target.value } } : n));
+                    setSelectedNode((prev) => prev ? { ...prev, data: { ...prev.data, label: e.target.value } } : null);
+                  }}
+                  className="w-full border rounded px-2 py-1 bg-background"
+                />
+              </div>
+              <div>
+                <label htmlFor="node-description" className="text-muted-foreground block mb-1">Description</label>
+                <textarea
+                  id="node-description"
+                  value={String((selectedNode.data as WorkflowNodeData).subtitle ?? '')}
+                  onChange={(e) => {
+                    setNodes((nds) => nds.map((n) => n.id === selectedNode.id ? { ...n, data: { ...n.data, subtitle: e.target.value } } : n));
+                    setSelectedNode((prev) => prev ? { ...prev, data: { ...prev.data, subtitle: e.target.value } } : null);
+                  }}
+                  rows={3} className="w-full border rounded px-2 py-1 resize-none bg-background"
+                />
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Node ID: {selectedNode.id}<br />
+                Type: {String((selectedNode.data as WorkflowNodeData).type)}
+              </div>
+              <button
+                onClick={() => {
+                  setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
+                  setEdges((eds) => eds.filter((e) => e.source !== selectedNode.id && e.target !== selectedNode.id));
+                  setSelectedNode(null);
+                }}
+                aria-label="Delete selected node"
+                className="w-full text-xs bg-red-50 text-red-600 border border-red-200 rounded py-1 hover:bg-red-100"
+              >Delete Node</button>
+            </div>
+          ) : (
+            <div className="p-3 text-xs text-muted-foreground">Click a node to inspect and configure it</div>
+          )}
+          {runOutput && (
+            <div className="border-t p-2 overflow-auto">
+              <div className="text-xs font-semibold mb-1">Run Output</div>
+              <pre className="text-[10px] bg-muted rounded p-2 overflow-auto max-h-40">{runOutput}</pre>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
+
+export default WorkflowBuilderPage;
