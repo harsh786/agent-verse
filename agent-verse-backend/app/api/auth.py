@@ -10,12 +10,38 @@ Provides:
 from __future__ import annotations
 
 import os
+import time
+from collections import defaultdict
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Simple sliding-window rate limiter for auth endpoints (per-IP)
+# 10 requests per minute per IP. Thread-safe.
+_auth_rate_limiter: dict[str, list[float]] = defaultdict(list)
+_auth_rate_lock = Lock()
+_AUTH_MAX_REQUESTS = 10
+_AUTH_WINDOW_SECONDS = 60.0
+
+
+def _check_auth_rate_limit(client_ip: str) -> None:
+    """Raise HTTP 429 if the client IP has exceeded the auth rate limit."""
+    now = time.monotonic()
+    with _auth_rate_lock:
+        window_start = now - _AUTH_WINDOW_SECONDS
+        timestamps = [t for t in _auth_rate_limiter[client_ip] if t > window_start]
+        if len(timestamps) >= _AUTH_MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication requests. Please wait before trying again.",
+                headers={"Retry-After": "60"},
+            )
+        timestamps.append(now)
+        _auth_rate_limiter[client_ip] = timestamps
 
 
 def _default_redirect_uri() -> str:
@@ -28,8 +54,12 @@ def _default_redirect_uri() -> str:
 async def get_sso_config() -> dict[str, Any]:
     """Return SSO configuration so the frontend knows where to redirect."""
     from app.auth.keycloak import (
-        _sso_enabled, _keycloak_url, _realm, _client_id,
-        authorization_endpoint, token_endpoint,
+        _client_id,
+        _keycloak_url,
+        _realm,
+        _sso_enabled,
+        authorization_endpoint,
+        token_endpoint,
     )
     enabled = _sso_enabled()
     return {
@@ -51,9 +81,9 @@ async def sso_login(
     """Redirect to Keycloak login page."""
     if not redirect_uri:
         redirect_uri = _default_redirect_uri()
-    from app.auth.keycloak import authorization_endpoint, _client_id
-
     import urllib.parse
+
+    from app.auth.keycloak import _client_id, authorization_endpoint
     params = {
         "response_type": "code",
         "client_id": _client_id(),
@@ -67,15 +97,26 @@ async def sso_login(
 
 @router.post("/token")
 async def exchange_token(
+    request: Request,
     code: str,
     redirect_uri: str = "",  # No default — require explicit or fall back to env var
 ) -> dict[str, Any]:
     """Exchange authorization code for access + refresh tokens."""
+    _check_auth_rate_limit(request.client.host if request.client else "unknown")
     if not redirect_uri:
         redirect_uri = _default_redirect_uri()
-    from app.auth.keycloak import token_endpoint, _client_id
+    from app.auth.keycloak import _client_id, token_endpoint
+    from app.core.config import get_settings
 
-    client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET", "agentverse-dev-secret")
+    _settings = get_settings()
+    client_secret = _settings.keycloak_client_secret
+    if not client_secret:
+        if _settings.environment == "production":
+            raise HTTPException(
+                status_code=503,
+                detail="SSO not configured: KEYCLOAK_CLIENT_SECRET is required in production",
+            )
+        client_secret = "agentverse-dev-secret"  # dev-only fallback
 
     import httpx
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -106,11 +147,21 @@ async def exchange_token(
 
 
 @router.post("/refresh")
-async def refresh_token(refresh_token_value: str) -> dict[str, Any]:
+async def refresh_token(request: Request, refresh_token_value: str) -> dict[str, Any]:
     """Refresh an expired access token using a refresh token."""
-    from app.auth.keycloak import token_endpoint, _client_id
+    _check_auth_rate_limit(request.client.host if request.client else "unknown")
+    from app.auth.keycloak import _client_id, token_endpoint
+    from app.core.config import get_settings
 
-    client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET", "agentverse-dev-secret")
+    _settings = get_settings()
+    client_secret = _settings.keycloak_client_secret
+    if not client_secret:
+        if _settings.environment == "production":
+            raise HTTPException(
+                status_code=503,
+                detail="SSO not configured: KEYCLOAK_CLIENT_SECRET is required in production",
+            )
+        client_secret = "agentverse-dev-secret"  # dev-only fallback
 
     import httpx
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -139,7 +190,7 @@ async def refresh_token(refresh_token_value: str) -> dict[str, Any]:
 @router.get("/userinfo")
 async def get_userinfo(request: Request) -> dict[str, Any]:
     """Return current user information from validated JWT."""
-    from app.auth.keycloak import _sso_enabled, validate_jwt, extract_roles
+    from app.auth.keycloak import _sso_enabled, extract_roles, validate_jwt
 
     if not _sso_enabled():
         raise HTTPException(400, "SSO not enabled")

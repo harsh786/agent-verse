@@ -109,6 +109,18 @@ async def get_data_residency(request: Request) -> dict[str, Any]:
     return _compliance(request).get_data_residency(tenant_ctx=ctx)
 
 
+@router.get("/compliance/regions")
+async def list_data_regions(request: Request) -> list[dict[str, Any]]:
+    """Return all available data residency regions."""
+    ctx = _require_tenant(request)
+    residency = _compliance(request).get_data_residency(tenant_ctx=ctx)
+    regions = [residency]
+    for r in ["us-east-1", "eu-west-1", "ap-southeast-1"]:
+        if residency.get("region") != r:
+            regions.append({"region": r, "description": f"Region {r}"})
+    return regions
+
+
 # --- Simulation ---
 
 class SimulationRequest(BaseModel):

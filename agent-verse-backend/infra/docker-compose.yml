@@ -206,6 +206,12 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   beat:
     build:
@@ -279,6 +285,12 @@ services:
       - "8889:8889"    # Prometheus metrics exporter
     depends_on:
       - jaeger
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Jaeger — distributed tracing UI ──────────────────────────────────────────
   jaeger:
@@ -296,10 +308,11 @@ services:
     volumes:
       - jaeger_data:/badger
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:14269/ | grep -q ok || exit 1"]
-      interval: 10s
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 3
+      start_period: 20s
 
   frontend:
     build:
@@ -326,10 +339,11 @@ services:
     environment:
       SEARXNG_BASE_URL: http://localhost:8081/
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
       retries: 3
+      start_period: 30s
 
   # ── Prometheus — metrics collection ──────────────────────────────────────────
   prometheus:

@@ -27,7 +27,6 @@ from app.observability.logging import get_logger as _get_logger
 
 _svc_logger = _get_logger(__name__)
 
-from app.agent.loop import AgentLoop
 
 # Module-level pause event registry (not a class attr to avoid circular)
 _GOAL_PAUSE_EVENTS: dict[str, asyncio.Event] = {}
@@ -105,6 +104,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
     """
     import logging as _logging
     import os
+
     from langgraph.checkpoint.memory import MemorySaver
 
     _std_logger = _logging.getLogger(__name__)
@@ -168,7 +168,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         except Exception as _e2:
             _msg = (
                 f"redis_saver_unavailable redis_url={redis_url[:30]} "
-                f"error={str(_e2)} "
+                f"error={_e2!s} "
                 "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"
             )
             _svc_logger.warning(
@@ -1239,7 +1239,7 @@ class GoalService:
 
                 class _WrappedAgent:
                     async def run(
-                        self_inner: "_WrappedAgent",
+                        self_inner: _WrappedAgent,
                         goal: str,
                         tenant_ctx: TenantContext,
                         event_callback: Any = None,
@@ -1520,18 +1520,34 @@ class GoalService:
 
             # Persist to PostgreSQL in the background when a DB factory is wired.
             if self._db is not None and self._task_queue is not None and not dry_run:
-                await self._db_persist_goal(
-                    goal_id=goal_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                    goal_text=goal,
-                    status=GoalStatus.PLANNING.value,
-                    priority=priority,
-                    dry_run=dry_run,
-                    agent_id=agent_id,
-                    workflow_mode=workflow_mode,
-                    execution_context=record.execution_context,
-                    raise_on_error=True,
-                )
+                try:
+                    await self._db_persist_goal(
+                        goal_id=goal_id,
+                        tenant_id=tenant_ctx.tenant_id,
+                        goal_text=goal,
+                        status=GoalStatus.PLANNING.value,
+                        priority=priority,
+                        dry_run=dry_run,
+                        agent_id=agent_id,
+                        workflow_mode=workflow_mode,
+                        execution_context=record.execution_context,
+                        raise_on_error=True,
+                    )
+                except Exception:
+                    # The concurrent-goal counter was already incremented; since no
+                    # background task will be created to decrement it on completion,
+                    # we must decrement here before re-raising.
+                    try:
+                        from app.tenancy.limits import decrement_concurrent_goals
+                        await decrement_concurrent_goals(
+                            tenant_id=tenant_ctx.tenant_id,
+                            redis=getattr(self, "_redis", None),
+                        )
+                    except Exception as _dec_exc:
+                        _svc_logger.warning(
+                            "counter_decrement_failed_on_error", error=str(_dec_exc)
+                        )
+                    raise
             elif self._db is not None:
                 self._track_db_task(
                     self._db_persist_goal(

@@ -139,6 +139,73 @@ async def get_spans(request: Request, limit: int = 50) -> list[dict]:
     return get_recent_spans(limit=limit)
 
 
+@router.get("/evals")
+async def eval_analytics(
+    days: int = Query(30, ge=1, le=365),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    """Return eval scorecard aggregates for the current tenant."""
+    tenant = _require_tenant(request) if request else None
+    tenant_id = tenant.tenant_id if tenant else ""
+
+    db_factory = getattr(request.app.state, "db_session_factory", None) if request else None
+    if db_factory is None:
+        goal_svc = getattr(request.app.state, "goal_service", None) if request else None
+        db_factory = getattr(goal_svc, "_db", None) if goal_svc else None
+
+    if db_factory is not None:
+        try:
+            from sqlalchemy import text as _t
+            async with db_factory() as session:
+                result = await session.execute(
+                    _t(
+                        "SELECT"
+                        " COUNT(*) as total,"
+                        " AVG(score_task_completion) as avg_task_completion,"
+                        " AVG(score_efficiency) as avg_efficiency,"
+                        " AVG(score_accuracy) as avg_accuracy,"
+                        " AVG(score_safety) as avg_safety,"
+                        " AVG(score_coherence) as avg_coherence,"
+                        " SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed_count"
+                        " FROM evaluations"
+                        " WHERE tenant_id = :tid"
+                        " AND run_at >= NOW() - INTERVAL :days"
+                    ),
+                    {"tid": tenant_id, "days": f"{days} days"},
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    return {
+                        "period_days": days,
+                        "total": row[0],
+                        "passed": row[6] or 0,
+                        "pass_rate": round((row[6] or 0) / max(row[0], 1), 4),
+                        "avg_scores": {
+                            "task_completion": round(float(row[1] or 0), 4),
+                            "efficiency": round(float(row[2] or 0), 4),
+                            "accuracy": round(float(row[3] or 0), 4),
+                            "safety": round(float(row[4] or 0), 4),
+                            "coherence": round(float(row[5] or 0), 4),
+                        },
+                    }
+        except Exception:
+            pass  # fall through to empty response
+
+    return {
+        "period_days": days,
+        "total": 0,
+        "passed": 0,
+        "pass_rate": 0.0,
+        "avg_scores": {
+            "task_completion": 0.0,
+            "efficiency": 0.0,
+            "accuracy": 0.0,
+            "safety": 0.0,
+            "coherence": 0.0,
+        },
+    }
+
+
 def _get_aggregator(request: Request):  # type: ignore[return]
     from app.analytics.aggregator import GoalAnalyticsAggregator
     goal_service = getattr(request.app.state, "goal_service", None)

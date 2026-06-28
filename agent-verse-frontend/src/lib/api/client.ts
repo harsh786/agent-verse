@@ -974,12 +974,11 @@ export interface EnterpriseExportResult {
 }
 
 export const enterpriseApi = {
-  getResidency: () => request<DataResidencyInfo>("/enterprise/data-residency"),
-  listRegions: () => request<DataResidencyInfo[]>("/enterprise/regions"),
-  exportData: () =>
-    request<EnterpriseExportResult>("/enterprise/compliance/export", { method: "POST" }),
+  getResidency: () => request<DataResidencyInfo>("/enterprise/compliance/residency"),
+  listRegions: () => request<DataResidencyInfo[]>("/enterprise/compliance/regions"),
+  exportData: () => request<EnterpriseExportResult>("/enterprise/compliance/export"),
   purgeData: () =>
-    request<{ message: string }>("/enterprise/purge", { method: "DELETE" }),
+    request<{ message: string }>("/enterprise/compliance/delete", { method: "POST" }),
 };
 
 // ── Playground (agent simulation with mock tools) ─────────────────────────────

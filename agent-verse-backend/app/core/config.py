@@ -56,6 +56,33 @@ class Settings(BaseSettings):
     # --- feature flags ---
     civilization_enabled: bool = False
 
+    # --- SSO / Keycloak ---
+    frontend_url: str = "http://localhost:5173"
+    sso_enabled: bool = False
+    keycloak_url: str = "http://keycloak:8080"
+    keycloak_realm: str = "agentverse"
+    keycloak_client_id: str = "agentverse-backend"
+    keycloak_client_secret: str = ""  # Empty = dev mode; required in production with SSO
+
+    # --- email (SMTP) ---
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_tls: bool = True
+
+    # --- object storage (MinIO / S3) ---
+    minio_endpoint: str = "http://minio:9000"
+    minio_access_key: str = "agentverse"
+    minio_secret_key: str = "agentverse_minio"
+
+    # --- tools ---
+    allow_shell_exec: bool = False
+    allow_subprocess_exec: bool = False
+
+    # --- search ---
+    searxng_url: str = "http://searxng:8081"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:
@@ -67,6 +94,14 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def is_sso_production_safe(self) -> bool:
+        """True if SSO is disabled OR a non-default client secret is set."""
+        if not self.sso_enabled:
+            return True
+        secret = self.keycloak_client_secret
+        return bool(secret) and secret != "agentverse-dev-secret"
 
 
 @lru_cache(maxsize=1)
@@ -81,5 +116,10 @@ def get_settings() -> Settings:
             logging.getLogger(__name__).error(
                 "SECURITY: DATABASE_URL contains default password 'agentverse'. "
                 "This must be changed before production deployment!"
+            )
+        if settings.sso_enabled and not settings.is_sso_production_safe:
+            logging.getLogger(__name__).error(
+                "SECURITY: KEYCLOAK_CLIENT_SECRET is empty or set to default. "
+                "Set a strong secret before production SSO deployment!"
             )
     return settings
