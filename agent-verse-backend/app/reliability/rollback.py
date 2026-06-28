@@ -69,18 +69,61 @@ class RollbackEngine:
     def rollback_all(self) -> list[str]:
         """Execute all inverse operations in LIFO order.
 
+        In async contexts, prefer ``rollback_all_async()`` to ensure completion.
+        This method schedules async inverses as tasks (fire-and-forget) and logs
+        a warning — use ``rollback_all_async()`` when guaranteed completion matters.
+
         Returns list of rolled-back action names. Errors are logged but do not
         abort the remaining rollback sequence.
         """
+        import asyncio
+
         rolled_back: list[str] = []
         while self._stack:
             action, inverse = self._stack.pop()
             try:
-                inverse()
+                result = inverse()
+                if asyncio.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(result)  # noqa: RUF006  # intentional fire-and-forget
+                        logger.warning(
+                            "rollback_fire_and_forget action=%s "
+                            "use_rollback_all_async_for_guaranteed_completion",
+                            action,
+                        )
+                    except RuntimeError:
+                        # No running loop — cannot schedule; close the coroutine cleanly
+                        logger.error("rollback_skipped_no_event_loop action=%s", action)
+                        result.close()  # Prevent "coroutine never awaited" warning
                 rolled_back.append(action)
                 logger.info("Rolled back: %s", action)
             except Exception as exc:
                 logger.error("Rollback failed for '%s': %s", action, exc)
+        return rolled_back
+
+    async def rollback_all_async(self) -> list[str]:
+        """Execute all inverse operations in LIFO order, awaiting each one.
+
+        Preferred over ``rollback_all()`` in async contexts — guarantees each
+        inverse actually completes before moving to the next.
+
+        Returns list of successfully rolled-back action names. Errors are logged
+        but do not abort the remaining rollback sequence.
+        """
+        import asyncio
+
+        rolled_back: list[str] = []
+        while self._stack:
+            action, inverse = self._stack.pop()
+            try:
+                result = inverse()
+                if asyncio.iscoroutine(result):
+                    await result
+                rolled_back.append(action)
+                logger.info("Rolled back async: %s", action)
+            except Exception as exc:
+                logger.error("Async rollback failed for '%s': %s", action, exc)
         return rolled_back
 
     def preview(self) -> list[str]:

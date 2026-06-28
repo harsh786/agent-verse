@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Play, Shield, FlaskConical, BarChart3 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, evalSuitesApi } from '@/lib/api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -584,24 +584,12 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
 
   const { data: suites = [], isLoading } = useQuery({
     queryKey: ['eval-suites'],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/eval/suites`, { headers: { 'X-API-Key': apiKey } });
-      if (!res.ok) throw new Error(res.statusText);
-      return res.json() as Promise<Array<{ suite_id: string; name: string; task_count: number; created_at: string }>>;
-    },
+    queryFn: () => evalSuitesApi.listSuites(),
     enabled: !!apiKey,
   });
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch(`${API_BASE}/eval/suites`, {
-        method: 'POST',
-        headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: suiteName, description: suiteDesc }),
-      });
-      if (!res.ok) throw new Error(res.statusText);
-      return res.json();
-    },
+    mutationFn: () => evalSuitesApi.createSuite(suiteName, suiteDesc || undefined),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eval-suites'] });
       setShowCreate(false);
@@ -611,14 +599,7 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
   });
 
   const runMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/eval/suites/${id}/run`, {
-        method: 'POST',
-        headers: { 'X-API-Key': apiKey },
-      });
-      if (!res.ok) throw new Error(res.statusText);
-      return res.json();
-    },
+    mutationFn: (id: string) => evalSuitesApi.runSuite(id),
   });
 
   return (
@@ -661,25 +642,31 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
             >
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </button>
-            <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-sm border rounded-md">Cancel</button>
+            <button
+              onClick={() => setShowCreate(false)}
+              className="px-3 py-1.5 text-sm border rounded-md"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
 
       {isLoading ? (
         <div className="py-8 text-center text-sm text-muted-foreground">Loading suites…</div>
-      ) : suites.length === 0 ? (
+      ) : (suites as any[]).length === 0 ? (
         <div className="py-8 text-center text-sm text-muted-foreground">
           No eval suites yet. Create one to group golden tasks and track regressions.
         </div>
       ) : (
         <div className="divide-y divide-border">
-          {suites.map((suite) => (
+          {(suites as any[]).map((suite: any) => (
             <div key={suite.suite_id} className="flex items-center justify-between p-4">
               <div>
                 <p className="text-sm font-medium">{suite.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {suite.task_count} tasks · created {new Date(suite.created_at).toLocaleDateString()}
+                  {suite.task_count} tasks · created{' '}
+                  {new Date(suite.created_at).toLocaleDateString()}
                 </p>
               </div>
               <button
@@ -699,8 +686,11 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+type EvalTab = 'evals' | 'suites';
+
 export function EvalPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
+  const [tab, setTab] = useState<EvalTab>('evals');
 
   return (
     <div className="space-y-6">
@@ -710,10 +700,35 @@ export function EvalPage() {
           Red team testing, goal simulation, and eval scoring
         </p>
       </div>
-      <RedTeamSection apiKey={apiKey} />
-      <SimulationSection apiKey={apiKey} />
-      <EvalScorerSection apiKey={apiKey} />
-      <EvalSuitesSection apiKey={apiKey} />
+
+      {/* Tab bar */}
+      <div className="flex gap-4 border-b border-border">
+        {(['evals', 'suites'] as EvalTab[]).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={`pb-2 px-1 capitalize font-medium text-sm transition-colors ${
+              tab === t
+                ? 'border-b-2 border-primary text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'evals' && (
+        <>
+          <RedTeamSection apiKey={apiKey} />
+          <SimulationSection apiKey={apiKey} />
+          <EvalScorerSection apiKey={apiKey} />
+        </>
+      )}
+
+      {tab === 'suites' && <EvalSuitesSection apiKey={apiKey} />}
     </div>
   );
 }

@@ -194,7 +194,22 @@ def _resolve_checkpointer(app_state: Any) -> Any:
 
 
 def _make_agent_loop() -> Any:
-    """Construct an AgentGraph backed by FakeProvider (no real LLM required)."""
+    """Construct an AgentGraph backed by FakeProvider (no real LLM required).
+
+    WARNING: In production mode (ENVIRONMENT=production), this raises a
+    ``RuntimeError`` instead of silently using FakeProvider for real goals.
+    Configure ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY to avoid this.
+    """
+    from app.core.config import get_settings as _get_cfg
+
+    _cfg = _get_cfg()
+    if getattr(_cfg, "environment", "development") == "production":
+        raise RuntimeError(
+            "Cannot use FakeProvider in production mode. "
+            "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY "
+            "to configure a real LLM provider."
+        )
+
     from app.agent.graph import AgentGraph
     from app.intelligence.guardrails import GuardrailChecker
     from app.reliability.dedup import DeduplicationCache

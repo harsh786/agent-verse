@@ -11,7 +11,7 @@
  * - Quick action buttons
  */
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Zap,
@@ -205,6 +205,10 @@ export function DashboardPage() {
     (metrics as any)?.cost_today_usd ?? // eslint-disable-line @typescript-eslint/no-explicit-any
     0;
 
+  // New user signal: no agents AND no goals
+  const isNewUser =
+    !goalsLoading && (Array.isArray(agents) ? agents : []).length === 0 && goalsArr.length === 0;
+
   // Build agent orbit data
   const agentOrbitNodes = (Array.isArray(agents) ? agents : [])
     .map((a: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -272,6 +276,24 @@ export function DashboardPage() {
             Review <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
           </div>
         </button>
+      )}
+
+      {/* ── Onboarding banner — shown when platform looks empty ───────── */}
+      {isNewUser && (
+        <div className="border border-border bg-muted/30 rounded-xl p-6 flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-foreground">Welcome to AgentVerse</h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              Complete the setup wizard to configure your first agent.
+            </p>
+          </div>
+          <Link
+            to="/onboarding"
+            className="px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+          >
+            Get Started
+          </Link>
+        </div>
       )}
 
       {/* ── KPI Cards ─────────────────────────────────────────────────── */}

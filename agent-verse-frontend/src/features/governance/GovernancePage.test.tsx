@@ -473,3 +473,83 @@ describe('GovernancePage – approver field', () => {
     });
   });
 });
+
+describe('GovernancePage – Emergency Stop', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAuthStore.setState({
+      apiKey: 'tenant-key',
+      tenantId: 'tenant-1',
+      plan: 'free',
+      isAuthenticated: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('emergency stop button triggers confirm and calls API', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (
+        url.includes('/governance/emergency-stop') &&
+        (init as RequestInit)?.method === 'POST'
+      ) {
+        return new Response(
+          JSON.stringify({
+            status: 'emergency_stop_activated',
+            cancelled_goals: 3,
+            rejected_approvals: 1,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderGovernancePage();
+
+    // Emergency Stop button is always visible (not behind a tab)
+    const emergencyBtn = await screen.findByRole('button', { name: /emergency stop/i });
+    await userEvent.click(emergencyBtn);
+
+    // Confirm modal appears
+    expect(screen.getByText(/are you sure/i)).toBeInTheDocument();
+
+    // Click confirm
+    await userEvent.click(screen.getByRole('button', { name: /confirm|yes|activate/i }));
+
+    await waitFor(() => {
+      expect(
+        f.mock.calls.some(
+          ([u, i]) =>
+            String(u).includes('/governance/emergency-stop') &&
+            (i as RequestInit)?.method === 'POST'
+        )
+      ).toBe(true);
+    });
+  });
+
+  test('shows emergency active banner with stats after activation', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/governance/emergency-stop') && (init as RequestInit)?.method === 'POST') {
+        return new Response(
+          JSON.stringify({ status: 'emergency_stop_activated', cancelled_goals: 5, rejected_approvals: 2 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderGovernancePage();
+    await userEvent.click(await screen.findByRole('button', { name: /emergency stop/i }));
+    await userEvent.click(screen.getByRole('button', { name: /confirm|yes|activate/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Emergency Stop Active/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/5 goals cancelled/i)).toBeInTheDocument();
+  });
+});

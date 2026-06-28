@@ -128,4 +128,50 @@ describe('DashboardPage', () => {
     renderDashboardPage();
     expect(screen.getByText('Live Activity')).toBeInTheDocument();
   });
+
+  test('shows onboarding banner for new user with no agents or goals', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/goals/metrics') || url.includes('/analytics/costs')) {
+        return new Response(
+          JSON.stringify({
+            active_goals: 0,
+            total_goals: 0,
+            success_rate: 0,
+            avg_latency_ms: 0,
+            cost_today_usd: 0,
+            goals_today: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/agents')) {
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/governance/approvals')) {
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/goals')) {
+        return new Response(JSON.stringify({ goals: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    renderDashboardPage();
+
+    expect(await screen.findByText(/welcome to agentverse/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /get started/i })).toHaveAttribute(
+      'href',
+      '/onboarding'
+    );
+  });
 });
