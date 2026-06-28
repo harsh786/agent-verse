@@ -6,7 +6,6 @@ Create Date: 2026-06-28
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMPTZ
 
 revision = "0057"
 down_revision = "0056"
@@ -140,10 +139,11 @@ def upgrade() -> None:
 
     # ------------------------------------------------------------------ #
     # Table: legal_holds                                                 #
-    # Prevents deletion of audit events for specific resources           #
+    # Replaces the minimal 0031 schema with the full governance schema   #
     # ------------------------------------------------------------------ #
+    op.execute("DROP TABLE IF EXISTS legal_holds CASCADE")
     op.execute("""
-        CREATE TABLE IF NOT EXISTS legal_holds (
+        CREATE TABLE legal_holds (
             id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
             tenant_id        TEXT NOT NULL,
             name             TEXT NOT NULL,

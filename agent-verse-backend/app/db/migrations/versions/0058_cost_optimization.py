@@ -85,11 +85,11 @@ def upgrade() -> None:
 
     # ------------------------------------------------------------------ #
     # Table: cost_ledger                                                  #
-    # Append-only cost record per LLM call or tool invocation.           #
-    # Partitioned by month for query efficiency at scale.                 #
+    # Replaces the plain 0009 table with a partitioned version.          #
     # ------------------------------------------------------------------ #
+    op.execute("DROP TABLE IF EXISTS cost_ledger CASCADE")
     op.execute("""
-        CREATE TABLE IF NOT EXISTS cost_ledger (
+        CREATE TABLE cost_ledger (
             id                  TEXT NOT NULL DEFAULT gen_random_uuid()::text,
             tenant_id           TEXT NOT NULL,
             goal_id             TEXT,

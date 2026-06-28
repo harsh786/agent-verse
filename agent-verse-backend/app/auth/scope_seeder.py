@@ -303,7 +303,7 @@ async def seed_builtin_scopes(db_factory: Any) -> None:
                             (id, tenant_id, name, display_name, description,
                              permissions, is_template, system_role, is_active)
                         VALUES (:id, NULL, :name, :display_name, :description,
-                                :permissions::jsonb, TRUE, :system_role, TRUE)
+                                CAST(:permissions AS jsonb), TRUE, :system_role, TRUE)
                         ON CONFLICT (id) DO NOTHING
                         """
                     ),
