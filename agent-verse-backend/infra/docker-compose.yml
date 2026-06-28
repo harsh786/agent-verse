@@ -180,7 +180,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,schedules,maintenance,goals_dlq"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0

@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import os
 import time
-from collections import defaultdict
-from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -20,28 +18,52 @@ from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Simple sliding-window rate limiter for auth endpoints (per-IP)
-# 10 requests per minute per IP. Thread-safe.
-_auth_rate_limiter: dict[str, list[float]] = defaultdict(list)
-_auth_rate_lock = Lock()
-_AUTH_MAX_REQUESTS = 10
-_AUTH_WINDOW_SECONDS = 60.0
+async def _check_auth_rate_limit(request: Request) -> None:
+    """Redis-backed sliding-window rate limiter for auth endpoints.
 
+    Falls back to no-op when Redis is unavailable (preserves availability).
+    10 requests per 60 seconds per client IP, enforced across all replicas.
+    """
+    client_ip: str = (
+        request.client.host if request.client else "unknown"
+    )
+    redis = getattr(request.app.state, "_rate_limiter_redis", None)
+    if redis is None:
+        # No Redis wired yet (startup / test) — allow all requests
+        return
 
-def _check_auth_rate_limit(client_ip: str) -> None:
-    """Raise HTTP 429 if the client IP has exceeded the auth rate limit."""
-    now = time.monotonic()
-    with _auth_rate_lock:
-        window_start = now - _AUTH_WINDOW_SECONDS
-        timestamps = [t for t in _auth_rate_limiter[client_ip] if t > window_start]
-        if len(timestamps) >= _AUTH_MAX_REQUESTS:
+    key = f"auth_rl:{client_ip}"
+    now_ms = int(time.time() * 1000)
+    window_ms = 60_000
+    max_requests = 10
+
+    try:
+        pipe = redis.pipeline() if hasattr(redis, "pipeline") else None
+        if pipe is not None:
+            pipe.zremrangebyscore(key, 0, now_ms - window_ms)
+            pipe.zadd(key, {str(now_ms): now_ms})
+            pipe.zcard(key)
+            pipe.expire(key, 120)
+            results = await pipe.execute()
+            count = results[2]
+        else:
+            await redis.zremrangebyscore(key, 0, now_ms - window_ms)
+            await redis.zadd(key, {str(now_ms): now_ms})
+            count = await redis.zcard(key)
+            await redis.expire(key, 120)
+
+        if count > max_requests:
+            from fastapi import HTTPException
             raise HTTPException(
                 status_code=429,
                 detail="Too many authentication requests. Please wait before trying again.",
                 headers={"Retry-After": "60"},
             )
-        timestamps.append(now)
-        _auth_rate_limiter[client_ip] = timestamps
+    except Exception as exc:
+        # Import here to avoid circular
+        from app.observability.logging import get_logger as _gl
+        _gl(__name__).warning("auth_rate_limit_redis_error", error=str(exc))
+        # On Redis error, allow the request (prefer availability over blocking)
 
 
 def _default_redirect_uri() -> str:
@@ -102,7 +124,7 @@ async def exchange_token(
     redirect_uri: str = "",  # No default — require explicit or fall back to env var
 ) -> dict[str, Any]:
     """Exchange authorization code for access + refresh tokens."""
-    _check_auth_rate_limit(request.client.host if request.client else "unknown")
+    await _check_auth_rate_limit(request)
     if not redirect_uri:
         redirect_uri = _default_redirect_uri()
     from app.auth.keycloak import _client_id, token_endpoint
@@ -149,7 +171,7 @@ async def exchange_token(
 @router.post("/refresh")
 async def refresh_token(request: Request, refresh_token_value: str) -> dict[str, Any]:
     """Refresh an expired access token using a refresh token."""
-    _check_auth_rate_limit(request.client.host if request.client else "unknown")
+    await _check_auth_rate_limit(request)
     from app.auth.keycloak import _client_id, token_endpoint
     from app.core.config import get_settings
 

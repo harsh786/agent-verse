@@ -119,7 +119,7 @@ function FileManager() {
   const [selectedPath, setSelectedPath] = useState('');
   const [content, setContent] = useState('');
 
-  const { data: files = [], isLoading } = useQuery({
+  const { data: files = [], isLoading, isError } = useQuery({
     queryKey: ['workspace-files', directory],
     queryFn: () => toolsApi.listFiles(directory),
   });
@@ -159,11 +159,18 @@ function FileManager() {
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
-        {isLoading ? (
+        {isLoading && (
           <p className="px-5 py-4 text-sm text-muted-foreground">Loading…</p>
-        ) : files.length === 0 ? (
+        )}
+        {isError && (
+          <div className="px-5 py-4 text-sm text-red-500" role="alert">
+            Failed to load files. Check your connection and try again.
+          </div>
+        )}
+        {!isLoading && !isError && files.length === 0 && (
           <p className="px-5 py-4 text-sm text-muted-foreground">No files in workspace.</p>
-        ) : (
+        )}
+        {!isLoading && !isError && files.length > 0 && (
           <ul className="divide-y divide-border">
             {files.map((f: WorkspaceFile) => (
               <li key={f.path} className="px-5 py-2 flex items-center justify-between gap-2">

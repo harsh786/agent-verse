@@ -29,6 +29,7 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
         return
     try:
         from sqlalchemy import text
+
         from app.db.rls import sqlalchemy_rls_context
         async with db() as session, session.begin():
             async with sqlalchemy_rls_context(session, tenant_id):
@@ -60,6 +61,7 @@ async def _load_snapshots_from_db(
         return []
     try:
         from sqlalchemy import text
+
         from app.db.rls import sqlalchemy_rls_context
         async with db() as session, sqlalchemy_rls_context(session, tenant_id):
             result = await session.execute(
@@ -299,6 +301,7 @@ class AgentStore:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 from app.db.rls import sqlalchemy_rls_context
                 async with self._db() as session, session.begin(), sqlalchemy_rls_context(
                     session, tenant_ctx.tenant_id
@@ -348,6 +351,7 @@ class AgentStore:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 from app.db.rls import sqlalchemy_rls_context
 
                 # Build SET clause dynamically for allowed fields
@@ -842,6 +846,42 @@ async def update_knowledge_binding(
         "allowed_collection_ids": body.collection_ids,
         "status": "updated",
     }
+
+
+@router.post("/{agent_id}/knowledge/{knowledge_id}", status_code=204)
+async def assign_knowledge_collection(
+    request: Request, agent_id: str, knowledge_id: str
+) -> None:
+    """Add a single knowledge collection to this agent's allowed list."""
+    tenant = _require_tenant(request)
+    store = _agent_store(request)
+    agent = store.get(agent_id, tenant_ctx=tenant)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    current_ids: list[str] = list(agent.get("allowed_collection_ids") or [])
+    if knowledge_id not in current_ids:
+        current_ids.append(knowledge_id)
+        update_data = dict(agent)
+        update_data["allowed_collection_ids"] = current_ids
+        store.update(agent_id, update_data, tenant_ctx=tenant)
+
+
+@router.delete("/{agent_id}/knowledge/{knowledge_id}", status_code=204)
+async def remove_knowledge_collection(
+    request: Request, agent_id: str, knowledge_id: str
+) -> None:
+    """Remove a single knowledge collection from this agent's allowed list."""
+    tenant = _require_tenant(request)
+    store = _agent_store(request)
+    agent = store.get(agent_id, tenant_ctx=tenant)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    current_ids: list[str] = [
+        i for i in (agent.get("allowed_collection_ids") or []) if i != knowledge_id
+    ]
+    update_data = dict(agent)
+    update_data["allowed_collection_ids"] = current_ids
+    store.update(agent_id, update_data, tenant_ctx=tenant)
 
 
 @router.get("/{agent_id}/versions")

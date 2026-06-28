@@ -19,6 +19,7 @@ class GoalTaskQueue(Protocol):
         agent_id: str | None = None,
         workflow_mode: str = "single_agent",
         goal_template: str = "",
+        plan: str = "free",
     ) -> str:
         """Enqueue a goal worker task and return the backend task id."""
 
@@ -39,9 +40,12 @@ class CeleryGoalTaskQueue:
         agent_id: str | None = None,
         workflow_mode: str = "single_agent",
         goal_template: str = "",
+        plan: str = "free",
     ) -> str:
+        from app.scaling.celery_app import PLAN_QUEUE_MAP
         from app.scaling.tasks import run_goal
 
+        target_queue = PLAN_QUEUE_MAP.get(plan, "goals.free")
         result: Any = run_goal.apply_async(
             kwargs={
                 "goal_id": goal_id,
@@ -53,6 +57,6 @@ class CeleryGoalTaskQueue:
                 "workflow_mode": workflow_mode,
                 "goal_template": goal_template,
             },
-            queue="goals",
+            queue=target_queue,
         )
         return str(getattr(result, "id", ""))

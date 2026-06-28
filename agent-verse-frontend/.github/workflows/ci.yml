@@ -17,10 +17,10 @@ jobs:
           node-version: "20"
           cache: "npm"
       - run: npm ci
-      - name: TypeScript check
-        run: npm run build -- --noEmit || npx tsc --noEmit
-      - name: Lint (if configured)
-        run: npm run lint || true
+      - name: Type check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
 
   unit-tests:
     name: Vitest Unit Tests
@@ -33,7 +33,7 @@ jobs:
           cache: "npm"
       - run: npm ci
       - name: Run unit tests
-        run: npm run test || true  # Don't fail if no tests yet
+        run: npm run test
 
   build:
     name: Production Build

@@ -1574,6 +1574,7 @@ class GoalService:
                         agent_id=agent_id,
                         workflow_mode=workflow_mode,
                         goal_template="",
+                        plan=tenant_ctx.plan.value,
                     )
                 else:
                     tool_context = await self._build_tool_context(
