@@ -41,27 +41,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
-from app.api.guardrails import router as guardrails_router
-from app.api.analytics import router as analytics_router
-from app.api.civilization import router as civilization_router
-from app.api.costs import router as costs_router
-from app.api.workflows import _WorkflowStore as WorkflowStore
-from app.api.workflows import router as workflows_router
-from app.api.insights import router as insights_router
-from app.api.templates import router as templates_router, template_store as _template_store
-from app.api.replay import router as replay_router
-from app.api.training_export import router as training_export_router
-from app.api.integrations import router as integrations_router
 from app.api.agents import AgentStore
 from app.api.agents import router as agents_router
+from app.api.analytics import router as analytics_router
 from app.api.artifacts import router as artifacts_router
 from app.api.auth import router as auth_router
+from app.api.civilization import router as civilization_router
 from app.api.collab import router as collab_router
 from app.api.connectors import router as connectors_router
+from app.api.costs import router as costs_router
 from app.api.enterprise import (
+    compliance_router,
     intelligence_router,
     marketplace_router,
-    compliance_router,
     scim_router,
 )
 from app.api.enterprise import (
@@ -69,9 +61,13 @@ from app.api.enterprise import (
 )
 from app.api.goals import router as goals_router
 from app.api.governance import router as governance_router
+from app.api.guardrails import router as guardrails_router
+from app.api.insights import router as insights_router
+from app.api.integrations import router as integrations_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
 from app.api.perception import router as perception_router
+from app.api.replay import router as replay_router
 from app.api.rpa import router as rpa_router
 from app.api.schedules import (
     events_router,
@@ -82,8 +78,15 @@ from app.api.schedules import (
     router as schedules_router,
 )
 from app.api.system import router as system_router
+from app.api.templates import router as templates_router
+from app.api.templates import template_store as _template_store
 from app.api.tenants import router as tenants_router
 from app.api.tools import router as tools_router
+from app.api.training_export import router as training_export_router
+from app.api.workflows import _WorkflowStore as WorkflowStore
+from app.api.workflows import router as workflows_router
+from app.auth.agent_identity import AgentIdentityService
+from app.auth.scope_enforcement import ScopeEnforcementMiddleware
 from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
@@ -101,6 +104,7 @@ from app.governance.policies import PolicyEngine
 from app.intelligence.cost_tracker import CostTracker
 from app.intelligence.eval_runner import EvalRunner
 from app.intelligence.eval_suite import EvalSuiteRunner
+from app.intelligence.guardrail_engine import GuardrailEngine as GuardrailEngineV2
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.intelligence.self_optimization import SelfOptimizer
 from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
@@ -128,14 +132,13 @@ from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
 from app.services.tenant_service import TenantService
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
-from app.auth.scope_enforcement import ScopeEnforcementMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
 
 logger = get_logger(__name__)
 
 
-def _resolve_provider_for_app(settings: "Settings") -> Any:
+def _resolve_provider_for_app(settings: Settings) -> Any:
     """Resolve a real LLM provider from environment, or FakeProvider as last resort."""
     import os
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -176,7 +179,6 @@ def _resolve_provider_for_app(settings: "Settings") -> Any:
             "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real goal execution."
         ),
     )
-    from app.providers.fake import FakeProvider
     return FakeProvider(responses=[
         '{"steps": ["Complete the requested task"]}',
         "Task executed successfully",
@@ -345,6 +347,10 @@ def create_app(
     _exec_memory = ExecutionMemory()
     # Cost tracker — wired with real Redis + DB in lifespan
     _cost_tracker = CostTracker(redis=_fake_redis)
+    # AgentIdentityService — wired with DB + Redis in lifespan
+    _agent_identity_svc = AgentIdentityService(db=None, vault=get_vault(), redis=_fake_redis)
+    # GuardrailEngine v2 — wired with Redis in lifespan
+    _guardrail_engine_v2 = GuardrailEngineV2()
 
     # Wire embedder: use VoyageProvider if VOYAGE_API_KEY set,
     # OpenAICompatibleProvider if OPENAI_API_KEY set,
@@ -563,6 +569,10 @@ def create_app(
             _cost_tracker._db = db_factory
             app.state.cost_tracker = _cost_tracker
 
+            # Wire AgentIdentityService with DB session factory
+            _agent_identity_svc.set_db(db_factory)
+            logger.info("agent_identity_service_db_wired")
+
             # H-4: Wire agent store directly into goal_service for agent config loading
             _goal_svc_with_db._agent_store = _agent_store_with_db
 
@@ -744,6 +754,33 @@ def create_app(
                 except Exception as _ps_exc:
                     logger.warning("policy_pubsub_start_failed", error=str(_ps_exc))
 
+                # ── AgentIdentityService: upgrade Redis for JWKS cache invalidation ──
+                if hasattr(_agent_identity_svc, "set_redis"):
+                    _agent_identity_svc.set_redis(redis_for_runtime)
+                    logger.info("agent_identity_service_redis_wired")
+
+                # ── AuditWriter + AuditFlusher: Redis WAL for v2 audit system ────────
+                try:
+                    import asyncio as _asyncio_wal
+
+                    from app.governance.audit_v2 import (
+                        AuditFlusher as _AuditFlusher,
+                    )
+                    from app.governance.audit_v2 import (
+                        AuditWriter as _AuditWriter,
+                    )
+                    _audit_writer = _AuditWriter(redis=redis_for_runtime)
+                    app.state.audit_writer = _audit_writer
+                    _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db=db_factory)
+                    _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
+                    logger.info("audit_wal_flusher_started")
+                except Exception as _aw_exc:
+                    logger.warning("audit_writer_wire_failed", error=str(_aw_exc))
+
+                # ── GuardrailEngine v2: wire Redis for tenant config cache ────────────
+                _guardrail_engine_v2._redis = redis_for_runtime
+                logger.info("guardrail_engine_v2_redis_wired")
+
             # ── PromptOptimizer: load variants from DB (all replicas on startup) ──
             try:
                 from app.intelligence.prompt_optimizer import _default_optimizer as _opt_db
@@ -782,6 +819,7 @@ def create_app(
             if redis_for_runtime is not None:
                 try:
                     import asyncio as _asyncio_cw
+
                     from app.auth.cache_warmer import warm_permission_cache
                     _asyncio_cw.create_task(
                         warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
@@ -795,7 +833,11 @@ def create_app(
                 import os as _os_siem
                 _siem_adapter = None
                 if _os_siem.getenv("SIEM_TYPE") or settings.siem_type:
-                    from app.governance.siem_adapters import SIEMConfig, SIEMType, build_siem_adapter
+                    from app.governance.siem_adapters import (
+                        SIEMConfig,
+                        SIEMType,
+                        build_siem_adapter,
+                    )
                     _siem_type_str = _os_siem.getenv("SIEM_TYPE") or settings.siem_type
                     try:
                         _siem_cfg = SIEMConfig(
@@ -909,6 +951,10 @@ def create_app(
     app.state.exec_memory = _exec_memory
     # Cost Tracker
     app.state.cost_tracker = _cost_tracker
+    # Agent Identity Service (JWT service-account credentials)
+    app.state.agent_identity_service = _agent_identity_svc
+    # GuardrailEngine v2 (six-layer input/output guardrails)
+    app.state.guardrail_engine = _guardrail_engine_v2
     # Intelligence
     app.state.eval_runner = _eval_runner
     app.state.eval_suite_runner = _eval_suite_runner

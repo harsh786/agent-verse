@@ -39,6 +39,21 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
+# GuardrailContext — shared context object passed to evaluation methods
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GuardrailContext:
+    """Context passed to GuardrailEngine evaluation methods for tenant-aware scoring."""
+
+    tenant_id: str = ""
+    goal_id: str = ""
+    agent_id: str = ""
+    domain: str = "general"
+
+
+# ---------------------------------------------------------------------------
 # Severity & action enums
 # ---------------------------------------------------------------------------
 
