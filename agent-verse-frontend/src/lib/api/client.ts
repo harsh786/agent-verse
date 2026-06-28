@@ -6,6 +6,7 @@
  */
 
 import { useAuthStore } from '@/stores/auth';
+import { toast } from '@/stores/toast';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -45,10 +46,24 @@ async function request<T>(
   };
   if (apiKey) headers["X-API-Key"] = apiKey;
 
-  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  } catch (networkErr) {
+    toast({ kind: 'error', message: 'Network error — could not reach the server.' });
+    throw networkErr;
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: { message: res.statusText } }));
-    throw new ApiError(res.status, body?.error?.message ?? res.statusText, body);
+    const message = body?.error?.message ?? res.statusText;
+    if (res.status === 401) {
+      const { logout } = useAuthStore.getState();
+      logout();
+      toast({ kind: 'error', message: 'Session expired — please sign in again.' });
+      throw new ApiError(401, message, body);
+    }
+    if (res.status >= 500) toast({ kind: 'error', message: `Server error: ${message}` });
+    throw new ApiError(res.status, message, body);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
