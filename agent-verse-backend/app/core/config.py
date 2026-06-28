@@ -89,6 +89,19 @@ class Settings(BaseSettings):
     # --- search ---
     searxng_url: str = "http://searxng:8081"
 
+    # --- SAML 2.0 ---
+    saml_enabled: bool = False
+    saml_idp_metadata_url: str = ""
+    saml_entity_id: str = "agentverse"
+    saml_acs_url: str = ""  # Assertion Consumer Service URL
+    saml_name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+    # --- SIEM Integration ---
+    siem_type: str = ""   # "splunk" | "elasticsearch" | "datadog" | "cef" | "leef" | "webhook"
+    siem_endpoint: str = ""
+    siem_token: str = ""
+    siem_api_key: str = ""
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:

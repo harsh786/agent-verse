@@ -1,13 +1,13 @@
 """tenant_settings table and gdpr_export_jobs if not exists
 
-Revision ID: 0058
-Revises: 0057
+Revision ID: 0066
+Revises: 0065
 Create Date: 2026-06-28
 """
 from alembic import op
 
-revision = "0058"
-down_revision = "0057"
+revision = "0066"
+down_revision = "0065"
 branch_labels = None
 depends_on = None
 

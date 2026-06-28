@@ -107,9 +107,9 @@ celery_app.conf.update(
             "options": {"queue": "maintenance"},
         },
         "drain-goals-dlq-every-5min": {
-            "task": "app.scaling.tasks.record_queue_depths",
-            "schedule": 300.0,  # every 5 minutes — also monitors DLQ depth
-            "options": {"queue": "maintenance"},
+            "task": "app.scaling.tasks.run_goal_dlq",
+            "schedule": 300.0,  # every 5 minutes — drain Dead Letter Queue
+            "options": {"queue": "goals_dlq"},
         },
         # Freshness reindex: mark stale knowledge chunks hourly
         "reindex-stale-knowledge": {
@@ -125,6 +125,47 @@ celery_app.conf.update(
         "civilization-discovery-every-30s": {
             "task": "app.scaling.tasks.discover_and_tick_civilizations",
             "schedule": 30,
+            "options": {"queue": "maintenance"},
+        },
+        # ── M-1: Eight new maintenance tasks ──────────────────────────────
+        "warm-jwks-cache": {
+            "task": "app.scaling.tasks.warm_jwks_cache",
+            "schedule": crontab(minute="*/9"),
+            "options": {"queue": "maintenance"},
+        },
+        "create-guardrail-partitions": {
+            "task": "app.scaling.tasks.create_guardrail_partitions",
+            "schedule": crontab(day_of_month="1", hour="2"),
+            "options": {"queue": "maintenance"},
+        },
+        "enforce-hitl-sla": {
+            "task": "app.scaling.tasks.enforce_hitl_sla",
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": "maintenance"},
+        },
+        "flush-audit-wal": {
+            "task": "app.scaling.tasks.flush_audit_wal",
+            "schedule": 10.0,
+            "options": {"queue": "maintenance"},
+        },
+        "scan-cost-anomalies": {
+            "task": "app.scaling.tasks.scan_cost_anomalies",
+            "schedule": crontab(minute="0"),
+            "options": {"queue": "maintenance"},
+        },
+        "embed-marketplace-templates": {
+            "task": "app.scaling.tasks.embed_marketplace_templates",
+            "schedule": crontab(minute="*/15"),
+            "options": {"queue": "maintenance"},
+        },
+        "conclude-stale-experiments": {
+            "task": "app.scaling.tasks.conclude_stale_experiments",
+            "schedule": crontab(hour="3", minute="0"),
+            "options": {"queue": "maintenance"},
+        },
+        "expire-stale-documents": {
+            "task": "app.scaling.tasks.expire_stale_documents",
+            "schedule": crontab(hour="1", minute="0"),
             "options": {"queue": "maintenance"},
         },
     },

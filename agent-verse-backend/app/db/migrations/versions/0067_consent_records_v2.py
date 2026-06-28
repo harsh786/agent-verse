@@ -1,13 +1,13 @@
 """consent_records v2, scim provisioning prep
 
-Revision ID: 0059
-Revises: 0058
+Revision ID: 0067
+Revises: 0066
 Create Date: 2026-06-28
 """
 from alembic import op
 
-revision = "0059"
-down_revision = "0058"
+revision = "0067"
+down_revision = "0066"
 branch_labels = None
 depends_on = None
 

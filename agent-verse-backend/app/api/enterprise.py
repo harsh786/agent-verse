@@ -584,6 +584,19 @@ async def deploy_template(
 
 # --- Intelligence / Self-optimization ---
 
+@intelligence_router.get("/experiments")
+async def list_experiments(request: Request) -> list[dict]:
+    """List all A/B optimization experiments for this tenant (M-2)."""
+    ctx = _require_tenant(request)
+    self_opt_v2 = getattr(request.app.state, "self_optimizer_v2", None)
+    if self_opt_v2 is None:
+        return []
+    try:
+        return await self_opt_v2.list_experiments(tenant_id=ctx.tenant_id)
+    except Exception:
+        return []
+
+
 @intelligence_router.get("/suggestions")
 async def list_suggestions(
     request: Request, applied: bool | None = None

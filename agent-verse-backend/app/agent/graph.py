@@ -190,6 +190,8 @@ class AgentGraph:
         self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
         self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
         self._self_optimizer: Any = None    # Settable from outside; SelfOptimizer instance
+        self._app_state: Any = None         # Set externally by goal_service; FastAPI app
+        self._agent_id: str | None = None   # Set externally by goal_service
         # Track fire-and-forget background tasks to prevent GC before completion
         self._background_tasks: set[Any] = set()
         # Agent knowledge collection binding — set externally by goal_service after construction
@@ -285,6 +287,20 @@ class AgentGraph:
                 )
                 await self._emit({"type": "goal_rejected", "reason": agent_state.error_message})
                 return {"agent_state": agent_state, "terminal_reason": "guardrail_rejected"}
+
+        # H-2: SelfOptimizerV2 arm config injection — pick experiment arm for this run
+        self_opt_v2 = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+        if self_opt_v2 and self._agent_id:
+            try:
+                arm_config = await self_opt_v2.get_arm_config(
+                    agent_id=self._agent_id,
+                    goal_id=agent_state.goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                )
+                if arm_config and isinstance(agent_state.context, dict):
+                    agent_state.context["_experiment_arm"] = arm_config.get("arm_name", "control")
+            except Exception:
+                pass
 
         return {"agent_state": agent_state, "iteration": 0, "rag_context": ""}
 
@@ -1708,6 +1724,38 @@ class AgentGraph:
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
+
+            # H-2: SelfOptimizerV2 result recording — feeds A/B experiment outcomes
+            _self_opt_v2 = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+            if _self_opt_v2 and self._agent_id and isinstance(agent_state.context, dict):
+                _arm = agent_state.context.get("_experiment_arm")
+                if _arm:
+                    _eval_scorecard = agent_state.context.get("eval_scorecard", {})
+                    _eval_score: float | None = None
+                    if hasattr(_eval_scorecard, "average_score"):
+                        try:
+                            _eval_score = float(_eval_scorecard.average_score())
+                        except Exception:
+                            pass
+                    elif isinstance(_eval_scorecard, dict):
+                        _eval_score_raw = _eval_scorecard.get("average_score")
+                        if _eval_score_raw is not None:
+                            try:
+                                _eval_score = float(_eval_score_raw)
+                            except Exception:
+                                pass
+                    if _eval_score is not None:
+                        import asyncio as _asyncio
+                        _v2_task = _asyncio.create_task(_self_opt_v2.record_result(
+                            goal_id=agent_state.goal_id,
+                            agent_id=self._agent_id,
+                            arm_name=_arm,
+                            eval_score=_eval_score,
+                            cost_usd=float(agent_state.context.get("total_cost_usd", 0.0)),
+                            tenant_id=tenant_ctx.tenant_id,
+                        ))
+                        self._background_tasks.add(_v2_task)
+                        _v2_task.add_done_callback(self._background_tasks.discard)
         else:
             scorecard = None
 

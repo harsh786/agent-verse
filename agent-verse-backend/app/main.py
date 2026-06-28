@@ -41,6 +41,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
+from app.api.guardrails import router as guardrails_router
 from app.api.analytics import router as analytics_router
 from app.api.civilization import router as civilization_router
 from app.api.costs import router as costs_router
@@ -768,6 +769,71 @@ def create_app(
                     except Exception as _bridge_exc:
                         logger.warning("celery_event_bridge_start_failed", error=str(_bridge_exc))
 
+            # ── H-3: Seed RBAC scope definitions from declarative registry ───────
+            try:
+                from app.auth.scope_seeder import seed_builtin_scopes, seed_scope_definitions
+                await seed_builtin_scopes(db_factory)
+                await seed_scope_definitions(db_factory)
+                logger.info("scope_seeder_complete")
+            except Exception as _seed_exc:
+                logger.warning("scope_seeder_failed", error=str(_seed_exc))
+
+            # ── M-3: Warm permission cache for recently-active tenants ────────────
+            if redis_for_runtime is not None:
+                try:
+                    import asyncio as _asyncio_cw
+                    from app.auth.cache_warmer import warm_permission_cache
+                    _asyncio_cw.create_task(
+                        warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
+                    )
+                    logger.info("permission_cache_warming_started")
+                except Exception as _cw_exc:
+                    logger.warning("permission_cache_warm_failed", error=str(_cw_exc))
+
+            # ── H-4: Wire SIEM adapter if configured ──────────────────────────────
+            try:
+                import os as _os_siem
+                _siem_adapter = None
+                if _os_siem.getenv("SIEM_TYPE") or settings.siem_type:
+                    from app.governance.siem_adapters import SIEMConfig, SIEMType, build_siem_adapter
+                    _siem_type_str = _os_siem.getenv("SIEM_TYPE") or settings.siem_type
+                    try:
+                        _siem_cfg = SIEMConfig(
+                            siem_type=SIEMType(_siem_type_str),
+                            endpoint=_os_siem.getenv("SIEM_ENDPOINT") or settings.siem_endpoint,
+                            credentials={
+                                "token": _os_siem.getenv("SIEM_TOKEN") or settings.siem_token,
+                                "api_key": _os_siem.getenv("SIEM_API_KEY") or settings.siem_api_key,
+                            },
+                        )
+                        _siem_adapter = build_siem_adapter(_siem_cfg)
+                    except Exception as _siem_init_exc:
+                        logger.warning("siem_adapter_init_failed", error=str(_siem_init_exc))
+                app.state.siem_adapter = _siem_adapter
+                if _siem_adapter:
+                    logger.info("siem_adapter_registered", siem_type=_siem_type_str)
+            except Exception as _siem_exc:
+                logger.warning("siem_adapter_setup_failed", error=str(_siem_exc))
+                app.state.siem_adapter = None
+
+            # ── H-5: Wire LegalHoldManager with DB + Redis ────────────────────────
+            try:
+                from app.governance.legal_holds import LegalHoldManager
+                _lhm = LegalHoldManager()
+                if hasattr(_lhm, "set_db"):
+                    _lhm.set_db(db_factory)
+                elif hasattr(_lhm, "_db"):
+                    _lhm._db = db_factory
+                if redis_for_runtime is not None:
+                    if hasattr(_lhm, "set_redis"):
+                        _lhm.set_redis(redis_for_runtime)
+                    elif hasattr(_lhm, "_redis"):
+                        _lhm._redis = redis_for_runtime
+                app.state.legal_hold_manager = _lhm
+                logger.info("legal_hold_manager_wired")
+            except Exception as _lhm_exc:
+                logger.warning("legal_hold_manager_wire_failed", error=str(_lhm_exc))
+
             try:
                 yield
             finally:
@@ -963,6 +1029,9 @@ def create_app(
     # Cost optimization & monitoring
     app.include_router(costs_router)
     logger.info("costs_router_registered")
+    # Guardrails
+    app.include_router(guardrails_router)
+    logger.info("guardrails_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 
