@@ -10,6 +10,8 @@
     "dev": "vitest"
   },
   "keywords": ["agentverse", "agentic", "ai", "agents"],
+  "files": ["dist"],
+  "engines": {"node": ">=18"},
   "dependencies": {},
   "devDependencies": {
     "typescript": "^5.0.0",

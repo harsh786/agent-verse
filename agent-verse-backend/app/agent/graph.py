@@ -1818,6 +1818,11 @@ class AgentGraph:
                         _v2_task.add_done_callback(self._background_tasks.discard)
         else:
             scorecard = None
+            # FIX: On permanent failure (retry=False), roll back all registered actions
+            # using the async method to guarantee each inverse completes before moving on.
+            if not retry and self._rollback_engine is not None and len(self._rollback_engine) > 0:
+                rolled = await self._rollback_engine.rollback_all_async()
+                self._logger.info("agent_rollback_complete", rolled_back=rolled)
 
         # Feed eval result back to PromptOptimizer for A/B learning (BUG 4 fix)
         if scorecard is not None and hasattr(agent_state, "context"):

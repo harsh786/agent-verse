@@ -1,0 +1,91 @@
+name: Publish TypeScript SDK to npm
+
+on:
+  push:
+    tags:
+      - 'ts-sdk/v*'  # e.g. ts-sdk/v0.2.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.2.0)'
+        required: true
+
+jobs:
+  test:
+    name: Test before publish
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: agent-verse-sdk-typescript/package-lock.json
+      - name: Install dependencies
+        working-directory: agent-verse-sdk-typescript
+        run: npm ci
+      - name: Type check
+        working-directory: agent-verse-sdk-typescript
+        run: npm run build
+      - name: Run tests
+        working-directory: agent-verse-sdk-typescript
+        run: npm test
+
+  publish:
+    name: Build and publish to npm
+    needs: test
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: agent-verse-sdk-typescript/package-lock.json
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/ts-sdk/v}" >> $GITHUB_OUTPUT
+          fi
+      - name: Set package version
+        working-directory: agent-verse-sdk-typescript
+        run: npm version ${{ steps.version.outputs.VERSION }} --no-git-tag-version
+      - name: Install & Build
+        working-directory: agent-verse-sdk-typescript
+        run: npm ci && npm run build
+      - name: Publish to npm (provenance)
+        working-directory: agent-verse-sdk-typescript
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: TypeScript SDK v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## @agentverse/sdk v${{ steps.version.outputs.VERSION }}
+
+            Install: `npm install @agentverse/sdk@${{ steps.version.outputs.VERSION }}`
+
+            ```typescript
+            import { AgentVerseClient } from '@agentverse/sdk';
+            const client = new AgentVerseClient({ apiKey: 'av-...' });
+            const goal = await client.submitGoal('Summarise all open GitHub issues');
+            for await (const event of client.streamGoal(goal.goalId)) {
+              console.log(event);
+            }
+            ```
