@@ -206,9 +206,9 @@ function CivilizationTheater({ civId }: { civId: string }) {
 
   return (
     <>
-      <div className="flex flex-col h-screen bg-gray-50">
+      <div className="flex flex-col h-screen bg-background">
         {/* Header */}
-        <div className="bg-white border-b px-6 py-3 flex items-center justify-between">
+        <div className="bg-card border-b border-border px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link to="/civilization" className="text-gray-400 hover:text-gray-600 text-sm">
               &#8592; Civilizations

@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { toast } from "@/stores/toast";
-import { X, Play, Eye } from "lucide-react";
+import { X, Play, Eye, Copy } from "lucide-react";
 
 interface TemplateInstantiatorProps {
   template: GoalTemplate;
@@ -89,6 +89,18 @@ export function TemplateInstantiator({ template, onClose }: TemplateInstantiator
           >
             <Play className="h-4 w-4" aria-hidden="true" />
             {instantiate.isPending ? "Submitting…" : "Run Now"}
+          </button>
+          <button
+            onClick={() => {
+              navigator.clipboard?.writeText(preview).catch(() => {});
+              toast({ kind: "success", message: "Goal text copied to clipboard!" });
+            }}
+            disabled={!allFilled}
+            className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+            title="Copy instantiated goal text to clipboard"
+          >
+            <Copy className="h-4 w-4" aria-hidden="true" />
+            Copy
           </button>
           <button
             onClick={onClose}

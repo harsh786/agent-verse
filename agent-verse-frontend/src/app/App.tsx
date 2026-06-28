@@ -50,9 +50,9 @@ import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
-import { GoalDiffPage } from "@/features/goals/GoalDiffPage";
-import { GhostRunPage } from "@/features/goals/GhostRunPage";
-import { AgentPersonalityPage } from "@/features/agents/AgentPersonalityPage";
+const GoalDiffPage = lazy(() => import("@/features/goals/GoalDiffPage").then(m => ({ default: m.GoalDiffPage })));
+const GhostRunPage = lazy(() => import("@/features/goals/GhostRunPage").then(m => ({ default: m.GhostRunPage })));
+const AgentPersonalityPage = lazy(() => import("@/features/agents/AgentPersonalityPage").then(m => ({ default: m.AgentPersonalityPage })));
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -168,14 +168,26 @@ export default function App() {
             <GoalDNAPage />
           </Suspense>
         } />
-        <Route path="goals/:goalId/diff" element={<GoalDiffPage />} />
-        <Route path="goals/ghost-run" element={<GhostRunPage />} />
+        <Route path="goals/:goalId/diff" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
+            <GoalDiffPage />
+          </Suspense>
+        } />
+        <Route path="goals/ghost-run" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
+            <GhostRunPage />
+          </Suspense>
+        } />
         <Route path="agents/:agentId/radar" element={
           <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
             <AgentRadarPage />
           </Suspense>
         } />
-        <Route path="agents/:agentId/personality" element={<AgentPersonalityPage />} />
+        <Route path="agents/:agentId/personality" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5" /></div>}>
+            <AgentPersonalityPage />
+          </Suspense>
+        } />
         <Route path="templates" element={
           <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
             <TemplateLibraryPage />

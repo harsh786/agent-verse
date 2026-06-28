@@ -23,6 +23,7 @@ import { ToolCallInspector } from "@/components/execution/ToolCallInspector";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
+import { LiveCostTicker } from "@/components/live/LiveCostTicker";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -265,7 +266,13 @@ export function GoalDetailPage() {
             <h1 className="text-xl font-bold leading-snug">{goal.goal}</h1>
             <p className="text-xs text-muted-foreground font-mono mt-1">{goal.goal_id}</p>
           </div>
-          <StatusBadge status={goal.status} />
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <StatusBadge status={goal.status} />
+            <LiveCostTicker
+              currentCost={(goal as any).cost_usd ?? 0}
+              isRunning={["planning", "executing", "verifying"].includes((goal as any).status ?? "")}
+            />
+          </div>
         </div>
       </div>
 

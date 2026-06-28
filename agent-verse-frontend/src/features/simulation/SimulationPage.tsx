@@ -36,7 +36,7 @@ export function SimulationPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Simulation Studio</h1>
-      <p className="text-gray-600 mb-4">
+      <p className="text-muted-foreground mb-4">
         Test your goal against governance policies and see the planned execution steps before
         running.
       </p>
