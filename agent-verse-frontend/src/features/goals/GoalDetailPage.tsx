@@ -8,6 +8,8 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Pause,
+  Play,
 } from "lucide-react";
 import { useState } from "react";
 import { goalsApi, governanceApi } from "@/lib/api/client";
@@ -15,6 +17,9 @@ import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
 import { ExecutionTimeline } from "@/components/execution/ExecutionTimeline";
 import { ToolCallInspector } from "@/components/execution/ToolCallInspector";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { toast } from "@/stores/toast";
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -136,6 +141,7 @@ export function GoalDetailPage() {
   const qc = useQueryClient();
   const tenantId = useAuthStore((s) => s.tenantId);
   const [approvalNote, setApprovalNote] = useState("");
+  const [activeTab, setActiveTab] = useState<"pipeline" | "events" | "eval">("pipeline");
 
   const { data: goal, isLoading } = useQuery({
     queryKey: ["goal", goalId],
@@ -149,6 +155,41 @@ export function GoalDetailPage() {
   const cancel = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goal", goalId] }),
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => goalsApi.pause(goalId!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["goal", goalId] });
+      toast({ kind: "success", message: "Goal paused." });
+    },
+    onError: (e) => toast({ kind: "error", message: `Pause failed: ${e}` }),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => goalsApi.resume(goalId!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["goal", goalId] });
+      toast({ kind: "success", message: "Goal resumed." });
+    },
+    onError: (e) => toast({ kind: "error", message: `Resume failed: ${e}` }),
+  });
+
+  // Event log (replay) — fetched when tab is active
+  const { data: eventLog = [], isLoading: eventsLoading } = useQuery({
+    queryKey: ["goal-events", goalId],
+    queryFn: () => goalsApi.getEventLog(goalId!),
+    enabled: !!goalId && activeTab === "events",
+  });
+
+  // Eval scorecard — fetched when tab is active and goal is terminal
+  const { data: evaluation, isLoading: evalLoading } = useQuery({
+    queryKey: ["goal-eval", goalId],
+    queryFn: () => goalsApi.getEvaluation(goalId!),
+    enabled:
+      !!goalId &&
+      activeTab === "eval" &&
+      ["complete", "failed"].includes(goal?.status ?? ""),
   });
 
   // HITL: fetch pending approvals — enabled only while waiting_human
@@ -166,7 +207,6 @@ export function GoalDetailPage() {
   const approveMutation = useMutation({
     mutationFn: () => {
       if (!pendingApproval) throw new Error("No pending approval request found");
-      // Use a meaningful approver identifier rather than the raw tenantId
       const approverName = `user:${tenantId?.slice(0, 8) ?? "unknown"}`;
       return governanceApi.approve(pendingApproval.request_id, approverName, approvalNote);
     },
@@ -235,6 +275,26 @@ export function GoalDetailPage() {
             className="flex items-center gap-2 px-3 py-1.5 text-sm border border-destructive text-destructive rounded-md hover:bg-destructive/10 transition-colors disabled:opacity-50"
           >
             <XCircle className="h-4 w-4" /> Cancel
+          </button>
+        )}
+        {goal.status === "executing" && (
+          <button
+            onClick={() => pauseMutation.mutate()}
+            disabled={pauseMutation.isPending}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-yellow-300 text-yellow-700 rounded-md hover:bg-yellow-50 transition-colors disabled:opacity-50"
+            aria-label="Pause goal"
+          >
+            <Pause className="h-4 w-4" /> Pause
+          </button>
+        )}
+        {goal.status === "paused" && (
+          <button
+            onClick={() => resumeMutation.mutate()}
+            disabled={resumeMutation.isPending}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-green-300 text-green-700 rounded-md hover:bg-green-50 transition-colors disabled:opacity-50"
+            aria-label="Resume goal"
+          >
+            <Play className="h-4 w-4" /> Resume
           </button>
         )}
         <button
@@ -321,37 +381,163 @@ export function GoalDetailPage() {
         </div>
       )}
 
-      {/* Live event stream */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h2 className="font-semibold text-sm">Pipeline steps</h2>
-          <span className={`text-xs ${connected ? "text-green-500" : "text-muted-foreground"}`}>
-            {connected ? "● Live" : "○ Disconnected"}
-          </span>
-        </div>
-        {events.length === 0 ? (
-          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-            {goal.status === "complete" || goal.status === "failed"
-              ? "Goal finished. No live events."
-              : "Waiting for events…"}
-          </div>
-        ) : (
-          <ul>
-            {events.map((evt, i) => (
-              <StepRow key={i} event={evt as Record<string, unknown>} />
-            ))}
-          </ul>
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b">
+        {(["pipeline", "events"] as const).map((tab) => (
+          <button
+            key={tab}
+            role="tab"
+            aria-selected={activeTab === tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
+              activeTab === tab
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {tab === "pipeline" ? "Pipeline" : "Event Log"}
+          </button>
+        ))}
+        {["complete", "failed"].includes(goal.status) && (
+          <button
+            role="tab"
+            aria-selected={activeTab === "eval"}
+            onClick={() => setActiveTab("eval")}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "eval"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Eval
+          </button>
         )}
       </div>
 
-      {/* Execution Timeline */}
-      {events.length > 0 && <ExecutionTimeline events={events as any[]} />}
+      {/* Pipeline tab */}
+      {activeTab === "pipeline" && (
+        <>
+          {/* Live event stream */}
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <h2 className="font-semibold text-sm">Pipeline steps</h2>
+              <span className={`text-xs ${connected ? "text-green-500" : "text-muted-foreground"}`}>
+                {connected ? "● Live" : "○ Disconnected"}
+              </span>
+            </div>
+            {events.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                {goal.status === "complete" || goal.status === "failed"
+                  ? "Goal finished. No live events."
+                  : "Waiting for events…"}
+              </div>
+            ) : (
+              <ul>
+                {events.map((evt, i) => (
+                  <StepRow key={i} event={evt as Record<string, unknown>} />
+                ))}
+              </ul>
+            )}
+          </div>
 
-      {/* Tool Call Inspector */}
-      {events.some((e) => (e as any).type === "tool_call_complete") && (
-        <ToolCallInspector
-          toolEvents={(events as any[]).filter((e) => e.type === "tool_call_complete")}
-        />
+          {/* Execution Timeline */}
+          {events.length > 0 && <ExecutionTimeline events={events as any[]} />}
+
+          {/* Tool Call Inspector */}
+          {events.some((e) => (e as any).type === "tool_call_complete") && (
+            <ToolCallInspector
+              toolEvents={(events as any[]).filter((e) => e.type === "tool_call_complete")}
+            />
+          )}
+        </>
+      )}
+
+      {/* Event Log tab */}
+      {activeTab === "events" && (
+        <div className="space-y-2">
+          {eventsLoading
+            ? Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))
+            : eventLog.length === 0
+            ? (
+              <EmptyState
+                title="No persisted events"
+                description="Events appear after goal execution completes."
+              />
+            )
+            : eventLog.map((ev, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm"
+              >
+                <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+                  {ev.created_at
+                    ? new Date(ev.created_at).toLocaleTimeString()
+                    : `#${i + 1}`}
+                </span>
+                <span className="font-medium">{ev.type}</span>
+                {ev.payload?.message != null && (
+                  <span className="text-muted-foreground text-xs">
+                    {String(ev.payload.message)}
+                  </span>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* Eval tab */}
+      {activeTab === "eval" && (
+        <div className="space-y-4">
+          {evalLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : !evaluation ? (
+            <EmptyState
+              title="No evaluation"
+              description="Evaluation runs automatically after goal completion."
+            />
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-4 p-4 rounded-lg border bg-card">
+                <div className="text-3xl font-bold">
+                  {((evaluation.score ?? 0) * 100).toFixed(0)}%
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Overall Score</p>
+                  <p
+                    className={`text-xs font-medium ${
+                      evaluation.passed ? "text-green-600" : "text-red-600"
+                    }`}
+                  >
+                    {evaluation.passed ? "PASSED" : "FAILED"}
+                  </p>
+                </div>
+              </div>
+              {evaluation.criteria && evaluation.criteria.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                  {evaluation.criteria.map((c) => (
+                    <div key={c.name} className="p-3 rounded border bg-card">
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {c.name.replace(/_/g, " ")}
+                      </p>
+                      <p className="text-lg font-semibold">
+                        {(c.score * 100).toFixed(0)}%
+                      </p>
+                      <span
+                        className={`text-[10px] font-medium ${
+                          c.passed ? "text-green-600" : "text-red-500"
+                        }`}
+                      >
+                        {c.passed ? "✓ pass" : "✗ fail"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Raw state */}
