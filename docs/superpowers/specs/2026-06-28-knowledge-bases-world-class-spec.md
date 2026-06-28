@@ -1595,3 +1595,224 @@ class TestDomainMetadataSchemas:
 # Inventory freshness: TTL = 4 hours (frequent price/stock changes)
 # Search ranking: boost in-stock items in search results
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 10.1 — Fix IVFFlat on empty tables → use HNSW
+
+```sql
+-- Replace IVFFlat with HNSW (handles empty tables, no training data required):
+
+-- BEFORE (IVFFlat fails on empty table):
+-- CREATE INDEX ix_documents_embedding_768 ON document_chunks_768 USING ivfflat (embedding vector_cosine_ops) WITH (lists = 200);
+
+-- AFTER (HNSW works on any table size):
+CREATE INDEX ix_documents_embedding_768 ON document_chunks_768
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX ix_documents_embedding_1536 ON document_chunks_1536
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX ix_documents_embedding_3072 ON document_chunks_3072
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+-- Note: HNSW requires pgvector >= 0.5.0 (check in healthcheck)
+```
+
+### Amendment 10.2 — Define embed_batch() on base provider interface
+
+```python
+# In app/providers/base.py, add to LLMProvider Protocol:
+async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    """Embed multiple texts in a single API call (more efficient)."""
+    # Default implementation calls embed() sequentially:
+    return [await self.embed(text) for text in texts]
+
+# Override in voyage_provider.py for efficient batching:
+async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    resp = await self._client.embed(texts, model=self._embed_model)
+    return [e.embedding for e in resp.embeddings]
+
+# Override in openai_compatible.py:
+async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    resp = await self._client.embeddings.create(input=texts, model=self._embed_model)
+    return [e.embedding for e in resp.data]
+```
+
+### Amendment 10.3 — Fix cross-model score incompatibility in federated search
+
+```python
+# Multi-collection federated search must normalize scores before merging:
+async def federated_search(self, query: str, collection_ids: list[str], top_k: int = 10) -> list[SearchResult]:
+    """Search across multiple collections, normalize scores for cross-model comparison."""
+    per_collection_results = await asyncio.gather(*[
+        self._search_collection(query, cid, top_k=top_k * 2)  # over-fetch for re-ranking
+        for cid in collection_ids
+    ])
+
+    # Normalize scores within each collection to [0, 1] using min-max normalization:
+    all_results = []
+    for results in per_collection_results:
+        if not results:
+            continue
+        scores = [r.similarity_score for r in results]
+        min_s, max_s = min(scores), max(scores)
+        score_range = max_s - min_s if max_s != min_s else 1.0
+        for r in results:
+            r.normalized_score = (r.similarity_score - min_s) / score_range  # [0, 1]
+            all_results.append(r)
+
+    # Re-rank by normalized score:
+    all_results.sort(key=lambda r: r.normalized_score, reverse=True)
+
+    # Dedup by content_hash:
+    seen = set()
+    deduped = []
+    for r in all_results:
+        if r.content_hash not in seen:
+            seen.add(r.content_hash)
+            deduped.append(r)
+    return deduped[:top_k]
+```
+
+### Amendment 10.4 — Fix token vs word chunking
+
+```python
+# BEFORE (splits by word count — overflows model context):
+# chunks = textwrap.wrap(text, width=512)  # or similar
+
+# AFTER (token-aware chunking using tiktoken):
+def chunk_by_tokens(text: str, max_tokens: int = 512, overlap_tokens: int = 64) -> list[str]:
+    """Split text respecting token boundaries, not word boundaries."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")  # works for most modern models
+        tokens = enc.encode(text)
+    except ImportError:
+        # Fallback: approximate 4 chars per token
+        return _chunk_by_chars(text, max_chars=max_tokens * 4, overlap=overlap_tokens * 4)
+
+    chunks = []
+    start = 0
+    while start < len(tokens):
+        end = min(start + max_tokens, len(tokens))
+        chunk_tokens = tokens[start:end]
+        chunks.append(enc.decode(chunk_tokens))
+        start += max_tokens - overlap_tokens  # overlap for context continuity
+    return chunks
+```
+
+### Amendment 10.5 — Implement KnowledgeGraph component + Celery tasks + App.tsx + toast + prefers-reduced-motion
+
+```typescript
+// KnowledgeGraph.tsx — actual implementation (replaces comment placeholder):
+import { useEffect, useRef } from "react";
+import type { KnowledgeGraphData } from "@/lib/api/client";
+
+export function KnowledgeGraph({ data, width = 600, height = 400 }: KnowledgeGraphProps) {
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!data || !svgRef.current) return;
+    // Async import d3-force (already installed):
+    (async () => {
+      const d3force = await import("d3-force");
+      const svg = svgRef.current!;
+      svg.innerHTML = "";
+
+      const simulation = d3force.forceSimulation(data.nodes as any[])
+        .force("link", d3force.forceLink(data.edges as any[]).id((d: any) => d.id).distance(60))
+        .force("charge", d3force.forceManyBody().strength(-30))
+        .force("center", d3force.forceCenter(width / 2, height / 2));
+
+      // Draw edges:
+      data.edges.forEach((edge: any) => {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("stroke", "hsl(var(--border))");
+        line.setAttribute("stroke-width", "1");
+        svg.appendChild(line);
+      });
+
+      // Draw nodes:
+      data.nodes.forEach((node: any) => {
+        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        const nodeColors = { document: "#3b82f6", concept: "#22c55e", entity: "#f59e0b" };
+        circle.setAttribute("r", String(node.type === "document" ? 8 : 5));
+        circle.setAttribute("fill", (nodeColors as any)[node.type] ?? "#9ca3af");
+        circle.setAttribute("title", node.label);
+        svg.appendChild(circle);
+      });
+
+      // Animate:
+      simulation.on("tick", () => {
+        let edgeIdx = 0;
+        const lines = svg.querySelectorAll("line");
+        data.edges.forEach((edge: any) => {
+          if (lines[edgeIdx]) {
+            lines[edgeIdx].setAttribute("x1", String(edge.source.x ?? 0));
+            lines[edgeIdx].setAttribute("y1", String(edge.source.y ?? 0));
+            lines[edgeIdx].setAttribute("x2", String(edge.target.x ?? 0));
+            lines[edgeIdx].setAttribute("y2", String(edge.target.y ?? 0));
+            edgeIdx++;
+          }
+        });
+        let nodeIdx = 0;
+        const circles = svg.querySelectorAll("circle");
+        data.nodes.forEach((node: any) => {
+          if (circles[nodeIdx]) {
+            circles[nodeIdx].setAttribute("cx", String(node.x ?? 0));
+            circles[nodeIdx].setAttribute("cy", String(node.y ?? 0));
+            nodeIdx++;
+          }
+        });
+      });
+
+      return () => simulation.stop();
+    })();
+  }, [data, width, height]);
+
+  return <svg ref={svgRef} width={width} height={height} aria-label="Knowledge graph" role="img" />;
+}
+```
+
+```python
+# Celery tasks for knowledge:
+@celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
+def expire_stale_documents():
+    """Remove documents past their freshness_ttl_hours."""
+    import asyncio
+    asyncio.run(_sweep_expired_documents())
+
+@celery_app.task(name="app.scaling.tasks.reembed_collection", queue="goals.free")
+def reembed_collection(collection_id: str, tenant_id: str):
+    """Re-embed all documents in a collection when model changes."""
+    import asyncio
+    asyncio.run(_reembed_all_documents(collection_id, tenant_id))
+
+# Beat: expire stale docs daily at 01:00 UTC
+```
+
+```typescript
+// App.tsx: KnowledgePage already exists — ensure lazy
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .knowledge-graph-node-pulse, .chunk-ingest-progress, .similarity-score-fill {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// createCollection onSuccess: toast({kind:"success", message:"Collection created"})
+// deleteCollection → ConfirmModal "Delete collection and all N documents?" variant="danger" + toast
+// ingestDocument onSuccess: toast({kind:"success", message:`Ingested ${chunkCount} chunks`})
+// ingestError: toast({kind:"error", message:`Ingestion failed: ${error}`})
+// search with no embedder configured: toast({kind:"error", message:"No embedding provider configured — set VOYAGE_API_KEY or OPENAI_API_KEY"})
+
+// Fix json.dumps(embedding) → correct PostgreSQL vector format:
+// In client.ts, embedding is already sent as float[] array — backend should use:
+# In store.py ingest_document():
+embedding_str = "[" + ",".join(str(round(v, 6)) for v in embedding) + "]"  # PostgreSQL vector literal
+await session.execute(_t(f"INSERT INTO document_chunks_768 ... VALUES ..., :emb::vector"), {"emb": embedding_str})
+```

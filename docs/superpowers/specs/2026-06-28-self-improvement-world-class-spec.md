@@ -1507,3 +1507,148 @@ class TestApplySuggestionToConfig:
 # Business rule: experiment window = 7 days (weekly sales cycle)
 # Revenue-weighted evaluation: improvements on high-value SKUs count more
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 9.1 — Fix stale session in _maybe_conclude_experiment()
+
+```python
+# BEFORE (stale session after commit):
+# async with self._db() as db:
+#     # ... operations ...
+#     await db.commit()
+# result2 = await db.execute(...)  # ← session is CLOSED here!
+
+# AFTER (single session for all operations):
+async def _maybe_conclude_experiment(self, experiment_id: str) -> None:
+    async with self._db() as db:
+        # All DB operations within ONE session:
+        await db.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": self._tenant_id})
+
+        exp_row = (await db.execute(_t("SELECT * FROM improvement_experiments WHERE id = :id"), {"id": experiment_id})).fetchone()
+        if not exp_row:
+            return
+
+        stats = await self._compute_stats(experiment_id, db)  # pass db session
+        if not self._has_sufficient_data(stats):
+            return
+
+        winner = self._determine_winner(stats)
+
+        # Update experiment in SAME session:
+        await db.execute(_t("""
+            UPDATE improvement_experiments
+            SET status = 'concluded', winner_arm = :winner, concluded_at = NOW()
+            WHERE id = :id
+        """), {"winner": winner, "id": experiment_id})
+
+        await db.commit()  # single commit
+    # apply_suggestion called OUTSIDE the session (fresh connection):
+    if winner == "challenger":
+        await self.apply_suggestion(experiment_id=experiment_id)
+```
+
+### Amendment 9.2 — Fix thread-unsafe random.gauss
+
+```python
+# BEFORE (global random module — not thread-safe under async):
+# challenger_win_prob = random.gauss(...)
+
+# AFTER (numpy Generator per call — thread-safe):
+import numpy as np
+
+def _bayesian_prob_better(self, control_scores: list[float], challenger_scores: list[float]) -> float:
+    """Thompson sampling: probability challenger beats control."""
+    if len(control_scores) < 2 or len(challenger_scores) < 2:
+        return 0.5
+    rng = np.random.default_rng()  # ← new Generator per call, thread-safe
+    control_samples = rng.normal(np.mean(control_scores), max(np.std(control_scores), 0.001), 10000)
+    challenger_samples = rng.normal(np.mean(challenger_scores), max(np.std(challenger_scores), 0.001), 10000)
+    return float(np.mean(challenger_samples > control_samples))
+```
+
+### Amendment 9.3 — Fix app.state.provider_factory attribute name
+
+```python
+# In main.py SelfOptimizer wiring — use the correct attribute name:
+# BEFORE (wrong attribute): app.state.provider_factory
+# AFTER (correct — matches main.py line 732): app.state._app_provider
+
+app.state.self_optimizer = SelfOptimizer(
+    provider=app.state._app_provider,  # ← correct attribute
+    db=None,  # upgraded in lifespan
+    redis=_fake_redis,
+)
+# In lifespan:
+app.state.self_optimizer._db = db_factory
+app.state.self_optimizer._redis = real_redis
+```
+
+### Amendment 9.4 — Define integration point in loop.py
+
+```python
+# In app/agent/graph.py, in _node_initialize():
+# After existing initialization, check for active experiment:
+if self._self_optimizer and self._agent_id:
+    arm_config = await self._self_optimizer.get_arm_config(
+        agent_id=self._agent_id,
+        goal_id=self._goal_id,
+        tenant_id=self._tenant_ctx.tenant_id,
+    )
+    if arm_config:
+        # Override agent config with experiment arm:
+        if "system_prompt" in arm_config:
+            self._system_prompt = arm_config["system_prompt"]
+        if "max_iterations" in arm_config:
+            self._max_iterations = arm_config["max_iterations"]
+        # Store which arm was used (for result recording):
+        state.context["experiment_arm"] = arm_config.get("arm_name", "control")
+
+# In _node_verify() (after verification completes), record result:
+if self._self_optimizer:
+    arm = state.context.get("experiment_arm")
+    if arm and state.eval_score is not None:
+        await self._self_optimizer.record_result(
+            goal_id=self._goal_id,
+            agent_id=self._agent_id,
+            arm_name=arm,
+            eval_score=state.eval_score,
+            cost_usd=state.context.get("total_cost_usd", 0),
+            tenant_id=self._tenant_ctx.tenant_id,
+        )
+```
+
+### Amendment 9.5 — Add stale experiment Celery task + App.tsx + toast + prefers-reduced-motion
+
+```python
+# Celery task for concluding stale experiments:
+@celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
+def conclude_stale_experiments():
+    """Conclude experiments that are >30 days old with insufficient data."""
+    import asyncio
+    asyncio.run(_mark_stale_experiments())
+# Beat schedule: daily at 03:00 UTC
+```
+
+```typescript
+// App.tsx: SelfImprovementPage likely at /analytics or under Enterprise
+const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({default: m.SelfImprovementPage})));
+// Route: <Route path="self-improvement" element={<Suspense...><SelfImprovementPage /></Suspense>} />
+// Sidebar — add under Enterprise section: { to: "/self-improvement", icon: TrendingUp, label: "Self-Improvement" }
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .experiment-lift-chart, .winner-celebration, .arm-progress-bars { animation: none !important; }
+}
+
+// Toast notifications:
+// applyOptimization onSuccess: toast({kind:"success", message:`Optimization applied to ${agentName}`})
+// rollbackOptimization onSuccess: toast({kind:"warning", message:"Optimization rolled back to previous config"})
+// concludeExperiment → ConfirmModal "Conclude experiment early?" + toast
+
+// Empty states:
+// No experiments: <EmptyState icon={TrendingUp} title="No experiments running" description="Self-improvement experiments start automatically when agents score below 70%." />
+// No suggestions: <EmptyState icon={Lightbulb} title="No suggestions" description="Run more goals to generate optimization suggestions." />
+```

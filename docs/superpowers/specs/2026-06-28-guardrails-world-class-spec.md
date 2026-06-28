@@ -1596,3 +1596,196 @@ class TestDomainGuardrailTemplates:
 # Fraud signal patterns: flag known fraud indicator strings in order notes
 # Counterfeit detection: flag patterns matching counterfeit product descriptions
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 3.1 — Implement Layer 6 OutputScanner (was completely missing)
+
+```python
+# app/intelligence/guardrails.py — add OutputScanner class:
+class OutputScanner:
+    """Layer 6: Scans final LLM output before returning to user."""
+
+    def __init__(self, pii_detector: PIIDetector, tenant_config: TenantGuardrailConfig):
+        self._pii = pii_detector
+        self._config = tenant_config
+
+    def scan(self, output: str, context: GuardrailContext) -> GuardrailResult:
+        violations = []
+
+        # PII scan
+        pii_hits = self._pii.scan(output)
+        for hit in pii_hits:
+            violations.append(GuardrailViolation(
+                rule_type="pii_in_output",
+                pattern_matched=hit.pattern_name,
+                severity=hit.severity,
+                location="output",
+                recommended_action="redact",
+            ))
+
+        # Redact PII if configured:
+        redacted_output = output
+        if violations and self._config.pii_action == "redact":
+            redacted_output = self._pii.redact(output)
+
+        # Check for system prompt leakage:
+        if self._config.prevent_system_prompt_leak:
+            for marker in ["[SYSTEM]", "Your instructions are", "You are an AI assistant named"]:
+                if marker.lower() in output.lower():
+                    violations.append(GuardrailViolation(
+                        rule_type="system_prompt_leak",
+                        pattern_matched=marker,
+                        severity="high",
+                        location="output",
+                        recommended_action="block",
+                    ))
+
+        passed = not any(v.severity in ("critical", "high") for v in violations)
+        return GuardrailResult(
+            passed=passed,
+            action="redact" if redacted_output != output else ("block" if not passed else "allow"),
+            risk_score=max((0.9 if v.severity == "critical" else 0.6 for v in violations), default=0.0),
+            violations=violations,
+            redacted_content=redacted_output if redacted_output != output else None,
+        )
+
+# Wire into GuardrailEngine:
+def evaluate_output(self, output: str, context: GuardrailContext) -> GuardrailResult:
+    """Layer 6: evaluate final output before returning to user."""
+    if not self._config.layers.get("output", True):
+        return GuardrailResult(passed=True, action="allow", risk_score=0.0, violations=[])
+    return self._output_scanner.scan(output, context)
+
+# Wire into app/agent/graph.py, before returning final result to user:
+# output_result = guardrail_engine.evaluate_output(final_output, ctx)
+# if not output_result.passed:
+#     final_output = output_result.redacted_content or "[Output blocked by guardrail]"
+```
+
+### Amendment 3.2 — Fix partition index propagation
+
+```sql
+-- Replace parent-table index with per-partition index creation
+-- AND add partition maintenance Celery task:
+```
+
+```python
+# In Alembic upgrade(), AFTER creating each partition, add index:
+for month_offset in range(0, 24):
+    year = 2025 + (month_offset // 12)
+    month = (month_offset % 12) + 1
+    partition_name = f"guardrail_violations_{year}_{month:02d}"
+    op.execute(f"CREATE INDEX IF NOT EXISTS ix_{partition_name}_tenant ON {partition_name}(tenant_id, created_at DESC)")
+```
+
+```python
+# Celery task for monthly partition creation:
+@celery_app.task(name="app.scaling.tasks.create_guardrail_partitions", queue="maintenance")
+def create_guardrail_partitions():
+    """Create next 3 months of guardrail_violations partitions."""
+    import asyncio
+    from datetime import datetime, timedelta
+    async def _run():
+        from app.db.session import get_session_factory
+        from sqlalchemy import text as _t
+        db = get_session_factory()
+        async with db() as session:
+            for i in range(1, 4):  # next 3 months
+                future = datetime.now() + timedelta(days=30 * i)
+                name = f"guardrail_violations_{future.year}_{future.month:02d}"
+                next_month = future.replace(day=1) + timedelta(days=32)
+                next_month = next_month.replace(day=1)
+                await session.execute(_t(f"""
+                    CREATE TABLE IF NOT EXISTS {name}
+                    PARTITION OF guardrail_violations
+                    FOR VALUES FROM ('{future.strftime('%Y-%m-01')}') TO ('{next_month.strftime('%Y-%m-01')}');
+                    CREATE INDEX IF NOT EXISTS ix_{name}_tenant ON {name}(tenant_id, created_at DESC);
+                """))
+            await session.commit()
+    asyncio.run(_run())
+# Beat schedule: run monthly
+```
+
+### Amendment 3.3 — Fix LLMJudge fail-open bug
+
+```python
+# In LLMJudge.evaluate():
+async def evaluate(self, text: str, rule: GuardrailConfig, context: GuardrailContext) -> GuardrailViolation | None:
+    try:
+        result = await self._call_llm(text, rule.semantic_description)
+        if result.get("violation"):
+            return GuardrailViolation(...)
+        return None
+    except Exception as exc:
+        # FAIL CLOSED for high-risk tiers (was: silently return None = allow)
+        if rule.severity in ("critical", "high"):
+            logger.warning("llm_judge_failed_closed", error=str(exc))
+            return GuardrailViolation(
+                rule_type="llm_judge_failure",
+                pattern_matched="llm_unavailable",
+                severity=rule.severity,
+                location="unknown",
+                recommended_action="block",
+            )
+        # For medium/low: fail open (logged)
+        logger.warning("llm_judge_failed_open", error=str(exc))
+        return None
+```
+
+### Amendment 3.4 — Fix HITL_QUEUED allowed=True bug
+
+```python
+# In GuardrailEngine._build_result():
+# BEFORE (wrong — HITL_QUEUED is treated as allowed):
+# allowed = action not in (GuardrailAction.BLOCKED,)
+
+# AFTER (correct — HITL_QUEUED is NOT allowed until approval):
+BLOCKING_ACTIONS = {GuardrailAction.BLOCKED, GuardrailAction.HITL_QUEUED}
+allowed = action not in BLOCKING_ACTIONS
+```
+
+### Amendment 3.5 — Add auth on test endpoint + per-tenant config cache + prefers-reduced-motion + App.tsx + toast
+
+```python
+# POST /api/guardrails/test — add rate limiting:
+rl_key = f"guardrail_test:{tenant.tenant_id}"
+count = await redis.incr(rl_key); await redis.expire(rl_key, 60)
+if count > 20:
+    raise HTTPException(429, "Too many guardrail test requests")
+
+# Per-tenant config cache (Redis, 5-min TTL):
+async def _load_tenant_config_cached(tenant_id: str, redis, db) -> TenantGuardrailConfig:
+    key = f"guardrail_config:{tenant_id}"
+    if redis:
+        cached = await redis.get(key)
+        if cached:
+            return TenantGuardrailConfig.parse_raw(cached)
+    config = await _load_tenant_config_from_db(tenant_id, db)
+    if redis:
+        await redis.setex(key, 300, config.json())
+    return config
+```
+
+```typescript
+// App.tsx:
+const GuardrailCenterPage = lazy(() => import("@/features/settings/GuardrailCenterPage").then(m => ({default: m.GuardrailCenterPage})));
+// Route: <Route path="settings/guardrails" element={<Suspense...><GuardrailCenterPage /></Suspense>} />
+// Sidebar: { to: "/settings/guardrails", icon: Shield, label: "Guardrails" },
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .risk-gauge-arc, .violation-slide-in, .pii-redact-char, .rule-pulse-glow {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast: createGuardrailRule onSuccess → toast({kind:"success", message:"Guardrail rule created"})
+// deleteGuardrailRule → ConfirmModal variant="danger" + onSuccess toast
+
+// Loading states:
+// Rules list: <Skeleton className="h-16 rounded-lg" /> × 4 while loading
+// Violation feed: <Skeleton className="h-10 rounded" /> × 5
+```

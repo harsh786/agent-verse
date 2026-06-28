@@ -1246,3 +1246,165 @@ class TestSCIMHandler:
 # White-label Shopify app: SCIM sync with Shopify staff accounts
 # GDPR + CCPA: combined privacy export for EU and California residents
 ```
+
+---
+
+## AMENDMENTS — Critical Fixes
+
+### Amendment 8.1 — Fix missing tables in upgrade() function
+
+```python
+# These two tables appear in DDL but are NOT in the upgrade() function:
+# compliance_certifications and whitelabel_configs
+
+def upgrade() -> None:
+    # ... existing tables ...
+    
+    # ADD THESE MISSING TABLES:
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS compliance_certifications (
+            id                TEXT PRIMARY KEY,
+            tenant_id         TEXT NOT NULL,
+            certification_type TEXT NOT NULL,  -- 'soc2_type2'|'hipaa'|'gdpr'|'iso27001'|'pci_dss'
+            status            TEXT NOT NULL DEFAULT 'not_certified',
+            issued_at         TIMESTAMPTZ,
+            expires_at        TIMESTAMPTZ,
+            certificate_url   TEXT,
+            certified_by      TEXT,
+            scope_description TEXT,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX ix_compliance_certs_tenant ON compliance_certifications(tenant_id);
+    """)
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS whitelabel_configs (
+            tenant_id         TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+            brand_name        TEXT NOT NULL DEFAULT 'AgentVerse',
+            logo_url          TEXT,
+            primary_color     TEXT NOT NULL DEFAULT '#3B82F6',
+            custom_domain     TEXT UNIQUE,
+            custom_email_from TEXT,
+            hide_branding     BOOLEAN NOT NULL DEFAULT FALSE,
+            terms_url         TEXT,
+            privacy_url       TEXT,
+            support_email     TEXT,
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+    # Add to downgrade():
+    # op.execute("DROP TABLE IF EXISTS whitelabel_configs CASCADE")
+    # op.execute("DROP TABLE IF EXISTS compliance_certifications CASCADE")
+```
+
+### Amendment 8.2 — Add SCIM bearer token authentication
+
+```python
+# SCIM endpoints must authenticate via bearer token:
+def _require_scim_auth(request: Request) -> str:
+    """Authenticate SCIM requests via pre-provisioned bearer token."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "SCIM requires Bearer token authentication")
+    token = auth[7:].strip()
+    # Hash and lookup:
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    # DB lookup: SELECT tenant_id FROM scim_tokens WHERE token_hash = :hash AND revoked_at IS NULL
+    # (Add scim_tokens table to migration)
+    tenant_id = _lookup_scim_token(token_hash, request)
+    if not tenant_id:
+        raise HTTPException(401, "Invalid SCIM bearer token")
+    return tenant_id
+
+# Add scim_tokens table to migration:
+op.execute("""
+    CREATE TABLE IF NOT EXISTS scim_tokens (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        revoked_at TIMESTAMPTZ
+    );
+""")
+```
+
+### Amendment 8.3 — Fix check_gdpr() hardcoded True values
+
+```python
+# BEFORE (re-introduces the bug):
+# controls["data_portability"] = {"pass": True}
+# controls["consent_management"] = {"pass": True}
+
+# AFTER (checks real DB records):
+async def check_gdpr(self, tenant_id: str) -> ComplianceCheckResult:
+    controls = {}
+    # Data portability: check if GDPR export was successfully run in last 90 days
+    async with self._db() as session:
+        recent_export = (await session.execute(_t("""
+            SELECT COUNT(*) FROM gdpr_export_jobs
+            WHERE tenant_id = :tid AND status = 'completed' AND completed_at > NOW() - INTERVAL '90 days'
+        """), {"tid": tenant_id})).scalar()
+        controls["data_portability"] = {"pass": recent_export > 0, "detail": f"{recent_export} exports in last 90 days"}
+
+        # Consent management: check if consent records exist
+        consent_count = (await session.execute(_t(
+            "SELECT COUNT(*) FROM consent_records WHERE tenant_id = :tid"
+        ), {"tid": tenant_id})).scalar()
+        controls["consent_management"] = {"pass": consent_count > 0, "detail": f"{consent_count} consent records"}
+
+        # DPA signed: check enterprise_contracts
+        dpa_signed = (await session.execute(_t(
+            "SELECT COUNT(*) FROM enterprise_contracts WHERE tenant_id = :tid AND contract_type = 'dpa' AND signed_at IS NOT NULL"
+        ), {"tid": tenant_id})).scalar()
+        controls["dpa_signed"] = {"pass": dpa_signed > 0, "detail": "Data Processing Agreement" if dpa_signed else "DPA not signed"}
+    return ComplianceCheckResult(framework="gdpr", controls=controls, overall_pass=all(c["pass"] for c in controls.values()))
+```
+
+### Amendment 8.4 — Add SAML replay protection + fix python3-saml boolean
+
+```python
+# SAML replay protection using Redis assertion ID cache:
+async def _check_saml_replay(self, assertion_id: str, redis) -> bool:
+    """Return True if assertion is a replay (already seen)."""
+    key = f"saml_assertion:{assertion_id}"
+    is_replay = await redis.exists(key)
+    if not is_replay:
+        await redis.setex(key, 3600, "used")  # 1-hour replay window
+    return bool(is_replay)
+
+# Call in process_acs():
+if await self._check_saml_replay(assertion_id, self._redis):
+    raise HTTPException(401, "SAML assertion replay detected")
+
+# Fix python3-saml https boolean (version-compatible):
+import sys
+if sys.version_info >= (3, 11):
+    request_data = {"https": True, ...}  # newer python3-saml accepts bool
+else:
+    request_data = {"https": "on", ...}  # older versions need string
+```
+
+### Amendment 8.5 — App.tsx routes + Sidebar + prefers-reduced-motion + toast
+
+```typescript
+// App.tsx: EnterprisePage already exists — ensure lazy
+// Additional routes:
+const SAMLCallbackPage = lazy(() => import("@/features/auth/SAMLCallbackPage").then(m => ({default: m.SAMLCallbackPage})));
+// Public route (outside RequireAuth): <Route path="/auth/saml/callback" element={<SAMLCallbackPage />} />
+// Sidebar: EnterprisePage already linked
+
+// prefers-reduced-motion:
+@media (prefers-reduced-motion: reduce) {
+  .compliance-badge-flip, .saml-step-checkmark, .data-flow-arrow, .sla-gauge-needle {
+    animation: none !important; transition: none !important;
+  }
+}
+
+// Toast notifications:
+// uploadContract onSuccess: toast({kind:"success", message:"Contract uploaded and stored securely"})
+// updateWhiteLabel onSuccess: toast({kind:"success", message:"White-label configuration saved"})
+// requestDataExport onSuccess: toast({kind:"info", message:"GDPR export started — you'll receive a download link when ready"})
+// deleteAllData → ConfirmModal variant="danger" title="Delete all data?" description="This permanently removes all goals, agents, knowledge, and audit logs. Type 'DELETE MY DATA' to confirm." + toast
+
+// Empty states:
+// No contracts: <EmptyState icon={FileText} title="No contracts on file" description="Upload your BAA, DPA, or SLA agreement to track compliance." />
+// No certifications: <EmptyState icon={Award} title="No certifications" description="Contact sales to begin your SOC2 or HIPAA certification process." />
+```
