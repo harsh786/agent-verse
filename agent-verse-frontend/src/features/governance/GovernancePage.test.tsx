@@ -437,3 +437,39 @@ describe('GovernancePage – Budget tab', () => {
     expect(screen.getByText('Daily Tenant Limit')).toBeInTheDocument();
   });
 });
+
+describe('GovernancePage – approver field', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAuthStore.setState({
+      apiKey: 'tenant-key',
+      tenantId: 'tenant-1',
+      plan: 'free',
+      isAuthenticated: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('approve sends approver and note', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/governance/approvals') && init?.method === 'POST')
+        return new Response(JSON.stringify({ status: 'approved' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/governance/approvals'))
+        return new Response(JSON.stringify([{ request_id: 'r1', goal_id: 'g1', tool_name: 'shell:run', status: 'pending' }]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderGovernancePage();
+    await userEvent.click(screen.getByText('approvals'));
+    await waitFor(() => expect(screen.getByText('shell:run')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /^approve$/i }));
+    await waitFor(() => {
+      const postCall = f.mock.calls.find(([u, i]) => String(u).includes('/approve') && (i as RequestInit)?.method === 'POST');
+      expect(postCall).toBeTruthy();
+      expect(JSON.parse(String((postCall![1] as RequestInit).body))).toHaveProperty('approver');
+    });
+  });
+});

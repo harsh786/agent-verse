@@ -200,6 +200,7 @@ function PoliciesTab({ apiKey }: { apiKey: string }) {
 function ApprovalsTab({ apiKey }: { apiKey: string }) {
   const qc = useQueryClient();
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const approver = useAuthStore((s) => s.tenantId) || 'ui-user';
 
   const { data: approvals = [], isLoading, error } = useQuery({
     queryKey: ['approvals'],
@@ -212,7 +213,7 @@ function ApprovalsTab({ apiKey }: { apiKey: string }) {
     mutationFn: ({ id, note }: { id: string; note: string }) =>
       apiFetch<void>(apiKey, `/governance/approvals/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ approver, note }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals'] }),
   });
@@ -221,7 +222,7 @@ function ApprovalsTab({ apiKey }: { apiKey: string }) {
     mutationFn: ({ id, note }: { id: string; note: string }) =>
       apiFetch<void>(apiKey, `/governance/approvals/${id}/reject`, {
         method: 'POST',
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ approver, note }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals'] }),
   });
