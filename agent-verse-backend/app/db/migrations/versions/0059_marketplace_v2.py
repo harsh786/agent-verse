@@ -88,8 +88,7 @@ def upgrade() -> None:
         USING gin(
             to_tsvector('english',
                 coalesce(name,'') || ' ' ||
-                coalesce(description,'') || ' ' ||
-                array_to_string(tags, ' ')
+                coalesce(description,'')
             )
         )
     """)

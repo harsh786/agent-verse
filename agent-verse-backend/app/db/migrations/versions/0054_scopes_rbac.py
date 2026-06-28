@@ -115,8 +115,7 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_role_assignments_user "
         "ON role_assignments(user_id, tenant_id) "
-        "WHERE revoked_at IS NULL "
-        "AND (expires_at IS NULL OR expires_at > now())"
+        "WHERE revoked_at IS NULL"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_role_assignments_resource "
