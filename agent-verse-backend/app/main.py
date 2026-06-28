@@ -196,12 +196,25 @@ class _FakeRedis:
     """
 
     def __init__(self) -> None:
+        import asyncio as _asyncio
+
         self._d: dict[str, Any] = {}
         self._s: dict[str, set[str]] = {}
         # sorted sets: key → {member: score}
         self._z: dict[str, dict[str, float]] = {}
         # TTL tracking: key → expiry epoch (monotonic seconds)
         self._ttl: dict[str, float] = {}
+        # Lazy asyncio.Lock — created on first use to avoid event-loop issues at
+        # construction time (the _FakeRedis instance is created before the loop starts).
+        self._lock: _asyncio.Lock | None = None
+
+    def _get_lock(self) -> Any:
+        """Return the asyncio.Lock, creating it lazily on first use."""
+        import asyncio as _asyncio
+
+        if self._lock is None:
+            self._lock = _asyncio.Lock()
+        return self._lock
 
     def _is_expired(self, key: str) -> bool:
         import time
@@ -238,35 +251,38 @@ class _FakeRedis:
     # ── sorted-set ops (required by SlidingWindowRateLimiter) ─────────────────
 
     async def zadd(self, key: str, mapping: dict[str, float]) -> int:
-        zset = self._z.setdefault(key, {})
-        added = sum(1 for m in mapping if m not in zset)
-        zset.update(mapping)
-        return added
+        async with self._get_lock():
+            zset = self._z.setdefault(key, {})
+            added = sum(1 for m in mapping if m not in zset)
+            zset.update(mapping)
+            return added
 
     async def zremrangebyscore(
         self, key: str, min_score: float, max_score: float
     ) -> int:
-        if self._is_expired(key):
-            self._z.pop(key, None)
-            self._ttl.pop(key, None)
-            return 0
-        zset = self._z.get(key)
-        if zset is None:
-            return 0
-        before = len(zset)
-        self._z[key] = {
-            member: score
-            for member, score in zset.items()
-            if not (min_score <= score <= max_score)
-        }
-        return before - len(self._z[key])
+        async with self._get_lock():
+            if self._is_expired(key):
+                self._z.pop(key, None)
+                self._ttl.pop(key, None)
+                return 0
+            zset = self._z.get(key)
+            if zset is None:
+                return 0
+            before = len(zset)
+            self._z[key] = {
+                member: score
+                for member, score in zset.items()
+                if not (min_score <= score <= max_score)
+            }
+            return before - len(self._z[key])
 
     async def zcard(self, key: str) -> int:
-        if self._is_expired(key):
-            self._z.pop(key, None)
-            self._ttl.pop(key, None)
-            return 0
-        return len(self._z.get(key, {}))
+        async with self._get_lock():
+            if self._is_expired(key):
+                self._z.pop(key, None)
+                self._ttl.pop(key, None)
+                return 0
+            return len(self._z.get(key, {}))
 
     async def expire(self, key: str, seconds: int) -> bool:
         import time
@@ -771,7 +787,7 @@ def create_app(
                     )
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
-                    _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db=db_factory)
+                    _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
                     _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
                     logger.info("audit_wal_flusher_started")
                 except Exception as _aw_exc:
@@ -795,6 +811,9 @@ def create_app(
                 logger.info("hitl_startup_restore_complete", count=_hitl_restored)
             except Exception as _hitl_exc:
                 logger.warning("hitl_startup_restore_failed", error=str(_hitl_exc))
+
+            # Wire db_session_factory so new runtime approval requests are persisted
+            _hitl._db_session_factory = db_factory
 
             # ── C-1: Start Celery→SSE event bridge when Redis is available ────────
             if redis_for_runtime is not None and settings.redis_url:
@@ -861,16 +880,7 @@ def create_app(
             # ── H-5: Wire LegalHoldManager with DB + Redis ────────────────────────
             try:
                 from app.governance.legal_holds import LegalHoldManager
-                _lhm = LegalHoldManager()
-                if hasattr(_lhm, "set_db"):
-                    _lhm.set_db(db_factory)
-                elif hasattr(_lhm, "_db"):
-                    _lhm._db = db_factory
-                if redis_for_runtime is not None:
-                    if hasattr(_lhm, "set_redis"):
-                        _lhm.set_redis(redis_for_runtime)
-                    elif hasattr(_lhm, "_redis"):
-                        _lhm._redis = redis_for_runtime
+                _lhm = LegalHoldManager(redis=redis_for_runtime, db_factory=db_factory)
                 app.state.legal_hold_manager = _lhm
                 logger.info("legal_hold_manager_wired")
             except Exception as _lhm_exc:

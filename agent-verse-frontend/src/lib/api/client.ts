@@ -367,6 +367,16 @@ export const governanceApi = {
   getPendingApprovals: () => request<ApprovalRequest[]>("/governance/hitl/pending"),
   approvalsStreamPath: () => "/governance/approvals/stream",
   policiesStreamPath: () => "/governance/policies/stream",
+  emergencyStop: () =>
+    request<{ status: string; cancelled_goals: number; rejected_approvals: number }>(
+      "/governance/emergency-stop",
+      { method: "POST" }
+    ),
+  clearEmergencyStop: () =>
+    request<{ status: string; tenant_id: string }>(
+      "/governance/emergency-stop",
+      { method: "DELETE" }
+    ),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────

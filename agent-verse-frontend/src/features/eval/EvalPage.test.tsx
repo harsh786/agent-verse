@@ -242,3 +242,71 @@ describe('EvalPage – Simulation section', () => {
     );
   });
 });
+
+describe('EvalPage – Eval Suites tab', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAuthStore.setState({
+      apiKey: 'tenant-key',
+      tenantId: 'tenant-1',
+      plan: 'enterprise',
+      isAuthenticated: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('EvalPage eval suites tab calls correct /intelligence/eval-suites endpoint', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (
+        url.includes('/intelligence/eval-suites') &&
+        !url.includes('/tasks') &&
+        !url.includes('/run') &&
+        !url.includes('/results')
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              suite_id: 's1',
+              name: 'Regression Suite',
+              task_count: 3,
+              created_at: '2026-01-01',
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      // EvalScorerSection on-mount queries
+      if (url.endsWith('/goals') || url.includes('/goals?')) {
+        return new Response(
+          JSON.stringify({ goals: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/intelligence/suggestions')) {
+        return new Response(
+          JSON.stringify([]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderEvalPage();
+
+    // Navigate to suites tab
+    const suitesTab = await screen.findByRole('tab', { name: /suites/i });
+    await userEvent.click(suitesTab);
+
+    await waitFor(() => {
+      expect(
+        f.mock.calls.some(([u]) => String(u).includes('/intelligence/eval-suites'))
+      ).toBe(true);
+    });
+
+    expect(await screen.findByText('Regression Suite')).toBeInTheDocument();
+  });
+});

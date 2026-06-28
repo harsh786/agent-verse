@@ -71,3 +71,17 @@ class CircuitBreaker:
         self._failure_count = 0
         self._state = CircuitState.CLOSED
         self._opened_at = 0.0
+
+    # ── Async wrappers — same interface as RedisCircuitBreaker ─────────────────
+
+    async def can_call_async(self) -> bool:
+        """Async-compatible wrapper — delegates to the synchronous can_call()."""
+        return self.can_call()
+
+    async def record_failure_async(self) -> None:
+        """Async-compatible wrapper — delegates to record_failure()."""
+        self.record_failure()
+
+    async def record_success_async(self) -> None:
+        """Async-compatible wrapper — delegates to record_success()."""
+        self.record_success()

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 
@@ -92,8 +93,16 @@ const INITIAL_FORM: RegisterForm = {
 export function ConnectorsRegisteredPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
   const qc = useQueryClient();
-  const [showRegister, setShowRegister] = useState(false);
-  const [form, setForm] = useState<RegisterForm>(INITIAL_FORM);
+  const location = useLocation();
+  const prefill = (location.state as any)?.prefill;
+
+  const [showRegister, setShowRegister] = useState(!!prefill);
+  const [form, setForm] = useState<RegisterForm>({
+    name: prefill?.name ?? '',
+    url: prefill?.url ?? prefill?.default_url ?? '',
+    auth_type: prefill?.auth_type ?? 'bearer',
+    auth_config: '{}',
+  });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState('');
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});

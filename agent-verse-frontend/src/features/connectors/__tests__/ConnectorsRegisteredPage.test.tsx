@@ -150,4 +150,40 @@ describe('ConnectorsRegisteredPage', () => {
     await userEvent.click(registerBtn);
     expect(await screen.findByText(/Register MCP Connector/i)).toBeInTheDocument();
   });
+
+  test('ConnectorsRegisteredPage pre-fills form from catalog navigation state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    );
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter
+          initialEntries={[
+            {
+              pathname: '/connectors',
+              state: {
+                prefill: {
+                  name: 'GitHub',
+                  url: 'https://api.github.com',
+                  auth_type: 'bearer',
+                },
+              },
+            },
+          ]}
+        >
+          <ConnectorsRegisteredPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    // Modal should be open and form pre-filled
+    await waitFor(() => {
+      const nameInput = screen.queryByDisplayValue('GitHub');
+      expect(nameInput).toBeInTheDocument();
+    });
+
+    expect(screen.queryByDisplayValue('https://api.github.com')).toBeInTheDocument();
+  });
 });

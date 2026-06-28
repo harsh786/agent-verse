@@ -7,9 +7,11 @@ Supported SIEM platforms:
 - CEF (Common Event Format / ArcSight) via syslog UDP/TCP
 - LEEF (Log Event Extended Format / QRadar) via HTTP
 - Webhook (generic HTTP)
+- Null (disabled / no-op)
 """
 from __future__ import annotations
 
+import abc
 import enum
 import json
 from dataclasses import dataclass, field
@@ -27,6 +29,7 @@ class SIEMType(enum.StrEnum):
     CEF = "cef"
     LEEF = "leef"
     WEBHOOK = "webhook"
+    NULL = "null"
 
 
 @dataclass
@@ -46,11 +49,26 @@ class SIEMConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-class SIEMAdapter:
-    """Base class — every adapter exposes a single ``send`` coroutine."""
+class SIEMAdapter(abc.ABC):
+    """Abstract base class — every adapter exposes a single ``send`` coroutine.
+
+    Direct instantiation raises ``TypeError`` at construction time, giving a clear
+    error instead of a silent ``NotImplementedError`` at call time.
+    """
+
+    @abc.abstractmethod
+    async def send(self, events: list[dict[str, Any]], config: SIEMConfig) -> bool:
+        """Send events to the SIEM platform. Returns True on success."""
+
+
+class NullSIEMAdapter(SIEMAdapter):
+    """No-op adapter — used when SIEM is disabled or not configured.
+
+    Always returns True (silently succeeds) without making any network calls.
+    """
 
     async def send(self, events: list[dict[str, Any]], config: SIEMConfig) -> bool:
-        raise NotImplementedError
+        return True
 
 
 class SplunkHECAdapter(SIEMAdapter):
@@ -309,13 +327,17 @@ SIEM_ADAPTER_MAP: dict[SIEMType, type[SIEMAdapter]] = {
     SIEMType.CEF: CEFAdapter,
     SIEMType.LEEF: LEEFAdapter,
     SIEMType.WEBHOOK: WebhookAdapter,
+    SIEMType.NULL: NullSIEMAdapter,
 }
 
 
 def build_siem_adapter(siem_type: str | SIEMType) -> SIEMAdapter:
     """Return a concrete SIEM adapter for the given type string or enum value."""
     if isinstance(siem_type, str):
-        siem_type = SIEMType(siem_type)
+        try:
+            siem_type = SIEMType(siem_type)
+        except ValueError:
+            raise ValueError(f"Unknown SIEM type: {siem_type!r}") from None
     cls = SIEM_ADAPTER_MAP.get(siem_type)
     if cls is None:
         raise ValueError(f"Unknown SIEM type: {siem_type!r}")

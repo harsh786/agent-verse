@@ -181,4 +181,46 @@ describe('AgentDetailPage', () => {
       expect(exportCalled).toBe(true);
     });
   });
+
+  // Test 7: Credentials tab lists credentials
+  test('AgentDetailPage credentials tab lists and issues credentials', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/agents/agent-001/credentials')) {
+        return new Response(
+          JSON.stringify([
+            { credential_id: 'cred-1', scopes: ['goals:read'], created_at: '2026-01-01' },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/agents/agent-001/versions')) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/goals')) {
+        return new Response(JSON.stringify({ goals: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/agents/agent-001')) {
+        return new Response(
+          JSON.stringify({ agent_id: 'agent-001', name: 'TestAgent', autonomy_mode: 'supervised' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderPage('agent-001');
+
+    // Click credentials tab
+    await userEvent.click(await screen.findByRole('tab', { name: /credentials/i }));
+
+    expect(await screen.findByText('cred-1')).toBeInTheDocument();
+    expect(screen.getByText(/goals:read/)).toBeInTheDocument();
+  });
 });

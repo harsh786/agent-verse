@@ -7,7 +7,7 @@ import {
   Activity, Sliders,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
-import { goalsApi, agentsApi, knowledgeApi } from "@/lib/api/client";
+import { goalsApi, agentsApi, knowledgeApi, credentialsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -71,6 +71,120 @@ async function updateAgent(apiKey: string, agentId: string, patch: Record<string
   });
   if (!res.ok) throw new Error(`Failed to update agent: ${res.statusText}`);
   return res.json();
+}
+
+// ── CredentialsTab ─────────────────────────────────────────────────────────────
+
+function CredentialsTab({ agentId }: { agentId: string }) {
+  const qc = useQueryClient();
+  const [issuing, setIssuing] = useState(false);
+  const [newScopes, setNewScopes] = useState('');
+
+  const { data: creds = [], isLoading } = useQuery({
+    queryKey: ['agent-credentials', agentId],
+    queryFn: () => credentialsApi.list(agentId),
+    enabled: !!agentId,
+  });
+
+  const issueMutation = useMutation({
+    mutationFn: (scopes: string[]) =>
+      credentialsApi.issue(agentId, { key_type: 'api_key', scopes }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent-credentials', agentId] });
+      setIssuing(false);
+      setNewScopes('');
+    },
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: (credId: string) => credentialsApi.revoke(agentId, credId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['agent-credentials', agentId] }),
+  });
+
+  if (isLoading) return <Skeleton className="h-32 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h3 className="text-sm font-semibold text-foreground">Agent Credentials</h3>
+        <button
+          onClick={() => setIssuing(true)}
+          className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity"
+        >
+          Issue Credential
+        </button>
+      </div>
+
+      {issuing && (
+        <div className="border border-border rounded-lg p-4 space-y-3">
+          <label className="text-sm text-muted-foreground">Scopes (comma-separated)</label>
+          <input
+            value={newScopes}
+            onChange={(e) => setNewScopes(e.target.value)}
+            placeholder="goals:read,goals:write"
+            className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() =>
+                issueMutation.mutate(
+                  newScopes
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                )
+              }
+              disabled={issueMutation.isPending}
+              className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+            >
+              {issueMutation.isPending ? 'Issuing…' : 'Issue'}
+            </button>
+            <button
+              onClick={() => setIssuing(false)}
+              className="px-3 py-1 text-xs bg-muted text-muted-foreground rounded"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(creds as any[]).length === 0 ? (
+        <EmptyState
+          title="No credentials issued"
+          description="Issue API credentials scoped to this agent."
+        />
+      ) : (
+        <div className="space-y-2">
+          {(creds as any[]).map((c: any) => {
+            const credId = c.credential_id ?? c.key_id;
+            return (
+              <div
+                key={credId}
+                className="flex items-center justify-between border border-border rounded-lg p-3"
+              >
+                <div>
+                  <p className="text-sm font-medium text-foreground">{credId}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {(c.scopes || []).join(', ')} ·{' '}
+                    Created{' '}
+                    {c.created_at ? new Date(c.created_at).toLocaleDateString() : '—'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => revokeMutation.mutate(credId)}
+                  disabled={revokeMutation.isPending}
+                  className="text-xs text-destructive hover:underline disabled:opacity-50"
+                >
+                  Revoke
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── AgentDetailPage ────────────────────────────────────────────────────────────
@@ -655,11 +769,7 @@ export function AgentDetailPage() {
 
       {/* Credentials tab */}
       {tab === 'credentials' && (
-        <EmptyState
-          title="Connector credentials"
-          description="Credentials for MCP connectors used by this agent are managed in the Connectors page."
-          action={<a href="/connectors" className="text-sm text-primary underline">Go to Connectors</a>}
-        />
+        <CredentialsTab agentId={agentId!} />
       )}
     </div>
   );

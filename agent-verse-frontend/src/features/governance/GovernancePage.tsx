@@ -515,6 +515,106 @@ function BudgetTab({ apiKey }: { apiKey: string }) {
   );
 }
 
+// ── Emergency Stop Banner ─────────────────────────────────────────────────────
+
+function EmergencyStopBanner({ apiKey }: { apiKey: string }) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [emergencyActive, setEmergencyActive] = useState(false);
+  const [stats, setStats] = useState<{ cancelled_goals: number; rejected_approvals: number } | null>(null);
+
+  const stopMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ status: string; cancelled_goals: number; rejected_approvals: number }>(
+        apiKey,
+        '/governance/emergency-stop',
+        { method: 'POST' }
+      ),
+    onSuccess: (data) => {
+      setEmergencyActive(true);
+      setStats({ cancelled_goals: data.cancelled_goals, rejected_approvals: data.rejected_approvals });
+      setShowConfirm(false);
+    },
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ status: string; tenant_id: string }>(
+        apiKey,
+        '/governance/emergency-stop',
+        { method: 'DELETE' }
+      ),
+    onSuccess: () => {
+      setEmergencyActive(false);
+      setStats(null);
+    },
+  });
+
+  return (
+    <>
+      {emergencyActive ? (
+        <div className="border border-red-300 bg-red-50 dark:bg-red-950/30 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+              ⚠ Emergency Stop Active — All goal execution halted
+            </p>
+            {stats && (
+              <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                {stats.cancelled_goals} goals cancelled · {stats.rejected_approvals} approvals rejected
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => clearMutation.mutate()}
+            disabled={clearMutation.isPending}
+            className="px-3 py-1.5 text-sm border border-red-300 rounded-md text-red-700 hover:bg-red-100 disabled:opacity-50 transition-colors"
+          >
+            {clearMutation.isPending ? 'Clearing…' : 'Clear Emergency Stop'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex justify-end">
+          <button
+            onClick={() => setShowConfirm(true)}
+            className="px-4 py-2 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 transition-colors"
+          >
+            Emergency Stop
+          </button>
+        </div>
+      )}
+
+      {showConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h2 className="text-lg font-bold text-red-600">Activate Emergency Stop?</h2>
+            <p className="text-sm text-muted-foreground">
+              Are you sure? This will immediately cancel all running goals and reject all pending
+              approvals for your tenant.
+            </p>
+            {stopMutation.isError && (
+              <p className="text-xs text-red-600">{String(stopMutation.error)}</p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
+              >
+                {stopMutation.isPending ? 'Activating…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 type Tab = 'policies' | 'approvals' | 'audit' | 'budget';
@@ -533,6 +633,9 @@ export function GovernancePage() {
           Policies, approvals, audit log, and budget controls
         </p>
       </div>
+
+      {/* Emergency Stop — always-visible safety control */}
+      <EmergencyStopBanner apiKey={apiKey} />
 
       {/* Tabs */}
       <div className="flex gap-4 border-b border-border">
