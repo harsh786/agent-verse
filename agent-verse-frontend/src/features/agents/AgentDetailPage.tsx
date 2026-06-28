@@ -171,15 +171,8 @@ export function AgentDetailPage() {
     if (!testGoal.trim()) return;
     setTesting(true);
     try {
-      const resp = await fetch(`${API_BASE}/goals`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ goal: testGoal, agent_id: agentId, dry_run: true }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        setTestResult(`Goal submitted: ${data.goal_id}. Plan: ${JSON.stringify(data.plan || data.execution_context || {}, null, 2)}`);
-      }
+      const data = await goalsApi.submit({ goal: testGoal, agent_id: agentId, dry_run: true });
+      setTestResult(`Goal submitted: ${data.goal_id}. Plan: ${JSON.stringify((data as any).plan || (data as any).execution_context || {}, null, 2)}`);
     } finally {
       setTesting(false);
     }
@@ -305,13 +298,13 @@ export function AgentDetailPage() {
 
         {/* Readiness widget */}
         {readiness && (
-          <div className="mt-4 p-4 border rounded bg-gray-50">
+          <div className="mt-4 p-4 border rounded bg-muted/30">
             <div className="flex items-center gap-2 mb-2">
               <span className={`w-3 h-3 rounded-full ${readiness.ready ? 'bg-green-500' : 'bg-red-500'}`} />
               <span className="font-medium">{readiness.ready ? 'Production Ready' : 'Not Ready'}</span>
             </div>
             {readiness.checks?.map((check: any, i: number) => (
-              <div key={i} className="flex items-center gap-2 text-sm text-gray-600 py-1">
+              <div key={i} className="flex items-center gap-2 text-sm text-muted-foreground py-1">
                 <span>{check.status === 'pass' ? '✓' : '✗'}</span>
                 <span>{check.message}</span>
               </div>
@@ -381,13 +374,13 @@ export function AgentDetailPage() {
             <button
               onClick={handleTestAgent}
               disabled={testing || !testGoal.trim()}
-              className="px-4 py-2 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50"
+              className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm hover:opacity-90 disabled:opacity-50"
             >
               {testing ? 'Testing...' : 'Test (Dry Run)'}
             </button>
           </div>
           {testResult && (
-            <pre className="mt-2 p-3 bg-gray-100 rounded text-xs overflow-auto max-h-40">
+            <pre className="mt-2 p-3 bg-muted/50 rounded text-xs overflow-auto max-h-40">
               {testResult}
             </pre>
           )}
@@ -446,7 +439,7 @@ export function AgentDetailPage() {
               </h2>
               <div className="flex flex-wrap gap-2">
                 {(agent.connector_ids as string[]).map((cid: string) => (
-                  <span key={cid} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
+                  <span key={cid} className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 text-xs px-2 py-1 rounded">
                     {cid}
                   </span>
                 ))}
@@ -499,10 +492,12 @@ export function AgentDetailPage() {
                 {recentGoals.slice(0, 5).map((g) => (
                   <div key={g.goal_id ?? g.id} className="flex items-center justify-between px-5 py-3 text-sm">
                     <p className="truncate flex-1">{g.goal}</p>
-                    <span className={`ml-3 px-2 py-0.5 rounded-full text-xs flex-shrink-0 ${
-                      g.status === "complete" ? "bg-green-100 text-green-700"
-                      : g.status === "failed" ? "bg-red-100 text-red-700"
-                      : "bg-blue-100 text-blue-700"
+                  <span className={`ml-3 px-2 py-0.5 rounded-full text-xs flex-shrink-0 ${
+                      g.status === "complete"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                        : g.status === "failed"
+                        ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                     }`}>{g.status}</span>
                   </div>
                 ))}

@@ -43,6 +43,7 @@ from app.db.models.civilization import (  # noqa: E402
     CivilizationEvent,
 )
 from app.db.models.workflow import Workflow  # noqa: E402
+from app.db.models.template import GoalTemplate  # noqa: E402
 
 __all__ = [
     "Base",
@@ -89,4 +90,6 @@ __all__ = [
     "CivilizationEvent",
     # workflows
     "Workflow",
+    # templates
+    "GoalTemplate",
 ]

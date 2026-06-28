@@ -45,6 +45,8 @@ from app.api.analytics import router as analytics_router
 from app.api.civilization import router as civilization_router
 from app.api.workflows import _WorkflowStore as WorkflowStore
 from app.api.workflows import router as workflows_router
+from app.api.insights import router as insights_router
+from app.api.templates import router as templates_router, template_store as _template_store
 from app.api.replay import router as replay_router
 from app.api.training_export import router as training_export_router
 from app.api.integrations import router as integrations_router
@@ -571,6 +573,11 @@ def create_app(
                 _workflow_store.set_db(db_factory)
                 logger.info("workflow_store_db_wired")
 
+            # Wire DB into TemplateStore
+            from app.api.templates import template_store as _tmpl_store_ref
+            _tmpl_store_ref.set_db(db_factory)
+            logger.info("template_store_db_wired")
+
             # Wire DB into NotificationService for persistent channel storage
             _notif_svc = getattr(app.state, "notification_service", None)
             if _notif_svc is not None:
@@ -813,6 +820,8 @@ def create_app(
     app.state.page_analyzer = _page_analyzer
     # Workflow Builder
     app.state.workflow_store = WorkflowStore()
+    # Goal Templates
+    app.state.template_store = _template_store
 
     # ── Middleware (order matters — outermost wraps last) ─────────────────────
     app.add_middleware(
@@ -892,6 +901,12 @@ def create_app(
     # Visual Workflow Builder
     app.include_router(workflows_router)
     logger.info("workflows_router_registered")
+    # Insights & Intelligence
+    app.include_router(insights_router)
+    logger.info("insights_router_registered")
+    # Goal Templates
+    app.include_router(templates_router)
+    logger.info("templates_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

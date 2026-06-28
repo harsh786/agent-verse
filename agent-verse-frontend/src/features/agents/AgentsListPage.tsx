@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 import { agentsApi } from '@/lib/api/client';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 interface Agent {
   agent_id: string;
@@ -14,9 +16,10 @@ interface Agent {
 }
 
 const AUTONOMY_COLORS: Record<string, string> = {
-  supervised: 'bg-yellow-100 text-yellow-800',
-  'bounded-autonomous': 'bg-blue-100 text-blue-800',
-  'fully-autonomous': 'bg-green-100 text-green-800',
+  supervised:           'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+  'bounded-autonomous': 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+  'fully-autonomous':   'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+  manual:               'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
 };
 
 const AUTONOMY_MODES = ['all', 'supervised', 'bounded-autonomous', 'fully-autonomous'];
@@ -28,6 +31,7 @@ export function AgentsListPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [nlCommand, setNlCommand] = useState('');
   const [filterMode, setFilterMode] = useState('all');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const {
     data: agents = [],
@@ -50,13 +54,20 @@ export function AgentsListPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => agentsApi.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] });
+      setConfirmDeleteId(null);
+    },
   });
 
   const filtered =
     filterMode === 'all'
       ? (agents as Agent[])
       : (agents as Agent[]).filter((a) => a.autonomy_mode === filterMode);
+
+  const agentToDelete = confirmDeleteId
+    ? (agents as Agent[]).find((a) => a.agent_id === confirmDeleteId)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -108,7 +119,7 @@ export function AgentsListPage() {
               autoFocus
             />
             {createMutation.isError && (
-              <p role="alert" className="text-xs text-red-600 mt-2">
+              <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-2">
                 {String(createMutation.error)}
               </p>
             )}
@@ -134,12 +145,43 @@ export function AgentsListPage() {
         </div>
       )}
 
+      {/* Delete confirm modal */}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title={`Delete agent "${agentToDelete?.name ?? ''}"`}
+        description="This action cannot be undone. All associated data will be removed."
+        confirmLabel="Delete"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => confirmDeleteId && deleteMutation.mutate(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
+
       {/* Table */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {isLoading ? (
-          <div className="px-5 py-10 text-center text-sm text-muted-foreground">
-            Loading agents…
-          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40">
+                {['Name', 'Autonomy Mode', 'Goal Template', 'Created', 'Actions'].map((h) => (
+                  <th key={h} className="text-left px-4 py-3 font-medium text-muted-foreground">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <tr key={i}>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-48" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-20" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-16" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : error ? (
           <div className="px-5 py-10 text-center text-sm text-red-500">
             Failed to load agents. Check your connection.
@@ -157,16 +199,11 @@ export function AgentsListPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40">
-                {['Name', 'Autonomy Mode', 'Goal Template', 'Created', 'Actions'].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="text-left px-4 py-3 font-medium text-muted-foreground"
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
+                {['Name', 'Autonomy Mode', 'Goal Template', 'Created', 'Actions'].map((h) => (
+                  <th key={h} className="text-left px-4 py-3 font-medium text-muted-foreground">
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -174,7 +211,7 @@ export function AgentsListPage() {
                 <tr
                   key={agent.agent_id}
                   onClick={() => navigate(`/agents/${agent.agent_id}`)}
-                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  className="hover:bg-muted/40 transition-colors cursor-pointer"
                   role="button"
                   aria-label={`View agent ${agent.name}`}
                 >
@@ -183,7 +220,7 @@ export function AgentsListPage() {
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                         AUTONOMY_COLORS[agent.autonomy_mode] ??
-                        'bg-gray-100 text-gray-800'
+                        'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
                       }`}
                     >
                       {agent.autonomy_mode}
@@ -204,17 +241,17 @@ export function AgentsListPage() {
                           e.stopPropagation();
                           navigate(`/agents/${agent.agent_id}`);
                         }}
-                        className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                        className="text-primary hover:opacity-70 text-sm font-medium"
                       >
                         View
                       </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          deleteMutation.mutate(agent.agent_id);
+                          setConfirmDeleteId(agent.agent_id);
                         }}
                         disabled={deleteMutation.isPending}
-                        className="text-red-500 hover:text-red-700 text-sm disabled:opacity-40 transition-opacity"
+                        className="text-destructive hover:opacity-70 text-sm disabled:opacity-40 transition-opacity"
                       >
                         Delete
                       </button>

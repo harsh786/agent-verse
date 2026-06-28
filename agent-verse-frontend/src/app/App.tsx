@@ -45,6 +45,12 @@ import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
+import { GoalDNAPage } from "@/features/goals/GoalDNAPage";
+import { GoalDiffPage } from "@/features/goals/GoalDiffPage";
+import { GhostRunPage } from "@/features/goals/GhostRunPage";
+import { AgentRadarPage } from "@/features/agents/AgentRadarPage";
+import { AgentPersonalityPage } from "@/features/agents/AgentPersonalityPage";
+import { TemplateLibraryPage } from "@/features/templates/TemplateLibraryPage";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -151,6 +157,12 @@ export default function App() {
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
+        <Route path="goals/:goalId/dna" element={<GoalDNAPage />} />
+        <Route path="goals/:goalId/diff" element={<GoalDiffPage />} />
+        <Route path="goals/ghost-run" element={<GhostRunPage />} />
+        <Route path="agents/:agentId/radar" element={<AgentRadarPage />} />
+        <Route path="agents/:agentId/personality" element={<AgentPersonalityPage />} />
+        <Route path="templates" element={<TemplateLibraryPage />} />
         <Route path="civilization" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
         <Route path="civilization/:id" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
       </Route>

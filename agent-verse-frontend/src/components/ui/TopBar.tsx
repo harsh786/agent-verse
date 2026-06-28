@@ -1,4 +1,4 @@
-import { Search, Moon, Sun, LogOut } from "lucide-react";
+import { Search, Moon, Sun, LogOut, Menu } from "lucide-react";
 import { useState, useRef, useCallback } from "react";
 import { useUiStore } from "@/stores/ui";
 import { useAuthStore } from "@/stores/auth";
@@ -21,7 +21,7 @@ const TYPE_ICONS: Record<string, string> = {
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
 
 export function TopBar() {
-  const { theme, toggleTheme, openCommandPalette } = useUiStore();
+  const { theme, toggleTheme, toggleSidebar, openCommandPalette } = useUiStore();
   const { logout, plan, tenantId, apiKey } = useAuthStore();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -93,6 +93,15 @@ export function TopBar() {
 
   return (
     <header className="flex items-center justify-between px-6 py-3 border-b border-border bg-card">
+      {/* Mobile hamburger */}
+      <button
+        onClick={toggleSidebar}
+        className="md:hidden p-2 rounded-md hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+        aria-label="Toggle sidebar"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+
       {/* Live search input */}
       <div className="relative">
         <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted rounded-md hover:bg-accent transition-colors min-w-[240px]">

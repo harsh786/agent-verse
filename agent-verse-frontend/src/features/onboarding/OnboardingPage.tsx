@@ -294,6 +294,7 @@ function Step4Goal({
   agentId: string;
   onFinish: () => void;
 }) {
+  const navigate = useNavigate();
   const [goal, setGoal] = useState("Say hello and list your available tools");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -370,7 +371,7 @@ function Step4Goal({
             </button>
             {goalId && (
               <button
-                onClick={() => window.location.assign(`/goals/${goalId}`)}
+                onClick={() => navigate(`/goals/${goalId}`)}
                 className="px-4 py-2 border border-green-300 text-green-700 text-sm rounded-lg hover:bg-green-50"
               >
                 Watch Goal

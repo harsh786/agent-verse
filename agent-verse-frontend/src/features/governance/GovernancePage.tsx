@@ -171,8 +171,8 @@ function PoliciesTab({ apiKey }: { apiKey: string }) {
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                         p.action === 'deny'
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-orange-100 text-orange-800'
+                          ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                          : 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300'
                       }`}
                     >
                       {p.action.replace('_', ' ')}
@@ -385,8 +385,8 @@ function AuditTab({ apiKey }: { apiKey: string }) {
                         <span
                           className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                             e.result === 'allowed'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
                           }`}
                         >
                           {e.result}

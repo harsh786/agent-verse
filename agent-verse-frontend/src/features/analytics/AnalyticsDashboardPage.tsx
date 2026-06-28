@@ -1,11 +1,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line,
-} from 'recharts';
 import { useAuthStore } from '@/stores/auth';
 import { analyticsApi } from '@/lib/api/client';
+import { ThemedBarChart, ThemedLineChart } from '@/components/charts';
 
 const PERIODS = [7, 30, 90] as const;
 type Period = typeof PERIODS[number];
@@ -49,7 +46,9 @@ export function AnalyticsDashboardPage() {
   });
 
   const goalChartData = (goals as any)?.by_status
-    ? Object.entries((goals as any).by_status as Record<string, number>).map(([status, count]) => ({ status, count }))
+    ? Object.entries((goals as any).by_status as Record<string, number>).map(
+        ([status, count]) => ({ status, count })
+      )
     : [];
 
   const toolChartData = (((tools as any)?.tools ?? []) as any[]).slice(0, 10).map((t: any) => ({
@@ -88,9 +87,20 @@ export function AnalyticsDashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Goals', value: (goals as any)?.total ?? '—' },
-          { label: 'Success Rate', value: (goals as any)?.success_rate != null ? `${((goals as any).success_rate * 100).toFixed(1)}%` : '—' },
-          { label: 'Eval Pass Rate', value: evals?.pass_rate != null ? `${(evals.pass_rate * 100).toFixed(1)}%` : '—' },
-          { label: `Cost (${days}d)`, value: costs?.total_cost_usd != null ? `$${costs.total_cost_usd.toFixed(4)}` : '—' },
+          {
+            label: 'Success Rate',
+            value: (goals as any)?.success_rate != null
+              ? `${((goals as any).success_rate * 100).toFixed(1)}%`
+              : '—',
+          },
+          {
+            label: 'Eval Pass Rate',
+            value: evals?.pass_rate != null ? `${(evals.pass_rate * 100).toFixed(1)}%` : '—',
+          },
+          {
+            label: `Cost (${days}d)`,
+            value: costs?.total_cost_usd != null ? `$${costs.total_cost_usd.toFixed(4)}` : '—',
+          },
         ].map(({ label, value }) => (
           <div key={label} className="bg-card border border-border rounded-xl p-4">
             <p className="text-sm text-muted-foreground">{label}</p>
@@ -103,46 +113,42 @@ export function AnalyticsDashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-4">Goals by Status</h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={goalChartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="status" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <ThemedBarChart
+            data={goalChartData}
+            bars={[{ key: 'count', label: 'Goals' }]}
+            xKey="status"
+            height={200}
+          />
         </div>
 
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-4">Top Tools (Success vs Failed)</h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={toolChartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Bar dataKey="success" fill="#22c55e" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="failed" fill="#ef4444" radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <ThemedBarChart
+            data={toolChartData}
+            bars={[
+              { key: 'success', label: 'Success' },
+              { key: 'failed', label: 'Failed' },
+            ]}
+            xKey="name"
+            height={200}
+          />
         </div>
 
         {/* Eval metrics over time */}
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-4">Eval Pass Rate ({days}d)</h2>
           {evalData.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">No eval data yet</div>
+            <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
+              No eval data yet
+            </div>
           ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={evalData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(d: string) => d.slice(5)} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]} />
-                <Tooltip formatter={(v: unknown) => [`${((v as number) * 100).toFixed(1)}%`, "Pass rate"]} />
-                <Line type="monotone" dataKey="pass_rate" stroke="#22c55e" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            <ThemedLineChart
+              data={evalData as Record<string, unknown>[]}
+              lines={[{ key: 'pass_rate', label: 'Pass rate' }]}
+              xKey="date"
+              height={200}
+              formatValue={(v) => `${(v * 100).toFixed(0)}%`}
+            />
           )}
         </div>
 
