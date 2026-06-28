@@ -169,9 +169,9 @@ async def eval_analytics(
                         " SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed_count"
                         " FROM evaluations"
                         " WHERE tenant_id = :tid"
-                        " AND run_at >= NOW() - INTERVAL :days"
+                        " AND run_at >= NOW() - (:days * INTERVAL '1 day')"
                     ),
-                    {"tid": tenant_id, "days": f"{days} days"},
+                    {"tid": tenant_id, "days": days},
                 )
                 row = result.fetchone()
                 if row and row[0]:

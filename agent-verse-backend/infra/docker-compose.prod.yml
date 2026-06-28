@@ -6,9 +6,42 @@ x-common-env: &common-env
   DATABASE_URL: ${DATABASE_URL}
   REDIS_URL: ${REDIS_URL}
   SECRET_KEY: ${SECRET_KEY}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   ENVIRONMENT: production
+
+  # LLM providers — set at least one
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+  # SSO / Keycloak
+  SSO_ENABLED: ${SSO_ENABLED:-false}
+  KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
+  KEYCLOAK_REALM: ${KEYCLOAK_REALM:-agentverse}
+  KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-agentverse-backend}
+  KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+
+  # Frontend / CORS
+  FRONTEND_URL: ${FRONTEND_URL:-https://app.agentverse.io}
+  CORS_ORIGINS: ${CORS_ORIGINS:-https://app.agentverse.io}
+
+  # Object storage (MinIO / S3-compatible)
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-agentverse}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+
+  # Email
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_TLS: ${SMTP_TLS:-true}
+
+  # Vault encryption
+  AGENTVERSE_VAULT_KEY: ${AGENTVERSE_VAULT_KEY:-}
+
+  # Observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 services:
   postgres:
@@ -98,6 +131,12 @@ services:
               "--concurrency=4", "--max-tasks-per-child=100"]
     environment:
       <<: *common-env
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME", "--timeout=5"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
     depends_on:
       redis:
         condition: service_healthy
@@ -119,6 +158,12 @@ services:
               "--loglevel=info", "--scheduler=redbeat.RedBeatScheduler"]
     environment:
       <<: *common-env
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping --timeout=5 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 2
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
@@ -138,6 +183,12 @@ services:
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     deploy:
       resources:
         limits:
@@ -156,12 +207,19 @@ services:
       - promdata:/prometheus
     ports:
       - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   grafana:
     image: grafana/grafana:11.0.0
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-agentverse_admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -169,6 +227,12 @@ services:
       - grafanadata:/var/lib/grafana
     ports:
       - "3001:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       - prometheus
 
@@ -181,6 +245,12 @@ services:
       sentinel failover-timeout mymaster 60000
       sentinel parallel-syncs mymaster 1
       bind 0.0.0.0' > /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       - redis
     networks:
@@ -195,6 +265,12 @@ services:
       sentinel failover-timeout mymaster 60000
       sentinel parallel-syncs mymaster 1
       bind 0.0.0.0' > /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       - redis
     networks:

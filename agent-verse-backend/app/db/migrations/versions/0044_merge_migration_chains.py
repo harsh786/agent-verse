@@ -1,6 +1,6 @@
 """Merge migration — consolidate parallel migration chains 0039 and 0043.
 
-Chain A: ...→ 0035 → 0036 → 0037 → 0038 → 0039
+Chain A: ...→ 0035 → 0037 → 0038 → 0039
 Chain B: ...→ 0035 → 0036 → 0040 → 0041 → 0042 → 0043
 
 Both chains are now merged at 0044.
