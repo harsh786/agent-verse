@@ -3,6 +3,7 @@
  * Uses a simple line-level diff to highlight changes in steps/tools/outputs.
  */
 import { useState } from "react";
+import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { goalsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -54,7 +55,8 @@ function goalToText(goal: unknown): string {
 }
 
 export function GoalDiffPage() {
-  const [goalIdA, setGoalIdA] = useState("");
+  const { goalId } = useParams<{ goalId?: string }>();
+  const [goalIdA, setGoalIdA] = useState(goalId ?? "");
   const [goalIdB, setGoalIdB] = useState("");
   const [compare, setCompare] = useState(false);
 
