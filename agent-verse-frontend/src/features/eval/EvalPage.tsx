@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Play, Shield, FlaskConical, BarChart3 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { API_BASE } from '@/lib/api/client';
@@ -574,6 +574,129 @@ function EvalScorerSection({ apiKey }: { apiKey: string }) {
   );
 }
 
+// ── Eval Suites Section ───────────────────────────────────────────────────────
+
+function EvalSuitesSection({ apiKey }: { apiKey: string }) {
+  const qc = useQueryClient();
+  const [showCreate, setShowCreate] = useState(false);
+  const [suiteName, setSuiteName] = useState('');
+  const [suiteDesc, setSuiteDesc] = useState('');
+
+  const { data: suites = [], isLoading } = useQuery({
+    queryKey: ['eval-suites'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/eval/suites`, { headers: { 'X-API-Key': apiKey } });
+      if (!res.ok) throw new Error(res.statusText);
+      return res.json() as Promise<Array<{ suite_id: string; name: string; task_count: number; created_at: string }>>;
+    },
+    enabled: !!apiKey,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`${API_BASE}/eval/suites`, {
+        method: 'POST',
+        headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: suiteName, description: suiteDesc }),
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eval-suites'] });
+      setShowCreate(false);
+      setSuiteName('');
+      setSuiteDesc('');
+    },
+  });
+
+  const runMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`${API_BASE}/eval/suites/${id}/run`, {
+        method: 'POST',
+        headers: { 'X-API-Key': apiKey },
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      return res.json();
+    },
+  });
+
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+        <h2 className="font-semibold text-sm">Eval Suites</h2>
+        <button
+          onClick={() => setShowCreate(true)}
+          aria-label="Create suite"
+          className="text-xs px-3 py-1.5 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+        >
+          + Create suite
+        </button>
+      </div>
+
+      {showCreate && (
+        <div className="p-4 border-b space-y-3">
+          <label className="block text-sm font-medium">
+            Suite name
+            <input
+              aria-label="Suite name"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              value={suiteName}
+              onChange={(e) => setSuiteName(e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Description
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              value={suiteDesc}
+              onChange={(e) => setSuiteDesc(e.target.value)}
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              onClick={() => createMutation.mutate()}
+              disabled={createMutation.isPending || !suiteName.trim()}
+              className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md disabled:opacity-50"
+            >
+              {createMutation.isPending ? 'Creating…' : 'Create'}
+            </button>
+            <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-sm border rounded-md">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">Loading suites…</div>
+      ) : suites.length === 0 ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">
+          No eval suites yet. Create one to group golden tasks and track regressions.
+        </div>
+      ) : (
+        <div className="divide-y divide-border">
+          {suites.map((suite) => (
+            <div key={suite.suite_id} className="flex items-center justify-between p-4">
+              <div>
+                <p className="text-sm font-medium">{suite.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {suite.task_count} tasks · created {new Date(suite.created_at).toLocaleDateString()}
+                </p>
+              </div>
+              <button
+                onClick={() => runMutation.mutate(suite.suite_id)}
+                disabled={runMutation.isPending}
+                className="text-xs px-3 py-1 rounded border text-green-700 hover:bg-green-50 disabled:opacity-50"
+              >
+                Run
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export function EvalPage() {
@@ -590,6 +713,7 @@ export function EvalPage() {
       <RedTeamSection apiKey={apiKey} />
       <SimulationSection apiKey={apiKey} />
       <EvalScorerSection apiKey={apiKey} />
+      <EvalSuitesSection apiKey={apiKey} />
     </div>
   );
 }

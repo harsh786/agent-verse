@@ -175,6 +175,172 @@ function CollectionsTab({
 
 // ── Ingest tab ────────────────────────────────────────────────────────────────
 
+const SOURCE_TYPES = [
+  { value: 'text', label: 'Plain Text' },
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'url', label: 'URL / Web Page' },
+  { value: 'pdf', label: 'PDF File' },
+  { value: 'docx', label: 'Word Document (.docx)' },
+  { value: 'git', label: 'Git Repository' },
+  { value: 'github', label: 'GitHub (repo/issues/PRs)' },
+  { value: 'openapi', label: 'OpenAPI Schema' },
+  { value: 'confluence', label: 'Confluence' },
+  { value: 'jira', label: 'Jira' },
+  { value: 'slack', label: 'Slack' },
+];
+
+function SourceConfigFields({
+  sourceType,
+  config,
+  onChange,
+}: {
+  sourceType: string;
+  config: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  switch (sourceType) {
+    case 'url':
+      return (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            URL to crawl
+            <input
+              aria-label="url to crawl"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="https://docs.example.com"
+              value={config.url ?? ''}
+              onChange={(e) => onChange('url', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Max depth
+            <input
+              type="number"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="3"
+              value={config.max_depth ?? ''}
+              onChange={(e) => onChange('max_depth', e.target.value)}
+            />
+          </label>
+        </div>
+      );
+    case 'github':
+      return (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            Repository (owner/repo)
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="acme/my-repo"
+              value={config.repo ?? ''}
+              onChange={(e) => onChange('repo', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Include (comma-separated: code, issues, prs)
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="code,issues"
+              value={config.include ?? ''}
+              onChange={(e) => onChange('include', e.target.value)}
+            />
+          </label>
+        </div>
+      );
+    case 'confluence':
+      return (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            Confluence URL
+            <input
+              aria-label="confluence url"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="https://myorg.atlassian.net/wiki"
+              value={config.base_url ?? ''}
+              onChange={(e) => onChange('base_url', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Space key
+            <input
+              aria-label="space key"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="ENG"
+              value={config.space_key ?? ''}
+              onChange={(e) => onChange('space_key', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            API token
+            <input
+              type="password"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              value={config.api_token ?? ''}
+              onChange={(e) => onChange('api_token', e.target.value)}
+            />
+          </label>
+        </div>
+      );
+    case 'jira':
+      return (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            Jira URL
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="https://myorg.atlassian.net"
+              value={config.base_url ?? ''}
+              onChange={(e) => onChange('base_url', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Project key
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="ENG"
+              value={config.project_key ?? ''}
+              onChange={(e) => onChange('project_key', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            API token
+            <input
+              type="password"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              value={config.api_token ?? ''}
+              onChange={(e) => onChange('api_token', e.target.value)}
+            />
+          </label>
+        </div>
+      );
+    case 'slack':
+      return (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            Bot token
+            <input
+              type="password"
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              value={config.bot_token ?? ''}
+              onChange={(e) => onChange('bot_token', e.target.value)}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Channels (comma-separated)
+            <input
+              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+              placeholder="#general,#eng"
+              value={config.channels ?? ''}
+              onChange={(e) => onChange('channels', e.target.value)}
+            />
+          </label>
+        </div>
+      );
+    default:
+      return null;
+  }
+}
+
 function IngestTab({
   apiKey,
   collections,
@@ -187,14 +353,22 @@ function IngestTab({
     source_type: 'text',
     content: '',
   });
+  const [sourceConfig, setSourceConfig] = useState<Record<string, string>>({});
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string>('');
+
+  const handleConfigChange = (key: string, value: string) => {
+    setSourceConfig((c) => ({ ...c, [key]: value }));
+  };
 
   const ingestMutation = useMutation({
     mutationFn: () =>
       apiFetch<{ doc_count: number }>(apiKey, '/knowledge/ingest', {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          ...(Object.keys(sourceConfig).length > 0 ? { source_config: sourceConfig } : {}),
+        }),
       }),
   });
 
@@ -217,8 +391,6 @@ function IngestTab({
     onError: (err) => setUploadStatus(`❌ ${String(err)}`),
   });
 
-  const SOURCE_TYPES = ['text', 'markdown', 'git', 'openapi'];
-
   return (
     <div className="space-y-4 max-w-2xl">
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
@@ -240,20 +412,36 @@ function IngestTab({
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium mb-1">Source Type</label>
+            <label htmlFor="source-type-select" className="block text-xs font-medium mb-1">Source Type</label>
             <select
+              id="source-type-select"
+              aria-label="Source Type"
               value={form.source_type}
-              onChange={(e) => setForm((f) => ({ ...f, source_type: e.target.value }))}
+              onChange={(e) => {
+                setForm((f) => ({ ...f, source_type: e.target.value }));
+                setSourceConfig({});
+              }}
               className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
             >
               {SOURCE_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
+                <option key={t.value} value={t.value}>
+                  {t.label}
                 </option>
               ))}
             </select>
           </div>
         </div>
+
+        {/* Per-source config fields */}
+        {['url', 'github', 'confluence', 'jira', 'slack'].includes(form.source_type) && (
+          <div className="p-3 rounded-lg bg-muted/50 border">
+            <SourceConfigFields
+              sourceType={form.source_type}
+              config={sourceConfig}
+              onChange={handleConfigChange}
+            />
+          </div>
+        )}
 
         {/* File upload section */}
         <div>

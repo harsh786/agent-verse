@@ -168,6 +168,7 @@ function SchedulesListTab({ apiKey, agents }: { apiKey: string; agents: Agent[] 
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<CreateScheduleForm>(INITIAL_FORM);
+  const [webhookSecret, setWebhookSecret] = useState('');
 
   const { data: schedules = [], isLoading, error } = useQuery({
     queryKey: ['schedules'],
@@ -186,6 +187,8 @@ function SchedulesListTab({ apiKey, agents }: { apiKey: string; agents: Agent[] 
       if (form.trigger_type === 'cron') body.cron_expr = form.cron_expr;
       if (form.trigger_type === 'interval')
         body.interval_seconds = parseInt(form.interval_seconds, 10) || 3600;
+      if (form.trigger_type === 'webhook' && webhookSecret.trim())
+        body.source_config = { webhook_secret: webhookSecret.trim() };
       return apiFetch<Schedule>(apiKey, '/schedules', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -195,6 +198,7 @@ function SchedulesListTab({ apiKey, agents }: { apiKey: string; agents: Agent[] 
       qc.invalidateQueries({ queryKey: ['schedules'] });
       setShowCreate(false);
       setForm(INITIAL_FORM);
+      setWebhookSecret('');
     },
   });
 
@@ -292,6 +296,40 @@ function SchedulesListTab({ apiKey, agents }: { apiKey: string; agents: Agent[] 
                   }
                   className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
                 />
+              </div>
+            )}
+            {form.trigger_type === 'webhook' && (
+              <div className="space-y-3 p-3 rounded-lg bg-muted/50 border">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Webhook endpoint URL</p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs bg-card border rounded px-2 py-1.5 text-foreground break-all">
+                      {`${API_BASE}/webhooks/trigger`}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(`${API_BASE}/webhooks/trigger`)}
+                      aria-label="Copy webhook URL"
+                      className="px-2 py-1.5 text-xs border rounded hover:bg-muted"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    POST to this URL to fire the schedule. Pass <code>X-Webhook-Secret</code> header.
+                  </p>
+                </div>
+                <label className="block text-sm font-medium">
+                  Webhook secret (optional)
+                  <input
+                    aria-label="Webhook secret"
+                    type="password"
+                    className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
+                    placeholder="Leave blank to auto-generate"
+                    value={webhookSecret}
+                    onChange={(e) => setWebhookSecret(e.target.value)}
+                  />
+                </label>
               </div>
             )}
           </div>

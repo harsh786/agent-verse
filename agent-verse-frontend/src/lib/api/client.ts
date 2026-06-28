@@ -203,6 +203,19 @@ export const agentsApi = {
     request<AgentResponse>(`/agents/${id}/rollback/${snapshotId}`, { method: "POST" }),
   export: (id: string, format: "openai" | "anthropic") =>
     request<object>(`/agents/${id}/export?format=${format}`),
+  // Phase-5 additions
+  getPermissions: (id: string) =>
+    request<{ read: string[]; write: string[] }>(`/agents/${id}/permissions`),
+  clone: (id: string) =>
+    request<AgentResponse>(`/agents/${id}/clone`, { method: "POST" }),
+  assignKnowledge: (agentId: string, knowledgeId: string) =>
+    request<void>(`/agents/${agentId}/knowledge/${knowledgeId}`, { method: "POST" }),
+  removeKnowledge: (agentId: string, knowledgeId: string) =>
+    request<void>(`/agents/${agentId}/knowledge/${knowledgeId}`, { method: "DELETE" }),
+  getRolloutGate: (id: string) =>
+    request<{ gate_status: string; traffic_pct: number; conditions: string[] }>(
+      `/agents/${id}/rollout-gate`
+    ),
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────
@@ -393,6 +406,7 @@ export interface SearchResult {
 }
 
 export const knowledgeApi = {
+  list: () => request<KnowledgeCollection[]>("/knowledge/collections"),
   listCollections: () => request<KnowledgeCollection[]>("/knowledge/collections"),
   createCollection: (data: { name: string; description?: string }) =>
     request<KnowledgeCollection>("/knowledge/collections", {
@@ -838,5 +852,70 @@ export const complianceApi = {
     request<{ purpose: string; status: string }>(
       `/compliance/consent/${purpose}`,
       { method: "DELETE" },
+    ),
+};
+
+// ── Eval Suites (Phase-5) ─────────────────────────────────────────────────────
+
+export interface EvalSuite {
+  suite_id: string;
+  name: string;
+  description?: string;
+  task_count: number;
+  created_at: string;
+}
+
+export interface EvalSuiteResult {
+  run_id: string;
+  suite_id: string;
+  overall_score: number;
+  passed: number;
+  failed: number;
+  completed_at: string;
+}
+
+export const evalSuitesApi = {
+  listSuites: () => request<EvalSuite[]>("/eval/suites"),
+  createSuite: (name: string, description?: string) =>
+    request<EvalSuite>("/eval/suites", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    }),
+  getSuite: (id: string) => request<EvalSuite>(`/eval/suites/${id}`),
+  addTask: (suiteId: string, task: { input: string; expected_output?: string; tags?: string[] }) =>
+    request<void>(`/eval/suites/${suiteId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify(task),
+    }),
+  runSuite: (id: string) =>
+    request<{ run_id: string }>(`/eval/suites/${id}/run`, { method: "POST" }),
+  getSuiteResults: (id: string) =>
+    request<EvalSuiteResult[]>(`/eval/suites/${id}/results`),
+};
+
+// ── Workflows (Phase-6) ────────────────────────────────────────────────────────
+
+export interface WorkflowRecord {
+  id: string;
+  name: string;
+  description?: string;
+  definition?: Record<string, unknown>;
+  status: string;
+  version?: number;
+  created_at?: string;
+}
+
+export const workflowsApi = {
+  list: () => request<WorkflowRecord[]>("/workflows"),
+  get: (id: string) => request<WorkflowRecord>(`/workflows/${id}`),
+  create: (data: { name: string; description?: string; definition?: object }) =>
+    request<WorkflowRecord>("/workflows", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: { name: string; description?: string; definition?: object }) =>
+    request<void>(`/workflows/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/workflows/${id}`, { method: "DELETE" }),
+  run: (id: string, dryRun = false) =>
+    request<{ run_id: string; status: string }>(
+      `/workflows/${id}/run${dryRun ? "?dry_run=true" : ""}`,
+      { method: "POST" }
     ),
 };

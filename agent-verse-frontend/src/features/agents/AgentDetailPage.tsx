@@ -6,7 +6,11 @@ import {
   Edit3, Save, X, Clock, Target, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
-import { goalsApi } from "@/lib/api/client";
+import { goalsApi, agentsApi, knowledgeApi } from "@/lib/api/client";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { toast } from "@/stores/toast";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
 
@@ -70,11 +74,14 @@ async function updateAgent(apiKey: string, agentId: string, patch: Record<string
 
 // ── AgentDetailPage ────────────────────────────────────────────────────────────
 
+type AgentTab = 'overview' | 'versions' | 'permissions' | 'knowledge' | 'rollout' | 'credentials';
+
 export function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const apiKey = useAuthStore((s) => s.apiKey);
+  const [tab, setTab] = useState<AgentTab>('overview');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [exportMsg, setExportMsg] = useState("");
@@ -178,6 +185,50 @@ export function AgentDetailPage() {
     }
   };
 
+  // Phase-5: new tab queries
+  const { data: permissions, isLoading: permsLoading } = useQuery({
+    queryKey: ['agent-permissions', agentId],
+    queryFn: () => agentsApi.getPermissions(agentId!),
+    enabled: !!agentId && tab === 'permissions',
+  });
+
+  const { data: rolloutGate, isLoading: rolloutLoading } = useQuery({
+    queryKey: ['agent-rollout', agentId],
+    queryFn: () => agentsApi.getRolloutGate(agentId!),
+    enabled: !!agentId && tab === 'rollout',
+  });
+
+  const { data: allKnowledge = [] } = useQuery({
+    queryKey: ['knowledge'],
+    queryFn: () => knowledgeApi.list(),
+    enabled: tab === 'knowledge',
+  });
+
+  const cloneMutation = useMutation({
+    mutationFn: () => agentsApi.clone(agentId!),
+    onSuccess: (data) => {
+      navigate(`/agents/${data.agent_id}`);
+      toast({ kind: 'success', message: 'Agent cloned.' });
+    },
+    onError: (e) => toast({ kind: 'error', message: `Clone failed: ${e}` }),
+  });
+
+  const assignKnowledgeMutation = useMutation({
+    mutationFn: (kId: string) => agentsApi.assignKnowledge(agentId!, kId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent', agentId] });
+      toast({ kind: 'success', message: 'Knowledge assigned.' });
+    },
+  });
+
+  const removeKnowledgeMutation = useMutation({
+    mutationFn: (kId: string) => agentsApi.removeKnowledge(agentId!, kId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent', agentId] });
+      toast({ kind: 'success', message: 'Knowledge removed.' });
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-40" data-testid="loading">
@@ -226,6 +277,14 @@ export function AgentDetailPage() {
               className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
             >
               Check Readiness
+            </button>
+            <button
+              onClick={() => cloneMutation.mutate()}
+              disabled={cloneMutation.isPending}
+              aria-label="Clone agent"
+              className="px-3 py-1 border rounded text-sm hover:bg-muted disabled:opacity-50"
+            >
+              {cloneMutation.isPending ? 'Cloning…' : 'Clone'}
             </button>
             <button
               onClick={() => {
@@ -335,154 +394,259 @@ export function AgentDetailPage() {
         </div>
       </div>
 
-      {/* Metadata */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        {[
-          { label: "Status", value: agent.status ?? "active" },
-          { label: "Created", value: agent.created_at ? new Date(agent.created_at).toLocaleDateString() : "—" },
-          { label: "Default Model", value: agent.default_model ?? "—" },
-        ].map(({ label, value }) => (
-          <div key={label} className="bg-card border border-border rounded-lg px-4 py-3">
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p className="font-medium text-sm mt-0.5 truncate">{value}</p>
-          </div>
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b">
+        {(
+          [
+            { key: 'overview', label: 'Overview' },
+            { key: 'versions', label: 'Versions' },
+            { key: 'permissions', label: 'Permissions' },
+            { key: 'knowledge', label: 'Knowledge' },
+            { key: 'rollout', label: 'Rollout Gate' },
+            { key: 'credentials', label: 'Credentials' },
+          ] as { key: AgentTab; label: string }[]
+        ).map(({ key, label }) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === key
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
         ))}
       </div>
 
-      {/* Connectors */}
-      {Array.isArray(agent.connector_ids) && agent.connector_ids.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h2 className="font-semibold text-sm mb-3" data-testid="connector-list">
-            Connector IDs
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {(agent.connector_ids as string[]).map((cid: string) => (
-              <span key={cid} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
-                {cid}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Actions: Snapshot & Export */}
-      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-        <h2 className="font-semibold text-sm">Actions</h2>
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => snapshotMutation.mutate()}
-            disabled={snapshotMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors disabled:opacity-50"
-            data-testid="snapshot-btn"
-          >
-            {snapshotMutation.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Camera className="h-4 w-4" />
-            )}
-            Take Snapshot
-          </button>
-          <button
-            onClick={() => handleExport("openai")}
-            className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
-            data-testid="export-btn"
-          >
-            <Download className="h-4 w-4" />
-            Export (OpenAI)
-          </button>
-          <button
-            onClick={() => handleExport("anthropic")}
-            className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
-          >
-            <Download className="h-4 w-4" />
-            Export (Anthropic)
-          </button>
-        </div>
-        {snapshotMsg && <p className="text-xs text-green-600">{snapshotMsg}</p>}
-        {exportMsg && <p className="text-xs text-muted-foreground">{exportMsg}</p>}
-      </div>
-
-      {/* Version history */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <button
-          onClick={() => setVersionOpen((v) => !v)}
-          className="w-full flex items-center justify-between px-5 py-3 hover:bg-accent/50 transition-colors"
-        >
-          <h2 className="font-semibold text-sm">Version History ({versions.length})</h2>
-          {versionOpen ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          )}
-        </button>
-        {versionOpen && (
-          <div className="divide-y divide-border border-t border-border">
-            {versions.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-muted-foreground">No snapshots yet.</p>
-            ) : (
-              versions.map((v) => (
-                <div
-                  key={v.snapshot_id}
-                  className="flex items-center justify-between px-5 py-3"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs font-mono text-muted-foreground">{v.snapshot_id}</p>
-                    {v.label && <p className="text-sm">{v.label}</p>}
-                    <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                      <Clock className="h-3 w-3" />
-                      {new Date(v.created_at).toLocaleString()}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => rollbackMutation.mutate(v.snapshot_id)}
-                    disabled={rollbackMutation.isPending}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-accent transition-colors disabled:opacity-50"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" /> Rollback
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Recent Goals */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-border">
-          <h2 className="font-semibold text-sm flex items-center gap-2">
-            <Target className="h-4 w-4" />
-            Recent Goals
-          </h2>
-        </div>
-        {!recentGoals || recentGoals.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-muted-foreground">
-            No goals run by this agent yet.
-          </p>
-        ) : (
-          <div className="divide-y divide-border">
-            {recentGoals.slice(0, 5).map((g) => (
-              <div
-                key={g.goal_id ?? g.id}
-                className="flex items-center justify-between px-5 py-3 text-sm"
-              >
-                <p className="truncate flex-1">{g.goal}</p>
-                <span
-                  className={`ml-3 px-2 py-0.5 rounded-full text-xs flex-shrink-0 ${
-                    g.status === "complete"
-                      ? "bg-green-100 text-green-700"
-                      : g.status === "failed"
-                      ? "bg-red-100 text-red-700"
-                      : "bg-blue-100 text-blue-700"
-                  }`}
-                >
-                  {g.status}
-                </span>
+      {/* Overview tab */}
+      {tab === 'overview' && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {[
+              { label: "Status", value: agent.status ?? "active" },
+              { label: "Created", value: agent.created_at ? new Date(agent.created_at).toLocaleDateString() : "—" },
+              { label: "Default Model", value: (agent as any).default_model ?? "—" },
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-card border border-border rounded-lg px-4 py-3">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className="font-medium text-sm mt-0.5 truncate">{value}</p>
               </div>
             ))}
           </div>
-        )}
-      </div>
+
+          {/* Connectors */}
+          {Array.isArray(agent.connector_ids) && agent.connector_ids.length > 0 && (
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h2 className="font-semibold text-sm mb-3" data-testid="connector-list">
+                Connector IDs
+              </h2>
+              <div className="flex flex-wrap gap-2">
+                {(agent.connector_ids as string[]).map((cid: string) => (
+                  <span key={cid} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
+                    {cid}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Actions: Snapshot & Export */}
+          <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+            <h2 className="font-semibold text-sm">Actions</h2>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={() => snapshotMutation.mutate()}
+                disabled={snapshotMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors disabled:opacity-50"
+                data-testid="snapshot-btn"
+              >
+                {snapshotMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                Take Snapshot
+              </button>
+              <button
+                onClick={() => handleExport("openai")}
+                className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+                data-testid="export-btn"
+              >
+                <Download className="h-4 w-4" /> Export (OpenAI)
+              </button>
+              <button
+                onClick={() => handleExport("anthropic")}
+                className="flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+              >
+                <Download className="h-4 w-4" /> Export (Anthropic)
+              </button>
+            </div>
+            {snapshotMsg && <p className="text-xs text-green-600">{snapshotMsg}</p>}
+            {exportMsg && <p className="text-xs text-muted-foreground">{exportMsg}</p>}
+          </div>
+
+          {/* Recent Goals */}
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-border">
+              <h2 className="font-semibold text-sm flex items-center gap-2">
+                <Target className="h-4 w-4" /> Recent Goals
+              </h2>
+            </div>
+            {!recentGoals || recentGoals.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-muted-foreground">No goals run by this agent yet.</p>
+            ) : (
+              <div className="divide-y divide-border">
+                {recentGoals.slice(0, 5).map((g) => (
+                  <div key={g.goal_id ?? g.id} className="flex items-center justify-between px-5 py-3 text-sm">
+                    <p className="truncate flex-1">{g.goal}</p>
+                    <span className={`ml-3 px-2 py-0.5 rounded-full text-xs flex-shrink-0 ${
+                      g.status === "complete" ? "bg-green-100 text-green-700"
+                      : g.status === "failed" ? "bg-red-100 text-red-700"
+                      : "bg-blue-100 text-blue-700"
+                    }`}>{g.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Versions tab */}
+      {tab === 'versions' && (
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <button
+            onClick={() => setVersionOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-3 hover:bg-accent/50 transition-colors"
+          >
+            <h2 className="font-semibold text-sm">Version History ({versions.length})</h2>
+            {versionOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+          </button>
+          {versionOpen && (
+            <div className="divide-y divide-border border-t border-border">
+              {versions.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-muted-foreground">No snapshots yet.</p>
+              ) : (
+                versions.map((v) => (
+                  <div key={v.snapshot_id} className="flex items-center justify-between px-5 py-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono text-muted-foreground">{v.snapshot_id}</p>
+                      {v.label && <p className="text-sm">{v.label}</p>}
+                      <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                        <Clock className="h-3 w-3" />
+                        {new Date(v.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => rollbackMutation.mutate(v.snapshot_id)}
+                      disabled={rollbackMutation.isPending}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-accent transition-colors disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" /> Rollback
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Permissions tab */}
+      {tab === 'permissions' && (
+        <div className="space-y-4">
+          {permsLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : !permissions ? (
+            <EmptyState title="No permissions configured" />
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-3 rounded-lg border bg-card">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Read scopes</p>
+                <ul className="space-y-1">
+                  {permissions.read.map((s) => (
+                    <li key={s} className="text-sm font-mono bg-muted rounded px-2 py-0.5">{s}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="p-3 rounded-lg border bg-card">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Write scopes</p>
+                <ul className="space-y-1">
+                  {permissions.write.map((s) => (
+                    <li key={s} className="text-sm font-mono bg-muted rounded px-2 py-0.5">{s}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Knowledge tab */}
+      {tab === 'knowledge' && (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">Assign knowledge collections this agent can retrieve from.</p>
+          {allKnowledge.length === 0 ? (
+            <EmptyState title="No knowledge collections" description="Create a collection in the Knowledge page first." />
+          ) : (
+            <div className="divide-y border rounded-lg overflow-hidden">
+              {allKnowledge.map((k) => (
+                <div key={k.collection_id} className="flex items-center justify-between p-3 bg-card">
+                  <span className="text-sm font-medium">{k.name}</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => assignKnowledgeMutation.mutate(k.collection_id)}
+                      className="text-xs px-2 py-1 rounded border hover:bg-muted"
+                    >Assign</button>
+                    <button
+                      onClick={() => removeKnowledgeMutation.mutate(k.collection_id)}
+                      className="text-xs px-2 py-1 rounded border text-red-600 hover:bg-red-50"
+                    >Remove</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Rollout Gate tab */}
+      {tab === 'rollout' && (
+        <div className="space-y-3">
+          {rolloutLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : !rolloutGate ? (
+            <EmptyState
+              title="No rollout gate configured"
+              description="Rollout gates control traffic steering to this agent version."
+            />
+          ) : (
+            <div className="p-4 rounded-lg border bg-card space-y-2">
+              <div className="flex items-center gap-3">
+                <StatusBadge status={rolloutGate.gate_status} />
+                <span className="text-sm font-medium">{rolloutGate.traffic_pct}% traffic</span>
+              </div>
+              {rolloutGate.conditions.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Conditions</p>
+                  <ul className="list-disc pl-4 text-sm space-y-1">
+                    {rolloutGate.conditions.map((c, i) => <li key={i}>{c}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Credentials tab */}
+      {tab === 'credentials' && (
+        <EmptyState
+          title="Connector credentials"
+          description="Credentials for MCP connectors used by this agent are managed in the Connectors page."
+          action={<a href="/connectors" className="text-sm text-primary underline">Go to Connectors</a>}
+        />
+      )}
     </div>
   );
 }

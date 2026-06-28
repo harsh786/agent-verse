@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
+import { useState } from 'react';
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -10,6 +11,8 @@ interface CatalogEntry {
   auth_type: string;
   default_url: string;
   category?: string;
+  connector_type?: string;
+  schema?: Record<string, unknown>;
 }
 
 async function fetchCatalog(apiKey: string): Promise<CatalogEntry[]> {
@@ -32,12 +35,21 @@ const AUTH_COLORS: Record<string, string> = {
 export function ConnectorsCatalogPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
   const navigate = useNavigate();
+  const [search, setSearch] = useState('');
 
   const { data: catalog = [], isLoading, error } = useQuery({
     queryKey: ['catalog'],
     queryFn: () => fetchCatalog(apiKey),
     enabled: !!apiKey,
   });
+
+  const filtered = search.trim()
+    ? catalog.filter(
+        (c) =>
+          c.name.toLowerCase().includes(search.toLowerCase()) ||
+          c.description.toLowerCase().includes(search.toLowerCase())
+      )
+    : catalog;
 
   return (
     <div className="space-y-6">
@@ -48,6 +60,16 @@ export function ConnectorsCatalogPage() {
         </p>
       </div>
 
+      {/* Search */}
+      <input
+        type="search"
+        placeholder="Search connectors…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="w-full max-w-sm border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
+        aria-label="Search connectors"
+      />
+
       {isLoading ? (
         <div className="py-10 text-center text-sm text-muted-foreground">
           Loading catalog…
@@ -56,13 +78,13 @@ export function ConnectorsCatalogPage() {
         <div className="py-10 text-center text-sm text-red-500">
           Failed to load catalog.
         </div>
-      ) : catalog.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="py-10 text-center text-sm text-muted-foreground">
           No catalog entries found.
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {catalog.map((c) => (
+          {filtered.map((c) => (
             <div
               key={c.name}
               className="bg-card border border-border rounded-xl p-4 hover:shadow-md transition-shadow flex flex-col"
@@ -82,7 +104,19 @@ export function ConnectorsCatalogPage() {
                 {c.default_url}
               </p>
               <button
-                onClick={() => navigate('/connectors/registered')}
+                onClick={() =>
+                  navigate('/connectors', {
+                    state: {
+                      prefill: {
+                        connector_type: c.connector_type ?? c.name,
+                        name: c.name,
+                        url: c.default_url,
+                        auth_type: c.auth_type,
+                        config_schema: c.schema,
+                      },
+                    },
+                  })
+                }
                 className="w-full bg-primary text-primary-foreground text-xs font-medium py-1.5 rounded-lg hover:opacity-90 transition-opacity"
               >
                 Register
