@@ -77,7 +77,7 @@ export function RpaLivePage() {
         <h1 className="text-2xl font-bold">RPA Live Sessions</h1>
         <button
           onClick={fetchSessions}
-          className="px-3 py-1 bg-gray-100 rounded text-sm hover:bg-gray-200"
+          className="px-3 py-1 bg-muted/50 rounded text-sm hover:bg-muted"
         >
           ↻ Refresh
         </button>
@@ -160,7 +160,7 @@ export function RpaLivePage() {
                   style={{ maxHeight: '400px', objectFit: 'contain' }}
                 />
               ) : (
-                <div className="bg-gray-100 rounded h-64 flex items-center justify-center text-gray-400">
+                <div className="bg-muted/50 rounded h-64 flex items-center justify-center text-gray-400">
                   {polling ? 'Capturing screenshot...' : 'No screenshot available'}
                 </div>
               )}

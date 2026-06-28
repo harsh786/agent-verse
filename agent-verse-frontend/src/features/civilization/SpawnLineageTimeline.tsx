@@ -18,10 +18,10 @@ export function SpawnLineageTimeline({ spawns }: SpawnLineageTimelineProps) {
 
   return (
     <div className="relative pl-4 space-y-4">
-      <div className="absolute left-1.5 top-0 bottom-0 w-px bg-gray-200" />
+      <div className="absolute left-1.5 top-0 bottom-0 w-px bg-muted" />
       {spawns.map(s => (
         <div key={s.id} className="relative flex gap-3 text-sm">
-          <div className={`absolute -left-2.5 w-4 h-4 rounded-full border-2 bg-white ${
+          <div className={`absolute -left-2.5 w-4 h-4 rounded-full border-2 bg-card ${
             s.decision === 'approved' ? 'border-green-400' : 'border-red-400'
           }`} />
           <div className="ml-3">

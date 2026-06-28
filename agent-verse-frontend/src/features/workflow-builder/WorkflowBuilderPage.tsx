@@ -25,7 +25,7 @@ const NODE_COLORS: Record<string, string> = {
   loop:           'bg-cyan-100 border-cyan-400 text-cyan-800',
   human_approval: 'bg-red-100 border-red-400 text-red-800',
   delay:          'bg-slate-100 border-slate-400 text-slate-700',
-  end:            'bg-gray-100 border-gray-400 text-gray-700',
+  end:            'bg-muted/60 border-muted-foreground/50 text-gray-900 dark:text-gray-100',
 };
 
 const NODE_ICONS: Record<string, string> = {

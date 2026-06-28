@@ -121,6 +121,12 @@ services:
       SEARXNG_URL: http://searxng:8080
       EMBEDDING_DIM: "1536"
       FAKE_LLM_WARNING: "WARNING: No LLM API keys set. Agent goals will use FakeProvider and return dummy responses. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     labels:
       - "traefik.enable=false"
       - "com.agentverse.note=Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real LLM execution"
@@ -241,6 +247,12 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   minio:
     image: minio/minio:latest

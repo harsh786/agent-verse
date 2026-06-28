@@ -171,9 +171,13 @@ async def replay_goal(
 
     except HTTPException:
         raise
+    except (RuntimeError, OSError) as exc:
+        # Connection/event-loop errors (e.g. asyncpg pool on wrong loop) → 503
+        logger.warning("goal_replay_service_unavailable", goal_id=goal_id, error=str(exc))
+        raise HTTPException(503, "Replay service temporarily unavailable") from exc
     except Exception as exc:
         logger.warning("goal_replay_failed", goal_id=goal_id, error=str(exc))
-        raise HTTPException(500, f"Replay failed: {exc}")
+        raise HTTPException(500, f"Replay failed: {exc}") from exc
 
 
 @router.get("/{goal_id}/timeline")

@@ -170,6 +170,13 @@ export interface AgentResponse {
   goal_template?: string;
   status?: string;
   created_at?: string;
+  // Extended fields returned by the backend but not always present
+  max_iterations?: number;
+  model_override?: string;
+  system_prompt?: string;
+  connector_ids?: string[];
+  allowed_collection_ids?: string[];
+  description?: string;
 }
 
 // ── Agent extended types ──────────────────────────────────────────────────────

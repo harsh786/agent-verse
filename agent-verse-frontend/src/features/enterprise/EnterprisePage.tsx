@@ -132,7 +132,7 @@ function DeleteSection() {
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
             placeholder="DELETE MY DATA"
-            className="w-full border border-red-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-red-400"
+            className="w-full border border-red-300 rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-red-400"
           />
           {mutation.isError && (
             <p className="text-xs text-red-600">{String(mutation.error)}</p>

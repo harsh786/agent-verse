@@ -31,9 +31,9 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
   const messages = (data?.recent_messages as Record<string, unknown>[]) ?? [];
 
   return (
-    <div className="fixed inset-y-0 right-0 w-96 bg-white shadow-2xl z-50 flex flex-col border-l">
+    <div className="fixed inset-y-0 right-0 w-96 bg-card shadow-2xl z-50 flex flex-col border-l">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
+      <div className="flex items-center justify-between p-4 border-b bg-muted/30">
         <div>
           <h2 className="font-semibold text-gray-800">Agent Inspector</h2>
           <div className="text-xs text-gray-400 font-mono">{agentId?.slice(0, 16)}...</div>
@@ -84,7 +84,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
               {/* Reputation bar */}
               <div className="mt-2">
                 <div className="text-xs text-gray-400 mb-1">Reputation</div>
-                <div className="w-full bg-gray-200 rounded-full h-1.5">
+                <div className="w-full bg-muted rounded-full h-1.5">
                   <div
                     className="bg-green-500 h-1.5 rounded-full transition-all"
                     style={{ width: `${Number(member.reputation || 0.5) * 100}%` }}
@@ -105,7 +105,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                   return (
                     <div key={key} className="text-xs">
                       <div className="text-gray-400 uppercase tracking-wide">{key.replace(/_/g, ' ')}</div>
-                      <div className="text-gray-700 bg-gray-50 rounded p-1.5 mt-0.5 font-mono break-all">
+                      <div className="text-foreground bg-muted/30 rounded p-1.5 mt-0.5 font-mono break-all">
                         {String(val).slice(0, 150)}{String(val).length > 150 ? '...' : ''}
                       </div>
                     </div>
