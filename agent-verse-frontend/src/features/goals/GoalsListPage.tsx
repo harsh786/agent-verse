@@ -55,7 +55,7 @@ export function GoalsListPage() {
       }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["goals"] });
-      navigate(`/goals/${res.goal_id}`);
+      navigate(`/goals/${res.goal_id ?? res.id}`);
     },
   });
 
