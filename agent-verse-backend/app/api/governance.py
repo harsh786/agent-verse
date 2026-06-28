@@ -6,6 +6,7 @@ import asyncio  # noqa: F401  (used in SSE generators)
 import json as _json
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -804,7 +805,8 @@ async def emergency_stop(request: Request) -> dict:
         try:
             from app.governance.audit import AuditEvent
             from app.governance.permissions import ActionLevel
-            from app.tenancy.context import PlanTier, TenantContext as _TC
+            from app.tenancy.context import PlanTier
+            from app.tenancy.context import TenantContext as _TC
             _audit_ctx = _TC(
                 tenant_id=ctx.tenant_id,
                 plan=PlanTier.FREE,
@@ -981,6 +983,7 @@ async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
     if db is None:
         raise HTTPException(503, "Database not available")
     import uuid
+
     from sqlalchemy import text
     async with db() as session, session.begin():
         await session.execute(text("""
@@ -1025,3 +1028,322 @@ async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
         ]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# NEW (governance v2): Batch HITL approval
+# ---------------------------------------------------------------------------
+
+class BatchApproveRequest(BaseModel):
+    action: str  # "approve" | "reject"
+    request_ids: list[str]
+    approver: str
+    note: str = ""
+
+
+@router.post("/hitl/batch-approve")
+async def batch_approve(
+    request: Request,
+    body: BatchApproveRequest,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
+    """Approve or reject up to 100 HITL requests in a single call."""
+    if len(body.request_ids) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Maximum 100 request IDs per batch",
+        )
+    tenant_ctx: TenantContext = _require_tenant(request)
+    gateway = _hitl(request)
+
+    approved = 0
+    rejected_count = 0
+    not_found = 0
+    results: list[dict[str, Any]] = []
+
+    for req_id in body.request_ids:
+        if body.action == "approve":
+            ok = gateway.approve(
+                req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+            )
+            if ok:
+                approved += 1
+                # Also publish via Redis BLPOP path if available
+                await gateway.publish_resolution(
+                    request_id=req_id,
+                    action="approve",
+                    approver=body.approver,
+                    note=body.note,
+                )
+                results.append({"request_id": req_id, "result": "approved"})
+            else:
+                not_found += 1
+                results.append({"request_id": req_id, "result": "not_found"})
+        elif body.action == "reject":
+            ok = await gateway.reject(
+                req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+            )
+            if ok:
+                rejected_count += 1
+                await gateway.publish_resolution(
+                    request_id=req_id,
+                    action="reject",
+                    approver=body.approver,
+                    note=body.note,
+                )
+                results.append({"request_id": req_id, "result": "rejected"})
+            else:
+                not_found += 1
+                results.append({"request_id": req_id, "result": "not_found"})
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown action: {body.action!r}",
+            )
+
+    return {
+        "approved": approved,
+        "rejected": rejected_count,
+        "not_found": not_found,
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# NEW (governance v2): Policy version history & rollback
+# ---------------------------------------------------------------------------
+
+
+@router.get("/policies/{policy_id}/versions")
+async def get_policy_versions(
+    request: Request, policy_id: str
+) -> list[dict[str, Any]]:
+    """Return the full version history for a policy."""
+    _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+
+        async with db() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT id, version_number, name, description, is_active,
+                           change_summary, changed_by, changed_at, deleted_at
+                    FROM policy_versions
+                    WHERE policy_id = :pid
+                    ORDER BY version_number ASC
+                    """
+                ),
+                {"pid": policy_id},
+            )
+            rows = result.fetchall()
+        return [
+            {
+                "id": r[0],
+                "policy_id": policy_id,
+                "version_number": r[1],
+                "name": r[2],
+                "description": r[3],
+                "is_active": r[4],
+                "change_summary": r[5],
+                "changed_by": r[6],
+                "changed_at": r[7].isoformat() if r[7] else None,
+                "deleted_at": r[8].isoformat() if r[8] else None,
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+class RollbackRequest(BaseModel):
+    target_version: int
+    reason: str
+
+
+@router.post("/policies/{policy_id}/rollback")
+async def rollback_policy(
+    request: Request,
+    policy_id: str,
+    body: RollbackRequest,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Roll back a policy to a previous version snapshot."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Database not available")
+
+    try:
+        from sqlalchemy import text
+
+        async with db() as session, session.begin():
+            # Deactivate current active version
+            await session.execute(
+                text(
+                    "UPDATE policy_versions SET is_active = FALSE "
+                    "WHERE policy_id = :pid AND is_active = TRUE"
+                ),
+                {"pid": policy_id},
+            )
+            # Fetch target snapshot
+            r = await session.execute(
+                text(
+                    "SELECT id, name, description, rules, version_number "
+                    "FROM policy_versions "
+                    "WHERE policy_id = :pid AND version_number = :ver"
+                ),
+                {"pid": policy_id, "ver": body.target_version},
+            )
+            target = r.fetchone()
+            if not target:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND,
+                    f"Version {body.target_version} not found for policy {policy_id}",
+                )
+            # Find max version
+            max_r = await session.execute(
+                text(
+                    "SELECT COALESCE(MAX(version_number), 0) FROM policy_versions "
+                    "WHERE policy_id = :pid"
+                ),
+                {"pid": policy_id},
+            )
+            max_ver = max_r.scalar() or 0
+            new_ver = max_ver + 1
+            import uuid as _uuid
+            new_id = _uuid.uuid4().hex
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO policy_versions
+                        (id, tenant_id, policy_id, version_number, name, description,
+                         rules, is_active, change_summary, changed_at)
+                    VALUES
+                        (:id, :tid, :pid, :ver, :name, :desc,
+                         :rules::jsonb, TRUE, :summary, now())
+                    """
+                ),
+                {
+                    "id": new_id,
+                    "tid": tenant_ctx.tenant_id,
+                    "pid": policy_id,
+                    "ver": new_ver,
+                    "name": target[1],
+                    "desc": target[2],
+                    "rules": json.dumps(target[3]) if not isinstance(target[3], str) else target[3],
+                    "summary": f"Rollback to v{body.target_version}: {body.reason}",
+                },
+            )
+        return {
+            "policy_id": policy_id,
+            "new_version": new_ver,
+            "rolled_back_to": body.target_version,
+            "reason": body.reason,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# NEW (audit v2): hash chain verification
+# ---------------------------------------------------------------------------
+
+
+@router.get("/audit/integrity/verify")
+async def verify_audit_chain(
+    request: Request,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict[str, Any]:
+    """Verify the cryptographic hash chain of audit events."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Database not available")
+
+    from datetime import datetime
+
+    try:
+        fd = (
+            datetime.fromisoformat(from_date)
+            if from_date
+            else datetime(2026, 1, 1, tzinfo=UTC)
+        )
+        td = (
+            datetime.fromisoformat(to_date)
+            if to_date
+            else datetime.now(UTC)
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    try:
+        from app.governance.audit_v2 import HashChainVerifier
+
+        async with db() as session:
+            verifier = HashChainVerifier()
+            return await verifier.verify(session, tenant_ctx.tenant_id, fd, td)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# NEW (audit v2): SLA violation stats
+# ---------------------------------------------------------------------------
+
+
+@router.get("/approvals/sla-stats")
+async def get_sla_stats(request: Request) -> dict[str, Any]:
+    """Return SLA compliance stats for HITL approvals."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return {"error": "Database not available"}
+
+    try:
+        from sqlalchemy import text
+
+        async with db() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                        COUNT(*) FILTER (WHERE status = 'approved') AS approved,
+                        COUNT(*) FILTER (WHERE status = 'denied') AS denied,
+                        COUNT(*) FILTER (WHERE status = 'timed_out') AS timed_out,
+                        COUNT(*) FILTER (WHERE status = 'escalated') AS escalated,
+                        COUNT(*) FILTER (
+                            WHERE sla_deadline IS NOT NULL
+                              AND resolved_at IS NOT NULL
+                              AND resolved_at <= sla_deadline
+                        ) AS within_sla,
+                        AVG(
+                            EXTRACT(EPOCH FROM (resolved_at - created_at))
+                        ) FILTER (WHERE resolved_at IS NOT NULL) AS avg_resolution_seconds
+                    FROM hitl_approval_requests
+                    WHERE tenant_id = :tid
+                    """
+                ),
+                {"tid": tenant_ctx.tenant_id},
+            )
+            row = result.fetchone()
+            if not row:
+                return {}
+            return {
+                "pending": row[0] or 0,
+                "approved": row[1] or 0,
+                "denied": row[2] or 0,
+                "timed_out": row[3] or 0,
+                "escalated": row[4] or 0,
+                "within_sla": row[5] or 0,
+                "avg_resolution_seconds": float(row[6]) if row[6] else None,
+            }
+    except Exception:
+        return {}

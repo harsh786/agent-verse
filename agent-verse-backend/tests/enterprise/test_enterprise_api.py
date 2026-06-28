@@ -116,7 +116,8 @@ def test_api_compliance_residency() -> None:
     resp = client.get("/enterprise/compliance/residency", headers=_HDR)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["gdpr_compliant"] is True
+    # FIX: gdpr_compliant must not be hardcoded True
+    assert body["gdpr_compliant"] is False
     assert body["tenant_id"] == _CTX.tenant_id
 
 

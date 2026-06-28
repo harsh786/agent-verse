@@ -71,9 +71,11 @@ async def test_data_residency(authed_client):
     assert resp.status_code == 200
     data = resp.json()
     assert "primary_region" in data or "region" in data
-    # GDPR compliance flag must be present
+    # FIX: gdpr_compliant must NOT be hardcoded True — it's dynamically checked.
+    # Verify the field exists and has a note about the dynamic compliance endpoint.
     assert "gdpr_compliant" in data
-    assert data["gdpr_compliant"] is True
+    assert data["gdpr_compliant"] is False  # FIX: no longer hardcoded True
+    assert "note" in data  # Points to /enterprise/compliance/gdpr
 
 
 async def test_compliance_requires_auth(app):

@@ -4,11 +4,13 @@ import os
 
 def test_slack_verify_fails_closed_in_production():
     os.environ["ENVIRONMENT"] = "production"
-    from app.integrations.slack import handler
-    import importlib; importlib.reload(handler)
-    result = handler.verify_slack_signature(b"body", "ts", "sig", "")
-    assert result is False, "Must reject requests when no secret in production"
-    os.environ["ENVIRONMENT"] = "development"
+    try:
+        from app.integrations.slack import handler
+        import importlib; importlib.reload(handler)
+        result = handler.verify_slack_signature(b"body", "ts", "sig", "")
+        assert result is False, "Must reject requests when no secret in production"
+    finally:
+        os.environ["ENVIRONMENT"] = "development"
 
 
 def test_slack_verify_passes_in_dev_no_secret():
@@ -21,10 +23,13 @@ def test_slack_verify_passes_in_dev_no_secret():
 
 def test_zapier_verify_fails_closed_in_production():
     os.environ["ENVIRONMENT"] = "production"
-    from app.integrations.zapier import handler
-    import importlib; importlib.reload(handler)
-    result = handler.verify_zapier_secret("")
-    assert result is False
+    try:
+        from app.integrations.zapier import handler
+        import importlib; importlib.reload(handler)
+        result = handler.verify_zapier_secret("")
+        assert result is False
+    finally:
+        os.environ["ENVIRONMENT"] = "development"
 
 
 def test_oauth_state_expiry():

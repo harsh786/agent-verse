@@ -278,12 +278,12 @@ async def test_marketplace_deploy_to_agent_creation():
 async def test_compliance_full_flow():
     """GDPR export → status check → deletion request."""
     cc = ComplianceController()
-    req = cc.request_data_export(tenant_ctx=T)
+    req = await cc.request_data_export(tenant_ctx=T)
     assert req.status == "ready"
     assert req.payload
-    status = cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
+    status = await cc.get_export_status(request_id=req.request_id, tenant_ctx=T)
     assert status is not None
-    deletion = cc.request_data_deletion(tenant_ctx=T)
+    deletion = await cc.request_data_deletion(tenant_ctx=T)
     assert deletion["deletion_scheduled"] is True
 
 

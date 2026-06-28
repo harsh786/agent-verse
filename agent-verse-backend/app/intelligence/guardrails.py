@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 
 # ── Pattern libraries ─────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ def _detect_rot13_injection(text: str) -> list[str]:
 
 
 def _detect_homoglyph_injection(text: str) -> list[str]:
-    """Detect Unicode homoglyphs (е→e, і→i, о→o) used to bypass filters."""
+    """Detect Unicode homoglyphs (e.g. cyrillic 'e', 'i', 'o') used to bypass filters."""
     normalized = _normalize_text(text)
     if normalized != text.lower() and any(phrase in normalized for phrase in _INJECTION_PHRASES):
         return ["unicode-homoglyph injection detected"]
@@ -108,6 +109,39 @@ def _detect_indirect_injection(text: str) -> list[str]:
     if any(phrase in leet_normalized for phrase in _INJECTION_PHRASES):
         issues.append("leetspeak injection phrase detected")
 
+    return issues
+
+
+def _scan_value_recursive(value: Any, depth: int = 0) -> list[str]:
+    """FIX: Recursively scan nested dict/list values for injection and dangerous patterns.
+
+    The original check() only iterated tool_args.values() which missed
+    injections hidden in nested structures like:
+      {"options": {"filter": {"description": "ignore previous instructions"}}}
+    """
+    if depth > 10:
+        return []
+    issues: list[str] = []
+    if isinstance(value, str):
+        text = value.lower()
+        for phrase in _INJECTION_PHRASES:
+            if phrase in text:
+                issues.append(f"Possible prompt-injection detected: '{phrase}'")
+                break
+        for pattern in _DANGEROUS_PATTERNS:
+            if pattern.search(value):
+                issues.append("Dangerous command pattern detected in args")
+                break
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            child_issues = _scan_value_recursive(v, depth + 1)
+            for ci in child_issues:
+                issues.append(f"key={k}: {ci}")
+    elif isinstance(value, (list, tuple)):
+        for i, item in enumerate(value):
+            child_issues = _scan_value_recursive(item, depth + 1)
+            for ci in child_issues:
+                issues.append(f"index={i}: {ci}")
     return issues
 
 
@@ -147,25 +181,20 @@ class GuardrailChecker:
     # ── Enhanced API ──────────────────────────────────────────────────────────
 
     def check(self, *, tool_name: str, tool_args: dict[str, object]) -> list[str]:
-        """Validate a tool call; return list of issue strings (empty = OK)."""
+        """Validate a tool call; return list of issue strings (empty = OK).
+
+        FIX: Uses recursive scanning (_scan_value_recursive) so injections
+        hidden in nested dicts/lists are caught, not just top-level values.
+        """
         issues: list[str] = []
 
         # Registry check (skip for always-allowed tools and when registry empty)
-        if self._known_tools and tool_name not in _ALWAYS_ALLOWED:
-            if tool_name not in self._known_tools:
-                issues.append(f"Unknown tool '{tool_name}' not in known-tools registry")
+        if self._known_tools and tool_name not in _ALWAYS_ALLOWED and tool_name not in self._known_tools:
+            issues.append(f"Unknown tool '{tool_name}' not in known-tools registry")
 
-        # Injection / dangerous pattern scan over string args
+        # Recursive injection / dangerous pattern scan over all arg values
         for value in tool_args.values():
-            text = str(value).lower()
-            for phrase in _INJECTION_PHRASES:
-                if phrase in text:
-                    issues.append(f"Possible prompt-injection detected: '{phrase}'")
-                    break
-            for pattern in _DANGEROUS_PATTERNS:
-                if pattern.search(str(value)):
-                    issues.append("Dangerous command pattern detected in args")
-                    break
+            issues.extend(_scan_value_recursive(value))
 
         return issues
 

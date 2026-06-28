@@ -169,12 +169,15 @@ class ComplianceController:
                 try:
                     from sqlalchemy import text as _text
                     async with db() as _sess:
+                        # FIX: The previous cap has been removed.
+                        # GDPR Art. 20 right to portability requires exporting ALL data.
+                        # Large tenants use async Celery export (compliance_router).
                         _rows = (
                             await _sess.execute(
                                 _text(
                                     "SELECT id, goal_text, status, created_at "
                                     "FROM goals WHERE tenant_id = :tid "
-                                    "ORDER BY created_at DESC LIMIT 500"
+                                    "ORDER BY created_at DESC"
                                 ),
                                 {"tid": tenant_ctx.tenant_id},
                             )
@@ -326,13 +329,17 @@ class ComplianceController:
         return req.payload
 
     def get_data_residency(self, *, tenant_ctx: TenantContext) -> dict[str, Any]:
+        # FIX: No longer returns hardcoded gdpr_compliant=True / soc2_type2=True.
+        # These are compliance assertions that must be earned, not assumed.
+        # Use ComplianceChecker (compliance_v2.py) for authoritative compliance status.
         return {
             "tenant_id": tenant_ctx.tenant_id,
             "primary_region": "us-east-1",
             "backup_region": "eu-west-1",
-            "gdpr_compliant": True,
+            "gdpr_compliant": False,   # FIX: was hardcoded True — dynamically checked via /compliance/gdpr
             "pci_dss_scope": False,
-            "soc2_type2": True,
+            "soc2_type2": False,       # FIX: was hardcoded True — dynamically checked via /compliance/soc2
+            "note": "Use GET /enterprise/compliance/{framework} for authoritative compliance status.",
         }
 
     async def execute_data_deletion_async(

@@ -121,6 +121,7 @@ async def test_submit_goal_enqueues_worker_without_local_task() -> None:
             "agent_id": "agent-123",
             "workflow_mode": "multi_agent",
             "goal_template": "",
+            "plan": _CTX_A.plan.value,
         }
     ]
 

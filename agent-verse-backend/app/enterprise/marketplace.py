@@ -1,4 +1,12 @@
-"""Marketplace — agent template gallery for browse/deploy/publish."""
+"""Marketplace — agent template gallery for browse/deploy/publish.
+
+V1 (this module): in-memory template gallery used by existing API endpoints.
+V2: see app.enterprise.marketplace_v2 for DB-backed service with atomic install,
+    security review pipeline, and full-text search.
+
+The existing API (browse/deploy/publish) is preserved unchanged so no existing
+tests break. New marketplace v2 endpoints in enterprise.py use marketplace_v2.
+"""
 from __future__ import annotations
 
 import uuid

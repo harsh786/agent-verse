@@ -1114,3 +1114,173 @@ export const templatesApi = {
       { method: "POST", body: JSON.stringify({ parameters, submit, agent_id: agentId }) }
     ),
 };
+
+// ── Agent Credentials (Spec 1) ────────────────────────────────────────────────
+
+export interface AgentCredential {
+  key_id: string;
+  key_type: "jwt" | "api_key" | "mtls";
+  scopes: string[];
+  expires_at: string | null;
+  last_used_at: string | null;
+  description?: string;
+  status: "active" | "revoked";
+}
+
+export interface IssueCredentialRequest {
+  key_type: "jwt" | "api_key" | "mtls";
+  scopes: string[];
+  expires_in_days?: number;
+  description?: string;
+}
+
+export interface IssuedCredential extends AgentCredential {
+  private_key?: string;
+}
+
+export const credentialsApi = {
+  list: (agentId: string) => request<AgentCredential[]>(`/agents/${agentId}/credentials`),
+  issue: (agentId: string, req: IssueCredentialRequest) =>
+    request<IssuedCredential>(`/agents/${agentId}/credentials`, { method: "POST", body: JSON.stringify(req) }),
+  revoke: (agentId: string, keyId: string) =>
+    request<void>(`/agents/${agentId}/credentials/${keyId}`, { method: "DELETE" }),
+  getToken: (agentId: string) =>
+    request<{ token: string; expires_at: string }>(`/agents/${agentId}/token`, { method: "POST" }),
+};
+
+// ── Guardrails (Spec 3) ───────────────────────────────────────────────────────
+
+export interface GuardrailConfig {
+  id: string;
+  name: string;
+  rule_type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  enabled: boolean;
+  layers: string[];
+  config: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CreateGuardrailRequest {
+  name: string;
+  rule_type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  layers: string[];
+  config: Record<string, unknown>;
+}
+
+export interface GuardrailTestResult {
+  passed: boolean;
+  risk_score: number;
+  violations: Array<{ type: string; message: string; severity: string }>;
+}
+
+export interface GuardrailViolation {
+  id: string;
+  guardrail_id: string;
+  guardrail_name: string;
+  type: string;
+  severity: string;
+  message: string;
+  goal_id?: string;
+  agent_id?: string;
+  created_at: string;
+}
+
+export const guardrailsApi = {
+  list: () => request<GuardrailConfig[]>("/guardrails"),
+  create: (body: CreateGuardrailRequest) =>
+    request<GuardrailConfig>("/guardrails", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: string, body: CreateGuardrailRequest) =>
+    request<void>(`/guardrails/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  delete: (id: string) => request<void>(`/guardrails/${id}`, { method: "DELETE" }),
+  test: (body: { text: string; rule_id?: string }) =>
+    request<GuardrailTestResult>("/guardrails/test", { method: "POST", body: JSON.stringify(body) }),
+  getViolations: (params?: { limit?: number }) =>
+    request<GuardrailViolation[]>(
+      `/guardrails/violations${params?.limit ? `?limit=${params.limit}` : ""}`
+    ),
+};
+
+// ── Costs (Spec 6) ───────────────────────────────────────────────────────────
+
+export interface CostSummary {
+  total_cost_usd: number;
+  cost_by_day: Array<{ date: string; cost_usd: number }>;
+  cost_by_model: Record<string, number>;
+  daily_budget_usd: number;
+  budget_utilization: number;
+}
+
+export interface AgentCost {
+  agent_id: string;
+  agent_name: string;
+  total_cost_usd: number;
+  goal_count: number;
+  avg_cost_per_goal: number;
+}
+
+export interface CostPrediction {
+  estimated_cost_usd: { min: number; mean: number; max: number };
+  confidence: "low" | "medium" | "high";
+}
+
+export interface BudgetConfig {
+  daily_budget_usd: number;
+  per_goal_budget_usd: number;
+  per_agent_budgets: Record<string, number>;
+  alert_threshold_pct: number;
+}
+
+export interface CostAnomaly {
+  id: string;
+  detected_at: string;
+  type: string;
+  message: string;
+  cost_delta_usd: number;
+  severity: "low" | "medium" | "high";
+}
+
+export const costsApi = {
+  getSummary: () => request<CostSummary>("/costs/summary"),
+  getPerAgent: () => request<AgentCost[]>("/costs/per-agent"),
+  predict: (goal: string) =>
+    request<CostPrediction>("/costs/predict", { method: "POST", body: JSON.stringify({ goal }) }),
+  getBudgets: () => request<BudgetConfig>("/costs/budgets"),
+  updateBudgets: (body: Partial<BudgetConfig>) =>
+    request<void>("/costs/budgets", { method: "PUT", body: JSON.stringify(body) }),
+  getAnomalies: () => request<CostAnomaly[]>("/costs/anomalies"),
+};
+
+// ── Self-Improvement (Spec 9) ─────────────────────────────────────────────────
+
+export interface Experiment {
+  id: string;
+  name: string;
+  agent_id: string;
+  status: "running" | "concluded" | "pending";
+  control_config: Record<string, unknown>;
+  challenger_config: Record<string, unknown>;
+  lift_pct: number | null;
+  started_at: string;
+  concluded_at: string | null;
+}
+
+export interface Suggestion {
+  id: string;
+  type: string;
+  description: string;
+  confidence: number;
+  agent_id?: string;
+  status: "pending" | "applied" | "rejected";
+  created_at: string;
+}
+
+export const selfImprovementApi = {
+  listExperiments: () => request<Experiment[]>("/intelligence/experiments"),
+  getSuggestions: () => request<Suggestion[]>("/intelligence/suggestions"),
+  applySuggestion: (id: string) =>
+    request<void>(`/intelligence/suggestions/${id}/apply`, { method: "POST" }),
+  rejectSuggestion: (id: string) =>
+    request<void>(`/intelligence/suggestions/${id}/reject`, { method: "POST" }),
+};

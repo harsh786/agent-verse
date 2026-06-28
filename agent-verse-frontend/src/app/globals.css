@@ -54,10 +54,50 @@
   outline-offset: 2px;
 }
 
-/* Reduced motion */
+/* Reduced motion — WCAG 2.1 Level AA §2.3.3 */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
+
+/* ── Animation keyframes ────────────────────────────────────────────────── */
+
+/* Credential issue entrance */
+@keyframes credentialIssue {
+  0%   { transform: scale(0.8) translateY(10px); opacity: 0; }
+  70%  { transform: scale(1.05) translateY(-2px); opacity: 0.9; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+.credential-card-entering { animation: credentialIssue 350ms cubic-bezier(0.34,1.56,0.64,1) forwards; }
+
+/* Credential revoke */
+@keyframes credentialRevoke {
+  0%   { opacity: 1; transform: scale(1); }
+  100% { opacity: 0.4; transform: scale(0.97); filter: grayscale(1); }
+}
+.credential-card-revoked { animation: credentialRevoke 500ms ease-out forwards; }
+
+/* Guardrail risk gauge */
+@keyframes riskGaugeFill { from { stroke-dashoffset: 283; } to { stroke-dashoffset: var(--target); } }
+.risk-gauge-arc { animation: riskGaugeFill 600ms ease-out forwards; }
+
+/* Violation slide-in */
+@keyframes violationSlideIn {
+  from { transform: translateX(-10px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.violation-entering { animation: violationSlideIn 200ms ease-out forwards; }
+
+/* Budget gauge sweep */
+@keyframes budgetSweep { from { stroke-dashoffset: 283; } to { stroke-dashoffset: var(--used); } }
+.budget-gauge-arc { animation: budgetSweep 600ms ease-out forwards; }
+
+/* Experiment lift animation */
+@keyframes liftIn { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.experiment-entering { animation: liftIn 250ms ease-out forwards; }

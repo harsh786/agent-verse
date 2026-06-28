@@ -1,25 +1,105 @@
 import { useState } from "react";
+import type { JSX } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DollarSign, TrendingUp, AlertCircle } from "lucide-react";
+import { DollarSign, TrendingUp, AlertCircle, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
-import { analyticsApi } from "@/lib/api/client";
+import { analyticsApi, costsApi } from "@/lib/api/client";
 import { ThemedLineChart, ThemedBarChart } from "@/components/charts";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { toast } from "@/stores/toast";
 
 const PERIODS = [7, 30, 90] as const;
-type Period = typeof PERIODS[number];
+type Period = (typeof PERIODS)[number];
 
-const formatCost = (v: number) => `$${v.toFixed(v >= 0.01 ? 2 : 4)}`;
+const formatCost = (v: number): string => `$${v.toFixed(v >= 0.01 ? 2 : 4)}`;
 
-export function CostDashboardPage() {
+// ── Cost Prediction Widget ────────────────────────────────────────────────────
+
+function CostPredictionWidget({ goalText }: { goalText: string }): JSX.Element | null {
+  const { data, isFetching } = useQuery({
+    queryKey: ["cost-predict", goalText],
+    queryFn: () => costsApi.predict(goalText),
+    enabled: goalText.trim().length > 10,
+    staleTime: 60_000,
+  });
+
+  if (!goalText.trim() || goalText.length <= 10) return null;
+
+  return (
+    <div className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+      <Zap className="h-3 w-3" />
+      {isFetching ? (
+        <span>Estimating cost…</span>
+      ) : data ? (
+        <span>
+          Est. cost: <span className="font-medium text-foreground">{formatCost(data.estimated_cost_usd.mean)}</span>
+          {" "}({data.confidence} confidence)
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Anomaly Alerts Panel ──────────────────────────────────────────────────────
+
+function AnomalyPanel(): JSX.Element {
+  const { data: anomalies = [], isLoading } = useQuery({
+    queryKey: ["cost-anomalies"],
+    queryFn: () => costsApi.getAnomalies(),
+    refetchInterval: 60_000,
+  });
+
+  if (isLoading) return <Skeleton className="h-16 w-full" />;
+  if (anomalies.length === 0) return <></>;
+
+  return (
+    <div className="space-y-2">
+      {anomalies.map((anomaly) => (
+        <div
+          key={anomaly.id}
+          className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+            anomaly.severity === "high"
+              ? "border-red-300/60 bg-red-50/40 dark:bg-red-900/20"
+              : anomaly.severity === "medium"
+              ? "border-yellow-300/60 bg-yellow-50/40 dark:bg-yellow-900/20"
+              : "border-border bg-card"
+          }`}
+        >
+          <AlertCircle
+            className={`h-4 w-4 mt-0.5 flex-shrink-0 ${
+              anomaly.severity === "high"
+                ? "text-red-600 dark:text-red-400"
+                : anomaly.severity === "medium"
+                ? "text-yellow-600 dark:text-yellow-400"
+                : "text-muted-foreground"
+            }`}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium capitalize">{anomaly.type.replace(/_/g, " ")}</p>
+            <p className="text-muted-foreground text-xs mt-0.5">{anomaly.message}</p>
+          </div>
+          <span className="text-xs text-muted-foreground flex-shrink-0">
+            +{formatCost(anomaly.cost_delta_usd)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── CostDashboardPage ─────────────────────────────────────────────────────────
+
+export function CostDashboardPage(): JSX.Element {
   const apiKey = useAuthStore((s) => s.apiKey);
   const [days, setDays] = useState<Period>(30);
+  const [predGoal, setPredGoal] = useState("");
 
   // Legacy KPI endpoint
   const { data: kpiData, isLoading: kpiLoading } = useQuery({
     queryKey: ["cost-metrics-kpi"],
     queryFn: async () => {
       const res = await fetch(
-        `${(import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000"}/goals/cost-metrics`,
+        `${(import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000"}/goals/cost-metrics`, // eslint-disable-line @typescript-eslint/no-explicit-any
         { headers: { "X-API-Key": apiKey } }
       );
       if (!res.ok) throw new Error(`${res.status}`);
@@ -37,10 +117,15 @@ export function CostDashboardPage() {
     enabled: !!apiKey,
   });
 
-  // Detailed analytics (time-series + model breakdown)
   const { data: analytics } = useQuery({
     queryKey: ["analytics-costs", days],
     queryFn: () => analyticsApi.getCostMetrics(days),
+    enabled: !!apiKey,
+  });
+
+  const { data: perAgent = [], isLoading: agentCostLoading } = useQuery({
+    queryKey: ["cost-per-agent"],
+    queryFn: () => costsApi.getPerAgent(),
     enabled: !!apiKey,
   });
 
@@ -52,7 +137,6 @@ export function CostDashboardPage() {
       ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
       : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
 
-  // Cost by model bar chart data
   const modelChartData = analytics?.cost_by_model
     ? Object.entries(analytics.cost_by_model)
         .map(([model, cost]) => ({ model: model.split("/").pop()?.slice(0, 14) ?? model, cost }))
@@ -60,7 +144,6 @@ export function CostDashboardPage() {
         .slice(0, 8)
     : [];
 
-  // Daily cost line data
   const dailyData = analytics?.cost_by_day?.slice(-days) ?? [];
 
   return (
@@ -72,7 +155,6 @@ export function CostDashboardPage() {
             LLM spend, budget tracking and goal economics
           </p>
         </div>
-        {/* Time period selector */}
         <div className="flex gap-1 border rounded-lg overflow-hidden">
           {PERIODS.map((p) => (
             <button
@@ -88,6 +170,9 @@ export function CostDashboardPage() {
           ))}
         </div>
       </div>
+
+      {/* Anomaly alerts */}
+      <AnomalyPanel />
 
       {kpiLoading ? (
         <div className="text-center py-10 text-sm text-muted-foreground">Loading cost data…</div>
@@ -123,9 +208,11 @@ export function CostDashboardPage() {
               <p className="text-sm text-muted-foreground mb-2">Goals Today</p>
               <p className="text-2xl font-bold">{kpiData?.goals_today ?? 0}</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                avg {kpiData?.goals_today
+                avg{" "}
+                {kpiData?.goals_today
                   ? formatCost((kpiData.cost_today_usd ?? 0) / kpiData.goals_today)
-                  : "$0.00"} / goal
+                  : "$0.00"}{" "}
+                / goal
               </p>
             </div>
 
@@ -134,9 +221,7 @@ export function CostDashboardPage() {
               <p className="text-2xl font-bold">
                 {formatCost(analytics?.total_cost_usd ?? 0)}
               </p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {days}-day period
-              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">{days}-day period</p>
             </div>
           </div>
 
@@ -165,9 +250,26 @@ export function CostDashboardPage() {
             </div>
           </div>
 
+          {/* Cost prediction */}
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="font-semibold text-sm mb-3 flex items-center gap-2">
+              <Zap className="h-4 w-4" /> Cost Predictor
+            </h2>
+            <input
+              type="text"
+              value={predGoal}
+              onChange={(e) => setPredGoal(e.target.value)}
+              placeholder="Type a goal to estimate its cost…"
+              className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") toast({ kind: "info", message: "Estimating cost…" });
+              }}
+            />
+            <CostPredictionWidget goalText={predGoal} />
+          </div>
+
           {/* Charts row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Daily cost time-series */}
             <div className="bg-card border border-border rounded-xl p-5">
               <h2 className="font-semibold text-sm mb-4">Daily Cost ({days}d)</h2>
               {dailyData.length === 0 ? (
@@ -185,7 +287,6 @@ export function CostDashboardPage() {
               )}
             </div>
 
-            {/* Cost by model */}
             <div className="bg-card border border-border rounded-xl p-5">
               <h2 className="font-semibold text-sm mb-4">Cost by Model</h2>
               {modelChartData.length === 0 ? (
@@ -203,6 +304,41 @@ export function CostDashboardPage() {
                 />
               )}
             </div>
+          </div>
+
+          {/* Per-agent cost breakdown */}
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+              <h2 className="font-semibold text-sm">Cost by Agent</h2>
+            </div>
+            {agentCostLoading ? (
+              <Skeleton className="h-32 w-full" />
+            ) : perAgent.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-muted-foreground">No per-agent cost data yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground">Agent</th>
+                      <th className="px-5 py-3 text-right text-xs font-medium text-muted-foreground">Total Cost</th>
+                      <th className="px-5 py-3 text-right text-xs font-medium text-muted-foreground">Goals</th>
+                      <th className="px-5 py-3 text-right text-xs font-medium text-muted-foreground">Avg / Goal</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {perAgent.map((ac) => (
+                      <tr key={ac.agent_id} className="hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-3 font-medium">{ac.agent_name}</td>
+                        <td className="px-5 py-3 text-right font-mono">{formatCost(ac.total_cost_usd)}</td>
+                        <td className="px-5 py-3 text-right">{ac.goal_count}</td>
+                        <td className="px-5 py-3 text-right font-mono">{formatCost(ac.avg_cost_per_goal)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}

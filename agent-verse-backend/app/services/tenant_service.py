@@ -54,6 +54,8 @@ class TenantService:
         self._tenant_keys: dict[str, list[str]] = {}
         # None in tests, real factory in production
         self._db: Any = db_session_factory
+        # Optional Redis client for caching (set by tests or lifespan)
+        self._redis: Any = None
 
     # ── tenant CRUD ───────────────────────────────────────────────────────────
 
@@ -92,6 +94,7 @@ class TenantService:
             "key_hash": key_hash,
             "is_active": True,
             "created_at": datetime.now(UTC).isoformat(),
+            "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
         }
         self._hash_to_key_id[key_hash] = key_id
         self._tenant_keys.setdefault(tenant_id, []).append(key_id)
@@ -200,8 +203,32 @@ class TenantService:
 
         Used by :class:`~app.tenancy.middleware.TenantMiddleware` as the key
         resolver callback.
+
+        Redis caching: on first lookup the resolved context is cached under
+        ``api_key:{sha256(raw_key)}`` (TTL 300 s) so subsequent requests skip
+        the in-memory dict walk entirely.
         """
+        import json as _json
+
         key_hash = _hash_key(raw_key)
+        cache_key = f"api_key:{key_hash}"
+
+        # ── Redis cache hit ────────────────────────────────────────────────
+        if self._redis is not None:
+            try:
+                cached = await self._redis.get(cache_key)
+                if cached is not None:
+                    data = _json.loads(cached)
+                    return TenantContext(
+                        tenant_id=data["tenant_id"],
+                        plan=PlanTier(data["plan"]),
+                        api_key_id=data["api_key_id"],
+                        roles=tuple(data.get("roles", ("operator",))),
+                    )
+            except Exception:
+                pass  # fall through on Redis errors
+
+        # ── In-memory lookup ───────────────────────────────────────────────
         key_id = self._hash_to_key_id.get(key_hash)
         if key_id is None:
             return None
@@ -221,15 +248,33 @@ class TenantService:
         tenant = self._tenants.get(key["tenant_id"])
         if tenant is None:
             return None
-        # API key holders are the tenant owner — grant them admin role by default
-        # so they can access all RBAC-protected endpoints for their own tenant.
-        key_roles: tuple[str, ...] = tuple(key.get("roles", ("admin",))) or ("admin",)
-        return TenantContext(
+        # Default role is "operator" (least-privilege non-admin default).
+        # Explicit roles stored on the key record override this default.
+        key_roles: tuple[str, ...] = tuple(key.get("roles", ("operator",))) or ("operator",)
+        ctx = TenantContext(
             tenant_id=tenant["tenant_id"],
             plan=PlanTier(tenant["plan"]),
             api_key_id=key_id,
             roles=key_roles,
         )
+
+        # ── Populate Redis cache ───────────────────────────────────────────
+        if self._redis is not None:
+            try:
+                await self._redis.setex(
+                    cache_key,
+                    300,
+                    _json.dumps({
+                        "tenant_id": ctx.tenant_id,
+                        "plan": ctx.plan.value,
+                        "api_key_id": ctx.api_key_id,
+                        "roles": list(ctx.roles),
+                    }),
+                )
+            except Exception:
+                pass  # caching is best-effort
+
+        return ctx
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
@@ -366,6 +411,29 @@ class TenantService:
                         }
             except Exception as exc:
                 logging.getLogger(__name__).warning("sso_lookup_failed: %s", exc)
+        return None
+
+    async def get_key_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
+        """Return the primary API key record associated with an SSO subject.
+
+        The tenant dict created by ``create_tenant_from_sso`` stores the initial
+        ``api_key_id``. This method retrieves that key record so callers can use
+        a real, persisted key_id instead of a ghost ``sso:{sub}`` string.
+        """
+        for tenant in self._tenants.values():
+            if tenant.get("sso_sub") == sso_sub:
+                key_id = tenant.get("api_key_id")
+                if not key_id:
+                    return None
+                key_rec = self._keys.get(key_id)
+                if key_rec:
+                    return {"key_id": key_id, **key_rec}
+                # Return minimal record using tenant data
+                return {
+                    "key_id": key_id,
+                    "tenant_id": tenant.get("tenant_id", ""),
+                    "sso_sub": sso_sub,
+                }
         return None
 
     async def create_tenant_from_sso(

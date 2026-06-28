@@ -7,7 +7,7 @@ import uuid as _uuid
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
@@ -69,7 +69,7 @@ class ConfluenceIngestRequest(BaseModel):
     collection_id: str
     base_url: str
     space_key: str
-    token: str
+    token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
     max_pages: int = 1000
 
@@ -78,7 +78,7 @@ class JiraIngestRequest(BaseModel):
     collection_id: str
     base_url: str
     project_key: str
-    token: str
+    token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
     jql_extra: str = ""
     max_issues: int = 500
@@ -87,7 +87,7 @@ class JiraIngestRequest(BaseModel):
 class SlackIngestRequest(BaseModel):
     collection_id: str
     channel_id: str
-    token: str
+    token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     channel_name: str = ""
     max_messages: int = 500
 
@@ -299,6 +299,19 @@ async def search_knowledge(
     store = _knowledge_store(request)
 
     embedder = getattr(request.app.state, "embedder", None)
+
+    # FIX 5: Fail loudly when no embedder is configured.
+    # Previously: returned empty embeddings silently, corrupting search results.
+    # Now: raises 503 with an actionable message for the operator.
+    if embedder is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No embedding provider configured. "
+                "Set VOYAGE_API_KEY or OPENAI_API_KEY to enable knowledge base search."
+            ),
+        )
+
     from app.providers.base import embed_texts
     query_embeddings = await embed_texts([q], provider=embedder)
     query_embedding = query_embeddings[0]
@@ -518,7 +531,7 @@ async def _ingest_repo_background(
         )
         try:
             _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             logger.warning("repo_clone_timeout", repo=repo_url)
             return
@@ -723,9 +736,10 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         chunks = [_CChunk(content=content.strip(), start_char=0, end_char=len(content))]
 
     embedder = getattr(request.app.state, "embedder", None)
-    from app.providers.base import EmbedRequest, embed_texts
-    from app.rag.models import Chunk as RagChunk
     import uuid as _uuid_mod
+
+    from app.providers.base import embed_texts
+    from app.rag.models import Chunk as RagChunk
 
     doc_id = _uuid_mod.uuid4().hex
     doc_count = 0
@@ -899,7 +913,7 @@ async def ingest_confluence(
     from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
     ingestor = ConfluenceIngestor(
         base_url=body.base_url,
-        token=body.token,
+        token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
         user=body.user,
     )
     chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
@@ -924,7 +938,7 @@ async def ingest_jira(
     from app.knowledge.ingestors.jira_ingestor import JiraIngestor
     ingestor = JiraIngestor(
         base_url=body.base_url,
-        token=body.token,
+        token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
         user=body.user,
     )
     chunks = await ingestor.ingest_project(
@@ -951,7 +965,7 @@ async def ingest_slack(
     embedder = getattr(request.app.state, "embedder", None)
 
     from app.knowledge.ingestors.slack_ingestor import SlackIngestor
-    ingestor = SlackIngestor(token=body.token)
+    ingestor = SlackIngestor(token=body.token.get_secret_value())
     chunks = await ingestor.ingest_channel(
         body.channel_id,
         channel_name=body.channel_name,

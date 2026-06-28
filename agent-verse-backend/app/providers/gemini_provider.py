@@ -11,6 +11,7 @@ from app.providers.base import (
     CompletionResponse,
     EmbedRequest,
     EmbedResponse,
+    TokenUsage,
 )
 
 
@@ -70,11 +71,19 @@ class GeminiProvider:
         )
 
         text = response.text if hasattr(response, "text") else ""
+        _usage_meta = getattr(response, "usage_metadata", None)
+        _prompt_toks = getattr(_usage_meta, "prompt_token_count", 0) if _usage_meta else 0
+        _cand_toks = getattr(_usage_meta, "candidates_token_count", 0) if _usage_meta else 0
         return CompletionResponse(
             content=text,
             model=model_name,
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=_prompt_toks,
+            output_tokens=_cand_toks,
+            usage=TokenUsage(
+                prompt_tokens=_prompt_toks,
+                completion_tokens=_cand_toks,
+                total_tokens=_prompt_toks + _cand_toks,
+            ),
         )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:

@@ -43,6 +43,7 @@ from fastapi.responses import JSONResponse
 from app.api.a2a import router as a2a_router
 from app.api.analytics import router as analytics_router
 from app.api.civilization import router as civilization_router
+from app.api.costs import router as costs_router
 from app.api.workflows import _WorkflowStore as WorkflowStore
 from app.api.workflows import router as workflows_router
 from app.api.insights import router as insights_router
@@ -60,6 +61,7 @@ from app.api.enterprise import (
     intelligence_router,
     marketplace_router,
     compliance_router,
+    scim_router,
 )
 from app.api.enterprise import (
     router as enterprise_router,
@@ -86,17 +88,21 @@ from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
 from app.core.pools import ConnectionPools
 from app.enterprise.compliance import ComplianceController
+from app.enterprise.compliance_v2 import ComplianceChecker
 from app.enterprise.marketplace import Marketplace
+from app.enterprise.marketplace_v2 import MarketplaceV2
 from app.enterprise.red_team import RedTeamRunner
 from app.enterprise.simulation import SimulationRunner
 from app.governance.audit import AuditLog
 from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.policies import PolicyEngine
+from app.intelligence.cost_tracker import CostTracker
 from app.intelligence.eval_runner import EvalRunner
 from app.intelligence.eval_suite import EvalSuiteRunner
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.intelligence.self_optimization import SelfOptimizer
+from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
 from app.mcp.client import MCPClient
 from app.mcp.oauth import OAuthFlowManager
 from app.mcp.registry import MCPRegistry
@@ -121,6 +127,7 @@ from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
 from app.services.tenant_service import TenantService
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
+from app.auth.scope_enforcement import ScopeEnforcementMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
 
@@ -321,10 +328,22 @@ def create_app(
     _simulation_runner = SimulationRunner()
     _red_team_runner = RedTeamRunner()
     _marketplace = Marketplace(agent_store=_agent_store)
+    _marketplace_v2 = MarketplaceV2(db_factory=None)  # upgraded in lifespan
     _self_optimizer = SelfOptimizer()
+    # v2 self-optimizer: fixes all 4 critical bugs + Bayesian A/B testing
+    # db_factory and redis are None here; upgraded in lifespan
+    _self_optimizer_v2 = SelfOptimizerV2(
+        redis=_fake_redis,
+        db_factory=None,
+        llm_provider_factory=lambda: _app_provider,
+    )
+    # v2 compliance checker: no hardcoded booleans; db_factory upgraded in lifespan
+    _compliance_checker = ComplianceChecker(db_factory=None)
     _notification_service = NotificationService()
     # H-3: ExecutionMemory — wired with DB in lifespan
     _exec_memory = ExecutionMemory()
+    # Cost tracker — wired with real Redis + DB in lifespan
+    _cost_tracker = CostTracker(redis=_fake_redis)
 
     # Wire embedder: use VoyageProvider if VOYAGE_API_KEY set,
     # OpenAICompatibleProvider if OPENAI_API_KEY set,
@@ -446,6 +465,8 @@ def create_app(
                 from app.governance.cost import RedisCostController
                 _redis_cost_ctrl = RedisCostController(redis=real_redis)
                 app.state.redis_cost_controller = _redis_cost_ctrl
+                # Upgrade CostTracker to use real Redis
+                _cost_tracker._redis = real_redis
                 # Also patch _redis on the in-memory controller so it can fall back
                 if hasattr(app.state, "cost_controller"):
                     app.state.cost_controller._redis = real_redis
@@ -537,6 +558,10 @@ def create_app(
             _exec_memory._db = db_factory
             app.state.exec_memory = _exec_memory
 
+            # Wire DB into CostTracker for ledger persistence + historical queries
+            _cost_tracker._db = db_factory
+            app.state.cost_tracker = _cost_tracker
+
             # H-4: Wire agent store directly into goal_service for agent config loading
             _goal_svc_with_db._agent_store = _agent_store_with_db
 
@@ -577,6 +602,15 @@ def create_app(
             from app.api.templates import template_store as _tmpl_store_ref
             _tmpl_store_ref.set_db(db_factory)
             logger.info("template_store_db_wired")
+
+            # Wire DB into MarketplaceV2 and seed builtin templates
+            _marketplace_v2._db = db_factory
+            app.state.marketplace_v2 = _marketplace_v2
+            try:
+                _seeded = await _marketplace_v2.seed_builtins()
+                logger.info("marketplace_v2_builtins_seeded", count=_seeded)
+            except Exception as _seed_exc:
+                logger.warning("marketplace_v2_seed_failed", error=str(_seed_exc))
 
             # Wire DB into NotificationService for persistent channel storage
             _notif_svc = getattr(app.state, "notification_service", None)
@@ -622,6 +656,17 @@ def create_app(
                 knowledge_store=_knowledge_store_db,
                 db=db_factory,
             )
+
+            # Wire v2 ComplianceChecker with real DB factory (no hardcoded booleans).
+            _compliance_checker._db = db_factory
+            app.state.compliance_checker = _compliance_checker
+
+            # Wire v2 SelfOptimizer with real DB factory + Redis.
+            _self_optimizer_v2._db = db_factory
+            if redis_for_runtime is not None:
+                _self_optimizer_v2._redis = redis_for_runtime
+                _self_optimizer_v2._state = _self_optimizer_v2._state.__class__(redis_for_runtime)
+            app.state.self_optimizer_v2 = _self_optimizer_v2
 
             # ── Wire Redis into runtime services ──────────────────────────────
             if redis_for_runtime is not None:
@@ -796,15 +841,20 @@ def create_app(
     app.state.long_term_memory = _long_term_memory
     # H-3: ExecutionMemory on app.state
     app.state.exec_memory = _exec_memory
+    # Cost Tracker
+    app.state.cost_tracker = _cost_tracker
     # Intelligence
     app.state.eval_runner = _eval_runner
     app.state.eval_suite_runner = _eval_suite_runner
     app.state.self_optimizer = _self_optimizer
+    app.state.self_optimizer_v2 = _self_optimizer_v2
     # Enterprise
     app.state.compliance_controller = _compliance_controller
+    app.state.compliance_checker = _compliance_checker  # v2: no hardcoded booleans
     app.state.simulation_runner = _simulation_runner
     app.state.red_team_runner = _red_team_runner
     app.state.marketplace = _marketplace
+    app.state.marketplace_v2 = _marketplace_v2
     app.state.collab_store = CollaborationStore()
     # RPA
     app.state.rpa_executor = _rpa_executor
@@ -832,6 +882,7 @@ def create_app(
         allow_headers=["*"],
     )
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(ScopeEnforcementMiddleware)
 
     # Dynamic resolver reads from app.state so lifespan can swap the service
     # (e.g. after wiring the DB session factory) without breaking auth.
@@ -885,6 +936,8 @@ def create_app(
     app.include_router(intelligence_router)
     # P2.10: Async GDPR export + consent management
     app.include_router(compliance_router)
+    # SCIM 2.0 provisioning (mounted at /scim/v2)
+    app.include_router(scim_router)
     # Perception
     app.include_router(perception_router)
     # Integrations (Slack, Zapier, email triggers)
@@ -907,6 +960,9 @@ def create_app(
     # Goal Templates
     app.include_router(templates_router)
     logger.info("templates_router_registered")
+    # Cost optimization & monitoring
+    app.include_router(costs_router)
+    logger.info("costs_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator
@@ -41,6 +42,9 @@ class GoalRequest(BaseModel):
     persistence_config: PersistenceConfigRequest = Field(
         default_factory=PersistenceConfigRequest
     )
+    # Multi-agent modes
+    agent_ids: list[str] = Field(default_factory=list)
+    supervisor_max_parallel: int = Field(default=5, ge=1, le=20)
 
 
 class ApproveRequest(BaseModel):
@@ -87,6 +91,57 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 exec_ctx["debate_winning_agent"] = debate_result.winning_agent
             except Exception:
                 pass  # Fall back to normal execution if debate fails
+
+    # ── Supervisor mode: LLM decomposes goal → parallel sub-agents ───────────
+    if body.workflow_mode == "supervisor":
+        from app.agent.supervisor import SupervisorAgent
+        provider = getattr(request.app.state, "_app_provider", None)
+        goal_svc = _goal_service(request)
+        supervisor = SupervisorAgent(
+            provider=provider,
+            goal_service=goal_svc,
+            max_parallel=body.supervisor_max_parallel,
+        )
+        try:
+            result = await supervisor.run(
+                goal=body.goal,
+                tenant_ctx=tenant,
+                execution_context=exec_ctx,
+            )
+            return {
+                "id": result.get("parent_goal_id", ""),
+                "goal_id": result.get("parent_goal_id", ""),
+                "status": "multi_agent",
+                "mode": "supervisor",
+                "sub_goal_ids": result.get("sub_goal_ids", []),
+                "goal": body.goal,
+            }
+        except Exception as exc:
+            raise HTTPException(500, f"Supervisor execution failed: {exc}") from exc
+
+    # ── Multi-agent mode: same goal dispatched to N agents in parallel ────────
+    if body.workflow_mode == "multi_agent" and body.agent_ids:
+        goal_svc = _goal_service(request)
+        tasks = [
+            goal_svc.submit_goal(
+                goal=body.goal,
+                tenant_ctx=tenant,
+                agent_id=agent_id,
+                priority=body.priority,
+                dry_run=body.dry_run,
+            )
+            for agent_id in body.agent_ids[:5]  # cap at 5
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = [r for r in results if isinstance(r, dict) and "goal_id" in r]
+        return {
+            "id": valid[0]["goal_id"] if valid else "",
+            "goal_id": valid[0]["goal_id"] if valid else "",
+            "status": "multi_agent",
+            "mode": "multi_agent",
+            "sub_goal_ids": [r["goal_id"] for r in valid],
+            "goal": body.goal,
+        }
 
     # ── Auto-routing: call AgentRouter when agent_id is not specified ─────────
     agent_id = body.agent_id
@@ -449,3 +504,157 @@ async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]
         ]
     except Exception:
         return []
+
+
+@router.get("/{goal_id}/lineage")
+async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
+    """Return the parent→child spawn tree for a goal."""
+    tenant = _require_tenant(request)
+    try:
+        from sqlalchemy import text
+
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        if db is None:
+            return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
+
+        async with db() as session:
+            await session.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
+            rows = (await session.execute(text("""
+                SELECT
+                    gl.id, gl.root_goal_id, gl.parent_goal_id, gl.child_goal_id,
+                    gl.parent_agent_id, gl.child_agent_id, gl.civilization_id,
+                    gl.spawn_reason, gl.depth, gl.spawned_at, gl.tenant_id
+                FROM goal_lineage gl
+                WHERE gl.root_goal_id = :root_id AND gl.tenant_id = :tid
+                UNION ALL
+                SELECT
+                    'root' AS id,
+                    :root_id AS root_goal_id,
+                    NULL AS parent_goal_id,
+                    :root_id AS child_goal_id,
+                    NULL AS parent_agent_id,
+                    NULL AS child_agent_id,
+                    NULL AS civilization_id,
+                    '' AS spawn_reason,
+                    0 AS depth,
+                    NOW() AS spawned_at,
+                    :tid AS tenant_id
+                ORDER BY depth ASC
+            """), {"root_id": goal_id, "tid": tenant.tenant_id})).fetchall()
+    except Exception:
+        return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
+
+    nodes = []
+    edges = []
+    seen_goals: set[str] = set()
+    for row in rows:
+        row_id, root_id, parent_gid, child_gid, parent_aid, child_aid, civ_id, reason, depth, spawned_at, _ = row
+        if row_id == "root":
+            continue
+        if child_gid not in seen_goals:
+            seen_goals.add(child_gid)
+            nodes.append({
+                "goal_id": child_gid,
+                "parent_goal_id": parent_gid,
+                "agent_id": child_aid,
+                "depth": depth,
+                "spawn_reason": reason,
+                "spawned_at": spawned_at.isoformat() if spawned_at else "",
+            })
+        if parent_gid:
+            edges.append({"parent": parent_gid, "child": child_gid})
+
+    # Ensure root node is always present
+    if goal_id not in seen_goals:
+        nodes.insert(0, {"goal_id": goal_id, "parent_goal_id": None, "agent_id": None, "depth": 0, "spawn_reason": "", "spawned_at": ""})
+
+    return {"root_goal_id": goal_id, "nodes": nodes, "edges": edges}
+
+
+@router.get("/{goal_id}/attempts")
+async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, Any]]:
+    """Return persistence attempt history for a goal."""
+    tenant = _require_tenant(request)
+    try:
+        from sqlalchemy import text
+
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        if db is None:
+            return []
+
+        async with db() as session:
+            await session.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
+            rows = (await session.execute(text("""
+                SELECT id, attempt_number, strategy, enriched_goal, started_at,
+                       ended_at, succeeded, failure_reason, iterations_used,
+                       cost_usd, backoff_seconds
+                FROM goal_attempts
+                WHERE goal_id = :gid AND tenant_id = :tid
+                ORDER BY attempt_number ASC
+            """), {"gid": goal_id, "tid": tenant.tenant_id})).fetchall()
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": r[0],
+            "attempt_number": r[1],
+            "strategy": r[2],
+            "enriched_goal": r[3],
+            "started_at": r[4].isoformat() if r[4] else "",
+            "ended_at": r[5].isoformat() if r[5] else "",
+            "succeeded": r[6],
+            "failure_reason": r[7] or "",
+            "iterations_used": r[8],
+            "cost_usd": float(r[9]) if r[9] else 0.0,
+            "backoff_seconds": r[10],
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{goal_id}/persistence/abort")
+async def abort_persistence(request: Request, goal_id: str) -> dict[str, Any]:
+    """Abort the active persistence loop for a goal."""
+    tenant = _require_tenant(request)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is None:
+        raise HTTPException(503, "Redis not available")
+    await redis.setex(f"persistence_abort:{tenant.tenant_id}:{goal_id}", 3600, "1")
+    return {"goal_id": goal_id, "status": "abort_requested"}
+
+
+@router.post("/{goal_id}/persistence/skip-strategy")
+async def skip_persistence_strategy(request: Request, goal_id: str) -> dict[str, Any]:
+    """Advance to the next retry strategy in the persistence loop."""
+    tenant = _require_tenant(request)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is None:
+        raise HTTPException(503, "Redis not available")
+    await redis.setex(f"persistence_skip_strategy:{tenant.tenant_id}:{goal_id}", 3600, "1")
+    return {"goal_id": goal_id, "status": "skip_strategy_requested"}
+
+
+class PersistenceGuidanceRequest(BaseModel):
+    guidance: str = Field(..., min_length=1, max_length=5000)
+
+
+@router.post("/{goal_id}/persistence/inject-guidance")
+async def inject_persistence_guidance(
+    request: Request, goal_id: str, body: PersistenceGuidanceRequest
+) -> dict[str, Any]:
+    """Inject human guidance text into the active persistence loop."""
+    tenant = _require_tenant(request)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    if redis is None:
+        raise HTTPException(503, "Redis not available")
+    await redis.setex(
+        f"persistence_guidance:{tenant.tenant_id}:{goal_id}",
+        3600,
+        body.guidance[:5000],
+    )
+    return {"goal_id": goal_id, "status": "guidance_injected", "guidance_length": len(body.guidance)}
