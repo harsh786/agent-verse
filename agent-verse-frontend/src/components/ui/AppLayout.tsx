@@ -3,10 +3,13 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { useUiStore } from "@/stores/ui";
+import { useTokenRefresh } from "@/hooks/useTokenRefresh";
 import { clsx } from "clsx";
 
 export function AppLayout() {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
+  // Silently refresh the Keycloak access token before it expires (SSO mode only).
+  useTokenRefresh();
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

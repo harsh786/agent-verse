@@ -883,11 +883,20 @@ async def email_approve_link(
     if matching_req is None:
         raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
 
-    tenant_id, req_obj = matching_req
+    tenant_id, _req_obj = matching_req
     from app.tenancy.context import PlanTier, TenantContext
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    actual_plan = PlanTier.FREE  # safe default
+    if tenant_svc is not None:
+        try:
+            real_tenant = await tenant_svc.get_tenant(tenant_id)
+            if real_tenant and real_tenant.get("plan"):
+                actual_plan = PlanTier(real_tenant["plan"])
+        except Exception:
+            pass  # fall through to FREE
     fake_ctx = TenantContext(
         tenant_id=tenant_id,
-        plan=PlanTier.ENTERPRISE,
+        plan=actual_plan,
         api_key_id="email-link-approver",
     )
 
@@ -931,11 +940,20 @@ async def email_reject_link(
     if matching_req is None:
         raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
 
-    tenant_id, req_obj = matching_req
+    tenant_id, _req_obj = matching_req
     from app.tenancy.context import PlanTier, TenantContext
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    actual_plan = PlanTier.FREE  # safe default
+    if tenant_svc is not None:
+        try:
+            real_tenant = await tenant_svc.get_tenant(tenant_id)
+            if real_tenant and real_tenant.get("plan"):
+                actual_plan = PlanTier(real_tenant["plan"])
+        except Exception:
+            pass  # fall through to FREE
     fake_ctx = TenantContext(
         tenant_id=tenant_id,
-        plan=PlanTier.ENTERPRISE,
+        plan=actual_plan,
         api_key_id="email-link-approver",
     )
 

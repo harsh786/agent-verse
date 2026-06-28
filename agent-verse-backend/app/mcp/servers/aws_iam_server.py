@@ -116,6 +116,20 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import boto3  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": "boto3 not installed. Run: pip install boto3",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 def _client() -> Any:
     import boto3  # type: ignore[import]
 
@@ -128,6 +142,15 @@ def _client() -> Any:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        import boto3  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return {
+            "error": "boto3 not installed. Run: pip install boto3",
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
+
     def _sync() -> dict[str, Any]:
         try:
             c = _client()

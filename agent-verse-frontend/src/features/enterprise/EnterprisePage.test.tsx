@@ -152,7 +152,7 @@ describe('EnterprisePage', () => {
   test('Residency section shows region information from API', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
-      if (url.includes('/enterprise/compliance/residency')) {
+      if (url.includes('/enterprise/data-residency')) {
         return new Response(
           JSON.stringify({
             region: 'eu-west-1',
@@ -175,7 +175,7 @@ describe('EnterprisePage', () => {
   test('shows data deletion scheduled message after successful delete', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.includes('/enterprise/compliance/delete') && init?.method === 'POST') {
+      if (url.includes('/enterprise/purge') && init?.method === 'DELETE') {
         return new Response(null, { status: 204 });
       }
       return new Response(

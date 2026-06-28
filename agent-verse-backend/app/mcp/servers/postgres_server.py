@@ -58,6 +58,20 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import asyncpg  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": "asyncpg not installed. Run: pip install asyncpg",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     db_url = os.getenv("POSTGRES_MCP_URL", "")
     if not db_url:
@@ -116,6 +130,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             await conn.close()
 
     except ImportError:
-        return {"error": "asyncpg not installed: pip install asyncpg"}
+        return {
+            "error": "asyncpg not installed. Run: pip install asyncpg",
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
     except Exception as exc:
         return {"error": str(exc)}

@@ -379,6 +379,19 @@ async def list_eval_suites(request: Request) -> list[dict[str, Any]]:
             for s in runner.list_suites()]
 
 
+@intelligence_router.get("/eval-suites/{suite_id}")
+async def get_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
+    """Get a single eval suite by ID."""
+    _require_tenant(request)
+    runner = getattr(request.app.state, "eval_suite_runner", None)
+    if runner is None:
+        raise HTTPException(503, "Eval suite runner not configured")
+    suites = runner.list_suites()
+    if suite_id not in suites:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    return {"suite_id": suite_id, "task_count": len(runner._suites.get(suite_id, []))}
+
+
 @intelligence_router.post("/eval-suites/{suite_id}/tasks", status_code=201)
 async def add_golden_task(
     request: Request, suite_id: str, body: AddGoldenTaskRequest

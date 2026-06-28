@@ -1094,8 +1094,11 @@ class GoalService:
                         steps=steps,
                         verification_success=verification_success,
                     )
-                    scorecard = eval_runner.score(
-                        state=agent_state, tenant_ctx=tenant_ctx_for_record
+                    scorecard = await eval_runner.score_and_persist(
+                        agent_state,
+                        tenant_ctx_for_record,
+                        provider=getattr(self._app_state, "_app_provider", None),
+                        db=self._db,
                     )
                     self._eval_scores[goal_id] = scorecard
                     # Trigger self-optimizer when score falls below threshold.

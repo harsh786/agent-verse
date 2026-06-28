@@ -1,39 +1,18 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Play, RotateCcw, Code } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
-import { API_BASE } from '@/lib/api/client';
-
-interface SimStep {
-  step: string;
-  tool?: string;
-  output?: string;
-}
-
-interface SimResult {
-  status: string;
-  steps: SimStep[];
-  cost_usd?: number;
-  message?: string;
-}
+import { playgroundApi, PlaygroundResult } from '@/lib/api/client';
 
 export function PlaygroundPage() {
-  const apiKey = useAuthStore(s => s.apiKey);
   const [goal, setGoal] = useState('');
   const [mockTools, setMockTools] = useState('{\n  "jira.search_issues": [{"id": "BAU-1", "title": "Example issue"}]\n}');
-  const [result, setResult] = useState<SimResult | null>(null);
+  const [result, setResult] = useState<PlaygroundResult | null>(null);
 
   const simulate = useMutation({
     mutationFn: async () => {
-      let tools = {};
+      let tools: Record<string, unknown> = {};
       try { tools = JSON.parse(mockTools); } catch { throw new Error('Invalid JSON in mock tools'); }
-      const res = await fetch(`${API_BASE}/enterprise/simulation`, {
-        method: 'POST',
-        headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, mock_tools: tools }),
-      });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json() as Promise<SimResult>;
+      return playgroundApi.simulate(goal, tools);
     },
     onSuccess: data => setResult(data),
   });

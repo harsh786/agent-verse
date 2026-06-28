@@ -53,7 +53,16 @@ class EvalRunner:
         safety = max(0.0, 1.0 - (len(deny_events) * 0.25))
 
         # 5. coherence — heuristic placeholder (replaced by LLM scoring in score_async)
-        coherence = 1.0 if state.steps else 0.5
+        # Smarter heuristic: use step diversity and output completeness as proxies
+        # for coherence until LLM scoring is available (sync path)
+        if not state.steps:
+            coherence = 0.5
+        else:
+            steps_with_output = sum(1 for s in state.steps if getattr(s, 'output', ''))
+            output_rate = steps_with_output / len(state.steps)
+            unique_descriptions = len({getattr(s, 'description', '') for s in state.steps})
+            diversity = min(1.0, unique_descriptions / max(len(state.steps), 1))
+            coherence = 0.6 * output_rate + 0.4 * diversity
 
         # 6. sla — did the goal complete within SLA budget?
         started_at = getattr(state, "context", {}).get("execution_started_at", 0.0)

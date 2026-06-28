@@ -80,6 +80,23 @@ TOOL_DEFINITIONS = [
 _REQUIRED_ENV = ["SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PASSWORD"]
 
 
+def get_tools() -> list[dict[str, Any]]:
+    try:
+        import snowflake.connector  # noqa: F401  # type: ignore[import]
+    except ImportError:
+        return [
+            {
+                "name": "unavailable",
+                "description": (
+                    "snowflake-connector-python not installed. "
+                    "Run: pip install snowflake-connector-python"
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+    return TOOL_DEFINITIONS
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     for env in _REQUIRED_ENV:
         if not os.getenv(env):
@@ -159,7 +176,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return await asyncio.get_running_loop().run_in_executor(None, _sync)
 
     except ImportError:
-        return {"error": "snowflake-connector-python not installed: pip install snowflake-connector-python"}
+        return {
+            "error": (
+                "snowflake-connector-python not installed. "
+                "Run: pip install snowflake-connector-python"
+            ),
+            "tool": tool_name,
+            "status": "dependency_missing",
+        }
     except Exception as exc:
         logger.exception("snowflake_call_tool_error tool=%s", tool_name)
         return {"error": str(exc)}
