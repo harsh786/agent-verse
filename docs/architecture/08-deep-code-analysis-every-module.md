@@ -2364,9 +2364,1281 @@ All 8 steps share the same `session_id="abc123"` → single Chromium browser pro
 | `rpa/` — Browser Automation | 12 Playwright tools, 3 execution modes, session management, credential injection, vision analysis | ~1,500 |
 | `auth/` — Identity & Security | Agent identity, SAML 2.0, SCIM 2.0, scope enforcement, permission cache, IP allowlist | ~2,000 |
 | `enterprise/` — Enterprise | Marketplace, simulation, compliance, red team | ~3,500 |
-| `services/` — Orchestration | Goal lifecycle, tenant management, notifications, event queue | ~4,000 |
+| `services/` — Orchestration | Goal lifecycle, tenant management, notifications, event queue, webhook delivery, persistence adapter | ~4,200 |
 | `providers/` — LLM Abstraction | Anthropic, OpenAI, Gemini, Voyage, Fake, vault | ~1,500 |
-| `reliability/` — Fault Tolerance | Circuit breaker, rollback, bulkhead, deduplication | ~800 |
-| `collab/` + `perception/` | Collaboration sessions, browser agent, page analysis | ~800 |
-| `scaling/` — Background Processing | 25 Celery tasks, 10 queues, 25 beat entries, RedBeat HA, per-plan isolation | ~2,500 |
-| **TOTAL** | **~70,000 lines of production Python** | |
+| `reliability/` — Fault Tolerance | Circuit breaker, rollback, bulkhead, deduplication, distributed lock, idempotency, goal lifecycle signals, result processor | ~1,200 |
+| `collab/` + `perception/` | AgentCollabSession protocol, debate persistence, BrowserAgent, PageAnalyzer, vision analysis | ~1,000 |
+| `scaling/` — Background Processing | 25 Celery tasks, 10 queues, 25 beat entries, RedBeat HA, per-plan isolation, ParallelExecutor, PriorityQueue | ~2,600 |
+| `tools/` — Built-in Agent Tools | Docker code execution, SearXNG search, shell (Docker sandboxed), HTTP (SSRF-protected), email, document parser, file ops, artifacts | ~1,600 |
+| `integrations/` — Inbound Triggers | Email-to-goal (IMAP), approval emails (HMAC), Slack (/agentverse slash command + HITL buttons), Zapier webhooks | ~400 |
+| `sdk/` — Developer SDK | AgentManifest (versioned YAML format), MockMCPServer (JSON-RPC 2.0 in-memory) | ~270 |
+| `analytics/` — Analytics Engine | GoalAnalyticsAggregator: goal/tool/agent/cost metrics, DB+memory dual source | ~250 |
+| `pipeline/` — Tool Pipeline | 12-step governance wrapper for every tool call: cost, permissions, dedup, circuit breaker, HITL, audit, memory, rollback, result processing, RAG | ~260 |
+| `testing/` — Test Infrastructure | AgentTestHarness: run goals with mocked tools, assertion helpers, FakeProvider + MockMCPClient | ~160 |
+| `triggers/` — Scheduling Models | TriggerSpec (10 trigger types), NLScheduler (NL→TriggerSpec via LLM), ScheduleStore | ~550 |
+| `observability/` — Platform Telemetry | Prometheus metrics (20+ named metrics), structlog JSON logging, OpenTelemetry tracing, HealthRegistry | ~600 |
+| `core/` — Foundation | Settings (12-factor config), secrets (file+env dual-source), connection pools, error classes | ~300 |
+| `knowledge/ingestors/` — Data Sources | GitHub (tree+content), Jira (ADF→text), Confluence, PDF, DOCX, Slack | ~480 |
+| **TOTAL** | **~70,000+ lines of production Python** | |
+
+---
+
+# PART 15: app/pipeline/ — The 12-Step Tool-Call Pipeline
+
+**File**: `steps.py` (257 lines)
+
+**Purpose**: Every tool call — whether to an MCP connector or a built-in tool — runs through this pipeline. It wraps the raw tool dispatch with the full governance stack: budget check, permission check, deduplication, circuit breaker, HITL gating, audit recording, execution memory lookup, rollback registration, result processing, SSE event streaming, and RAG context injection.
+
+**Why it matters**: Without this pipeline, every tool call is just an HTTP request. With it, every tool call is audited, budget-controlled, permission-checked, deduplicated, and rollback-able. The pipeline is what makes AgentVerse "production-grade" rather than just "functional."
+
+### All 12 Pipeline Steps
+
+| Step | Function | What it does | Returns |
+|------|----------|-------------|---------|
+| 1 | `cost_check` | `CostController.check_and_record(goal_id, cost_usd, tenant_ctx)` | `bool` — False = over budget, block call |
+| 2 | `governance_check` | `PermissionMatrix.check(tool_name, tenant_ctx)` | `ActionLevel` — ALLOW / ALLOW_LOG / APPROVAL / DENY |
+| 3 | `dedup_check` | `DeduplicationCache.is_duplicate(content_hash, tenant_ctx)` | `bool` — True = duplicate, skip call |
+| 4 | `circuit_breaker_check` | `CircuitBreaker.is_closed()` | `bool` — True = circuit open, block call |
+| 5 | `hitl_gate` | `HITLGateway.request_approval(goal_id, action, risk_level)` | `bool` — True = approval requested (caller blocks) |
+| 6 | `record_usage` | `AuditLog.record(AuditEvent(goal_id, tool_name, ALLOW_LOG, tokens))` | `None` |
+| 7 | `exec_memory_lookup` | `ExecutionMemory.recall(goal_hint, tenant_ctx)` | `list[dict]` — past winning plans |
+| 8 | `record_rollback_point` | `RollbackEngine.register(action, inverse)` | `str` — action used as checkpoint ID |
+| 9 | `result_processor_step` | `ResultProcessor.process(raw_output)` — redact secrets, truncate to 4000 chars | `str` — sanitized output |
+| 10 | `stream_step_event` | Publish SSE event (no-op in pipeline; handled by loop's event_callback) | `None` |
+| 11 | `smart_context_fetch` | Hybrid vector+trigram search across ≤3 collections; returns top-3 results | `str` — formatted context |
+| 12 | *(return result)* | Processed, redacted, audited, budget-checked result returned to executor | — |
+
+### Design: Graceful Degradation
+
+Every step accepts its dependency as `Optional` with `None` default. This means:
+```python
+# Full production: all 12 steps are active
+result = await pipeline.run(cost_controller=controller, permission_matrix=matrix, ...)
+
+# Tests: inject only what you need
+result = await pipeline.run()  # all steps no-op, raw result passes through
+```
+
+This is how tests work without mocking the entire stack — the pipeline simply skips governance when dependencies are `None`.
+
+### `smart_context_fetch` — RAG in the Pipeline
+
+```python
+async def smart_context_fetch(*, goal, step, tenant_ctx, knowledge_store,
+                               query_embedding, context, agent_store) -> str:
+```
+
+- **Skips when no embedder**: `query_embedding is None` → returns `""` with a debug log. Avoids random-vector corruption.
+- **Agent collection filtering**: If `context["agent_id"]` exists and the agent has `allowed_collection_ids`, only searches those collections.
+- **Caps at 3 collections** per call to bound latency.
+- **Returns**: `"[Context 1 (score=0.87)]: ...\n[Context 2 (score=0.81)]: ..."`
+
+---
+
+# PART 16: app/tools/ — Built-in Agent Tools
+
+**8 files** providing native capabilities that don't require external MCP connectors.
+
+Unlike MCP connectors (HTTP calls to external servers), these tools run **in-process**. They are injected into `AgentGraph` alongside MCP tools and appear identically to the agent.
+
+---
+
+## `code_interpreter.py` — Sandboxed Code Execution (302 lines)
+
+**Purpose**: Execute Python, JavaScript, or Bash code in a sandboxed Docker container. The agent can write and run code to solve computational problems, process data, or automate tasks.
+
+### Security Constraints (Hard-coded, not configurable)
+```python
+docker.containers.run(
+    image,                          # python:3.12-slim | node:20-alpine | alpine:latest
+    command=cmd,
+    network_mode="none",            # No internet access from container
+    mem_limit="256m",               # Hard memory cap
+    cpu_quota=100000,               # 1 CPU maximum
+    read_only=True,                 # Immutable root filesystem
+    tmpfs={"/tmp": "size=64m,noexec=off"},  # /tmp only, 64MB, no exec
+    user="1000:1000",               # Non-root user
+    timeout=30,                     # Default 30s, configurable per call
+    remove=True,                    # Container auto-removed after execution
+)
+```
+
+### Language Support
+| Language | Docker Image | Run Command | Extension |
+|----------|-------------|-------------|-----------|
+| `python` | `python:3.12-slim` | `python3 /sandbox/code.py` | `.py` |
+| `javascript` | `node:20-alpine` | `node /sandbox/code.js` | `.js` |
+| `bash` | `alpine:latest` | `sh /sandbox/code.sh` | `.sh` |
+
+### Execution Flow
+1. Write code to host-side temp file
+2. Volume-mount read-only: `{tmp_path: {"bind": "/sandbox/code.ext", "mode": "ro"}}`
+3. `await run_in_executor(None, lambda: client.containers.run(...))` — non-blocking from async
+4. Decode stdout bytes → `CodeResult`
+5. Delete temp file in `finally` block
+
+### `CodeResult` Dataclass
+```python
+@dataclass
+class CodeResult:
+    stdout: str
+    stderr: str
+    exit_code: int
+    timed_out: bool = False
+    execution_time_ms: float = 0.0
+
+    @property
+    def success(self) -> bool:
+        return self.exit_code == 0 and not self.timed_out
+```
+
+### Subprocess Fallback
+When Docker unavailable: `AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true` → runs via `asyncio.create_subprocess_exec`. **Blocked by default** — explicitly requires opt-in to prevent unsandboxed execution in production.
+
+---
+
+## `web_search.py` — SearXNG/DuckDuckGo Search (138 lines)
+
+**Purpose**: Search the web for current information. Used by agents when they need real-time data, documentation, or facts not in their training data.
+
+### Two Sources (Priority Order)
+1. **SearXNG** (if `SEARXNG_URL` set): `GET {SEARXNG_URL}/search?q={query}&format=json`. Returns structured `{results: [{title, url, content, engine}]}`. Falls back to DuckDuckGo on error.
+2. **DuckDuckGo Instant Answer API** (fallback, no key required): `GET https://api.duckduckgo.com/?q={query}&format=json`. Extracts `AbstractText` (featured snippet) + `RelatedTopics`.
+
+### `WebSearchResult` Returns
+```python
+{"query": "...", "source": "searxng|duckduckgo",
+ "results": [{"title": "...", "url": "...", "snippet": "..."}]}
+```
+
+---
+
+## `shell_tool.py` — Sandboxed Shell Execution (158 lines)
+
+**Purpose**: Execute shell commands for system tasks (git operations, build scripts, package management).
+
+### Security Layers
+1. **Disabled by default**: `AGENTVERSE_ALLOW_SHELL_EXEC=true` required
+2. **Command allowlist**: Only these commands permitted: `echo, cat, ls, grep, awk, sed, sort, uniq, wc, head, tail, find, date, env, pwd, which, python3, node, git, npm, pip, curl`
+3. **Path traversal protection**: `working_dir` validated against `_SAFE_ROOTS = ["/tmp", "/workspace", "/sandbox"]`
+4. **Docker sandbox** (when available): `network_disabled=True`, 256MB limit, tmpfs workspace, 30s timeout
+5. **Output cap**: `_MAX_OUTPUT = 64 * 1024` (64KB)
+
+---
+
+## `http_tool.py` — HTTP Request Tool (141 lines)
+
+**Purpose**: Make HTTP requests to external APIs. Used by agents when no dedicated MCP connector exists for a service.
+
+### SSRF Protection
+```python
+_BLOCKED_HOSTS = frozenset({
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
+    "169.254.169.254",          # AWS EC2 metadata
+    "metadata.google.internal", # GCP metadata
+    "100.100.100.200",          # Alibaba Cloud metadata
+})
+```
+Additionally blocks RFC-1918 private ranges (`addr.is_private`), link-local, reserved, multicast IPs, and `.internal` / `.local` hostnames. **Fail-safe**: any parse error → block request.
+
+### Features
+- Methods: GET, POST, PUT, PATCH, DELETE, HEAD
+- Body: dict → JSON, string → raw bytes
+- Response capped at **512 KB** (`_MAX_RESPONSE_BYTES`)
+- JSON auto-parsed when `Content-Type: application/json`
+- Max timeout: `min(requested, 60.0)` — no unbounded waits
+- User-Agent: `AgentVerse/1.0`
+
+---
+
+## `email_tool.py` — Email Send and Read (271 lines)
+
+**Purpose**: Agents can send emails (reports, notifications, HITL escalations) and read inboxes.
+
+**Two configs**:
+- `SMTPConfig`: host, port (587), username, password, from_address, use_tls
+- `IMAPConfig`: host, port (993), username, password, use_ssl
+
+### Send Path
+```python
+await aiosmtplib.send(MIMEMultipart(From, To, Subject, plain+html bodies),
+                      hostname, port, username, password, use_tls)
+```
+Returns: `{"status": "sent", "to": ..., "message_id": "<uuid@agentverse>"}`
+
+### Read Path
+`aioimaplib.IMAP4_SSL` → `search("UNSEEN" | "ALL")` → `fetch(msg_id, "(RFC822)")` → parse RFC822 → extract `body_preview` (500 chars). Returns `list[{message_id, from, subject, date, body_preview}]`.
+
+### Module-level `email_send()` function
+Convenience wrapper that reads `SMTP_HOST/PORT/USER/PASSWORD/TLS` from env — used for dev with MailPit (`SMTP_HOST=localhost SMTP_PORT=1025`).
+
+### `from_vault_config()` class method
+Instantiates `EmailTool` from a vault config dict with keys: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_from`, `imap_host`, `imap_port`, `imap_username`, `imap_password`.
+
+---
+
+## `document_parser.py` — Multi-Format Document Parser (261 lines)
+
+**Purpose**: Extract text from uploaded documents so agents can reason over their content.
+
+### Supported Formats
+| Format | Parser | Library | Max | Metadata |
+|--------|--------|---------|-----|----------|
+| PDF | `pypdf.PdfReader` (falls back to PyPDF2) | `pypdf` | 50 pages, 100K chars | page_count, metadata dict |
+| CSV | `csv.reader` → markdown table | stdlib | 1000 rows, 100K chars | rows, columns, headers list |
+| DOCX | `docx.Document` | `python-docx` | 100K chars | paragraph_count |
+| TXT/MD | raw decode | stdlib | 100K chars | — |
+| JSON | `json.loads` + `json.dumps(indent=2)` | stdlib | 100K chars | — |
+| YAML | `yaml.safe_load` + `yaml.dump` | `pyyaml` | 100K chars | — |
+
+All parsing runs in a thread executor (`run_in_executor(None, self._parse_sync, ...)`) to avoid blocking the event loop for large files.
+
+### `ParsedDocument` Return
+```python
+@dataclass
+class ParsedDocument:
+    filename: str; content: str; page_count: int | None
+    metadata: dict; format: str; truncated: bool = False
+```
+
+---
+
+## `file_ops.py` — Tenant-Scoped File Operations (157 lines)
+
+**Purpose**: Give agents a sandboxed filesystem workspace for temporary files (intermediate results, generated reports, downloaded data).
+
+### Workspace Isolation
+Every tenant gets an isolated directory: `/tmp/agentverse-workspace/{tenant_id}/`
+
+**Path traversal protection** (`_safe_path`):
+```python
+resolved = (self._workspace / path).resolve()
+resolved.relative_to(workspace_resolved)  # raises ValueError if escaping
+```
+Any path that resolves outside the workspace raises `PermissionError`.
+
+### Operations
+- `read(path)` → async file read via `aiofiles` (stdlib fallback)
+- `write(path, content)` → creates parent dirs, writes text, returns bytes_written
+- `list(directory)` → returns `[{name, type, size_bytes, modified_at}]`
+- `delete(path)` → handles both files (`unlink`) and directories (`shutil.rmtree`)
+- `exists(path)` → returns False on PermissionError (treats as not-found)
+
+Module-level wrappers: `file_read`, `file_write`, `file_list`, `file_delete` — return `{success, ...}` dict never raising exceptions (safe for agent tool calls).
+
+---
+
+## `artifact_tool.py` — Artifact Save Tool (81 lines)
+
+**Purpose**: Agents can save any content as a downloadable artifact (CSV reports, markdown summaries, JSON exports).
+
+### Storage Priority
+1. **MinIO via artifact_store**: `artifact_store.write_bytes(key, data, content_type)` → returns MinIO URI
+2. **Local tmp fallback**: `/tmp/agentverse-artifacts/{tenant_id}/{goal_id}/{artifact_id}/{name}` if artifact_store fails
+3. **URL scheme**: `/artifacts/{tenant_id}/{goal_id}/{artifact_id}/{name}` (served by the API)
+
+Returns: `{artifact_id, filename, content_type, size_bytes, artifact_url, created_at, goal_id, expires_hours}`
+
+**Default TTL**: `expires_hours=168` (7 days). The MinIO lifecycle policy enforces actual deletion.
+
+---
+
+# PART 17: app/integrations/ — Inbound Trigger Layer
+
+**4 files** across 3 subdirectories — the complete inbound integration layer for email-to-goal, Slack-to-goal, and Zapier webhooks.
+
+---
+
+## `email/imap_listener.py` — Email-to-Goal (150 lines)
+
+**Purpose**: Monitor an IMAP mailbox and convert inbound emails into agent goals. Enables "email agent@mycompany.com to start a deployment" workflows.
+
+### Configuration
+```bash
+IMAP_ENABLED=true          # disabled by default
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993              # or 143 for STARTTLS
+IMAP_USER=agent@mycompany.com
+IMAP_PASSWORD=...          # or app password
+IMAP_SSL=true              # default
+IMAP_MAILBOX=INBOX
+```
+
+### Processing Pipeline
+1. `aioimaplib.IMAP4_SSL.search("UNSEEN")` → message IDs
+2. `fetch(email_id, "(RFC822)")` for each (max 10 per poll)
+3. Parse RFC822: `Subject` → goal_text; `From` → context; `body` (text/plain, 500 chars) → additional context
+4. `goal_service.submit_goal(goal=goal_text, priority="normal", tenant_ctx=email_tenant_ctx)`
+5. `imap.store(email_id, "+FLAGS", r"(\Seen)")` — mark as read so it won't fire again
+
+**Email goal format**:
+```
+goal_text = subject + "\n\nAdditional context from email:\n" + body.strip()
+```
+
+---
+
+## `email/approval_sender.py` — HITL Approval Emails (84 lines)
+
+**Purpose**: Send HMAC-signed HTML approval emails with clickable Approve/Reject buttons when an agent hits a HITL gate.
+
+### HMAC Signature Generation
+```python
+secret = os.getenv("HITL_EMAIL_SECRET", "changeme-please-set-HITL_EMAIL_SECRET")
+payload = f"{request_id}:{action}".encode()
+sig = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()[:32]
+```
+
+- `approve_url = "{frontend_url}/hitl/{request_id}/approve?sig={approve_sig}"`
+- `reject_url = "{frontend_url}/hitl/{request_id}/reject?sig={reject_sig}"`
+
+### HTML Email
+Blue header + action description + two big buttons (green Approve, red Reject) + 24h expiry notice + link to Approval Inbox.
+
+**Anti-replay**: `_verify(request_id, action, sig)` uses `hmac.compare_digest` (constant-time comparison) to prevent timing attacks on signature verification.
+
+---
+
+## `slack/handler.py` — Slack Integration (137 lines)
+
+**Purpose**: Receive `/agentverse` slash commands from Slack and fire HITL approval buttons back into Slack channels.
+
+### Signature Verification
+```python
+base = f"v0:{timestamp}:{body.decode()}"
+expected = "v0=" + hmac.new(signing_secret.encode(), base.encode(), sha256).hexdigest()
+hmac.compare_digest(expected, x_slack_signature)
+```
+- Rejects requests older than 5 minutes (stale timestamp protection)
+- **Fail-open in development** if no `SLACK_SIGNING_SECRET` set; **fail-closed in production**
+
+### `/agentverse [goal]` Slash Command
+The `POST /api/integrations/slack` endpoint (in `api/integrations.py`) receives Slack's JSON, extracts the goal text, and calls `goal_service.submit_goal()`.
+
+### `send_approval_request_to_slack()`
+Posts a Block Kit message to `SLACK_APPROVAL_CHANNEL` (default `#approvals`):
+```json
+{
+  "type": "section", "text": ":warning: *Approval Required*\nGoal: `{goal_id}`\nAction: `{action}`\nRisk: `{risk_level}`"
+  "actions": [
+    {"type": "button", "text": "Approve", "style": "primary", "action_id": "approve_hitl"},
+    {"type": "button", "text": "Reject", "style": "danger", "action_id": "reject_hitl"}
+  ]
+}
+```
+
+---
+
+## `zapier/handler.py` — Zapier Webhook Handler (40 lines)
+
+**Purpose**: Accept Zapier webhook POST requests and convert them to goals.
+
+### Signature Verification
+`ZAPIER_WEBHOOK_SECRET` → constant-time comparison. Fail-closed in production.
+
+### Payload Extraction
+```python
+# Supports multiple Zapier payload formats:
+if "goal" in payload:   return str(payload["goal"])
+if "text" in payload:   return str(payload["text"])
+if "message" in payload: return str(payload["message"])
+return str(payload)[:500]  # fallback: stringify entire payload
+```
+
+---
+
+# PART 18: app/sdk/ — Developer SDK
+
+**Files**: `manifest.py` (141 lines) + `mock_server.py` (130 lines)
+
+The internal SDK module is separate from the external `agent-verse-sdk-python`. It provides developer-facing abstractions: a versioned agent manifest format and an in-memory MCP server for testing.
+
+---
+
+## `manifest.py` — AgentManifest (141 lines)
+
+**Purpose**: Version-controlled, commit-able YAML/JSON format for agent configuration. Allows agents to be defined in code, reviewed in PRs, and deployed via CI.
+
+### Complete Schema
+```yaml
+name: "salesforce-agent"           # required
+version: "1.2.0"                   # semver required
+description: "Manages Salesforce CRM"
+autonomy_mode: "bounded-autonomous" # supervised | bounded-autonomous | fully-autonomous
+goal_template: "Execute: {goal}"   # optional Jinja-like template
+default_model: "claude-opus-4-8"   # override the system default
+
+connector_requirements:
+  - type: "salesforce"             # required connector
+  - type: "slack"
+    optional: true                 # won't block deployment if missing
+
+knowledge_collections:
+  - "salesforce-docs"
+  - "company-runbooks"
+
+policies:
+  - name: "no-deletes"
+    tools_pattern: "*.delete"
+    action: "deny"                 # deny | require_approval
+  - name: "production-writes"
+    tools_pattern: "*.update"
+    action: "require_approval"
+
+eval_suite_id: "salesforce-eval-v2"
+tags: ["crm", "production"]
+```
+
+### API
+- `AgentManifest.from_yaml(path)` → parses YAML file
+- `AgentManifest.from_json(path)` → parses JSON file
+- `manifest.to_yaml()` → serializes back to YAML
+- `manifest.validate()` → returns `list[str]` of validation errors (empty = valid)
+
+**Validation rules**: name required, version required and semver-like, autonomy_mode one of 3 valid values, policy actions in `{"deny", "require_approval"}`.
+
+---
+
+## `mock_server.py` — MockMCPServer (130 lines)
+
+**Purpose**: In-memory MCP JSON-RPC 2.0 server for testing agent behavior without real connector deployments.
+
+### Two Response Modes
+1. **Callable handler** (`fn`): Real Python function/coroutine called with the tool arguments. Supports both `async def` and regular `def`.
+2. **Fixture response** (`fixture`): Static response returned for every call.
+
+### Usage Pattern
+```python
+server = MockMCPServer("test-crm")
+server.register_tool(
+    "get_opportunity",
+    description="Fetch a Salesforce opportunity",
+    fn=lambda id: {"id": id, "amount": 50000, "stage": "Proposal"},
+)
+server.set_fixture("create_opportunity", {"id": "opp_123", "status": "created"})
+
+# Enable call logging for test assertions
+server.enable_call_logging()
+
+await server.handle_jsonrpc("tools/list", {})
+await server.handle_jsonrpc("tools/call", {"name": "get_opportunity", "arguments": {"id": "opp_1"}})
+
+# Assert
+calls = server.get_call_log()
+assert calls[0]["tool"] == "get_opportunity"
+assert calls[0]["arguments"] == {"id": "opp_1"}
+```
+
+**Fluent API**: Both `register_tool()` and `set_fixture()` return `self` for chaining:
+```python
+server.register_tool(...).set_fixture("list_accounts", []).enable_call_logging()
+```
+
+---
+
+# PART 19: app/analytics/ — GoalAnalyticsAggregator
+
+**File**: `aggregator.py` (253 lines)
+
+**Purpose**: Compute behavioral metrics from goal event history. Powers the `/api/analytics` endpoint and the analytics dashboard (`/analytics` frontend page).
+
+### Dual Data Source
+The aggregator reads from whichever source is available:
+- **PostgreSQL** (preferred when `tenant_id` + `db` provided): `SELECT id, status, priority, agent_id, created_at FROM goals WHERE tenant_id=:tid AND created_at > NOW()-:days*day LIMIT 10000`
+- **In-memory GoalService** (fallback): reads from `goal_service._goals` dict for tests or when DB is not available
+
+### Methods and Metrics
+
+**`goal_metrics(tenant_id, days=30, agent_id=None) → GoalMetrics`**
+```python
+@dataclass
+class GoalMetrics:
+    total: int; completed: int; failed: int; cancelled: int
+    success_rate: float   # completed / total, rounded to 4 decimal places
+    avg_duration_s: float # mean of (completed_at - created_at).total_seconds()
+    avg_cost_usd: float   # mean of goal.cost_usd
+    total_cost_usd: float # sum of goal.cost_usd
+```
+
+**`tool_metrics(days=30) → list[ToolMetrics]`** (in-memory only)
+Reads from `goal.events` — events with type `tool_call_complete/failed/step_complete`. Computes per-tool: `call_count`, `failure_count`, `avg_latency_ms`, `failure_rate`. Sorted by call_count descending.
+
+**`cost_trends(days=30, bucket="day") → list[{period, cost_usd}]`**
+Aggregates goal costs by day (`%Y-%m-%d`) or week (`%Y-W%V`). Returns sorted list.
+
+**`agent_metrics(days=30) → list[AgentMetrics]`**
+Groups goals by `agent_id`. Computes: `goal_count`, `success_rate`, `avg_eval_score` (from `goal.eval_score`), `avg_cost_usd`. Sorted by goal_count descending.
+
+### Status Normalization
+The aggregator handles both StrEnum variants and string comparisons:
+```python
+def _goal_status_completed(status) -> bool:
+    return str(status).lower() in ("complete", "completed")
+```
+This tolerates `GoalStatus.COMPLETE` (StrEnum), `"complete"`, and `"completed"` equally.
+
+---
+
+# PART 20: app/collab/ — Collaboration Protocol
+
+**Files**: `agent_collab.py` (189 lines) + `store.py` (323 lines)
+
+---
+
+## `agent_collab.py` — AgentCollabSession (189 lines)
+
+**Purpose**: Multi-round propose/critique/counter/agree protocol for collaborative decision-making between multiple agents.
+
+### The Protocol
+```
+Agent A: add_round(CollabRound(agent_id="agent-a", round_type="propose", content="Use Approach X"))
+Agent B: add_round(CollabRound(agent_id="agent-b", round_type="critique", content="Approach X has risk Y"))
+Agent A: add_round(CollabRound(agent_id="agent-a", round_type="counter", content="Risk Y mitigated by Z"))
+Agent B: add_round(CollabRound(agent_id="agent-b", round_type="agree", content="Agreed with mitigation"))
+→ session.synthesize_consensus() → ConsensusResult(agreed=True, summary="Use Approach X with Z")
+```
+
+### Two Consensus Methods
+
+**Rule-based `synthesize_consensus()`** (no LLM):
+- `agree_rounds` present + no `disagree_rounds` → `ConsensusResult(agreed=True, summary=last_proposal)`
+- `disagree_rounds` present → `ConsensusResult(agreed=False, dissenter=disagree_rounds[-1].agent_id)`
+- No agree rounds → `ConsensusResult(agreed=False, summary="No agreement round yet")`
+
+**LLM-enhanced `synthesize_consensus_llm(provider)`**:
+Serializes all rounds as JSON, asks LLM to produce: `{consensus, agreed, key_points, dissenter_id}`. Falls back to rule-based on error.
+
+### Debate Persistence
+`persist_debate(session_id, goal_id, tenant_id, ...)` writes to two tables:
+- `debate_sessions`: one row per debate (original_goal, consensus, confidence, rounds, status)
+- `debate_proposals`: one row per agent proposal (agent_role, proposal_text, critique_text, vote, round_number)
+
+Uses `ON CONFLICT DO NOTHING` to make it idempotent — safe to call multiple times.
+
+---
+
+## `store.py` — CollabSessionStore (323 lines)
+
+**Purpose**: Persists collaboration session state to PostgreSQL and provides SSE streaming for real-time collaboration.
+
+Key methods: `create_session`, `get_session`, `add_message`, `broadcast_event`, `list_sessions` — all with tenant_id scoping. Uses Redis pub/sub for cross-process event delivery when multiple API replicas are running.
+
+---
+
+# PART 21: app/observability/ — Platform Telemetry
+
+**4 files** providing the full observability stack: Prometheus metrics, structured logging, OpenTelemetry tracing, and a composable health check registry.
+
+---
+
+## `metrics.py` — Prometheus Metrics (361 lines)
+
+**Purpose**: Define, register, and expose all platform metrics. A dedicated `CollectorRegistry` (not the global default) keeps test isolation clean.
+
+### Label Normalization
+All labels are normalized through frozenset allowlists with alias mappings to prevent cardinality explosion:
+
+```python
+# Provider normalization
+"azure" → "azure_openai"; "ollama" → "local"
+# Status normalization
+"completed" → "complete"; "running" → "started"; "unreachable" → "error"
+# Token type normalization
+"input" → "prompt"; "output" → "completion"; "cache" → "cached"
+```
+
+### Core Metrics (All Named `agentverse_*`)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `agentverse_goal_duration_seconds` | Histogram | `status, priority` | Latency distribution for goal execution |
+| `agentverse_tool_calls_total` | Counter | `tool_category, status` | Tool call volume by category and outcome |
+| `agentverse_llm_tokens_total` | Counter | `provider, model, token_type` | Token consumption tracking |
+| `agentverse_llm_cost_usd_total` | Counter | `provider, scope` | LLM cost accumulation |
+| `agentverse_active_goals` | Gauge | — | Currently executing goals |
+| `agentverse_queue_depth` | Gauge | `queue_name` | Celery queue backlog depth |
+| `agentverse_schedule_fires_total` | Counter | `status` | Schedule trigger firings |
+
+**Design rule**: Histograms for latency (not averages), counters for totals, gauges for in-flight state.
+
+### Recording Functions
+```python
+record_goal_duration(status, duration_seconds, priority)
+record_tool_call(tool_name, status)          # normalizes tool to category
+record_llm_tokens(provider, model, token_type, count)
+record_goal_cost(provider, scope, cost_usd)
+set_active_goals(count)
+record_queue_depth(queue_name, depth)
+record_schedule_fire(status)
+```
+
+---
+
+## `logging.py` — Structured Logging (42 lines)
+
+**Purpose**: Configure structlog for structured JSON logging in production and human-readable console output in development.
+
+```python
+configure_logging(level="INFO", json_logs=True)
+```
+
+**Production** (`json_logs=True`): Each log line is a JSON object:
+```json
+{"event": "goal_started", "goal_id": "abc", "level": "info", "timestamp": "2026-06-29T..."}
+```
+
+**Development** (`json_logs=False`): `structlog.dev.ConsoleRenderer()` — color-coded, human-readable.
+
+**Context variables**: `structlog.contextvars.merge_contextvars` — `request_id`, `tenant_id`, `goal_id` set via `structlog.contextvars.bind_contextvars()` in middleware automatically appear in all log lines from that request.
+
+```python
+# Usage everywhere in the codebase:
+logger = get_logger(__name__)
+logger.info("goal_started", goal_id=goal_id, tenant_id=tenant_id)
+```
+
+---
+
+## `tracing.py` — OpenTelemetry Tracing (110 lines)
+
+**Purpose**: Bootstrap distributed tracing. Sends spans to Jaeger via OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; otherwise uses an in-memory exporter for local debugging.
+
+### Mode Selection
+```python
+configure_tracing("agentverse-backend", otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT)
+```
+- **With OTLP**: `OTLPSpanExporter(endpoint=..., insecure=True)` + `BatchSpanProcessor` (async, non-blocking)
+- **Without OTLP**: `InMemorySpanExporter` + `SimpleSpanProcessor` → accessible via `get_recent_spans(limit=100)`
+
+### `_NoOpTracer` Fallback
+When `opentelemetry` is not installed (minimal test environments), `get_tracer(name)` returns `_NoOpTracer` which provides `start_as_current_span(name)` as a context manager that does nothing. **Every call site is safe without OTel installed.**
+
+### `get_recent_spans(limit=100)`
+Returns the last N in-memory spans as dicts: `{name, trace_id, span_id, start_time, end_time, attributes, status}`. Used by the `/api/replay` endpoint to show execution traces.
+
+---
+
+## `health.py` — HealthRegistry (45 lines)
+
+**Purpose**: Composable, concurrent health check system. Each service module registers its own health check; the `/health` endpoint runs them all without knowing about individual services.
+
+### Architecture
+```python
+@dataclass(frozen=True, slots=True)
+class HealthCheck:
+    name: str
+    check: Callable[[], Awaitable[None]]  # raises on failure
+
+@dataclass(slots=True)
+class HealthRegistry:
+    checks: list[HealthCheck]
+
+    async def run(self) -> tuple[bool, dict[str, Any]]:
+        # Runs all checks concurrently via asyncio.gather
+        # Returns: (all_healthy, {"postgres": {"status": "up"}, "redis": {"status": "down", "error": "..."}})
+```
+
+**Registration pattern**:
+```python
+# In lifespan (main.py):
+health_registry.register(HealthCheck("postgres", lambda: db.execute("SELECT 1")))
+health_registry.register(HealthCheck("redis", lambda: redis.ping()))
+health_registry.register(HealthCheck("mcp", lambda: mcp_registry.health_check()))
+```
+
+Any module can add its own check without modifying the `/health` endpoint.
+
+---
+
+# PART 22: app/perception/ — Browser Vision
+
+**Files**: `browser_agent.py` (217 lines) + `page_analyzer.py` (93 lines) + `multimodal.py` (85 lines)
+
+---
+
+## `browser_agent.py` — BrowserAgent (217 lines)
+
+**Purpose**: Headless Chromium automation with optional vision LLM analysis. The core engine for web perception — used by `RPAExecutor` (production) and `PageAnalyzer` (intelligence gathering).
+
+### `BrowserAction` + `BrowserResult`
+```python
+@dataclass
+class BrowserAction:
+    action_type: str  # navigate | click | type | scroll | screenshot | extract_text
+    selector: str = ""
+    value: str = ""
+    url: str = ""
+
+@dataclass
+class BrowserResult:
+    success: bool; action: str; output: str = ""
+    screenshot_b64: str = ""  # Base64-encoded PNG
+    error: str = ""
+```
+
+### Operations
+- `take_screenshot(url)` → full-page=False, 1280×720, returns base64 PNG
+- `extract_text(url, selector="body")` → Playwright `inner_text()`, truncated to 5000 chars
+- `execute_action(BrowserAction)` → dispatches by `action_type`: navigate, click, type, scroll, screenshot, extract_text
+- `analyze_screenshot(screenshot_b64, question)` → sends to vision LLM provider with prompt; returns text description
+
+**Note**: Network is NOT restricted — BrowserAgent has full internet access. Domain-level policies must be enforced at the application layer.
+
+---
+
+## `page_analyzer.py` — PageAnalyzer (93 lines)
+
+**Purpose**: Combine screenshot + text extraction + LLM analysis into a structured `PageAnalysis` for injecting into the planner prompt.
+
+### `PageAnalysis` Dataclass
+```python
+@dataclass
+class PageAnalysis:
+    url: str; title: str = ""; text_content: str = ""
+    screenshot_b64: str = ""; llm_analysis: str = ""
+    success: bool = False; error: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_context_block(self) -> str:
+        # Returns: "### Page: {url}\nTitle: {title}\nAnalysis:\n{llm_analysis}"
+```
+
+### `analyze_url(url, question, extract_text=True, take_screenshot=True)`
+Runs screenshot + vision analysis + text extraction. The `question` parameter controls what the vision LLM is asked: `"What is the main purpose and content of this page?"` (default) or a specific question like `"What is the invoice total?"`.
+
+### `analyze_multiple(urls, question)`
+`asyncio.gather(*[analyze_url(url) for url in urls])` — concurrent multi-page analysis.
+
+### `build_context_block(analyses)`
+Formats all successful analyses as a `## Web Page Context` block for injection into the planner prompt.
+
+---
+
+# PART 23: app/triggers/ — Scheduling Models
+
+**Files**: `models.py` (49 lines) + `nl_scheduler.py` (69 lines) + `store.py` (445 lines)
+
+---
+
+## `models.py` — TriggerSpec (49 lines)
+
+**Purpose**: Defines all supported trigger types and the unified `TriggerSpec` data class.
+
+### TriggerType Enum (10 types)
+```python
+class TriggerType(enum.StrEnum):
+    CRON = "cron"           # Celery Beat cron expression
+    INTERVAL = "interval"  # Every N seconds
+    WEBHOOK = "webhook"    # HTTP POST to /webhooks/{token}
+    EVENT = "event"        # Redis pub/sub channel
+    REST = "rest"          # Manual HTTP call to /triggers/{id}/fire
+    ONCE = "once"          # Fire once at fire_at_iso
+    FILE_DROP = "file_drop"      # New file in watched directory
+    ALERTMANAGER = "alertmanager" # Prometheus AlertManager webhook
+    DATADOG = "datadog"          # Datadog webhook alert
+    PAGERDUTY = "pagerduty"      # PagerDuty incident webhook
+```
+
+### `TriggerSpec` Fields
+```python
+@dataclass
+class TriggerSpec:
+    trigger_type: TriggerType = TriggerType.ONCE
+    cron_expression: str = ""    # "0 9 * * 1-5" — CRON only
+    timezone: str = "UTC"
+    interval_seconds: int = 0   # INTERVAL only
+    webhook_token: str = ""     # WEBHOOK only
+    event_channel: str = ""     # EVENT only
+    event_filter: str = ""
+    fire_at_iso: str = ""       # ONCE only
+    condition: str = ""         # optional: only fire if condition met
+    description: str = ""       # human-readable description
+```
+
+---
+
+## `nl_scheduler.py` — NLScheduler (69 lines)
+
+**Purpose**: Convert natural language schedule descriptions into `TriggerSpec` objects using an LLM.
+
+### Examples
+```
+"Every weekday at 9 AM UTC"     → TriggerSpec(CRON, "0 9 * * 1-5", "UTC")
+"Every hour"                    → TriggerSpec(INTERVAL, interval_seconds=3600)
+"At 8 AM, 2 PM, 8 PM daily"    → [TriggerSpec(CRON, "0 8 * * *"), TriggerSpec(CRON, "0 14 * * *"), TriggerSpec(CRON, "0 20 * * *")]
+"Tomorrow at noon UTC"          → TriggerSpec(ONCE, fire_at_iso="2026-06-30T12:00:00Z")
+```
+
+### Protocol
+Sends a strict JSON-only prompt to the LLM provider. Response is cleaned of markdown fences and parsed. For compound schedules (`"schedules": [...]`) returns multiple `TriggerSpec` objects. Falls back to `TriggerSpec(ONCE)` on JSON parse failure.
+
+---
+
+## `store.py` — ScheduleStore (445 lines)
+
+**Purpose**: Persist schedules to Redis (primary, fast) and PostgreSQL (durable). The `fire_due_schedules` Celery task reads from the same Redis keys.
+
+---
+
+# PART 24: app/reliability/ — Complete Fault Tolerance
+
+**PART 7** covered `circuit_breaker.py`, `rollback.py`, `bulkhead.py`, `dedup.py`. These are the 4 missing files:
+
+---
+
+## `distributed_lock.py` — GoalExecutionLock (66 lines)
+
+**Purpose**: Prevent the same goal from being executed by two Celery workers simultaneously (at-most-once guarantee).
+
+### Implementation: Redis SET NX with Lua Script
+```python
+KEY_PREFIX = "goal_lock:"
+# Acquire: SET goal_lock:{goal_id} {uuid} NX PX {ttl_ms}
+# NX = only set if not exists; PX = TTL in milliseconds (default: 1,800,000 = 30 min)
+
+# Release: Lua script (atomic check-and-delete)
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+# ARGV[1] = our UUID — only release if we own it
+
+# Extend: Lua script (atomic check-and-extend)
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+```
+
+**Why Lua for release?** If our TTL expires (worker crashed, very slow step), another worker acquires the lock. A simple `DEL` would delete the new worker's lock. The Lua script checks the value first — only deletes if it matches our UUID.
+
+Methods: `acquire(goal_id, ttl_ms=1_800_000)`, `release(goal_id)`, `extend(goal_id, ttl_ms)`, `is_locked(goal_id)`
+
+---
+
+## `idempotency.py` — IdempotencyStore (35 lines)
+
+**Purpose**: Prevent duplicate goal submissions — if a client submits the same goal twice (network retry, double-click), only one executes.
+
+```python
+KEY_PREFIX = "idempotency:"
+redis_key = f"{KEY_PREFIX}{tenant_id}:{key}"
+
+# check_and_set: SET NX EX → returns True (new) or False (duplicate)
+result = await redis.set(redis_key, "1", nx=True, ex=ttl_seconds)
+return result is not None  # None = key existed = duplicate
+
+# release: for requests that failed — allow retry
+await redis.delete(redis_key)
+```
+
+**TTL default**: 3600s (1 hour). If the same idempotency key arrives twice within 1 hour, the second is rejected. After 1 hour, the key expires and the request can be retried.
+
+---
+
+## `goal_lifecycle.py` — Cross-Process Goal Signals (118 lines)
+
+**Purpose**: Allow the API server (async) to send pause/resume/cancel signals to Celery workers (separate processes) running goals.
+
+### Signal Mechanism
+```python
+# API server sends signal:
+await signal_pause("goal-123", async_redis)
+# → redis.set("goal_paused:goal-123", "1", ex=7200)
+# → redis.publish("goal_pause:goal-123", "pause")
+
+# Celery worker checks before each step:
+if is_cancelled_sync("goal-123", sync_redis):
+    raise GoalCancelledError("Cancelled by operator")
+await check_pause_cancel("goal-123", redis)  # blocks until resumed if paused
+```
+
+### Three Signals
+| Signal | Redis Key | Channel | TTL |
+|--------|-----------|---------|-----|
+| Pause | `goal_paused:{goal_id}` | `goal_pause:{goal_id}` | 2h |
+| Resume | (delete pause key) | `goal_pause:{goal_id}` | — |
+| Cancel | `goal_cancelled:{goal_id}` | `goal_cancel:{goal_id}` | 2h |
+
+**`check_pause_cancel`** (async): Checks cancel first (raises immediately), then checks pause and `asyncio.sleep(1)` polls until the pause flag is cleared.
+
+**`is_cancelled_sync`** (sync): Used in Celery tasks (sync context) — checks the Redis key directly without asyncio.
+
+---
+
+## `result_processor.py` — ResultProcessor (59 lines)
+
+**Purpose**: Sanitize tool outputs before they enter the agent context. Prevents credential leakage from noisy tool responses.
+
+### Two Operations
+
+**1. Secret Redaction**
+```python
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9]{8,}"),        # OpenAI API keys
+    re.compile(r"ghp_[A-Za-z0-9]{36,}"),      # GitHub personal tokens
+    re.compile(r"xoxb-[A-Za-z0-9\-]+"),       # Slack bot tokens
+    re.compile(r"Bearer [A-Za-z0-9\-._~+/]+=*"),  # Bearer tokens
+]
+# + Context-aware base64: only redacts when preceded by password/secret/token/key/credential/auth/bearer
+```
+
+**2. Truncation**
+```python
+_DEFAULT_MAX_LENGTH = 4000
+# Appends "...[truncated]" if over limit
+```
+
+**Why context-aware base64 redaction?** Simple base64 patterns would flag commit SHAs, UUIDs, and other legitimate content. Only redacts when the base64 string appears immediately after a credential keyword — drastically reduces false positives.
+
+---
+
+# PART 25: app/testing/ — AgentTestHarness
+
+**File**: `harness.py` (162 lines)
+
+**Purpose**: Run complete agent goals (plan → execute → verify) with mocked tools and LLM responses, without a running server. Used for testing agent decision-making behavior, not just unit testing individual functions.
+
+### Setup
+```python
+harness = AgentTestHarness(
+    planner_responses=['{"steps": ["Search for invoices", "Export to CSV"]}'],
+    executor_responses=["Found 5 invoices", "Exported to report.csv"],
+    verifier_responses=['{"success": true, "reason": "CSV exported"}'],
+)
+harness.set_mock_tool("quickbooks.list_invoices", [{"id": "inv_1", "amount": 5000}])
+harness.set_mock_tool("file_ops.write", {"success": True, "bytes_written": 1024})
+```
+
+### `TestResult` Dataclass
+```python
+@dataclass
+class TestResult:
+    __test__ = False  # Prevents pytest from collecting as a test class
+    success: bool
+    events: list[dict]      # All SSE events emitted during execution
+    tools_called: list[str] # Names of all tool calls made
+    plan_steps: list[str]   # Steps from the plan_ready event
+    output: str             # Last step output
+    cost_usd: float
+    iterations: int
+    error: str | None
+```
+
+### Assertion Helpers
+```python
+harness.assert_tool_called("quickbooks.list_invoices", result)
+harness.assert_tool_called("quickbooks.list_invoices", result, times=1)  # exact count
+harness.assert_tool_not_called("delete_database", result)
+harness.assert_goal_completed(result)
+harness.assert_output_contains("report.csv", result)
+```
+
+### Internals
+The harness constructs a real `AgentGraph` with:
+- `FakeProvider(responses=self._planner_responses)` for planner
+- `FakeProvider(responses=self._executor_responses)` for executor
+- `FakeProvider(responses=self._verifier_responses)` for verifier
+- `MockMCPClient(self._mock_tools)` for all tool calls
+
+This means the full LangGraph state machine runs — including the replan logic, HITL gates, and circuit breakers — just without hitting real LLMs or real APIs.
+
+---
+
+# PART 26: app/scaling/ — ParallelExecutor + PriorityQueue
+
+---
+
+## `parallel_executor.py` — ParallelExecutor (30 lines)
+
+**Purpose**: Execute multiple async steps concurrently with a semaphore cap. Used by `WorkflowExecutor` and `GoalTree` to run independent sub-goals in parallel waves.
+
+```python
+class ParallelExecutor:
+    def __init__(self, max_concurrency: int = 8) -> None:
+        self._sem = asyncio.Semaphore(max_concurrency)
+
+    async def run_parallel(self, steps: list[Callable[[], Awaitable[str]]]) -> list[str]:
+        async def _bounded(step):
+            async with self._sem:
+                return await step()
+        return list(await asyncio.gather(*[_bounded(s) for s in steps]))
+```
+
+**Why a semaphore?** Without it, a plan with 50 independent steps would spawn 50 concurrent tool calls, exhausting connection pools and rate limits. The semaphore caps at 8 simultaneous, processing the rest as slots free up.
+
+---
+
+## `priority_queue.py` — PriorityQueue (61 lines)
+
+**Purpose**: Priority-aware goal scheduling within a worker process. In production, the Redis sorted set uses the same scoring formula for cross-process priority ordering.
+
+### Priority Levels
+```python
+class Priority(enum.IntEnum):
+    P0 = 0  # critical — SLA breach imminent, emergency stop triggered
+    P1 = 1  # high — enterprise tenant, time-sensitive
+    P2 = 2  # normal (default)
+    P3 = 3  # low — background analysis
+    P4 = 4  # background — non-urgent maintenance
+```
+
+### Scoring Formula
+```python
+score = priority.value * 1_000_000_000_000 + created_at  # monotonic timestamp
+```
+
+**Why 1e12 scale factor?** `time.monotonic()` returns floats with ~6 decimal places of precision. Multiplying priority by 1e12 ensures P0 scores are always lower than P1 scores even after 11+ days of uptime (1e12 seconds ≈ 31,700 years). FIFO within same priority is preserved by the `created_at` component.
+
+---
+
+# PART 27: app/core/secrets.py — Secret Resolution
+
+**File**: `secrets.py` (41 lines)
+
+**Purpose**: Dual-source secret resolution that works identically in Docker Swarm/Kubernetes (mounted secret files) and local development (environment variables).
+
+### Precedence Order
+```
+1. {NAME}_FILE env var → read & strip the file (Docker secrets, K8s secretsMounts)
+2. {NAME} env var → use value directly (local dev, .env files)
+3. default parameter → use fallback
+4. raise SecretNotFoundError
+```
+
+### Usage in Production
+```python
+# Docker Compose / Kubernetes:
+# DATABASE_URL_FILE=/run/secrets/database_url
+# (the file contains the DSN string)
+
+from app.core.secrets import read_secret
+db_url = read_secret("DATABASE_URL", default="postgresql+asyncpg://localhost/dev")
+```
+
+**Why `*_FILE` precedence?** Docker Swarm secrets mount credentials as files at `/run/secrets/`. The file approach avoids credentials appearing in `docker inspect` output (env vars are visible there). Kubernetes `secretKeyRef` also uses file mounts in best practice configurations.
+
+---
+
+# PART 28: app/services/ — webhook_service + persistence
+
+---
+
+## `webhook_service.py` — OutboundWebhookService (157 lines)
+
+**Purpose**: Deliver outbound webhooks (goal completion notifications, HITL events, cost alerts) to user-configured URLs with exponential backoff retry and a Dead Letter Queue.
+
+### `WebhookDelivery` Dataclass
+```python
+@dataclass
+class WebhookDelivery:
+    delivery_id: str   # UUID hex
+    tenant_id: str
+    url: str
+    payload: dict
+    status: str        # pending | delivered | failed | dead
+    attempts: int = 0
+    max_attempts: int = 3
+    last_error: str = ""
+    created_at: str    # ISO format UTC
+    delivered_at: str  # set on success
+```
+
+### Delivery Pipeline
+1. `deliver(tenant_id, url, payload)` → `httpx.AsyncClient.post(url, json=payload, timeout=10)`
+2. On success: `status = "delivered"`
+3. On failure: `status = "failed"`, increment `attempts`
+4. At `attempts >= max_attempts`: `status = "dead"` → moved to DLQ list
+
+### In-Memory Storage
+- `_deliveries: dict[str, WebhookDelivery]` — active deliveries (max 10,000, TTL 24h)
+- `_dlq: list[WebhookDelivery]` — dead letter queue
+- `_evict_old_deliveries()` — removes entries older than 24h and caps at size limit
+
+---
+
+## `persistence.py` — Background Persistence Adapter (114 lines)
+
+**Purpose**: Write goal state to PostgreSQL in the background. The in-memory `GoalService` is the source of truth for real-time operations; this module provides eventual persistence to DB without blocking goal execution.
+
+### Design Principle
+```python
+"""Design: always use in-memory services (fast, testable), and additionally
+attempt to persist to PostgreSQL in the background. Failure to persist is
+logged but never raises to the caller."""
+```
+
+### Functions
+- `persist_goal(goal_id, tenant_id, goal_text, status, priority, dry_run, db_session_factory)` → `INSERT INTO goals`
+- `persist_goal_status(goal_id, tenant_id, status, error_message, db_session_factory)` → `UPDATE goals SET status`
+- `persist_goal_event(goal_id, event_type, event_data, db_session_factory)` → `INSERT INTO goal_events`
+
+All functions: if `db_session_factory is None` → `return` immediately (no-op). On DB error → `logger.warning(...)` and return. **Never raises to caller.**
+
+---
+
+# PART 29: app/knowledge/ingestors/ — Data Source Ingestors
+
+**6 files** for pulling content from external sources into knowledge collections.
+
+| Ingestor | File | Primary API | Output |
+|----------|------|-------------|--------|
+| GitHub | `github_ingestor.py` (124 lines) | GitHub REST API (`/repos/{owner}/{repo}/git/trees`, `/contents/{path}`) | Code files, README, docs |
+| Jira | `jira_ingestor.py` (110 lines) | Jira REST API (`/search?jql=project={key}`) | Issues with ADF→plain text |
+| Confluence | `confluence_ingestor.py` (86 lines) | Confluence REST API (`/wiki/rest/api/content`) | Pages as plain text |
+| PDF | `pdf_ingestor.py` (59 lines) | pypdf / PyPDF2 | Text extracted per page |
+| DOCX | `docx_ingestor.py` (41 lines) | python-docx | Paragraphs + tables |
+| Slack | `slack_ingestor.py` (76 lines) | Slack Web API (`conversations.history`) | Messages per channel |
+
+### GitHubIngestor
+```python
+ingestor = GitHubIngestor(token="ghp_...")
+chunks = await ingestor.ingest_repo("owner", "repo")
+```
+- `_get_tree()` fetches the full repo file tree (recursive)
+- `_should_ingest(path)` filters: `.py`, `.ts`, `.tsx`, `.js`, `.md`, `.txt`, `.yaml`, `.yml`, `.json` — skips test files, vendor dirs, build artifacts
+- `_fetch_file_content()` fetches individual file content via base64-decoded blob
+- Returns list of `{content, metadata: {path, repo, language}}`
+
+### JiraIngestor
+```python
+ingestor = JiraIngestor(base_url="https://company.atlassian.net", token="...", user="user@co.com")
+chunks = await ingestor.ingest_project("PROJ")
+```
+- JQL: `project={project_key} ORDER BY updated DESC` with pagination
+- `_adf_to_text(adf)` converts Atlassian Document Format nodes (paragraph, text, heading, orderedList, bulletList, codeBlock, mention) to plain text
+- Returns list of `{content: "PROJ-123: Bug in login\n\n{description}", metadata: {issue_key, type, status, priority}}`
+
+### ConfluenceIngestor
+Fetches pages from a Confluence space, strips HTML via BeautifulSoup or fallback regex, returns `{content, metadata: {page_id, title, space}}`.
+
+---
+
+# PART 30: Frontend — Stores, Hooks, Transport Layer
+
+**Previously undocumented**: Zustand stores, React hooks, and the API client extensions for civilization and governance real-time.
+
+---
+
+## `src/stores/auth.ts` — Authentication Store (143 lines)
+
+**Purpose**: Single source of truth for authentication state across the entire frontend. Persists to `sessionStorage` (cleared on tab close) with localStorage fallback for backward compatibility.
+
+### Two Auth Modes
+
+**1. API-key mode** (traditional):
+```typescript
+{apiKey: string; tenantId: string; plan: string; isAuthenticated: boolean}
+setCredentials(apiKey, tenantId, plan)
+```
+
+**2. SSO/JWT mode** (Keycloak OIDC):
+```typescript
+{ssoMode: boolean; accessToken: string; refreshToken: string; tokenExpiresAt: number}
+setSSOCredentials(accessToken, refreshToken, expiresIn, tenantId, plan)
+updateAccessToken(accessToken, expiresIn)  // called by useTokenRefresh on silent refresh
+```
+
+### Security Design
+```typescript
+// sessionStorage ONLY — never write API keys or JWTs to localStorage
+setItem: (name, value) => sessionStorage.setItem(name, value)
+// Read localStorage for backward compat (old sessions), never write there
+getItem: (name) => sessionStorage.getItem(name) ?? localStorage.getItem(name)
+// logout: clear both
+removeItem: (name) => { sessionStorage.removeItem(name); localStorage.removeItem(name) }
+```
+
+**Why sessionStorage?** `localStorage` survives browser restarts and is accessible to any XSS-injected script. `sessionStorage` is cleared when the tab closes, reducing the exfiltration window.
+
+---
+
+## `src/stores/ui.ts` — UI State Store (48 lines)
+
+**Purpose**: Global UI state: sidebar collapse, theme, and mobile menu.
+
+```typescript
+{sidebarCollapsed: boolean; theme: "light" | "dark" | "system"; mobileMenuOpen: boolean}
+```
+
+Theme persists via Zustand `persist` middleware to localStorage. Sidebar state resets on page load.
+
+---
+
+## `src/stores/toast.ts` — Toast Notification Store (27 lines)
+
+**Purpose**: Centralized toast notification queue.
+
+```typescript
+{toasts: Toast[]}
+addToast(message, type: "success" | "error" | "warning" | "info", duration?)
+removeToast(id)
+```
+
+---
+
+## `src/hooks/useTokenRefresh.ts` — JWT Silent Refresh (121 lines)
+
+**Purpose**: Automatically refresh the Keycloak access token before it expires, maintaining SSO sessions indefinitely.
+
+### Refresh Logic
+```typescript
+// Refresh when token is within REFRESH_BEFORE_EXPIRY_SECONDS of expiring (default: 60s)
+const shouldRefresh = ssoMode && tokenExpiresAt > 0 &&
+                      (tokenExpiresAt - Date.now()/1000) < REFRESH_BEFORE_EXPIRY_SECONDS;
+```
+
+On refresh: `POST {KEYCLOAK_URL}/protocol/openid-connect/token` with `grant_type=refresh_token`. On success: `updateAccessToken(newToken, expiresIn)`. On failure (401/invalid): `logout()` → redirect to login.
+
+**Polling interval**: Checks every 30 seconds. Only runs when `ssoMode === true`.
+
+---
+
+## `src/hooks/useAppHotkeys.ts` — Global Keyboard Shortcuts (32 lines)
+
+**Purpose**: `?` help overlay + `g+{key}` navigation shortcuts for power users.
+
+| Shortcut | Navigation |
+|----------|-----------|
+| `g` + `d` | Goals / Dashboard |
+| `g` + `g` | Goals list |
+| `g` + `a` | Agents list |
+| `g` + `t` | Templates |
+| `g` + `k` | Knowledge base |
+| `g` + `r` | RPA sessions |
+| `g` + `o` | Observability |
+| `?` | Toggle help overlay |
+
+Uses `react-hotkeys-hook` under the hood. The `g` key starts a "leader key" sequence — next key pressed within 1 second triggers navigation.
+
+---
+
+## `src/lib/api/civilizationApi.ts` — Civilization API Client (126 lines)
+
+**Purpose**: Typed API client for civilization-specific endpoints.
+
+Covers: `createCivilization`, `getCivilization`, `listCivilizations`, `tickCivilization`, `getCivilizationAgents`, `getConstitution`, `updateConstitution`, `getBlackboard`, `postBlackboardEntry`, `getSocietyReputation`.
+
+---
+
+## `src/lib/sse/useCivilizationStream.ts` — Civilization SSE Hook (95 lines)
+
+**Purpose**: React hook for real-time civilization events via Server-Sent Events.
+
+```typescript
+const { events, connected, error } = useCivilizationStream(civilizationId);
+```
+
+Subscribes to `GET /api/civilization/{id}/stream`. Events: `agent_spawned`, `agent_retired`, `knowledge_promoted`, `breach_detected`, `tick_complete`. Auto-reconnects on disconnect with exponential backoff.
+
+---
+
+## `src/lib/api/governance-realtime.ts` — Governance Real-Time Transport
+
+**Purpose**: Real-time governance events (HITL approval requests, policy violations, budget alerts) delivered via SSE.
+
+```typescript
+subscribeToApprovals(tenantId, onEvent)  // HITL approval inbox
+subscribeToViolations(tenantId, onEvent) // Policy violation alerts
+subscribeToBudgetAlerts(tenantId, onEvent) // Cost threshold alerts
+```
+
+Powers the `GovernanceDashboard` real-time updates and the `ApprovalInbox` live refresh.
