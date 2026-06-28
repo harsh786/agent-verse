@@ -42,6 +42,8 @@ import { A2APage } from "@/features/a2a/A2APage";
 import { NotificationCenterPage } from "@/features/notifications/NotificationCenterPage";
 import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
+import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
+import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -144,6 +146,8 @@ export default function App() {
         <Route path="notifications" element={<NotificationCenterPage />} />
         <Route path="rbac" element={<RbacPage />} />
         <Route path="compliance" element={<CompliancePage />} />
+        <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
+        <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
         <Route path="civilization" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
         <Route path="civilization/:id" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
       </Route>
