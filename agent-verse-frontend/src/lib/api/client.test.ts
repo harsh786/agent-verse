@@ -1,7 +1,12 @@
-import { afterEach, expect, test, vi } from 'vitest';
-import { analyticsApi, schedulesApi, agentsApi } from '@/lib/api/client';
+import { afterEach, expect, test, vi, beforeEach } from 'vitest';
+import { analyticsApi, schedulesApi, agentsApi, goalsApi, ApiError } from '@/lib/api/client';
+import { useAuthStore } from '@/stores/auth';
 
 afterEach(() => vi.restoreAllMocks());
+
+beforeEach(() => {
+  useAuthStore.setState({ apiKey: '', tenantId: '', plan: '', isAuthenticated: false });
+});
 
 function mockOk(body: unknown) {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -31,4 +36,13 @@ test('createNl posts command+autorun to /agents/create', async () => {
   expect(String(url)).toContain('/agents/create');
   expect(init?.method).toBe('POST');
   expect(JSON.parse(String(init?.body))).toEqual({ command: 'make a triage bot', autorun: false });
+});
+
+test('401 logs out and surfaces a session toast', async () => {
+  useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true });
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ error: { message: 'unauthorized' } }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+  );
+  await expect(goalsApi.list()).rejects.toBeInstanceOf(ApiError);
+  expect(useAuthStore.getState().isAuthenticated).toBe(false);
 });
