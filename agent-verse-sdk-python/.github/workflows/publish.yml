@@ -1,0 +1,89 @@
+name: Publish Python SDK to PyPI
+
+on:
+  push:
+    tags:
+      - 'python-sdk/v*'  # e.g. python-sdk/v0.2.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.2.0)'
+        required: true
+
+jobs:
+  test:
+    name: Test before publish
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        working-directory: agent-verse-sdk-python
+        run: uv sync --frozen
+      - name: Run tests
+        working-directory: agent-verse-sdk-python
+        run: uv run pytest --tb=short -q
+      - name: Type check
+        working-directory: agent-verse-sdk-python
+        run: uv run mypy agentverse/ || true
+
+  publish:
+    name: Build and publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # Required for OIDC trusted publishing
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/python-sdk/v}" >> $GITHUB_OUTPUT
+          fi
+      - name: Update version in pyproject.toml
+        working-directory: agent-verse-sdk-python
+        run: |
+          sed -i "s/^version = .*/version = \"${{ steps.version.outputs.VERSION }}\"/" pyproject.toml
+      - name: Build wheel and sdist
+        working-directory: agent-verse-sdk-python
+        run: |
+          pip install build
+          python -m build
+      - name: Publish to PyPI (OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: agent-verse-sdk-python/dist/
+          # Use OIDC trusted publishing — no API token needed.
+          # Configure at: https://pypi.org/manage/project/agentverse-sdk/settings/publishing/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: Python SDK v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## agentverse-sdk v${{ steps.version.outputs.VERSION }}
+
+            Install: `pip install agentverse-sdk==${{ steps.version.outputs.VERSION }}`
+
+            ```python
+            from agentverse import AgentVerseClient
+            async with AgentVerseClient(api_key="av-...") as client:
+                goal = await client.submit_goal("Summarise all open GitHub issues")
+                result = await client.wait_for_goal(goal.goal_id)
+            ```
+          files: agent-verse-sdk-python/dist/*

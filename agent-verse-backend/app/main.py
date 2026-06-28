@@ -501,19 +501,36 @@ def create_app(
                 _llm_store = LLMConfigStore(redis_client=real_redis)
                 set_llm_config_store(_llm_store)
                 app.state.llm_config_store = _llm_store
-                # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7)
+                # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7 + Fix 2)
+                # langgraph-checkpoint-redis >= 0.0.6 returns an async context manager from
+                # from_conn_string(); we must enter it via __aenter__ to get the real saver.
+                # Sync RedisSaver.from_conn_string() similarly returns a sync context manager.
                 try:
                     from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-                    _checkpointer = AsyncRedisSaver.from_conn_string(str(settings.redis_url))
-                    await _checkpointer.setup()  # create Redis data structures
-                    app.state.langgraph_checkpointer = _checkpointer
+                    _raw_cm = AsyncRedisSaver.from_conn_string(str(settings.redis_url))
+                    if hasattr(_raw_cm, "__aenter__"):
+                        # Newer library: async context manager — enter it to get the saver
+                        _actual_saver = await _raw_cm.__aenter__()
+                        # Keep a reference so the context manager stays alive for the
+                        # full process lifetime; cleaned up in the finally block below.
+                        app.state._async_redis_saver_cm = _raw_cm
+                    else:
+                        _actual_saver = _raw_cm
+                    await _actual_saver.setup()  # create Redis data structures
+                    app.state.langgraph_checkpointer = _actual_saver
                     logger.info("async_redis_saver_checkpointer_wired")
                 except (ImportError, Exception) as _exc:
+                    logger.warning("async_redis_saver_failed", error=str(_exc))
                     # Fall back to sync RedisSaver
                     try:
                         from langgraph.checkpoint.redis import RedisSaver
-                        _checkpointer = RedisSaver.from_conn_string(str(settings.redis_url))
-                        app.state.langgraph_checkpointer = _checkpointer
+                        _raw_sync_cm = RedisSaver.from_conn_string(str(settings.redis_url))
+                        if hasattr(_raw_sync_cm, "__enter__"):
+                            _sync_saver = _raw_sync_cm.__enter__()
+                            app.state._sync_redis_saver_cm = _raw_sync_cm
+                        else:
+                            _sync_saver = _raw_sync_cm
+                        app.state.langgraph_checkpointer = _sync_saver
                         logger.info("redis_saver_checkpointer_wired")
                     except (ImportError, Exception) as _exc2:
                         logger.warning("redis_saver_unavailable", error=str(_exc2))
@@ -827,9 +844,8 @@ def create_app(
 
             # ── H-3: Seed RBAC scope definitions from declarative registry ───────
             try:
-                from app.auth.scope_seeder import seed_builtin_scopes, seed_scope_definitions
+                from app.auth.scope_seeder import seed_builtin_scopes
                 await seed_builtin_scopes(db_factory)
-                await seed_scope_definitions(db_factory)
                 logger.info("scope_seeder_complete")
             except Exception as _seed_exc:
                 logger.warning("scope_seeder_failed", error=str(_seed_exc))

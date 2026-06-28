@@ -62,10 +62,41 @@ class PromptOptimizer:
         self._variants: dict[str, dict[str, PromptVariant]] = {}
         # Per-tenant active variant map: tenant_id → {prompt_key: variant_id}
         self._active: dict[str, dict[str, str]] = {}
+        # Pending DB-persist tasks — strong references prevent task GC before completion.
+        self._pending_tasks: set = set()
 
     # ------------------------------------------------------------------
     # Variant management
     # ------------------------------------------------------------------
+
+    def add_variant(self, variant: PromptVariant, tenant_id: str, db: Any = None) -> None:
+        """Register a pre-built PromptVariant for the given tenant.
+
+        If *db* is None, the variant is stored in-memory only and WILL BE LOST
+        on process restart.  Always pass *db* in production so the variant is
+        persisted to the ``prompt_variants`` table.
+        """
+        if db is None:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "prompt_variant_no_db_in_memory_only variant_id=%s tenant_id=%s "
+                "will_be_lost_on_restart=True",
+                variant.variant_id,
+                tenant_id,
+            )
+        self._variants.setdefault(tenant_id, {})[variant.variant_id] = variant
+        if variant.is_control:
+            self._active.setdefault(tenant_id, {})[variant.prompt_key] = variant.variant_id
+        if db is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self.persist_variant(variant, tenant_id, db))
+                # Hold a strong reference so the GC does not collect the task early.
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+            except RuntimeError:
+                pass  # Not in an async context — caller must persist separately.
 
     def register_variant(
         self,
