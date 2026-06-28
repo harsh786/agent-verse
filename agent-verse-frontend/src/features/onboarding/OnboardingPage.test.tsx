@@ -2,14 +2,14 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { vi, expect, test, beforeEach } from 'vitest';
+import { vi, expect, test } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { OnboardingPage } from './OnboardingPage';
 
 test('create-agent step sends X-API-Key from the auth store (not localStorage)', async () => {
   sessionStorage.clear(); localStorage.clear();
   useAuthStore.setState({ apiKey: 'store-key', tenantId: 't', plan: 'free', isAuthenticated: true });
-  const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
     if (url.includes('/agents/create')) {
       return new Response(JSON.stringify({ agent_id: 'a1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });

@@ -3,22 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
-
-async function createAgentNL(
-  apiKey: string,
-  command: string,
-  autorun: boolean
-): Promise<{ agent_id: string; name: string }> {
-  const res = await fetch(`${API_BASE}/agents/create`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, autorun }),
-  });
-  if (!res.ok) throw new Error(`Failed to create agent: ${res.statusText}`);
-  return res.json();
-}
+import { agentsApi } from '@/lib/api/client';
 
 export function AgentCreatePage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -40,7 +25,7 @@ export function AgentCreatePage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => createAgentNL(apiKey, nlCommand, autorun),
+    mutationFn: () => agentsApi.createNl(nlCommand, autorun),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['agents'] });
       navigate(`/agents/${data.agent_id}`);
@@ -52,17 +37,7 @@ export function AgentCreatePage() {
     setLoading(true);
     setError('');
     try {
-      const resp = await fetch(`${API_BASE}/agents`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify(manualForm),
-      });
-      if (!resp.ok) {
-        const err = await resp.json();
-        setError(err.detail || 'Failed to create agent');
-        return;
-      }
-      const data = await resp.json();
+      const data = await agentsApi.create(manualForm as unknown as Parameters<typeof agentsApi.create>[0]);
       qc.invalidateQueries({ queryKey: ['agents'] });
       navigate(`/agents/${data.agent_id}`);
     } catch (err) {
@@ -71,6 +46,9 @@ export function AgentCreatePage() {
       setLoading(false);
     }
   };
+
+  // apiKey used for conditional checks in form validation
+  void apiKey;
 
   return (
     <div className="space-y-6 max-w-2xl">

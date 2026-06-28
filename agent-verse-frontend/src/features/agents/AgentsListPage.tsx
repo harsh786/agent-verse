@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+import { agentsApi } from '@/lib/api/client';
 
 interface Agent {
   agent_id: string;
@@ -12,36 +11,6 @@ interface Agent {
   goal_template: string;
   status?: string;
   created_at?: string;
-}
-
-async function fetchAgents(apiKey: string): Promise<Agent[]> {
-  const res = await fetch(`${API_BASE}/agents`, {
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch agents: ${res.statusText}`);
-  return res.json();
-}
-
-async function createAgentNL(
-  apiKey: string,
-  command: string,
-  autorun: boolean
-): Promise<Agent> {
-  const res = await fetch(`${API_BASE}/agents/create`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, autorun }),
-  });
-  if (!res.ok) throw new Error(`Failed to create agent: ${res.statusText}`);
-  return res.json();
-}
-
-async function deleteAgent(apiKey: string, agentId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
-    method: 'DELETE',
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`Failed to delete agent: ${res.statusText}`);
 }
 
 const AUTONOMY_COLORS: Record<string, string> = {
@@ -66,12 +35,12 @@ export function AgentsListPage() {
     error,
   } = useQuery({
     queryKey: ['agents'],
-    queryFn: () => fetchAgents(apiKey),
+    queryFn: () => agentsApi.list(),
     enabled: !!apiKey,
   });
 
   const createMutation = useMutation({
-    mutationFn: () => createAgentNL(apiKey, nlCommand, false),
+    mutationFn: () => agentsApi.createNl(nlCommand, false),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents'] });
       setShowCreate(false);
@@ -80,14 +49,14 @@ export function AgentsListPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteAgent(apiKey, id),
+    mutationFn: (id: string) => agentsApi.delete(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] }),
   });
 
   const filtered =
     filterMode === 'all'
-      ? agents
-      : agents.filter((a) => a.autonomy_mode === filterMode);
+      ? (agents as Agent[])
+      : (agents as Agent[]).filter((a) => a.autonomy_mode === filterMode);
 
   return (
     <div className="space-y-6">
