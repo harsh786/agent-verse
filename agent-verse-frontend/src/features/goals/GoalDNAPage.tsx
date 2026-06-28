@@ -5,14 +5,14 @@
  * - Edges: data flow between nodes
  * Uses @xyflow/react (already installed) for clean rendering.
  */
-import { useMemo } from "react";
+import { useMemo, Component, type ReactNode, type ErrorInfo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, BackgroundVariant, MarkerType, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { insightsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { ArrowLeft, Zap, Wrench, GitBranch, CheckCircle2, XCircle, Info } from "lucide-react";
+import { ArrowLeft, Zap, Wrench, GitBranch, CheckCircle2, XCircle, Info, AlertCircle } from "lucide-react";
 
 const NODE_COLORS: Record<string, { bg: string; border: string; icon: React.ElementType }> = {
   start:  { bg: "bg-blue-50 dark:bg-blue-950/40",  border: "border-blue-300 dark:border-blue-700", icon: Zap },
@@ -40,6 +40,37 @@ function CustomNode({ data }: { data: Record<string, unknown> }) {
 }
 
 const NODE_TYPES = { custom: CustomNode };
+
+class GraphErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: string }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: "" };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("GoalDNA graph error:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 text-muted-foreground border border-border rounded-xl">
+          <AlertCircle className="h-8 w-8 mb-2 opacity-40" />
+          <p className="text-sm">Failed to render execution graph</p>
+          <p className="text-xs mt-1 opacity-60">{this.state.error}</p>
+          <button
+            onClick={() => this.setState({ hasError: false })}
+            className="mt-3 text-xs text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function GoalDNAPage() {
   const { goalId } = useParams<{ goalId: string }>();
@@ -127,18 +158,20 @@ export function GoalDNAPage() {
       )}
 
       {graph && nodes.length > 0 && (
-        <div className="flex-1 border border-border rounded-xl overflow-hidden min-h-[500px]">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={NODE_TYPES}
-            fitView
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={16} className="opacity-50" />
-            <Controls />
-          </ReactFlow>
-        </div>
+        <GraphErrorBoundary>
+          <div className="flex-1 border border-border rounded-xl overflow-hidden min-h-[500px]">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={NODE_TYPES}
+              fitView
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={16} className="opacity-50" />
+              <Controls />
+            </ReactFlow>
+          </div>
+        </GraphErrorBoundary>
       )}
     </div>
   );

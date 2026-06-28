@@ -10,6 +10,9 @@ import {
   ChevronRight,
   Pause,
   Play,
+  Dna,
+  GitCompare,
+  Ghost,
 } from "lucide-react";
 import { useState } from "react";
 import { goalsApi, governanceApi } from "@/lib/api/client";
@@ -380,6 +383,35 @@ export function GoalDetailPage() {
           )}
         </div>
       )}
+
+      {/* Tab bar */}
+      <div className="flex items-center gap-2 flex-wrap mt-2 pt-2 border-t border-border">
+        <span className="text-xs text-muted-foreground">Analysis:</span>
+        <button
+          onClick={() => navigate(`/goals/${goalId}/dna`)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
+          title="Visualize execution as a force graph"
+        >
+          <Dna className="h-3 w-3" aria-hidden="true" />
+          View DNA
+        </button>
+        <button
+          onClick={() => navigate(`/goals/${goalId}/diff`)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
+          title="Compare this run with another"
+        >
+          <GitCompare className="h-3 w-3" aria-hidden="true" />
+          Diff Run
+        </button>
+        <button
+          onClick={() => navigate("/goals/ghost-run")}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
+          title="Run same goal with multiple strategies"
+        >
+          <Ghost className="h-3 w-3" aria-hidden="true" />
+          Ghost Run
+        </button>
+      </div>
 
       {/* Tab bar */}
       <div role="tablist" aria-label="Goal detail tabs" className="flex gap-1 border-b">

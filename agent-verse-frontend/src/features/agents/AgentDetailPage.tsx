@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Loader2, Download, Camera, RotateCcw,
   Edit3, Save, X, Clock, Target, ChevronDown, ChevronRight,
+  Activity, Sliders,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { goalsApi, agentsApi, knowledgeApi } from "@/lib/api/client";
@@ -292,6 +293,24 @@ export function AgentDetailPage() {
             >
               {editing ? <X className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
               {editing ? "Cancel" : "Edit"}
+            </button>
+            <button
+              onClick={() => navigate(`/agents/${agentId}/radar`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
+              aria-label="View agent health radar"
+              title="6-axis health radar chart"
+            >
+              <Activity className="h-3.5 w-3.5" aria-hidden="true" />
+              Health Radar
+            </button>
+            <button
+              onClick={() => navigate(`/agents/${agentId}/personality`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
+              aria-label="Configure agent personality"
+              title="Visual personality slider configuration"
+            >
+              <Sliders className="h-3.5 w-3.5" aria-hidden="true" />
+              Personality
             </button>
           </div>
         </div>

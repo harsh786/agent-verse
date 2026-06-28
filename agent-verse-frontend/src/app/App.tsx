@@ -1,10 +1,16 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState, lazy, Suspense } from "react";
+import { Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
+const GoalDNAPage = lazy(() => import("@/features/goals/GoalDNAPage").then(m => ({ default: m.GoalDNAPage })));
+const AgentRadarPage = lazy(() => import("@/features/agents/AgentRadarPage").then(m => ({ default: m.AgentRadarPage })));
+const TemplateLibraryPage = lazy(() => import("@/features/templates/TemplateLibraryPage").then(m => ({ default: m.TemplateLibraryPage })));
+const WorkflowBuilderPage = lazy(() => import("@/features/workflow-builder/WorkflowBuilderPage").then(m => ({ default: m.WorkflowBuilderPage })));
+
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -27,7 +33,6 @@ import { EvalPage } from "@/features/eval/EvalPage";
 import { MarketplacePage } from "@/features/marketplace/MarketplacePage";
 import { EnterprisePage } from "@/features/enterprise/EnterprisePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
-import { WorkflowBuilderPage } from "@/features/workflow-builder/WorkflowBuilderPage";
 import { PlaygroundPage } from "@/features/playground/PlaygroundPage";
 import { AnalyticsDashboardPage } from "@/features/analytics/AnalyticsDashboardPage";
 import SimulationPage from "@/features/simulation/SimulationPage";
@@ -45,12 +50,9 @@ import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
-import { GoalDNAPage } from "@/features/goals/GoalDNAPage";
 import { GoalDiffPage } from "@/features/goals/GoalDiffPage";
 import { GhostRunPage } from "@/features/goals/GhostRunPage";
-import { AgentRadarPage } from "@/features/agents/AgentRadarPage";
 import { AgentPersonalityPage } from "@/features/agents/AgentPersonalityPage";
-import { TemplateLibraryPage } from "@/features/templates/TemplateLibraryPage";
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -139,7 +141,11 @@ export default function App() {
         <Route path="marketplace" element={<MarketplacePage />} />
         <Route path="enterprise" element={<EnterprisePage />} />
         <Route path="settings" element={<SettingsPage />} />
-        <Route path="workflow-builder" element={<WorkflowBuilderPage />} />
+        <Route path="workflow-builder" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
+            <WorkflowBuilderPage />
+          </Suspense>
+        } />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="analytics" element={<AnalyticsDashboardPage />} />
         <Route path="simulation" element={<SimulationPage />} />
@@ -157,14 +163,26 @@ export default function App() {
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
-        <Route path="goals/:goalId/dna" element={<GoalDNAPage />} />
+        <Route path="goals/:goalId/dna" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
+            <GoalDNAPage />
+          </Suspense>
+        } />
         <Route path="goals/:goalId/diff" element={<GoalDiffPage />} />
         <Route path="goals/ghost-run" element={<GhostRunPage />} />
-        <Route path="agents/:agentId/radar" element={<AgentRadarPage />} />
+        <Route path="agents/:agentId/radar" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
+            <AgentRadarPage />
+          </Suspense>
+        } />
         <Route path="agents/:agentId/personality" element={<AgentPersonalityPage />} />
-        <Route path="templates" element={<TemplateLibraryPage />} />
-        <Route path="civilization" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
-        <Route path="civilization/:id" element={<Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}><CivilizationPage /></Suspense>} />
+        <Route path="templates" element={
+          <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}>
+            <TemplateLibraryPage />
+          </Suspense>
+        } />
+        <Route path="civilization" element={<Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}><CivilizationPage /></Suspense>} />
+        <Route path="civilization/:id" element={<Suspense fallback={<div className="flex items-center justify-center h-64 text-muted-foreground"><Loader2 className="animate-spin h-5 w-5 mr-2" />Loading...</div>}><CivilizationPage /></Suspense>} />
       </Route>
     </Routes>
   );

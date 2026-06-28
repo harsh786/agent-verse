@@ -3,7 +3,7 @@
  * Runs the same goal with different agent configurations and compares results.
  */
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { goalsApi } from "@/lib/api/client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -17,6 +17,7 @@ interface GhostResult {
   status: string;
   cost?: number;
   duration?: number;
+  iterations?: number;
 }
 
 export function GhostRunPage() {
@@ -64,6 +65,36 @@ export function GhostRunPage() {
     },
     onSuccess: (strategies) => setResults(strategies),
   });
+
+  const TERMINAL = new Set(["complete", "completed", "failed", "cancelled"]);
+
+  const { data: polledResults } = useQuery({
+    queryKey: ["ghost-run-results", results.map(r => r.goalId).join(",")],
+    queryFn: async () => {
+      const fetched = await Promise.allSettled(
+        results.map(r => goalsApi.get(r.goalId))
+      );
+      return fetched.map((r, i) => ({
+        ...results[i],
+        status: r.status === "fulfilled" ? (r.value as any).status ?? results[i].status : results[i].status,
+        cost: r.status === "fulfilled" ? (r.value as any).cost_usd : undefined,
+        iterations: r.status === "fulfilled" ? (r.value as any).iterations : undefined,
+      }));
+    },
+    enabled: results.length > 0,
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      const allDone = d?.every((r: GhostResult) => TERMINAL.has(r.status ?? ""));
+      return allDone ? false : 3000;
+    },
+    staleTime: 0,
+  });
+
+  const displayResults = polledResults ?? results;
+
+  const winner = displayResults
+    .filter(r => r.status === "complete" || r.status === "completed")
+    .sort((a, b) => ((a.cost ?? 999) - (b.cost ?? 999)))[0];
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -117,14 +148,29 @@ export function GhostRunPage() {
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <Trophy className="h-4 w-4 text-amber-500" aria-hidden="true" />
-            <h2 className="text-sm font-semibold">{results.length} strategies launched</h2>
+            <h2 className="text-sm font-semibold">{displayResults.length} strategies launched</h2>
           </div>
-          {results.map((r) => (
+          {displayResults.map((r) => (
             <div key={r.goalId} className="flex items-center justify-between p-4 bg-card border border-border rounded-xl">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{r.strategy}</span>
                   <StatusBadge status={r.status} size="sm" />
+                  {r.cost !== undefined && (
+                    <span className="text-xs text-muted-foreground">
+                      ${(r.cost as number).toFixed(4)}
+                    </span>
+                  )}
+                  {r.iterations !== undefined && (
+                    <span className="text-xs text-muted-foreground">
+                      {r.iterations} step{(r.iterations as number) !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {r.goalId === winner?.goalId && (
+                    <span className="ml-auto text-xs text-amber-500 font-medium flex items-center gap-1">
+                      <Trophy className="h-3 w-3" /> Best
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-muted-foreground font-mono">{r.goalId}</p>
               </div>

@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Plus, Search, XCircle } from "lucide-react";
+import { Plus, Search, XCircle, BookOpen, Ghost } from "lucide-react";
 import { agentsApi, goalsApi } from "@/lib/api/client";
+import { CostEstimateWidget } from "@/features/goals/components/CostEstimateWidget";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
+import { VoiceGoalInput } from "@/components/voice/VoiceGoalInput";
 
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
 
@@ -87,7 +89,29 @@ export function GoalsListPage() {
 
       {/* Submit form */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="font-semibold text-sm mb-3">Submit a new goal</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-sm">Submit a new goal</h2>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <a
+              href="/templates"
+              onClick={(e) => { e.preventDefault(); navigate("/templates"); }}
+              className="flex items-center gap-1 hover:text-foreground transition-colors"
+              aria-label="Browse goal templates"
+            >
+              <BookOpen className="h-3 w-3" aria-hidden="true" />
+              Templates
+            </a>
+            <a
+              href="/goals/ghost-run"
+              onClick={(e) => { e.preventDefault(); navigate("/goals/ghost-run"); }}
+              className="flex items-center gap-1 hover:text-foreground transition-colors"
+              aria-label="Try Ghost Run A/B comparison"
+            >
+              <Ghost className="h-3 w-3" aria-hidden="true" />
+              Ghost Run
+            </a>
+          </div>
+        </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -110,13 +134,25 @@ export function GoalsListPage() {
               ))}
             </select>
           </label>
-          <textarea
-            value={goalText}
-            onChange={(e) => setGoalText(e.target.value)}
-            placeholder="Describe the goal in natural language, e.g. 'Fix all JIRA bugs labelled prod-down and open a PR'"
-            rows={3}
-            className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
-            aria-label="Goal text"
+          <div className="relative">
+            <textarea
+              value={goalText}
+              onChange={(e) => setGoalText(e.target.value)}
+              placeholder="Describe the goal in natural language, e.g. 'Fix all JIRA bugs labelled prod-down and open a PR'"
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none pr-10"
+              aria-label="Goal text"
+            />
+            <div className="absolute right-2 top-2">
+              <VoiceGoalInput
+                onTranscript={(text) => setGoalText((prev) => prev ? `${prev} ${text}` : text)}
+                disabled={submit.isPending}
+              />
+            </div>
+          </div>
+          <CostEstimateWidget
+            goal={goalText}
+            enabled={goalText.length >= 10}
           />
           <div className="flex items-center justify-between gap-3">
             <label className="flex items-center gap-2 text-sm cursor-pointer">

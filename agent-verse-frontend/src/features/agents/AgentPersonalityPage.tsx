@@ -2,7 +2,7 @@
  * AgentPersonalityPage — visual personality configuration for agents.
  * Sliders map to real agent config (model, max_iterations, autonomy_mode).
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "@/lib/api/client";
@@ -99,19 +99,19 @@ export function AgentPersonalityPage() {
     queryKey: ["agent", agentId],
     queryFn: () => agentsApi.get(agentId!),
     enabled: !!agentId,
-    select: (data) => {
-      if (!initialized) {
-        const agentAsMap: Record<string, unknown> = {
-          autonomy_mode: data.autonomy_mode,
-          max_iterations: (data as unknown as Record<string, unknown>).max_iterations,
-          model_override: (data as unknown as Record<string, unknown>).model_override,
-        };
-        setValues(configToSliderValues(agentAsMap));
-        setInitialized(true);
-      }
-      return data;
-    },
   });
+
+  useEffect(() => {
+    if (agent && !initialized) {
+      const agentAsMap: Record<string, unknown> = {
+        autonomy_mode: agent.autonomy_mode,
+        max_iterations: (agent as unknown as Record<string, unknown>).max_iterations,
+        model_override: (agent as unknown as Record<string, unknown>).model_override,
+      };
+      setValues(configToSliderValues(agentAsMap));
+      setInitialized(true);
+    }
+  }, [agent, initialized]);
 
   const save = useMutation({
     mutationFn: () => {

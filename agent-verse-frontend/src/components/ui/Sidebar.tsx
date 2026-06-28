@@ -6,7 +6,7 @@ import {
   Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
   GitBranch, FlaskConical, BarChart2, Globe,
   Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
-  Bell, KeyRound, FileLock, X, Package,
+  Bell, KeyRound, FileLock, X, Package, Ghost,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -80,6 +80,8 @@ export function Sidebar() {
         { to: "/workflow-builder",  icon: GitBranch,    label: "Workflow Builder" },
         { to: "/playground",        icon: FlaskConical, label: "Playground"       },
         { to: "/civilization",      icon: Globe,        label: "Civilization"     },
+        { to: "/templates",         icon: BookOpen,     label: "Templates"        },
+        { to: "/goals/ghost-run",   icon: Ghost,        label: "Ghost Run"        },
       ],
     },
     {
@@ -94,6 +96,7 @@ export function Sidebar() {
         { to: "/a2a",                icon: Network,       label: "A2A"               },
         { to: "/rpa/live",           icon: Activity,      label: "RPA Sessions"      },
         { to: "/connectors/catalog", icon: Package,       label: "Connector Catalog" },
+        { to: "/simulation",         icon: FlaskConical,  label: "Simulation"        },
       ],
     },
   ];
