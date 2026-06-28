@@ -1086,3 +1086,579 @@ Grafana dashboard additions (`infra/grafana/dashboards/agentverse-civilization.j
 - `civ_budget_spent_usd` time series per tenant
 - `civ_debates_total` counter
 - `civ_learnings_promoted_total` / `civ_learnings_rejected_total` counters
+
+---
+
+## 9. Amendments — World-Class Completeness Fixes
+
+### 9.1 Error Responses for All New Endpoints (Section 3.5 Addition)
+
+All five new endpoints in Section 3.5 share these base error cases:
+
+```
+All endpoints (401 / 403 / 404):
+  - 401 Unauthorized: No API key or invalid key
+    → {"detail": "Unauthorized"}
+  - 403 Forbidden: Tenant does not own this civilization
+    → {"detail": "Forbidden"}
+  - 404 Not Found: civilization_id does not exist
+    → {"detail": "Civilization {civ_id} not found"}
+```
+
+**GET /reputation-history endpoint-specific:**
+```
+- 200 with empty series {} if no data exists for the requested window (never 404)
+- 422 Unprocessable Entity if hours > 168
+    → {"detail": "hours must be ≤ 168"}
+- SQL query must include LIMIT 10000 as a pagination anchor to prevent unbounded result sets:
+    SELECT ... FROM civilization_reputation_history
+    WHERE civilization_id=:civ AND recorded_at >= NOW() - (:hours || ' hours')::INTERVAL
+    ORDER BY recorded_at ASC
+    LIMIT 10000
+```
+
+**POST /constitution/rollback/{history_id} endpoint-specific:**
+```
+- 404 if history_id does not exist in civilization_constitution_history
+    → {"detail": "History record {history_id} not found"}
+- 409 Conflict if the current constitution is already identical to the target version
+    → {"detail": "Constitution is already at this version"}
+```
+
+**GET /budget/burn-rate endpoint-specific:**
+```
+- Always 200 — returns zeroed-out object if no data exists yet:
+    {"spent_usd": 0.0, "total_budget_usd": 0.0, "utilization_pct": 0.0,
+     "burn_rate_usd_per_hour": 0.0, "eta_exhaustion_hours": null, "top_spenders": []}
+```
+
+---
+
+### 9.2 Society Cache Race Condition Fix (replaces Section 3.8)
+
+The `get_or_create_society()` helper in Section 3.8 is not safe under concurrent requests
+(two simultaneous first-calls can race to construct a `Society` twice). Replace with an
+`asyncio.Lock`-protected version:
+
+**File to modify**: `agent-verse-backend/app/main.py`
+
+```python
+import asyncio
+from typing import Any
+
+_society_cache: dict[str, Any] = {}
+_society_locks: dict[str, asyncio.Lock] = {}
+
+async def get_or_create_society(app, tenant_id: str, civ_id: str) -> "Society":
+    """Thread-safe society cache — uses per-key asyncio.Lock to prevent duplicate construction."""
+    key = f"{tenant_id}:{civ_id}"
+    if key not in _society_locks:
+        _society_locks[key] = asyncio.Lock()
+    async with _society_locks[key]:
+        if key not in app.state.civilization_societies:
+            from app.civilization.society import Society
+            app.state.civilization_societies[key] = Society(
+                civilization_id=civ_id, tenant_id=tenant_id
+            )
+        return app.state.civilization_societies[key]
+```
+
+Note: `_society_locks` is module-level (not per-request) so that locks survive across calls.
+The lock is held only during Society construction — not during the Society's own operations.
+
+---
+
+### 9.3 Complete ConstitutionHistoryModal Component (replaces Section 4.5 bullet points)
+
+**File to create**: `agent-verse-frontend/src/features/civilization/components/ConstitutionHistoryModal.tsx`
+
+```typescript
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { X, RotateCcw, Clock, User } from "lucide-react";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { toast } from "@/stores/toast";
+import { apiFetch } from "@/lib/api/client";
+
+interface ConstitutionHistoryEntry {
+  id: string;
+  constitution: Record<string, unknown>;
+  changed_by: string;
+  change_reason: string;
+  changed_at: string;
+  diff_summary: string;
+}
+
+interface Props {
+  civilizationId: string;
+  currentConstitution: Record<string, unknown>;
+  onClose: () => void;
+}
+
+export function ConstitutionHistoryModal({ civilizationId, currentConstitution, onClose }: Props) {
+  const qc = useQueryClient();
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+
+  const { data: history = [], isLoading } = useQuery({
+    queryKey: ["constitution-history", civilizationId],
+    queryFn: () =>
+      apiFetch<{ history: ConstitutionHistoryEntry[] }>(
+        `/civilizations/${civilizationId}/constitution/history`
+      ).then(d => d.history),
+  });
+
+  const rollbackMutation = useMutation({
+    mutationFn: (historyId: string) =>
+      apiFetch<{ success: boolean; constitution: Record<string, unknown> }>(
+        `/civilizations/${civilizationId}/constitution/rollback/${historyId}`,
+        { method: "POST", body: JSON.stringify({ reason: "Rolled back via UI" }) }
+      ),
+    onSuccess: () => {
+      toast({ kind: "success", message: "Constitution rolled back successfully" });
+      qc.invalidateQueries({ queryKey: ["civilization", civilizationId] });
+      qc.invalidateQueries({ queryKey: ["constitution-history", civilizationId] });
+      setRollbackTarget(null);
+    },
+    onError: (e) => toast({ kind: "error", message: String(e) }),
+  });
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="relative bg-card border border-border rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[80vh] flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="const-history-title"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 id="const-history-title" className="text-base font-semibold">
+            Constitution History
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+            Loading history…
+          </div>
+        ) : history.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-32 text-muted-foreground text-sm">
+            <Clock className="h-8 w-8 opacity-30 mb-2" />
+            No constitution changes recorded yet.
+          </div>
+        ) : (
+          <div className="overflow-y-auto space-y-3 flex-1 pr-1">
+            {history.map((entry) => (
+              <div key={entry.id} className="border border-border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    {new Date(entry.changed_at).toLocaleString()}
+                    <User className="h-3 w-3 ml-2" />
+                    {entry.changed_by}
+                  </div>
+                  <button
+                    onClick={() => setRollbackTarget(entry.id)}
+                    className="flex items-center gap-1 text-xs text-primary hover:underline"
+                    aria-label={`Rollback to this version from ${entry.changed_at}`}
+                  >
+                    <RotateCcw className="h-3 w-3" /> Rollback
+                  </button>
+                </div>
+                {entry.change_reason && (
+                  <p className="text-xs text-muted-foreground mb-2 italic">
+                    "{entry.change_reason}"
+                  </p>
+                )}
+                {entry.diff_summary && (
+                  <p className="text-xs font-mono bg-muted/50 px-2 py-1 rounded">
+                    {entry.diff_summary}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <ConfirmModal
+        open={!!rollbackTarget}
+        title="Rollback constitution?"
+        description="This will replace the current constitution with the selected version. A history record will be saved."
+        confirmLabel="Rollback"
+        variant="warning"
+        isLoading={rollbackMutation.isPending}
+        onConfirm={() => rollbackTarget && rollbackMutation.mutate(rollbackTarget)}
+        onCancel={() => setRollbackTarget(null)}
+      />
+    </div>
+  );
+}
+```
+
+---
+
+### 9.4 BudgetBurnTab Inline Component (replaces Section 4.6 Budget tab comment)
+
+Replace the comment placeholder in `CivilizationPage.tsx` Budget tab with this concrete component:
+
+```typescript
+// Inline in CivilizationPage.tsx — Budget tab implementation:
+function BudgetBurnTab({ civilizationId }: { civilizationId: string }) {
+  const { data } = useQuery({
+    queryKey: ["civ-burn-rate", civilizationId],
+    queryFn: () => apiFetch<BudgetBurnRate>(`/civilizations/${civilizationId}/budget/burn-rate`),
+    refetchInterval: 30_000,
+  });
+
+  const pct = data ? Math.min(100, (data.spent_usd / data.total_budget_usd) * 100) : 0;
+  const circumference = 2 * Math.PI * 40; // r=40
+  const dashoffset = circumference - (pct / 100) * circumference;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-6">
+        <svg
+          width="100"
+          height="100"
+          viewBox="0 0 100 100"
+          aria-label={`${pct.toFixed(1)}% budget consumed`}
+        >
+          <circle cx="50" cy="50" r="40" fill="none" stroke="hsl(var(--muted))" strokeWidth="10" />
+          <circle
+            cx="50" cy="50" r="40" fill="none"
+            stroke={pct > 90 ? "#ef4444" : pct > 75 ? "#f59e0b" : "#22c55e"}
+            strokeWidth="10"
+            strokeDasharray={circumference}
+            strokeDashoffset={dashoffset}
+            strokeLinecap="round"
+            transform="rotate(-90 50 50)"
+            style={{ transition: "stroke-dashoffset 600ms ease-out" }}
+          />
+          <text
+            x="50" y="54" textAnchor="middle" fontSize="16" fontWeight="bold"
+            fill="hsl(var(--foreground))"
+          >
+            {pct.toFixed(0)}%
+          </text>
+        </svg>
+        <div className="space-y-1 text-sm">
+          <p>
+            <span className="text-muted-foreground">Spent:</span>{" "}
+            <span className="font-mono font-semibold">${data?.spent_usd.toFixed(4) ?? "—"}</span>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Total:</span>{" "}
+            <span className="font-mono">${data?.total_budget_usd.toFixed(2) ?? "—"}</span>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Burn rate:</span>{" "}
+            <span className="font-mono">${data?.burn_rate_usd_per_hour.toFixed(4) ?? "—"}/hr</span>
+          </p>
+          {data?.eta_exhaustion_hours != null && (
+            <p className="text-amber-600 dark:text-amber-400 text-xs">
+              ETA: {data.eta_exhaustion_hours.toFixed(1)}h remaining
+            </p>
+          )}
+        </div>
+      </div>
+
+      {data?.top_spenders && data.top_spenders.length > 0 && (
+        <div>
+          <p className="text-xs font-medium mb-2">Top spenders</p>
+          {data.top_spenders.map(s => (
+            <div key={s.agent_id} className="flex items-center gap-2 text-xs mb-1">
+              <span className="flex-1 truncate text-muted-foreground">{s.name}</span>
+              <span className="font-mono">${s.spent_usd.toFixed(4)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+### 9.5 SpawnAgentModal Component (for Section 4.9 ControlBar)
+
+**File to create**: `agent-verse-frontend/src/features/civilization/components/SpawnAgentModal.tsx`
+
+```typescript
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { X, Zap } from "lucide-react";
+import { apiFetch } from "@/lib/api/client";
+import { toast } from "@/stores/toast";
+
+interface Props {
+  civilizationId: string;
+  onClose: () => void;
+}
+
+export function SpawnAgentModal({ civilizationId, onClose }: Props) {
+  const qc = useQueryClient();
+  const [capability, setCapability] = useState("");
+  const [goalText, setGoalText] = useState("");
+  const [budget, setBudget] = useState(1.0);
+
+  const spawn = useMutation({
+    mutationFn: () =>
+      apiFetch(`/civilizations/${civilizationId}/goals`, {
+        method: "POST",
+        body: JSON.stringify({
+          goal: goalText,
+          requested_capability: capability,
+          budget_usd: budget,
+        }),
+      }),
+    onSuccess: () => {
+      toast({ kind: "success", message: "Spawn request submitted to Governor" });
+      qc.invalidateQueries({ queryKey: ["civilization", civilizationId] });
+      onClose();
+    },
+    onError: (e) => toast({ kind: "error", message: String(e) }),
+  });
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="relative bg-card border border-border rounded-xl shadow-xl max-w-md w-full p-6 space-y-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="spawn-modal-title"
+      >
+        <div className="flex items-center justify-between">
+          <h2 id="spawn-modal-title" className="text-base font-semibold">
+            Spawn New Agent
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1" htmlFor="spawn-capability">
+            Required capability
+          </label>
+          <input
+            id="spawn-capability"
+            value={capability}
+            onChange={e => setCapability(e.target.value)}
+            placeholder="e.g. Jira specialist, data analyzer, code reviewer"
+            className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1" htmlFor="spawn-goal">
+            Goal to assign
+          </label>
+          <textarea
+            id="spawn-goal"
+            rows={3}
+            value={goalText}
+            onChange={e => setGoalText(e.target.value)}
+            placeholder="Describe the goal for the new agent"
+            className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1" htmlFor="spawn-budget">
+            Budget (USD)
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              id="spawn-budget"
+              type="range"
+              min={0.1}
+              max={10}
+              step={0.1}
+              value={budget}
+              onChange={e => setBudget(+e.target.value)}
+              className="flex-1 accent-primary"
+            />
+            <span className="font-mono text-sm w-14 text-right">${budget.toFixed(2)}</span>
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => spawn.mutate()}
+            disabled={!capability || !goalText || spawn.isPending}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+          >
+            <Zap className="h-4 w-4" />
+            {spawn.isPending ? "Submitting to Governor…" : "Request Spawn"}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+---
+
+### 9.6 Debate Transcript Write Path (Section 3.5 Backend Addition)
+
+**File to modify**: `agent-verse-backend/app/agent/debate.py`
+
+After each debate round completes in `DebateOrchestrator`, persist structured transcript rows.
+This only activates when `civilization_id` is present in the execution context (non-breaking).
+
+Add after the block that resolves `DebateRound` results:
+
+```python
+async def _persist_debate_round(
+    self,
+    debate_id: str,
+    civilization_id: str,
+    tenant_id: str,
+    round_number: int,
+    proposer_agent_id: str,
+    critic_agent_id: str | None,
+    proposal_text: str,
+    critique_text: str,
+    counter_proposal: str,
+    consensus_reached: bool,
+    winning_proposal: str,
+    confidence: float,
+    db,
+) -> None:
+    """Persist one debate round to civilization_debate_transcripts.
+    Only called when civilization_id is non-empty in execution context.
+    """
+    import uuid
+    from sqlalchemy import text as _t
+    try:
+        async with db() as session:
+            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("""
+                INSERT INTO civilization_debate_transcripts
+                (id, debate_id, civilization_id, tenant_id, round_number,
+                 proposer_agent_id, critic_agent_id, proposal_text, critique_text,
+                 counter_proposal, consensus_reached, winning_proposal, confidence, created_at)
+                VALUES (:id, :debate_id, :civ, :tid, :round,
+                        :proposer, :critic, :proposal, :critique,
+                        :counter, :consensus, :winning, :conf, NOW())
+            """), {
+                "id": str(uuid.uuid4()), "debate_id": debate_id, "civ": civilization_id,
+                "tid": tenant_id, "round": round_number, "proposer": proposer_agent_id,
+                "critic": critic_agent_id, "proposal": proposal_text,
+                "critique": critique_text, "counter": counter_proposal,
+                "consensus": consensus_reached, "winning": winning_proposal,
+                "conf": confidence,
+            })
+            await session.commit()
+    except Exception:
+        pass  # Non-critical — debate continues even if transcript write fails
+
+# Integration point in DebateOrchestrator.run():
+# After resolving each round:
+#   civ_id = execution_context.get("civilization_id", "") if execution_context else ""
+#   if civ_id:
+#       await self._persist_debate_round(debate_id=debate_id, civilization_id=civ_id, ...)
+```
+
+---
+
+### 9.7 prefers-reduced-motion CSS (All Animation Sections)
+
+Add to `agent-verse-frontend/src/index.css` (or `src/app/globals.css`):
+
+```css
+/* Respect user motion preferences — disable all civilization + spawning animations */
+@media (prefers-reduced-motion: reduce) {
+  .agent-node-entering,
+  .agent-node-retiring,
+  .animate-mock-bounce,
+  .animate-cost-flash,
+  .animate-step-in,
+  .animate-event-in,
+  .strategy-node-entering,
+  .animate-slide-in-from-left {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+```
+
+This single block covers all animation classes defined in Sections 4.2, 4.10, and the spawning
+spec Section 4.7. No individual component needs a JS-level motion check.
+
+---
+
+### 9.8 Missing Empty States
+
+Specify these empty states for all three new visualization components:
+
+**ReputationTimelineChart (no data):**
+```typescript
+// When chartData.length === 0 after successful fetch:
+<div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-sm gap-2">
+  <TrendingUp className="h-8 w-8 opacity-20" />
+  <p>No reputation data yet — start running goals in this civilization</p>
+</div>
+```
+
+**SpawnTreePage (no spawns yet):**
+```typescript
+// When lineage.nodes.length === 0:
+<div className="flex flex-col items-center justify-center h-64 text-muted-foreground text-sm gap-3">
+  <Bot className="h-10 w-10 opacity-20" />
+  <p>No spawns yet — submit a goal to see the spawn tree grow</p>
+</div>
+```
+
+**DebateViewer (no debates recorded):**
+```typescript
+// When debates array is empty:
+<div className="flex flex-col items-center justify-center h-32 text-muted-foreground text-sm gap-2">
+  <MessageSquare className="h-8 w-8 opacity-20" />
+  <p>No debates recorded</p>
+</div>
+```
+
+---
+
+### 9.9 Toast Notifications for All Mutations
+
+Document the required toast for each mutation in the civilization feature:
+
+| Mutation | Success toast | Error toast |
+|----------|--------------|-------------|
+| Kill agent | `toast({kind:"success", message:"Agent terminated"})` | `toast({kind:"error", message:String(e)})` |
+| Adjust agent budget | `toast({kind:"success", message:"Budget updated"})` | `toast({kind:"error", message:String(e)})` |
+| Constitution rollback | `toast({kind:"success", message:"Constitution rolled back successfully"})` (already in 9.3) | `toast({kind:"error", message:String(e)})` |
+| Spawn agent | `toast({kind:"success", message:"Spawn request submitted to Governor"})` (already in 9.5) | `toast({kind:"error", message:String(e)})` |
+| Pause civilization | `toast({kind:"success", message:"Civilization paused"})` | `toast({kind:"error", message:String(e)})` |
+| Resume civilization | `toast({kind:"success", message:"Civilization resumed"})` | `toast({kind:"error", message:String(e)})` |

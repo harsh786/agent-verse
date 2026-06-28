@@ -1088,3 +1088,235 @@ test("backoff countdown decrements from SSE event", async () => { ... });
 // E2E: loop-engineering.spec.ts
 test("submit persistence goal → attempt counter increments → abort works", async ({page}) => { ... });
 ```
+
+---
+
+## 8. Amendments — World-Class Completeness Fixes
+
+### FIX: Celery task body with real reconstruction code
+
+```python
+@celery_app.task(name="app.scaling.tasks.run_persistent_goal", queue="goals.persistence", max_retries=0)
+def run_persistent_goal(goal_id: str, tenant_id: str, goal_text: str, persistence_config: dict, execution_context: dict | None = None):
+    """Run a goal with persistence engine in Celery worker context."""
+    import asyncio, os, json
+    from app.core.config import get_settings
+    from app.tenancy.context import TenantContext, PlanTier
+    from app.agent.persistence import GoalPersistenceEngine, PersistenceConfig
+
+    settings = get_settings()
+
+    async def _async_run():
+        from app.db.session import get_session_factory
+        from app.services.goal_service import GoalService
+        from app.services.tenant_service import TenantService
+        from app.providers.fake import FakeProvider
+
+        db_factory = get_session_factory()
+
+        # Reconstruct tenant context from DB
+        tenant_svc = TenantService(db_session_factory=db_factory)
+        tenant_record = await tenant_svc.get_tenant(tenant_id)
+        plan_str = tenant_record.get("plan", "free") if tenant_record else "free"
+        try:
+            plan = PlanTier(plan_str)
+        except ValueError:
+            plan = PlanTier.FREE
+
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id, plan=plan, api_key_id="celery-persistence"
+        )
+
+        # Resolve LLM provider
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        provider = None
+        if anthropic_key:
+            try:
+                from app.providers.anthropic_provider import AnthropicProvider
+                provider = AnthropicProvider(api_key=anthropic_key)
+            except Exception:
+                pass
+        if provider is None and openai_key:
+            try:
+                from app.providers.openai_compatible import OpenAICompatibleProvider
+                provider = OpenAICompatibleProvider(api_key=openai_key)
+            except Exception:
+                pass
+        if provider is None:
+            provider = FakeProvider(responses=["Attempting goal again with different approach"])
+
+        # Build GoalService
+        goal_svc = GoalService(db_session_factory=db_factory, provider=provider)
+
+        # Build PersistenceConfig from dict
+        config = PersistenceConfig(**{k: v for k, v in persistence_config.items() if k in PersistenceConfig.__dataclass_fields__})
+
+        # Store running state in Redis for UI polling
+        import redis as _redis
+        r = _redis.from_url(settings.redis_url)
+        r.setex(f"persistence:{goal_id}:status", 86400, "running")
+        r.setex(f"persistence:{goal_id}:config", 86400, json.dumps(persistence_config))
+
+        try:
+            engine = GoalPersistenceEngine(
+                goal_id=goal_id,
+                config=config,
+                provider=provider,
+                db=db_factory,
+            )
+            await engine.run(
+                goal=goal_text,
+                tenant_ctx=tenant_ctx,
+                goal_service=goal_svc,
+            )
+        finally:
+            r.delete(f"persistence:{goal_id}:status")
+            r.delete(f"persistence:{goal_id}:config")
+
+    asyncio.run(_async_run())
+```
+
+### FIX: Specify exact line to modify in goal_service.py
+
+```
+In app/services/goal_service.py, find the code:
+    if persistence_mode:
+        asyncio.create_task(self._run_agent_loop_persistent(...))
+
+REPLACE with:
+    if persistence_mode:
+        try:
+            from app.scaling.tasks import run_persistent_goal
+            run_persistent_goal.delay(
+                goal_id=goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                goal_text=goal,
+                persistence_config=execution_context.get("persistence_config", {}),
+                execution_context=execution_context,
+            )
+        except Exception:
+            # Fall back to asyncio.create_task if Celery unavailable
+            asyncio.create_task(self._run_agent_loop_persistent(
+                goal_id=goal_id, goal=goal, tenant_ctx=tenant_ctx,
+                execution_context=execution_context or {},
+            ))
+```
+
+### FIX: Add goals.persistence queue to celery_app.py
+
+```python
+# In app/scaling/celery_app.py, add to celery_app.conf.update():
+task_routes = {
+    "app.scaling.tasks.run_goal": {"queue": PLAN_QUEUE_MAP.get("free", "goals.free")},
+    "app.scaling.tasks.run_persistent_goal": {"queue": "goals.persistence"},
+    "app.scaling.tasks.run_schedule": {"queue": "schedules"},
+}
+```
+
+Also add `goals.persistence` to docker-compose worker `-Q` flags.
+
+### FIX: Replace raw fetch() with goalsApi
+
+In `PersistenceStatusPanel` and `PersistenceControlsPanel`, replace all raw `fetch()` calls:
+
+```typescript
+// Instead of: fetch(`/goals/${goalId}/attempts`)
+// Use: request<PersistenceState>(`/goals/${goalId}/attempts`) via apiFetch from @/lib/api/client
+
+// Add to goalsApi in client.ts:
+// getPersistenceState: (id: string) => request<PersistenceState>(`/goals/${id}/attempts`),
+// abortPersistence: (id: string) => request<{success:boolean}>(`/goals/${id}/persistence/abort`, {method:"POST"}),
+// skipStrategy: (id: string) => request<{success:boolean;next_strategy:string}>(`/goals/${id}/persistence/skip-strategy`, {method:"POST"}),
+// injectGuidance: (id: string, guidance: string) => request<{success:boolean}>(`/goals/${id}/persistence/inject-guidance`, {method:"POST",body:JSON.stringify({guidance})}),
+```
+
+### FIX: clearInterval cleanup in countdown useEffect
+
+```typescript
+// Replace the countdown useEffect with:
+useEffect(() => {
+  const lastBackoff = [...currentEvents].reverse()
+    .find(e => e.type === "persistence_backoff_waiting");
+  if (!lastBackoff) return;
+
+  const startedAt = Date.now();
+  const totalMs = (lastBackoff.payload?.remaining_seconds ?? 0) * 1000;
+
+  // Use requestAnimationFrame-based countdown for accuracy (avoids setInterval drift)
+  let rafId: number;
+  function tick() {
+    const elapsed = Date.now() - startedAt;
+    const remaining = Math.max(0, Math.ceil((totalMs - elapsed) / 1000));
+    setCountdown(remaining);
+    if (remaining > 0) rafId = requestAnimationFrame(tick);
+    else setCountdown(null);
+  }
+  rafId = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(rafId);
+}, [currentEvents]);
+```
+
+### FIX: predictStrategies function
+
+```typescript
+const STRATEGIES = ["SAME_APPROACH", "DIFFERENT_TOOLS", "SIMPLIFY", "DECOMPOSE", "HUMAN_GUIDANCE", "ESCALATE"];
+
+function predictStrategies(config: typeof PERSISTENCE_PRESETS.auto): Array<{attempt: number; strategy: string}> {
+  const results = [];
+  let consecutiveWithSameStrategy = 0;
+  let strategyIndex = 0;
+
+  for (let attempt = 1; attempt <= config.max_attempts; attempt++) {
+    if (attempt > config.escalate_after_failures && strategyIndex < STRATEGIES.length - 1) {
+      strategyIndex = STRATEGIES.indexOf("ESCALATE");
+    } else if (consecutiveWithSameStrategy >= config.strategy_switch_after && strategyIndex < STRATEGIES.length - 2) {
+      strategyIndex++;
+      consecutiveWithSameStrategy = 0;
+    }
+    results.push({ attempt, strategy: STRATEGIES[Math.min(strategyIndex, STRATEGIES.length - 1)] });
+    consecutiveWithSameStrategy++;
+  }
+  return results;
+}
+```
+
+### FIX: HITL gateway injection
+
+```python
+# In GoalPersistenceEngine.__init__, add:
+def __init__(self, goal_id: str, config: PersistenceConfig, provider=None, db=None, hitl_gateway=None):
+    # ... existing params ...
+    self._hitl_gateway = hitl_gateway
+
+# In GoalService._run_agent_loop_persistent(), pass hitl gateway:
+engine = GoalPersistenceEngine(
+    goal_id=goal_id,
+    config=config,
+    provider=provider,
+    db=self._db,
+    hitl_gateway=getattr(self._app_state, "hitl_gateway", None) if self._app_state else None,
+)
+```
+
+### ADD: Mobile responsiveness, prefers-reduced-motion, empty states
+
+```
+Mobile:
+- PersistenceStatusPanel: SVG ring collapses to 70px width on mobile; strategy timeline wraps
+- LoopEngineeringPlayground: stacks to single column on mobile (flex-col)
+- Attempt breakdown table: hide backoff_seconds column on mobile (hidden sm:table-cell)
+
+prefers-reduced-motion:
+All animation classes (.strategy-node-entering, countdown drain bar, attempt ring stroke transition)
+must be wrapped:
+  @media (prefers-reduced-motion: reduce) {
+    .strategy-node-entering { animation: none !important; }
+    .attempt-ring circle { transition: none !important; }
+  }
+
+Empty states:
+- PersistenceStatusPanel with no attempts:
+  <EmptyState title="No persistence attempts" description="Enable persistence mode when submitting a goal to see retry history here" />
+- LoopEngineeringPlayground strategy preview with 0 predictions: "Configure a goal and persistence settings to see strategy predictions"
+```

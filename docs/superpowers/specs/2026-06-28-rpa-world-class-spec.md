@@ -1264,3 +1264,369 @@ Verify Playwright is in `agent-verse-backend/pyproject.toml` dependencies:
 [project.dependencies]
 playwright = ">=1.40.0"
 ```
+
+---
+
+## 9. Amendments — World-Class Completeness Fixes
+
+### FIX: Cross-worker session routing (replace TODO)
+
+```python
+# In app/rpa/session_manager.py get_or_create():
+async def get_or_create(self, session_id: str, tenant_id: str, **kwargs):
+    # 1. Check local cache first
+    if session_id in self._sessions:
+        return self._sessions[session_id]
+
+    # 2. Check Redis for ownership
+    if self._redis:
+        owner_worker = await self.get_session_worker(session_id)
+        if owner_worker and owner_worker != self._worker_id:
+            # Another worker owns this session — delegate via Redis pub/sub request-reply
+            return await self._delegate_action(session_id, tenant_id, owner_worker, **kwargs)
+
+    # 3. Create new session locally
+    session = await self._create_session(session_id=session_id, tenant_id=tenant_id, **kwargs)
+    self._sessions[session_id] = session
+    await self._register_session(session_id, tenant_id)
+    return session
+
+async def _delegate_action(self, session_id: str, tenant_id: str, owner_worker: str, **kwargs):
+    """Route action to the worker that owns this session via Redis pub/sub RPC."""
+    if self._redis is None:
+        raise ValueError(f"Session {session_id} is owned by worker {owner_worker} but Redis is unavailable for routing")
+
+    import uuid, json
+    request_id = str(uuid.uuid4())
+    request_channel = f"rpa_rpc:{owner_worker}"
+    reply_channel = f"rpa_rpc_reply:{request_id}"
+
+    pubsub = self._redis.pubsub()
+    await pubsub.subscribe(reply_channel)
+
+    try:
+        request = json.dumps({
+            "request_id": request_id,
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "action": "get_or_create",
+            "reply_channel": reply_channel,
+        })
+        await self._redis.publish(request_channel, request)
+
+        # Wait for reply (max 5 seconds)
+        deadline = asyncio.get_event_loop().time() + 5
+        async for message in pubsub.listen():
+            if asyncio.get_event_loop().time() > deadline:
+                break
+            if message["type"] == "message":
+                reply = json.loads(message["data"])
+                if reply.get("request_id") == request_id:
+                    if reply.get("error"):
+                        raise ValueError(reply["error"])
+                    # Return a proxy object that routes all actions to the owning worker
+                    return _RemoteSessionProxy(session_id=session_id, owner_worker=owner_worker, redis=self._redis)
+    finally:
+        await pubsub.unsubscribe(reply_channel)
+
+    raise TimeoutError(f"Worker {owner_worker} did not respond to session delegation request")
+```
+
+### FIX: Write rpa_actions sorted set on every action
+
+```python
+# In app/rpa/executor.py execute() method, after successful execution:
+async def _record_action(self, session_id: str, tenant_id: str, tool_name: str, arguments: dict, output: Any, duration_ms: float, success: bool):
+    """Record action to Redis sorted set for history endpoint."""
+    if self._redis is None:
+        return
+    import json, time
+    key = f"rpa_actions:{tenant_id}:{session_id}"
+    action_record = json.dumps({
+        "tool_name": tool_name,
+        "arguments": {k: v for k, v in arguments.items() if k not in ("_goal_id",)},
+        "output": str(output)[:500] if output else "",
+        "success": success,
+        "duration_ms": round(duration_ms, 1),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    score = time.time()
+    try:
+        await self._redis.zadd(key, {action_record: score})
+        await self._redis.expire(key, 86400)  # 24h TTL
+        # Cap at 1000 entries per session
+        count = await self._redis.zcard(key)
+        if count > 1000:
+            await self._redis.zremrangebyrank(key, 0, count - 1001)
+    except Exception:
+        pass  # Non-critical
+```
+
+### FIX: WebSocket auth (_extract_ws_auth + _resolve_ws_tenant)
+
+```python
+# Add to app/api/rpa.py:
+def _extract_ws_auth_token(websocket: WebSocket) -> str:
+    """Extract API key from WebSocket subprotocols (same pattern as collab.py)."""
+    import base64
+    for proto in (websocket.headers.get("sec-websocket-protocol") or "").split(","):
+        proto = proto.strip()
+        if proto.startswith("av.v1."):
+            try:
+                b64 = proto[6:].replace("-", "+").replace("_", "/")
+                padding = 4 - len(b64) % 4
+                if padding != 4:
+                    b64 += "=" * padding
+                return base64.b64decode(b64).decode()
+            except Exception:
+                pass
+    # Fallback: check query param
+    return websocket.query_params.get("token", "")
+
+async def _resolve_ws_auth(websocket: WebSocket, token: str):
+    """Resolve token to TenantContext for WebSocket."""
+    from app.tenancy.context import TenantContext
+    if not token:
+        raise ValueError("No auth token")
+    resolver = getattr(websocket.app.state, "_tenant_key_resolver", None)
+    if resolver is None:
+        raise ValueError("No key resolver on app state")
+    ctx = await resolver(token)
+    if ctx is None:
+        raise ValueError("Invalid token")
+    return ctx
+```
+
+### FIX: Bytes takeover security bug
+
+```python
+# In WebSocket control handler, replace:
+# takeover_active = await redis_client.get(f"rpa_takeover:{ctx.tenant_id}:{session_id}")
+# if not takeover_active:
+
+# WITH (correct bytes handling):
+takeover_raw = await redis_client.get(f"rpa_takeover:{ctx.tenant_id}:{session_id}")
+takeover_value = takeover_raw.decode() if isinstance(takeover_raw, bytes) else takeover_raw
+if not takeover_value or takeover_value not in ("true", "1", "yes"):
+    await websocket.close(code=4003)  # No active takeover — properly rejects unauthorized control
+    return
+```
+
+### FIX: session_manager.get_page() definition
+
+```python
+# Add to BrowserSessionManager:
+def get_page(self, session_id: str):
+    """Return the Playwright Page object for an active local session."""
+    session = self._sessions.get(session_id)
+    if session is None:
+        return None
+    return getattr(session, "_page", None) or getattr(session, "page", None)
+```
+
+### FIX: Wire _browser_agent into RPAExecutor
+
+```python
+# In app/rpa/executor.py RPAExecutor.__init__:
+def __init__(self, playwright=None, artifact_store=None, vision_provider=None, browser_agent=None, redis_client=None, worker_id=None):
+    # ... existing init ...
+    self._browser_agent = browser_agent  # ← Add this
+    self._redis = redis_client  # ← Add this
+
+# In app/main.py create_app(), when constructing RPAExecutor:
+_rpa_executor = RPAExecutor(
+    playwright=_playwright if _playwright else None,
+    artifact_store=_rpa_artifact_store,
+    vision_provider=_embedder if hasattr(_embedder, "analyze_image") else None,
+    browser_agent=_browser_agent,  # ← Pass existing browser_agent
+    redis_client=_fake_redis,  # ← Pass Redis (upgraded in lifespan)
+    worker_id=os.getenv("HOSTNAME", "worker-1"),
+)
+
+# In lifespan, upgrade Redis:
+_rpa_executor._redis = real_redis
+```
+
+### FIX: RPA_TOOLS schemas for 12 new primitives
+
+```python
+# In app/rpa/tools.py, add to RPA_TOOLS list:
+ADDITIONAL_RPA_TOOLS = [
+    {"name": "rpa_scroll", "description": "Scroll the page or an element",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "scroll_x": {"type": "integer", "default": 0}, "scroll_y": {"type": "integer", "default": 500}}}},
+    {"name": "rpa_hover", "description": "Hover over an element",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}},
+    {"name": "rpa_keyboard_press", "description": "Press a keyboard key",
+     "inputSchema": {"type": "object", "properties": {"key": {"type": "string", "description": "Key name: Enter, Escape, Tab, ArrowDown, etc."}}, "required": ["key"]}},
+    {"name": "rpa_keyboard_type", "description": "Type text character by character",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "delay_ms": {"type": "integer", "default": 50}}, "required": ["text"]}},
+    {"name": "rpa_get_attribute", "description": "Get element attribute value",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "attribute": {"type": "string"}}, "required": ["selector", "attribute"]}},
+    {"name": "rpa_evaluate_js", "description": "Execute JavaScript expression",
+     "inputSchema": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}},
+    {"name": "rpa_wait_for_selector", "description": "Wait for CSS selector to appear",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer", "default": 10000}, "state": {"type": "string", "enum": ["attached","detached","hidden","visible"], "default": "visible"}}, "required": ["selector"]}},
+    {"name": "rpa_drag_drop", "description": "Drag from source to target element",
+     "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "target": {"type": "string"}}, "required": ["source", "target"]}},
+    {"name": "rpa_screenshot_element", "description": "Screenshot a specific element",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}},
+    {"name": "rpa_new_tab", "description": "Open a new browser tab",
+     "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
+    {"name": "rpa_pdf_export", "description": "Export current page as PDF",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+# Extend RPA_TOOLS with ADDITIONAL_RPA_TOOLS
+```
+
+### ADD: RPA Analytics backend endpoints
+
+```python
+# In app/api/rpa.py, add analytics endpoints:
+
+@router.get("/analytics/summary")
+async def rpa_analytics_summary(request: Request, days: int = Query(default=30, ge=1, le=90)) -> dict:
+    """Return RPA analytics summary: sessions, tool usage, auto-heal rate, durations."""
+    ctx = _require_tenant(request)
+    redis_client = getattr(request.app.state, "_rate_limiter_redis", None)
+
+    # Get all sessions for tenant
+    sessions = await _list_tenant_sessions_from_redis(ctx.tenant_id, redis_client)
+
+    # Aggregate action history across all sessions
+    tool_counts: dict[str, int] = {}
+    heal_total = 0
+    heal_success = 0
+    durations: dict[str, list[float]] = {}
+
+    for session_meta in sessions:
+        session_id = session_meta.get("session_id", "")
+        if not session_id:
+            continue
+        key = f"rpa_actions:{ctx.tenant_id}:{session_id}"
+        if redis_client:
+            raw_actions = await redis_client.zrevrange(key, 0, 499)
+            for raw in (raw_actions or []):
+                try:
+                    import json
+                    action = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                    tool_name = action.get("tool_name", "unknown")
+                    tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+                    if tool_name == "rpa_click" and "auto_healed" in action:
+                        heal_total += 1
+                        if action.get("success"):
+                            heal_success += 1
+                    d = action.get("duration_ms", 0)
+                    durations.setdefault(tool_name, []).append(d)
+                except Exception:
+                    pass
+
+    return {
+        "period_days": days,
+        "total_sessions": len(sessions),
+        "tool_usage": [{"tool_name": k, "count": v} for k, v in sorted(tool_counts.items(), key=lambda x: -x[1])[:20]],
+        "auto_heal_rate": round(heal_success / max(heal_total, 1), 3) if heal_total > 0 else None,
+        "avg_duration_ms": {tool: round(sum(d)/len(d), 1) for tool, d in durations.items() if d},
+    }
+```
+
+### ADD: ManualActionPanel definition
+
+```typescript
+// In src/features/rpa/BrowserMirrorPage.tsx, define ManualActionPanel:
+function ManualActionPanel({ sessionId, apiKey }: { sessionId: string; apiKey: string }) {
+  const [tool, setTool] = useState("rpa_open_url");
+  const [args, setArgs] = useState('{"url": "https://"}');
+  const [isRunning, setIsRunning] = useState(false);
+
+  const QUICK_TOOLS = ["rpa_open_url", "rpa_click", "rpa_type", "rpa_screenshot", "rpa_scroll", "rpa_keyboard_press", "rpa_extract_text"];
+
+  async function run() {
+    setIsRunning(true);
+    try {
+      let parsedArgs = {};
+      try { parsedArgs = JSON.parse(args); } catch { throw new Error("Invalid JSON in arguments"); }
+      await fetch(`/rpa/execute`, {
+        method: "POST",
+        headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, tool_name: tool, arguments: parsedArgs }),
+      });
+    } catch (e) {
+      toast({ kind: "error", message: String(e) });
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-border p-2 space-y-1.5 bg-card">
+      <p className="text-[10px] font-medium text-muted-foreground">Manual Action</p>
+      <select value={tool} onChange={e => setTool(e.target.value)}
+        className="w-full text-xs border border-input rounded px-1.5 py-1 bg-background">
+        {QUICK_TOOLS.map(t => <option key={t} value={t}>{t}</option>)}
+      </select>
+      <textarea value={args} onChange={e => setArgs(e.target.value)} rows={2}
+        className="w-full text-[10px] font-mono border border-input rounded px-1.5 py-1 bg-background resize-none"
+        placeholder='{"url": "https://example.com"}' />
+      <button onClick={run} disabled={isRunning}
+        className="w-full py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-50">
+        {isRunning ? "Running…" : "Execute"}
+      </button>
+    </div>
+  );
+}
+```
+
+### ADD: Screenshot animation trigger + error flash
+
+```typescript
+// In BrowserMirrorPage, track screenshot changes for animation:
+const [screenshotKey, setScreenshotKey] = useState(0);
+const [hasError, setHasError] = useState(false);
+
+useEffect(() => {
+  setScreenshotKey(k => k + 1);
+}, [currentScreenshot]);
+
+useEffect(() => {
+  const lastEvent = events[events.length - 1];
+  if (lastEvent?.type === "action_failed") {
+    setHasError(true);
+    setTimeout(() => setHasError(false), 600);
+  }
+}, [events]);
+
+// Apply to img:
+<img
+  key={screenshotKey}
+  className={`... animate-screenshot-update ${hasError ? "animate-error-flash" : ""}`}
+  ...
+/>
+```
+
+```css
+@keyframes screenshotUpdate { from { opacity: 0.8; } to { opacity: 1; } }
+.animate-screenshot-update { animation: screenshotUpdate 80ms ease-out; }
+
+@keyframes errorFlash {
+  0%, 100% { box-shadow: none; }
+  40% { box-shadow: 0 0 20px 8px rgba(239, 68, 68, 0.5); }
+}
+.animate-error-flash { animation: errorFlash 600ms ease-out; }
+```
+
+### ADD: prefers-reduced-motion + mobile
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .animate-screenshot-update, .animate-error-flash, .animate-event-in, .animate-slide-down {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+```
+
+Mobile responsiveness:
+
+- `BrowserMirrorPage`: on mobile (`<md`), collapse to single column (browser mirror full width, event log toggleable via bottom drawer)
+- `RpaLivePage` session cards: `grid-cols-1` on mobile
+- Viewport preset: default to `"mobile"` on screens `< 768px`
