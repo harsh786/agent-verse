@@ -85,13 +85,16 @@ export function Sidebar() {
     {
       heading: "Tooling",
       items: [
-        { to: "/tools",           icon: Wrench,        label: "Tools"           },
-        { to: "/memory",          icon: Brain,         label: "Memory"          },
-        { to: "/artifacts",       icon: FileBox,       label: "Artifacts"       },
-        { to: "/integrations",    icon: Webhook,       label: "Integrations"    },
-        { to: "/perception",      icon: Eye,           label: "Perception"      },
-        { to: "/training-export", icon: GraduationCap, label: "Training Export" },
-        { to: "/a2a",             icon: Network,       label: "A2A"             },
+        { to: "/tools",              icon: Wrench,        label: "Tools"           },
+        { to: "/memory",             icon: Brain,         label: "Memory"          },
+        { to: "/artifacts",          icon: FileBox,       label: "Artifacts"       },
+        { to: "/integrations",       icon: Webhook,       label: "Integrations"    },
+        { to: "/perception",         icon: Eye,           label: "Perception"      },
+        { to: "/training-export",    icon: GraduationCap, label: "Training Export" },
+        { to: "/a2a",                icon: Network,       label: "A2A"             },
+        { to: "/rpa/live",           icon: Activity,      label: "RPA Sessions"    },
+        { to: "/connectors/catalog", icon: ShoppingBag,   label: "Connector Catalog" },
+        { to: "/eval",               icon: FlaskConical,  label: "Eval & Sim"      },
       ],
     },
   ];

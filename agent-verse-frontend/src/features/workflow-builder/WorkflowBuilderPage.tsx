@@ -80,7 +80,7 @@ const PALETTE_NODES = [
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function WorkflowBuilderPage() {
-  const { apiKey } = useAuthStore();
+  const { apiKey } = useAuthStore((s) => ({ apiKey: s.apiKey }));
   const qc = useQueryClient();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);

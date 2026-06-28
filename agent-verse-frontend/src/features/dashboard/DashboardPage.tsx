@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Target, CheckCircle, Clock, DollarSign, Activity } from "lucide-react";
+import { Target, CheckCircle, Clock, DollarSign, Activity, AlertTriangle } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { goalsApi, governanceApi } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 
@@ -49,6 +50,7 @@ function StatusBadge({ status }: { status: string }) {
 
 export function DashboardPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
+  const navigate = useNavigate();
   const { data, isLoading } = useQuery({
     queryKey: ["goals", tenantId],
     queryFn: () => goalsApi.list(),
@@ -58,6 +60,13 @@ export function DashboardPage() {
   const { data: metrics, isLoading: metricsLoading } = useQuery({
     queryKey: ["goal-metrics"],
     queryFn: () => governanceApi.goalMetrics(),
+    refetchInterval: 15_000,
+  });
+
+  // Pending approvals widget
+  const { data: pendingApprovals = [] } = useQuery({
+    queryKey: ["approvals-pending"],
+    queryFn: () => governanceApi.getPendingApprovals(),
     refetchInterval: 15_000,
   });
 
@@ -114,6 +123,29 @@ export function DashboardPage() {
           color="bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400"
         />
       </div>
+
+      {/* Pending Approvals Widget */}
+      {pendingApprovals.length > 0 && (
+        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="h-5 w-5 text-orange-500 flex-shrink-0" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-semibold text-orange-800">
+                {pendingApprovals.length} Pending Approval{pendingApprovals.length > 1 ? 's' : ''}
+              </p>
+              <p className="text-xs text-orange-600 mt-0.5">
+                Agent actions waiting for your review
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate('/approvals')}
+            className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+          >
+            Review
+          </button>
+        </div>
+      )}
 
       {/* Activity Feed */}
       <div className="bg-card border border-border rounded-xl">
