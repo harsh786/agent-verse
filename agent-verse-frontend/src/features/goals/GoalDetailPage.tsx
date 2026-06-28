@@ -382,7 +382,7 @@ export function GoalDetailPage() {
       )}
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b">
+      <div role="tablist" aria-label="Goal detail tabs" className="flex gap-1 border-b">
         {(["pipeline", "events"] as const).map((tab) => (
           <button
             key={tab}
@@ -434,7 +434,7 @@ export function GoalDetailPage() {
             ) : (
               <ul>
                 {events.map((evt, i) => (
-                  <StepRow key={i} event={evt as Record<string, unknown>} />
+                  <StepRow key={(evt as any).event_id ?? `evt-${i}`} event={evt as Record<string, unknown>} />
                 ))}
               </ul>
             )}
@@ -540,15 +540,16 @@ export function GoalDetailPage() {
         </div>
       )}
 
-      {/* Raw state */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
-          <h2 className="font-semibold text-sm">Raw state</h2>
-        </div>
-        <pre className="px-4 py-4 text-xs overflow-x-auto whitespace-pre-wrap text-muted-foreground">
-          {JSON.stringify(goal, null, 2)}
-        </pre>
-      </div>
+      {import.meta.env.DEV && (
+        <details className="mt-4">
+          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+            Debug: raw goal state
+          </summary>
+          <pre className="mt-2 text-[10px] bg-muted rounded p-3 overflow-auto max-h-64">
+            {JSON.stringify(goal, null, 2)}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }

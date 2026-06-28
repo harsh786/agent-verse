@@ -1003,3 +1003,107 @@ export const playgroundApi = {
       body: JSON.stringify({ goal, mock_tools: mockTools }),
     }),
 };
+
+// ── Insights API ──────────────────────────────────────────────────────────────
+
+export interface CostEstimate {
+  estimated_cost_usd: { min: number; mean: number; max: number };
+  estimated_duration_s: { min: number; mean: number; max: number };
+  estimated_iterations: { min: number; mean: number; max: number };
+  success_probability: number;
+  similar_goals_count: number;
+  confidence: "low" | "medium" | "high";
+  based_on: string;
+}
+
+export interface ExecutionGraph {
+  goal_id: string;
+  nodes: Array<{ id: string; type: string; label: string; data: Record<string, unknown> }>;
+  edges: Array<{ id: string; source: string; target: string }>;
+  stats: { total_nodes: number; total_edges: number; tool_calls: number; unique_tools: number };
+}
+
+export interface FailureAnalysis {
+  goal_id: string;
+  goal: string;
+  status: string;
+  failure_reason: string;
+  suggestions: Array<{ action: string; description: string }>;
+  iterations_used: number;
+  cost_usd: number;
+}
+
+export interface AgentHealth {
+  agent_id: string;
+  health: {
+    speed: number;
+    accuracy: number;
+    cost_efficiency: number;
+    tool_coverage: number;
+    success_rate: number;
+    coherence: number;
+  };
+  sample_size: number;
+}
+
+export const insightsApi = {
+  estimateGoal: (goal: string, agentId?: string) =>
+    request<CostEstimate>("/insights/estimate", {
+      method: "POST",
+      body: JSON.stringify({ goal, agent_id: agentId }),
+    }),
+  getExecutionGraph: (goalId: string) =>
+    request<ExecutionGraph>(`/insights/graph/${goalId}`),
+  analyzeFailure: (goalId: string) =>
+    request<FailureAnalysis>(`/insights/analysis/${goalId}`),
+  queryGoals: (query: string, entity: "goals" | "agents" | "connectors" = "goals", limit = 20) =>
+    request<{ results: GoalResponse[]; total: number; query_parsed: Record<string, unknown> }>(
+      "/insights/query",
+      { method: "POST", body: JSON.stringify({ query, entity, limit }) }
+    ),
+  getAgentHealth: (agentId: string) =>
+    request<AgentHealth>(`/insights/agent-health/${agentId}`),
+  getBenchmarks: () =>
+    request<{
+      platform_avg_success_rate: number;
+      platform_avg_cost_usd: number;
+      platform_avg_duration_s: number;
+      top_10_pct_success_rate: number;
+      percentile_bands: Record<string, Record<string, number>>;
+    }>("/insights/benchmarks"),
+};
+
+// ── Goal Templates API ────────────────────────────────────────────────────────
+
+export interface GoalTemplate {
+  id: string;
+  name: string;
+  description: string;
+  goal_text: string;
+  domain: string;
+  parameters: Array<{
+    name: string;
+    description: string;
+    required: boolean;
+    default?: string;
+  }>;
+  use_count: number;
+  version: number;
+  created_at: string;
+}
+
+export const templatesApi = {
+  list: (domain?: string) =>
+    request<GoalTemplate[]>(`/templates${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
+  get: (id: string) => request<GoalTemplate>(`/templates/${id}`),
+  create: (data: { name: string; description?: string; goal_text: string; domain?: string }) =>
+    request<GoalTemplate>("/templates", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: { name: string; description?: string; goal_text: string; domain?: string }) =>
+    request<void>(`/templates/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/templates/${id}`, { method: "DELETE" }),
+  instantiate: (id: string, parameters: Record<string, string>, submit = false, agentId?: string) =>
+    request<{ template_id: string; instantiated_goal: string; parameters_used: Record<string, string>; submitted_goal?: GoalResponse }>(
+      `/templates/${id}/instantiate`,
+      { method: "POST", body: JSON.stringify({ parameters, submit, agent_id: agentId }) }
+    ),
+};

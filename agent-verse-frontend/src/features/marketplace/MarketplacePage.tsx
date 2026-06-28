@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ShoppingBag, Plug } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
+import { toast } from '@/stores/toast';
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -51,6 +52,31 @@ async function deployTemplate(
   return res.json();
 }
 
+/** Per-card deploy button — each has its own mutation so other cards stay enabled. */
+function DeployButton({
+  templateId,
+  onDeployed,
+}: {
+  templateId: string;
+  onDeployed: (result: DeployResult) => void;
+}) {
+  const apiKey = useAuthStore((s) => s.apiKey);
+  const mutation = useMutation({
+    mutationFn: () => deployTemplate(apiKey, templateId),
+    onSuccess: (data) => onDeployed(data),
+    onError: (e) => toast({ kind: 'error', message: `Deploy failed: ${String(e)}` }),
+  });
+  return (
+    <button
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      className="w-full py-1.5 px-3 text-xs font-medium bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
+    >
+      {mutation.isPending ? 'Deploying…' : 'Deploy'}
+    </button>
+  );
+}
+
 function PublishSection({ apiKey }: { apiKey: string }) {
   const [form, setForm] = useState({ name: '', domain: 'software', description: '', connectors: '' });
   const [published, setPublished] = useState<{ template_id: string; name: string } | null>(null);
@@ -73,6 +99,7 @@ function PublishSection({ apiKey }: { apiKey: string }) {
       setPublished(data);
       qc.invalidateQueries({ queryKey: ['marketplace'] });
     },
+    onError: (e) => toast({ kind: 'error', message: `Publish failed: ${String(e)}` }),
   });
 
   if (published) {
@@ -116,12 +143,6 @@ export function MarketplacePage() {
     queryKey: ['marketplace'],
     queryFn: () => fetchTemplates(apiKey),
     enabled: !!apiKey,
-  });
-
-  const deployMutation = useMutation({
-    mutationFn: (id: string) => deployTemplate(apiKey, id),
-    onSuccess: (data, id) =>
-      setDeployResults((prev) => ({ ...prev, [id]: data })),
   });
 
   const filtered =
@@ -218,13 +239,12 @@ export function MarketplacePage() {
                     {deployed.name && ` — ${deployed.name}`}
                   </div>
                 ) : (
-                  <button
-                    onClick={() => deployMutation.mutate(t.template_id)}
-                    disabled={deployMutation.isPending}
-                    className="w-full bg-primary text-primary-foreground py-2 rounded-lg text-sm hover:opacity-90 disabled:opacity-50 transition-opacity"
-                  >
-                    {deployMutation.isPending ? 'Deploying…' : 'Deploy'}
-                  </button>
+                  <DeployButton
+                    templateId={t.template_id}
+                    onDeployed={(result) =>
+                      setDeployResults((prev) => ({ ...prev, [t.template_id]: result }))
+                    }
+                  />
                 )}
               </div>
             );

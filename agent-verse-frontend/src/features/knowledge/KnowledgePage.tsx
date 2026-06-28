@@ -646,7 +646,7 @@ function SearchTab({
                   <span className="text-xs text-muted-foreground font-mono">
                     {r.doc_id ?? `result-${i + 1}`}
                   </span>
-                  <span className="text-xs font-medium bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                  <span className="text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded-full">
                     score: {r.score.toFixed(4)}
                   </span>
                 </div>

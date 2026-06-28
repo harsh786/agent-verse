@@ -3,13 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { DollarSign, TrendingUp, AlertCircle } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { analyticsApi } from "@/lib/api/client";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line,
-} from "recharts";
+import { ThemedLineChart, ThemedBarChart } from "@/components/charts";
 
 const PERIODS = [7, 30, 90] as const;
 type Period = typeof PERIODS[number];
+
+const formatCost = (v: number) => `$${v.toFixed(v >= 0.01 ? 2 : 4)}`;
 
 export function CostDashboardPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -47,9 +46,11 @@ export function CostDashboardPage() {
 
   const utilization = (kpiData?.budget_utilization ?? 0) * 100;
   const utilizationColor =
-    utilization > 80 ? "text-red-600 bg-red-100" :
-    utilization > 50 ? "text-yellow-600 bg-yellow-100" :
-    "text-green-600 bg-green-100";
+    utilization > 80
+      ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+      : utilization > 50
+      ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+      : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
 
   // Cost by model bar chart data
   const modelChartData = analytics?.cost_by_model
@@ -99,7 +100,9 @@ export function CostDashboardPage() {
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">Cost Today</p>
               </div>
-              <p className="text-2xl font-bold">${(kpiData?.cost_today_usd ?? 0).toFixed(4)}</p>
+              <p className="text-2xl font-bold">
+                {formatCost(kpiData?.cost_today_usd ?? 0)}
+              </p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 of ${(kpiData?.daily_budget_usd ?? 0).toFixed(2)} daily budget
               </p>
@@ -120,16 +123,16 @@ export function CostDashboardPage() {
               <p className="text-sm text-muted-foreground mb-2">Goals Today</p>
               <p className="text-2xl font-bold">{kpiData?.goals_today ?? 0}</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                avg ${kpiData?.goals_today
-                  ? ((kpiData.cost_today_usd ?? 0) / kpiData.goals_today).toFixed(4)
-                  : "0.0000"} / goal
+                avg {kpiData?.goals_today
+                  ? formatCost((kpiData.cost_today_usd ?? 0) / kpiData.goals_today)
+                  : "$0.00"} / goal
               </p>
             </div>
 
             <div className="bg-card border border-border rounded-xl p-5">
               <p className="text-sm text-muted-foreground mb-2">Total ({days}d)</p>
               <p className="text-2xl font-bold">
-                ${(analytics?.total_cost_usd ?? 0).toFixed(4)}
+                {formatCost(analytics?.total_cost_usd ?? 0)}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {days}-day period
@@ -142,7 +145,7 @@ export function CostDashboardPage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-sm">Daily Budget Consumption</h2>
               {utilization > 80 && (
-                <div className="flex items-center gap-1.5 text-red-600 text-xs">
+                <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 text-xs">
                   <AlertCircle className="h-3.5 w-3.5" />
                   Budget almost exhausted
                 </div>
@@ -157,7 +160,7 @@ export function CostDashboardPage() {
               />
             </div>
             <div className="flex justify-between text-xs text-muted-foreground mt-1.5">
-              <span>${(kpiData?.cost_today_usd ?? 0).toFixed(4)} used</span>
+              <span>{formatCost(kpiData?.cost_today_usd ?? 0)} used</span>
               <span>${(kpiData?.daily_budget_usd ?? 0).toFixed(2)} limit</span>
             </div>
           </div>
@@ -168,17 +171,17 @@ export function CostDashboardPage() {
             <div className="bg-card border border-border rounded-xl p-5">
               <h2 className="font-semibold text-sm mb-4">Daily Cost ({days}d)</h2>
               {dailyData.length === 0 ? (
-                <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">No data yet</div>
+                <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
+                  No data yet
+                </div>
               ) : (
-                <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={dailyData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(d: string) => d.slice(5)} />
-                    <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(3)}`} />
-                    <Tooltip formatter={(v: unknown) => [`$${(v as number).toFixed(4)}`, "Cost"]} />
-                    <Line type="monotone" dataKey="cost_usd" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <ThemedLineChart
+                  data={dailyData as Record<string, unknown>[]}
+                  lines={[{ key: "cost_usd", label: "Cost" }]}
+                  xKey="date"
+                  height={200}
+                  formatValue={formatCost}
+                />
               )}
             </div>
 
@@ -186,17 +189,18 @@ export function CostDashboardPage() {
             <div className="bg-card border border-border rounded-xl p-5">
               <h2 className="font-semibold text-sm mb-4">Cost by Model</h2>
               {modelChartData.length === 0 ? (
-                <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">No model data yet</div>
+                <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
+                  No model data yet
+                </div>
               ) : (
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={modelChartData} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(3)}`} />
-                    <YAxis dataKey="model" type="category" tick={{ fontSize: 10 }} width={80} />
-                    <Tooltip formatter={(v: unknown) => [`$${(v as number).toFixed(4)}`, "Cost"]} />
-                    <Bar dataKey="cost" fill="#6366f1" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <ThemedBarChart
+                  data={modelChartData as Record<string, unknown>[]}
+                  bars={[{ key: "cost", label: "Cost" }]}
+                  xKey="model"
+                  height={200}
+                  layout="vertical"
+                  formatValue={(v) => `$${v.toFixed(3)}`}
+                />
               )}
             </div>
           </div>

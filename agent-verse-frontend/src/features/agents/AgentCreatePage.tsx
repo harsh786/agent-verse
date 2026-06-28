@@ -69,13 +69,13 @@ export function AgentCreatePage() {
       <div className="flex border-b mb-6">
         <button
           onClick={() => setMode('nl')}
-          className={`px-4 py-2 text-sm font-medium ${mode === 'nl' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`px-4 py-2 text-sm font-medium ${mode === 'nl' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}`}
         >
           AI Builder
         </button>
         <button
           onClick={() => setMode('manual')}
-          className={`px-4 py-2 text-sm font-medium ${mode === 'manual' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`px-4 py-2 text-sm font-medium ${mode === 'manual' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           data-testid="manual-tab"
         >
           Manual Configuration
@@ -143,19 +143,19 @@ export function AgentCreatePage() {
               <label className="block text-sm font-medium mb-1">Agent Name *</label>
               <input
                 required
-                value={manualForm.name}
-                onChange={(e) => setManualForm((p) => ({ ...p, name: e.target.value }))}
-                className="w-full px-3 py-2 border rounded"
-                placeholder="My Jira Agent"
+              value={manualForm.name}
+              onChange={(e) => setManualForm((p) => ({ ...p, name: e.target.value }))}
+              className="w-full px-3 py-2 border border-input rounded bg-background focus:ring-2 focus:ring-primary outline-none"
+              placeholder="My Jira Agent"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium mb-1">Autonomy Mode</label>
               <select
-                value={manualForm.autonomy_mode}
-                onChange={(e) => setManualForm((p) => ({ ...p, autonomy_mode: e.target.value }))}
-                className="w-full px-3 py-2 border rounded"
+              value={manualForm.autonomy_mode}
+              onChange={(e) => setManualForm((p) => ({ ...p, autonomy_mode: e.target.value }))}
+              className="w-full px-3 py-2 border border-input rounded bg-background focus:ring-2 focus:ring-primary outline-none"
               >
                 <option value="supervised">Supervised (every action needs approval)</option>
                 <option value="bounded-autonomous">Bounded Autonomous (approve high-risk only)</option>
@@ -169,7 +169,7 @@ export function AgentCreatePage() {
                 rows={3}
                 value={manualForm.goal_template}
                 onChange={(e) => setManualForm((p) => ({ ...p, goal_template: e.target.value }))}
-                className="w-full px-3 py-2 border rounded text-sm"
+                className="w-full px-3 py-2 border border-input rounded text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 placeholder="You are an expert at... Your job is to..."
               />
             </div>
@@ -180,7 +180,7 @@ export function AgentCreatePage() {
                 rows={2}
                 value={manualForm.system_prompt}
                 onChange={(e) => setManualForm((p) => ({ ...p, system_prompt: e.target.value }))}
-                className="w-full px-3 py-2 border rounded text-sm"
+                className="w-full px-3 py-2 border border-input rounded text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 placeholder="Additional system instructions..."
               />
             </div>
@@ -198,7 +198,7 @@ export function AgentCreatePage() {
                       .filter(Boolean),
                   }))
                 }
-                className="w-full px-3 py-2 border rounded text-sm"
+                className="w-full px-3 py-2 border border-input rounded text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 placeholder="github, jira-mcp, slack-mcp"
               />
             </div>
@@ -216,7 +216,7 @@ export function AgentCreatePage() {
                     max_iterations: parseInt(e.target.value) || 15,
                   }))
                 }
-                className="w-full px-3 py-2 border rounded text-sm"
+                className="w-full px-3 py-2 border border-input rounded text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
               />
             </div>
 
@@ -237,7 +237,7 @@ export function AgentCreatePage() {
               <button
                 type="submit"
                 disabled={loading || !manualForm.name}
-                className="w-full py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 disabled:opacity-50"
+                className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium hover:opacity-90 disabled:opacity-50"
               >
                 {loading ? 'Creating...' : 'Create Agent'}
               </button>

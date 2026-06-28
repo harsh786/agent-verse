@@ -17,11 +17,18 @@
   "dependencies": {
     "@tanstack/react-query": "5.80.7",
     "@tanstack/react-query-devtools": "5.80.7",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-selection": "^3.0.11",
+    "@types/diff": "^7.0.2",
     "@xyflow/react": "^12.11.1",
     "clsx": "2.1.1",
+    "d3-force": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "diff": "^9.0.0",
     "lucide-react": "0.511.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-hotkeys-hook": "^5.3.3",
     "react-router-dom": "7.6.2",
     "recharts": "2.15.3",
     "zustand": "5.0.5"

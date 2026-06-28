@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 interface UiState {
   sidebarOpen: boolean;
@@ -7,20 +8,41 @@ interface UiState {
   toggleSidebar: () => void;
   openCommandPalette: () => void;
   closeCommandPalette: () => void;
+  setTheme: (theme: "light" | "dark") => void;
   toggleTheme: () => void;
 }
 
-export const useUiStore = create<UiState>((set) => ({
-  sidebarOpen: true,
-  commandPaletteOpen: false,
-  theme: "light",
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  openCommandPalette: () => set({ commandPaletteOpen: true }),
-  closeCommandPalette: () => set({ commandPaletteOpen: false }),
-  toggleTheme: () =>
-    set((s) => {
-      const next = s.theme === "light" ? "dark" : "light";
-      document.documentElement.classList.toggle("dark", next === "dark");
-      return { theme: next };
+function applyTheme(theme: "light" | "dark") {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+export const useUiStore = create<UiState>()(
+  persist(
+    (set, get) => ({
+      sidebarOpen: true,
+      commandPaletteOpen: false,
+      theme: "light",
+      toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+      openCommandPalette: () => set({ commandPaletteOpen: true }),
+      closeCommandPalette: () => set({ commandPaletteOpen: false }),
+      setTheme: (theme) => {
+        applyTheme(theme);
+        set({ theme });
+      },
+      toggleTheme: () => {
+        const next = get().theme === "light" ? "dark" : "light";
+        applyTheme(next);
+        set({ theme: next });
+      },
     }),
-}));
+    {
+      name: "av-ui",
+      storage: createJSONStorage(() => localStorage),
+      partialize: (s) => ({ theme: s.theme, sidebarOpen: s.sidebarOpen }),
+      onRehydrateStorage: () => (state) => {
+        // Apply persisted theme to DOM immediately on load
+        if (state?.theme) applyTheme(state.theme);
+      },
+    }
+  )
+);

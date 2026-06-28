@@ -317,12 +317,12 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
 
       {/* Newly created key banner */}
       {newlyCreated && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-          <p className="text-xs font-medium text-green-800 mb-1">
+        <div className="mb-4 p-3 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg">
+          <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-1">
             Key created — copy it now, it won't be shown again
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 text-xs font-mono bg-white border border-green-200 rounded px-2 py-1 overflow-auto">
+            <code className="flex-1 text-xs font-mono bg-card border border-green-300 dark:border-green-700 rounded px-2 py-1 overflow-auto">
               {newlyCreated.raw_key}
             </code>
             <button

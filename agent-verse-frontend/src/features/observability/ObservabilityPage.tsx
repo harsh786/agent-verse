@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, XCircle, AlertCircle, ExternalLink } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
-const GRAFANA_URL = 'http://localhost:3001';
+const GRAFANA_URL = (import.meta as any).env?.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
 interface HealthDependency {
   status: string;
@@ -81,10 +81,14 @@ export function ObservabilityPage() {
   });
 
   // Check Grafana availability
-  React.useEffect(() => {
-    fetch(GRAFANA_URL, { mode: 'no-cors' })
-      .then(() => setGrafanaAvailable(true))
-      .catch(() => setGrafanaAvailable(false));
+  useEffect(() => {
+    // Use a HEAD request to the Grafana health endpoint with a short timeout
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    fetch(`${GRAFANA_URL}/api/health`, { signal: controller.signal })
+      .then(r => setGrafanaAvailable(r.ok))
+      .catch(() => setGrafanaAvailable(false))
+      .finally(() => clearTimeout(timer));
   }, []);
 
   return (

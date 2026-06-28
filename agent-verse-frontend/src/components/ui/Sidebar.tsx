@@ -6,7 +6,7 @@ import {
   Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
   GitBranch, FlaskConical, BarChart2, Globe,
   Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
-  Bell, KeyRound, FileLock
+  Bell, KeyRound, FileLock, X, Package,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -59,42 +59,41 @@ export function Sidebar() {
     {
       heading: "Governance",
       items: [
-        { to: "/governance", icon: Shield,      label: "Governance"  },
-        { to: "/approvals",  icon: CheckSquare, label: "Approvals",  badge: pendingCount > 0 ? pendingCount : undefined },
-        { to: "/notifications", icon: Bell,     label: "Notifications" },
-        { to: "/rbac",       icon: KeyRound,    label: "Access Control" },
-        { to: "/compliance", icon: FileLock,    label: "Compliance"  },
-        { to: "/audit",      icon: Activity,    label: "Audit Log"   },
-        { to: "/settings",   icon: Settings,    label: "Settings"    },
+        { to: "/governance",    icon: Shield,      label: "Governance"     },
+        { to: "/approvals",     icon: CheckSquare, label: "Approvals",     badge: pendingCount > 0 ? pendingCount : undefined },
+        { to: "/notifications", icon: Bell,        label: "Notifications"  },
+        { to: "/rbac",          icon: KeyRound,    label: "Access Control" },
+        { to: "/compliance",    icon: FileLock,    label: "Compliance"     },
+        { to: "/audit",         icon: Activity,    label: "Audit Log"      },
+        { to: "/settings",      icon: Settings,    label: "Settings"       },
       ],
     },
     {
       heading: "Enterprise",
       items: [
-        { to: "/marketplace",         icon: ShoppingBag,  label: "Marketplace"       },
-        { to: "/observability",        icon: Activity,     label: "Observability"     },
-        { to: "/observability/cost",   icon: DollarSign,   label: "Cost Dashboard"    },
-        { to: "/eval",                 icon: BarChart3,    label: "Eval"              },
-        { to: "/enterprise",           icon: Building,     label: "Enterprise"        },
-        { to: "/analytics",            icon: BarChart2,    label: "Analytics"         },
-        { to: "/workflow-builder",     icon: GitBranch,    label: "Workflow Builder"  },
-        { to: "/playground",           icon: FlaskConical, label: "Playground"        },
-        { to: "/civilization",         icon: Globe,        label: "Civilization"      },
+        { to: "/marketplace",       icon: ShoppingBag,  label: "Marketplace"      },
+        { to: "/observability",     icon: Activity,     label: "Observability"    },
+        { to: "/observability/cost",icon: DollarSign,   label: "Cost Dashboard"   },
+        { to: "/eval",              icon: BarChart3,    label: "Eval"             },
+        { to: "/enterprise",        icon: Building,     label: "Enterprise"       },
+        { to: "/analytics",         icon: BarChart2,    label: "Analytics"        },
+        { to: "/workflow-builder",  icon: GitBranch,    label: "Workflow Builder" },
+        { to: "/playground",        icon: FlaskConical, label: "Playground"       },
+        { to: "/civilization",      icon: Globe,        label: "Civilization"     },
       ],
     },
     {
       heading: "Tooling",
       items: [
-        { to: "/tools",              icon: Wrench,        label: "Tools"           },
-        { to: "/memory",             icon: Brain,         label: "Memory"          },
-        { to: "/artifacts",          icon: FileBox,       label: "Artifacts"       },
-        { to: "/integrations",       icon: Webhook,       label: "Integrations"    },
-        { to: "/perception",         icon: Eye,           label: "Perception"      },
-        { to: "/training-export",    icon: GraduationCap, label: "Training Export" },
-        { to: "/a2a",                icon: Network,       label: "A2A"             },
-        { to: "/rpa/live",           icon: Activity,      label: "RPA Sessions"    },
-        { to: "/connectors/catalog", icon: ShoppingBag,   label: "Connector Catalog" },
-        { to: "/eval",               icon: FlaskConical,  label: "Eval & Sim"      },
+        { to: "/tools",              icon: Wrench,        label: "Tools"             },
+        { to: "/memory",             icon: Brain,         label: "Memory"            },
+        { to: "/artifacts",          icon: FileBox,       label: "Artifacts"         },
+        { to: "/integrations",       icon: Webhook,       label: "Integrations"      },
+        { to: "/perception",         icon: Eye,           label: "Perception"        },
+        { to: "/training-export",    icon: GraduationCap, label: "Training Export"   },
+        { to: "/a2a",                icon: Network,       label: "A2A"               },
+        { to: "/rpa/live",           icon: Activity,      label: "RPA Sessions"      },
+        { to: "/connectors/catalog", icon: Package,       label: "Connector Catalog" },
       ],
     },
   ];
@@ -102,13 +101,25 @@ export function Sidebar() {
   return (
     <aside
       className={clsx(
-        "fixed inset-y-0 left-0 z-30 flex flex-col bg-gray-900 text-white transition-all duration-200",
-        sidebarOpen ? "w-64" : "w-16"
+        "fixed inset-y-0 left-0 z-30 flex flex-col bg-card border-r border-border",
+        "transition-all duration-200 ease-in-out",
+        sidebarOpen ? "w-64" : "w-16",
+        // On mobile: translate off-screen when closed, full overlay when open
+        sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
       )}
     >
+      {/* Mobile close button — only visible when open on mobile */}
+      <button
+        className="md:hidden absolute top-4 right-4 text-muted-foreground hover:text-foreground"
+        onClick={toggleSidebar}
+        aria-label="Close sidebar"
+      >
+        <X className="h-4 w-4" />
+      </button>
+
       {/* Logo */}
-      <div className="flex items-center gap-2 px-4 py-4 border-b border-gray-700">
-        <Zap className="h-6 w-6 text-blue-400 flex-shrink-0" />
+      <div className="flex items-center gap-2 px-4 py-4 border-b border-border">
+        <Zap className="h-6 w-6 text-primary flex-shrink-0" />
         {sidebarOpen && (
           <span className="font-bold text-lg truncate">AgentVerse</span>
         )}
@@ -119,45 +130,54 @@ export function Sidebar() {
         {NAV_SECTIONS.map(({ heading, items }) => (
           <div key={heading} className="mb-1">
             {sidebarOpen && (
-              <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-gray-500 select-none">
+              <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground select-none">
                 {heading}
               </p>
             )}
             {!sidebarOpen && (
-              <div className="mx-3 my-1 h-px bg-gray-700" aria-hidden="true" />
+              <div className="mx-3 my-1 h-px bg-border" aria-hidden="true" />
             )}
             {items.map(({ to, icon: Icon, label, badge }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  clsx(
-                    "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
-                    "hover:bg-gray-800 focus-visible:bg-gray-800",
-                    isActive ? "bg-gray-800 text-blue-400" : "text-gray-300"
-                  )
-                }
-              >
-                <div className="relative flex-shrink-0">
-                  <Icon className="h-5 w-5" aria-hidden="true" />
-                  {/* Badge on collapsed sidebar */}
-                  {!sidebarOpen && badge != null && badge > 0 && (
-                    <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-orange-500 text-white text-xs font-bold leading-none">
-                      {badge > 9 ? "9+" : badge}
-                    </span>
-                  )}
-                </div>
-                {sidebarOpen && (
-                  <>
-                    <span className="truncate flex-1">{label}</span>
-                    {badge != null && badge > 0 && (
-                      <span className="ml-auto flex items-center justify-center px-1.5 min-w-[1.25rem] h-5 rounded-full bg-orange-500 text-white text-xs font-bold">
-                        {badge > 99 ? "99+" : badge}
+              <div key={to} className="relative group">
+                <NavLink
+                  to={to}
+                  className={({ isActive }) =>
+                    clsx(
+                      "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
+                      "hover:bg-muted/60 focus-visible:bg-muted/60",
+                      isActive
+                        ? "bg-primary/10 text-primary font-medium border-l-2 border-primary"
+                        : "text-muted-foreground border-l-2 border-transparent"
+                    )
+                  }
+                >
+                  <div className="relative flex-shrink-0">
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                    {/* Badge on collapsed sidebar */}
+                    {!sidebarOpen && badge != null && badge > 0 && (
+                      <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-orange-500 text-white text-xs font-bold leading-none">
+                        {badge > 9 ? "9+" : badge}
                       </span>
                     )}
-                  </>
+                  </div>
+                  {sidebarOpen && (
+                    <>
+                      <span className="truncate flex-1">{label}</span>
+                      {badge != null && badge > 0 && (
+                        <span className="ml-auto flex items-center justify-center px-1.5 min-w-[1.25rem] h-5 rounded-full bg-orange-500 text-white text-xs font-bold">
+                          {badge > 99 ? "99+" : badge}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </NavLink>
+                {/* Tooltip when collapsed */}
+                {!sidebarOpen && (
+                  <span className="absolute left-full ml-2 px-2 py-1 bg-popover border border-border text-popover-foreground text-xs rounded shadow-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none top-1/2 -translate-y-1/2">
+                    {label}
+                  </span>
                 )}
-              </NavLink>
+              </div>
             ))}
           </div>
         ))}
@@ -166,12 +186,12 @@ export function Sidebar() {
       {/* Collapse toggle */}
       <button
         onClick={toggleSidebar}
-        className="flex items-center justify-center p-4 border-t border-gray-700 hover:bg-gray-800 transition-colors"
+        className="flex items-center justify-center p-4 border-t border-border hover:bg-muted/60 transition-colors"
         aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
       >
         <ChevronLeft
           className={clsx(
-            "h-5 w-5 text-gray-400 transition-transform duration-200",
+            "h-5 w-5 text-muted-foreground transition-transform duration-200",
             !sidebarOpen && "rotate-180"
           )}
         />

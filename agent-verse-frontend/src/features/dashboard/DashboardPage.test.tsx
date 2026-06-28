@@ -37,23 +37,22 @@ describe('DashboardPage', () => {
     renderDashboardPage();
     expect(screen.getByText('Active Goals')).toBeInTheDocument();
     expect(screen.getByText('Success Rate')).toBeInTheDocument();
-    expect(screen.getByText('Avg Latency')).toBeInTheDocument();
     expect(screen.getByText('Cost Today')).toBeInTheDocument();
+    expect(screen.getByText('Agents')).toBeInTheDocument();
   });
 
-  test('shows loading dashes before data arrives', () => {
+  test('shows loading skeleton state before data arrives', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderDashboardPage();
-    // Active Goals and Success Rate show "—" during load; Avg Latency is always "—"
+    // KPI cards show "—" while loading (goalsLoading branch)
     const dashes = screen.getAllByText('—');
-    expect(dashes.length).toBeGreaterThanOrEqual(3);
+    expect(dashes.length).toBeGreaterThanOrEqual(1);
   });
 
-  test('shows page title and subtitle', () => {
+  test('shows Mission Control page title and subtitle', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderDashboardPage();
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText(/real-time platform overview/i)).toBeInTheDocument();
+    expect(screen.getByText('Mission Control')).toBeInTheDocument();
   });
 
   test('renders goal entries in activity feed when goals exist', async () => {
@@ -82,7 +81,7 @@ describe('DashboardPage', () => {
     );
     renderDashboardPage();
     await waitFor(() =>
-      expect(screen.getByText(/no goals yet/i)).toBeInTheDocument()
+      expect(screen.getByText(/no recent activity/i)).toBeInTheDocument()
     );
   });
 
@@ -119,13 +118,14 @@ describe('DashboardPage', () => {
       )
     );
     renderDashboardPage();
-    await waitFor(() => expect(screen.getByText('complete')).toBeInTheDocument());
-    expect(screen.getByText('executing')).toBeInTheDocument();
+    // StatusBadge renders "Complete" and "Executing" (capitalized labels)
+    await waitFor(() => expect(screen.getByText('Complete')).toBeInTheDocument());
+    expect(screen.getByText('Executing')).toBeInTheDocument();
   });
 
-  test('renders Live Activity Feed section header', () => {
+  test('renders Live Activity section header', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderDashboardPage();
-    expect(screen.getByText('Live Activity Feed')).toBeInTheDocument();
+    expect(screen.getByText('Live Activity')).toBeInTheDocument();
   });
 });

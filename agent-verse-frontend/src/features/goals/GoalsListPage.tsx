@@ -4,15 +4,17 @@ import { useNavigate } from "react-router-dom";
 import { Plus, Search, XCircle } from "lucide-react";
 import { agentsApi, goalsApi } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { Pagination } from "@/components/ui/Pagination";
 
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    complete: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-    executing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-    planning: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
-    failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+    complete:      "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+    executing:     "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
+    planning:      "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
+    failed:        "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
     waiting_human: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
   };
   return (
@@ -30,6 +32,8 @@ export function GoalsListPage() {
   const [search, setSearch] = useState("");
   const [dryRun, setDryRun] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState("auto");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -64,11 +68,13 @@ export function GoalsListPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goals"] }),
   });
 
-  const goals = (data?.goals ?? []).filter((g) => {
+  const filteredGoals = (data?.goals ?? []).filter((g) => {
     const matchStatus = filter === "all" || g.status === filter;
     const matchSearch = !search || g.goal.toLowerCase().includes(search.toLowerCase());
     return matchStatus && matchSearch;
   });
+
+  const paginatedGoals = filteredGoals.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <div className="space-y-6">
@@ -146,7 +152,10 @@ export function GoalsListPage() {
           <input
             type="search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             placeholder="Search goals…"
             className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
             aria-label="Search goals"
@@ -156,7 +165,10 @@ export function GoalsListPage() {
           {STATUS_OPTIONS.map((s) => (
             <button
               key={s}
-              onClick={() => setFilter(s)}
+              onClick={() => {
+                setFilter(s);
+                setPage(1);
+              }}
               className={`px-3 py-1 text-xs rounded-full border transition-colors ${
                 filter === s
                   ? "bg-primary text-primary-foreground border-primary"
@@ -172,8 +184,28 @@ export function GoalsListPage() {
       {/* Goals table */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {isLoading ? (
-          <div className="px-5 py-10 text-center text-sm text-muted-foreground">Loading…</div>
-        ) : goals.length === 0 ? (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40">
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Goal</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground w-32">Status</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground w-24">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <tr key={i}>
+                  <td className="px-4 py-3">
+                    <Skeleton className="h-4 w-3/4 mb-1" />
+                    <Skeleton className="h-3 w-1/3" />
+                  </td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-20" /></td>
+                  <td className="px-4 py-3 text-right"><Skeleton className="h-4 w-6 ml-auto" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : filteredGoals.length === 0 ? (
           <div className="px-5 py-10 text-center text-sm text-muted-foreground">No goals found.</div>
         ) : (
           <table className="w-full text-sm">
@@ -185,7 +217,7 @@ export function GoalsListPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {goals.map((goal) => (
+              {paginatedGoals.map((goal) => (
                 <tr
                   key={goal.id}
                   onClick={() => navigate(`/goals/${goal.id}`)}
@@ -218,6 +250,20 @@ export function GoalsListPage() {
           </table>
         )}
       </div>
+
+      {/* Pagination */}
+      {!isLoading && filteredGoals.length > 0 && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={filteredGoals.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => {
+            setPageSize(s);
+            setPage(1);
+          }}
+        />
+      )}
     </div>
   );
 }
