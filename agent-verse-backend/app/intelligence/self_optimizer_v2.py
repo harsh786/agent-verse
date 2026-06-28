@@ -829,3 +829,24 @@ Respond with ONLY valid JSON:
             if before.get(k) != after.get(k):
                 delta[k] = {"before": before.get(k), "after": after.get(k)}
         return delta
+
+    async def list_experiments(self, tenant_id: str) -> list[dict]:
+        """List A/B optimization experiments for a tenant (M-2)."""
+        if self._db is None:
+            return []
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                rows = (await session.execute(_t("""
+                    SELECT id, agent_id, status, challenger_config, control_config,
+                           challenger_wins, control_wins, created_at, concluded_at, winner_arm
+                    FROM improvement_experiments
+                    WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT 50
+                """), {"tid": tenant_id})).fetchall()
+            cols = [
+                "id", "agent_id", "status", "challenger_config", "control_config",
+                "challenger_wins", "control_wins", "created_at", "concluded_at", "winner_arm",
+            ]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            return []

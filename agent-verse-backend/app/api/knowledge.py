@@ -185,6 +185,24 @@ async def delete_collection(request: Request, collection_id: str) -> None:
             detail=f"Collection {collection_id} not found",
         )
 
+    # H-5: Block deletion if a legal hold is active on this resource
+    from app.governance.legal_holds import LegalHoldManager
+    _legal_hold_mgr = getattr(request.app.state, "legal_hold_manager", None)
+    if _legal_hold_mgr is not None:
+        try:
+            _is_held = await _legal_hold_mgr.is_under_hold(
+                resource_id=collection_id, tenant_id=tenant_ctx.tenant_id
+            )
+            if _is_held:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Resource is under legal hold and cannot be deleted",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Legal hold check failure is non-fatal; allow deletion
+
     # Delete from DB: chunks first (FK constraint), then the collection row
     db = getattr(store, "_db", None)
     if db is not None:
@@ -243,20 +261,14 @@ async def ingest_document(
         metadata=str_metadata,
     )
 
-    # Split into semantic chunks using SemanticChunker with real or fallback embeddings.
-    from app.rag.chunker import Chunk as _CChunk
-    from app.rag.chunker import SemanticChunker
-    chunker = SemanticChunker(max_chars=512, overlap_chars=64)
-    source_type = body.source_type or "text"
-    chunks_text = chunker.chunk(body.content, source_type=source_type)
+    # Split into token-aware chunks for accurate LLM context window usage.
+    from app.knowledge.chunker_v2 import chunk_by_tokens
+    _raw_chunks = chunk_by_tokens(body.content, max_tokens=512, overlap_tokens=64)
+    chunks_text = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_chunks]
 
     # Fallback: very short content that doesn't meet min_chunk threshold
     if not chunks_text and body.content.strip():
-        chunks_text = [_CChunk(
-            content=body.content.strip(),
-            start_char=0,
-            end_char=len(body.content),
-        )]
+        chunks_text = [type("_C", (), {"content": body.content.strip(), "start_char": 0, "end_char": len(body.content)})()]
 
     chunks_created = 0
     embedder = getattr(request.app.state, "embedder", None)
@@ -411,15 +423,14 @@ async def ingest_file(
     if not text.strip():
         raise HTTPException(422, "File is empty or could not be parsed")
 
-    # Chunk using SemanticChunker
-    from app.rag.chunker import Chunk as _CChunk
-    from app.rag.chunker import SemanticChunker
-    chunker = SemanticChunker(max_chars=512, overlap_chars=64)
-    chunks = chunker.chunk(text, source_type=source_type)
+    # Chunk using token-aware chunker
+    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
+    _raw_file_chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64)
+    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_file_chunks]
 
     # Fallback for very short content
     if not chunks and text.strip():
-        chunks = [_CChunk(content=text.strip(), start_char=0, end_char=len(text))]
+        chunks = [type("_C", (), {"content": text.strip(), "start_char": 0, "end_char": len(text)})()]
 
     ingested = 0
     document_id = _uuid.uuid4().hex
@@ -518,7 +529,7 @@ async def _ingest_repo_background(
 
     from app.observability.logging import get_logger
     from app.providers.base import EmbedRequest
-    from app.rag.chunker import SemanticChunker
+    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     logger = get_logger(__name__)
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
@@ -544,7 +555,7 @@ async def _ingest_repo_background(
             )
             return
 
-        chunker = SemanticChunker(max_chars=512, overlap_chars=64)
+        chunker = None  # replaced by chunk_by_tokens below
         files_processed = 0
 
         for pattern in file_patterns:
@@ -559,7 +570,8 @@ async def _ingest_repo_background(
                         continue
                     ext = filepath.suffix.lstrip(".")
                     src_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
-                    chunks = chunker.chunk(text, source_type=src_type)
+                    _raw = _chunk_by_tokens_repo(text, max_tokens=512, overlap_tokens=64)
+                    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw]
                     rel_path = str(filepath.relative_to(tmpdir))
                     doc_id = _uuid.uuid4().hex
                     for idx, chunk in enumerate(chunks):
@@ -727,13 +739,11 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         raise HTTPException(422, "No content extracted from URL")
 
     # Chunk and ingest
-    from app.rag.chunker import Chunk as _CChunk
-    from app.rag.chunker import SemanticChunker
-    chunker = SemanticChunker(max_chars=512, overlap_chars=64)
-    src_type = "text"
-    chunks = chunker.chunk(content, source_type=src_type)
+    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_url
+    _raw_url_chunks = _chunk_by_tokens_url(content, max_tokens=512, overlap_tokens=64)
+    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_url_chunks]
     if not chunks and content.strip():
-        chunks = [_CChunk(content=content.strip(), start_char=0, end_char=len(content))]
+        chunks = [type("_C", (), {"content": content.strip(), "start_char": 0, "end_char": len(content)})()]
 
     embedder = getattr(request.app.state, "embedder", None)
     import uuid as _uuid_mod
@@ -977,4 +987,47 @@ async def ingest_slack(
         "chunks_ingested": ingested,
         "source": f"slack:{body.channel_id}",
         "source_type": "slack",
+    }
+
+
+# ---------------------------------------------------------------------------
+# H-7: Federated search across multiple collections
+# ---------------------------------------------------------------------------
+
+@router.post("/search/federated")
+async def federated_search_endpoint(
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Search across multiple knowledge collections with score normalization."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+    if embedder is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No embedding provider configured",
+        )
+
+    query: str = body.get("query", "")
+    collection_ids: list[str] = body.get("collection_ids", [])
+    top_k: int = int(body.get("top_k", 10))
+    top_k = max(1, min(100, top_k))
+
+    if not query:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query is required")
+    if not collection_ids:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="collection_ids is required")
+
+    from app.knowledge.federated_search import federated_search
+    results = await federated_search(
+        query=query,
+        collection_ids=collection_ids,
+        store=store,
+        top_k=top_k,
+    )
+    return {
+        "results": results,
+        "total": len(results),
+        "collections_searched": len(collection_ids),
     }

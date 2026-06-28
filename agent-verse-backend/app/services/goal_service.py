@@ -213,6 +213,7 @@ def _make_agent_loop() -> Any:
             dedup_cache=DeduplicationCache(),
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
+            cost_tracker=None,
         )
     except Exception as exc:
         _svc_logger.error(
@@ -779,6 +780,8 @@ class GoalService:
             autonomy_mode=_agent_config.get("autonomy_mode", "bounded-autonomous"),
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
             checkpointer=_resolve_checkpointer(app_state),
+            # H-1: real token-cost tracker
+            cost_tracker=getattr(app_state, "cost_tracker", None),
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
@@ -788,6 +791,9 @@ class GoalService:
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)
         graph._rpa_executor = _rpa_exec
+        # H-2: Wire app_state and agent_id for SelfOptimizerV2 A/B experiment tracking
+        graph._app_state = app_state
+        graph._agent_id = agent_id
         # Phase 25: Wire self-optimizer for automatic improvement on poor performance
         from app.intelligence.self_optimization import SelfOptimizer
         _self_optimizer = getattr(app_state, "self_optimizer", None) if app_state else None
