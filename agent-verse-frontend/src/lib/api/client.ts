@@ -168,6 +168,11 @@ export const agentsApi = {
   get: (id: string) => request<AgentResponse>(`/agents/${id}`),
   create: (data: CreateAgentRequest) =>
     request<AgentResponse>("/agents", { method: "POST", body: JSON.stringify(data) }),
+  createNl: (command: string, autorun = false) =>
+    request<AgentResponse>("/agents/create", {
+      method: "POST",
+      body: JSON.stringify({ command, autorun }),
+    }),
   update: (id: string, data: Partial<CreateAgentRequest>) =>
     request<AgentResponse>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/agents/${id}`, { method: "DELETE" }),
