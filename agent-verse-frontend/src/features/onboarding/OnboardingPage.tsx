@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle, ChevronRight, Loader2, Zap } from "lucide-react";
-import { settingsApi, connectorsApi, goalsApi } from "@/lib/api/client";
+import { settingsApi, connectorsApi, goalsApi, agentsApi } from "@/lib/api/client";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -234,20 +234,8 @@ function Step3Agent({
     setSaving(true);
     setError("");
     try {
-      const res = await fetch(
-        `${(import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000"}/agents/create`,
-        {
-          method: "POST",
-          headers: {
-            "X-API-Key": localStorage.getItem("av_api_key") ?? "",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ command, autorun: false }),
-        }
-      );
-      if (!res.ok) throw new Error(res.statusText);
-      const data = await res.json();
-      onAgentCreated(data.agent_id ?? data.id ?? "");
+      const data = await agentsApi.createNl(command, false);
+      onAgentCreated(data.agent_id ?? '');
       setSaved(true);
       setTimeout(onNext, 800);
     } catch (e) {
