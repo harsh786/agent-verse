@@ -152,7 +152,7 @@ describe('EnterprisePage', () => {
   test('Residency section shows region information from API', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
-      if (url.includes('/enterprise/data-residency')) {
+      if (url.includes('/enterprise/compliance/residency')) {
         return new Response(
           JSON.stringify({
             region: 'eu-west-1',

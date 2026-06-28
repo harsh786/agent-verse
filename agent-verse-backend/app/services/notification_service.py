@@ -34,9 +34,72 @@ class NotificationService:
 
     def __init__(self) -> None:
         self._channels: dict[str, list[NotificationChannel]] = {}
+        self._db: Any = None
+
+    def set_db(self, db_factory: Any) -> None:
+        """Wire in async SQLAlchemy session factory (called during lifespan)."""
+        self._db = db_factory
+
+    async def sync_from_db(self, tenant_id: str | None = None) -> None:
+        """Load persisted channels from DB into the in-memory cache."""
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                if tenant_id:
+                    await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                query = (
+                    "SELECT channel_id, tenant_id, channel_type, config, enabled"
+                    " FROM notification_channels"
+                )
+                params: dict[str, Any] = {}
+                if tenant_id:
+                    query += " WHERE tenant_id = :tid"
+                    params["tid"] = tenant_id
+                result = await session.execute(_t(query), params)
+                for row in result.fetchall():
+                    ch = NotificationChannel(
+                        channel_id=row[0],
+                        tenant_id=row[1],
+                        channel_type=row[2],
+                        config=row[3] or {},
+                        enabled=row[4],
+                    )
+                    self._channels.setdefault(row[1], [])
+                    if not any(c.channel_id == ch.channel_id for c in self._channels[row[1]]):
+                        self._channels[row[1]].append(ch)
+        except Exception as exc:
+            logger.warning("notification_sync_failed", error=str(exc))
 
     def add_channel(self, channel: NotificationChannel) -> None:
         self._channels.setdefault(channel.tenant_id, []).append(channel)
+        if self._db is not None:
+            import asyncio
+            asyncio.create_task(self._persist_channel(channel))  # noqa: RUF006
+
+    async def _persist_channel(self, channel: NotificationChannel) -> None:
+        """Persist a channel to the DB (fire-and-forget)."""
+        try:
+            import json as _json
+
+            from sqlalchemy import text as _t
+            async with self._db() as session, session.begin():
+                await session.execute(_t("""
+                    INSERT INTO notification_channels
+                        (channel_id, tenant_id, channel_type, config, enabled)
+                    VALUES (:cid, :tid, :ctype, :cfg::jsonb, :enabled)
+                    ON CONFLICT (channel_id) DO UPDATE
+                        SET config = EXCLUDED.config, enabled = EXCLUDED.enabled
+                """), {
+                    "cid": channel.channel_id,
+                    "tid": channel.tenant_id,
+                    "ctype": channel.channel_type,
+                    "cfg": _json.dumps(channel.config),
+                    "enabled": channel.enabled,
+                })
+        except Exception as exc:
+            logger.warning("notification_persist_failed", error=str(exc))
 
     def get_channels(self, tenant_id: str) -> list[NotificationChannel]:
         return [c for c in self._channels.get(tenant_id, []) if c.enabled]
@@ -45,7 +108,23 @@ class NotificationService:
         channels = self._channels.get(tenant_id, [])
         before = len(channels)
         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
-        return len(self._channels[tenant_id]) < before
+        removed = len(self._channels[tenant_id]) < before
+        if removed and self._db is not None:
+            import asyncio
+            asyncio.create_task(self._delete_channel(channel_id))  # noqa: RUF006
+        return removed
+
+    async def _delete_channel(self, channel_id: str) -> None:
+        """Remove a channel from the DB (fire-and-forget)."""
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    _t("DELETE FROM notification_channels WHERE channel_id = :cid"),
+                    {"cid": channel_id},
+                )
+        except Exception as exc:
+            logger.warning("notification_delete_failed", error=str(exc))
 
     async def notify_approval_required(
         self, *, request_id: str, goal_id: str, action: str,

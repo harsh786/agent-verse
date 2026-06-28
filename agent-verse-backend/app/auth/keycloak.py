@@ -15,7 +15,6 @@ Open-source deps only: python-jose, httpx (already in requirements)
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any
 
@@ -32,19 +31,23 @@ _jwks_fetched_at = 0.0
 
 
 def _keycloak_url() -> str:
-    return os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
+    from app.core.config import get_settings
+    return get_settings().keycloak_url
 
 
 def _realm() -> str:
-    return os.getenv("KEYCLOAK_REALM", "agentverse")
+    from app.core.config import get_settings
+    return get_settings().keycloak_realm
 
 
 def _client_id() -> str:
-    return os.getenv("KEYCLOAK_CLIENT_ID", "agentverse-backend")
+    from app.core.config import get_settings
+    return get_settings().keycloak_client_id
 
 
 def _sso_enabled() -> bool:
-    return os.getenv("SSO_ENABLED", "false").lower() in {"true", "1", "yes"}
+    from app.core.config import get_settings
+    return get_settings().sso_enabled
 
 
 def jwks_uri() -> str:
@@ -93,7 +96,8 @@ async def validate_jwt(token: str) -> dict[str, Any]:
         ValueError: If token is invalid, expired, or from wrong issuer
     """
     try:
-        from jose import jwt as _jwt, JWTError, ExpiredSignatureError
+        from jose import ExpiredSignatureError, JWTError
+        from jose import jwt as _jwt
     except ImportError as exc:
         raise ImportError(
             "python-jose required for SSO: pip install 'python-jose[cryptography]'"
@@ -143,7 +147,7 @@ async def resolve_tenant_from_jwt(
     Maps Keycloak users to AgentVerse tenants by email.
     Creates a new tenant record on first login (JIT provisioning).
     """
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     try:
         payload = await validate_jwt(token)

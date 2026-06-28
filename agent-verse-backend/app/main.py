@@ -571,6 +571,13 @@ def create_app(
                 _workflow_store.set_db(db_factory)
                 logger.info("workflow_store_db_wired")
 
+            # Wire DB into NotificationService for persistent channel storage
+            _notif_svc = getattr(app.state, "notification_service", None)
+            if _notif_svc is not None:
+                _notif_svc.set_db(db_factory)
+                await _notif_svc.sync_from_db()
+                logger.info("notification_service_db_wired")
+
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
                 from sqlalchemy import text as _sql_text
