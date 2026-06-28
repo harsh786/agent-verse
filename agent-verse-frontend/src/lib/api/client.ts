@@ -5,6 +5,8 @@
  * works too and is required for production builds.
  */
 
+import { useAuthStore } from '@/stores/auth';
+
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 /** Exported alias for use in feature pages. */
@@ -13,7 +15,10 @@ export const API_BASE = API_BASE_URL;
 // NOTE: sessionStorage is less vulnerable than localStorage (cleared on tab close)
 // Production: use httpOnly cookie set by the backend auth endpoint
 const getApiKey = (): string => {
-  // Prefer sessionStorage (not persisted across browser restarts)
+  // Prefer the Zustand auth store (set via login/setCredentials actions)
+  const storeKey = useAuthStore.getState().apiKey;
+  if (storeKey) return storeKey;
+  // Fall back to sessionStorage/localStorage for backward compat
   return (
     sessionStorage.getItem("av_api_key") ??
     localStorage.getItem("av_api_key") ?? // backward compat
