@@ -112,6 +112,16 @@ filterwarnings = [
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+omit = [
+    # Alembic auto-generated DDL migrations — these are SQL schema definitions,
+    # not business logic; they run against a real DB (testcontainers/integration).
+    "app/db/migrations/*",
+]
+
+[tool.coverage.run]
+omit = [
+    "app/db/migrations/*",
+]
 
 [tool.ruff]
 line-length = 100
