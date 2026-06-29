@@ -6,6 +6,7 @@ Any service that speaks the OpenAI Chat Completions + Embeddings API works here.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 
 from app.providers.base import (
     CompletionRequest,
@@ -138,6 +139,57 @@ class OpenAICompatibleProvider:
                     yield delta
         except Exception as exc:
             yield f"[stream error: {exc}]"
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Stream tokens from the OpenAI-compatible API, calling on_token for each delta.
+
+        Falls back to a non-streaming complete() call if the streaming API raises.
+        """
+        import logging as _logging
+
+        model = request.model or self._default_model
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "stream": True,
+        }
+
+        full_text = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        try:
+            stream = await self._client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    full_text += delta
+                    await on_token(delta)
+                # Pick up usage from the final chunk when available
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    prompt_tokens = getattr(usage, "prompt_tokens", prompt_tokens)
+                    completion_tokens = getattr(usage, "completion_tokens", completion_tokens)
+        except Exception as exc:
+            _logging.getLogger(__name__).warning(
+                "openai_stream_tokens_failed error=%s fallback=True", str(exc)
+            )
+            return await self.complete(request)
+
+        return CompletionResponse(
+            content=full_text,
+            model=model,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+        )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         model = request.model or "text-embedding-3-small"

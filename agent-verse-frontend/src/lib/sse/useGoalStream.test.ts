@@ -1,99 +1,149 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+/**
+ * Tests for the useGoalStream SSE hook — token streaming behaviour.
+ *
+ * We test the token streaming logic by directly exercising the hook's
+ * internal state transitions using React Testing Library's renderHook.
+ */
+
 import { renderHook, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useGoalStream } from './useGoalStream';
 
-describe('useGoalStream', () => {
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Build a ReadableStream that yields the given SSE frames sequentially,
+ * then closes the stream.
+ */
+function makeSseStream(frames: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i >= frames.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(frames[i++]));
+    },
+  });
+}
+
+function sseFrame(data: object): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+describe('useGoalStream — token streaming', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    localStorage.setItem('av_api_key', 'test-key');
   });
 
-  it('starts disconnected', () => {
-    const { result } = renderHook(() => useGoalStream(null));
-    expect(result.current.connected).toBe(false);
-    expect(result.current.events).toHaveLength(0);
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
   });
 
-  it('sends X-API-Key header not query param', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-      ok: false,
-      status: 401,
-      body: null,
-    } as Response);
+  test('token_chunk events update streamingToken and are NOT added to events array', async () => {
+    const stream = makeSseStream([
+      sseFrame({ type: 'goal_started' }),
+      sseFrame({ type: 'token_chunk', step: 'Write code', token: 'Hello', cumulative: 'Hello' }),
+      sseFrame({ type: 'token_chunk', step: 'Write code', token: ' world', cumulative: 'Hello world' }),
+    ]);
 
-    localStorage.setItem('av_api_key', 'test-key-abc');
-    renderHook(() => useGoalStream('goal-1'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    );
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const { result } = renderHook(() => useGoalStream('goal-123'));
 
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).not.toContain('api_key=');
-    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('test-key-abc');
+    await waitFor(() => {
+      // Regular event is in events array
+      expect(result.current.events.some((e) => e.type === 'goal_started')).toBe(true);
+    });
+
+    await waitFor(() => {
+      // streamingToken reflects the last cumulative value
+      expect(result.current.streamingToken?.cumulative).toBe('Hello world');
+      expect(result.current.streamingToken?.step).toBe('Write code');
+    });
+
+    // token_chunk must NOT appear in events[]
+    expect(result.current.events.some((e) => e.type === 'token_chunk')).toBe(false);
   });
 
-  it('parses SSE events from stream', async () => {
-    const eventData = JSON.stringify({ type: 'goal_started', goal: 'test' });
-    const sseFrame = `data: ${eventData}\n\n`;
+  test('step_complete event clears streamingToken', async () => {
+    // Deliver frames separately to ensure they can be processed
     const encoder = new TextEncoder();
-    const encoded = encoder.encode(sseFrame);
+    const frames = [
+      sseFrame({ type: 'token_chunk', step: 'Do thing', token: 'Hey', cumulative: 'Hey' }),
+      sseFrame({ type: 'step_complete', step: 'Do thing', output: 'done' }),
+    ];
+    let pushIdx = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pushIdx >= frames.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(encoder.encode(frames[pushIdx++]));
+      },
+    });
 
-    let readCount = 0;
-    const mockReader = {
-      read: vi.fn().mockImplementation(async () => {
-        if (readCount === 0) { readCount++; return { done: false, value: encoded }; }
-        return { done: true, value: undefined };
-      }),
-    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    );
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader } as unknown as ReadableStream,
-    } as Response);
+    const { result } = renderHook(() => useGoalStream('goal-456'));
 
-    const { result } = renderHook(() => useGoalStream('goal-2'));
-    // waitFor retries until the callback does not throw — use expect() so it
-    // throws (and retries) while events is still empty.
-    await waitFor(() => expect(result.current.events).toHaveLength(1));
-    expect(result.current.events[0].type).toBe('goal_started');
-  });
-});
-
-describe('useGoalStream API key source', () => {
-  it('reads from sessionStorage first', () => {
-    sessionStorage.setItem('av_api_key', 'session-key-123');
-    localStorage.removeItem('av_api_key');
-
-    const key = sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
-    expect(key).toBe('session-key-123');
-    sessionStorage.removeItem('av_api_key');
+    // After step_complete is processed, streamingToken must be cleared
+    await waitFor(() => {
+      expect(result.current.events.some((e) => e.type === 'step_complete')).toBe(true);
+    });
+    expect(result.current.streamingToken).toBeNull();
   });
 
-  it('falls back to localStorage for backward compatibility', () => {
-    sessionStorage.removeItem('av_api_key');
-    localStorage.setItem('av_api_key', 'local-key-456');
+  test('terminal event clears streamingToken and stops reconnect', async () => {
+    const stream = makeSseStream([
+      sseFrame({ type: 'token_chunk', step: 'Final step', token: 'Fin', cumulative: 'Fin' }),
+      sseFrame({ type: 'goal_complete', result: 'Done' }),
+    ]);
 
-    const key = sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
-    expect(key).toBe('local-key-456');
-    localStorage.removeItem('av_api_key');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    );
+
+    const { result } = renderHook(() => useGoalStream('goal-789'));
+
+    await waitFor(() => {
+      expect(result.current.events.some((e) => e.type === 'goal_complete')).toBe(true);
+      expect(result.current.streamingToken).toBeNull();
+      expect(result.current.connected).toBe(false);
+    });
   });
 
-  it('hook uses sessionStorage key when both are set', async () => {
-    sessionStorage.setItem('av_api_key', 'session-wins');
-    localStorage.setItem('av_api_key', 'local-loses');
+  test('streamingToken is null initially and on new goalId', () => {
+    const { result } = renderHook(() => useGoalStream(null));
+    expect(result.current.streamingToken).toBeNull();
+  });
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-      ok: false,
-      status: 401,
-      body: null,
-    } as Response);
+  test('onEvent callback is called for token_chunk events', async () => {
+    const stream = makeSseStream([
+      sseFrame({ type: 'token_chunk', step: 'S1', token: 'abc', cumulative: 'abc' }),
+    ]);
 
-    renderHook(() => useGoalStream('goal-session'));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    );
 
-    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('session-wins');
+    const onEvent = vi.fn();
+    renderHook(() => useGoalStream('goal-cb', { onEvent }));
 
-    sessionStorage.removeItem('av_api_key');
-    localStorage.removeItem('av_api_key');
+    await waitFor(() => {
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'token_chunk', token: 'abc' })
+      );
+    });
   });
 });

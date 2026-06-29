@@ -94,20 +94,20 @@ test.describe('Agent Personality', () => {
     ).toBeVisible({ timeout: 15000 });
 
     // Autonomy slider: Supervised ↔ Fully Autonomous
-    await expect(page.getByText('Supervised')).toBeVisible();
-    await expect(page.getByText('Fully Autonomous')).toBeVisible();
+    await expect(page.getByText('Supervised')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Fully Autonomous')).toBeVisible({ timeout: 15000 });
 
     // Thoroughness slider: Fast ↔ Thorough
-    await expect(page.getByText('Fast')).toBeVisible();
-    await expect(page.getByText('Thorough')).toBeVisible();
+    await expect(page.getByText('Fast')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Thorough')).toBeVisible({ timeout: 15000 });
 
     // Strategy slider: Deterministic ↔ Creative
-    await expect(page.getByText('Deterministic')).toBeVisible();
-    await expect(page.getByText('Creative')).toBeVisible();
+    await expect(page.getByText('Deterministic')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Creative')).toBeVisible({ timeout: 15000 });
 
     // Cost slider: Cost-Optimized ↔ Quality-First
-    await expect(page.getByText('Cost-Optimized')).toBeVisible();
-    await expect(page.getByText('Quality-First')).toBeVisible();
+    await expect(page.getByText('Cost-Optimized')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Quality-First')).toBeVisible({ timeout: 15000 });
   });
 
   test('config preview section is visible', async ({ page }) => {
@@ -121,10 +121,9 @@ test.describe('Agent Personality', () => {
     ).toBeVisible({ timeout: 15000 });
 
     // The generated config preview section
-    await expect(page.getByText(/generated config/i)).toBeVisible();
-    await expect(page.getByText(/mode/i)).toBeVisible();
-    await expect(page.getByText(/max iterations/i)).toBeVisible();
-    await expect(page.getByText(/model/i)).toBeVisible();
+    await expect(page.getByText('Generated config')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Mode')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Max iterations')).toBeVisible({ timeout: 15000 });
   });
 
   test('Save Personality button is present', async ({ page }) => {

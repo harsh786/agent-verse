@@ -7,7 +7,7 @@ Records every call in ``call_history`` for assertion in tests.
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 from app.providers.base import (
     CompletionRequest,
@@ -63,6 +63,29 @@ class FakeProvider:
         full_response = self._next_response()
         for word in full_response.split():
             yield word + " "
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Fake streaming: emit response word-by-word to simulate token streaming.
+
+        Calls ``on_token`` for each word so tests can assert streaming behaviour
+        without a real LLM provider.
+        """
+        self.call_history.append(request)
+        text = self._next_response()
+        words = text.split()
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            await on_token(chunk)
+        return CompletionResponse(
+            content=text,
+            model=request.model,
+            input_tokens=10,
+            output_tokens=len(words),
+        )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         embeddings = [

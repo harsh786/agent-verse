@@ -6,6 +6,8 @@ The API key is read from the credential vault or directly from env/secrets.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.providers.base import (
@@ -159,6 +161,85 @@ class AnthropicProvider:
                     yield text
         except Exception as exc:
             yield f"[stream error: {exc}]"
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Stream tokens from the Anthropic API, calling on_token for each text chunk.
+
+        Uses the official Anthropic streaming API (messages.stream).  Falls back
+        to a non-streaming complete() call if the streaming API raises.
+        """
+        model = request.model or self._default_model
+        messages = []
+        for m in request.messages:
+            if m.role == "system":
+                continue
+            if m.image_data:
+                messages.append({
+                    "role": m.role,
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": m.image_data,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": m.content if isinstance(m.content, str) else str(m.content),
+                        },
+                    ],
+                })
+            else:
+                messages.append({"role": m.role, "content": m.content})
+
+        import anthropic as _anthropic
+        system_prompt = request.system or next(
+            (m.content for m in request.messages if m.role == "system"),
+            _anthropic.NOT_GIVEN,
+        )
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+        }
+        if system_prompt is not _anthropic.NOT_GIVEN:
+            kwargs["system"] = system_prompt
+        if request.tools:
+            kwargs["tools"] = [
+                {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+                for t in request.tools
+            ]
+
+        full_text = ""
+        input_tokens = 0
+        output_tokens = 0
+
+        try:
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for text_chunk in stream.text_stream:
+                    full_text += text_chunk
+                    await on_token(text_chunk)
+                final_msg = await stream.get_final_message()
+                input_tokens = getattr(final_msg.usage, "input_tokens", 0)
+                output_tokens = getattr(final_msg.usage, "output_tokens", 0)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "anthropic_stream_tokens_failed error=%s fallback=True", str(exc)
+            )
+            return await self.complete(request)
+
+        return CompletionResponse(
+            content=full_text,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         # Anthropic does not currently offer an embedding API.

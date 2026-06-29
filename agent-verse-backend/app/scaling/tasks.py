@@ -2031,6 +2031,7 @@ def expire_stale_documents() -> dict:
 
 
 @celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations", queue="maintenance")
+def discover_and_tick_civilizations() -> dict:
     """Discover all active civilizations and enqueue tick tasks for each."""
     async def _run() -> dict:
         try:

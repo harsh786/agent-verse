@@ -11,6 +11,13 @@ async function setupAuth(page: Page) {
     );
     localStorage.setItem('av_api_key', 'test-api-key');
   });
+  await page.route('**/tenants/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ tenant_id: 'test-tenant', name: 'Test Org', plan: 'free' }),
+    })
+  );
 }
 
 test.describe('Collaboration', () => {
@@ -50,7 +57,7 @@ test.describe('Collaboration', () => {
     await page.getByRole('button', { name: /new session/i }).click();
     await expect(page.getByText('New Collaboration Session')).toBeVisible();
     await page.getByPlaceholder(/session name|sprint planning/i).fill('E2E review');
-    await page.getByPlaceholder(/goal/i).fill('goal-e2e');
+    await page.getByPlaceholder('Goal ID').fill('goal-e2e');
     const agentInput = page.getByPlaceholder(/agent/i);
     if (await agentInput.count()) {
       await agentInput.fill('agent-e2e');

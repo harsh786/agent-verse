@@ -23,6 +23,10 @@ async function setupAuth(page: Page) {
       body: JSON.stringify({ tenant_id: 'test-tenant', name: 'Test Org', plan: 'free' }),
     })
   );
+  // Prevent sidebar from making unmocked API calls that trigger error toasts
+  await page.route(/localhost:8000\/governance\/approvals/, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
+  );
 }
 
 test.describe('RBAC', () => {
@@ -102,7 +106,7 @@ test.describe('RBAC', () => {
     await page.goto('/rbac');
 
     await expect(page.getByText('user-alice')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/admin/i)).toBeVisible();
+    await expect(page.getByText('admin', { exact: true }).first()).toBeVisible();
   });
 
   test('can add an IP to the allowlist', async ({ page }) => {
