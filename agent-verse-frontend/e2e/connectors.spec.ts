@@ -28,7 +28,7 @@ async function setupAuth(page: Page) {
 test.describe('Connectors', () => {
   test('shows Registered Connectors heading', async ({ page }) => {
     await setupAuth(page);
-    await page.route(/localhost:8000/connectors/, (route) => {
+    await page.route(/localhost:8000\/connectors/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -54,7 +54,7 @@ test.describe('Connectors', () => {
     ];
 
     await setupAuth(page);
-    await page.route(/localhost:8000/connectors/, (route) => {
+    await page.route(/localhost:8000\/connectors/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -102,9 +102,12 @@ test.describe('Connectors', () => {
     });
 
     await page.goto('/connectors');
+    // Form is hidden by default — open it first
+    await page.getByRole('button', { name: /register connector/i }).click();
+    await expect(page.locator('input[placeholder="my-github"]')).toBeVisible({ timeout: 10000 });
     await page.locator('input[placeholder="my-github"]').fill('my-github');
     await page.locator('input[placeholder="http://localhost:9000"]').fill('http://localhost:9000');
-    await page.getByRole('button', { name: /register|add|connect/i }).first().click();
+    await page.getByRole('button', { name: /^register$/i }).click();
 
     await expect(page.getByText('my-github')).toBeVisible({ timeout: 15000 });
   });

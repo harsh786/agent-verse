@@ -115,11 +115,19 @@ test.describe('Dashboard', () => {
 
   test('KPI values reflect the /goals/metrics response', async ({ page }) => {
     await setupAuth(page);
+    // Override analytics/costs to return populated cost data so Cost Today shows $2.5000
+    await page.route(/localhost:8000\/analytics\/costs/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ period_days: 1, total_cost_usd: 2.5, cost_today_usd: 2.5, trends: [] }),
+      })
+    );
     await mockGoalsApis(page, { metrics: POPULATED_METRICS });
     await page.goto('/dashboard');
 
-    // Cost Today = $2.50
-    await expect(page.getByText('$2.50')).toBeVisible({ timeout: 15000 });
+    // Cost Today = $2.5000 (toFixed(4))
+    await expect(page.getByText('$2.5000')).toBeVisible({ timeout: 15000 });
   });
 
   test('KPI sub-labels render (total, completed, failed, active counts)', async ({
