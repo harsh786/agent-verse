@@ -8,10 +8,10 @@
 DevOps teams operate at the intersection of speed and reliability — shipping fast while keeping production stable. The reality: 70% of on-call engineers report alert fatigue. Mean Time to Detect (MTTD) averages **197 minutes** for production incidents. Cloud waste reaches **32% of total cloud spend**. Post-mortems don't prevent the same incidents from recurring.
 
 **The opportunity:**
-- Global DevOps market: **$12.8B (2024) → $57.9B (2032)** — CAGR 20.7%
-- Average cost of a production outage: **$5,600/minute** (Gartner)
-- Cloud waste: companies overspend by **$26.6B/year** on unused cloud resources
-- On-call burnout drives **35% of SRE attrition** — some of the most expensive engineers to replace
+- Global DevOps market: **₹1.07 lakh crore (2024) → ₹4.84 lakh crore (2032)** — CAGR 20.7%
+- Average cost of a production outage: **₹4,70,000/minute** (Gartner)
+- Cloud waste: companies overspend by **₹2.23 lakh crore/year** on unused cloud resources
+- On-call burnout drives **35% of SRE attrition** — each SRE replacement costs ₹15–25L in recruitment and ramp-up
 
 AgentVerse sits between your monitoring tools and your engineering team — triaging, diagnosing, remediating, and documenting, while humans focus on architecture and business logic.
 
@@ -57,8 +57,8 @@ When an alert fires, AgentVerse agent immediately triages: reads logs, checks me
 12. Update incident with timeline and resolution
 
 **MCP Connectors Used:** PagerDuty, CloudWatch/Datadog, GitHub (deployment history), AWS/Kubernetes, Slack  
-**Revenue Model:** $800/month per on-call team; $5,000/month enterprise with custom runbooks  
-**ROI:** MTTD: 197 min → 8 min; MTTR: 45 min → 15 min; $200K+ saved per prevented hour of P1 outage  
+**Revenue Model:** ₹67,000/month per on-call team; ₹4,20,000/month enterprise with custom runbooks  
+**ROI:** MTTD: 197 min → 8 min; MTTR: 45 min → 15 min; ₹1.7 crore+ saved per prevented hour of P1 outage  
 **Target Customers:** Any company with production SLAs, SRE teams, cloud-native companies
 
 ---
@@ -113,7 +113,7 @@ Agent analyzes cloud spend weekly, identifies specific wasteful resources with o
 12. Monthly executive report: actual savings achieved vs potential
 
 **MCP Connectors Used:** AWS Cost Explorer, AWS CloudWatch, Jira, Slack  
-**Revenue Model:** 10% of monthly savings achieved (performance-based); or $1,000/month flat  
+**Revenue Model:** 10% of monthly savings achieved (performance-based); or ₹84,000/month flat  
 **ROI:** 15–25% reduction in cloud spend; typical ROI: $15K saved per $100K cloud bill  
 **Target Customers:** Companies spending >$50K/month on cloud, FinOps teams
 
@@ -140,7 +140,7 @@ Agent ingests security scan results, triages by real exploitability, generates p
 10. Compliance reporting: OWASP Top 10 coverage, SOC2 evidence generation
 
 **MCP Connectors Used:** GitHub, code execution sandbox, web search (NVD), Slack, Jira  
-**Revenue Model:** $300/month per 10 services; compliance report add-on $500/month  
+**Revenue Model:** ₹25,000/month per 10 services; compliance report add-on ₹42,000/month  
 **ROI:** CVE patch time: 48 days → 4 days; 90% reduction in critical unpatched vulnerabilities  
 **Target Customers:** Any company with container workloads; companies targeting SOC2/ISO27001
 
@@ -167,7 +167,7 @@ Agent executes runbooks step-by-step autonomously, with HITL approval at each de
 10. Complete runbook execution: "Runbook 'payment-service-restart' completed in 8 minutes. All 12 steps executed. Service health restored."
 
 **MCP Connectors Used:** Kubernetes/AWS, PagerDuty, Confluence, Slack, code execution sandbox  
-**Revenue Model:** $600/month runbook automation module  
+**Revenue Model:** ₹50,000/month runbook automation module  
 **ROI:** Runbook execution time: 45 min → 8 min; 80% reduction in execution errors  
 **Target Customers:** Companies with complex production systems, SRE teams, regulated industries
 
@@ -194,7 +194,7 @@ Agent analyzes traffic patterns, predicts load spikes, recommends pre-scaling ac
 10. Day before major events: automated pre-scaling with HITL approval
 
 **MCP Connectors Used:** AWS CloudWatch, Prometheus/Grafana, Jira, Slack  
-**Revenue Model:** Included in DevOps suite or $500/month capacity planning module  
+**Revenue Model:** Included in DevOps suite or ₹42,000/month capacity planning module  
 **ROI:** 40% reduction in capacity-related incidents; 15% cloud cost optimization from accurate provisioning  
 **Target Customers:** E-commerce companies with seasonal traffic, SaaS companies growing >50%/year
 
@@ -221,7 +221,7 @@ Agent monitors service performance metrics in real-time, detects early degradati
 10. Notify customer success team of proactive action taken
 
 **MCP Connectors Used:** Datadog/CloudWatch/Prometheus, PagerDuty, Slack, AWS Route53/ALB  
-**Revenue Model:** $1,000/month SLA monitoring add-on  
+**Revenue Model:** ₹84,000/month SLA monitoring add-on  
 **ROI:** SLA penalty avoidance: $50K–500K/year for enterprise companies; 70% reduction in SLA breaches  
 **Target Customers:** SaaS companies with enterprise SLAs, financial services, healthcare IT
 
@@ -248,7 +248,7 @@ Agent ingests log streams, identifies anomalous patterns, correlates across serv
 10. Visualize: generate Grafana dashboard link highlighting the anomaly window
 
 **MCP Connectors Used:** Elasticsearch/CloudWatch/Splunk, PagerDuty, Slack, Grafana  
-**Revenue Model:** $700/month per cluster; enterprise $3,000/month multi-cluster  
+**Revenue Model:** ₹59,000/month per cluster; enterprise ₹2,50,000/month multi-cluster  
 **ROI:** 68% of incidents have early log signals — catching those prevents $5,600/min downtime  
 **Target Customers:** Companies with microservices (high log volume), financial services, healthcare
 
@@ -275,7 +275,7 @@ Agent continuously compares production infrastructure state against IaC definiti
 10. Monthly drift report for compliance (SOC2, CIS Benchmarks)
 
 **MCP Connectors Used:** AWS/GCP/Azure, Kubernetes, GitHub (Terraform), Jira, Slack, CloudTrail  
-**Revenue Model:** $500/month infrastructure governance module  
+**Revenue Model:** ₹42,000/month infrastructure governance module  
 **ROI:** 73% reduction in undocumented manual changes; compliance evidence for SOC2  
 **Target Customers:** Companies with Terraform/Kubernetes, SOC2-certified companies, regulated industries
 
@@ -359,7 +359,7 @@ Agent tracks all certificates and secrets, rotates them proactively before expir
 11. Alert if any cert <7 days from expiry remains unrotated: P1 incident creation
 
 **MCP Connectors Used:** AWS Certificate Manager, HashiCorp Vault, Kubernetes, Let's Encrypt (via HTTP tool), Slack  
-**Revenue Model:** $400/month secrets management module  
+**Revenue Model:** ₹33,000/month secrets management module  
 **ROI:** Zero certificate-expiry outages; 8 hours/cert manual rotation → 20 minutes automated  
 **Target Customers:** Any company with production TLS certificates and API secrets (all companies)
 
@@ -367,19 +367,19 @@ Agent tracks all certificates and secrets, rotates them proactively before expir
 
 ## Monetization Strategy
 
-### Tier 1 — DevOps Starter ($499/month)
+### Tier 1 — DevOps Starter (₹42,000/month)
 - Incident triage, CI/CD failure analysis, post-deploy verification
 - Up to 5 services monitored
 - 3,000 agent goals/month
 - Slack integration
 
-### Tier 2 — Platform Pro ($1,500/month)
+### Tier 2 — Platform Pro (₹1,25,000/month)
 - All Starter + cloud cost optimization, vulnerability scanning, runbook execution
 - Up to 25 services
 - 15,000 agent goals/month
 - Custom runbook library
 
-### Tier 3 — Enterprise SRE ($5,000+/month)
+### Tier 3 — Enterprise SRE (₹4,20,000+/month)
 - Full suite + capacity planning, SLA prediction, secret rotation
 - Unlimited services
 - Custom alert routing, custom HITL workflows
