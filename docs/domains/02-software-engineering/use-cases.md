@@ -9,9 +9,9 @@ Software engineering teams are productivity-constrained by repetitive cognitive 
 
 **The opportunity:**
 - Average developer spends **42% of time on non-coding tasks** (GitHub, 2023) — documentation, meetings, code review overhead, ticket management
-- Code review alone costs **$80B/year** in developer time globally
-- Technical debt costs US companies **$1.52 trillion** per year (CAST Software)
-- Developer time costs **$100–250/hour** — every hour saved is a compounding return
+- Code review alone costs **₹6.7 lakh crore/year globally** in developer time globally
+- Technical debt costs companies **$1.52 trillion (₹1.27 crore crore globally)** per year (CAST Software)
+- Developer time costs **₹8,000–20,000/hour** — every hour saved is a compounding return
 
 AgentVerse agents integrate directly into the developer workflow via GitHub, Jira, Slack, and CI/CD pipelines — operating as a tireless engineering peer.
 
@@ -57,7 +57,7 @@ Agent reviews every PR automatically within 5 minutes: checks logic, security, s
 12. Notify PR author via Slack: `"Code review complete: 2 critical issues, 1 major — check #pr-1234"`
 
 **MCP Connectors Used:** GitHub, code execution sandbox, Slack, web search (CVE lookups)  
-**Revenue Model:** $99/developer/month or $500/month for teams up to 10  
+**Revenue Model:** ₹8,000/developer/month or ₹42,000/month for teams up to 10  
 **ROI:** 4–8h/week saved per senior engineer; PR cycle time reduced from 48h to 6h  
 **Target Customers:** Dev teams of 5–500, tech startups, software product companies
 
@@ -85,7 +85,7 @@ Agent triages every new bug report: reproduces it, finds the likely root cause i
 11. Update Jira with: severity, owner, root cause, reproduction steps, related commits
 
 **MCP Connectors Used:** Jira/Linear, GitHub, code execution sandbox, Slack  
-**Revenue Model:** $200/month add-on per repo or included in engineering suite  
+**Revenue Model:** ₹17,000/month add-on per repo or included in engineering suite  
 **ROI:** Triage time: 5 hours → 20 minutes per bug; 40% reduction in misrouted tickets  
 **Target Customers:** Product companies with >50 bugs/month, QA teams
 
@@ -112,7 +112,7 @@ Agent auto-generates comprehensive PR descriptions from the diff, explains the w
 10. Post draft description as PR comment for developer to review and accept
 
 **MCP Connectors Used:** GitHub, Jira, web search  
-**Revenue Model:** Included in code review tier; or $39/developer/month standalone  
+**Revenue Model:** Included in code review tier; or ₹3,200/developer/month standalone  
 **ROI:** 30 min/developer/day → 2 min; PR descriptions improve review speed by 35%  
 **Target Customers:** Any software team with >5 developers
 
@@ -140,7 +140,7 @@ Weekly agent run analyzes the entire codebase for debt indicators, quantifies th
 11. Track debt trend over time: is it improving or worsening?
 
 **MCP Connectors Used:** GitHub, Jira, PagerDuty, code execution sandbox, Slack  
-**Revenue Model:** $500/month engineering analytics module  
+**Revenue Model:** ₹42,000/month engineering analytics module  
 **ROI:** 2–5x reduction in incident rate after addressing top-10 debt items  
 **Target Customers:** CTOs and engineering managers at 20–500 person engineering orgs
 
@@ -149,7 +149,7 @@ Weekly agent run analyzes the entire codebase for debt indicators, quantifies th
 ### UC-5: Automated Documentation Generation from Code
 
 **The Problem**
-Documentation is always out of date. Engineers don't update docs when they change code. Onboarding new engineers takes **3–6 months** partly because documentation is incomplete. API consumers file 40% of their bugs because the docs were wrong. **Technical writers cost $80–150K/year** — yet most code is still undocumented.
+Documentation is always out of date. Engineers don't update docs when they change code. Onboarding new engineers takes **3–6 months** partly because documentation is incomplete. API consumers file 40% of their bugs because the docs were wrong. **Technical writers cost ₹65L–₹1.25 crore/year** — yet most code is still undocumented.
 
 **AgentVerse Solution**
 Agent analyzes the codebase, generates comprehensive documentation, identifies gaps in existing docs, and keeps docs in sync with code changes.
@@ -168,7 +168,7 @@ Agent analyzes the codebase, generates comprehensive documentation, identifies g
 11. Create PRs with documentation additions/updates
 
 **MCP Connectors Used:** GitHub, Confluence/Notion, code execution sandbox  
-**Revenue Model:** $300/month per 10-developer team; enterprise: $2,000/month unlimited repos  
+**Revenue Model:** ₹25,000/month per 10-developer team; enterprise: ₹1,65,000/month unlimited repos  
 **ROI:** New engineer ramp-up time: 3 months → 6 weeks; 40% reduction in internal "how does X work?" questions  
 **Target Customers:** Teams with >5 developers, open-source projects, companies with complex codebases
 
@@ -196,7 +196,7 @@ Agent continuously monitors all repositories for vulnerable dependencies, assess
 11. Track SLA: P1 CVEs must be patched within 24h; escalate to CISO if overdue
 
 **MCP Connectors Used:** GitHub, code execution sandbox, web search (NVD), Slack, PagerDuty  
-**Revenue Model:** $150/repo/month security scanning; enterprise: $3,000/month  
+**Revenue Model:** ₹12,500/repo/month security scanning; enterprise: ₹2,50,000/month  
 **ROI:** CVE patch time: 48 days → 4 days; 90% reduction in unpatched critical vulnerabilities  
 **Target Customers:** Any company with software products, SOC2/ISO27001 certified companies
 
@@ -224,7 +224,7 @@ Agent analyzes historical sprint data, generates capacity-aware sprint plans, id
 11. Post-sprint: generate velocity retrospective with trend analysis
 
 **MCP Connectors Used:** Jira/Linear, Slack, Google Calendar  
-**Revenue Model:** Included in engineering suite; or $150/month per Jira project  
+**Revenue Model:** Included in engineering suite; or ₹12,500/month per Jira project  
 **ROI:** Sprint planning meeting reduced from 4 hours to 90 minutes; sprint predictability improves 25%  
 **Target Customers:** Agile engineering teams of 3–20 developers
 
@@ -251,7 +251,7 @@ Agent analyzes new code, understands its intent, and generates comprehensive tes
 10. If tests reveal a bug in the code: flag it in the PR
 
 **MCP Connectors Used:** GitHub, code execution sandbox  
-**Revenue Model:** $200/developer/month test generation add-on  
+**Revenue Model:** ₹17,000/developer/month test generation add-on  
 **ROI:** Test coverage increases from 47% to 75%; 35% reduction in production bugs  
 **Target Customers:** Dev teams with low test coverage, teams preparing for SOC2 audits
 
@@ -279,7 +279,7 @@ Agent auto-drafts post-mortems immediately after incident resolution by reading 
 11. Schedule post-mortem review meeting for next business day
 
 **MCP Connectors Used:** PagerDuty, Datadog/CloudWatch, GitHub, Slack, Confluence/Jira  
-**Revenue Model:** Included in DevOps suite; standalone $200/month  
+**Revenue Model:** Included in DevOps suite; standalone ₹17,000/month  
 **ROI:** Post-mortem draft time: 6 hours → 30 minutes; incident recurrence rate drops 50%  
 **Target Customers:** Any company with on-call engineering, SRE teams
 
@@ -306,7 +306,7 @@ Agent ingests the entire codebase into a knowledge base and answers questions wi
 10. Update knowledge base when PRs are merged (webhook-triggered re-ingestion)
 
 **MCP Connectors Used:** GitHub, knowledge base (code ingestor), Slack  
-**Revenue Model:** $500/month per engineering team; enterprise $3,000/month multi-repo  
+**Revenue Model:** ₹42,000/month per engineering team; enterprise ₹2,50,000/month multi-repo  
 **ROI:** New engineer ramp-up: 6 months → 6 weeks; senior engineer interrupt time: 60 min/day → 10 min/day  
 **Target Customers:** Teams with >50K LOC, onboarding >2 engineers/month
 
@@ -368,18 +368,18 @@ Agent monitors API contracts, detects breaking changes in every PR, and alerts c
 
 ## Monetization Strategy
 
-### Tier 1 — Developer Tools Starter ($99/month, up to 5 devs)
+### Tier 1 — Developer Tools Starter (₹7,999/month, up to 5 devs)
 - Code review bot, PR description generation, test case generation
 - 1 GitHub repository
 - 2,000 agent goals/month
 
-### Tier 2 — Engineering Team Pro ($500/month, up to 20 devs)
+### Tier 2 — Engineering Team Pro (₹42,000/month, up to 20 devs)
 - All Starter + vulnerability scanning, tech debt analysis, codebase Q&A
 - Unlimited repositories
 - 20,000 agent goals/month
 - Slack integration
 
-### Tier 3 — Enterprise Engineering ($3,000+/month)
+### Tier 3 — Enterprise Engineering (₹2,50,000+/month)
 - Full suite + custom model fine-tuning on company's codebase
 - SLA-backed review times (<5 min)
 - Custom guardrails (language standards, security policies)

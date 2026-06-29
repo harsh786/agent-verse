@@ -281,6 +281,68 @@ Agent consolidates all portfolio data into a single real-time performance dashbo
 
 ---
 
+### UC-11: Lease Renewal Negotiation Intelligence
+
+**The Problem**
+Landlords consistently lose **15–25% of achievable market rate** on lease renewals because they negotiate without data. Every 1% of rent below market on a ₹5,00,000/month commercial property equals ₹60,000/year lost — permanently baked into the next escalation cycle. Across a 10-property commercial portfolio, this compounds to **₹6,00,000–₹15,00,000 annually in forgone revenue** that never appears on any report. Brokers represent tenants with full market data; landlords guess. The information asymmetry is the problem, and it is entirely solvable.
+
+**AgentVerse Solution**
+Agent triggers 90 days before lease expiry, conducts a complete micro-market rent intelligence scan, benchmarks the current rent against live comparables and recent registrations, and produces a negotiation briefing with precise anchor points and a concession ladder. For each negotiation round, the agent logs counter-offers, recomputes the landlord's position against market data, and recommends the optimal next counter — transforming a gut-feel conversation into a data-backed negotiation.
+
+**Agent Workflow**
+1. Monitor lease database for all leases expiring within 90 days; trigger renewal intelligence workflow automatically per property
+2. Fetch active comparable listings in the same micro-market: same building grade (Grade A/B/C office or retail), similar carpet area (±20%), same locality — via MagicBricks, 99acres, JLL, and Anarock portal RPA
+3. Pull recent registered transaction data for completed deals in last 6 months from sub-registrar office data available via state government portals and broker aggregator feeds via web search
+4. Analyze micro-market supply-demand dynamics: current vacancy rate in the submarket, new supply delivering in next 6–12 months (from JLL/Cushman city reports via web search), average absorption pace, seasonal demand patterns
+5. Benchmark current rent: express as a percentile rank against comparable transactions — e.g., `"Current rent ₹82/sqft is at P38 of market; P50 is ₹97/sqft; P75 is ₹1,12/sqft"`
+6. Compute the full negotiation range: (a) walk-away floor = market P45 minus 5% for incumbency goodwill, (b) target rate = market P60 with incumbent premium justification, (c) opening anchor = market P75 plus 10% with full comparable evidence pack
+7. Model tenant's BATNA: identify the 3 most realistic alternative spaces the tenant could move to; estimate their all-in relocation cost (new build-out, fit-out, downtime, moving costs — typically ₹800–₹1,500/sqft for commercial) to quantify the tenant's true negotiating ceiling
+8. Generate comprehensive negotiation briefing document: market evidence table, percentile positioning, tenant BATNA analysis, recommended anchor and target, concession ladder (rent-free months vs rent reduction vs cap-ex contribution), and talking points for each expected counter-argument
+9. Draft formal rent revision letter with proposed new rent, market comparables cited as evidence, and a 21-day response window; review for tone and legal accuracy
+10. HITL: landlord or property manager reviews negotiation briefing and counter-offer letter; approves parameters, adjusts if needed, and authorizes dispatch
+11. Dispatch formal renewal notice to tenant via registered email and WhatsApp; record dispatch timestamp for notice period compliance
+12. Track negotiation rounds: after each tenant counter-offer, log the counter in a structured negotiation journal (date, tenant position, delta from market median, concessions offered); generate recommended next counter with market-data rationale updated for any new comparables
+13. On agreement: draft lease renewal addendum with new rent, revised escalation clause (CPI-linked or fixed %, compounded annually), extended lock-in, break-clause amendments, and maintenance obligation restatement; route for both-party e-signature via DocuSign
+14. Post-renewal: update portfolio rent register with new rent, escalation schedule, and next renewal trigger date; recalculate gross yield on cost; generate portfolio-level summary of rent optimization outcomes for the quarter
+
+**Tools/Connectors Used:** Web search, browser RPA (MagicBricks/99acres/JLL/sub-registrar portals), document generation, DocuSign, WhatsApp Business, email, Google Sheets/Airtable, code execution (percentile calculations)
+**Revenue Model:** ₹8,000/renewal negotiation briefing (single property); ₹40,000/month for portfolio-wide renewal management covering 10+ properties with continuous monitoring
+**ROI:** Average rent improvement of 12–18% above landlord's pre-briefing baseline position; on a single ₹5L/month commercial lease, an 8% improvement = ₹4,80,000/year uplift that compounds with every escalation cycle; 90-day advance trigger eliminates the "surprised by expiry" loss
+**Target Customers:** Commercial property owners, family offices with commercial portfolios (3+ properties), institutional landlords, co-working space operators, IT park developers managing multi-tenant floors
+
+---
+
+### UC-12: New Project Launch Campaign Orchestration
+
+**The Problem**
+A real estate developer launching a new project must coordinate **15+ simultaneous activities** within a 72-hour launch window: portal listings go live, broker briefings reach 500+ channel partners, press releases land in media inboxes, social media posts fire at peak engagement times, email campaigns reach the developer's lead database, the call center receives scripts and price lists, and the site visit calendar opens for booking — all at once, all aligned. Coordinating this manually requires 6–8 people working 40+ hours across the launch week. **The first 72 hours generate 40–60% of total project inquiries**, and disorganized launches — where portals go live 6 hours before brokers are briefed, or where social media fires before the call center has price lists — have been documented to generate **35–50% fewer bookings** in the first week than well-orchestrated ones. That gap can translate to ₹5–25 crore in delayed sales velocity on a mid-size project.
+
+**AgentVerse Solution**
+Agent ingests the project brief and autonomously builds and executes the complete launch playbook: portal listing creation and staged activation, bulk broker WhatsApp broadcast with briefing deck, social media scheduling across platforms, email campaign to lead database, call center script generation, press outreach, and site visit calendar setup — all coordinated to fire simultaneously at the declared launch moment. A real-time dashboard tracks first-72-hour inquiry surge with source attribution.
+
+**Agent Workflow**
+1. Receive project brief: project name, location, unit mix (1BHK/2BHK/3BHK), pricing by unit type, USPs, developer brand, launch date and exact launch time, approved imagery and renders, channel partner contact list, existing lead database, press contact list, launch event details (if any), and available marketing budget
+2. Generate master launch runbook: 15-task dependency map with owner, deadline, completion status — covering portals, broker outreach, social, email, PR, call center, and site visit calendar; share with project marketing team via Google Sheets with live status tracking
+3. Create portal-ready listings for MagicBricks, 99acres, Housing.com, PropTiger, and NoBroker — each formatted to that portal's field schema, character limits, and image specifications; stage all listings for simultaneous activation at T-0 via portal API or RPA; do not publish until launch moment
+4. Generate broker briefing deck (PDF + WhatsApp-shareable image card): project highlights, unit mix overview, pricing matrix, site location with landmark distances, possession timeline, channel partner commission structure, site access instructions for broker-led site visits; dispatch via WhatsApp Business bulk broadcast to the full broker database with delivery confirmation tracking
+5. Draft press release in wire-format: launch headline, developer quote, project highlights, market positioning statement, availability of units, price point, contact for media queries; personalize cover note for each of the top 15 real estate journalists/editors based on their recent coverage beats
+6. Send personalized press pitches via email to real estate media (ET Realty, HT Estates, Money Control Realty, PropTiger Media, regional language newspapers); schedule follow-up at H+48 for non-openers
+7. Create complete social media launch sequence: D-7 teaser (ambience renders, "coming soon" message), D-3 location reveal, D-1 countdown with USPs, T-0 launch announcement (all platforms simultaneously), D+1 early-response social proof, D+3 momentum post (units booked update); write platform-native versions for Instagram, LinkedIn, Facebook, Twitter/X; schedule all in Buffer/Hootsuite at computed peak engagement windows for real estate audience in the target city
+8. Design and dispatch email launch invitation to developer's existing lead database: HTML email with project highlights, exclusive pre-launch pricing note (if applicable), site visit registration link, and UTM-tracked CTA; segment database by interest profile (previous inquiries for same ticket size/location)
+9. Generate call center operational brief: project overview, unit availability and pricing matrix, FAQ document (20 most likely questions with approved answers), objection handler script, escalation triggers for hot leads, site visit scheduling instructions; dispatch to call center supervisor with read-receipt confirmation
+10. Configure site visit calendar in Google Calendar: create 30-minute slots across 7 days post-launch for sales executives (separate calendars per executive); integrate booking link for lead self-scheduling; set up automated confirmation email with Google Maps navigation link and parking instructions
+11. At T-0 (precise launch moment): execute simultaneous activation — portal listings go live via RPA/API, social media posts publish, email blast sends, SMS broadcast fires to broker network with project launch notification; log activation timestamp for each channel
+12. Monitor first-hour inquiry surge: pull incoming leads from all portals, website, and WhatsApp into unified dashboard; auto-assign to sales team by source geography and broker attribution; send Slack alert every 30 minutes with running inquiry count per channel
+13. Real-time launch dashboard (updated every 30 minutes for first 72 hours): total inquiries by channel, broker-attributed vs direct, hot lead count (site visit scheduled), call center call volume, social media reach and engagement per post, email open and click rates; visible to project team via shared Google Sheets / web dashboard
+14. End of 72-hour launch window: generate comprehensive launch performance report — total inquiries with source breakdown, quality distribution (hot/warm/cold), site visits booked vs targets, expressions of interest or token bookings, best-performing channel, worst-performing channel with diagnosis, and recommended focus adjustments for weeks 2–4 of the sales campaign
+
+**Tools/Connectors Used:** Browser RPA (MagicBricks/99acres/Housing.com/PropTiger portal activation), WhatsApp Business (bulk broadcast), Mailchimp/email (lead database blast), Buffer/Hootsuite (social scheduling), Google Calendar (site visit booking), SMS gateway (broker broadcast), document generation (briefing deck, press release, call center scripts), Slack, Google Sheets (launch dashboard)
+**Revenue Model:** ₹75,000/project launch (one-time fee); ₹1,20,000/month for developers with a continuous launch pipeline (3+ projects active per quarter), including ongoing inquiry management
+**ROI:** Human coordination effort: 40+ hours across 6–8 people → 6 hours of oversight; simultaneous channel activation improves first-72-hour inquiry volume by 35–50% vs sequential manual launches; zero dropped tasks means no channel-partner relations damage from late briefings; for a ₹100 crore project, even one additional booking in the launch window pays for the agent 150×
+**Target Customers:** Real estate developers (mid to large, 100+ unit projects), project marketing and sales agencies, co-living and student housing brand launches, township developers with recurring quarterly launches
+
+---
+
 ## Monetization Strategy
 
 ### Tier 1 — Property Manager Starter (₹5,000/month)

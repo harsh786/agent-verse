@@ -56,7 +56,7 @@ Agent automatically enriches every new lead with 40+ data points and assigns a b
 11. Notify SDR via Slack: `"Hot lead: Acme Corp — 89/100 ICP score. Just raised Series B. CTO recently posted about infrastructure scaling challenges. Reach out today."`
 
 **MCP Connectors Used:** Salesforce/HubSpot, Apollo, LinkedIn, web search, Slack  
-**Revenue Model:** $200/1,000 leads enriched; or $2,000/month unlimited for sales teams  
+**Revenue Model:** ₹17,000/1,000 leads enriched; or ₹1,65,000/month unlimited for sales teams  
 **ROI:** Research time: 2–3 hours → 5 minutes per lead; lead-to-opportunity conversion: +25%  
 **Target Customers:** B2B SaaS companies with high-volume outbound, SDR teams
 
@@ -84,7 +84,7 @@ Agent writes genuinely personalized outreach emails using real intelligence abou
 11. Track: monitor open rates, reply rates; A/B test subject lines; learn what works
 
 **MCP Connectors Used:** HubSpot/Salesforce, LinkedIn, web search, email tool (Salesloft/Outreach via HTTP)  
-**Revenue Model:** $300/month per rep; $3,000/month for 10-rep team  
+**Revenue Model:** ₹25,000/month per rep; ₹2,50,000/month for 10-rep team  
 **ROI:** Response rate: 2% → 15%; 10 hours/day research → 30 min review; pipeline 3× larger  
 **Target Customers:** B2B SaaS with outbound motion, SDR teams, account executives
 
@@ -111,7 +111,7 @@ Agent listens to the meeting recording/transcript, extracts action items, and se
 10. Send follow-up email (HITL: rep reviews and edits before sending, or auto-send based on preference)
 
 **MCP Connectors Used:** Gong/Zoom, Salesforce/HubSpot, Google Calendar, email tool, Slack  
-**Revenue Model:** $150/month per rep follow-up automation  
+**Revenue Model:** ₹12,500/month per rep follow-up automation  
 **ROI:** Follow-up sent within 30 min (vs 24h); deal close rate improves 22%; rep saves 1h/meeting  
 **Target Customers:** Enterprise sales teams, SaaS companies with demo-heavy sales cycles
 
@@ -139,7 +139,7 @@ Agent monitors every deal in the pipeline continuously, detects risk signals, an
 11. Weekly pipeline review: push risk report to sales manager + flash report in Slack
 
 **MCP Connectors Used:** Salesforce/HubSpot, Gong, email (engagement tracking), LinkedIn, Slack  
-**Revenue Model:** $1,000/month pipeline intelligence module; enterprise $5,000/month  
+**Revenue Model:** ₹84,000/month pipeline intelligence module; enterprise ₹4,20,000/month  
 **ROI:** 67% of at-risk deals recovered with early intervention; 15% improvement in win rate  
 **Target Customers:** Enterprise B2B sales teams with deal cycles >30 days, VP Sales
 
@@ -166,7 +166,7 @@ Agent continuously monitors competitors and auto-generates up-to-date battle car
 10. When Gong detects a competitor mention in a call: immediately surface relevant battle card to rep
 
 **MCP Connectors Used:** Web search (SearXNG), Gong, Confluence/Notion, Slack, browser automation (RPA)  
-**Revenue Model:** $500/month competitive intelligence module  
+**Revenue Model:** ₹42,000/month competitive intelligence module  
 **ROI:** Win rate in competitive deals improves 18%; rep preparation time per competitive deal: 2h → 10 min  
 **Target Customers:** Any B2B SaaS with >3 significant competitors
 
@@ -194,7 +194,7 @@ Agent runs continuous CRM hygiene: deduplication, enrichment, validation, and ar
 11. Calculate data quality ROI: `"Fixed 847 records this week — estimated $43,000 in marketing waste prevented"`
 
 **MCP Connectors Used:** Salesforce/HubSpot, Apollo, LinkedIn, email validation API (via HTTP tool)  
-**Revenue Model:** $300/month RevOps data quality module  
+**Revenue Model:** ₹25,000/month RevOps data quality module  
 **ROI:** CRM data accuracy: 9% → 73%; marketing waste reduction: 20%; rep time saved: 30 min/day  
 **Target Customers:** Companies with >500 CRM records, RevOps teams, marketing operations
 
@@ -203,7 +203,7 @@ Agent runs continuous CRM hygiene: deduplication, enrichment, validation, and ar
 ### UC-7: Sales Forecast Generation & Accuracy Improvement
 
 **The Problem**
-Sales forecasts are wrong **79% of the time** (Clari, 2024). Reps are optimistic about their deals. Managers apply gut-feel adjustments. Finance makes revenue decisions on unreliable data. A 10% forecast miss for a $10M ARR company = $1M in unplanned variance — causing hiring freezes, missed investments, or unpleasant board conversations.
+Sales forecasts are wrong **79% of the time** (Clari, 2024). Reps are optimistic about their deals. Managers apply gut-feel adjustments. Finance makes revenue decisions on unreliable data. A 10% forecast miss for a ₹83 crore ARR company = ₹8.3 crore in unplanned variance — causing hiring freezes, missed investments, or unpleasant board conversations.
 
 **AgentVerse Solution**
 Agent generates data-driven forecasts based on historical win rates, deal health scores, and current pipeline composition — not rep optimism.
@@ -222,7 +222,7 @@ Agent generates data-driven forecasts based on historical win rates, deal health
 11. Post weekly forecast to Slack + update Salesforce forecast fields
 
 **MCP Connectors Used:** Salesforce/HubSpot, Slack, Google Sheets  
-**Revenue Model:** $1,500/month forecast intelligence; included in enterprise CRM suite  
+**Revenue Model:** ₹1,25,000/month forecast intelligence; included in enterprise CRM suite  
 **ROI:** Forecast accuracy: 21% → 78%; prevents $500K+ in misallocated resources per quarter  
 **Target Customers:** VP Sales, CRO, RevOps teams at $5M–100M ARR companies
 
@@ -251,7 +251,7 @@ Agent monitors all customer accounts for churn signals and expansion opportuniti
 12. Post weekly customer health digest to `#customer-success` Slack
 
 **MCP Connectors Used:** Salesforce, product analytics (Amplitude/Mixpanel), Zendesk/Intercom, Slack  
-**Revenue Model:** $2,000/month customer success intelligence module  
+**Revenue Model:** ₹1,65,000/month customer success intelligence module  
 **ROI:** Churn reduction: 20–30% improvement; expansion revenue: identify $500K+ in upsell per 100 accounts  
 **Target Customers:** SaaS companies with recurring revenue model, customer success teams
 
@@ -307,7 +307,7 @@ Agent analyzes every closed deal — won and lost — to identify patterns, gene
 10. Monthly coaching report: per-rep win rate trends, improvement areas, recommended focus
 
 **MCP Connectors Used:** Salesforce, Gong, Slack, Confluence  
-**Revenue Model:** $1,000/month sales analytics and coaching module  
+**Revenue Model:** ₹84,000/month sales analytics and coaching module  
 **ROI:** Win rate improvement: 5–15% (direct revenue impact); rep ramp time reduction: 30%  
 **Target Customers:** VPs of Sales, sales enablement teams, companies with >5 reps
 
@@ -334,7 +334,7 @@ Agent calculates commission for every rep at month/quarter end, cross-references
 10. Reps can query their own commission: `"Why is my commission $12,400 instead of $15,000?"` → agent explains specific deal calculations
 
 **MCP Connectors Used:** Salesforce/HubSpot, QuickBooks/Stripe, HRIS payroll API, Slack  
-**Revenue Model:** $500/month sales ops automation  
+**Revenue Model:** ₹42,000/month sales ops automation  
 **ROI:** Commission calculation time: 8 hours/quarter → 30 minutes; disputes: 40 hours → 2 hours  
 **Target Customers:** Companies with >5 quota-carrying reps, complex commission structures
 
