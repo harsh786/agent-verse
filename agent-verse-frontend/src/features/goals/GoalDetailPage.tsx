@@ -154,7 +154,7 @@ export function GoalDetailPage() {
     enabled: !!goalId,
   });
 
-  const { events, connected } = useGoalStream(goalId ?? "");
+  const { events, connected, streamingToken } = useGoalStream(goalId ?? "");
 
   const cancel = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
@@ -478,6 +478,33 @@ export function GoalDetailPage() {
               </ul>
             )}
           </div>
+
+          {/* Live token streaming display — shown while the LLM is generating */}
+          {streamingToken && (
+            <div
+              role="status"
+              aria-live="polite"
+              aria-label="Live LLM output"
+              className="rounded-lg border border-border bg-muted/30 p-3 text-sm font-mono"
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-2 w-2 rounded-full bg-primary animate-pulse"
+                />
+                <span className="text-xs text-muted-foreground">
+                  Generating: {streamingToken.step}
+                </span>
+              </div>
+              <p className="text-foreground whitespace-pre-wrap break-words">
+                {streamingToken.cumulative}
+                <span
+                  aria-hidden="true"
+                  className="inline-block w-0.5 h-4 bg-primary animate-pulse ml-0.5 align-middle"
+                />
+              </p>
+            </div>
+          )}
 
           {/* Execution Timeline */}
           {events.length > 0 && <ExecutionTimeline events={events as any[]} />}

@@ -1054,13 +1054,22 @@ class GoalService:
         event: dict[str, Any],
         tenant_ctx: TenantContext | None = None,
     ) -> None:
-        """Append *event* to the record and fan out to all live subscribers."""
+        """Append *event* to the record and fan out to all live subscribers.
+
+        Ephemeral event types (``token_chunk``, ``heartbeat``) are forwarded to
+        live SSE subscribers but are **not** stored in the in-memory event log or
+        persisted to the database.  This prevents the event log from being flooded
+        with thousands of token-level fragments during a single goal execution.
+        """
         record = self._goals.get(goal_id)
         if record is None:
             return
         sanitized_event = sanitize_event(event)
-        record.events.append(sanitized_event)
-        await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
+        _EPHEMERAL_EVENT_TYPES = {"token_chunk", "heartbeat"}
+        _is_ephemeral = sanitized_event.get("type") in _EPHEMERAL_EVENT_TYPES
+        if not _is_ephemeral:
+            record.events.append(sanitized_event)
+            await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
         # Reflect terminal status in the record and record metrics.
         etype = sanitized_event.get("type")
         if etype == "goal_complete":

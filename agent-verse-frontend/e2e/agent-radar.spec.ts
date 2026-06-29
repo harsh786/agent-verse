@@ -135,11 +135,11 @@ test.describe('Agent Radar', () => {
 
     await expect(page.getByText(/above platform average/i)).toBeVisible({ timeout: 15000 });
 
-    await expect(page.getByText('Speed')).toBeVisible();
-    await expect(page.getByText('Accuracy')).toBeVisible();
-    await expect(page.getByText('Cost Eff.')).toBeVisible();
-    await expect(page.getByText('Tool Coverage')).toBeVisible();
-    await expect(page.getByText('Success Rate')).toBeVisible();
-    await expect(page.getByText('Coherence')).toBeVisible();
+    await expect(page.getByText('Speed').first()).toBeVisible();
+    await expect(page.getByText('Accuracy').first()).toBeVisible();
+    await expect(page.getByText('Cost Eff.').first()).toBeVisible();
+    await expect(page.getByText('Tool Coverage').first()).toBeVisible();
+    await expect(page.getByText('Success Rate').first()).toBeVisible();
+    await expect(page.getByText('Coherence').first()).toBeVisible();
   });
 });

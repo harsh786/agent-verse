@@ -7,6 +7,11 @@
  * with exponential backoff (1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s) up to 8 attempts.
  * Retries are cancelled on terminal events (goal_complete / goal_failed /
  * goal_cancelled) and on component unmount.
+ *
+ * Token streaming:
+ * - `token_chunk` events update `streamingToken` with the step name and cumulative text.
+ * - `step_complete` / `step_completed` events clear `streamingToken` (the LLM finished).
+ * - `streamingToken` is null when no streaming is in progress.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -21,6 +26,14 @@ export interface GoalEvent {
   [key: string]: unknown;
 }
 
+/** Live state of the currently-streaming LLM output for a single step. */
+export interface StreamingToken {
+  /** Step description identifying which step is being executed. */
+  step: string;
+  /** Full text accumulated so far (all token chunks joined). */
+  cumulative: string;
+}
+
 interface UseGoalStreamOptions {
   onEvent?: (event: GoalEvent) => void;
 }
@@ -28,6 +41,7 @@ interface UseGoalStreamOptions {
 export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions) {
   const [events, setEvents] = useState<GoalEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const [streamingToken, setStreamingToken] = useState<StreamingToken | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const onEventRef = useRef(opts?.onEvent);
   const retryCountRef = useRef(0);
@@ -38,8 +52,9 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   useEffect(() => {
     if (!goalId) return;
 
-    // Reset retry counter whenever we connect to a new goal
+    // Reset retry counter and streaming state whenever we connect to a new goal
     retryCountRef.current = 0;
+    setStreamingToken(null);
 
     const apiKey =
       sessionStorage.getItem("av_api_key") ??
@@ -105,10 +120,27 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
               if (!data) continue;
               try {
                 const parsed = JSON.parse(data) as GoalEvent;
+
+                const etype = parsed.type;
+
+                // token_chunk — update streaming state, do NOT push to events array
+                if (etype === "token_chunk") {
+                  const step = (parsed.step as string | undefined) ?? "";
+                  const cumulative = (parsed.cumulative as string | undefined) ?? "";
+                  setStreamingToken({ step, cumulative });
+                  onEventRef.current?.(parsed);
+                  continue;
+                }
+
+                // Structural events — push to events array
                 setEvents((prev) => [...prev, parsed]);
                 onEventRef.current?.(parsed);
 
-                const etype = parsed.type;
+                // A step completing clears any in-progress streaming display
+                if (etype === "step_complete" || etype === "step_completed") {
+                  setStreamingToken(null);
+                }
+
                 if (
                   etype === "goal_complete" ||
                   etype === "goal_failed" ||
@@ -117,6 +149,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
                   retryCountRef.current = 0; // Reset retries on terminal event
                   terminalReceived = true;
                   setConnected(false);
+                  setStreamingToken(null);
                 }
               } catch {
                 // ignore malformed JSON frames
@@ -147,8 +180,9 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
       abortRef.current?.abort();
       abortRef.current = null;
       setConnected(false);
+      setStreamingToken(null);
     };
   }, [goalId]);
 
-  return { events, connected };
+  return { events, connected, streamingToken };
 }

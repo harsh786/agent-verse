@@ -118,6 +118,22 @@ export interface StepResponse {
   output: string;
 }
 
+/**
+ * Token-level streaming event emitted by the backend during executor LLM calls.
+ * These events are ephemeral — they are NOT stored in the event log.
+ */
+export interface TokenChunkEvent {
+  type: 'token_chunk';
+  /** Step description that is currently being executed. */
+  step: string;
+  /** The individual token fragment just emitted by the LLM. */
+  token: string;
+  /** Full text accumulated so far for this step (token1 + token2 + …). */
+  cumulative: string;
+  /** ISO-8601 timestamp added by the backend. */
+  ts?: string;
+}
+
 // ── Goal extended types ───────────────────────────────────────────────────────
 
 export interface GoalEvent {

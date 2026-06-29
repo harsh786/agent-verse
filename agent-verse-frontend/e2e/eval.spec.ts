@@ -47,6 +47,10 @@ async function mockEvalSupportApis(page: Page) {
   await page.route(/localhost:8000\/intelligence\/suggestions/, (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
   );
+  // Sidebar approvals query — prevent unmocked 401 error toast
+  await page.route(/localhost:8000\/governance\/approvals/, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
+  );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -64,7 +68,7 @@ test.describe('Eval & Testing — page structure', () => {
   });
 
   test('Red Team Testing section title is visible', async ({ page }) => {
-    await expect(page.getByText('Red Team Testing')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('h2').filter({ hasText: 'Red Team Testing' })).toBeVisible({ timeout: 15000 });
   });
 
   test('"Run Red Team" button is visible and enabled', async ({ page }) => {
@@ -75,7 +79,7 @@ test.describe('Eval & Testing — page structure', () => {
   });
 
   test('Goal Simulation section title is visible', async ({ page }) => {
-    await expect(page.getByText('Goal Simulation')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('h2').filter({ hasText: 'Goal Simulation' })).toBeVisible({ timeout: 15000 });
   });
 
   test('Simulation section has Goal textarea and Mock Tools textarea', async ({ page }) => {

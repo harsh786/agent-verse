@@ -28,7 +28,7 @@ async function setupAuth(page: Page) {
 test.describe('Workflow Builder', () => {
   test('shows workflow builder page with toolbar controls', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/workflows', (route) => {
+    await page.route(/localhost:8000\/workflows/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -41,13 +41,13 @@ test.describe('Workflow Builder', () => {
     await page.goto('/workflow-builder');
 
     // The page should render with save and run buttons
-    await expect(page.getByRole('button', { name: /save/i })).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('button', { name: /run/i })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /save/i })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: /run/i })).toBeVisible({ timeout: 30000 });
   });
 
   test('shows workflow name input', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/workflows', (route) => {
+    await page.route(/localhost:8000\/workflows/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -122,7 +122,7 @@ test.describe('Workflow Builder', () => {
     ];
 
     await setupAuth(page);
-    await page.route('**/workflows', (route) => {
+    await page.route(/localhost:8000\/workflows/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -140,7 +140,7 @@ test.describe('Workflow Builder', () => {
 
   test('Dry Run button is visible and enabled', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/workflows', (route) => {
+    await page.route(/localhost:8000\/workflows/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,

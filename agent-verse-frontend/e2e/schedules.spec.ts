@@ -28,7 +28,7 @@ async function setupAuth(page: Page) {
 test.describe('Schedules', () => {
   test('shows Schedules h1 heading', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/schedules', (route) => {
+    await page.route(/localhost:8000\/schedules/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -46,7 +46,7 @@ test.describe('Schedules', () => {
 
   test('shows empty state when no schedules exist', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/schedules', (route) => {
+    await page.route(/localhost:8000\/schedules/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -118,7 +118,7 @@ test.describe('Schedules', () => {
     ];
 
     await setupAuth(page);
-    await page.route('**/schedules', (route) => {
+    await page.route(/localhost:8000\/schedules/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,

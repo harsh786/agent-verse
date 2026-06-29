@@ -6,6 +6,7 @@ No inheritance required — duck-typing via Protocol.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -100,6 +101,22 @@ class LLMProvider(Protocol):
     """
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse: ...
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Stream tokens one-by-one, calling on_token for each chunk.
+
+        Default implementation: calls complete() then calls on_token once with
+        the full response text.  Providers that support real streaming override
+        this method for true token-level delivery.
+        """
+        response = await self.complete(request)
+        if response.content:
+            await on_token(response.content)
+        return response
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse: ...
 

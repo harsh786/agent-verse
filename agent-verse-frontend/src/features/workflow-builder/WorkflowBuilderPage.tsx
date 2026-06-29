@@ -62,6 +62,7 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
 }
 
 const NODE_TYPES = { workflow: WorkflowNode };
+const SNAP_GRID: [number, number] = [16, 16]; // stable ref — prevents ReactFlow useEffect infinite loop
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 
@@ -304,7 +305,7 @@ export function WorkflowBuilderPage() {
             onNodeClick={(_, node) => setSelectedNode(node)}
             onPaneClick={() => setSelectedNode(null)}
             nodeTypes={NODE_TYPES}
-            fitView snapToGrid snapGrid={[16, 16]}
+            fitView snapToGrid snapGrid={SNAP_GRID}
             deleteKeyCode="Backspace"
           >
             <Background variant={BackgroundVariant.Dots} gap={16} />

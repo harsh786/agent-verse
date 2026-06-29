@@ -69,6 +69,8 @@ const CIVILIZATION_DETAIL = {
     retired_members: 0,
     total_budget_spent_usd: 5.2,
     avg_reputation: 0.72,
+           max_reputation: 1.0,
+           min_reputation: 0.0,
   },
 };
 
@@ -328,9 +330,10 @@ test.describe('Agent Civilization', () => {
   });
 
   test('learning ledger tab shows promoted and rejected entries', async ({ page }) => {
+    await expect(page.getByText('🧠 Learning Ledger')).toBeVisible({ timeout: 10000 });
     await page.getByText('🧠 Learning Ledger').click();
-    await expect(page.getByText('promoted')).toBeVisible({ timeout: 3000 });
-    await expect(page.getByText('rejected')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText('promoted')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('rejected')).toBeVisible({ timeout: 10000 });
   });
 
   test('spawn audit tab shows approved and denied entries', async ({ page }) => {

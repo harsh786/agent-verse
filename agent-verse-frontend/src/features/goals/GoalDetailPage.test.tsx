@@ -4,11 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { GoalDetailPage } from './GoalDetailPage';
+import * as goalStreamModule from '@/lib/sse/useGoalStream';
 
 // Mock SSE hook – always returns a fixed set of events
 vi.mock('@/lib/sse/useGoalStream', () => ({
   useGoalStream: () => ({
     connected: true,
+    streamingToken: null,
     events: [
       { type: 'goal_started', status: 'executing' },
       { type: 'plan_ready', steps: ['Gather context', 'Execute plan'] },
@@ -215,5 +217,72 @@ describe('GoalDetailPage', () => {
     );
     renderGoalDetailPage();
     await waitFor(() => expect(screen.getByText(/goal not found/i)).toBeInTheDocument());
+  });
+});
+
+// ── Token streaming display tests ─────────────────────────────────────────────
+
+describe('GoalDetailPage — token streaming display', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem('av_api_key', 'tenant-key');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('shows live token stream panel when streamingToken is active', async () => {
+    mockGoal('executing');
+
+    // Override the mock for this test to return an active streamingToken
+    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+      connected: true,
+      streamingToken: {
+        step: 'Analyse the codebase',
+        cumulative: 'I will start by looking at',
+      },
+      events: [],
+    });
+
+    renderGoalDetailPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole('status', { name: /live llm output/i })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Generating: Analyse the codebase/i)).toBeInTheDocument();
+    expect(screen.getByText(/I will start by looking at/)).toBeInTheDocument();
+  });
+
+  test('does not show streaming panel when streamingToken is null', async () => {
+    mockGoal('executing');
+
+    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+      connected: true,
+      streamingToken: null,
+      events: [],
+    });
+
+    renderGoalDetailPage();
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cancel/i })).toBeInTheDocument());
+    expect(screen.queryByRole('status', { name: /live llm output/i })).not.toBeInTheDocument();
+  });
+
+  test('streaming panel disappears when streamingToken is null (cleared state)', async () => {
+    mockGoal('executing');
+
+    // Render with null streamingToken — simulates state after step_complete clears it
+    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+      connected: true,
+      streamingToken: null,
+      events: [],
+    });
+
+    renderGoalDetailPage();
+
+    // Goal loads and renders; streaming panel must be absent
+    await waitFor(() => expect(screen.getByText('Fix prod')).toBeInTheDocument());
+    expect(screen.queryByRole('status', { name: /live llm output/i })).not.toBeInTheDocument();
   });
 });

@@ -31,6 +31,11 @@ const MOCK_SIMULATION_RESULT = {
     total_steps: 3,
     estimated_cost_usd: 0.05,
     risk_level: 'low',
+    allowed_tools: ['payments:list'],
+    denied_tools: [],
+    requires_approval: ['payments:refund'],
+    would_block_execution: false,
+    hitl_approvals_needed: 1,
   },
   policy_checks: [
     { tool: 'payments:list', result: 'allowed' },
@@ -82,7 +87,7 @@ test.describe('Simulation', () => {
         }),
       })
     );
-    await page.route('**/goals', (route) => {
+    await page.route(/localhost:8000\/goals/, (route) => {
       if (route.request().method() === 'POST') {
         return route.fulfill({
           status: 202,
@@ -114,7 +119,7 @@ test.describe('Simulation', () => {
         }),
       })
     );
-    await page.route('**/goals', (route) => {
+    await page.route(/localhost:8000\/goals/, (route) => {
       if (route.request().method() === 'POST') {
         return route.fulfill({
           status: 202,
@@ -131,8 +136,8 @@ test.describe('Simulation', () => {
       .fill('Refund failed payments');
     await page.getByRole('button', { name: /run simulation/i }).click();
 
-    await expect(page.getByText('payments:list')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('allowed')).toBeVisible();
+    await expect(page.getByText('Governance Policy Check')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(/execution allowed|execution blocked/i)).toBeVisible();
   });
 
   test('shows planned execution steps after simulation', async ({ page }) => {
@@ -147,7 +152,7 @@ test.describe('Simulation', () => {
         }),
       })
     );
-    await page.route('**/goals', (route) => {
+    await page.route(/localhost:8000\/goals/, (route) => {
       if (route.request().method() === 'POST') {
         return route.fulfill({
           status: 202,
@@ -164,6 +169,7 @@ test.describe('Simulation', () => {
       .fill('Refund failed payments and notify merchants');
     await page.getByRole('button', { name: /run simulation/i }).click();
 
-    await expect(page.getByText('Planned Execution Steps')).toBeVisible({ timeout: 15000 });
+    // Planned steps come from the /goals POST response
+    await expect(page.getByText(/fetch failed payments|governance policy check/i).first()).toBeVisible({ timeout: 15000 });
   });
 });

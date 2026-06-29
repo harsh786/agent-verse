@@ -72,7 +72,7 @@ test.describe('Settings', () => {
     );
     await page.goto('/settings');
 
-    await expect(page.getByText('Profile')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Profile').first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText(/profile, llm provider/i)).toBeVisible();
   });
 

@@ -1104,10 +1104,24 @@ class AgentGraph:
                 self._logger.warning("bulkhead_acquire_failed", error=str(bulkhead_exc))
                 _bulkhead_acquired = False
 
+        # Token streaming — buffer for accumulation and closure for on_token callback.
+        # Defined before the bulkhead try so the closure captures step by value.
+        _token_buffer: list[str] = []
+        _step_for_token = step
+
+        async def _on_token(chunk: str) -> None:
+            _token_buffer.append(chunk)
+            await self._emit({
+                "type": "token_chunk",
+                "step": _step_for_token,
+                "token": chunk,
+                "cumulative": "".join(_token_buffer),
+            })
+
         try:
             try:
                 async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
-                    resp = await self._executor.complete(req)
+                    resp = await self._executor.stream_tokens(req, _on_token)
                 if _active_breaker is not None:
                     _active_breaker.record_success()
             except Exception:

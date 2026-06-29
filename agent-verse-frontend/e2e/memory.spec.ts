@@ -47,14 +47,18 @@ test.describe('Memory Explorer', () => {
         id: 'mem-001',
         content: 'Use async functions for all API calls',
         memory_type: 'long_term',
+        confidence: 0.92,
         score: 0.92,
+        tags: [],
         created_at: new Date().toISOString(),
       },
       {
         id: 'mem-002',
         content: 'Prefer TypeScript over JavaScript',
         memory_type: 'long_term',
+        confidence: 0.87,
         score: 0.87,
+        tags: [],
         created_at: new Date().toISOString(),
       },
     ];
@@ -89,7 +93,9 @@ test.describe('Memory Explorer', () => {
         id: 'mem-recall-1',
         content: 'Always validate user input before processing',
         memory_type: 'long_term',
+        confidence: 0.95,
         score: 0.95,
+        tags: [],
         created_at: new Date().toISOString(),
       },
     ];
@@ -115,7 +121,7 @@ test.describe('Memory Explorer', () => {
     await page
       .locator('input[placeholder="Recall memories relevant to…"]')
       .fill('validation');
-    await page.keyboard.press('Enter');
+    await page.getByRole('button', { name: /recall/i }).click();
 
     await expect(page.getByText('Always validate user input before processing')).toBeVisible({
       timeout: 15000,
@@ -127,7 +133,9 @@ test.describe('Memory Explorer', () => {
       id: 'mem-del',
       content: 'Memory to delete',
       memory_type: 'long_term',
+      confidence: 0.5,
       score: 0.5,
+      tags: [],
       created_at: new Date().toISOString(),
     };
     let memories = [mem];

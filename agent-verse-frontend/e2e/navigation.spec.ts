@@ -101,7 +101,7 @@ test.describe('Navigation — sidebar structure', () => {
     await setupAuth(page);
     await mockAllApis(page);
     await page.goto('/dashboard');
-    await expect(page.locator('h1').filter({ hasText: /dashboard/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
   });
@@ -115,11 +115,11 @@ test.describe('Navigation — sidebar structure', () => {
   });
 
   test('sidebar contains "Governance" section heading', async ({ page }) => {
-    await expect(page.locator('aside').getByText('Governance', { exact: true })).toBeVisible();
+    await expect(page.locator('aside p.uppercase').filter({ hasText: 'Governance' })).toBeVisible();
   });
 
   test('sidebar contains "Enterprise" section heading', async ({ page }) => {
-    await expect(page.locator('aside').getByText('Enterprise', { exact: true })).toBeVisible();
+    await expect(page.locator('aside p.uppercase').filter({ hasText: 'Enterprise' })).toBeVisible();
   });
 
   test('all core nav links are present: Dashboard, Goals, Agents', async ({ page }) => {
@@ -199,25 +199,25 @@ test.describe('Navigation — active link highlighting', () => {
     await page.goto('/goals');
     // Active NavLink gets class "text-blue-400" per Sidebar.tsx
     const goalsLink = page.locator('a[href="/goals"]').first();
-    await expect(goalsLink).toHaveClass(/text-blue-400/, { timeout: 10000 });
+    await expect(goalsLink).toHaveClass(/text-primary/, { timeout: 10000 });
   });
 
   test('Dashboard nav link has blue text (active) when on /dashboard page', async ({ page }) => {
     await page.goto('/dashboard');
     const dashLink = page.locator('a[href="/dashboard"]').first();
-    await expect(dashLink).toHaveClass(/text-blue-400/, { timeout: 10000 });
+    await expect(dashLink).toHaveClass(/text-primary/, { timeout: 10000 });
   });
 
   test('non-active links do NOT have blue text when on /dashboard', async ({ page }) => {
     await page.goto('/dashboard');
     const goalsLink = page.locator('a[href="/goals"]').first();
-    await expect(goalsLink).toHaveClass(/text-gray-300/, { timeout: 10000 });
+    await expect(goalsLink).toHaveClass(/text-muted-foreground/, { timeout: 10000 });
   });
 });
 
 test.describe('Navigation — page headings', () => {
   const PAGES: Array<{ path: string; heading: RegExp }> = [
-    { path: '/dashboard', heading: /dashboard/i },
+    { path: '/dashboard', heading: /mission control/i },
     { path: '/goals', heading: /goals/i },
     { path: '/governance', heading: /governance/i },
     { path: '/eval', heading: /eval/i },

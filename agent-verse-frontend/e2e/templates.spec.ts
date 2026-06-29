@@ -158,8 +158,10 @@ test.describe('Template Library', () => {
 
     // Instantiator modal should open with parameter inputs
     await expect(page.getByText('Deploy to Kubernetes').first()).toBeVisible({ timeout: 5000 });
-    // Expect a parameter input for "image"
-    const imageInput = page.locator('input[id="param-image"], input[placeholder*="image"]').first();
-    await expect(imageInput.or(page.locator('label').filter({ hasText: /image/i }))).toBeVisible();
+    // Expect a parameter input for "image" or its label
+    // placeholder may be empty ('') so use id or label text
+    await expect(
+      page.locator('input[id="param-image"]').or(page.locator('label').filter({ hasText: /image/i }))
+    ).toBeVisible({ timeout: 10000 });
   });
 });
