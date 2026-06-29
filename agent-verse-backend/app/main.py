@@ -289,6 +289,48 @@ class _FakeRedis:
         self._ttl[key] = time.monotonic() + seconds
         return key in self._d or key in self._z
 
+    async def expireat(self, key: str, timestamp: int) -> bool:
+        """Set expiry as an absolute Unix timestamp."""
+        import time
+        self._ttl[key] = float(timestamp) - time.time() + time.monotonic()
+        return key in self._d or key in self._z
+
+    async def incrbyfloat(self, key: str, amount: float) -> float:
+        """Increment a float counter and return the new value."""
+        async with self._get_lock():
+            current = float(self._d.get(key, 0))
+            new_val = current + amount
+            self._d[key] = str(new_val)
+            return new_val
+
+    def register_script(self, script: str) -> "_FakeLuaScript":
+        """Return a fake Lua script executor that simulates the atomic check-and-increment."""
+        return _FakeLuaScript(self, script)
+
+
+class _FakeLuaScript:
+    """Simulates the _ATOMIC_INCREMENT_SCRIPT Lua behaviour for tests."""
+
+    def __init__(self, redis: "_FakeRedis", script: str) -> None:
+        self._redis = redis
+        self._script = script
+
+    async def __call__(self, keys: list[str], args: list[str]) -> str:
+        """Execute the Lua script atomically using the FakeRedis lock."""
+        key = keys[0]
+        increment = float(args[0])
+        limit = float(args[1])
+        expiry_ts = int(args[2])
+        async with self._redis._get_lock():
+            current = float(self._redis._d.get(key, 0))
+            if current + increment > limit:
+                raise Exception("BUDGET_EXCEEDED")
+            new_val = current + increment
+            self._redis._d[key] = str(new_val)
+            import time
+            self._redis._ttl[key] = float(expiry_ts) - time.time() + time.monotonic()
+            return str(new_val)
+
 
 # ── error handlers ─────────────────────────────────────────────────────────────
 
