@@ -233,3 +233,65 @@ class RedisCostController:
 
     def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
         self._tenant_configs[tenant_id] = budget
+
+    async def try_record_and_check(
+        self,
+        tenant_id: str,
+        goal_id: str,
+        cost_usd: float,
+        tenant_budget: float,
+    ) -> bool:
+        """Atomically check budget and record cost using a Lua script.
+
+        Returns True if within budget and cost recorded, False if budget exceeded.
+        Fails open (returns True) on Redis errors other than BUDGET_EXCEEDED so
+        a Redis outage never blocks all tool calls.
+        """
+        import datetime as _dt
+        import logging as _logging
+
+        if self._redis is None:
+            return True
+
+        daily_key = self._daily_key(tenant_id)
+
+        # Expiry = next midnight UTC (epoch seconds)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        midnight = (now + _dt.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        expiry_ts = int(midnight.timestamp())
+
+        _ATOMIC_SCRIPT = """
+local current = tonumber(redis.call('GET', KEYS[1])) or 0
+local increment = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+if current + increment > limit then
+    return redis.error_reply('BUDGET_EXCEEDED')
+end
+local new_val = redis.call('INCRBYFLOAT', KEYS[1], increment)
+redis.call('EXPIREAT', KEYS[1], tonumber(ARGV[3]))
+return tostring(new_val)
+"""
+        try:
+            if hasattr(self._redis, "register_script"):
+                script = self._redis.register_script(_ATOMIC_SCRIPT)
+                await script(
+                    keys=[daily_key],
+                    args=[str(cost_usd), str(tenant_budget), str(expiry_ts)],
+                )
+            else:
+                # Fallback for Redis clients without Lua support
+                current = float(await self._redis.get(daily_key) or 0)
+                if current + cost_usd > tenant_budget:
+                    return False
+                await self._redis.incrbyfloat(daily_key, cost_usd)  # type: ignore[attr-defined]
+                await self._redis.expireat(daily_key, expiry_ts)  # type: ignore[attr-defined]
+            return True
+        except Exception as exc:
+            if "BUDGET_EXCEEDED" in str(exc):
+                return False
+            _logging.getLogger(__name__).warning(
+                "cost_controller_atomic_redis_error error=%s fail_open=True", str(exc)
+            )
+            return True  # Fail open on non-budget errors
