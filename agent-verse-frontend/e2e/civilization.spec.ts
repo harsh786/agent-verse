@@ -332,8 +332,8 @@ test.describe('Agent Civilization', () => {
   test('learning ledger tab shows promoted and rejected entries', async ({ page }) => {
     await expect(page.getByText('🧠 Learning Ledger')).toBeVisible({ timeout: 10000 });
     await page.getByText('🧠 Learning Ledger').click();
-    await expect(page.getByText('promoted')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('rejected')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('promoted').first()).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('rejected').first()).toBeVisible({ timeout: 10000 });
   });
 
   test('spawn audit tab shows approved and denied entries', async ({ page }) => {
