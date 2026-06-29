@@ -249,3 +249,313 @@ async def test_trigger_debate_without_debate_orchestrator():
     assert result["status"] == "concluded"
     assert result["consensus"] is None
     orch._bus.publish.assert_called_once()
+
+
+# ── Additional coverage tests ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_multi_agent_mode():
+    """multi_agent mode dispatches to supervisor agent."""
+    mock_society = AsyncMock()
+    mock_society.route_goal = AsyncMock(return_value={
+        "mode": "multi_agent",
+        "agent_id": None,
+        "confidence": 0.9,
+        "reason": "multi-agent",
+    })
+    mock_society.load_members = AsyncMock(return_value=[])
+    mock_society.get_metrics = AsyncMock(return_value={})
+    mock_society.get_lineage_graph = AsyncMock(return_value={"nodes": [], "edges": []})
+
+    mock_supervisor = AsyncMock()
+    supervisor_result = MagicMock(synthesis="Final answer from supervisor agents")
+    mock_supervisor.run = AsyncMock(return_value=supervisor_result)
+
+    orch = _make_orchestrator(society=mock_society)
+    orch._supervisor = mock_supervisor
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    result = await orch.submit_goal("Complex multi-step goal")
+    assert result["status"] == "accepted"
+    assert result["mode"] == "multi_agent"
+    mock_supervisor.run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_multi_agent_supervisor_failure_falls_through():
+    """If supervisor raises, falls through to single agent path."""
+    mock_society = AsyncMock()
+    mock_society.route_goal = AsyncMock(return_value={
+        "mode": "multi_agent",
+        "agent_id": "fallback-agent",
+        "confidence": 0.7,
+        "reason": "multi-agent",
+    })
+    mock_society.load_members = AsyncMock(return_value=[])
+    mock_society.get_metrics = AsyncMock(return_value={})
+    mock_society.get_lineage_graph = AsyncMock(return_value={"nodes": [], "edges": []})
+
+    mock_supervisor = AsyncMock()
+    mock_supervisor.run = AsyncMock(side_effect=RuntimeError("Supervisor failed"))
+
+    orch = _make_orchestrator(society=mock_society)
+    orch._supervisor = mock_supervisor
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    result = await orch.submit_goal("Complex goal (supervisor will fail)")
+    # Falls through to single agent, so accepted
+    assert result["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_service_exception_is_handled():
+    """GoalService submit failure is logged and orchestrator still returns accepted."""
+    orch = _make_orchestrator()
+
+    mock_gs = AsyncMock()
+    mock_gs.submit_goal = AsyncMock(side_effect=RuntimeError("GoalService down"))
+    orch._goal_service = mock_gs
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    result = await orch.submit_goal("Some goal")
+    assert result["status"] == "accepted"
+    assert result["goal_id"]  # still has a goal_id (the civ_* one)
+
+
+@pytest.mark.asyncio
+async def test_trigger_debate_handles_debate_run_exception():
+    """Debate run exception is caught; result still returned with error key."""
+    orch = _make_orchestrator()
+    orch._debate = AsyncMock()
+    orch._debate.run = AsyncMock(side_effect=RuntimeError("Debate engine failed"))
+    orch._society.load_members = AsyncMock(return_value=[])
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    result = await orch.trigger_debate(
+        topic="performance",
+        claim_a={"content": "slow"},
+        claim_b={"content": "fast"},
+        initiator_agent_id="a1",
+    )
+    assert result["debate_id"]
+    assert "error" in result
+    orch._bus.publish.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_trigger_debate_updates_and_restores_member_statuses():
+    """trigger_debate sets members to 'debating' then restores to 'active'."""
+    mock_society = AsyncMock()
+    members = [
+        {"agent_id": "a1", "reputation": 0.9, "status": "active"},
+        {"agent_id": "a2", "reputation": 0.8, "status": "active"},
+    ]
+    mock_society.load_members = AsyncMock(return_value=members)
+    mock_society.update_member_status = AsyncMock()
+    mock_society.get_metrics = AsyncMock(return_value={})
+    mock_society.get_lineage_graph = AsyncMock(return_value={"nodes": [], "edges": []})
+
+    debate_result = MagicMock(consensus="agreed", confidence=0.8)
+    mock_debate = AsyncMock()
+    mock_debate.run = AsyncMock(return_value=debate_result)
+
+    orch = _make_orchestrator(society=mock_society)
+    orch._debate = mock_debate
+    orch._blackboard.post = AsyncMock()
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    await orch.trigger_debate(
+        topic="arch",
+        claim_a={"content": "microservices"},
+        claim_b={"content": "monolith"},
+        initiator_agent_id="a1",
+    )
+
+    status_calls = mock_society.update_member_status.call_args_list
+    debating_calls = [c for c in status_calls if "debating" in str(c)]
+    active_calls = [c for c in status_calls if c.args[1] == "active" if len(c.args) > 1]
+    assert len(debating_calls) > 0
+    assert len(active_calls) > 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_debate_posts_consensus_to_blackboard():
+    orch = _make_orchestrator()
+    orch._debate = AsyncMock()
+    debate_result = MagicMock(consensus="Both partially valid", confidence=0.75)
+    orch._debate.run = AsyncMock(return_value=debate_result)
+    orch._blackboard.post = AsyncMock()
+    orch._society.load_members = AsyncMock(return_value=[])
+
+    from app.tenancy.context import PlanTier, TenantContext
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    await orch.trigger_debate(
+        topic="caching",
+        claim_a={"content": "redis"},
+        claim_b={"content": "memcached"},
+        initiator_agent_id="a1",
+    )
+    orch._blackboard.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tick_with_no_governor():
+    """Tick still returns result dict when governor is None."""
+    orch = _make_orchestrator()
+    orch._governor = None
+    result = await orch.tick()
+    assert "tick_ts" in result
+
+
+@pytest.mark.asyncio
+async def test_tick_breach_exception_is_swallowed():
+    orch = _make_orchestrator()
+    orch._governor.check_breach = AsyncMock(side_effect=RuntimeError("Breach check failed"))
+    orch._governor.auto_retire_idle = AsyncMock(return_value=[])
+    result = await orch.tick()
+    assert "tick_ts" in result
+
+
+@pytest.mark.asyncio
+async def test_tick_auto_retire_exception_is_swallowed():
+    orch = _make_orchestrator()
+    orch._governor.check_breach = AsyncMock(
+        return_value=MagicMock(breached=False, reasons=[])
+    )
+    orch._governor.auto_retire_idle = AsyncMock(side_effect=RuntimeError("Retire failed"))
+    result = await orch.tick()
+    assert "tick_ts" in result
+
+
+@pytest.mark.asyncio
+async def test_tick_learning_pipeline_runs():
+    orch = _make_orchestrator()
+    orch._governor.check_breach = AsyncMock(
+        return_value=MagicMock(breached=False, reasons=[])
+    )
+    orch._governor.auto_retire_idle = AsyncMock(return_value=[])
+    mock_learning = AsyncMock()
+    mock_learning.run_step = AsyncMock(return_value={"validated": 2, "promoted": 1, "rejected": 0})
+    orch._learning = mock_learning
+
+    result = await orch.tick()
+    assert result["learning"]["promoted"] == 1
+    mock_learning.run_step.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tick_learning_exception_is_swallowed():
+    orch = _make_orchestrator()
+    orch._governor.check_breach = AsyncMock(
+        return_value=MagicMock(breached=False, reasons=[])
+    )
+    orch._governor.auto_retire_idle = AsyncMock(return_value=[])
+    mock_learning = AsyncMock()
+    mock_learning.run_step = AsyncMock(side_effect=RuntimeError("Learning failed"))
+    orch._learning = mock_learning
+
+    result = await orch.tick()
+    assert "tick_ts" in result
+    assert "learning" not in result
+
+
+@pytest.mark.asyncio
+async def test_sync_reputation_from_evals_no_db():
+    orch = _make_orchestrator()
+    orch._db = None
+    result = await orch.sync_reputation_from_evals()
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_reputation_from_evals_with_db():
+    from types import SimpleNamespace
+
+    class _noop_ctx:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            return None
+
+    class _FakeRepSession:
+        def __init__(self):
+            self.executions = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def execute(self, stmt, params=None):
+            self.executions.append(params)
+            return SimpleNamespace(
+                fetchall=lambda: [("agent-1", 0.85, 5)],
+            )
+
+    session = _FakeRepSession()
+    orch = _make_orchestrator(db=lambda: session)
+    orch._society.load_members = AsyncMock(return_value=[{"agent_id": "agent-1"}])
+    orch._society.update_reputation = AsyncMock()
+
+    result = await orch.sync_reputation_from_evals()
+    assert result == 1
+    orch._society.update_reputation.assert_called_once_with(
+        agent_id="agent-1", new_score=0.85
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_reputation_from_evals_skips_nonmembers():
+    """Eval scores for agents not in society are skipped."""
+    from types import SimpleNamespace
+
+    class _FakeRepSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def execute(self, stmt, params=None):
+            return SimpleNamespace(
+                fetchall=lambda: [("agent-X", 0.85, 5)],  # not in society
+            )
+
+    session = _FakeRepSession()
+    orch = _make_orchestrator(db=lambda: session)
+    orch._society.load_members = AsyncMock(return_value=[{"agent_id": "agent-1"}])
+    orch._society.update_reputation = AsyncMock()
+
+    result = await orch.sync_reputation_from_evals()
+    assert result == 0
+    orch._society.update_reputation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_reputation_from_evals_exception_returns_0():
+    class _FailSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def execute(self, *_, **__):
+            raise RuntimeError("DB failed")
+
+    orch = _make_orchestrator(db=lambda: _FailSession())
+    result = await orch.sync_reputation_from_evals()
+    assert result == 0

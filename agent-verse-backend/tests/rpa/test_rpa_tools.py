@@ -266,6 +266,7 @@ async def test_rpa_executor_simulation() -> None:
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_open_url",
         arguments={"url": "https://example.com"},
@@ -282,6 +283,7 @@ async def test_rpa_executor_all_tools() -> None:
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     for tool in RPA_TOOLS:
         result = await executor.execute(
             tool_name=tool["name"],

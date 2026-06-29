@@ -107,6 +107,7 @@ async def test_credential_injector_wired_to_executor():
     injector = CredentialInjector(secret_store=mock_store, tenant_id="t1")
 
     ex = RPAExecutor()
+    ex._playwright_available = False  # force simulation mode — no real browser
     ex._credential_injector = injector
 
     # rpa_type with a vault reference in the text argument

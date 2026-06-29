@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.civilization.bus import CivilizationBus
+from app.civilization.bus import CivilizationBus, _nullctx
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -228,3 +228,356 @@ async def test_publish_db_and_redis_both_called():
     assert msg_id
     assert len(session.executions) >= 1
     mock_redis.publish.assert_called_once()
+
+
+# ── _all_channel ──────────────────────────────────────────────────────────────
+
+
+def test_all_channel_format():
+    bus = _make_bus()
+    ch = bus._all_channel()
+    assert ch == "civ:t1:civ-1:*"
+
+
+# ── get_messages with filters ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_messages_with_from_agent_id_filter():
+    now = datetime.now(UTC)
+    rows = [("msg-10", "agent-x", "coordination", {}, now)]
+    session = _FakeSession(rows=rows)
+
+    bus = _make_bus(db=lambda: session)
+    messages = await bus.get_messages(from_agent_id="agent-x", limit=5)
+
+    assert len(messages) == 1
+    _, params = session.executions[0]
+    assert "from_agent" in params
+    assert params["from_agent"] == "agent-x"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_with_since_ts_filter():
+    now = datetime.now(UTC)
+    rows = [("msg-11", "agent-y", "lifecycle", {}, now)]
+    session = _FakeSession(rows=rows)
+
+    bus = _make_bus(db=lambda: session)
+    messages = await bus.get_messages(since_ts=now, limit=5)
+
+    assert len(messages) == 1
+    _, params = session.executions[0]
+    assert "since" in params
+
+
+@pytest.mark.asyncio
+async def test_get_messages_with_all_filters():
+    now = datetime.now(UTC)
+    rows = []
+    session = _FakeSession(rows=rows)
+
+    bus = _make_bus(db=lambda: session)
+    await bus.get_messages(topic="spawn", from_agent_id="a1", since_ts=now, limit=3)
+
+    _, params = session.executions[0]
+    assert params["topic"] == "spawn"
+    assert params["from_agent"] == "a1"
+    assert "since" in params
+
+
+@pytest.mark.asyncio
+async def test_get_messages_db_exception_returns_empty():
+    class _FailSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def execute(self, *args, **kwargs):
+            raise RuntimeError("DB down")
+
+    bus = _make_bus(db=lambda: _FailSession())
+    messages = await bus.get_messages(limit=5)
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_get_messages_payload_non_dict_becomes_empty_dict():
+    now = datetime.now(UTC)
+    rows = [("msg-12", "agent-z", "findings", "not-a-dict", now)]
+    session = _FakeSession(rows=rows)
+
+    bus = _make_bus(db=lambda: session)
+    messages = await bus.get_messages()
+    assert messages[0]["payload"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_messages_none_ts_becomes_empty_string():
+    rows = [("msg-13", "agent-z", "findings", {}, None)]
+    session = _FakeSession(rows=rows)
+
+    bus = _make_bus(db=lambda: session)
+    messages = await bus.get_messages()
+    assert messages[0]["ts"] == ""
+
+
+# ── Redis publish exception path ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_publish_redis_exception_is_swallowed():
+    """Redis publish errors must not propagate out of publish()."""
+    mock_redis = AsyncMock()
+    mock_redis.publish = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+    bus = _make_bus(redis=mock_redis)
+    msg_id = await bus.publish(
+        from_agent_id="a1",
+        topic="spawn",
+        payload={"test": True},
+    )
+    assert msg_id  # publish still returns a message_id
+
+
+# ── _persist_message exception ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_persist_message_db_exception_is_swallowed():
+    class _FailSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def begin(self):
+            class _FailCtx:
+                async def __aenter__(self):
+                    raise RuntimeError("DB insert failed")
+
+                async def __aexit__(self, *_):
+                    return None
+
+            return _FailCtx()
+
+        async def execute(self, *args, **kwargs):
+            raise RuntimeError("DB insert failed")
+
+    bus = _make_bus(db=lambda: _FailSession())
+    # Should not raise
+    msg_id = await bus.publish(
+        from_agent_id="a1",
+        topic="lifecycle",
+        payload={"event": "test"},
+    )
+    assert msg_id
+
+
+# ── _emit_civilization_event exception ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_emit_civilization_event_db_exception_is_swallowed():
+    call_count = 0
+
+    class _PartialFailSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def begin(self):
+            return _noop_ctx()
+
+        async def execute(self, statement, params=None):
+            nonlocal call_count
+            call_count += 1
+            # First call (_persist_message) succeeds, second (_emit_civ_event) fails
+            if call_count >= 2:
+                raise RuntimeError("Event table missing")
+            from types import SimpleNamespace as NS
+            return NS(fetchall=lambda: [], fetchone=lambda: None)
+
+    bus = _make_bus(db=lambda: _PartialFailSession())
+    msg_id = await bus.publish(
+        from_agent_id="a1",
+        topic="coordination",
+        payload={"x": 1},
+    )
+    assert msg_id
+
+
+# ── _nullctx ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_nullctx_as_context_manager():
+    from app.civilization.bus import _nullctx
+
+    value = object()
+    async with _nullctx(value) as v:
+        assert v is value
+
+
+@pytest.mark.asyncio
+async def test_nullctx_exit_returns_none():
+    from app.civilization.bus import _nullctx
+
+    ctx = _nullctx("test-value")
+    result = await ctx.__aenter__()
+    assert result == "test-value"
+    exit_result = await ctx.__aexit__(None, None, None)
+    assert exit_result is None
+
+
+# ── subscribe: no-redis path ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_subscribe_no_redis_yields_nothing():
+    bus = _make_bus(redis=None)
+    results = []
+    async for msg in bus.subscribe(topics=["spawn"]):
+        results.append(msg)
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_redis_yields_messages():
+    """Subscribe iterates Redis pub/sub messages and yields valid JSON payloads."""
+    collected = []
+
+    class _MockListen:
+        def __init__(self, msgs):
+            self._msgs = msgs
+            self._idx = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._idx >= len(self._msgs):
+                raise StopAsyncIteration
+            msg = self._msgs[self._idx]
+            self._idx += 1
+            return msg
+
+    class _MockPubSub:
+        def __init__(self, messages):
+            self._messages = messages
+
+        async def subscribe(self, *channels):
+            pass
+
+        async def unsubscribe(self, *channels):
+            pass
+
+        def listen(self):
+            return _MockListen(self._messages)
+
+    class _MockRedis:
+        def __init__(self, messages):
+            self._pubsub = _MockPubSub(messages)
+
+        def pubsub(self):
+            return self._pubsub
+
+    messages = [
+        {"type": "message", "data": json.dumps({"id": "m1", "topic": "spawn"})},
+        {"type": "subscribe", "data": "ignored-sub-confirm"},
+        {"type": "message", "data": json.dumps({"id": "m2", "topic": "findings"})},
+    ]
+    mock_redis = _MockRedis(messages)
+    bus = _make_bus(redis=mock_redis)
+
+    async for msg in bus.subscribe(topics=["spawn", "findings"]):
+        collected.append(msg)
+
+    assert len(collected) == 2
+    assert collected[0]["id"] == "m1"
+    assert collected[1]["id"] == "m2"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_invalid_json_is_skipped():
+    """Invalid JSON messages are silently ignored."""
+    collected = []
+
+    class _MockListen:
+        def __init__(self):
+            self._msgs = [
+                {"type": "message", "data": "NOT VALID JSON {{{{"},
+                {"type": "message", "data": json.dumps({"id": "m-good"})},
+            ]
+            self._idx = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._idx >= len(self._msgs):
+                raise StopAsyncIteration
+            m = self._msgs[self._idx]
+            self._idx += 1
+            return m
+
+    class _MockPubSub:
+        async def subscribe(self, *_):
+            pass
+
+        async def unsubscribe(self, *_):
+            pass
+
+        def listen(self):
+            return _MockListen()
+
+    class _MockRedis:
+        def pubsub(self):
+            return _MockPubSub()
+
+    bus = _make_bus(redis=_MockRedis())
+    async for msg in bus.subscribe(topics=["spawn"]):
+        collected.append(msg)
+
+    assert len(collected) == 1
+    assert collected[0]["id"] == "m-good"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_no_topics_uses_all_valid():
+    """subscribe() with no topics argument subscribes to all valid topics."""
+    from app.civilization.bus import _VALID_TOPICS
+    collected_channels = []
+
+    class _MockPubSub:
+        async def subscribe(self, *channels):
+            collected_channels.extend(channels)
+
+        async def unsubscribe(self, *channels):
+            pass
+
+        def listen(self):
+            class _Empty:
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    raise StopAsyncIteration
+
+            return _Empty()
+
+    class _MockRedis:
+        def pubsub(self):
+            return _MockPubSub()
+
+    bus = _make_bus(redis=_MockRedis())
+    async for _ in bus.subscribe():
+        pass
+
+    # Should have subscribed to all valid topics
+    assert len(collected_channels) == len(_VALID_TOPICS)
