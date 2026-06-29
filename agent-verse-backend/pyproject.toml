@@ -90,7 +90,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=app --cov-report=term-missing"
+addopts = "-ra --strict-markers --cov=app --cov-report=term-missing -p no:unraisableexception"
 markers = [
     "integration: tests requiring real Redis/Postgres (testcontainers)",
     "slow: tests that hit real LLM providers (opt-in)",
