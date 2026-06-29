@@ -104,6 +104,10 @@ filterwarnings = [
     "ignore::ResourceWarning",
     # asyncpg cancel-coroutine GC noise (Connection._cancel never awaited on teardown).
     "ignore:coroutine.*was never awaited:RuntimeWarning",
+    # Background asyncio tasks from app startup fire-and-forget patterns (LangGraph checkpoint
+    # setup, Redis pub/sub, audit flusher). These are intentional fire-and-forget; the tasks
+    # raise when the event loop closes after the test. They are not test failures.
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.report]
