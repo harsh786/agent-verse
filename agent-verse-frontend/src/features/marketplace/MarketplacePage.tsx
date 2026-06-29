@@ -4,7 +4,7 @@ import { ShoppingBag, Plug } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 interface MarketplaceTemplate {
   template_id: string;

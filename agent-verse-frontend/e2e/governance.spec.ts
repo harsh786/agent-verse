@@ -149,7 +149,8 @@ test.describe('Governance — Policies tab', () => {
 
     // The toggle button now reads "Cancel"
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByText('New Policy')).not.toBeVisible();
+    await expect(page.getByRole('button', { name: '+ New Policy' })).toBeVisible();
+    await expect(page.locator('input[placeholder="block-shell-commands"]')).not.toBeVisible();
   });
 
   test('can submit a new policy; policy appears in the list', async ({ page }) => {

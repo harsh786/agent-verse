@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pause, Play, Trash2, Send } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

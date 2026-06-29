@@ -86,3 +86,44 @@ class ConnectorRegisterRequest(BaseModel):
     url: str
     auth_token: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Memory(BaseModel):
+    memory_id: str
+    content: str
+    tags: list[str] = Field(default_factory=list)
+    created_at: str = ""
+
+
+class Schedule(BaseModel):
+    schedule_id: str
+    name: str
+    goal_template: str
+    enabled: bool
+    cron: str | None = None
+    next_run_at: str | None = None
+    created_at: str = ""
+
+
+class GoalMetrics(BaseModel):
+    active_goals: int
+    total_goals: int
+    success_rate: float
+    avg_latency_ms: float
+    cost_today_usd: float
+
+
+class CostMetrics(BaseModel):
+    total_cost_usd: float
+    cost_by_day: list[dict[str, Any]] = Field(default_factory=list)
+    cost_by_model: dict[str, float] = Field(default_factory=dict)
+    daily_budget_usd: float
+    budget_utilization: float
+
+
+class SimulationResult(BaseModel):
+    run_id: str
+    goal: str
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    completed: bool
+    error: str | None = None

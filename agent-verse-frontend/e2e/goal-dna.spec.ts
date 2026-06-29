@@ -111,7 +111,7 @@ test.describe('Goal DNA', () => {
     // Stats bar should show 5 nodes and 1 tool call
     await expect(page.getByText('5').first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText(/nodes/i)).toBeVisible();
-    await expect(page.getByText(/tool/i)).toBeVisible();
+    await expect(page.getByText('tool calls')).toBeVisible();
   });
 
   test('error state shown when graph unavailable', async ({ page }) => {

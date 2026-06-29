@@ -3,8 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, XCircle, AlertCircle, ExternalLink } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
-const GRAFANA_URL = (import.meta as any).env?.VITE_GRAFANA_URL ?? 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
 interface HealthDependency {
   status: string;

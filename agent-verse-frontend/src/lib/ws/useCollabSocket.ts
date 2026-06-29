@@ -54,7 +54,7 @@ export function useCollabSocket({
   }
 
   const connect = useCallback(() => {
-    const wsBase = (import.meta as any).env?.VITE_WS_URL ?? 'ws://localhost:8000';
+    const wsBase = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000';
     const url = `${wsBase}/collab/sessions/${sessionId}/ws`;
     const ws = new WebSocket(url, [encodeProtocolToken(apiKey)]);
     wsRef.current = ws;

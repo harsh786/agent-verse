@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export function RpaLivePage() {
   const [sessions, setSessions] = useState<any[]>([]);
@@ -88,7 +88,7 @@ export function RpaLivePage() {
         <div className="border rounded-lg p-4">
           <h2 className="font-semibold mb-3">Active Sessions ({sessions.length})</h2>
           {sessions.length === 0 ? (
-            <p className="text-gray-400 text-sm">No active RPA sessions.</p>
+            <p className="text-muted-foreground text-sm">No active RPA sessions.</p>
           ) : (
             sessions.map((s: any) => (
               <button
@@ -97,15 +97,15 @@ export function RpaLivePage() {
                 className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${
                   selectedSession === s.session_id
                     ? 'bg-blue-50 border border-blue-200'
-                    : 'hover:bg-gray-50'
+                    : 'hover:bg-accent/50'
                 }`}
               >
-                <div className="font-mono text-xs text-gray-500">
+                <div className="font-mono text-xs text-muted-foreground">
                   {s.session_id.slice(0, 16)}...
                 </div>
                 <div
                   className={`text-xs ${
-                    s.status === 'active' ? 'text-green-600' : 'text-gray-400'
+                    s.status === 'active' ? 'text-green-600' : 'text-muted-foreground'
                   }`}
                 >
                   {s.status}
@@ -118,7 +118,7 @@ export function RpaLivePage() {
         {/* Live View */}
         <div className="col-span-2 border rounded-lg p-4">
           {!selectedSession ? (
-            <div className="flex items-center justify-center h-64 text-gray-400">
+            <div className="flex items-center justify-center h-64 text-muted-foreground">
               Select a session to view live feed
             </div>
           ) : (
@@ -131,7 +131,7 @@ export function RpaLivePage() {
                   {polling ? (
                     <button
                       onClick={stopLiveView}
-                      className="px-3 py-1 bg-gray-200 rounded text-sm"
+                      className="px-3 py-1 bg-muted rounded text-sm"
                     >
                       ⏸ Pause
                     </button>
@@ -160,16 +160,16 @@ export function RpaLivePage() {
                   style={{ maxHeight: '400px', objectFit: 'contain' }}
                 />
               ) : (
-                <div className="bg-muted/50 rounded h-64 flex items-center justify-center text-gray-400">
+                <div className="bg-muted/50 rounded h-64 flex items-center justify-center text-muted-foreground">
                   {polling ? 'Capturing screenshot...' : 'No screenshot available'}
                 </div>
               )}
 
               <div className="mt-4">
                 <h3 className="font-medium text-sm mb-2">Action Log</h3>
-                <div className="bg-gray-900 text-green-400 rounded p-3 font-mono text-xs h-32 overflow-y-auto">
+                <div className="bg-background text-green-400 rounded p-3 font-mono text-xs h-32 overflow-y-auto border border-border">
                   {actionLog.length === 0 ? (
-                    <span className="text-gray-500">Waiting for actions...</span>
+                    <span className="text-muted-foreground">Waiting for actions...</span>
                   ) : (
                     actionLog.map((a, i) => <div key={i}>{a}</div>)
                   )}

@@ -36,7 +36,7 @@ export function AnalyticsDashboardPage() {
     queryKey: ['analytics-tools'],
     queryFn: async () => {
       const res = await fetch(
-        `${(import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000'}/analytics/tools`,
+        `${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/analytics/tools`,
         { headers: { 'X-API-Key': apiKey } }
       );
       return res.ok ? res.json() : null;

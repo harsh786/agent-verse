@@ -93,7 +93,7 @@ export function WorkflowBuilderPage() {
   const [runOutput, setRunOutput] = useState<string>('');
   const nodeCounter = useRef(1);
 
-  const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+  const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
   const { data: savedWorkflows } = useQuery({
     queryKey: ['workflows'],

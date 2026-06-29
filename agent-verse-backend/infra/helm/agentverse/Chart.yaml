@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agentverse
+description: AgentVerse — vendor-agnostic multi-tenant autonomous AI agent platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - agents
+  - llm
+  - autonomous
+  - multi-tenant
+home: https://github.com/agentverse/agentverse
+maintainers:
+  - name: AgentVerse Team
+    email: platform@agentverse.ai
+dependencies: []

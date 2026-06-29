@@ -28,7 +28,7 @@ async function setupAuth(page: Page) {
 test.describe('Connectors', () => {
   test('shows Registered Connectors heading', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/connectors', (route) => {
+    await page.route(/localhost:8000/connectors/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,
@@ -54,7 +54,7 @@ test.describe('Connectors', () => {
     ];
 
     await setupAuth(page);
-    await page.route('**/connectors', (route) => {
+    await page.route(/localhost:8000/connectors/, (route) => {
       if (route.request().method() === 'GET') {
         return route.fulfill({
           status: 200,

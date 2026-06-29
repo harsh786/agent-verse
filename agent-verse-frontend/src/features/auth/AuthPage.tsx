@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const REDIRECT_URI = typeof window !== "undefined"
   ? `${window.location.origin}/auth/callback`
   : "http://localhost:5173/auth/callback";

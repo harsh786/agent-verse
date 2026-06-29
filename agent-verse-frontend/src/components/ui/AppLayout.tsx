@@ -1,11 +1,52 @@
 import { Outlet } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { useUiStore } from "@/stores/ui";
+import { useAuthStore } from "@/stores/auth";
+import { useEmergencyStore } from "@/stores/emergency";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh";
 import { useAppHotkeys } from "@/hooks/useAppHotkeys";
 import { clsx } from "clsx";
+import { API_BASE } from "@/lib/api/client";
+
+function EmergencyBanner() {
+  const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
+  const { apiKey } = useAuthStore();
+  const qc = useQueryClient();
+
+  if (!isActive) return null;
+
+  const handleClear = async () => {
+    try {
+      await fetch(`${API_BASE}/governance/emergency-stop`, {
+        method: "DELETE",
+        headers: { "X-API-Key": apiKey },
+      });
+    } catch {
+      // best-effort — clear local state regardless
+    }
+    clear();
+    qc.invalidateQueries();
+  };
+
+  return (
+    <div className="bg-red-600 text-white px-4 py-2 flex items-center justify-between text-sm font-medium shrink-0">
+      <span>
+        Emergency Stop Active — All goal execution halted since{" "}
+        {activatedAt ? new Date(activatedAt).toLocaleTimeString() : "now"}.{" "}
+        {cancelledGoals} goals cancelled.
+      </span>
+      <button
+        onClick={handleClear}
+        className="ml-4 underline hover:no-underline"
+      >
+        Clear Emergency Stop
+      </button>
+    </div>
+  );
+}
 
 export function AppLayout() {
   const { sidebarOpen, toggleSidebar } = useUiStore();
@@ -37,6 +78,7 @@ export function AppLayout() {
         )}
       >
         <TopBar />
+        <EmergencyBanner />
         <main className="flex-1 overflow-auto p-4 md:p-6">
           <Outlet />
         </main>

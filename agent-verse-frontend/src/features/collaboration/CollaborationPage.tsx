@@ -4,7 +4,7 @@ import { CheckCircle, MessageSquare, Send, Users, Wifi, WifiOff } from 'lucide-r
 import { useAuthStore } from '@/stores/auth';
 import { useCollabSocket } from '@/lib/ws/useCollabSocket';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 interface CollabSession {
   session_id: string;

@@ -22,7 +22,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, CheckCircle2, Loader2, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 interface TokenResponse {
   access_token: string;

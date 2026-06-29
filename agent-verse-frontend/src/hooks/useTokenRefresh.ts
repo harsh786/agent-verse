@@ -15,7 +15,7 @@
 import { useEffect, useRef } from "react";
 import { useAuthStore } from "@/stores/auth";
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 /** Refresh this many seconds before the token actually expires. */
 const REFRESH_BUFFER_SECONDS = 60;
