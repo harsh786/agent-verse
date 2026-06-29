@@ -144,8 +144,8 @@ test.describe('Eval & Testing — Red Team', () => {
     await page.getByRole('button', { name: /run red team/i }).click();
 
     await expect(page.getByText('Total Cases')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Passed')).toBeVisible();
-    await expect(page.getByText('Failed')).toBeVisible();
+    await expect(page.getByText('Passed').first()).toBeVisible();
+    await expect(page.getByText('Failed', { exact: true }).first()).toBeVisible();
   });
 
   test('red team report shows individual case results table', async ({ page }) => {
@@ -288,8 +288,8 @@ test.describe('Eval & Testing — Simulation', () => {
     await page.getByRole('button', { name: /run simulation/i }).click();
 
     await expect(page.getByText('Simulated Steps')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('List available services')).toBeVisible();
-    await expect(page.getByText('Deploy service to staging')).toBeVisible();
+    await expect(page.locator('span').filter({ hasText: /^1. List available services$/ }).first()).toBeVisible();
+    await expect(page.locator('span').filter({ hasText: /^2. Deploy service to staging$/ }).first()).toBeVisible();
   });
 
   test('simulation result shows status badge', async ({ page }) => {

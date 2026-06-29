@@ -160,8 +160,9 @@ test.describe('Template Library', () => {
     await expect(page.getByText('Deploy to Kubernetes').first()).toBeVisible({ timeout: 5000 });
     // Expect a parameter input for "image" or its label
     // placeholder may be empty ('') so use id or label text
-    await expect(
-      page.locator('input[id="param-image"]').or(page.locator('label').filter({ hasText: /image/i }))
-    ).toBeVisible({ timeout: 10000 });
+    // Check for param input by id (most specific) or fall back to label
+    const paramInput = page.locator('input[id="param-image"]');
+    const paramLabel = page.locator('label').filter({ hasText: /image/i }).first();
+    await expect(paramInput.or(paramLabel).first()).toBeVisible({ timeout: 10000 });
   });
 });

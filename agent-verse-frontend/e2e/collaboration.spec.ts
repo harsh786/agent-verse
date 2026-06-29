@@ -58,7 +58,7 @@ test.describe('Collaboration', () => {
     await expect(page.getByText('New Collaboration Session')).toBeVisible();
     await page.getByPlaceholder(/session name|sprint planning/i).fill('E2E review');
     await page.getByPlaceholder('Goal ID').fill('goal-e2e');
-    const agentInput = page.getByPlaceholder(/agent/i);
+    const agentInput = page.getByPlaceholder('Agent ID');
     if (await agentInput.count()) {
       await agentInput.fill('agent-e2e');
     }

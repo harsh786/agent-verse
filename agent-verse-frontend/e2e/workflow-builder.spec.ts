@@ -42,7 +42,7 @@ test.describe('Workflow Builder', () => {
 
     // The page should render with save and run buttons
     await expect(page.getByRole('button', { name: /save/i })).toBeVisible({ timeout: 30000 });
-    await expect(page.getByRole('button', { name: /run/i })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: '▶ Run' })).toBeVisible({ timeout: 30000 });
   });
 
   test('shows workflow name input', async ({ page }) => {
@@ -135,7 +135,8 @@ test.describe('Workflow Builder', () => {
 
     await page.goto('/workflow-builder');
     // Saved workflow name should be listed
-    await expect(page.getByText('Deploy Pipeline')).toBeVisible({ timeout: 15000 });
+    // Saved workflows render inside a <select>; options are attached but not 'visible'
+    await expect(page.getByRole('option', { name: 'Deploy Pipeline' })).toBeAttached({ timeout: 15000 });
   });
 
   test('Dry Run button is visible and enabled', async ({ page }) => {

@@ -94,20 +94,20 @@ test.describe('Agent Personality', () => {
     ).toBeVisible({ timeout: 15000 });
 
     // Autonomy slider: Supervised ↔ Fully Autonomous
-    await expect(page.getByText('Supervised')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Fully Autonomous')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Supervised').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Fully Autonomous').first()).toBeVisible({ timeout: 15000 });
 
     // Thoroughness slider: Fast ↔ Thorough
-    await expect(page.getByText('Fast')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Thorough')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Fast').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Thorough').first()).toBeVisible({ timeout: 15000 });
 
     // Strategy slider: Deterministic ↔ Creative
-    await expect(page.getByText('Deterministic')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Creative')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Deterministic').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Creative').first()).toBeVisible({ timeout: 15000 });
 
     // Cost slider: Cost-Optimized ↔ Quality-First
-    await expect(page.getByText('Cost-Optimized')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Quality-First')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Cost-Optimized').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Quality-First').first()).toBeVisible({ timeout: 15000 });
   });
 
   test('config preview section is visible', async ({ page }) => {
@@ -122,7 +122,7 @@ test.describe('Agent Personality', () => {
 
     // The generated config preview section
     await expect(page.getByText('Generated config')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Mode')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('p', { hasText: /^Mode$/ }).first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('Max iterations')).toBeVisible({ timeout: 15000 });
   });
 
