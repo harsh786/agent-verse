@@ -95,12 +95,12 @@ test.describe('Ghost Run', () => {
     await page.getByRole('button', { name: /launch ghost run/i }).click();
 
     // Wait for the 3 strategy cards to appear
-    await expect(page.getByText('Standard')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('High Priority')).toBeVisible();
-    await expect(page.getByText('Dry Run')).toBeVisible();
+    await expect(page.locator('span.font-medium', { hasText: 'Standard' }).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('span.font-medium', { hasText: 'High Priority' }).first()).toBeVisible();
+    await expect(page.locator('span.font-medium', { hasText: 'Dry Run' }).first()).toBeVisible();
 
     // Each strategy card should have a Track button
-    const trackButtons = page.getByRole('button', { name: /track/i });
+    const trackButtons = page.locator('button', { hasText: 'Track' });
     await expect(trackButtons.first()).toBeVisible();
   });
 

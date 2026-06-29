@@ -1,0 +1,107 @@
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options: [staging, production]
+
+jobs:
+  build-and-push:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/backend
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: agent-verse-backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+      - name: Run DB migrations
+        run: |
+          kubectl apply -f agent-verse-backend/infra/k8s/migration-job.yaml -n agentverse
+          kubectl wait --for=condition=complete job/agentverse-migration -n agentverse --timeout=120s
+      - name: Deploy green
+        run: |
+          sed -i 's|image:.*|image: ghcr.io/${{ github.repository }}/backend:${{ needs.build-and-push.outputs.image-tag }}|' agent-verse-backend/infra/k8s/backend-deployment-green.yaml
+          kubectl apply -f agent-verse-backend/infra/k8s/backend-deployment-green.yaml -n agentverse
+          kubectl rollout status deployment/agentverse-backend-green -n agentverse --timeout=120s
+      - name: Smoke test green
+        run: |
+          kubectl port-forward -n agentverse deployment/agentverse-backend-green 8001:8000 &
+          sleep 5
+          curl -f http://localhost:8001/health || (echo "Smoke test failed" && exit 1)
+          kill %1
+      - name: Switch traffic to green
+        run: bash agent-verse-backend/infra/k8s/switch-traffic.sh green
+      - name: Clean up blue
+        run: kubectl delete deployment agentverse-backend-blue -n agentverse --ignore-not-found
+
+  deploy-production:
+    name: Deploy to production
+    needs: [build-and-push, deploy-staging]
+    runs-on: ubuntu-latest
+    environment: production
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure kubectl (prod)
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      - name: Run DB migrations (prod)
+        run: |
+          kubectl apply -f agent-verse-backend/infra/k8s/migration-job.yaml -n agentverse
+          kubectl wait --for=condition=complete job/agentverse-migration -n agentverse --timeout=120s
+      - name: Deploy green (prod)
+        run: |
+          sed -i 's|image:.*|image: ghcr.io/${{ github.repository }}/backend:${{ needs.build-and-push.outputs.image-tag }}|' agent-verse-backend/infra/k8s/backend-deployment-green.yaml
+          kubectl apply -f agent-verse-backend/infra/k8s/backend-deployment-green.yaml -n agentverse
+          kubectl rollout status deployment/agentverse-backend-green -n agentverse --timeout=300s
+      - name: Switch traffic (prod)
+        run: bash agent-verse-backend/infra/k8s/switch-traffic.sh green

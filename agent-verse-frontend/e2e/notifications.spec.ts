@@ -47,7 +47,7 @@ test('create and delete a notification channel', async ({ page }) => {
   });
   await page.goto('/notifications');
   await page.getByRole('button', { name: /add channel/i }).click();
-  await expect(page.getByText('webhook')).toBeVisible();
+  await expect(page.getByRole('option', { name: 'webhook' })).toBeAttached();
 });
 
 test('shows error toast on server failure', async ({ page }) => {
@@ -59,5 +59,5 @@ test('shows error toast on server failure', async ({ page }) => {
   });
   await page.goto('/notifications');
   await page.getByRole('button', { name: /add channel/i }).click();
-  await expect(page.getByRole('status')).toContainText(/boom|error/i);
+  await expect(page.getByRole('status').first()).toContainText(/boom|error/i);
 });

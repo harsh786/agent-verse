@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },

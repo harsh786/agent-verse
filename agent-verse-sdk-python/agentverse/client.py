@@ -21,10 +21,15 @@ from agentverse.models import (
     AgentCreateRequest,
     Connector,
     ConnectorRegisterRequest,
+    CostMetrics,
     Goal,
     GoalEvent,
+    GoalMetrics,
     GoalStatus,
     GoalSubmitRequest,
+    Memory,
+    Schedule,
+    SimulationResult,
 )
 from agentverse.streaming import stream_sse
 
@@ -348,6 +353,76 @@ class AgentVerseClient:
         resp = await self._client().delete(f"/connectors/{server_id}")
         self._raise_for_status(resp)
 
+    async def test_connector(self, connector_id: str) -> dict:
+        """Test connectivity of a registered connector."""
+        return await self._request("POST", f"/connectors/{connector_id}/test")
+
+    async def get_connector_catalog(self) -> list[dict]:
+        """Fetch the catalog of available connector types."""
+        return await self._request("GET", "/connectors/catalog")  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # Memory
+    # ------------------------------------------------------------------
+
+    async def recall_memory(self, query: str, limit: int = 10) -> list[Memory]:
+        """Recall memory entries semantically matching *query*."""
+        resp = await self._client().get("/memory/recall", params={"q": query, "limit": limit})
+        self._raise_for_status(resp)
+        data = resp.json()
+        items = data if isinstance(data, list) else data.get("results", [])
+        return [Memory.model_validate(m) for m in items]
+
+    async def store_memory(self, content: str, tags: list[str] | None = None) -> Memory:
+        """Store a new memory entry."""
+        payload: dict[str, Any] = {"content": content}
+        if tags is not None:
+            payload["tags"] = tags
+        return Memory.model_validate(await self._request("POST", "/memory", json=payload))
+
+    # ------------------------------------------------------------------
+    # Knowledge
+    # ------------------------------------------------------------------
+
+    async def search_knowledge(self, collection_id: str, query: str, limit: int = 10) -> list[dict]:
+        """Semantic search within a knowledge collection."""
+        resp = await self._client().get(
+            "/knowledge/search",
+            params={"collection_id": collection_id, "q": query, "limit": limit},
+        )
+        self._raise_for_status(resp)
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("results", [])  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # Analytics
+    # ------------------------------------------------------------------
+
+    async def get_goal_metrics(self, days: int = 30) -> GoalMetrics:
+        """Fetch goal execution metrics for the past *days* days."""
+        resp = await self._client().get("/analytics/goals", params={"days": days})
+        self._raise_for_status(resp)
+        return GoalMetrics.model_validate(resp.json())
+
+    async def get_cost_metrics(self, days: int = 30) -> CostMetrics:
+        """Fetch cost breakdown metrics for the past *days* days."""
+        resp = await self._client().get("/analytics/cost", params={"days": days})
+        self._raise_for_status(resp)
+        return CostMetrics.model_validate(resp.json())
+
+    # ------------------------------------------------------------------
+    # Enterprise simulation
+    # ------------------------------------------------------------------
+
+    async def simulate(self, goal: str, mock_tools: dict[str, Any] | None = None) -> SimulationResult:
+        """Run a sandboxed simulation of *goal* without executing real tools."""
+        payload: dict[str, Any] = {"goal": goal, "dry_run": True}
+        if mock_tools is not None:
+            payload["mock_tools"] = mock_tools
+        return SimulationResult.model_validate(
+            await self._request("POST", "/enterprise/simulate", json=payload)
+        )
+
     # ------------------------------------------------------------------
     # Schedules
     # ------------------------------------------------------------------
@@ -377,6 +452,17 @@ class AgentVerseClient:
         if agent_id:
             payload["agent_id"] = agent_id
         return await self._request("POST", "/schedules", json=payload)
+
+    async def create_schedule_nl(self, command: str) -> Schedule:
+        """Create a schedule from a natural-language command."""
+        return Schedule.model_validate(
+            await self._request("POST", "/schedules/nl", json={"command": command})
+        )
+
+    async def delete_schedule(self, schedule_id: str) -> None:
+        """Delete a schedule by ID."""
+        resp = await self._client().delete(f"/schedules/{schedule_id}")
+        self._raise_for_status(resp)
 
     # ------------------------------------------------------------------
     # Goal replay / logs

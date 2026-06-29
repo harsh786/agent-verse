@@ -45,6 +45,22 @@ async function setupAuth(page: Page) {
       body: JSON.stringify({ tenant_id: 'test-tenant', name: 'Test Org', plan: 'pro' }),
     })
   );
+  // Agents list — needed by Agent Orbit visualization
+  await page.route(/localhost:8000\/agents/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ agents: [] }),
+    })
+  );
+  // Cost analytics — needed by cost KPI card
+  await page.route(/localhost:8000\/analytics\/costs/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ period_days: 1, total_cost_usd: 0, cost_today_usd: 0, trends: [] }),
+    })
+  );
 }
 
 /**
@@ -84,7 +100,7 @@ async function mockGoalsApis(
 test.describe('Dashboard', () => {
   // ── KPI cards ──────────────────────────────────────────────────────────────
 
-  test('all 4 KPI card labels render: Active Goals, Success Rate, Avg Latency, Cost Today', async ({
+  test('all 4 KPI card labels render: Active Goals, Success Rate, Cost Today, Agents', async ({
     page,
   }) => {
     await setupAuth(page);
@@ -93,8 +109,8 @@ test.describe('Dashboard', () => {
 
     await expect(page.getByText('Active Goals')).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('Success Rate')).toBeVisible();
-    await expect(page.getByText('Avg Latency')).toBeVisible();
     await expect(page.getByText('Cost Today')).toBeVisible();
+    await expect(page.getByText('Agents').first()).toBeVisible();
   });
 
   test('KPI values reflect the /goals/metrics response', async ({ page }) => {
@@ -102,30 +118,30 @@ test.describe('Dashboard', () => {
     await mockGoalsApis(page, { metrics: POPULATED_METRICS });
     await page.goto('/dashboard');
 
-    // Cost Today = $2.50, Avg Latency = 1234ms
+    // Cost Today = $2.50
     await expect(page.getByText('$2.50')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('1234ms')).toBeVisible();
   });
 
-  test('KPI sub-labels render (executing + planning, p95 execution latency, etc.)', async ({
+  test('KPI sub-labels render (total, completed, failed, active counts)', async ({
     page,
   }) => {
     await setupAuth(page);
     await mockGoalsApis(page, { metrics: EMPTY_METRICS });
     await page.goto('/dashboard');
 
-    await expect(page.getByText('executing + planning')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('p95 execution latency')).toBeVisible();
+    // With empty metrics, sub-labels show "0 total", "0 completed"
+    await expect(page.getByText('0 total')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('0 completed')).toBeVisible();
   });
 
   // ── Activity feed ───────────────────────────────────────────────────────────
 
-  test('"Live Activity Feed" heading is visible', async ({ page }) => {
+  test('"Live Activity" heading is visible', async ({ page }) => {
     await setupAuth(page);
     await mockGoalsApis(page);
     await page.goto('/dashboard');
 
-    await expect(page.getByText('Live Activity Feed')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Live Activity')).toBeVisible({ timeout: 15000 });
   });
 
   test('activity feed shows empty state message when no goals exist', async ({ page }) => {
@@ -133,10 +149,10 @@ test.describe('Dashboard', () => {
     await mockGoalsApis(page, { goals: [] });
     await page.goto('/dashboard');
 
-    await expect(page.getByText(/no goals yet/i)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('No recent activity')).toBeVisible({ timeout: 15000 });
   });
 
-  test('activity feed shows goal text and ID when goals are returned', async ({ page }) => {
+  test('activity feed shows goal text when goals are returned', async ({ page }) => {
     const goals = [
       {
         id: 'g-abc-001',
@@ -160,8 +176,7 @@ test.describe('Dashboard', () => {
 
     await expect(page.getByText('Fix the authentication bug')).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('Improve test coverage to 90%')).toBeVisible();
-    // Goal IDs rendered in monospace
-    await expect(page.getByText('g-abc-001')).toBeVisible();
+    // Goal IDs are not rendered in the activity feed — only goal text is shown
   });
 
   // ── Status badges ───────────────────────────────────────────────────────────
@@ -209,14 +224,15 @@ test.describe('Dashboard', () => {
 
   // ── Page header ─────────────────────────────────────────────────────────────
 
-  test('Dashboard h1 and subtitle are visible', async ({ page }) => {
+  test('"Mission Control" h1 and dynamic subtitle are visible', async ({ page }) => {
     await setupAuth(page);
     await mockGoalsApis(page);
     await page.goto('/dashboard');
 
-    await expect(page.locator('h1').filter({ hasText: /dashboard/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.getByText('Real-time platform overview')).toBeVisible();
+    // Subtitle is "All systems nominal" when no active goals
+    await expect(page.getByText('All systems nominal')).toBeVisible();
   });
 });

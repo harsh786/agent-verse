@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
+import { useEmergencyStore } from '@/stores/emergency';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -519,8 +520,13 @@ function BudgetTab({ apiKey }: { apiKey: string }) {
 
 function EmergencyStopBanner({ apiKey }: { apiKey: string }) {
   const [showConfirm, setShowConfirm] = useState(false);
-  const [emergencyActive, setEmergencyActive] = useState(false);
-  const [stats, setStats] = useState<{ cancelled_goals: number; rejected_approvals: number } | null>(null);
+  const {
+    isActive: emergencyActive,
+    setActive,
+    clear: clearEmergency,
+    cancelledGoals,
+    rejectedApprovals,
+  } = useEmergencyStore();
 
   const stopMutation = useMutation({
     mutationFn: () =>
@@ -530,8 +536,10 @@ function EmergencyStopBanner({ apiKey }: { apiKey: string }) {
         { method: 'POST' }
       ),
     onSuccess: (data) => {
-      setEmergencyActive(true);
-      setStats({ cancelled_goals: data.cancelled_goals, rejected_approvals: data.rejected_approvals });
+      setActive({
+        cancelledGoals: data.cancelled_goals ?? 0,
+        rejectedApprovals: data.rejected_approvals ?? 0,
+      });
       setShowConfirm(false);
     },
   });
@@ -544,8 +552,7 @@ function EmergencyStopBanner({ apiKey }: { apiKey: string }) {
         { method: 'DELETE' }
       ),
     onSuccess: () => {
-      setEmergencyActive(false);
-      setStats(null);
+      clearEmergency();
     },
   });
 
@@ -557,9 +564,9 @@ function EmergencyStopBanner({ apiKey }: { apiKey: string }) {
             <p className="text-sm font-semibold text-red-700 dark:text-red-400">
               ⚠ Emergency Stop Active — All goal execution halted
             </p>
-            {stats && (
+            {(cancelledGoals > 0 || rejectedApprovals > 0) && (
               <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                {stats.cancelled_goals} goals cancelled · {stats.rejected_approvals} approvals rejected
+                {cancelledGoals} goals cancelled · {rejectedApprovals} approvals rejected
               </p>
             )}
           </div>

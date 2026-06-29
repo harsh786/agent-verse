@@ -29,7 +29,7 @@ function CivilizationList() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64 text-gray-400">
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
         <div className="text-center">
           <div className="animate-spin text-3xl mb-2">&#9696;</div>
           <div className="text-sm">Loading civilizations...</div>
@@ -55,13 +55,13 @@ function CivilizationList() {
     <div className="p-6 max-w-4xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">&#127760; Agent Civilizations</h1>
-        <p className="text-gray-500 text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Select a civilization to enter the theater, or create a new one.
         </p>
       </div>
 
       {civs.length === 0 ? (
-        <div className="border-2 border-dashed rounded-xl p-12 text-center text-gray-400">
+        <div className="border-2 border-dashed rounded-xl p-12 text-center text-muted-foreground">
           <div className="text-5xl mb-3">&#127759;</div>
           <div className="text-lg font-medium mb-1">No civilizations yet</div>
           <div className="text-sm">Create one from the backend or via the API to get started.</div>
@@ -72,21 +72,21 @@ function CivilizationList() {
             <Link
               key={civ.id}
               to={`/civilization/${civ.id}`}
-              className="border rounded-xl p-4 hover:border-blue-400 hover:shadow-md transition-all bg-white group"
+              className="border rounded-xl p-4 hover:border-blue-400 hover:shadow-md transition-all bg-card group"
             >
               <div className="flex items-start justify-between mb-3">
                 <div>
-                  <h2 className="font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                  <h2 className="font-bold text-foreground group-hover:text-blue-600 transition-colors">
                     {civ.name}
                   </h2>
-                  <div className="text-xs text-gray-400 mt-0.5">
+                  <div className="text-xs text-muted-foreground mt-0.5">
                     {civ.id.slice(0, 16)}...
                   </div>
                 </div>
                 <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                   civ.status === 'active' ? 'bg-green-100 text-green-700' :
                   civ.status === 'paused' ? 'bg-amber-100 text-amber-700' :
-                  'bg-gray-100 text-gray-500'
+                  'bg-muted text-muted-foreground'
                 }`}>
                   {civ.status}
                 </span>
@@ -111,7 +111,7 @@ function CivilizationList() {
                 </div>
               )}
 
-              <div className="mt-3 text-xs text-gray-400">
+              <div className="mt-3 text-xs text-muted-foreground">
                 Created {new Date(civ.created_at).toLocaleDateString()}
               </div>
             </Link>
@@ -210,20 +210,20 @@ function CivilizationTheater({ civId }: { civId: string }) {
         {/* Header */}
         <div className="bg-card border-b border-border px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link to="/civilization" className="text-gray-400 hover:text-gray-600 text-sm">
+            <Link to="/civilization" className="text-muted-foreground hover:text-foreground/70 text-sm">
               &#8592; Civilizations
             </Link>
-            <span className="text-gray-300">/</span>
+            <span className="text-border">/</span>
             <div>
               <h1 className="text-lg font-bold leading-tight">{civ?.name ?? 'Civilization'}</h1>
-              <div className="text-xs text-gray-400">Agent Civilization Theater</div>
+              <div className="text-xs text-muted-foreground">Agent Civilization Theater</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`} />
-            <span className="text-xs text-gray-500">{connected ? 'Live' : 'Reconnecting...'}</span>
+            <span className="text-xs text-muted-foreground">{connected ? 'Live' : 'Reconnecting...'}</span>
             {civ?.metrics && (
-              <div className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-1">
+              <div className="text-xs text-muted-foreground bg-muted rounded px-2 py-1">
                 {civ.metrics.active_members} active &middot; {civ.metrics.total_members} total
               </div>
             )}
@@ -272,7 +272,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
           </div>
 
           {/* Right: Detail panels */}
-          <div className="w-96 border-l bg-white flex flex-col">
+          <div className="w-96 border-l bg-card flex flex-col">
             {/* Tabs */}
             <div className="flex border-b overflow-x-auto scrollbar-none">
               {TABS.map(tab => (
@@ -282,7 +282,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                   className={`px-3 py-2 text-xs whitespace-nowrap transition-colors ${
                     activePanel === tab.key
                       ? 'border-b-2 border-blue-600 text-blue-600 font-medium'
-                      : 'text-gray-500 hover:text-gray-800'
+                      : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {tab.label}
@@ -296,7 +296,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                 <CivilizationMetrics metrics={civ.metrics} />
               )}
               {activePanel === 'map' && !civ?.metrics && (
-                <div className="text-sm text-gray-400 text-center py-8">
+                <div className="text-sm text-muted-foreground text-center py-8">
                   Metrics will appear once agents are running.
                 </div>
               )}
@@ -325,13 +325,13 @@ function CivilizationTheater({ civId }: { civId: string }) {
               {activePanel === 'replay' && (
                 <div className="space-y-1">
                   {liveEvents.length === 0 && (
-                    <div className="text-sm text-gray-400 text-center py-4">
+                    <div className="text-sm text-muted-foreground text-center py-4">
                       Live events will appear here.
                     </div>
                   )}
                   {liveEvents.map((e, i) => (
                     <div key={`${e.id}-${i}`} className="flex gap-2 text-xs border-b pb-1">
-                      <span className="text-gray-400 whitespace-nowrap">{e.ts?.slice(11, 19)}</span>
+                      <span className="text-muted-foreground whitespace-nowrap">{e.ts?.slice(11, 19)}</span>
                       <span className="text-blue-600 font-medium">{e.type}</span>
                     </div>
                   ))}

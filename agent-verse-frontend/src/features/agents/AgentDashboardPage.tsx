@@ -5,7 +5,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Skeleton } from '@/components/ui/Skeleton';
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export function AgentDashboardPage() {
   const { agentId } = useParams<{ agentId: string }>();

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useEmergencyStore } from '@/stores/emergency';
 import { GovernancePage } from './GovernancePage';
 
 function renderGovernancePage() {
@@ -477,6 +478,13 @@ describe('GovernancePage – approver field', () => {
 describe('GovernancePage – Emergency Stop', () => {
   beforeEach(() => {
     localStorage.clear();
+    // Reset persisted emergency store state so tests don't bleed into each other
+    useEmergencyStore.setState({
+      isActive: false,
+      activatedAt: null,
+      cancelledGoals: 0,
+      rejectedApprovals: 0,
+    });
     useAuthStore.setState({
       apiKey: 'tenant-key',
       tenantId: 'tenant-1',

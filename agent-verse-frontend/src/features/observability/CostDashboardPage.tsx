@@ -99,7 +99,7 @@ export function CostDashboardPage(): JSX.Element {
     queryKey: ["cost-metrics-kpi"],
     queryFn: async () => {
       const res = await fetch(
-        `${(import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000"}/goals/cost-metrics`, // eslint-disable-line @typescript-eslint/no-explicit-any
+        `${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/goals/cost-metrics`, // eslint-disable-line @typescript-eslint/no-explicit-any
         { headers: { "X-API-Key": apiKey } }
       );
       if (!res.ok) throw new Error(`${res.status}`);

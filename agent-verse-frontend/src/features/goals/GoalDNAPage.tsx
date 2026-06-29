@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, BackgroundVariant, MarkerType, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { insightsApi } from "@/lib/api/client";
+import { layeredLayout, type FlowNodeInput, type FlowEdgeInput } from "@/components/graph/FlowCanvas";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ArrowLeft, Zap, Wrench, GitBranch, CheckCircle2, XCircle, Info, AlertCircle } from "lucide-react";
 
@@ -86,19 +87,27 @@ export function GoalDNAPage() {
   const { nodes, edges } = useMemo<{ nodes: Node[]; edges: Edge[] }>(() => {
     if (!graph) return { nodes: [], edges: [] };
 
-    const xGap = 200;
-    const yGap = 80;
-    const flowNodes: Node[] = graph.nodes.map((n, i) => {
-      const x = (i % 4) * xGap + (n.type === "tool" ? 50 : 0);
-      const y = Math.floor(i / 4) * yGap;
-      return {
-        id: n.id,
-        type: "custom",
-        position: { x, y },
-        data: { label: n.label, nodeType: n.type, ...n.data, toolName: n.data?.tool_name as string | undefined },
-        draggable: true,
-      };
-    });
+    const nodeInputs: FlowNodeInput[] = graph.nodes.map((n) => ({
+      id: n.id,
+      label: n.label || n.id,
+      kind: n.type,
+      data: n.data as Record<string, unknown> | undefined,
+    }));
+    const edgeInputs: FlowEdgeInput[] = graph.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+    }));
+
+    const positions = layeredLayout(nodeInputs, edgeInputs);
+
+    const flowNodes: Node[] = graph.nodes.map((n) => ({
+      id: n.id,
+      type: "custom",
+      position: positions[n.id] ?? { x: 0, y: 0 },
+      data: { label: n.label, nodeType: n.type, ...n.data, toolName: n.data?.tool_name as string | undefined },
+      draggable: true,
+    }));
 
     const flowEdges: Edge[] = graph.edges.map((e) => ({
       id: e.id,

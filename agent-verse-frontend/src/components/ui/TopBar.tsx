@@ -18,7 +18,7 @@ const TYPE_ICONS: Record<string, string> = {
   connector: "🔌",
 };
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 export function TopBar() {
   const { theme, toggleTheme, toggleSidebar, openCommandPalette } = useUiStore();

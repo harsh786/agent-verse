@@ -13,7 +13,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 interface AgentVersion {
   snapshot_id: string;

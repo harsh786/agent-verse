@@ -75,6 +75,8 @@ test.describe('Authentication', () => {
 
   test('shows "required" error when submitting with empty fields', async ({ page }) => {
     await page.goto('/auth');
+    await page.fill('#tenantId', '   ');
+    await page.fill('#apiKey', '   ');
     await page.getByRole('button', { name: /sign in/i }).click();
     await expect(page.getByRole('alert')).toBeVisible({ timeout: 5000 });
     await expect(page.getByRole('alert')).toContainText(/required/i);
@@ -153,7 +155,7 @@ test.describe('Authentication', () => {
     await page.fill('#tenantId', 'test-tenant');
     await page.fill('#apiKey', 'valid-api-key');
     await page.getByRole('button', { name: /sign in/i }).click();
-    await expect(page.locator('h1').filter({ hasText: /dashboard/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
   });
@@ -181,7 +183,7 @@ test.describe('Authentication', () => {
     await mockDashboardApis(page);
     await page.goto('/dashboard');
     // Confirm we are on the dashboard
-    await expect(page.locator('h1').filter({ hasText: /dashboard/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
     // Click the Sign out button in the TopBar (aria-label="Sign out")
@@ -209,7 +211,7 @@ test.describe('Authentication', () => {
     await mockTenantValidation(page);
     await mockDashboardApis(page);
     await page.goto('/dashboard');
-    await expect(page.locator('h1').filter({ hasText: /dashboard/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
     await page.getByRole('button', { name: /sign out/i }).click();

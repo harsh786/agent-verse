@@ -63,8 +63,7 @@ import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const API_BASE = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);

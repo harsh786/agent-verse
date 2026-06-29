@@ -10,7 +10,7 @@ interface SpawnLineageTimelineProps {
 export function SpawnLineageTimeline({ spawns }: SpawnLineageTimelineProps) {
   if (spawns.length === 0) {
     return (
-      <div className="text-sm text-gray-400 text-center py-6">
+      <div className="text-sm text-muted-foreground text-center py-6">
         No spawn events recorded yet.
       </div>
     );
@@ -26,10 +26,10 @@ export function SpawnLineageTimeline({ spawns }: SpawnLineageTimelineProps) {
           }`} />
           <div className="ml-3">
             <div className="font-medium text-gray-700">{s.requested_capability}</div>
-            <div className="text-xs text-gray-400">
+            <div className="text-xs text-muted-foreground">
               {s.created_at?.slice(0, 16).replace('T', ' ')} &middot; {s.decision}
             </div>
-            {s.reason && <div className="text-xs text-gray-500 mt-0.5">{s.reason}</div>}
+            {s.reason && <div className="text-xs text-muted-foreground mt-0.5">{s.reason}</div>}
           </div>
         </div>
       ))}
