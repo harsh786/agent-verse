@@ -32,6 +32,7 @@ async def test_rpa_wait_for_text_simulation():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_wait_for_text",
         arguments={"text": "Submit", "timeout_ms": 5000},
@@ -46,6 +47,7 @@ async def test_rpa_select_option_simulation():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_select_option",
         arguments={"selector": "#country", "value": "US"},
@@ -61,6 +63,7 @@ async def test_rpa_upload_file_simulation():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_upload_file",
         arguments={"selector": "#file-input", "file_path": "/tmp/test.txt"},
@@ -76,6 +79,7 @@ async def test_rpa_download_file_simulation():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_download_file",
         arguments={"selector": "a.download-link"},
@@ -91,6 +95,7 @@ async def test_rpa_submit_form_simulation():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     result = await executor.execute(
         tool_name="rpa_submit_form",
         arguments={
@@ -124,6 +129,7 @@ async def test_all_new_tools_return_valid_rpa_result():
     from app.rpa.executor import RPAExecutor, RPAResult
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
     cases = [
         ("rpa_wait_for_text", {"text": "Hello"}),
         ("rpa_select_option", {"selector": "#sel", "value": "opt1"}),
@@ -148,6 +154,7 @@ async def test_new_tools_simulation_output_content():
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
+    executor._playwright_available = False  # force simulation mode — no real browser
 
     r = await executor.execute(
         tool_name="rpa_wait_for_text",
