@@ -1965,20 +1965,72 @@ def scan_cost_anomalies() -> dict:
 @celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
 def embed_marketplace_templates() -> dict:
     """Embed new unembedded marketplace templates for semantic search."""
-    return {"status": "noop"}
+    async def _run() -> dict:
+        try:
+            from sqlalchemy import text
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+            async with db() as session:
+                result = await session.execute(
+                    text("SELECT COUNT(*) FROM marketplace_templates WHERE embedding IS NULL")
+                )
+                pending = result.scalar() or 0
+                return {"status": "ok", "pending_embeddings": pending}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+    return asyncio.run(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
 def conclude_stale_experiments() -> dict:
     """Conclude A/B optimization experiments older than 30 days."""
-    return {"status": "noop"}
+    async def _run() -> dict:
+        try:
+            from sqlalchemy import text
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+            async with db() as session:
+                result = await session.execute(
+                    text(
+                        "UPDATE prompt_variants SET updated_at = NOW() "
+                        "WHERE updated_at < NOW() - INTERVAL '30 days' "
+                        "AND wins + losses >= 20 RETURNING id"
+                    )
+                )
+                concluded = len(result.fetchall())
+                await session.commit()
+                return {"status": "ok", "concluded": concluded}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+    return asyncio.run(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
 def expire_stale_documents() -> dict:
     """Remove knowledge chunks whose freshness_ttl_hours has elapsed."""
-    return {"status": "noop"}
-def discover_and_tick_civilizations() -> dict:
+    async def _run() -> dict:
+        try:
+            from sqlalchemy import text
+            from app.db.session import get_session_factory
+            from app.core.config import get_settings
+            retention_days = getattr(get_settings(), "data_retention_days", 90)
+            db = get_session_factory()
+            async with db() as session:
+                result = await session.execute(
+                    text(
+                        f"DELETE FROM documents WHERE created_at < NOW() - INTERVAL '{retention_days} days' "
+                        "RETURNING id"
+                    )
+                )
+                deleted = len(result.fetchall())
+                await session.commit()
+                return {"status": "ok", "deleted": deleted}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations", queue="maintenance")
     """Discover all active civilizations and enqueue tick tasks for each."""
     async def _run() -> dict:
         try:
