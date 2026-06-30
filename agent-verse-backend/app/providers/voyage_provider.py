@@ -6,6 +6,8 @@ Falls back to a sentence-transformers local model if voyageai is not available.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from app.providers.base import (
     CompletionRequest,
     CompletionResponse,
@@ -39,6 +41,17 @@ class VoyageProvider:
         self._model = model
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        raise NotImplementedError(
+            "VoyageProvider supports embeddings only. "
+            "Use AnthropicProvider or OpenAICompatibleProvider for completions."
+        )
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Not supported — VoyageProvider is embedding-only."""
         raise NotImplementedError(
             "VoyageProvider supports embeddings only. "
             "Use AnthropicProvider or OpenAICompatibleProvider for completions."

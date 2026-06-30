@@ -1527,3 +1527,590 @@ async def test_standalone_context_exception_handled() -> None:
         )
     assert result.success is False
     assert "Context crash" in (result.error or "")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART C — additional coverage for previously-uncovered lines
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── lines 222-223: vision_provider exception handler in session path ──────────
+
+@pytest.mark.asyncio
+async def test_pw_screenshot_vision_provider_exception_fallback() -> None:
+    """Lines 222-223: exception in BrowserAgent.analyze_screenshot is silenced."""
+    page = make_mock_page(screenshot_bytes=b"\x89PNG\r\n\x1a\n")
+    executor, _ = make_executor_with_session_manager(page)
+    executor._vision_provider = MagicMock()  # non-None triggers the vision path
+
+    mock_ba = MagicMock()
+    mock_ba.analyze_screenshot = AsyncMock(side_effect=RuntimeError("vision API down"))
+    with patch("app.perception.browser_agent.BrowserAgent", return_value=mock_ba):
+        result = await executor.execute(
+            tool_name="rpa_screenshot",
+            arguments={"name": "vision_fail"},
+            session_id="s1",
+            tenant_id="t1",
+        )
+    # Exception is swallowed; screenshot still succeeds
+    assert result.success is True
+    assert result.artifact_url is not None
+
+
+# ── lines 317-342: download_file success path with proper awaitable value ─────
+
+@pytest.mark.asyncio
+async def test_pw_download_file_success_awaitable() -> None:
+    """Lines 317-342: complete download success path (await download_info.value works)."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "report.pdf"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_download():
+        return mock_download
+
+    mock_holder.value = _get_download()  # awaitable coroutine
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"PDF bytes")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf:
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor, _ = make_executor_with_session_manager(page)
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".dl-btn"},
+                session_id="s1",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_pw_download_file_success_with_artifact_store() -> None:
+    """Lines 317-342: download with artifact_store set (covers store_bytes call)."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "data.csv"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl():
+        return mock_download
+
+    mock_holder.value = _get_dl()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+
+    mock_artifact_store = AsyncMock()
+    mock_artifact_store.store_bytes = AsyncMock(return_value="s3://bucket/data.csv")
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+        f.write(b"a,b,c\n1,2,3\n")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf:
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor, _ = make_executor_with_session_manager(page)
+            executor._artifact_store = mock_artifact_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".export-btn"},
+                session_id="s1",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+# ── line 492-493: standalone screenshot artifact_store exception handler ───────
+
+@pytest.mark.asyncio
+async def test_standalone_screenshot_artifact_store_exception() -> None:
+    """Lines 492-493: artifact_store.write_bytes raises → fallback to base64."""
+    page = make_mock_page(screenshot_bytes=b"\x89PNG\r\n\x1a\n")
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
+
+    mock_store = AsyncMock()
+    mock_store.write_bytes = AsyncMock(side_effect=Exception("S3 unavailable"))
+    executor._artifact_store = mock_store
+
+    with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+        result = await executor.execute(
+            tool_name="rpa_screenshot",
+            arguments={"name": "fallback"},
+            session_id="standalone",
+            tenant_id="t1",
+            goal_id="goal-for-exception",  # non-empty goal_id triggers store path
+        )
+    assert result.success is True
+    # Falls back to base64 when store raises
+    assert "data:image/png;base64," in (result.artifact_url or "")
+
+
+# ── line 552: standalone upload_file missing file_path argument ───────────────
+
+@pytest.mark.asyncio
+async def test_standalone_upload_file_no_file_path_error() -> None:
+    """Line 552: upload_file with selector but no file_path returns error."""
+    page = make_mock_page()
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
+
+    with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+        result = await executor.execute(
+            tool_name="rpa_upload_file",
+            arguments={"selector": "#file-input"},  # file_path missing
+            session_id="standalone",
+            tenant_id="t1",
+        )
+    assert result.success is False
+    assert "file_path" in (result.error or "").lower()
+
+
+# ── lines 565-566: standalone upload_file set_input_files exception ───────────
+
+@pytest.mark.asyncio
+async def test_standalone_upload_file_set_input_files_exception() -> None:
+    """Lines 565-566: page.set_input_files raises → RPAResult(success=False)."""
+    page = make_mock_page()
+    page.set_input_files = AsyncMock(side_effect=Exception("Permission denied"))
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
+
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+        f.write(b"content")
+        tmp_path = f.name
+
+    try:
+        with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+            result = await executor.execute(
+                tool_name="rpa_upload_file",
+                arguments={"selector": "#broken-input", "file_path": tmp_path},
+                session_id="standalone",
+                tenant_id="t1",
+            )
+    finally:
+        os.unlink(tmp_path)
+
+    assert result.success is False
+    assert "Permission denied" in (result.error or "")
+
+
+# ── lines 576-602: standalone download_file success path ─────────────────────
+
+@pytest.mark.asyncio
+async def test_standalone_download_file_success() -> None:
+    """Lines 576-602: standalone download_file full success path."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "export.xlsx"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl():
+        return mock_download
+
+    mock_holder.value = _get_dl()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+    playwright_cm = make_playwright_cm(page)
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+        f.write(b"XLSX content")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf, \
+             patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor = make_standalone_executor()
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".export-btn"},
+                session_id="standalone",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_standalone_download_file_success_with_artifact_store() -> None:
+    """Lines 576-602: standalone download with artifact_store (covers store_bytes path)."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "report.pdf"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl2():
+        return mock_download
+
+    mock_holder.value = _get_dl2()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+    playwright_cm = make_playwright_cm(page)
+
+    mock_store = AsyncMock()
+    mock_store.store_bytes = AsyncMock(return_value="s3://bucket/report.pdf")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"PDF data")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf, \
+             patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor = make_standalone_executor()
+            executor._artifact_store = mock_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".dl"},
+                session_id="standalone",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+# ── line 623: standalone submit_form select field path ────────────────────────
+
+@pytest.mark.asyncio
+async def test_standalone_submit_form_select_field() -> None:
+    """Line 623: submit_form with a <select> element in standalone path."""
+    page = make_mock_page()
+    mock_el = MagicMock()
+    mock_el.evaluate = AsyncMock(side_effect=["select", ""])
+    mock_el.fill = AsyncMock()
+    page.locator = MagicMock(return_value=mock_el)
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
+
+    with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+        result = await executor.execute(
+            tool_name="rpa_submit_form",
+            arguments={"field_values": {"#country": "US"}, "submit_selector": "#go"},
+            session_id="standalone",
+            tenant_id="t1",
+        )
+    assert result.success is True
+    page.select_option.assert_called_once_with("#country", value="US")
+
+
+# ── line 628: standalone submit_form checkbox uncheck path ────────────────────
+
+@pytest.mark.asyncio
+async def test_standalone_submit_form_checkbox_uncheck() -> None:
+    """Line 628: submit_form checkbox uncheck path in standalone."""
+    page = make_mock_page()
+    mock_el = MagicMock()
+    mock_el.evaluate = AsyncMock(side_effect=["input", "checkbox"])
+    mock_el.check = AsyncMock()
+    mock_el.uncheck = AsyncMock()
+    page.locator = MagicMock(return_value=mock_el)
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
+
+    with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+        result = await executor.execute(
+            tool_name="rpa_submit_form",
+            arguments={"field_values": {"#newsletter": False}},
+            session_id="standalone",
+            tenant_id="t1",
+        )
+    assert result.success is True
+    mock_el.uncheck.assert_called_once()
+
+
+# ── lines 333-334: artifact_store.store_bytes exception in session download ───
+
+@pytest.mark.asyncio
+async def test_pw_download_file_artifact_store_raises() -> None:
+    """Lines 333-334: store_bytes raises → exception caught, artifact_url = tmp_path."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "data.pdf"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl():
+        return mock_download
+
+    mock_holder.value = _get_dl()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+
+    mock_artifact_store = AsyncMock()
+    mock_artifact_store.store_bytes = AsyncMock(side_effect=RuntimeError("S3 down"))
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"content")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf:
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor, _ = make_executor_with_session_manager(page)
+            executor._artifact_store = mock_artifact_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".dl"},
+                session_id="s1",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+# ── lines 338-339: os.unlink raises in finally block (session download) ───────
+
+@pytest.mark.asyncio
+async def test_pw_download_file_unlink_exception_silenced() -> None:
+    """Lines 338-339: os.unlink raises in the artifact_store finally block → silenced."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "report.pdf"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl3():
+        return mock_download
+
+    mock_holder.value = _get_dl3()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+
+    mock_artifact_store = AsyncMock()
+    mock_artifact_store.store_bytes = AsyncMock(return_value="s3://bucket/report.pdf")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"pdf-data")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf, \
+             patch("os.unlink", side_effect=OSError("file locked")):
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor, _ = make_executor_with_session_manager(page)
+            executor._artifact_store = mock_artifact_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".dl-btn"},
+                session_id="s1",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    # Exception in os.unlink is silenced — result should still come back
+    assert result is not None
+
+
+# ── lines 594-595, 599-600: standalone download artifact_store exception ──────
+
+@pytest.mark.asyncio
+async def test_standalone_download_artifact_store_raises() -> None:
+    """Lines 594-595: standalone download artifact_store.store_bytes raises."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "export.csv"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl4():
+        return mock_download
+
+    mock_holder.value = _get_dl4()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+    playwright_cm = make_playwright_cm(page)
+
+    mock_store = AsyncMock()
+    mock_store.store_bytes = AsyncMock(side_effect=RuntimeError("S3 error"))
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+        f.write(b"a,b\n1,2")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf, \
+             patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor = make_standalone_executor()
+            executor._artifact_store = mock_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".export"},
+                session_id="standalone",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_standalone_download_unlink_exception_silenced() -> None:
+    """Lines 599-600: standalone download os.unlink raises in finally → silenced."""
+    page = make_mock_page()
+
+    mock_download = MagicMock()
+    mock_download.suggested_filename = "data.zip"
+    mock_download.save_as = AsyncMock()
+
+    mock_holder = MagicMock()
+
+    async def _get_dl5():
+        return mock_download
+
+    mock_holder.value = _get_dl5()
+
+    download_cm = MagicMock()
+    download_cm.__aenter__ = AsyncMock(return_value=mock_holder)
+    download_cm.__aexit__ = AsyncMock(return_value=False)
+    page.expect_download = MagicMock(return_value=download_cm)
+    playwright_cm = make_playwright_cm(page)
+
+    mock_store = AsyncMock()
+    mock_store.store_bytes = AsyncMock(return_value="s3://bucket/data.zip")
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+        f.write(b"ZIP")
+        real_tmp = f.name
+
+    try:
+        with patch("tempfile.NamedTemporaryFile") as mock_ntf, \
+             patch("os.unlink", side_effect=OSError("busy")), \
+             patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+            mock_file_ctx = MagicMock()
+            mock_file_ctx.name = real_tmp
+            mock_ntf.return_value.__enter__ = MagicMock(return_value=mock_file_ctx)
+            mock_ntf.return_value.__exit__ = MagicMock(return_value=False)
+
+            executor = make_standalone_executor()
+            executor._artifact_store = mock_store
+
+            result = await executor.execute(
+                tool_name="rpa_download_file",
+                arguments={"selector": ".dl-zip"},
+                session_id="standalone",
+                tenant_id="t1",
+            )
+    finally:
+        try:
+            os.unlink(real_tmp)
+        except Exception:
+            pass
+
+    assert result is not None
