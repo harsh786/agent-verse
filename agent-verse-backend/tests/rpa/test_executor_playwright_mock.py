@@ -14,6 +14,19 @@ import pytest
 
 from app.rpa.executor import RPAExecutor, RPAResult
 
+# Standalone tests patch async_playwright — skip the whole section when
+# playwright is not installed (CI/test environments without the browser).
+_PLAYWRIGHT_AVAILABLE = True
+try:
+    import playwright  # noqa: F401
+except ImportError:
+    _PLAYWRIGHT_AVAILABLE = False
+
+requires_playwright = pytest.mark.skipif(
+    not _PLAYWRIGHT_AVAILABLE,
+    reason="playwright package not installed — standalone path tests skipped",
+)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -943,6 +956,7 @@ def make_playwright_cm(page: MagicMock) -> MagicMock:
     return playwright_cm
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_open_url() -> None:
     page = make_mock_page()
@@ -960,6 +974,7 @@ async def test_standalone_open_url() -> None:
     page.goto.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_open_url_no_url_error() -> None:
     page = make_mock_page()
@@ -976,6 +991,7 @@ async def test_standalone_open_url_no_url_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_click_by_selector() -> None:
     page = make_mock_page()
@@ -992,6 +1008,7 @@ async def test_standalone_click_by_selector() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_click_with_url() -> None:
     page = make_mock_page()
@@ -1009,6 +1026,7 @@ async def test_standalone_click_with_url() -> None:
     page.goto.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_click_by_text() -> None:
     page = make_mock_page()
@@ -1025,6 +1043,7 @@ async def test_standalone_click_by_text() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_click_no_selector_no_text_error() -> None:
     page = make_mock_page()
@@ -1041,6 +1060,7 @@ async def test_standalone_click_no_selector_no_text_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_type_success() -> None:
     page = make_mock_page()
@@ -1057,6 +1077,7 @@ async def test_standalone_type_success() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_type_with_url() -> None:
     page = make_mock_page()
@@ -1074,6 +1095,7 @@ async def test_standalone_type_with_url() -> None:
     page.goto.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_type_no_selector_error() -> None:
     page = make_mock_page()
@@ -1090,6 +1112,7 @@ async def test_standalone_type_no_selector_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_extract_text() -> None:
     page = make_mock_page()
@@ -1108,6 +1131,7 @@ async def test_standalone_extract_text() -> None:
     assert "page text here" in result.output
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_extract_text_with_url() -> None:
     page = make_mock_page()
@@ -1125,6 +1149,7 @@ async def test_standalone_extract_text_with_url() -> None:
     page.goto.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_screenshot() -> None:
     page = make_mock_page(screenshot_bytes=b"\x89PNG\r\n")
@@ -1142,6 +1167,7 @@ async def test_standalone_screenshot() -> None:
     assert "data:image/png;base64," in (result.artifact_url or "")
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_screenshot_with_url() -> None:
     page = make_mock_page()
@@ -1159,6 +1185,7 @@ async def test_standalone_screenshot_with_url() -> None:
     page.goto.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_screenshot_with_artifact_store() -> None:
     """Covers standalone artifact_store path."""
@@ -1184,6 +1211,7 @@ async def test_standalone_screenshot_with_artifact_store() -> None:
     mock_store.write_bytes.assert_called_once()
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_wait_for_text() -> None:
     page = make_mock_page()
@@ -1201,6 +1229,7 @@ async def test_standalone_wait_for_text() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_wait_for_text_no_text_error() -> None:
     page = make_mock_page()
@@ -1217,6 +1246,7 @@ async def test_standalone_wait_for_text_no_text_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_wait_for_text_content_fallback() -> None:
     page = make_mock_page(html_content="<html>Hello!</html>")
@@ -1235,6 +1265,7 @@ async def test_standalone_wait_for_text_content_fallback() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_wait_for_text_not_found() -> None:
     page = make_mock_page(html_content="<html>Goodbye!</html>")
@@ -1253,6 +1284,7 @@ async def test_standalone_wait_for_text_not_found() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_select_option() -> None:
     page = make_mock_page()
@@ -1269,6 +1301,7 @@ async def test_standalone_select_option() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_select_option_label_fallback() -> None:
     page = make_mock_page()
@@ -1286,6 +1319,7 @@ async def test_standalone_select_option_label_fallback() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_select_option_no_selector_error() -> None:
     page = make_mock_page()
@@ -1302,6 +1336,7 @@ async def test_standalone_select_option_no_selector_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_select_option_exception() -> None:
     page = make_mock_page()
@@ -1319,6 +1354,7 @@ async def test_standalone_select_option_exception() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_upload_file_no_selector_error() -> None:
     page = make_mock_page()
@@ -1335,6 +1371,7 @@ async def test_standalone_upload_file_no_selector_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_upload_file_not_found() -> None:
     page = make_mock_page()
@@ -1351,6 +1388,7 @@ async def test_standalone_upload_file_not_found() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_upload_file_success() -> None:
     with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
@@ -1373,6 +1411,7 @@ async def test_standalone_upload_file_success() -> None:
         os.unlink(tmp_path)
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_file_no_selector_error() -> None:
     page = make_mock_page()
@@ -1389,6 +1428,7 @@ async def test_standalone_download_file_no_selector_error() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_file_exception() -> None:
     page = make_mock_page()
@@ -1409,6 +1449,7 @@ async def test_standalone_download_file_exception() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form() -> None:
     page = make_mock_page()
@@ -1429,6 +1470,7 @@ async def test_standalone_submit_form() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form_checkbox() -> None:
     page = make_mock_page()
@@ -1450,6 +1492,7 @@ async def test_standalone_submit_form_checkbox() -> None:
     assert result.success is True
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form_keyboard_fallback() -> None:
     page = make_mock_page()
@@ -1472,6 +1515,7 @@ async def test_standalone_submit_form_keyboard_fallback() -> None:
     page.keyboard.press.assert_called_once_with("Enter")
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form_exception() -> None:
     page = make_mock_page()
@@ -1491,6 +1535,7 @@ async def test_standalone_submit_form_exception() -> None:
     assert result.success is False
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_unknown_tool_fallback() -> None:
     page = make_mock_page()
@@ -1507,6 +1552,7 @@ async def test_standalone_unknown_tool_fallback() -> None:
     assert result is not None  # falls back to simulation
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_context_exception_handled() -> None:
     """Exception in browser.new_context() is caught by inner try/except (lines 649-650)."""
@@ -1662,6 +1708,7 @@ async def test_pw_download_file_success_with_artifact_store() -> None:
 
 # ── line 492-493: standalone screenshot artifact_store exception handler ───────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_screenshot_artifact_store_exception() -> None:
     """Lines 492-493: artifact_store.write_bytes raises → fallback to base64."""
@@ -1688,6 +1735,7 @@ async def test_standalone_screenshot_artifact_store_exception() -> None:
 
 # ── line 552: standalone upload_file missing file_path argument ───────────────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_upload_file_no_file_path_error() -> None:
     """Line 552: upload_file with selector but no file_path returns error."""
@@ -1708,6 +1756,7 @@ async def test_standalone_upload_file_no_file_path_error() -> None:
 
 # ── lines 565-566: standalone upload_file set_input_files exception ───────────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_upload_file_set_input_files_exception() -> None:
     """Lines 565-566: page.set_input_files raises → RPAResult(success=False)."""
@@ -1737,6 +1786,7 @@ async def test_standalone_upload_file_set_input_files_exception() -> None:
 
 # ── lines 576-602: standalone download_file success path ─────────────────────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_file_success() -> None:
     """Lines 576-602: standalone download_file full success path."""
@@ -1787,6 +1837,7 @@ async def test_standalone_download_file_success() -> None:
     assert result is not None
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_file_success_with_artifact_store() -> None:
     """Lines 576-602: standalone download with artifact_store (covers store_bytes path)."""
@@ -1844,6 +1895,7 @@ async def test_standalone_download_file_success_with_artifact_store() -> None:
 
 # ── line 623: standalone submit_form select field path ────────────────────────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form_select_field() -> None:
     """Line 623: submit_form with a <select> element in standalone path."""
@@ -1868,6 +1920,7 @@ async def test_standalone_submit_form_select_field() -> None:
 
 # ── line 628: standalone submit_form checkbox uncheck path ────────────────────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_submit_form_checkbox_uncheck() -> None:
     """Line 628: submit_form checkbox uncheck path in standalone."""
@@ -2005,6 +2058,7 @@ async def test_pw_download_file_unlink_exception_silenced() -> None:
 
 # ── lines 594-595, 599-600: standalone download artifact_store exception ──────
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_artifact_store_raises() -> None:
     """Lines 594-595: standalone download artifact_store.store_bytes raises."""
@@ -2060,6 +2114,7 @@ async def test_standalone_download_artifact_store_raises() -> None:
     assert result is not None
 
 
+@requires_playwright
 @pytest.mark.asyncio
 async def test_standalone_download_unlink_exception_silenced() -> None:
     """Lines 599-600: standalone download os.unlink raises in finally → silenced."""
