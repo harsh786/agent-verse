@@ -114,3 +114,57 @@ def test_cors_preflight_bypasses_auth() -> None:
 
     assert resp.status_code == 200
     assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_cors_headers_present_on_scope_403() -> None:
+    """CORS headers must be on 403 responses from ScopeEnforcementMiddleware.
+
+    Regression test: CORSMiddleware was previously added innermost (first), so
+    403s from ScopeEnforcement bypassed it and the browser saw a CORS error
+    instead of an actionable 403.  CORSMiddleware must be outermost (added last)
+    to wrap ALL responses.
+    """
+    from app.auth.scope_enforcement import ScopeEnforcementMiddleware
+    from app.tenancy.context import TenantContext
+
+    scope_app = FastAPI()
+
+    tenant_ctx = TenantContext(
+        tenant_id="t1",
+        plan=PlanTier.FREE,
+        api_key_id="k1",
+        roles=("operator",),  # operator doesn't have governance:read
+    )
+
+    async def _resolve(_: str) -> TenantContext | None:
+        return tenant_ctx
+
+    # Correct order: CORS outermost (added last), scope enforcement inner
+    scope_app.add_middleware(SecurityHeadersMiddleware)
+    scope_app.add_middleware(ScopeEnforcementMiddleware)
+    scope_app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    scope_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    from fastapi import Request
+
+    @scope_app.get("/governance/approvals")
+    async def approvals(request: Request) -> dict:
+        return {"approvals": []}
+
+    client = TestClient(scope_app, raise_server_exceptions=False)
+    resp = client.get(
+        "/governance/approvals",
+        headers={"X-Api-Key": "any-key", "Origin": "http://localhost:5173"},
+    )
+
+    assert resp.status_code == 403
+    assert "access-control-allow-origin" in resp.headers, (
+        "CORS header missing on 403 — CORSMiddleware must be outermost"
+    )
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
