@@ -328,7 +328,7 @@ services:
 
   frontend:
     build:
-      context: ../agent-verse-frontend
+      context: ../../agent-verse-frontend
       dockerfile: Dockerfile
       args:
         VITE_API_URL: http://localhost:8000

@@ -1878,11 +1878,11 @@ def enforce_hitl_sla() -> dict:
                 overdue = (
                     await session.execute(
                         _t("""
-                            SELECT id, tenant_id, request_id, sla_deadline_at, escalation_action
+                            SELECT id, tenant_id, sla_deadline
                             FROM hitl_approval_requests
                             WHERE status = 'pending'
-                              AND sla_deadline_at IS NOT NULL
-                              AND sla_deadline_at < NOW()
+                              AND sla_deadline IS NOT NULL
+                              AND sla_deadline < NOW()
                             LIMIT 100
                         """)
                     )
@@ -1916,7 +1916,7 @@ def flush_audit_wal() -> dict:
             from app.db.session import get_session_factory
             from app.governance.audit_v2 import AuditFlusher
 
-            flusher = AuditFlusher(redis=r, db=get_session_factory())
+            flusher = AuditFlusher(redis=r, db_factory=get_session_factory())
             flushed = await flusher.flush()
             await r.aclose()
             return {"flushed": flushed}
