@@ -364,6 +364,11 @@ def create_app(
     settings = settings or get_settings()
     configure_logging(level=settings.log_level, json_logs=settings.is_production)
 
+    # Allow env var to enable manage_pools when uvicorn calls create_app() with no args
+    import os as _os_mp
+    if not manage_pools and _os_mp.getenv("MANAGE_POOLS", "").lower() in ("1", "true", "yes"):
+        manage_pools = True
+
     registry = HealthRegistry(list(health_checks or []))
 
     # ── Build shared services ─────────────────────────────────────────────────

@@ -225,7 +225,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 "startAt": arguments.get("start_at", 0),
                 "fields": arguments.get("fields", default_fields),
             }
-            resp = await client.post("/rest/api/3/search", json=payload)
+            resp = await client.post("/rest/api/3/search/jql", json=payload)
             resp.raise_for_status()
             data = resp.json()
             return {
