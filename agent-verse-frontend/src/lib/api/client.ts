@@ -1274,13 +1274,19 @@ export interface CostAnomaly {
 
 export const costsApi = {
   getSummary: () => request<CostSummary>("/costs/summary"),
-  getPerAgent: () => request<AgentCost[]>("/costs/per-agent"),
+  getPerAgent: () =>
+    request<{ agents: AgentCost[]; period_days?: number } | AgentCost[]>("/costs/per-agent").then(
+      (res) => (Array.isArray(res) ? res : (res as any).agents ?? [])
+    ) as Promise<AgentCost[]>,
   predict: (goal: string) =>
     request<CostPrediction>("/costs/predict", { method: "POST", body: JSON.stringify({ goal }) }),
   getBudgets: () => request<BudgetConfig>("/costs/budgets"),
   updateBudgets: (body: Partial<BudgetConfig>) =>
     request<void>("/costs/budgets", { method: "PUT", body: JSON.stringify(body) }),
-  getAnomalies: () => request<CostAnomaly[]>("/costs/anomalies"),
+  getAnomalies: () =>
+    request<{ anomalies: CostAnomaly[] } | CostAnomaly[]>("/costs/anomalies").then(
+      (res) => (Array.isArray(res) ? res : (res as any).anomalies ?? [])
+    ) as Promise<CostAnomaly[]>,
 };
 
 // ── Self-Improvement (Spec 9) ─────────────────────────────────────────────────
