@@ -1,134 +1,114 @@
-# AgentVerse: Complete Agent Creation Guide
-## From Simple JIRA Agent → Multi-Agent Civilizations
+# AgentVerse: Complete Agent Creation Masterplan
+## Simple JIRA Agent → Multi-Connector → Multi-Agent → Civilization
 
-> **This is your end-to-end roadmap.** Start with a single JIRA agent, progress through multi-connector agents, multi-agent patterns, and arrive at fully autonomous Agent Civilizations that create and manage agents on their own.
-
----
-
-## Table of Contents
-
-1. [Platform Setup (Prerequisites)](#1-platform-setup)
-2. [Phase 1 — Simple JIRA Agent](#2-phase-1--simple-jira-agent)
-3. [Phase 2 — JIRA + GitHub + Slack (Multi-Connector)](#3-phase-2--multi-connector-agent)
-4. [Phase 3 — Multi-Agent Patterns](#4-phase-3--multi-agent-patterns)
-5. [Phase 4 — Autonomous Agent Civilization](#5-phase-4--agent-civilization)
-6. [Agent Mastery Checklist](#6-agent-mastery-checklist)
+> **The end-to-end practical guide.** Every step verified against real AgentVerse code.
+> Built from actual connector setup, auth debugging, and platform architecture.
 
 ---
 
-## 1. Platform Setup
+## Quick Status Check
 
-### 1.1 Start AgentVerse locally
+Before starting, verify everything is running:
 
 ```bash
-# 1. Start Docker VM (macOS)
-colima start
+# 1. Backend healthy?
+curl -s http://localhost:8000/health | python3 -m json.tool
+# Expected: {"status":"healthy","checks":{"postgres":{"status":"up"},"redis":{"status":"up"}}}
 
-# 2. Start the minimum infrastructure
+# 2. Your API key (from earlier setup)
+export AV_KEY="av_free_CvkhCJyL3OSJy6mWUe_2hpZCotGWYFYvzhg0xs-K-WQ"
+
+# 3. Frontend running?
+open http://localhost:5173
+```
+
+If backend is down:
+```bash
+colima start
 cd agent-verse-backend
 docker-compose -f infra/docker-compose.yml up -d postgres redis
-
-# 3. Apply database migrations
-uv sync && uv run alembic upgrade head
-
-# 4. Set your LLM API key in .env
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
-# OR
-echo "OPENAI_API_KEY=sk-..." >> .env
-
-# 5. Start the backend
-uv run uvicorn app.main:app --reload --port 8000
-
-# 6. Start Celery worker (needed for goal execution)
-uv run celery -A app.scaling.celery_app worker \
-  --loglevel=info -Q goals,schedules,maintenance --concurrency=2
-
-# 7. Start the frontend (new terminal)
-cd agent-verse-frontend && npm run dev
+uv run uvicorn app.main:app --reload --port 8000 &
+uv run celery -A app.scaling.celery_app worker --loglevel=info -Q goals,schedules,maintenance --concurrency=2 &
 ```
-
-Open: **http://localhost:5173**
-
-### 1.2 Create your first tenant
-
-```bash
-# Returns api_key — save this!
-curl -s -X POST http://localhost:8000/tenants/signup \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My Team", "email": "me@example.com"}' | python3 -m json.tool
-```
-
-**Or via UI:** Visit http://localhost:5173 → enter name + email → copy the API key shown.
-
-Set your key for all subsequent `curl` commands:
-```bash
-export AV_KEY="av-your-api-key-here"
-```
-
-### 1.3 JIRA API credentials you need
-
-Before creating a JIRA agent, get these from your Atlassian account:
-
-| Credential | Where to get it |
-|-----------|----------------|
-| **JIRA Base URL** | `https://yourcompany.atlassian.net` |
-| **JIRA Email** | Your Atlassian login email |
-| **JIRA API Token** | https://id.atlassian.com → Security → Create API token |
-| **Project Key** | From JIRA board URL: `jira.atlassian.net/jira/software/projects/PROJ/...` |
 
 ---
 
-## 2. Phase 1 — Simple JIRA Agent
+# PHASE 1: Simple JIRA Agent
+**Time to complete: 30 minutes**
+**What you build: An agent that reads, creates, and triages JIRA tickets autonomously**
 
-**Goal:** An agent that can read, create, and update JIRA tickets autonomously.
+---
 
-### Step 2.1 — Register the JIRA Connector
+## Step 1.1 — Register JIRA Connector
 
-**Via UI:**
-1. Go to **Connectors** (sidebar) → **Connector Catalog**
-2. Find **JIRA** → click **Register**
+### Via the new UI (Fixed auth form)
+
+1. Go to **http://localhost:5173/connectors**
+2. Click **+ Register Connector**
 3. Fill in:
-   - Name: `My JIRA`
-   - URL: `https://yourcompany.atlassian.net`
-   - Auth Type: `api_key`
-   - API Key: `your-email:your-api-token` (base64 encoded for Basic Auth) or just paste the token
 
-**Via API:**
+| Field | Value |
+|-------|-------|
+| **Name** | `pinelabs-jira` |
+| **URL** | `https://pinelabs.atlassian.net` ← auto-filled when you type "jira" |
+| **Auth Type** | `Basic Auth` |
+| **Username/Email** | `harsh.kumar01@pinelabs.com` |
+| **Password/API Token** | `[your NEW Atlassian API token]` |
+
+> **Get a new API token here:** https://id.atlassian.com/manage-profile/security/api-tokens
+> Click "Create API token" → Label: `agentverse` → Copy the token
+
+4. Click **Register**
+5. Click **Test** → should show green "OK · ~200ms"
+
+### Via API (alternative)
+
 ```bash
+# Generate base64 of email:token
+ENCODED=$(echo -n "harsh.kumar01@pinelabs.com:YOUR_NEW_TOKEN" | base64)
+
 curl -s -X POST http://localhost:8000/connectors \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "My JIRA",
-    "url": "https://yourcompany.atlassian.net",
-    "auth_type": "api_key",
-    "auth_config": {
-      "api_key": "your-api-token",
-      "email": "you@yourcompany.com"
-    },
-    "description": "Main JIRA instance"
-  }' | python3 -m json.tool
+  -d "{
+    \"name\": \"pinelabs-jira\",
+    \"url\": \"https://pinelabs.atlassian.net\",
+    \"auth_type\": \"custom_header\",
+    \"auth_config\": {
+      \"Authorization\": \"Basic ${ENCODED}\"
+    }
+  }" | python3 -m json.tool
+
+# Save the server_id from response
+export JIRA_CONNECTOR_ID="<server_id from response>"
 ```
 
-Copy the `server_id` from the response — you need it for the agent.
+### Verify you have project access
 
-**Test the connector works:**
 ```bash
-curl -s -X POST http://localhost:8000/connectors/{server_id}/test \
-  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
-# Should show: "reachable": true
+# Test that your token can see JIRA projects
+curl -s -u "harsh.kumar01@pinelabs.com:YOUR_NEW_TOKEN" \
+  "https://pinelabs.atlassian.net/rest/api/3/project/search" \
+  -H "Accept: application/json" | python3 -m json.tool | grep '"key"'
 ```
 
-### Step 2.2 — Create the JIRA Agent
+**If you get `"total": 0`** — your account needs to be added to a JIRA project by your admin.
+Ask your JIRA admin: *"Please add harsh.kumar01@pinelabs.com to the [PROJECT] project with Browse + Edit permissions"*
 
-**Via UI:**
-1. Go to **Agents** → **Create Agent**
-2. Choose **AI Builder** tab
-3. Type: `"Create a JIRA triage agent for project PROJ"`
-4. Click **Generate** — the AI configures it automatically
-5. Review the config → click **Create**
+---
 
-**Via API (full control):**
+## Step 1.2 — Create the JIRA Agent
+
+### Via UI (Recommended — uses AI Builder)
+
+1. Go to **http://localhost:5173/agents** → **Create Agent**
+2. Select **AI Builder** tab
+3. Type: `"Create a JIRA triage agent for PineLabs project that reads tickets, assigns priority, and adds summary comments"`
+4. Click **Generate** → reviews and creates the config
+5. Click **Create Agent**
+
+### Via API (Full control)
+
 ```bash
 curl -s -X POST http://localhost:8000/agents \
   -H "X-API-Key: $AV_KEY" \
@@ -136,848 +116,990 @@ curl -s -X POST http://localhost:8000/agents \
   -d '{
     "name": "JIRA Triage Agent",
     "autonomy_mode": "supervised",
-    "goal_template": "Triage all unassigned JIRA tickets in project {project_key}: categorize by priority, assign to appropriate team members, add labels, and post a summary comment on each.",
-    "description": "Reads and triages JIRA tickets — assigns, labels, comments",
-    "connector_ids": ["YOUR_JIRA_SERVER_ID"],
-    "model": "claude-sonnet-4-5"
+    "goal_template": "Perform JIRA operations on project {project_key}: {task}",
+    "description": "Reads and manages JIRA tickets for PineLabs",
+    "connector_ids": ["'"$JIRA_CONNECTOR_ID"'"]
   }' | python3 -m json.tool
+
+export JIRA_AGENT_ID="<agent_id from response>"
 ```
 
-**Key fields explained:**
-
-| Field | Value | Why |
-|-------|-------|-----|
-| `autonomy_mode` | `supervised` | Agent asks for human approval on write operations (safe start) |
-| `goal_template` | NL description with `{variables}` | Reusable template; submit goals with specific values |
-| `connector_ids` | `["jira-server-id"]` | Only this agent can call JIRA |
-| `model` | `claude-sonnet-4-5` | Mid-tier model: good balance of cost/quality for tool use |
-
-**Autonomy modes — when to use each:**
-
+**Autonomy mode explanation:**
 ```
-supervised           → Every high-risk step (create/update/delete) waits for YOUR approval
-                      Use when: first time running, testing, prod deployments
+supervised        → PAUSES and asks YOUR approval for every write operation
+                   ✅ Use this first — safe, you stay in control
 
-bounded-autonomous   → Runs freely but logs every action for audit
-                      Use when: you trust the agent logic, want speed, need audit trail
+bounded-autonomous → Runs freely, logs everything, no pauses
+                   ✅ Use after you trust the agent logic
 
-fully-autonomous     → Runs without any human gates
-                      Use when: proven agent, repetitive well-defined task, non-destructive
+fully-autonomous  → No human gates at all
+                   ⚠️ Only use for proven, non-destructive tasks
 ```
 
-### Step 2.3 — Submit Your First JIRA Goal
+---
 
-**Via UI:**
-1. Go to **Goals** → **Submit Goal**
-2. Select agent: `JIRA Triage Agent`
-3. Type goal: `"List all open bugs in project PROJ with priority High, sorted by creation date"`
-4. Click **Submit**
-5. Watch the **Goal Detail** page — live execution timeline appears
+## Step 1.3 — Submit Your First Goals (Read-Only)
 
-**Via API:**
+Start safe — read operations only, zero risk.
+
+### Goal 1: List open tickets
+
 ```bash
 curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "List all open bugs in project PROJ with priority High, sorted by creation date",
-    "agent_id": "YOUR_AGENT_ID",
-    "priority": "normal"
+    "goal": "Search JIRA for all open tickets in project PLAT with priority High. Return a formatted list with: ticket key, summary, assignee, days since created.",
+    "agent_id": "'"$JIRA_AGENT_ID"'"
   }' | python3 -m json.tool
-```
 
-**Watch it execute (streaming events):**
-```bash
+# Get the goal_id from response, then watch it execute:
 curl -N -H "X-API-Key: $AV_KEY" \
   "http://localhost:8000/goals/{goal_id}/stream"
 ```
 
-**What the agent does internally:**
+**What happens internally:**
 ```
-1. PLAN:    "I need to search JIRA with JQL for high-priority open bugs"
-2. EXECUTE: Calls jira_search_issues(jql="project=PROJ AND issuetype=Bug AND status=Open AND priority=High ORDER BY created DESC")
-3. VERIFY:  "I got 12 issues back — the goal asked for a list, this is complete"
-4. RESULT:  Returns formatted list of 12 bugs with summary, assignee, created date
+[PLAN]    Agent decides: use jira_search_issues with JQL
+[EXECUTE] Calls: jira_search_issues(jql="project=PLAT AND status=Open AND priority=High ORDER BY created DESC")
+[VERIFY]  Gets back N tickets → "Goal achieved: found X high-priority open tickets"
+[RESULT]  Returns formatted table
 ```
 
-### Step 2.4 — Try Write Operations (with HITL)
-
-Since you're in `supervised` mode, write operations will pause for approval.
+### Goal 2: Sprint summary
 
 ```bash
 curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Create a new bug ticket in PROJ: Summary=Login page crashes on mobile Safari, Priority=High, Labels=frontend,mobile",
-    "agent_id": "YOUR_AGENT_ID"
-  }' | python3 -m json.tool
+    "goal": "Get the current active sprint for project PLAT board. List all tickets with their status. Count: total tickets, done, in-progress, to-do. Calculate completion percentage.",
+    "agent_id": "'"$JIRA_AGENT_ID"'"
+  }'
 ```
 
-The agent will:
-1. Plan the `jira_create_issue` call
-2. **PAUSE** → sends you a notification: "Agent wants to call `jira_create_issue` — approve?"
-3. You approve at **http://localhost:5173/approvals**
-4. Agent creates the ticket, returns the new issue key (e.g., `PROJ-456`)
+### Goal 3: Unestimated tickets
 
-**Approve via API:**
-```bash
-curl -s -X POST http://localhost:8000/governance/approvals/{request_id}/approve \
-  -H "X-API-Key: $AV_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"approver": "me@example.com", "note": "Looks good"}'
-```
-
-### Step 2.5 — Common JIRA Goals to Try
-
-```bash
-# 1. Sprint report
-"Summarize all tickets completed in the last sprint for project PROJ. Include total story points, 
- number of bugs fixed, and top contributors by tickets closed."
-
-# 2. Auto-triage
-"Find all unassigned tickets in PROJ created in the last 7 days. For each one:
- - If it's a Bug: set priority to High, assign to the dev team lead
- - If it's a Task: add label 'needs-grooming'
- - Add a comment: 'Auto-triaged by AgentVerse on [today's date]'"
-
-# 3. Stale ticket cleanup
-"Find all tickets in PROJ that haven't been updated in 30+ days and are still In Progress.
- For each: add a comment asking the assignee for a status update."
-
-# 4. Epic progress
-"For epic PROJ-100, list all child stories, their statuses, and calculate % completion."
-
-# 5. Release notes generation
-"Generate release notes for version 2.0.0 of PROJ by finding all resolved tickets 
- since 2025-01-01 with fix version = 2.0.0. Group by Bug Fixes, Features, Improvements."
-```
-
-### Step 2.6 — Ghost Run First (Preview Before Executing)
-
-Before running destructive operations, preview what the agent will do:
-
-**Via UI:** Goals → Ghost Run  
-**Via API:**
 ```bash
 curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Close all PROJ tickets with status Done that are older than 90 days",
-    "agent_id": "YOUR_AGENT_ID",
-    "dry_run": true
-  }' | python3 -m json.tool
+    "goal": "Find all tickets in project PLAT that have no story points set and are not Done. Return them grouped by assignee.",
+    "agent_id": "'"$JIRA_AGENT_ID"'"
+  }'
 ```
 
-Shows you the plan (what JIRA calls it would make) without executing anything.
+### View execution live on frontend
+
+Go to **http://localhost:5173/goals** → click on your goal → watch the real-time execution timeline with streaming tokens.
 
 ---
 
-## 3. Phase 2 — Multi-Connector Agent
+## Step 1.4 — First Write Operation (with HITL approval)
 
-**Goal:** An agent that spans JIRA + GitHub + Slack — detecting code merged to main, creating JIRA tickets for any issues found, and notifying Slack.
-
-### Step 3.1 — Register All 3 Connectors
+Since you're in `supervised` mode, writing pauses for your approval.
 
 ```bash
-# GitHub connector
-curl -s -X POST http://localhost:8000/connectors \
+# Submit a write goal
+curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "GitHub Org",
-    "url": "https://api.github.com",
-    "auth_type": "bearer",
-    "auth_config": {"token": "ghp_your_token"},
-    "description": "Main GitHub organization"
-  }'
-
-# Slack connector
-curl -s -X POST http://localhost:8000/connectors \
-  -H "X-API-Key: $AV_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Engineering Slack",
-    "url": "https://slack.com/api",
-    "auth_type": "bearer",
-    "auth_config": {"token": "xoxb-your-bot-token"},
-    "description": "Engineering workspace"
+    "goal": "Create a new bug ticket in project PLAT. Summary: Login page crashes on mobile Safari iOS 17. Priority: High. Labels: frontend, mobile, safari. Description: Users report the login button becomes unresponsive after typing in the password field on Safari iOS 17.",
+    "agent_id": "'"$JIRA_AGENT_ID"'"
   }'
 ```
 
-### Step 3.2 — Create a Multi-Connector Agent
+**The agent pauses** → goes to **http://localhost:5173/approvals**
+
+You see:
+```
+⚠️ Agent wants to call: jira_create_issue
+   Project: PLAT
+   Summary: Login page crashes on mobile Safari iOS 17
+   Priority: High
+
+[Approve] [Reject]
+```
+
+Click **Approve** → agent creates the ticket → returns the new issue key (e.g., `PLAT-456`)
+
+**Or approve via API:**
+```bash
+# Get the pending approval
+curl -s http://localhost:8000/governance/approvals \
+  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
+
+# Approve it
+curl -s -X POST http://localhost:8000/governance/approvals/{request_id}/approve \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"approver": "harsh.kumar01@pinelabs.com", "note": "Looks correct, approved"}'
+```
+
+---
+
+## Step 1.5 — Ghost Run (Preview Before Executing)
+
+Before any bulk operation, preview what the agent WOULD do:
+
+```bash
+curl -s -X POST http://localhost:8000/goals \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "goal": "Find all tickets in PLAT with status Done that are older than 90 days and transition them to Closed",
+    "agent_id": "'"$JIRA_AGENT_ID"'",
+    "dry_run": true
+  }'
+```
+
+Shows the plan (what JIRA calls it would make) **without executing anything**.
+Or via UI: **http://localhost:5173/goals/ghost-run**
+
+---
+
+## Step 1.6 — Upgrade to Bounded-Autonomous
+
+Once you trust the agent, remove the approval gates:
+
+```bash
+curl -s -X PUT http://localhost:8000/agents/$JIRA_AGENT_ID \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"autonomy_mode": "bounded-autonomous"}'
+```
+
+Now set up governance policies to protect critical operations:
+
+```bash
+# Block all deletes forever
+curl -s -X POST http://localhost:8000/governance/policies \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Block JIRA deletes",
+    "rule": "jira_delete_*",
+    "action": "DENY",
+    "enabled": true
+  }'
+
+# Require approval for P0 ticket creation
+curl -s -X POST http://localhost:8000/governance/policies \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "P0 ticket approval required",
+    "rule": "jira_create_issue",
+    "action": "REQUIRE_APPROVAL",
+    "time_window": null,
+    "enabled": true
+  }'
+```
+
+---
+
+## Step 1.7 — Set Up a Daily Schedule
+
+Automate the morning standup prep:
+
+```bash
+# Natural language schedule
+curl -s -X POST http://localhost:8000/nl/schedule \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "Every weekday at 9 AM, run the JIRA standup prep goal"
+  }' | python3 -m json.tool
+
+# Then set the goal template on the schedule
+```
+
+Or via UI: **http://localhost:5173/schedules** → **NL Scheduler** tab → type:
+`"Every weekday morning at 9 AM: get all tickets updated yesterday in project PLAT"`
+
+---
+
+## Phase 1 Checklist
+
+- [ ] JIRA connector registered and tests as "OK"
+- [ ] JIRA agent created in supervised mode
+- [ ] Ran 3+ read goals successfully (search, sprint, unestimated)
+- [ ] Ran 1 write goal and approved via HITL
+- [ ] Tried ghost run to preview bulk operation
+- [ ] Upgraded to bounded-autonomous mode
+- [ ] Set up at least 2 governance policies (DENY delete, REQUIRE_APPROVAL for P0)
+- [ ] Set up 1 scheduled goal
+
+---
+
+# PHASE 2: Multi-Connector Agent
+**Time to complete: 1-2 hours**
+**What you build: Agent spanning JIRA + GitHub + Slack — syncing code, tickets, and notifications**
+
+---
+
+## Step 2.1 — Register GitHub Connector
+
+```bash
+# GitHub: uses Bearer token (Personal Access Token)
+# Get your PAT at: github.com → Settings → Developer settings → Personal access tokens
+curl -s -X POST http://localhost:8000/connectors \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "pinelabs-github",
+    "url": "https://api.github.com",
+    "auth_type": "bearer",
+    "auth_config": {"token": "ghp_your_github_token_here"},
+    "description": "PineLabs GitHub organization"
+  }' | python3 -m json.tool
+
+export GITHUB_CONNECTOR_ID="<server_id>"
+```
+
+**GitHub PAT scopes needed:** `repo`, `read:org`, `read:user`
+
+---
+
+## Step 2.2 — Register Slack Connector
+
+```bash
+# Slack: uses Bearer (Bot User OAuth Token starting with xoxb-)
+# Get it at: api.slack.com/apps → your app → OAuth & Permissions → Bot User OAuth Token
+curl -s -X POST http://localhost:8000/connectors \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "pinelabs-slack",
+    "url": "https://slack.com/api",
+    "auth_type": "bearer",
+    "auth_config": {"token": "xoxb-your-slack-bot-token"},
+    "description": "PineLabs engineering Slack workspace"
+  }' | python3 -m json.tool
+
+export SLACK_CONNECTOR_ID="<server_id>"
+```
+
+**Slack bot scopes needed:** `chat:write`, `channels:read`, `channels:history`, `search:read`
+
+---
+
+## Step 2.3 — Create Multi-Connector Agent
 
 ```bash
 curl -s -X POST http://localhost:8000/agents \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Release Sync Agent",
+    "name": "Engineering Sync Agent",
     "autonomy_mode": "bounded-autonomous",
-    "goal_template": "Monitor the {repo} repository for new merged PRs, create JIRA tickets for any bug fixes or features, and post a Slack summary to #{channel}",
-    "connector_ids": ["JIRA_ID", "GITHUB_ID", "SLACK_ID"],
-    "description": "Syncs GitHub releases → JIRA tickets → Slack announcements"
+    "goal_template": "Sync engineering data across JIRA, GitHub, and Slack: {task}",
+    "description": "Cross-system agent: JIRA tickets ↔ GitHub PRs ↔ Slack notifications",
+    "connector_ids": [
+      "'"$JIRA_CONNECTOR_ID"'",
+      "'"$GITHUB_CONNECTOR_ID"'",
+      "'"$SLACK_CONNECTOR_ID"'"
+    ]
+  }' | python3 -m json.tool
+
+export SYNC_AGENT_ID="<agent_id>"
+```
+
+**How the agent picks the right connector:**
+When you submit a goal, the planning LLM sees ALL available tools:
+```
+Available tools:
+  JIRA:   jira_search_issues, jira_create_issue, jira_update_issue, jira_add_comment, jira_transition_issue
+  GitHub: github_list_repos, github_list_issues, github_create_issue, github_create_pr, github_get_file
+  Slack:  slack_send_message, slack_list_channels, slack_get_channel_history
+```
+It plans which tools to call in what order.
+
+---
+
+## Step 2.4 — Multi-Connector Goals
+
+### Goal: PR → JIRA sync
+
+```bash
+curl -s -X POST http://localhost:8000/goals \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "goal": "Get all pull requests merged to main branch in the pinelabs/backend repo in the last 24 hours. For each PR: 1) Find if there is a linked JIRA ticket mentioned in the PR title or description (format: PLAT-XXX). 2) If found, add a comment on the JIRA ticket: PR merged: [PR title] - [PR URL]. 3) If no JIRA ticket found, create a new JIRA task with the PR title as summary.",
+    "agent_id": "'"$SYNC_AGENT_ID"'"
   }'
 ```
 
-### Step 3.3 — Multi-Connector Goal Examples
+**What happens (parallel execution):**
+```
+Wave 1: github_list_pull_requests(repo="pinelabs/backend", state="closed", since="24h ago")
+         → Returns [PR#123, PR#124, PR#125]
 
-**Release notes pipeline:**
-```
-"Check GitHub repo 'myorg/backend' for all PRs merged today.
- For each PR:
-   1. If it contains a bug fix (label=bug): create a JIRA ticket type=Bug in project PROJ
-   2. If it contains a feature (label=feature): create a JIRA Story in PROJ
-   3. Link the JIRA ticket to the PR URL
- Finally post a summary to Slack #releases channel:
-   - Total PRs merged: N
-   - Bugs fixed: N (with JIRA links)
-   - Features shipped: N (with JIRA links)"
-```
-
-**Code review + ticket update:**
-```
-"Find all open PRs in 'myorg/backend' that have been waiting for review > 2 days.
- For each one:
-   1. Find the linked JIRA ticket (from PR description)
-   2. Add a comment on the JIRA ticket: 'PR waiting for review since [date]'
-   3. Notify the JIRA assignee on Slack with a direct message"
+Wave 2 (parallel for each PR):
+  ├── PR#123: jira_search_issues(jql="text ~ 'PLAT-100'") → found PLAT-100
+  │           jira_add_comment(PLAT-100, "PR merged: Fix login bug - https://...")
+  ├── PR#124: jira_search_issues(jql="text ~ 'PLAT-'") → not found
+  │           jira_create_issue(summary="Add dark mode toggle", type=Task)
+  └── PR#125: jira_search_issues(...) → found PLAT-102
+              jira_add_comment(PLAT-102, "PR merged: ...")
 ```
 
-**Sprint automation:**
-```
-"At the start of each sprint:
-   1. Get the GitHub issues labeled 'sprint-ready' from 'myorg/backend'
-   2. Create corresponding JIRA Stories in project PROJ with GitHub issue links
-   3. Move all JIRA Stories to the new sprint
-   4. Post the sprint plan to Slack #dev-team with a formatted table"
-```
+### Goal: Weekly engineering report
 
-### Step 3.4 — How the Agent Routes Across Connectors
-
-Internally, when the agent has 3 connectors, the planning LLM sees all available tools:
-```
-Available tools:
-  - jira_search_issues, jira_create_issue, jira_update_issue, jira_add_comment
-  - github_list_pull_requests, github_get_pull_request, github_create_issue
-  - slack_send_message, slack_list_channels
+```bash
+curl -s -X POST http://localhost:8000/goals \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "goal": "Generate the weekly engineering report: 1) Get all JIRA tickets completed this week in project PLAT (status transitioned to Done). 2) Get all PRs merged to main this week in pinelabs/backend. 3) Calculate: total story points delivered, number of bugs fixed, number of features shipped. 4) Post a formatted summary to Slack channel #engineering-weekly. Format: bold headers, bullet points, include ticket/PR links.",
+    "agent_id": "'"$SYNC_AGENT_ID"'"
+  }'
 ```
 
-The **ModelRouter** then:
-- Uses `claude-opus-4-8` for **planning** (complex multi-step reasoning)
-- Uses `claude-sonnet-4-5` for **executing** each step (calling individual tools)
-- Uses `claude-haiku-3-5` for **verifying** (was the goal achieved?)
+### Goal: Stale PR alert
 
-This cuts LLM cost by ~65% vs using the same model for everything.
-
-### Step 3.5 — Parallel Execution (Wave-Based)
-
-When you submit a goal with multiple independent steps, AgentVerse runs them **in parallel**:
-
-```
-Goal: "For projects PROJ1, PROJ2, PROJ3: get all open bugs and post summaries to Slack"
-
-Wave 1 (parallel):
-  ├── jira_search_issues(project=PROJ1)
-  ├── jira_search_issues(project=PROJ2)
-  └── jira_search_issues(project=PROJ3)
-
-Wave 2 (all results available):
-  └── slack_send_message(combined summary)
-```
-
-The `StructuredPlan.execution_waves()` algorithm automatically detects which steps can run in parallel based on data dependencies — you don't configure this manually.
-
-### Step 3.6 — Governance for Write Operations
-
-When your agent spans multiple connectors and performs writes, add policies:
-
-**Via UI:** Governance → Policies → Add Policy
-
-```json
-{
-  "name": "Require approval for Slack messages",
-  "pattern": "slack.*",
-  "action": "REQUIRE_APPROVAL",
-  "time_window": null
-}
-```
-
-```json
-{
-  "name": "Block production JIRA deletes",
-  "pattern": "jira.delete_*",
-  "action": "DENY"
-}
-```
-
-```json
-{
-  "name": "Allow JIRA reads always",
-  "pattern": "jira.get_*",
-  "action": "ALLOW"
-}
-```
-
-```json
-{
-  "name": "Restrict JIRA writes to business hours",
-  "pattern": "jira.create_*",
-  "action": "REQUIRE_APPROVAL",
-  "time_window": {"start_hour": 9, "end_hour": 17, "weekdays": [0,1,2,3,4]}
-}
+```bash
+curl -s -X POST http://localhost:8000/goals \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "goal": "Find all open GitHub PRs in pinelabs/backend that have been waiting for review for more than 3 days. For each stale PR: 1) Find the linked JIRA ticket. 2) Update the JIRA ticket comment: PR stale since [date], needs review. 3) Send a Slack DM to the PR author reminding them to ping reviewers.",
+    "agent_id": "'"$SYNC_AGENT_ID"'"
+  }'
 ```
 
 ---
 
-## 4. Phase 3 — Multi-Agent Patterns
+## Step 2.5 — Schedule Multi-Connector Automation
 
-Now you build **systems of agents** where multiple specialized agents collaborate.
-
-### Pattern A: Supervisor Agent (Orchestrator)
-
-**Use case:** You have a complex goal that requires multiple specialists.
-
-```
-SupervisorAgent
-    ├── JIRAAgent (reads/writes tickets)
-    ├── GitHubAgent (reads PRs, code)
-    ├── SlackAgent (sends notifications)
-    └── AnalyticsAgent (generates reports)
-```
-
-**Create specialist agents first:**
 ```bash
-# 1. JIRA Specialist
-curl -s -X POST http://localhost:8000/agents -H "X-API-Key: $AV_KEY" \
+# Monday morning sync
+curl -s -X POST http://localhost:8000/schedules \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Weekly Engineering Report",
+    "cron": "0 9 * * 1",
+    "goal_template": "Generate weekly engineering report: JIRA completions + GitHub PRs + post to Slack #engineering-weekly",
+    "agent_id": "'"$SYNC_AGENT_ID"'",
+    "enabled": true
+  }'
+
+# Daily EOD sync
+curl -s -X POST http://localhost:8000/schedules \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Daily PR-JIRA Sync",
+    "cron": "0 18 * * 1-5",
+    "goal_template": "Sync all PRs merged today in pinelabs/backend to their corresponding JIRA tickets. Post daily summary to #dev-updates",
+    "agent_id": "'"$SYNC_AGENT_ID"'",
+    "enabled": true
+  }'
+```
+
+---
+
+## Phase 2 Checklist
+
+- [ ] GitHub connector registered and tested
+- [ ] Slack connector registered and tested
+- [ ] Multi-connector agent created with all 3 connectors
+- [ ] Ran PR→JIRA sync goal successfully
+- [ ] Ran weekly report goal and saw Slack message
+- [ ] Set up 2 scheduled automations
+- [ ] Verified parallel wave execution in goal detail timeline
+
+---
+
+# PHASE 3: Multi-Agent Patterns
+**Time to complete: 2-4 hours**
+**What you build: Hierarchy of specialized agents + Workflow Builder automation**
+
+---
+
+## Step 3.1 — Create Specialist Agents
+
+Each agent has ONE job and ONE connector set.
+
+```bash
+# Agent 1: JIRA Specialist (reads + writes tickets)
+curl -s -X POST http://localhost:8000/agents \
+  -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "JIRA Specialist",
     "autonomy_mode": "bounded-autonomous",
-    "goal_template": "Perform JIRA operations: {task}",
-    "connector_ids": ["JIRA_CONNECTOR_ID"]
-  }'
+    "goal_template": "JIRA operation: {task}. Project: {project_key}",
+    "connector_ids": ["'"$JIRA_CONNECTOR_ID"'"]
+  }' | python3 -m json.tool
+export JIRA_SPECIALIST_ID="<agent_id>"
 
-# 2. GitHub Specialist  
-curl -s -X POST http://localhost:8000/agents -H "X-API-Key: $AV_KEY" \
+# Agent 2: GitHub Specialist (reads PRs, code, issues)
+curl -s -X POST http://localhost:8000/agents \
+  -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "GitHub Specialist",
     "autonomy_mode": "bounded-autonomous",
-    "goal_template": "Perform GitHub operations: {task}",
-    "connector_ids": ["GITHUB_CONNECTOR_ID"]
-  }'
+    "goal_template": "GitHub operation: {task}. Repo: {repo}",
+    "connector_ids": ["'"$GITHUB_CONNECTOR_ID"'"]
+  }' | python3 -m json.tool
+export GITHUB_SPECIALIST_ID="<agent_id>"
 
-# 3. Slack Specialist
-curl -s -X POST http://localhost:8000/agents -H "X-API-Key: $AV_KEY" \
+# Agent 3: Slack Notifier (sends messages and reads channel history)
+curl -s -X POST http://localhost:8000/agents \
+  -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Slack Specialist",
+    "name": "Slack Notifier",
     "autonomy_mode": "fully-autonomous",
-    "goal_template": "Send Slack notifications: {message}",
-    "connector_ids": ["SLACK_CONNECTOR_ID"]
-  }'
+    "goal_template": "Send Slack notification: {message}. Channel: {channel}",
+    "connector_ids": ["'"$SLACK_CONNECTOR_ID"'"]
+  }' | python3 -m json.tool
+export SLACK_SPECIALIST_ID="<agent_id>"
 ```
 
-**Submit a supervisor goal:**
+---
+
+## Step 3.2 — Supervisor Pattern
+
+One coordinator decomposes a complex goal into sub-tasks and delegates to specialists.
+
 ```bash
 curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Generate our weekly engineering report: get all JIRA tickets closed this week, find the top 3 PRs merged, calculate team velocity, and post a formatted report to Slack #weekly-report",
+    "goal": "Prepare complete end-of-sprint report for PLAT Sprint 23: Get all completed JIRA tickets with story points, find all merged PRs this sprint with their authors, calculate velocity vs planned, identify top 3 blockers from tickets that were moved out of sprint, and post the full report to Slack #sprint-reviews with charts and links",
     "workflow_mode": "supervisor"
   }'
 ```
 
-**What the Supervisor does:**
+**The Supervisor Agent decomposes this into:**
 ```
-1. Decomposes goal into 3 sub-goals:
-   - Sub-goal A → JIRAAgent: "Get all tickets closed this week with assignee and story points"
-   - Sub-goal B → GitHubAgent: "Find top 3 PRs by comment count and size merged this week"
-   - Sub-goal C → (waits for A+B)
-   
-2. Runs A and B in parallel
+Supervisor creates 4 sub-goals in parallel:
 
-3. When both complete:
-   - Sub-goal C → SlackAgent: "Post formatted report with [A results] and [B results]"
-   
-4. Synthesizes: "Weekly report posted successfully to #weekly-report"
+Sub-goal A → JIRA Specialist:
+  "Get all PLAT tickets with status Done in Sprint 23. Include: key, summary, assignee, story points, completion date"
+
+Sub-goal B → GitHub Specialist:
+  "List all PRs merged to pinelabs/backend tagged with Sprint 23 or merged during Sprint 23 dates. Include author, title, URL, lines changed"
+
+Sub-goal C → JIRA Specialist (after A):
+  "Find all PLAT tickets that were in Sprint 23 but got moved to backlog. Identify the reasons from comments"
+
+Sub-goal D → Slack Notifier (after A+B+C):
+  "Post formatted sprint report to #sprint-reviews with: velocity=42pts/planned=50pts, 15 tickets done, 8 PRs merged, 3 carried-over tickets. Include all links."
+
+Supervisor synthesizes results → "Sprint 23 report posted to #sprint-reviews"
 ```
 
-### Pattern B: Debate Mode (High-Stakes Decisions)
+---
 
-**Use case:** Before making an important decision (e.g., "should we escalate this bug to P0?"), have multiple agent instances debate and vote.
+## Step 3.3 — Debate Mode (For Important Decisions)
+
+Use when you need confidence in a decision before acting.
 
 ```bash
 curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Analyze PROJ-500: Login failure affecting 15% of users. Should this be escalated to P0? If yes, what immediate actions should be taken?",
+    "goal": "JIRA ticket PLAT-500 title: Payment service down - affecting 20% of transactions. Current priority: Medium. Based on the ticket description, comments, and the fact that 20% of transactions are affected, should this be escalated to P0? Provide recommendation with reasoning and what immediate actions should be taken.",
     "debate_mode": true,
     "debate_agents": 3
   }'
 ```
 
 **What happens:**
-- 3 independent agent instances each analyze the ticket
-- Round 1: Each proposes their assessment (escalate/don't + reasoning)
-- Round 2: Each critiques the other two proposals
-- Round 3: Confidence-weighted vote
-- Winner: The proposal with highest vote count becomes the decision
-- Result includes `consensus_level` (e.g., 0.67 = 2 of 3 agreed)
+```
+Round 1 — 3 independent agents each analyze the ticket:
+  Agent 1: "YES - P0. Payment failures are revenue-impacting. 20% threshold exceeds P0 criteria."
+  Agent 2: "YES - P0. Immediate engineering escalation needed. SLA breach risk."
+  Agent 3: "YES - P0, but verify if 20% is of all transactions or just a segment first."
+
+Round 2 — Each critiques the others:
+  Agent 1 critiques Agent 3: "Verification can happen after escalation, not instead of it"
+  Agent 2 agrees with Agent 1
+  Agent 3 updates: "Agree on P0 escalation"
+
+Round 3 — Vote:
+  All 3 vote for immediate P0 escalation
+  Consensus: 1.0 (unanimous)
+
+Result: "ESCALATE TO P0 immediately. Actions: 1) Page on-call engineer, 2) Update PLAT-500 priority to P0..."
+```
 
 **When to use debate mode:**
-- Architecture decisions
-- Bug severity escalation
-- Whether to break a deadline
-- Risk assessment for a deployment
-- Anything where being wrong has high cost
-
-### Pattern C: Goal Tree (Recursive Decomposition)
-
-**Use case:** A goal so large it needs to be split into sub-goals, each of which may split further.
-
-```bash
-curl -s -X POST http://localhost:8000/goals \
-  -H "X-API-Key: $AV_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "goal": "Perform a full sprint retrospective for PROJ Sprint 42: analyze all completed tickets, identify blockers that caused delays, suggest process improvements, create action items as JIRA tickets, and prepare a presentation summary",
-    "workflow_mode": "goal_tree"
-  }'
-```
-
-**The tree structure:**
-```
-Root: Sprint Retrospective
-├── Branch 1: Data Collection (parallel)
-│   ├── Leaf: Get all completed tickets in Sprint 42
-│   ├── Leaf: Find tickets that moved out of sprint
-│   └── Leaf: Get cycle time for each ticket
-├── Branch 2: Analysis (depends on Branch 1)
-│   ├── Leaf: Identify top 3 blockers by delay caused
-│   └── Leaf: Calculate team velocity vs planned
-├── Branch 3: Actions (depends on Branch 2)
-│   ├── Leaf: Create JIRA improvement tickets
-│   └── Leaf: Assign action items to team leads
-└── Branch 4: Report (depends on Branch 3)
-    └── Leaf: Post summary to Slack
-```
-
-### Pattern D: Multi-Agent Workflow Builder
-
-**Use case:** Build a visual workflow that runs on a schedule.
-
-1. Go to **Workflow Builder** (sidebar)
-2. Click **Generate from NL**
-3. Type: `"Every Monday morning: check JIRA for unestimated tickets, estimate them using historical data from similar tickets, update story points, and notify the scrum master on Slack"`
-4. The canvas generates a workflow with nodes:
-
-```
-[Trigger: Monday 9 AM]
-    ↓
-[Tool Call: jira_search_issues(unestimated tickets)]
-    ↓ 
-[Decision: Found tickets?] → No → [End]
-    ↓ Yes
-[Parallel Fan-out]
-    ├── [Tool Call: jira_search_issues(similar past tickets for T1)]
-    ├── [Tool Call: jira_search_issues(similar past tickets for T2)]
-    └── [Tool Call: jira_search_issues(similar past tickets for T3)]
-    ↓
-[Agent Step: Calculate story point estimates]
-    ↓
-[Loop: For each ticket]
-    └── [Tool Call: jira_update_issue(story_points=estimated)]
-    ↓
-[Tool Call: slack_send_message(scrum master summary)]
-    ↓
-[End]
-```
-
-5. **Save** the workflow
-6. **Schedule** it: set trigger to cron `0 9 * * 1` (Monday 9 AM)
+- Production incident severity assessment
+- Architecture decision (microservice vs monolith)
+- Whether to skip a release due to a bug
+- Budget impact analysis
+- Any decision where being wrong is expensive
 
 ---
 
-## 5. Phase 4 — Agent Civilization
+## Step 3.4 — Visual Workflow Builder
 
-**This is where AgentVerse becomes truly autonomous.** A Civilization is a self-governing society of agents that:
-- Creates new specialist agents when needed
-- Retires agents that are no longer effective
-- Learns from outcomes and improves agent prompts
-- Coordinates through a shared Blackboard
-- Governed by a Constitution (rules that cannot be overridden)
+Build a recurring automation as a visual workflow.
 
-### 5.1 — Understanding the Civilization Architecture
+1. Go to **http://localhost:5173/workflow-builder**
+2. Click **"Generate from NL"**
+3. Type: `"Every Monday: Get unestimated JIRA tickets, search similar historical tickets to estimate story points, update each ticket, notify the team on Slack"`
+
+**The canvas generates:**
 
 ```
-CivilizationOrchestrator
-    │
-    ├── Governor          ← Evaluates spawning/killing decisions
-    ├── Constitution      ← Immutable rules (e.g., "never delete production data")
-    ├── Blackboard        ← Shared knowledge space (all agents read/write here)
-    ├── Society           ← Registry of active agents
-    ├── LearningPipeline  ← Extracts patterns from past executions
-    └── Agents (N)        ← Active workers
+[Trigger: Monday 9 AM]
+         ↓
+[JIRA Tool: jira_search_issues]
+ jql: "project=PLAT AND story_points is EMPTY AND status != Done"
+         ↓
+[Decision: tickets found?] ──No──→ [Slack: "No unestimated tickets 🎉"] → [End]
+         ↓ Yes
+[Parallel Fan-out] ─────────────────────────────────────────────────┐
+    ↓                      ↓                          ↓             │
+[JIRA: search            [JIRA: search             [JIRA: search    │
+ similar to ticket 1]     similar to ticket 2]      similar to T3]  │
+    ↓                      ↓                          ↓             │
+    └──────────────── [Agent Step: Calculate estimates] ────────────┘
+                                   ↓
+                    [Loop: For each ticket]
+                           ↓
+                    [JIRA: jira_update_issue(story_points=estimate)]
+                           ↓
+                    [Slack: Post summary to #dev-team]
+                           ↓
+                         [End]
 ```
 
-**The civilization tick cycle (every 30 seconds):**
+4. **Save** the workflow → name it "Weekly Estimation Bot"
+5. **Schedule** it: set trigger to cron `0 9 * * 1`
+6. Click **Test Run (Dry)** to verify logic without executing
+
+---
+
+## Phase 3 Checklist
+
+- [ ] 3 specialist agents created (JIRA, GitHub, Slack)
+- [ ] Ran supervisor-mode sprint report goal
+- [ ] Used debate mode for a real decision (e.g., ticket severity)
+- [ ] Built workflow in Workflow Builder via NL-generate
+- [ ] Connected workflow to a Monday 9 AM schedule
+- [ ] Tested workflow with dry run
+
+---
+
+# PHASE 4: Agent Civilization
+**Time to complete: 1 day setup, then autonomous**
+**What you build: A self-governing society of agents that creates, manages, and improves agents autonomously**
+
+---
+
+## Understanding the Civilization Architecture
+
 ```
-1. Observe  → Each agent reports its status to the Blackboard
-2. Evaluate → Governor scores each agent: eval_score, success_rate, last_used
-3. Decide   → Governor may: spawn new agent, retire poor agent, reassign load
-4. Act      → Spawn/retire decisions execute via GoalService
-5. Learn    → LearningPipeline extracts winning patterns from this tick
-6. Propagate→ Learnings broadcast to all agents (update their prompts)
+                    ┌─────────────────────────────────┐
+                    │       CivilizationOrchestrator   │
+                    │                                  │
+                    │  ┌──────────┐  ┌─────────────┐  │
+                    │  │ Governor │  │ Constitution │  │
+                    │  │(spawn/   │  │(hard rules   │  │
+                    │  │ retire)  │  │ never broken)│  │
+                    │  └──────────┘  └─────────────┘  │
+                    │                                  │
+                    │  ┌─────────────────────────────┐ │
+                    │  │         Blackboard           │ │
+                    │  │  Shared knowledge all agents │ │
+                    │  │  read/write here             │ │
+                    │  └─────────────────────────────┘ │
+                    │                                  │
+                    │  ┌──────────────────────────┐   │
+                    │  │     LearningPipeline      │   │
+                    │  │  Extracts winning patterns │   │
+                    │  │  Updates agent prompts     │   │
+                    │  └──────────────────────────┘   │
+                    │                                  │
+                    │  Agents: [A1] [A2] [A3] [A4...]  │
+                    └─────────────────────────────────┘
+
+Every 30 seconds (civilization tick):
+  1. Observe  → Each agent reports status to Blackboard
+  2. Evaluate → Governor scores: success_rate, queue_depth, last_used
+  3. Decide   → Spawn new? Retire poor? Reassign?
+  4. Act      → Execute decisions
+  5. Learn    → Extract patterns from this tick
+  6. Propagate→ Broadcast learnings to all agents
 ```
 
-### 5.2 — Create Your First Civilization
+---
 
-**Via UI:** Enterprise → Civilization → New Civilization
+## Step 4.1 — Create the Civilization
 
-**Via API:**
 ```bash
 curl -s -X POST http://localhost:8000/civilization \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Engineering Ops Civilization",
-    "description": "Autonomous management of our engineering workflows across JIRA, GitHub, and Slack",
+    "name": "PineLabs Engineering Ops",
+    "description": "Autonomous management of JIRA, GitHub, and Slack for the engineering organization",
     "constitution": {
       "rules": [
-        "Never delete tickets, only close or archive them",
-        "Always require human approval before creating issues with priority P0 or P1",
+        "Never delete any JIRA ticket, GitHub PR, or Slack message — only close or archive",
+        "Never create P0 or P1 tickets without human approval",
         "Never post to public Slack channels without explicit instruction",
-        "Maximum 10 new tickets per hour to avoid flooding",
-        "All actions must be logged to the audit trail"
+        "Maximum 50 JIRA API calls per minute across all agents combined",
+        "All ticket updates must include [AgentVerse] prefix in comments so humans can identify them",
+        "If an agent fails 3 consecutive goals, pause it and alert the human"
       ],
-      "max_agents": 10,
-      "spawn_threshold": 0.6,
-      "retire_threshold": 0.3
+      "max_agents": 5,
+      "spawn_threshold": 0.65,
+      "retire_threshold": 0.35
     },
     "seed_agents": [
       {
-        "name": "JIRA Triage Bot",
+        "name": "JIRA Triage Bot v1",
         "autonomy_mode": "bounded-autonomous",
-        "goal_template": "Triage new JIRA tickets in project {project}",
-        "connector_ids": ["JIRA_ID"]
+        "goal_template": "Triage new JIRA tickets: assign priority, add labels, link related issues",
+        "connector_ids": ["'"$JIRA_CONNECTOR_ID"'"]
       }
     ],
-    "connectors": ["JIRA_ID", "GITHUB_ID", "SLACK_ID"]
+    "connectors": [
+      "'"$JIRA_CONNECTOR_ID"'",
+      "'"$GITHUB_CONNECTOR_ID"'",
+      "'"$SLACK_CONNECTOR_ID"'"
+    ]
   }' | python3 -m json.tool
+
+export CIV_ID="<civilization_id>"
 ```
 
-### 5.3 — How the Governor Spawns New Agents
+---
 
-The Governor uses this decision algorithm:
+## Step 4.2 — Configure the Constitution (Hard Rules)
 
-```python
-# When does it spawn a new agent?
-if (
-    task_queue_depth > 5  # Backlog building up
-    AND existing_agents_all_busy
-    AND success_rate_of_existing > 0.6  # They're capable, just overloaded
-    AND spawn_budget_available
-):
-    spawn_new_agent(
-        name=f"JIRA Triage Bot #{n+1}",
-        clone_from="JIRA Triage Bot",  # Copy the best-performing agent
-        inherit_learnings=True
-    )
-
-# When does it retire an agent?
-if (
-    agent.success_rate < constitution.retire_threshold  # 30%
-    AND agent.last_used > 2_hours_ago
-    AND len(active_agents) > 1  # Never retire the last one
-):
-    retire_agent(agent_id)
-```
-
-### 5.4 — The Blackboard: Shared Agent Memory
-
-Every agent in the civilization can read and write to the shared Blackboard:
-
-```
-Blackboard entries (examples):
-  Key: "jira:project:PROJ:last_sprint_velocity"  Value: 42
-  Key: "jira:ticket:PROJ-500:assigned_to"         Value: "alice@team.com"
-  Key: "github:repo:backend:last_merge"           Value: "2026-06-30T09:00:00Z"
-  Key: "slack:channel:eng-alerts:last_message"    Value: "Deployment successful"
-  Key: "pattern:estimation:accuracy"              Value: 0.87
-```
-
-Agents use the Blackboard to avoid duplicating work:
-- `JIRA Triage Bot #1` checks: "Has another agent already triaged PROJ-500?" 
-- Blackboard says yes → skip it → move to next ticket
-
-### 5.5 — Constitution Rules (Hard Limits)
-
-The Constitution is the governance layer for the entire civilization. These rules can NEVER be overridden by any agent or goal:
+The Constitution is enforced by the Governor. **These rules can NEVER be overridden by any agent.**
 
 ```bash
-curl -s -X PUT http://localhost:8000/civilization/{civ_id}/constitution \
+curl -s -X PUT http://localhost:8000/civilization/$CIV_ID/constitution \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "rules": [
       {
         "id": "no-delete",
-        "rule": "No agent may delete any JIRA ticket, GitHub PR, or Slack message",
+        "description": "No agent may delete data",
         "action_pattern": "*.delete_*",
         "enforcement": "hard_block"
       },
       {
-        "id": "p0-human-approval",
-        "rule": "Creating P0 or P1 JIRA tickets requires human approval",
-        "condition": "issue_priority in [P0, P1]",
+        "id": "p0-human",
+        "description": "P0/P1 ticket creation requires human approval",
+        "condition": "priority in [Highest, Critical, P0, P1]",
         "enforcement": "require_approval"
       },
       {
         "id": "rate-limit",
-        "rule": "Maximum 50 JIRA API calls per minute across all agents",
+        "description": "Max 50 JIRA calls/minute",
         "enforcement": "rate_limit",
-        "limit": 50,
-        "window_seconds": 60
+        "calls_per_minute": 50
+      },
+      {
+        "id": "comment-prefix",
+        "description": "All comments must start with [AgentVerse]",
+        "enforcement": "transform",
+        "transform": "prepend_[AgentVerse]_to_body"
       }
     ]
   }'
 ```
 
-### 5.6 — Learning Pipeline: Self-Improvement
+---
 
-The civilization automatically improves itself:
+## Step 4.3 — Add Civilization Schedules
 
-```
-After each successful goal completion:
-  1. EvalRunner scores it (6 dimensions)
-  2. If score > 0.85:
-     - Extract the winning plan as a pattern
-     - Store in LongTermMemory
-     - Propagate to all agents: "Next time you see a similar goal, here's the plan that worked"
-  
-After each failure:
-  1. SelfOptimizer analyzes: what went wrong?
-  2. Generates a suggestion: "Try adding more context about the project key to the prompt"
-  3. Creates an A/B variant
-  4. Mann-Whitney U test after 20 runs: if challenger wins at 95% confidence → promote to control
-```
-
-You can see this in **Self-Improvement** (sidebar) → shows active experiments and their results.
-
-### 5.7 — Full Autonomous JIRA + GitHub Civilization Example
-
-This civilization manages ALL engineering operations autonomously:
+The civilization runs these goals on schedules, managed by the Governor:
 
 ```bash
-curl -s -X POST http://localhost:8000/civilization \
+# Morning standup prep — every weekday
+curl -s -X POST http://localhost:8000/schedules \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "FullStack Engineering Civ",
-    "constitution": {
-      "rules": [
-        "Never delete production data",
-        "P0 bugs require human approval before any action",
-        "Maximum 3 agents active simultaneously"
-      ],
-      "max_agents": 3,
-      "spawn_threshold": 0.65,
-      "retire_threshold": 0.35
-    },
-    "seed_agents": [
-      {
-        "name": "JIRA Triage Specialist",
-        "goal_template": "Continuously triage new JIRA tickets: assign priority, add labels, link to related issues",
-        "connector_ids": ["JIRA_ID"],
-        "autonomy_mode": "bounded-autonomous"
-      }
-    ],
-    "schedules": [
-      {
-        "trigger": "cron:0 9 * * 1-5",
-        "goal": "Morning standup prep: summarize yesterdays JIRA completions and todays priorities"
-      },
-      {
-        "trigger": "cron:0 18 * * 5",
-        "goal": "End-of-week report: sprint velocity, blockers encountered, next week planning"
-      },
-      {
-        "trigger": "webhook:github_push",
-        "goal": "On every GitHub push to main: check if any JIRA tickets are affected and update their status to In Review"
-      }
-    ]
-  }' | python3 -m json.tool
+    "name": "Daily Standup Prep",
+    "cron": "0 9 * * 1-5",
+    "goal_template": "Prepare standup report: list all JIRA tickets updated yesterday in PLAT, identify blockers, calculate in-progress count. Post to Slack #daily-standup",
+    "civilization_id": "'"$CIV_ID"'",
+    "enabled": true
+  }'
+
+# PR review reminders — twice daily
+curl -s -X POST http://localhost:8000/schedules \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "PR Review Reminders",
+    "cron": "0 11,16 * * 1-5",
+    "goal_template": "Find all open PRs in pinelabs/backend awaiting review for more than 4 hours. For each: notify the reviewer on Slack and add a comment on the linked JIRA ticket",
+    "civilization_id": "'"$CIV_ID"'",
+    "enabled": true
+  }'
+
+# Weekly sprint health — Friday afternoon
+curl -s -X POST http://localhost:8000/schedules \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Sprint Health Check",
+    "cron": "0 16 * * 5",
+    "goal_template": "Assess sprint health for PLAT: compare planned vs actual story points, identify risk items, generate next week prioritization suggestions. Post to Slack #eng-leadership",
+    "civilization_id": "'"$CIV_ID"'",
+    "enabled": true
+  }'
 ```
 
-**What happens over time:**
-```
-Day 1:  1 JIRA Triage Specialist running
-        Handles: 45 tickets/day, success_rate: 0.72
+---
 
-Day 3:  Backlog growing (> 5 tickets/hour)
-        Governor spawns JIRA Triage Specialist #2
-        Now: 90 tickets/day, success_rate: 0.78
+## Step 4.4 — Watch the Governor in Action
 
-Day 5:  GitHub webhook firing → JIRA status updates needed
-        Governor spawns: JIRA-GitHub Bridge Specialist
-        Now: 3 agents, full coverage
-
-Day 7:  Learning: "Tickets with no description get misrouted"
-        SelfOptimizer adds to prompt: "Always check description before routing"
-        Success_rate improves to 0.89
-
-Day 14: JIRA Triage Specialist #2 has success_rate 0.71 (vs #1 at 0.91)
-        Governor decides: retire #2, spawn a better one trained on #1's learnings
-```
-
-### 5.8 — Monitor Your Civilization
+Monitor your civilization over the first week:
 
 ```bash
-# Get civilization status
-curl -s http://localhost:8000/civilization/{civ_id} -H "X-API-Key: $AV_KEY"
+# Check civilization status
+curl -s http://localhost:8000/civilization/$CIV_ID \
+  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
 
-# Get active agents in the civ
-curl -s http://localhost:8000/civilization/{civ_id}/agents -H "X-API-Key: $AV_KEY"
+# See all active agents + their scores
+curl -s http://localhost:8000/civilization/$CIV_ID/agents \
+  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
 
-# Get blackboard state
-curl -s http://localhost:8000/civilization/{civ_id}/blackboard -H "X-API-Key: $AV_KEY"
+# See what's on the shared Blackboard
+curl -s http://localhost:8000/civilization/$CIV_ID/blackboard \
+  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
 
-# Get learning history
-curl -s http://localhost:8000/civilization/{civ_id}/learnings -H "X-API-Key: $AV_KEY"
-
-# Pause the civilization (keep agents, stop new goals)
-curl -s -X POST http://localhost:8000/civilization/{civ_id}/control \
-  -H "X-API-Key: $AV_KEY" -d '{"action": "pause"}'
-
-# Resume
-curl -s -X POST http://localhost:8000/civilization/{civ_id}/control \
-  -H "X-API-Key: $AV_KEY" -d '{"action": "resume"}'
+# See what the civilization has learned
+curl -s http://localhost:8000/civilization/$CIV_ID/learnings \
+  -H "X-API-Key: $AV_KEY" | python3 -m json.tool
 ```
 
-**Via UI:** Enterprise → Civilization → your civ → live orbit view of agents + blackboard + metrics
+**Via UI:** http://localhost:5173/civilization → see orbit view of agents + live metrics
 
 ---
 
-## 6. Agent Mastery Checklist
+## Step 4.5 — Governor's Spawn/Retire Algorithm
 
-### Phase 1: Simple Agent ✓
-- [ ] Registered JIRA connector and tested it
-- [ ] Created a supervised agent
-- [ ] Submitted a read goal and watched live execution
-- [ ] Submitted a write goal and approved via HITL
-- [ ] Tried Ghost Run to preview before executing
-- [ ] Ran at least 5 different JIRA goals
+The Governor runs this logic every 30 seconds:
 
-### Phase 2: Multi-Connector ✓
-- [ ] Registered GitHub + Slack connectors
-- [ ] Created agent with 3 connectors
-- [ ] Executed a cross-system goal (JIRA → GitHub → Slack)
-- [ ] Set up governance policies for write operations
-- [ ] Switched agent to `bounded-autonomous` mode
-- [ ] Set up a scheduled goal (e.g., Monday morning report)
+```python
+# SPAWN decision:
+if (
+    task_queue_depth > 5          # More than 5 goals queued
+    AND all_agents_busy           # No idle agents
+    AND best_agent.success_rate > 0.65  # They ARE capable, just overloaded
+    AND active_agents < constitution.max_agents  # Not at max
+    AND constitution.spawn_threshold_met
+):
+    new_agent = clone_from(best_performing_agent)
+    new_agent.inherit_learnings = True  # Gets all learned patterns
+    civilization.spawn(new_agent)
 
-### Phase 3: Multi-Agent ✓
-- [ ] Created 3 specialist agents
-- [ ] Submitted a supervisor-mode goal
-- [ ] Tried debate mode for a high-stakes decision
-- [ ] Built a workflow in the Workflow Builder
-- [ ] Scheduled a recurring workflow
-- [ ] Reviewed the Knowledge Base (add JIRA docs for better context)
+# RETIRE decision:
+if (
+    agent.success_rate < constitution.retire_threshold  # Below 35%
+    AND agent.last_used_minutes_ago > 30  # Not actively working
+    AND civilization.active_count > 1  # Never retire the last agent
+):
+    civilization.retire(agent)
+    # Agent's learnings are preserved in the LearningPipeline before retirement
+```
 
-### Phase 4: Civilization ✓
-- [ ] Created a civilization with 1 seed agent
-- [ ] Watched the Governor spawn a second agent automatically
-- [ ] Configured the Constitution with 3+ rules
-- [ ] Reviewed Blackboard activity
-- [ ] Observed a Self-Improvement experiment
-- [ ] Set up 2+ civilization-level schedules
-- [ ] Monitored civilization metrics for 1 week
+**What you'll see over time:**
+```
+Day 1:  1 agent (JIRA Triage Bot v1)  → handles 30 goals/day, success_rate: 0.74
+
+Day 2:  Queue depth hits 8 at 11 AM
+        Governor spawns: JIRA Triage Bot v2 (clone of v1, inherits all learnings)
+        Now: 2 agents, 60 goals/day
+
+Day 3:  GitHub PRs piling up in goals
+        Governor spawns: GitHub Sync Bot (new specialty, uses GitHub connector)
+        Now: 3 agents, covering JIRA + GitHub
+
+Day 5:  JIRA Triage Bot v2 success_rate drops to 0.31
+        Governor investigates: v2 is failing on edge cases v1 handles
+        LearningPipeline: extracts v1's winning patterns
+        Governor upgrades v2 prompt → success_rate recovers to 0.78
+
+Day 7:  JIRA Triage Bot v2 success_rate 0.28 (still struggling)
+        Governor retires v2
+        Spawns v3 with improved prompt from v1's learnings
+
+Day 14: Stable at 3 agents: JIRA Specialist, GitHub Sync, Slack Broadcaster
+        success_rates: 0.91, 0.87, 0.94
+        Self-improvement experiments running: 2 active A/B tests on prompts
+```
 
 ---
 
-## Quick Reference: API Cheat Sheet
+## Step 4.6 — Self-Improvement Monitoring
+
+The civilization automatically runs A/B tests on agent prompts:
+
+Go to **http://localhost:5173/self-improvement** to see:
+
+```
+Active Experiments:
+  ┌─────────────────────────────────────────────────────────┐
+  │ Experiment: JIRA Triage Prompt v1 vs v2                 │
+  │ Status: Running (day 3 of 7)                            │
+  │ Control (v1):  success_rate=0.74, n=23 goals           │
+  │ Challenger (v2): success_rate=0.81, n=21 goals         │
+  │ Statistical significance: 67% (need 95% to promote)    │
+  │ Estimated: 4 more days to conclusion                    │
+  └─────────────────────────────────────────────────────────┘
+
+Recent improvements applied:
+  ✅ "Ticket priority detection": +12% accuracy (promoted Day 5)
+  ✅ "JQL query optimization": -34% API calls (promoted Day 3)
+  ✅ "Sprint detection pattern": +8% sprint identification (promoted Day 7)
+```
+
+---
+
+## Step 4.7 — Emergency Controls
 
 ```bash
-# === CONNECTORS ===
-POST /connectors                   # Register new connector
-GET  /connectors                   # List all
-POST /connectors/{id}/test         # Test connectivity
-GET  /connectors/catalog           # Browse 32 templates
+# PAUSE all civilization activity (safe mode)
+curl -s -X POST http://localhost:8000/civilization/$CIV_ID/control \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "pause"}'
 
-# === AGENTS ===
-POST /agents                       # Create agent (manual)
-POST /agents/create                # Create agent (NL AI Builder)
-GET  /agents                       # List all agents
-GET  /agents/{id}                  # Get agent details
-PUT  /agents/{id}                  # Update agent
-POST /agents/{id}/snapshot         # Version the agent
-POST /agents/{id}/rollback/{snap}  # Rollback to version
+# RESUME
+curl -s -X POST http://localhost:8000/civilization/$CIV_ID/control \
+  -H "X-API-Key: $AV_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "resume"}'
 
-# === GOALS ===
-POST /goals                        # Submit goal
-POST /goals  (dry_run=true)        # Ghost run (preview only)
-GET  /goals/{id}                   # Goal status + result
-GET  /goals/{id}/stream            # Live SSE event stream
-POST /goals/{id}/pause             # Pause execution
-POST /goals/{id}/resume            # Resume execution
-POST /goals/{id}/cancel            # Cancel
+# NUCLEAR OPTION — stops ALL goals across entire platform
+curl -s -X POST http://localhost:8000/governance/emergency-stop \
+  -H "X-API-Key: $AV_KEY"
 
-# === GOVERNANCE ===
-GET  /governance/approvals         # Pending HITL approvals
-POST /governance/approvals/{id}/approve  # Approve a step
-POST /governance/approvals/{id}/reject   # Reject a step
-GET  /governance/audit             # Audit log
-POST /governance/policies          # Add policy rule
-POST /governance/emergency-stop    # KILL SWITCH — halt everything
-
-# === CIVILIZATION ===
-POST /civilization                 # Create civilization
-GET  /civilization/{id}            # Status + active agents
-POST /civilization/{id}/control    # pause/resume/throttle
-GET  /civilization/{id}/blackboard # Shared knowledge state
-GET  /civilization/{id}/learnings  # What it has learned
-
-# === SCHEDULES ===
-POST /schedules                    # Create cron/interval schedule
-POST /nl/schedule                  # Create from natural language
-GET  /schedules                    # List active schedules
-DELETE /schedules/{id}             # Delete schedule
+# Clear the emergency stop
+curl -s -X DELETE http://localhost:8000/governance/emergency-stop \
+  -H "X-API-Key: $AV_KEY"
 ```
 
 ---
 
-## Progression Summary
+## Phase 4 Checklist
 
-```
-Week 1: Simple JIRA Agent
-  → Learn goal submission, HITL, basic tool calls
-  → Get comfortable with supervised mode
-  
-Week 2: Multi-Connector Agent  
-  → JIRA + GitHub + Slack working together
-  → Set up governance policies
-  → First scheduled automation
+- [ ] Civilization created with Constitution rules
+- [ ] Seed agent running successfully
+- [ ] 2+ scheduled goals configured
+- [ ] Watched Governor spawn a second agent (happens when queue builds)
+- [ ] Reviewed Blackboard shared state
+- [ ] Reviewed LearningPipeline outputs
+- [ ] Watched a Self-Improvement experiment run
+- [ ] Tested emergency pause/resume
 
-Week 3: Multi-Agent Patterns
-  → Supervisor + specialist hierarchy
-  → Debate mode for important decisions
-  → Visual Workflow Builder
+---
 
-Week 4: Agent Civilization
-  → Civilization created and self-managing
-  → Constitution rules protecting your data
-  → Self-improvement running experiments
-  → Agents spawning/retiring autonomously
-  → You're now overseeing a team of AI engineers
+# Complete API Quick Reference
+
+```bash
+export AV_KEY="av_free_CvkhCJyL3OSJy6mWUe_2hpZCotGWYFYvzhg0xs-K-WQ"
+export JIRA_CONNECTOR_ID="4cffee6d2b2b4928b8a90f45839b1a6c"   # Already registered
+export JIRA_AGENT_ID="9644350a84c2411093b53d1732ccdb42"         # Already created
+
+# CONNECTORS
+GET    /connectors                    # List all
+POST   /connectors                    # Register new
+PUT    /connectors/:id                # Update
+POST   /connectors/:id/test           # Test connectivity
+DELETE /connectors/:id                # Remove
+
+# AGENTS
+GET    /agents                        # List all
+POST   /agents                        # Create (manual config)
+POST   /agents/create                 # Create (NL AI Builder)
+GET    /agents/:id                    # Get details
+PUT    /agents/:id                    # Update (change mode etc)
+POST   /agents/:id/snapshot           # Save a version
+POST   /agents/:id/rollback/:snap     # Rollback to version
+
+# GOALS
+POST   /goals                         # Submit goal
+POST   /goals (dry_run:true)          # Ghost run — preview only
+GET    /goals/:id                     # Status + result
+GET    /goals/:id/stream              # Live SSE events (curl -N)
+POST   /goals/:id/pause               # Pause
+POST   /goals/:id/resume              # Resume
+POST   /goals/:id/cancel              # Cancel
+
+# GOVERNANCE (safety)
+GET    /governance/approvals          # Pending HITL approvals
+POST   /governance/approvals/:id/approve
+POST   /governance/approvals/:id/reject
+POST   /governance/policies           # Add policy rule (DENY/ALLOW/REQUIRE)
+DELETE /governance/policies/:id       # Remove policy
+POST   /governance/emergency-stop     # ⚠️ Kill switch — stops everything
+DELETE /governance/emergency-stop     # Clear emergency stop
+
+# SCHEDULES (automation)
+POST   /schedules                     # Create cron schedule
+POST   /nl/schedule                   # Create from English description
+GET    /schedules                     # List active schedules
+DELETE /schedules/:id                 # Delete
+POST   /schedules/:id/pause           # Pause
+POST   /schedules/:id/resume          # Resume
+
+# CIVILIZATION
+POST   /civilization                  # Create civilization
+GET    /civilization/:id              # Status + metrics
+GET    /civilization/:id/agents       # Active agents + scores
+GET    /civilization/:id/blackboard   # Shared knowledge state
+GET    /civilization/:id/learnings    # What it has learned
+POST   /civilization/:id/control      # pause/resume/throttle
 ```
 
 ---
 
-*Save this guide at: `docs/agent-creation-guide.md`*
-*Platform docs: `docs/features/` — 57 feature-specific deep-dives*
-*Operations guide: `RUNBOOK.md`*
+# Your Progression Timeline
+
+```
+Week 1: JIRA Agent (Phase 1)
+  Day 1-2: Setup + first read goals
+  Day 3-4: Write goals with HITL approval
+  Day 5-7: Schedules + governance policies + bounded-autonomous
+
+Week 2: Multi-Connector (Phase 2)
+  Day 8-9: GitHub + Slack connectors
+  Day 10-11: Cross-system goals (PR→JIRA sync)
+  Day 12-14: Scheduled multi-connector workflows
+
+Week 3: Multi-Agent (Phase 3)
+  Day 15-16: Create specialist agents
+  Day 17-18: Supervisor pattern for complex goals
+  Day 19: Debate mode for decisions
+  Day 20-21: Workflow Builder visual automation
+
+Week 4+: Civilization (Phase 4)
+  Day 22: Create civilization + constitution
+  Day 23-24: Watch Governor spawn agents
+  Day 25-28: Observe self-improvement experiments
+  Day 29+: Civilization runs autonomously, you review weekly
+```
+
+---
+
+*Guide saved at: `docs/agent-creation-guide.md`*
+*Your AgentVerse API key: `av_free_CvkhCJyL3OSJy6mWUe_2hpZCotGWYFYvzhg0xs-K-WQ`*
+*Your JIRA Connector ID: `4cffee6d2b2b4928b8a90f45839b1a6c`*
+*Your JIRA Agent ID: `9644350a84c2411093b53d1732ccdb42`*
+*Platform docs: `docs/features/` — 57 deep feature docs*
+*Operations: `RUNBOOK.md`*
