@@ -60,7 +60,7 @@ class EventStore:
                                     0
                                 ) + 1,
                                 :etype,
-                                :payload::jsonb
+                                CAST(:payload AS jsonb)
                             )
                             """
                         ),

@@ -559,22 +559,24 @@ class TenantService:
                         )
                     keys = key_result.scalars().all()
                     for k in keys:
-                        if k.id not in self._keys:
-                            self._keys[k.id] = {
-                                "key_id": k.id,
-                                "tenant_id": k.tenant_id,
-                                "name": k.name,
-                                "scopes": list(k.scopes or []),
-                                "roles": list(k.roles or ["admin"]),
-                                "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                                "key_hash": k.key_hash,
-                                "is_active": True,
-                                "created_at": k.created_at.isoformat() if k.created_at else "",
-                            }
-                            self._hash_to_key_id[k.key_hash] = k.id
-                            self._tenant_keys.setdefault(k.tenant_id, [])
-                            if k.id not in self._tenant_keys[k.tenant_id]:
-                                self._tenant_keys[k.tenant_id].append(k.id)
+                        key_data = {
+                            "key_id": k.id,
+                            "tenant_id": k.tenant_id,
+                            "name": k.name,
+                            "scopes": list(k.scopes or []),
+                            "roles": list(k.roles or ["admin"]),
+                            "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+                            "key_hash": k.key_hash,
+                            "is_active": True,
+                            "created_at": k.created_at.isoformat() if k.created_at else "",
+                        }
+                        # Always update from DB (not just on first load) so role/scope
+                        # changes made via DB or API are picked up on next sync.
+                        self._keys[k.id] = key_data
+                        self._hash_to_key_id[k.key_hash] = k.id
+                        self._tenant_keys.setdefault(k.tenant_id, [])
+                        if k.id not in self._tenant_keys[k.tenant_id]:
+                            self._tenant_keys[k.tenant_id].append(k.id)
             logging.getLogger(__name__).info("Synced %d tenants from DB", loaded)
             return loaded
         except Exception as exc:
