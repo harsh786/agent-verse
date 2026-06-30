@@ -6,6 +6,8 @@ Falls back gracefully if the SDK is not installed.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from app.providers.base import (
     CompletionRequest,
     CompletionResponse,
@@ -85,6 +87,40 @@ class GeminiProvider:
                 total_tokens=_prompt_toks + _cand_toks,
             ),
         )
+
+    async def stream_tokens(
+        self,
+        request: CompletionRequest,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> CompletionResponse:
+        """Stream tokens from Gemini via generate_content_async with stream=True.
+
+        Falls back to complete() if streaming raises.
+        """
+        model_name = request.model or self._default_model
+        model = self._genai.GenerativeModel(model_name)
+
+        parts: list[str] = []
+        system = request.system or next(
+            (m.content for m in request.messages if m.role == "system"), None
+        )
+        if system:
+            parts.append(f"[System]: {system}")
+        for msg in [m for m in request.messages if m.role != "system"]:
+            parts.append(f"[{msg.role.capitalize()}]: {msg.content}")
+        prompt = "\n".join(parts)
+
+        full_text = ""
+        try:
+            async for chunk in model.generate_content_async(prompt, stream=True):
+                text = getattr(chunk, "text", "") or ""
+                if text:
+                    full_text += text
+                    await on_token(text)
+        except Exception:
+            return await self.complete(request)
+
+        return CompletionResponse(content=full_text, model=model_name)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         import asyncio
