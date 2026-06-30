@@ -1054,13 +1054,8 @@ def create_app(
     app.state.template_store = _template_store
 
     # ── Middleware (order matters — outermost wraps last) ─────────────────────
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # NOTE: CORSMiddleware must be outermost (added LAST) so CORS headers are
+    # present on ALL responses including 403s from ScopeEnforcementMiddleware.
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(ScopeEnforcementMiddleware)
 
@@ -1077,6 +1072,15 @@ def create_app(
         TenantMiddleware,
         key_resolver=_dynamic_resolver,
         rate_limiter=_fake_redis,
+    )
+    # CORSMiddleware is outermost — added last so its CORS headers wrap ALL
+    # responses including error 403s from ScopeEnforcementMiddleware.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Wire app reference into GoalService for per-tenant LLM provider dispatch.

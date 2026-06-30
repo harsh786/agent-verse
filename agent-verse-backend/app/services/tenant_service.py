@@ -323,6 +323,7 @@ class TenantService:
                             name="Default",
                             key_hash=key_hash,
                             scopes=[],
+                            roles=["admin"],  # initial owner key gets full admin access
                         )
                     )
         except Exception as exc:
@@ -564,6 +565,7 @@ class TenantService:
                                 "tenant_id": k.tenant_id,
                                 "name": k.name,
                                 "scopes": list(k.scopes or []),
+                                "roles": list(k.roles or ["admin"]),
                                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                                 "key_hash": k.key_hash,
                                 "is_active": True,
