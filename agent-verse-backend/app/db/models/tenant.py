@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import ARRAY, Boolean, DateTime, ForeignKey, String, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models import Base
@@ -47,7 +48,7 @@ class ApiKey(Base):
         ARRAY(String), nullable=False, server_default=text("'{}'")
     )
     roles: Mapped[list[str]] = mapped_column(
-        ARRAY(String), nullable=False, server_default=text("'{}'")
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
