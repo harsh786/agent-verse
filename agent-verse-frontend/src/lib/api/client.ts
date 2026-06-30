@@ -1214,7 +1214,10 @@ export interface GuardrailViolation {
 }
 
 export const guardrailsApi = {
-  list: () => request<GuardrailConfig[]>("/guardrails"),
+  list: () =>
+    request<{ configs: GuardrailConfig[]; total: number } | GuardrailConfig[]>("/guardrails").then(
+      (res) => (Array.isArray(res) ? res : (res as any).configs ?? [])
+    ) as Promise<GuardrailConfig[]>,
   create: (body: CreateGuardrailRequest) =>
     request<GuardrailConfig>("/guardrails", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: CreateGuardrailRequest) =>
@@ -1223,9 +1226,11 @@ export const guardrailsApi = {
   test: (body: { text: string; rule_id?: string }) =>
     request<GuardrailTestResult>("/guardrails/test", { method: "POST", body: JSON.stringify(body) }),
   getViolations: (params?: { limit?: number }) =>
-    request<GuardrailViolation[]>(
+    request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
       `/guardrails/violations${params?.limit ? `?limit=${params.limit}` : ""}`
-    ),
+    ).then(
+      (res) => (Array.isArray(res) ? res : (res as any).violations ?? [])
+    ) as Promise<GuardrailViolation[]>,
 };
 
 // ── Costs (Spec 6) ───────────────────────────────────────────────────────────
