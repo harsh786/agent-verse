@@ -490,3 +490,71 @@ class TestBatchApprove:
             await batch_approve(request=request, body=body)
 
         assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Regression: AuditFlusher db_factory keyword param
+# ---------------------------------------------------------------------------
+
+def test_audit_flusher_init_accepts_db_factory_keyword():
+    """AuditFlusher.__init__ must accept db_factory= keyword, not db=.
+
+    Regression: main.py and tasks.py called AuditFlusher(redis=r, db=factory)
+    which raised TypeError. The parameter must be named db_factory.
+    """
+    import inspect
+    from app.governance.audit_v2 import AuditFlusher
+
+    sig = inspect.signature(AuditFlusher.__init__)
+    params = list(sig.parameters.keys())
+
+    assert "db_factory" in params, (
+        f"AuditFlusher.__init__ must have 'db_factory' param; got {params}"
+    )
+    assert "db" not in params, (
+        "AuditFlusher.__init__ must NOT have a bare 'db' param — use 'db_factory'"
+    )
+
+
+def test_audit_flusher_keyword_construction_works():
+    """AuditFlusher must be constructable with redis= and db_factory= keywords."""
+    from unittest.mock import MagicMock
+    from app.governance.audit_v2 import AuditFlusher
+
+    mock_redis = MagicMock()
+    mock_db = MagicMock()
+
+    # Must not raise TypeError
+    flusher = AuditFlusher(redis=mock_redis, db_factory=mock_db)
+    assert flusher._redis is mock_redis
+    assert flusher._db is mock_db
+
+
+# ---------------------------------------------------------------------------
+# Regression: LegalHoldManager constructor signature
+# ---------------------------------------------------------------------------
+
+def test_legal_hold_manager_requires_redis_and_db_factory():
+    """LegalHoldManager.__init__ must require redis and db_factory args.
+
+    Regression: main.py called LegalHoldManager() with no args; the constructor
+    requires both redis and db_factory.
+    """
+    import inspect
+    from app.governance.legal_holds import LegalHoldManager
+
+    sig = inspect.signature(LegalHoldManager.__init__)
+    params = list(sig.parameters.keys())
+
+    assert "redis" in params, f"LegalHoldManager must have 'redis' param; got {params}"
+    assert "db_factory" in params, f"LegalHoldManager must have 'db_factory' param; got {params}"
+
+
+def test_legal_hold_manager_keyword_construction_works():
+    """LegalHoldManager must construct without error when given None args."""
+    from app.governance.legal_holds import LegalHoldManager
+
+    # Must not raise TypeError (previously main.py called it with no args)
+    mgr = LegalHoldManager(redis=None, db_factory=None)
+    assert mgr._redis is None
+    assert mgr._db is None
