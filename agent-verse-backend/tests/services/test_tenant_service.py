@@ -148,3 +148,23 @@ async def test_tenant_isolation(svc: TenantService) -> None:
     keys_b = await svc.list_api_keys(tenant_id=b["tenant_id"])
     b_key_ids = {k["key_id"] for k in keys_b}
     assert kid_a not in b_key_ids
+
+
+# ── roles regression ──────────────────────────────────────────────────────────
+
+
+async def test_create_tenant_initial_key_has_admin_role(svc: TenantService) -> None:
+    """Initial API key must resolve with roles=('admin',) not the operator default.
+
+    Regression: create_tenant() stored roles=['admin'] in memory but
+    sync_from_db() never loaded them, so after the lifespan upgrade to the
+    DB-backed service all keys defaulted to ('operator',) — losing
+    governance:read, costs:read, etc.
+    """
+    result = await svc.create_tenant(name="AdminCorp", email="admin@admincorp.com")
+    ctx = await svc.resolve_api_key(result["api_key"])
+
+    assert ctx is not None
+    assert "admin" in ctx.roles, (
+        f"Initial owner key must have 'admin' role; got roles={ctx.roles!r}"
+    )
