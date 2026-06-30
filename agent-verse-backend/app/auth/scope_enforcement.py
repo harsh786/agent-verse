@@ -389,11 +389,16 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
 
         if db_factory is not None:
             try:
-                from sqlalchemy import select
+                from sqlalchemy import select, text as _text
 
                 from app.db.models.auth import APIKeyScope, CustomRole, RoleAssignment
 
                 async with db_factory() as db:
+                    # Set RLS tenant context so the api_key_scopes isolation policy passes
+                    await db.execute(
+                        _text("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
                     # Direct key scopes
                     rows = await db.execute(
                         select(APIKeyScope.scope).where(

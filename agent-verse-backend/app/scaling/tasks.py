@@ -186,7 +186,7 @@ def _get_llm_provider(tenant_id: str) -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
             return OpenAICompatibleProvider(
-                api_key=api_key, base_url=base_url, default_model=model or "gpt-4o"
+                api_key=api_key, base_url=base_url, default_model=model or "gpt-4-turbo"
             )
 
     except Exception as exc:
@@ -589,10 +589,31 @@ def run_goal(
                 except Exception:
                     pass
 
+            # Build a model router matched to the provider type so the graph
+            # uses the correct model names (e.g. gpt-4-turbo not claude-opus-4-8).
+            _model_router = None
+            try:
+                from app.agent.model_router import ModelRouter
+                _provider_name = getattr(real_provider, "_provider_name", None)
+                if _provider_name is None:
+                    # Detect provider type from class name
+                    _cls = type(real_provider).__name__
+                    if "Anthropic" in _cls:
+                        _provider_name = "anthropic"
+                    elif "OpenAI" in _cls or "Compatible" in _cls:
+                        _provider_name = "openai"
+                    elif "Gemini" in _cls:
+                        _provider_name = "gemini"
+                if _provider_name:
+                    _model_router = ModelRouter(provider_name=_provider_name)
+            except Exception:
+                pass
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
                 verifier=provider,
+                model_router=_model_router,
                 result_processor=ResultProcessor(),
                 dedup_cache=DeduplicationCache(),
                 rollback_engine=RollbackEngine(),

@@ -32,7 +32,7 @@ class OpenAICompatibleProvider:
         api_key: str | None = None,
         *,
         base_url: str | None = None,
-        default_model: str = "gpt-4o",
+        default_model: str = "gpt-4-turbo",
         supports_vision_flag: bool = True,
     ) -> None:
         try:
