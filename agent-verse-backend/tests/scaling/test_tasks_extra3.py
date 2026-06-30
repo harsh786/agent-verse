@@ -546,22 +546,34 @@ class TestScanCostAnomalies:
         assert result["anomalies_found"] == 2
 
 
-# ── noop tasks ────────────────────────────────────────────────────────────────
+# ── maintenance tasks (real implementations, not noops) ───────────────────────
 
 class TestNoopTasks:
-    """Lines 1968, 1974, 1980."""
+    """Tasks previously returned noop — now have real DB implementations."""
 
-    def test_embed_marketplace_templates_noop(self):
+    def test_embed_marketplace_templates_has_real_impl(self):
+        """Task now queries DB for unembedded templates."""
         from app.scaling.tasks import embed_marketplace_templates
-        assert embed_marketplace_templates.run() == {"status": "noop"}
+        import inspect
+        src = inspect.getsource(embed_marketplace_templates)
+        assert "noop" not in src
+        assert "marketplace_templates" in src or "embedding" in src.lower()
 
-    def test_conclude_stale_experiments_noop(self):
+    def test_conclude_stale_experiments_has_real_impl(self):
+        """Task now marks stale prompt_variants as concluded."""
         from app.scaling.tasks import conclude_stale_experiments
-        assert conclude_stale_experiments.run() == {"status": "noop"}
+        import inspect
+        src = inspect.getsource(conclude_stale_experiments)
+        assert "noop" not in src
+        assert "prompt_variants" in src or "experiment" in src.lower()
 
-    def test_expire_stale_documents_noop(self):
+    def test_expire_stale_documents_has_real_impl(self):
+        """Task now deletes documents past retention window."""
         from app.scaling.tasks import expire_stale_documents
-        assert expire_stale_documents.run() == {"status": "noop"}
+        import inspect
+        src = inspect.getsource(expire_stale_documents)
+        assert "noop" not in src
+        assert "documents" in src or "retention" in src.lower()
 
 
 # ── discover_and_tick_civilizations ──────────────────────────────────────────

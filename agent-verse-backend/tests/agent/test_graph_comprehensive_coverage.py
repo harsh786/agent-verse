@@ -390,6 +390,9 @@ async def test_execute_step_circuit_breaker_records_failure_on_exception() -> No
         async def complete(self, req: CompletionRequest) -> None:
             raise RuntimeError("LLM down")
 
+        async def stream_tokens(self, req, on_token):
+            raise RuntimeError("LLM down")
+
         async def embed(self, req: object) -> None:
             raise NotImplementedError
 
@@ -950,6 +953,11 @@ async def test_execute_step_cost_tracker_records_usage() -> None:
                 output_tokens=5,
                 usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             )
+        async def stream_tokens(self, req, on_token):
+            resp = await self.complete(req)
+            if resp.content:
+                await on_token(resp.content)
+            return resp
         async def embed(self, req: object) -> None:
             raise NotImplementedError
         def supports_vision(self) -> bool:
