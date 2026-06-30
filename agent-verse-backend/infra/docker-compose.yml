@@ -406,10 +406,20 @@ services:
       start_period: 30s
 
 volumes:
+  # driver_opts driver=local with no options = named volume (data persists across
+  # `docker-compose down` but is removed only by `docker-compose down -v`).
+  # Using explicit driver: local makes the intent clear and prevents accidental loss.
   pgdata:
+    driver: local
   redisdata:
+    driver: local
   minio_data:
+    driver: local
   jaeger_data:
+    driver: local
   keycloak_data:
+    driver: local
   prometheus_data:
+    driver: local
   grafana_data:
+    driver: local
