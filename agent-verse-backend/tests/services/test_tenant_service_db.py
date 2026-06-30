@@ -75,6 +75,7 @@ async def test_sync_from_db_loads_api_keys_with_tenant_rls_context():
         email="tenant-1@example.com",
         plan_tier="free",
         created_at=None,
+        roles=[],
     )
     api_key = SimpleNamespace(
         id="key-1",
@@ -83,6 +84,7 @@ async def test_sync_from_db_loads_api_keys_with_tenant_rls_context():
         scopes=[],
         expires_at=None,
         key_hash="hash-1",
+        roles=["admin"],
         created_at=None,
     )
 

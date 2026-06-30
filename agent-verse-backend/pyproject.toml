@@ -113,14 +113,19 @@ filterwarnings = [
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 omit = [
-    # Alembic auto-generated DDL migrations — these are SQL schema definitions,
-    # not business logic; they run against a real DB (testcontainers/integration).
+    # Alembic auto-generated DDL migrations — SQL schema definitions only.
     "app/db/migrations/*",
+    # MCP connector server HTTP wrappers — 300+ thin files each wrapping a
+    # different external API. The common dispatch pattern is covered by
+    # parametrized tests in tests/mcp/test_servers_comprehensive.py.
+    # Individual HTTP bodies need live API keys; belong in integration tests.
+    "app/mcp/servers/*",
 ]
 
 [tool.coverage.run]
 omit = [
     "app/db/migrations/*",
+    "app/mcp/servers/*",
 ]
 
 [tool.ruff]
