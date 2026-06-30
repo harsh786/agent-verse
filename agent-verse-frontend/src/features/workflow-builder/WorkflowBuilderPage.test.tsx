@@ -85,7 +85,8 @@ describe('stable references (infinite loop regression)', () => {
     // Regression: (s) => ({ apiKey: s.apiKey }) creates a new object every render
     // causing Zustand to trigger re-renders infinitely.
     // The fix uses (s) => s.apiKey which returns a stable primitive.
-    import('@/features/workflow-builder/WorkflowBuilderPage').then((mod) => {
+    import('@/features/workflow-builder/WorkflowBuilderPage').then((_unused) => {
+      void _unused;
       // Extract the selector by re-running it against a fake state
       const fakeState = { apiKey: 'test-key', tenantId: 'tid', plan: 'free', isAuthenticated: true };
       // The correct selector pattern returns a primitive
@@ -99,14 +100,14 @@ describe('stable references (infinite loop regression)', () => {
     // Regression: snapGrid={[16, 16]} created a new array on every render causing
     // ReactFlow's internal useEffect to fire on every render → infinite loop.
     // Fix: define SNAP_GRID at module scope so reference is stable.
-    const mod = await import('@/features/workflow-builder/WorkflowBuilderPage');
+    const _mod = await import('@/features/workflow-builder/WorkflowBuilderPage');
     // Module should export SNAP_GRID as a named export or it exists in the source
     // We verify the component renders without crashing (which would fail on infinite loop)
-    expect(mod.WorkflowBuilderPage).toBeDefined();
+    expect(_mod.WorkflowBuilderPage).toBeDefined();
   });
 
   it('component renders and stabilises without infinite re-render', async () => {
-    const { render, screen } = await import('@testing-library/react');
+    const { render } = await import('@testing-library/react');
     const React = await import('react');
     const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
     const { MemoryRouter } = await import('react-router-dom');
