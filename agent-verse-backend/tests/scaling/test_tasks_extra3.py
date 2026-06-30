@@ -810,3 +810,87 @@ class TestCheckEmailGoalsDisabled:
         from app.scaling.tasks import check_email_goals
         result = check_email_goals.run()
         assert result["status"] == "disabled"
+
+
+# ── regression: flush_audit_wal db_factory keyword arg ───────────────────────
+
+class TestFlushAuditWalDbFactory:
+    """Regression tests for flush_audit_wal AuditFlusher keyword arg fix."""
+
+    def test_audit_flusher_called_with_db_factory_keyword(self):
+        """flush_audit_wal must pass db_factory= (not db=) to AuditFlusher.
+
+        Regression: tasks.py called AuditFlusher(redis=r, db=...) which raised
+        TypeError because AuditFlusher.__init__ expects db_factory not db.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.scaling.tasks import flush_audit_wal
+
+        mock_flusher_instance = MagicMock()
+        mock_flusher_instance.flush = AsyncMock(return_value=5)
+
+        constructed_kwargs = {}
+
+        def capture_init(self, redis, db_factory):
+            constructed_kwargs["redis"] = redis
+            constructed_kwargs["db_factory"] = db_factory
+            self._redis = redis
+            self._db = db_factory
+            self._chain_cache = {}
+
+        with patch("app.governance.audit_v2.AuditFlusher.__init__", capture_init), \
+             patch("app.governance.audit_v2.AuditFlusher.flush", AsyncMock(return_value=5)), \
+             patch("app.db.session.get_session_factory", return_value=MagicMock()), \
+             patch("redis.asyncio.from_url", return_value=AsyncMock(aclose=AsyncMock())), \
+             patch("asyncio.run", _run_in_new_loop):
+            result = flush_audit_wal.run()
+
+        # Must have used db_factory keyword, not db
+        assert "db_factory" in constructed_kwargs, (
+            "AuditFlusher was not called with db_factory= keyword; "
+            "did someone revert the fix to use db=?"
+        )
+        assert "db" not in constructed_kwargs
+
+
+# ── regression: enforce_hitl_sla SQL column names ─────────────────────────────
+
+class TestEnforceHitlSlaSqlColumns:
+    """Regression tests for enforce_hitl_sla SQL column name fix."""
+
+    def test_sql_uses_sla_deadline_not_sla_deadline_at(self):
+        """enforce_hitl_sla SQL must use 'sla_deadline', not 'sla_deadline_at'.
+
+        Regression: SQL used non-existent column sla_deadline_at which raised
+        UndefinedColumnError. Actual column in hitl_approval_requests is sla_deadline.
+        """
+        import inspect
+        from app.scaling.tasks import enforce_hitl_sla
+
+        # Get the source of the task to inspect the SQL string
+        source = inspect.getsource(enforce_hitl_sla)
+
+        assert "sla_deadline_at" not in source, (
+            "enforce_hitl_sla still references non-existent column sla_deadline_at"
+        )
+        assert "sla_deadline" in source, (
+            "enforce_hitl_sla must reference column sla_deadline"
+        )
+
+    def test_sql_does_not_select_request_id(self):
+        """enforce_hitl_sla SQL must not select 'request_id' (column doesn't exist).
+
+        Regression: SQL selected request_id which doesn't exist in the table.
+        The primary key column is just 'id'.
+        """
+        import inspect
+        from app.scaling.tasks import enforce_hitl_sla
+
+        source = inspect.getsource(enforce_hitl_sla)
+
+        # Should NOT have "request_id" as a selected column
+        # (it appears in the method name/context, so check it's not in SELECT)
+        assert "SELECT id, tenant_id, sla_deadline" in source or \
+               ("request_id" not in source), (
+            "enforce_hitl_sla must not select non-existent column request_id"
+        )

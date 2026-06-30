@@ -219,3 +219,28 @@ async def test_seed_builtin_scopes_permissions_serialized_as_json():
         # Should be a valid JSON string (list)
         parsed = json.loads(perms)
         assert isinstance(parsed, list)
+
+
+# ---------------------------------------------------------------------------
+# Regression: CAST(:permissions AS jsonb) SQL syntax fix
+# ---------------------------------------------------------------------------
+
+def test_seed_builtin_scopes_sql_uses_cast_not_double_colon():
+    """seed_builtin_scopes must use CAST(:permissions AS jsonb), not :permissions::jsonb.
+
+    Regression: SQLAlchemy's text() binder misparses '::' cast syntax after a
+    named parameter (e.g. ':permissions::jsonb'), treating the '::' as part of
+    the param name.  The fix replaces it with standard SQL CAST() syntax.
+    """
+    import inspect
+    from app.auth import scope_seeder
+
+    source = inspect.getsource(scope_seeder)
+
+    assert ":permissions::jsonb" not in source, (
+        "scope_seeder still uses :permissions::jsonb — SQLAlchemy text() cannot "
+        "parse '::' cast after a named parameter; use CAST(:permissions AS jsonb) instead"
+    )
+    assert "CAST(:permissions AS jsonb)" in source, (
+        "scope_seeder must use CAST(:permissions AS jsonb) for the permissions column"
+    )

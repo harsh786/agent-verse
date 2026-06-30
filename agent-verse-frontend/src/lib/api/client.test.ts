@@ -167,3 +167,65 @@ test('trainingApi.export downloads a blob + parses headers', async () => {
   expect(res.count).toBe(2);
   expect(res.blob).toBeInstanceOf(Blob);
 });
+
+// ── guardrailsApi ─────────────────────────────────────────────────────────────
+// Regression: backend returns { configs: [], total: 0 } envelope, not a plain
+// array. The frontend crashed with "rules.map is not a function".
+
+import { guardrailsApi } from '@/lib/api/client';
+
+test('guardrailsApi.list() unwraps {configs} envelope into a plain array', async () => {
+  const envelope = { configs: [{ id: 'g1', name: 'PII', pattern: 'pii', action: 'block', enabled: true }], total: 1 };
+  mockOk(envelope);
+  useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+
+  const result = await guardrailsApi.list();
+
+  expect(Array.isArray(result)).toBe(true);
+  expect(result).toHaveLength(1);
+  expect(result[0].id).toBe('g1');
+});
+
+test('guardrailsApi.list() handles a plain array response (no envelope)', async () => {
+  const plain = [{ id: 'g2', name: 'Secrets', pattern: 'secret', action: 'redact', enabled: true }];
+  mockOk(plain);
+  useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+
+  const result = await guardrailsApi.list();
+
+  expect(Array.isArray(result)).toBe(true);
+  expect(result[0].id).toBe('g2');
+});
+
+test('guardrailsApi.list() returns empty array when configs key is missing', async () => {
+  mockOk({ total: 0 }); // no configs key
+  useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+
+  const result = await guardrailsApi.list();
+
+  expect(Array.isArray(result)).toBe(true);
+  expect(result).toHaveLength(0);
+});
+
+test('guardrailsApi.getViolations() unwraps {violations} envelope into a plain array', async () => {
+  const envelope = { violations: [{ id: 'v1', rule_id: 'g1', input: 'my ssn', severity: 'high' }], total: 1, offset: 0, limit: 50 };
+  mockOk(envelope);
+  useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+
+  const result = await guardrailsApi.getViolations({ limit: 50 });
+
+  expect(Array.isArray(result)).toBe(true);
+  expect(result).toHaveLength(1);
+  expect(result[0].id).toBe('v1');
+});
+
+test('guardrailsApi.getViolations() handles a plain array response (no envelope)', async () => {
+  const plain = [{ id: 'v2', rule_id: 'g1', input: 'test', severity: 'low' }];
+  mockOk(plain);
+  useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+
+  const result = await guardrailsApi.getViolations();
+
+  expect(Array.isArray(result)).toBe(true);
+  expect(result[0].id).toBe('v2');
+});
