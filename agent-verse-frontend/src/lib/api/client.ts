@@ -287,6 +287,8 @@ export const connectorsApi = {
   list: () => request<ConnectorResponse[]>("/connectors"),
   register: (body: ConnectorRequest) =>
     request<ConnectorResponse>("/connectors", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<ConnectorRequest>) =>
+    request<ConnectorResponse>(`/connectors/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   unregister: (id: string) => request<void>(`/connectors/${id}`, { method: "DELETE" }),
   test: (id: string) =>
     request<ConnectorTestResult>(`/connectors/${id}/test`, { method: "POST" }),
