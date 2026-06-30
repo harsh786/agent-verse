@@ -13,9 +13,9 @@ def test_catalog_has_at_least_32_connectors() -> None:
     assert len(CONNECTOR_CATALOG) >= 32
 
 
-def test_catalog_has_exactly_32_connectors() -> None:
+def test_catalog_has_at_least_200_connectors() -> None:
     """The spec promises 32 connectors — count to catch accidental deletions."""
-    assert len(CONNECTOR_CATALOG) == 32
+    assert len(CONNECTOR_CATALOG) >= 200, f"Expected 200+ connectors, got {len(CONNECTOR_CATALOG)}"
 
 
 # ── Every entry is a valid ConnectorSpec ─────────────────────────────────────
