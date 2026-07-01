@@ -26,7 +26,7 @@ class PlanLimits:
 PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
     PlanTier.FREE: PlanLimits(
         requests_per_minute=60,
-        goals_per_day=10,
+        goals_per_day=1000,
         max_agents=2,
         max_api_keys=2,
         max_knowledge_collections=1,

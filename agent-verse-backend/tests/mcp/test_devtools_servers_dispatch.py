@@ -352,6 +352,21 @@ async def test_jira_search_issues():
 
 
 @pytest.mark.asyncio
+async def test_jira_search_issues_accepts_base_url_without_protocol():
+    from app.mcp.servers.jira_server import call_tool
+
+    resp_data = {"total": 0, "issues": []}
+    mc = mk_client(post=make_resp(data=resp_data))
+    env = {**_JIRA, "JIRA_BASE_URL": "myco.atlassian.net"}
+    with patch.dict("os.environ", env), patch("httpx.AsyncClient") as cls:
+        cls.return_value = mc
+        result = await call_tool("jira_search_issues", {"jql": "project = PROJ"})
+
+    assert result["total"] == 0
+    assert cls.call_args.kwargs["base_url"] == "https://myco.atlassian.net"
+
+
+@pytest.mark.asyncio
 async def test_jira_get_issue():
     from app.mcp.servers.jira_server import call_tool
 

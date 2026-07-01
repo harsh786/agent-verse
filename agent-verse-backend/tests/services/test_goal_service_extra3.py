@@ -812,6 +812,27 @@ class TestSubscribeEvents:
         async for evt in svc.subscribe_events("g1", _ctx()):
             events.append(evt)
 
+    async def test_subscriber_receives_events_emitted_immediately_after_connect(self):
+        svc = _svc()
+        _inject_goal(svc, "g1", status="executing")
+        received = []
+
+        async def _emit_during_replay_gap(goal_id, record, tenant_ctx):
+            await svc._dispatch_event(goal_id, {"type": "goal_started"}, tenant_ctx=tenant_ctx)
+            return []
+
+        svc._events_for_replay = _emit_during_replay_gap  # type: ignore[method-assign]
+
+        async def _collect_first_event():
+            async for evt in svc.subscribe_events("g1", _ctx()):
+                received.append(evt)
+                break
+
+        task = asyncio.create_task(_collect_first_event())
+        await asyncio.wait_for(task, timeout=0.2)
+
+        assert received == [{"type": "goal_started"}]
+
     async def test_not_found_raises(self):
         svc = _svc()
         with pytest.raises(NotFoundError):

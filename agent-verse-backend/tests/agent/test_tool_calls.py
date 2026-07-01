@@ -72,3 +72,26 @@ def test_repair_tool_call_arguments_replaces_placeholder_jira_jql_from_goal() ->
 
     assert repaired.arguments["jql"] == "created >= -26w ORDER BY created DESC"
     assert repaired.arguments["max_results"] == 100
+
+
+def test_repair_tool_call_arguments_builds_cross_project_assignee_jql() -> None:
+    call = ToolCall(tool="jira_search_issues", arguments={"jql": "project = TEST"})
+
+    repaired = repair_tool_call_arguments(
+        call,
+        "Use Jira search",
+        goal="Find all the JIRA assigned on Abhay Dwivedi",
+    )
+
+    assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'
+
+
+def test_repair_tool_call_arguments_preserves_all_projects_for_named_assignee() -> None:
+    call = ToolCall(tool="jira_search_issues", arguments={})
+
+    repaired = repair_tool_call_arguments(
+        call,
+        "Search all projects for Jira assigned to Abhay Dwivedi",
+    )
+
+    assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'

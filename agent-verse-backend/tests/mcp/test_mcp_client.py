@@ -168,6 +168,26 @@ async def test_jira_rest_connector_exposes_search_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_jira_rest_connector_exposes_search_tool_without_url_protocol() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="pinelabs.atlassian.net",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Basic test-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+
+    assert [tool.name for tool in tools] == ["jira_search_issues"]
+
+
+@pytest.mark.asyncio
 async def test_jira_named_mcp_endpoint_uses_jsonrpc_discovery() -> None:
     redis = FakeRedis()
     registry = MCPRegistry(redis=redis)
@@ -366,6 +386,37 @@ async def test_jira_rest_connector_dispatches_search_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_jira_rest_connector_dispatches_search_tool_without_url_protocol() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="pinelabs.atlassian.net",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Basic test-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        route = respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(200, json={"total": 0, "issues": []})
+        )
+        result = await client.call_tool(
+            server_id=server_id,
+            tool_name="jira_search_issues",
+            arguments={"jql": "assignee = currentUser()", "max_results": 50},
+            tenant_ctx=TENANT,
+        )
+
+    assert result.success is True
+    assert result.output["total"] == 0
+    assert route.called
+
+
+@pytest.mark.asyncio
 async def test_call_tool_success(
     registry_with_server: tuple[MCPRegistry, str],
 ) -> None:
@@ -473,6 +524,55 @@ async def test_call_tool_uses_jsonrpc_for_mcp_endpoint(
         "arguments": {"query": "project = TEST"},
     }
     assert body["id"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_initializes_mcp_endpoint_only_when_required(
+    registry_with_mcp_endpoint: tuple[MCPRegistry, str],
+) -> None:
+    registry, server_id = registry_with_mcp_endpoint
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        route = respx.post("https://mcp.atlassian.com/v1/mcp").mock(
+            side_effect=[
+                httpx.Response(
+                    400,
+                    json={
+                        "jsonrpc": "2.0",
+                        "error": {"message": "Request must be an initialize request"},
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    headers={"Mcp-Session-Id": "session-1", "Content-Type": "text/event-stream"},
+                    text='event: message\ndata: {"jsonrpc":"2.0","id":"init","result":{}}\n\n',
+                ),
+                httpx.Response(202),
+                httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "response-id",
+                        "result": {"content": [{"type": "text", "text": "ISSUE-1"}]},
+                    },
+                ),
+            ]
+        )
+        result = await client.call_tool(
+            server_id=server_id,
+            tool_name="search_jira",
+            arguments={"query": "project = TEST"},
+            tenant_ctx=TENANT,
+        )
+
+    assert result.success is True
+    assert json.loads(route.calls[0].request.content)["method"] == "tools/call"
+    assert json.loads(route.calls[1].request.content)["method"] == "initialize"
+    assert json.loads(route.calls[2].request.content)["method"] == "notifications/initialized"
+    retry = route.calls[3].request
+    assert retry.headers["Mcp-Session-Id"] == "session-1"
+    assert json.loads(retry.content)["method"] == "tools/call"
 
 
 @pytest.mark.asyncio

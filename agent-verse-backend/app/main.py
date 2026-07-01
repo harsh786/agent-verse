@@ -645,6 +645,35 @@ def create_app(
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
+            # Register built-in MCP servers for every active tenant when their
+            # required env vars are present. Without this, catalog connectors
+            # can exist in Redis with no tool_definitions/handler, causing
+            # agents to fail with "Tool not found" even though the connector
+            # appears registered in the UI.
+            try:
+                from app.mcp.servers.registry_wiring import register_builtin_servers
+                from app.tenancy.context import PlanTier, TenantContext
+
+                builtin_registered = 0
+                for tenant_id, tenant_data in getattr(_tenant_svc_with_db, "_tenants", {}).items():
+                    try:
+                        tenant_plan = PlanTier(tenant_data.get("plan", "free"))
+                    except Exception:
+                        tenant_plan = PlanTier.FREE
+                    tenant_ctx = TenantContext(
+                        tenant_id=tenant_id,
+                        plan=tenant_plan,
+                        api_key_id="builtin-registration",
+                        roles=("admin",),
+                    )
+                    builtin_registered += await register_builtin_servers(
+                        app.state.mcp_registry,
+                        tenant_ctx,
+                    )
+                logger.info("builtin_mcp_servers_registered", count=builtin_registered)
+            except Exception as _builtin_exc:
+                logger.warning("builtin_mcp_server_registration_failed", error=str(_builtin_exc))
+
             # H-3: Wire DB into ExecutionMemory for persistence
             _exec_memory._db = db_factory
             app.state.exec_memory = _exec_memory

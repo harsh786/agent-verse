@@ -12,6 +12,7 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -52,8 +53,16 @@ def _is_mcp_endpoint(url: str) -> bool:
     return path.endswith("/mcp") or path.endswith("/mcp/authv2")
 
 
+def _absolute_http_url(url: str) -> str:
+    """Return an absolute HTTP(S) URL, defaulting public hostnames to HTTPS."""
+    stripped = url.strip()
+    if not stripped or "://" in stripped:
+        return stripped
+    return f"https://{stripped}"
+
+
 def _is_jira_rest_endpoint(cfg: MCPServerConfig) -> bool:
-    raw_url = cfg.url or cfg.base_url
+    raw_url = _absolute_http_url(cfg.url or cfg.base_url)
     if _is_mcp_endpoint(raw_url):
         return False
     url = raw_url.lower()
@@ -407,9 +416,10 @@ class MCPClient:
             payload["nextPageToken"] = arguments["next_page_token"]
 
         try:
+            base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
-                    f"{(server.url or server.base_url).rstrip('/')}/rest/api/3/search/jql",
+                    f"{base_url}/rest/api/3/search/jql",
                     json=payload,
                     headers=headers,
                 )
@@ -427,10 +437,18 @@ class MCPClient:
                             "id": issue.get("id", ""),
                             "key": issue.get("key", ""),
                             "summary": (issue.get("fields") or {}).get("summary", ""),
-                            "status": ((issue.get("fields") or {}).get("status") or {}).get("name", ""),
-                            "priority": ((issue.get("fields") or {}).get("priority") or {}).get("name", ""),
-                            "assignee": ((issue.get("fields") or {}).get("assignee") or {}).get("displayName", ""),
-                            "issue_type": ((issue.get("fields") or {}).get("issuetype") or {}).get("name", ""),
+                            "status": ((issue.get("fields") or {}).get("status") or {}).get(
+                                "name", ""
+                            ),
+                            "priority": ((issue.get("fields") or {}).get("priority") or {}).get(
+                                "name", ""
+                            ),
+                            "assignee": ((issue.get("fields") or {}).get("assignee") or {}).get(
+                                "displayName", ""
+                            ),
+                            "issue_type": ((issue.get("fields") or {}).get("issuetype") or {}).get(
+                                "name", ""
+                            ),
                             "created": (issue.get("fields") or {}).get("created", ""),
                             "updated": (issue.get("fields") or {}).get("updated", ""),
                         }
@@ -483,7 +501,6 @@ class MCPClient:
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if using_jsonrpc:
-                headers = await self._ensure_mcp_session(client, cfg, headers)
                 resp = await client.post(
                     cfg.url.rstrip("/"),
                     json=_jsonrpc(
@@ -492,6 +509,16 @@ class MCPClient:
                     ),
                     headers=headers,
                 )
+                if self._requires_initialize(resp):
+                    headers = await self._ensure_mcp_session(client, cfg, headers)
+                    resp = await client.post(
+                        cfg.url.rstrip("/"),
+                        json=_jsonrpc(
+                            "tools/call",
+                            {"name": tool_name, "arguments": arguments},
+                        ),
+                        headers=headers,
+                    )
             else:
                 resp = await client.post(
                     f"{cfg.url.rstrip('/')}/tools/{tool_name}",
@@ -625,10 +652,8 @@ class MCPClient:
             )
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
-                try:
+                with suppress(Exception):
                     await cb.record_success_async()
-                except Exception:
-                    pass
             # Update tool capability stats
             try:
                 _db = getattr(self, "_db", None)
@@ -644,10 +669,8 @@ class MCPClient:
         except httpx.HTTPStatusError as exc:
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
-                try:
+                with suppress(Exception):
                     await cb.record_failure_async()
-                except Exception:
-                    pass
             try:
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
@@ -665,10 +688,8 @@ class MCPClient:
         except Exception as exc:
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
-                try:
+                with suppress(Exception):
                     await cb.record_failure_async()
-                except Exception:
-                    pass
             try:
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
@@ -693,7 +714,10 @@ class MCPClient:
             return
         try:
             from sqlalchemy import text
-            col_success = "call_count = call_count + 1" + (", error_count = error_count + 1" if not success else "")
+
+            col_success = "call_count = call_count + 1" + (
+                ", error_count = error_count + 1" if not success else ""
+            )
             async with db() as session, session.begin():
                 await session.execute(text(f"""
                     UPDATE tool_capabilities
@@ -712,7 +736,7 @@ class MCPClient:
                     "inc": 1 if success else 0,
                 })
         except Exception as exc:
-            import logging; logging.getLogger(__name__).debug("tool_stats_update_failed: %s", exc)
+            logging.getLogger(__name__).debug("tool_stats_update_failed: %s", exc)
 
     async def _build_auth_headers(
         self,
@@ -752,15 +776,13 @@ class MCPClient:
                     token = self._oauth_manager.get_token(tenant_id, server_id)
                     if token is not None:
                         if token.is_expired():
-                            try:
+                            with suppress(Exception):
                                 token = await self._oauth_manager.refresh_token(
                                     tenant_id=tenant_id,
                                     server_id=server_id,
                                     token=token,
                                     auth_config=auth,
                                 )
-                            except Exception:
-                                pass
                         if token is not None and not token.is_expired():
                             headers["Authorization"] = f"Bearer {token.access_token}"
                 except Exception:

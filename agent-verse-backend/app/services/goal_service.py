@@ -2036,37 +2036,57 @@ class GoalService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Async generator that yields SSE events for *goal_id* in real time."""
         record = self._get_record(goal_id, tenant_ctx)
+        queue: asyncio.Queue[dict[str, Any] | None] | None = None
+        if record.status not in _TERMINAL_STATUSES:
+            queue = asyncio.Queue()
+            record.subscribers.append(queue)
 
-        # Replay persisted events and in-memory events without duplicating events
-        # already recovered from the durable stream.
-        replay_events = await self._events_for_replay(goal_id, record, tenant_ctx)
-        for event in replay_events:
-            yield event
-
-        replay_status = self._status_from_events(replay_events)
-        if replay_status is not None:
-            record.status = replay_status
-
-        # If goal is already terminal, nothing more to await
-        if record.status in _TERMINAL_STATUSES:
-            return
-
-        record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
-        if record.status in _TERMINAL_STATUSES:
-            return
-
-        # Register a subscriber queue for future events
-        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        record.subscribers.append(queue)
         try:
+            # Replay persisted events and in-memory events without duplicating events
+            # already recovered from the durable stream. The live queue is registered
+            # first so events emitted during replay are not missed by the SSE stream.
+            replay_events = await self._events_for_replay(goal_id, record, tenant_ctx)
+            seen = {self._event_key(event) for event in replay_events}
+            for event in replay_events:
+                yield event
+
+            if queue is not None:
+                while True:
+                    try:
+                        queued = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if queued is None:
+                        return
+                    key = self._event_key(queued)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield queued
+
+            replay_status = self._status_from_events(replay_events)
+            if replay_status is not None:
+                record.status = replay_status
+
+            # If goal is already terminal, nothing more to await
+            if record.status in _TERMINAL_STATUSES:
+                return
+
+            record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
+            if record.status in _TERMINAL_STATUSES:
+                return
+
+            if queue is None:
+                return
             while True:
                 item = await queue.get()
                 if item is None:  # end-of-stream
                     break
                 yield item
         finally:
-            with suppress(ValueError):
-                record.subscribers.remove(queue)
+            if queue is not None:
+                with suppress(ValueError):
+                    record.subscribers.remove(queue)
 
     # ── governance delegations ────────────────────────────────────────────────
 

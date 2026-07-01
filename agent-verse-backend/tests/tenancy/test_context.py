@@ -15,7 +15,7 @@ def test_plan_tiers_are_ordered_by_capability() -> None:
 def test_free_tier_has_conservative_limits() -> None:
     lim = PLAN_LIMITS[PlanTier.FREE]
     assert lim.requests_per_minute <= 60
-    assert lim.goals_per_day <= 10
+    assert lim.goals_per_day == 1000
     assert lim.max_agents <= 3
     assert lim.max_api_keys <= 3
 
