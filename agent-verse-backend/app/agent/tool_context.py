@@ -35,14 +35,24 @@ class ToolContext:
 
     def find_tool(self, name: str) -> ToolRef | None:
         """Find a tool by unqualified name or by Server.tool_name."""
+        def _normalize(value: str) -> str:
+            return value.lower().replace(".", "").replace(" ", "").replace("_", "")
+
+        name_key = _normalize(name)
+        alias_matches = [
+            tool
+            for tool in self.tools
+            if name_key == _normalize(tool.name)
+            or (name_key in {"jirasearch", "searchjira"} and tool.name == "jira_search_issues")
+        ]
+        if alias_matches:
+            return alias_matches[0]
+
         if "." not in name:
             matches = [tool for tool in self.tools if tool.name == name]
             if matches:
                 return matches[0]  # Return first registered (most recently discovered)
             return None
-
-        def _normalize(value: str) -> str:
-            return value.lower().replace(".", "").replace(" ", "")
 
         server_name, tool_name = name.rsplit(".", 1)
         server_name_key = _normalize(server_name)

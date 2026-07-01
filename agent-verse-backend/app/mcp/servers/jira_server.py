@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -18,6 +19,13 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 JIRA_BASE = os.getenv("JIRA_BASE_URL", "").rstrip("/")
+
+
+def _absolute_http_url(url: str) -> str:
+    stripped = url.strip().rstrip("/")
+    if not stripped or "://" in stripped:
+        return stripped
+    return f"https://{stripped}"
 
 TOOL_DEFINITIONS = [
     {
@@ -35,7 +43,10 @@ TOOL_DEFINITIONS = [
                 "fields": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Fields to return. Defaults to summary, status, assignee, priority, created, updated.",
+                    "description": (
+                        "Fields to return. Defaults to summary, status, assignee, "
+                        "priority, created, updated."
+                    ),
                 },
             },
             "required": ["jql"],
@@ -69,7 +80,10 @@ TOOL_DEFINITIONS = [
                     "description": "Issue type: Bug, Story, Task, Epic, etc.",
                 },
                 "description": {"type": "string", "default": ""},
-                "priority": {"type": "string", "description": "Priority name: Highest, High, Medium, Low, Lowest"},
+                "priority": {
+                    "type": "string",
+                    "description": "Priority name: Highest, High, Medium, Low, Lowest",
+                },
                 "assignee_account_id": {"type": "string"},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "components": {
@@ -214,18 +228,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return await _call_tool_inner(tool_name, arguments)
     except httpx.HTTPStatusError as exc:
         error_body = ""
-        try:
+        with suppress(Exception):
             error_body = exc.response.text[:500]
-        except Exception:
-            pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: "
+            f"{error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = os.getenv("JIRA_BASE_URL", "").rstrip("/")
+    base = _absolute_http_url(os.getenv("JIRA_BASE_URL", ""))
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
 
@@ -233,7 +249,15 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
         if tool_name == "jira_search_issues":
-            default_fields = ["summary", "status", "assignee", "priority", "created", "updated", "issuetype"]
+            default_fields = [
+                "summary",
+                "status",
+                "assignee",
+                "priority",
+                "created",
+                "updated",
+                "issuetype",
+            ]
             payload: dict[str, Any] = {
                 "jql": arguments["jql"],
                 "maxResults": arguments.get("max_results", 50),
@@ -375,7 +399,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                                     "content": [
                                         {
                                             "type": "paragraph",
-                                            "content": [{"type": "text", "text": arguments["comment"]}],
+                                            "content": [
+                                                {"type": "text", "text": arguments["comment"]}
+                                            ],
                                         }
                                     ],
                                 }
@@ -416,7 +442,12 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             data = resp.json()
             return {
                 "projects": [
-                    {"id": p["id"], "key": p["key"], "name": p["name"], "type": p.get("projectTypeKey", "")}
+                    {
+                        "id": p["id"],
+                        "key": p["key"],
+                        "name": p["name"],
+                        "type": p.get("projectTypeKey", ""),
+                    }
                     for p in (data if isinstance(data, list) else data.get("values", []))
                 ]
             }
@@ -435,7 +466,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             resp = await client.post("/rest/agile/1.0/sprint", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return {"sprint_id": data.get("id"), "name": data.get("name"), "state": data.get("state")}
+            return {
+                "sprint_id": data.get("id"),
+                "name": data.get("name"),
+                "state": data.get("state"),
+            }
 
         elif tool_name == "jira_get_board_sprints":
             board_id = arguments["board_id"]

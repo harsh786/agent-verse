@@ -50,15 +50,37 @@ def extract_tool_call(text: str) -> ToolCall | None:
 
 
 def _looks_like_placeholder_jql(jql: str) -> bool:
-    placeholders = {"project = test", "project_name", "date_calculated", "date_calculated_in_step"}
+    placeholders = {
+        "project = test",
+        "project = TEST",
+        "project_name",
+        "date_calculated",
+        "date_calculated_in_step",
+    }
     lower = jql.lower()
-    return any(item in lower for item in placeholders)
+    return any(item.lower() in lower for item in placeholders)
+
+
+def _named_assignee_from_text(text: str) -> str:
+    match = re.search(
+        r"assigned\s+(?:to|on)\s+([A-Z][A-Za-z]+(?:[ \t]+[A-Z][A-Za-z]+){0,3})",
+        text,
+    )
+    if match is None:
+        return ""
+    assignee = match.group(1).strip()
+    if assignee.lower() in {"me", "you"}:
+        return ""
+    return assignee
 
 
 def _jql_from_goal_or_step(text: str) -> str:
     lower = text.lower()
     if "assigned to me" in lower or "assigned to you" in lower:
         return "assignee = currentUser() AND created >= -26w ORDER BY created DESC"
+    named_assignee = _named_assignee_from_text(text)
+    if named_assignee:
+        return f'assignee = "{named_assignee}" ORDER BY created DESC'
     if "last 6 months" in lower:
         return "created >= -26w ORDER BY created DESC"
     return ""

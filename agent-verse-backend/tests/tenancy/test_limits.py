@@ -1,12 +1,15 @@
 """Tests for plan limit enforcement."""
+
 from __future__ import annotations
+
 import pytest
+
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.limits import (
     PlanLimitExceededError,
-    check_daily_goal_limit,
     check_agent_limit,
     check_api_key_limit,
+    check_daily_goal_limit,
     check_knowledge_collection_limit,
 )
 
@@ -15,12 +18,12 @@ ENTERPRISE = TenantContext(tenant_id="t2", plan=PlanTier.ENTERPRISE, api_key_id=
 
 
 def test_goal_limit_not_exceeded():
-    check_daily_goal_limit(FREE, 9)  # limit is 10, should not raise
+    check_daily_goal_limit(FREE, 999)  # limit is 1000, should not raise
 
 
 def test_goal_limit_exceeded():
     with pytest.raises(PlanLimitExceededError, match="Daily goal limit"):
-        check_daily_goal_limit(FREE, 10)
+        check_daily_goal_limit(FREE, 1000)
 
 
 def test_goal_limit_enterprise_high():
@@ -50,13 +53,14 @@ def test_knowledge_limit_exceeded():
 async def test_goal_service_enforces_daily_limit():
     """GoalService raises PlanLimitExceededError when daily limit hit."""
     from datetime import UTC, datetime
-    from app.services.goal_service import GoalService, GoalRecord
+
     from app.agent.state import GoalStatus
+    from app.services.goal_service import GoalRecord, GoalService
 
     svc = GoalService()
-    # Manually inject 10 goals for today
+    # Manually inject 1000 goals for today
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    for i in range(10):
+    for i in range(1000):
         rec = GoalRecord(
             goal_id=f"g{i}",
             goal_text="test",
