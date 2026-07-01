@@ -7,6 +7,7 @@
 
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
+import type { ResultArtifact } from '@/features/goals/resultArtifact';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -109,6 +110,7 @@ export interface GoalResponse {
   iterations?: number;
   cost_usd?: number;
   created_at?: string;
+  result_artifact?: ResultArtifact;
 }
 
 export interface StepResponse {
@@ -137,11 +139,13 @@ export interface TokenChunkEvent {
 // ── Goal extended types ───────────────────────────────────────────────────────
 
 export interface GoalEvent {
-  event_id: string;
-  goal_id: string;
+  event_id?: string;
+  goal_id?: string;
   type: string;
   payload?: Record<string, unknown>;
-  created_at: string;
+  data?: Record<string, unknown>;
+  created_at?: string;
+  ts?: string;
 }
 
 export interface EvalScorecard {

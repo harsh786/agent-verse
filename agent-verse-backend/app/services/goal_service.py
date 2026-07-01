@@ -41,6 +41,7 @@ from app.governance.hitl import HITLGateway
 from app.observability.metrics import record_goal_duration, record_goal_started
 from app.providers.fake import FakeProvider
 from app.services.goal_queue import GoalTaskQueue
+from app.services.result_artifacts import build_result_artifact
 from app.tenancy.context import PlanTier, TenantContext
 
 # Module-level OTel tracer — no-ops cleanly when no exporter is configured.
@@ -1714,7 +1715,13 @@ class GoalService:
             record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
         if record is None:
             raise NotFoundError(f"Goal not found: {goal_id}")
-        event_count = await self._event_count_for_response(goal_id, record, tenant_ctx)
+        events_for_replay = await self._events_for_replay(goal_id, record, tenant_ctx)
+        event_count = len(events_for_replay)
+        result_artifact = build_result_artifact(
+            goal=record.goal_text,
+            status=record.status.value,
+            events=events_for_replay,
+        )
         return {
             "goal_id": record.goal_id,
             "status": record.status.value,
@@ -1726,6 +1733,7 @@ class GoalService:
             "created_at": record.created_at,
             "event_count": event_count,
             "provider_warning": record.execution_context.get("provider_warning"),
+            "result_artifact": result_artifact,
         }
 
     async def list_goals(self, tenant_ctx: TenantContext) -> dict[str, list[dict[str, Any]]]:

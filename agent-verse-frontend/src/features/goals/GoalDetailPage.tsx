@@ -14,7 +14,7 @@ import {
   GitCompare,
   Ghost,
 } from "lucide-react";
-import { useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { goalsApi, governanceApi } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
@@ -24,6 +24,26 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { LiveCostTicker } from "@/components/live/LiveCostTicker";
+import { GoalEvidencePanel } from "./components/GoalEvidencePanel";
+import { GoalOutcomeHero } from "./components/GoalOutcomeHero";
+import { GoalResultCanvas } from "./components/GoalResultCanvas";
+import type { GoalEvent } from "@/lib/api/client";
+import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
+
+type GoalDetailTab = "results" | "evidence" | "execution" | "events" | "eval";
+
+type GoalDetailTabConfig = {
+  tab: GoalDetailTab;
+  label: string;
+};
+
+function tabId(tab: GoalDetailTab) {
+  return `goal-tab-${tab}`;
+}
+
+function tabPanelId(tab: GoalDetailTab) {
+  return `goal-tabpanel-${tab}`;
+}
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -50,15 +70,23 @@ function formatValue(value: unknown): string | undefined {
   return JSON.stringify(value, null, 2);
 }
 
+function eventTimestamp(event: GoalEvent): string | undefined {
+  return readString(event.created_at) ?? readString(event.ts);
+}
+
+function eventPayload(event: GoalEvent): Record<string, unknown> | undefined {
+  return event.payload ?? event.data;
+}
+
 type EventSummaryContext = {
-  events: Record<string, unknown>[];
+  events: StreamGoalEvent[];
   index: number;
   goalStatus: string;
 };
 
 function hasLaterEvent(
   context: EventSummaryContext,
-  predicate: (event: Record<string, unknown>) => boolean
+  predicate: (event: StreamGoalEvent) => boolean
 ) {
   return context.events.slice(context.index + 1).some(predicate);
 }
@@ -75,7 +103,7 @@ function statusAfterTerminal(context: EventSummaryContext) {
   return "executing";
 }
 
-function eventSummary(event: Record<string, unknown>, context: EventSummaryContext) {
+function eventSummary(event: StreamGoalEvent, context: EventSummaryContext) {
   const type = readString(event.type) ?? "event";
   const step = readString(event.step);
   const status = readString(event.status);
@@ -162,8 +190,8 @@ function StepRow({
   index,
   goalStatus,
 }: {
-  event: Record<string, unknown>;
-  events: Record<string, unknown>[];
+  event: StreamGoalEvent;
+  events: StreamGoalEvent[];
   index: number;
   goalStatus: string;
 }) {
@@ -203,7 +231,14 @@ export function GoalDetailPage() {
   const qc = useQueryClient();
   const tenantId = useAuthStore((s) => s.tenantId);
   const [approvalNote, setApprovalNote] = useState("");
-  const [activeTab, setActiveTab] = useState<"pipeline" | "events" | "eval">("pipeline");
+  const [selectedTab, setSelectedTab] = useState<GoalDetailTab | null>(null);
+  const tabRefs = useRef<Record<GoalDetailTab, HTMLButtonElement | null>>({
+    results: null,
+    evidence: null,
+    execution: null,
+    events: null,
+    eval: null,
+  });
 
   const { data: goal, isLoading } = useQuery({
     queryKey: ["goal", goalId],
@@ -213,6 +248,56 @@ export function GoalDetailPage() {
   });
 
   const { events, connected, streamingToken } = useGoalStream(goalId ?? "");
+
+  const hasResultArtifact = Boolean(goal?.result_artifact);
+  const isTerminal = ["complete", "failed"].includes(goal?.status ?? "");
+  const visibleTabs: GoalDetailTabConfig[] = [
+    ...(hasResultArtifact
+      ? [
+          { tab: "results", label: "Results" },
+          { tab: "evidence", label: "Evidence" },
+        ] satisfies GoalDetailTabConfig[]
+      : []),
+    { tab: "execution", label: "Execution" },
+    { tab: "events", label: "Developer Log" },
+    ...(isTerminal ? [{ tab: "eval", label: "Eval" }] satisfies GoalDetailTabConfig[] : []),
+  ];
+  const defaultTab: GoalDetailTab = isTerminal && hasResultArtifact ? "results" : "execution";
+  const activeTab: GoalDetailTab = visibleTabs.some(({ tab }) => tab === selectedTab)
+    ? selectedTab!
+    : defaultTab;
+
+  function selectTab(tab: GoalDetailTab, focus = false) {
+    setSelectedTab(tab);
+    if (focus) {
+      tabRefs.current[tab]?.focus();
+    }
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    const currentIndex = visibleTabs.findIndex(({ tab }) => tab === activeTab);
+    let nextIndex: number | undefined;
+
+    switch (event.key) {
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % visibleTabs.length;
+        break;
+      case "ArrowLeft":
+        nextIndex = (currentIndex - 1 + visibleTabs.length) % visibleTabs.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = visibleTabs.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    selectTab(visibleTabs[nextIndex].tab, true);
+  }
 
   const cancel = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
@@ -251,7 +336,7 @@ export function GoalDetailPage() {
     enabled:
       !!goalId &&
       activeTab === "eval" &&
-      ["complete", "failed"].includes(goal?.status ?? ""),
+      isTerminal,
   });
 
   // HITL: fetch pending approvals — enabled only while waiting_human
@@ -327,12 +412,21 @@ export function GoalDetailPage() {
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={goal.status} />
             <LiveCostTicker
-              currentCost={(goal as any).cost_usd ?? 0}
-              isRunning={["planning", "executing", "verifying"].includes((goal as any).status ?? "")}
+              currentCost={goal.cost_usd ?? 0}
+              isRunning={["planning", "executing", "verifying"].includes(goal.status)}
             />
           </div>
         </div>
       </div>
+
+      {goal.result_artifact && ["complete", "failed"].includes(goal.status) && (
+        <GoalOutcomeHero
+          goal={goal.goal}
+          status={goal.status}
+          artifact={goal.result_artifact}
+          onRerun={() => window.location.reload()}
+        />
+      )}
 
       {/* Actions */}
       <div className="flex flex-wrap gap-2">
@@ -480,40 +574,63 @@ export function GoalDetailPage() {
 
       {/* Tab bar */}
       <div role="tablist" aria-label="Goal detail tabs" className="flex gap-1 border-b">
-        {(["pipeline", "events"] as const).map((tab) => (
+        {visibleTabs.map(({ tab, label }) => (
           <button
             key={tab}
+            ref={(element) => {
+              tabRefs.current[tab] = element;
+            }}
+            id={tabId(tab)}
             role="tab"
             aria-selected={activeTab === tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
+            aria-controls={tabPanelId(tab)}
+            tabIndex={activeTab === tab ? 0 : -1}
+            onClick={() => selectTab(tab)}
+            onKeyDown={handleTabKeyDown}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {tab === "pipeline" ? "Pipeline" : "Event Log"}
+            {label}
           </button>
         ))}
-        {["complete", "failed"].includes(goal.status) && (
-          <button
-            role="tab"
-            aria-selected={activeTab === "eval"}
-            onClick={() => setActiveTab("eval")}
-            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "eval"
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Eval
-          </button>
-        )}
       </div>
 
-      {/* Pipeline tab */}
-      {activeTab === "pipeline" && (
-        <>
+      {activeTab === "results" && goal.result_artifact && (
+        <div
+          id={tabPanelId("results")}
+          role="tabpanel"
+          aria-labelledby={tabId("results")}
+          tabIndex={0}
+        >
+          <GoalResultCanvas
+            artifact={goal.result_artifact}
+            onShowExecution={() => selectTab("execution", true)}
+          />
+        </div>
+      )}
+
+      {activeTab === "evidence" && goal.result_artifact && (
+        <div
+          id={tabPanelId("evidence")}
+          role="tabpanel"
+          aria-labelledby={tabId("evidence")}
+          tabIndex={0}
+        >
+          <GoalEvidencePanel artifact={goal.result_artifact} />
+        </div>
+      )}
+
+      {/* Execution tab */}
+      {activeTab === "execution" && (
+        <div
+          id={tabPanelId("execution")}
+          role="tabpanel"
+          aria-labelledby={tabId("execution")}
+          tabIndex={0}
+        >
           {/* Live event stream */}
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
@@ -532,9 +649,9 @@ export function GoalDetailPage() {
               <ul>
                 {events.map((evt, i) => (
                   <StepRow
-                    key={(evt as any).event_id ?? `evt-${i}`}
-                    event={evt as Record<string, unknown>}
-                    events={events as Record<string, unknown>[]}
+                    key={readString(evt.event_id) ?? `evt-${i}`}
+                    event={evt}
+                    events={events}
                     index={i}
                     goalStatus={goal.status}
                   />
@@ -571,20 +688,26 @@ export function GoalDetailPage() {
           )}
 
           {/* Execution Timeline */}
-          {events.length > 0 && <ExecutionTimeline events={events as any[]} />}
+          {events.length > 0 && <ExecutionTimeline events={events} />}
 
           {/* Tool Call Inspector */}
-          {events.some((e) => (e as any).type === "tool_call_complete") && (
+          {events.some((e) => e.type === "tool_call_complete") && (
             <ToolCallInspector
-              toolEvents={(events as any[]).filter((e) => e.type === "tool_call_complete")}
+              toolEvents={events.filter((e) => e.type === "tool_call_complete")}
             />
           )}
-        </>
+        </div>
       )}
 
       {/* Event Log tab */}
       {activeTab === "events" && (
-        <div className="space-y-2">
+        <div
+          id={tabPanelId("events")}
+          role="tabpanel"
+          aria-labelledby={tabId("events")}
+          tabIndex={0}
+          className="space-y-2"
+        >
           {eventsLoading
             ? Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full" />
@@ -596,30 +719,40 @@ export function GoalDetailPage() {
                 description="Events appear after goal execution completes."
               />
             )
-            : eventLog.map((ev, i) => (
+            : eventLog.map((ev, i) => {
+              const timestamp = eventTimestamp(ev);
+              const payload = eventPayload(ev);
+              return (
               <div
                 key={i}
                 className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm"
               >
                 <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-                  {ev.created_at
-                    ? new Date(ev.created_at).toLocaleTimeString()
+                  {timestamp
+                    ? new Date(timestamp).toLocaleTimeString()
                     : `#${i + 1}`}
                 </span>
                 <span className="font-medium">{ev.type}</span>
-                {ev.payload?.message != null && (
+                {payload?.message != null && (
                   <span className="text-muted-foreground text-xs">
-                    {String(ev.payload.message)}
+                    {String(payload.message)}
                   </span>
                 )}
               </div>
-            ))}
+              );
+            })}
         </div>
       )}
 
       {/* Eval tab */}
       {activeTab === "eval" && (
-        <div className="space-y-4">
+        <div
+          id={tabPanelId("eval")}
+          role="tabpanel"
+          aria-labelledby={tabId("eval")}
+          tabIndex={0}
+          className="space-y-4"
+        >
           {evalLoading ? (
             <Skeleton className="h-40 w-full" />
           ) : !evaluation ? (

@@ -63,6 +63,106 @@ function mockGoal(status: string, goal = 'Fix prod') {
   });
 }
 
+function mockCompletedGoalWithResultArtifact() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith('/goals/goal-1/replay')) {
+      return new Response(
+        JSON.stringify({
+          timeline: [
+            {
+              event_id: 'event-1',
+              goal_id: 'goal-1',
+              type: 'goal_complete',
+              payload: { message: 'Persisted completion event' },
+              created_at: '2026-07-01T12:00:00Z',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        id: 'goal-1',
+        goal_id: 'goal-1',
+        status: 'complete',
+        goal: 'Fetch Jira issues',
+        result_artifact: {
+          version: 1,
+          kind: 'table',
+          title: 'Jira issues assigned to you',
+          summary: 'Found 1 Jira issue assigned to you.',
+          status: 'success',
+          metrics: [{ label: 'Issues', value: 1 }],
+          tables: [
+            {
+              title: 'Issues',
+              columns: [
+                { key: 'key', label: 'Key', type: 'link' },
+                { key: 'summary', label: 'Summary', type: 'text' },
+                { key: 'status', label: 'Status', type: 'badge' },
+              ],
+              rows: [{ key: 'PCF-58608', summary: 'Deployment fix', status: 'Open' }],
+            },
+          ],
+          evidence: {
+            tools: [{ name: 'jira_search_issues', server_id: 'jira', success: true }],
+            verification: 'Jira returned matching issues.',
+          },
+          downloads: ['json', 'csv', 'markdown'],
+          debug: { event_count: 3 },
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  });
+}
+
+function mockCompletedGoalWithoutResultArtifact() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+    new Response(
+      JSON.stringify({
+        id: 'goal-1',
+        goal_id: 'goal-1',
+        status: 'complete',
+        goal: 'Fetch Jira issues',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+}
+
+function mockFailedGoalWithResultArtifact() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+    new Response(
+      JSON.stringify({
+        id: 'goal-1',
+        goal_id: 'goal-1',
+        status: 'failed',
+        goal: 'Fetch Jira issues',
+        result_artifact: {
+          version: 1,
+          kind: 'error',
+          title: 'Jira lookup failed',
+          summary: 'The agent could not complete the Jira lookup.',
+          status: 'failed',
+          metrics: [],
+          tables: [],
+          evidence: {
+            tools: [{ name: 'jira_search_issues', server_id: 'jira', success: true }],
+            verification: 'Token expired while creating the PR.',
+          },
+          downloads: [],
+          debug: { event_count: 5 },
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+}
+
 /** Mock for waiting_human with a matching pending approval */
 function mockWaitingHumanGoal() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -150,6 +250,123 @@ describe('GoalDetailPage', () => {
     renderGoalDetailPage();
     expect(await screen.findByText('Fix production bug')).toBeInTheDocument();
     expect(screen.getByText('executing')).toBeInTheDocument();
+  });
+
+  test('shows completed result artifact by default and opens execution and developer log tabs', async () => {
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('PCF-58608')).toBeInTheDocument();
+    expect(screen.getByText('Deployment fix')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /execution/i }));
+    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
+    expect(screen.getByText('jira.search succeeded')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /developer log/i }));
+    expect(await screen.findByText('goal_complete')).toBeInTheDocument();
+    expect(screen.getByText('Persisted completion event')).toBeInTheDocument();
+  });
+
+  test('hides artifact tabs and defaults to execution when completed goal has no artifact', async () => {
+    mockCompletedGoalWithoutResultArtifact();
+    renderGoalDetailPage();
+
+    expect(await screen.findByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
+    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /results/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /evidence/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /execution/i })).toHaveAttribute('aria-controls', 'goal-tabpanel-execution');
+  });
+
+  test('opens execution tab from failed result artifact diagnostic action', async () => {
+    mockFailedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const openExecutionButton = await screen.findByRole('button', { name: /open execution tab/i });
+    await userEvent.click(openExecutionButton);
+
+    expect(screen.getByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
+    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
+  });
+
+  test('supports arrow key navigation across visible tabs', async () => {
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const resultsTab = await screen.findByRole('tab', { name: /results/i });
+    const evidenceTab = screen.getByRole('tab', { name: /evidence/i });
+    const executionTab = screen.getByRole('tab', { name: /execution/i });
+    const evalTab = screen.getByRole('tab', { name: /eval/i });
+
+    resultsTab.focus();
+    await userEvent.keyboard('{ArrowRight}');
+
+    expect(evidenceTab).toHaveFocus();
+    expect(evidenceTab).toHaveAttribute('aria-selected', 'true');
+
+    await userEvent.keyboard('{ArrowRight}');
+    expect(executionTab).toHaveFocus();
+    expect(executionTab).toHaveAttribute('aria-selected', 'true');
+
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(evidenceTab).toHaveFocus();
+    expect(evidenceTab).toHaveAttribute('aria-selected', 'true');
+
+    await userEvent.keyboard('{End}');
+    expect(evalTab).toHaveFocus();
+    expect(evalTab).toHaveAttribute('aria-selected', 'true');
+
+    await userEvent.keyboard('{Home}');
+    expect(resultsTab).toHaveFocus();
+    expect(resultsTab).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('focuses and selects execution tab from failed result artifact diagnostic action', async () => {
+    mockFailedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const openExecutionButton = await screen.findByRole('button', { name: /open execution tab/i });
+    openExecutionButton.focus();
+    await userEvent.keyboard('{Enter}');
+
+    const executionTab = screen.getByRole('tab', { name: /execution/i });
+    expect(executionTab).toHaveFocus();
+    expect(executionTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
+  });
+
+  test('renders developer log events returned with ts and data replay shape', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/goals/goal-1/replay')) {
+        return new Response(
+          JSON.stringify({
+            timeline: [
+              {
+                event_id: 'event-1',
+                goal_id: 'goal-1',
+                type: 'goal_complete',
+                data: { message: 'Persisted completion event from replay data' },
+                ts: '2026-07-01T12:00:00Z',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fetch Jira issues' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /developer log/i }));
+
+    expect(await screen.findByText('goal_complete')).toBeInTheDocument();
+    expect(screen.getByText('Persisted completion event from replay data')).toBeInTheDocument();
   });
 
   test('shows HITL panel with Approve/Reject when matching approval exists', async () => {
