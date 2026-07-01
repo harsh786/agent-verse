@@ -96,7 +96,7 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    return os.getenv("KAFKA_REST_ENDPOINT", "https://pkc-placeholder.region.confluent.cloud")
+    return os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
 
 
 def _auth() -> tuple[str, str]:
@@ -104,11 +104,13 @@ def _auth() -> tuple[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    base = os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
+    if not base:
+        return {"error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"}
     api_key = os.getenv("KAFKA_API_KEY", "")
     if not api_key:
         return {"error": "KAFKA_API_KEY not configured"}
 
-    base = _base()
     auth = _auth()
     cluster_id = arguments.get("cluster_id", "")
 

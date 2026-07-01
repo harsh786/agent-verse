@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agent.tool_calls import ToolCall, extract_tool_call
+from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 
 
 def test_extract_tool_call_from_json_tool_arguments() -> None:
@@ -36,3 +36,39 @@ def test_extract_tool_call_returns_none_for_list_arguments() -> None:
 
 def test_extract_tool_call_returns_none_for_string_args() -> None:
     assert extract_tool_call('{"tool": "jira_search", "args": "bad"}') is None
+
+
+def test_extract_tool_call_ignores_placeholder_tool_name() -> None:
+    assert extract_tool_call('{"tool": "server_name.tool_name", "arguments": {}}') is None
+    assert extract_tool_call('{"tool": "server_name.jira_jql", "arguments": {}}') is None
+    assert extract_tool_call('{"tool": "python.datetime", "arguments": {}}') is None
+
+
+def test_repair_tool_call_arguments_extracts_missing_jira_jql_from_step() -> None:
+    call = ToolCall(tool="PineLabs.JIRA.jira_search_issues", arguments={})
+
+    repaired = repair_tool_call_arguments(
+        call,
+        "Use Jira with the JQL "
+        "'assignee = currentUser() AND created >= -26w ORDER BY created DESC'",
+    )
+
+    assert repaired.arguments == {
+        "jql": "assignee = currentUser() AND created >= -26w ORDER BY created DESC"
+    }
+
+
+def test_repair_tool_call_arguments_replaces_placeholder_jira_jql_from_goal() -> None:
+    call = ToolCall(
+        tool="PineLabs.JIRA.jira_search_issues",
+        arguments={"jql": "project = TEST AND status = Open", "max_results": 100},
+    )
+
+    repaired = repair_tool_call_arguments(
+        call,
+        "Use Jira search",
+        goal="fetch all jira issues in last 6 months",
+    )
+
+    assert repaired.arguments["jql"] == "created >= -26w ORDER BY created DESC"
+    assert repaired.arguments["max_results"] == 100

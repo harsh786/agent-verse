@@ -601,9 +601,8 @@ class GoalService:
 
         This is the production path — every goal runs with full pipeline.
         """
-        import os
-
         from app.agent.graph import AgentGraph
+        from app.core.config import get_provider_env
         from app.intelligence.guardrails import GuardrailChecker
         from app.reliability.dedup import DeduplicationCache
         from app.reliability.result_processor import ResultProcessor
@@ -641,8 +640,8 @@ class GoalService:
 
         # 2. Fall back to env-var provider
         if provider is None:
-            anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-            openai_key = os.getenv("OPENAI_API_KEY", "")
+            anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
+            openai_key = get_provider_env("OPENAI_API_KEY")
             if anthropic_key:
                 try:
                     from app.providers.anthropic_provider import AnthropicProvider
@@ -1598,6 +1597,18 @@ class GoalService:
 
             if not dry_run:
                 if self._task_queue is not None:
+                    _connector_ids: list[str] = []
+                    if agent_id is not None:
+                        _agent_store_for_queue = self._get_agent_store()
+                        if _agent_store_for_queue is not None:
+                            _agent_for_queue = _agent_store_for_queue.get(
+                                agent_id, tenant_ctx=tenant_ctx
+                            )
+                            if isinstance(_agent_for_queue, dict):
+                                _connector_ids = [
+                                    str(item)
+                                    for item in _agent_for_queue.get("connector_ids", [])
+                                ]
                     self._task_queue.enqueue_goal(
                         goal_id=goal_id,
                         tenant_id=tenant_ctx.tenant_id,
@@ -1605,6 +1616,7 @@ class GoalService:
                         priority=priority,
                         dry_run=dry_run,
                         agent_id=agent_id,
+                        connector_ids=_connector_ids,
                         workflow_mode=workflow_mode,
                         goal_template="",
                         plan=tenant_ctx.plan.value,

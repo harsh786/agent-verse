@@ -153,6 +153,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     f"{base}/services/data/{API_VERSION}/sobjects/{obj}/{rid}",
                     json=arguments.get("fields", {}),
                 )
+                r.raise_for_status()
                 return {"success": r.status_code == 204, "status_code": r.status_code}
 
             elif tool_name == "salesforce_delete_record":
@@ -160,6 +161,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.delete(
                     f"{base}/services/data/{API_VERSION}/sobjects/{obj}/{rid}"
                 )
+                r.raise_for_status()
                 return {"success": r.status_code == 204}
 
             elif tool_name == "salesforce_describe_object":

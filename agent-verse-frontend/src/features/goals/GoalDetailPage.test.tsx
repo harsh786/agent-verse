@@ -34,7 +34,7 @@ vi.mock('@/lib/sse/useGoalStream', () => ({
 
 function renderGoalDetailPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/goals/goal-1']}>
         <Routes>
@@ -120,6 +120,29 @@ describe('GoalDetailPage', () => {
     await userEvent.click(screen.getByText('github.create_pr failed'));
     expect(screen.getByText(/Server: github/)).toBeInTheDocument();
     expect(screen.getByText(/Token expired/)).toBeInTheDocument();
+  });
+
+  test('does not leave successful completed goal events spinning', async () => {
+    mockGoal('complete');
+    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+      connected: false,
+      streamingToken: null,
+      events: [
+        { type: 'worker_started', goal: 'Fix prod', worker: 'celery' },
+        { type: 'goal_started', goal: 'Fix prod' },
+        { type: 'plan_ready', steps: ['Execute the goal autonomously'] },
+        { type: 'step_started', step: 'Execute the goal autonomously' },
+        { type: 'step_complete', step: 'Execute the goal autonomously', output: 'Done' },
+        { type: 'verification_done', success: true, reason: 'Completed by worker' },
+        { type: 'goal_complete' },
+        { type: 'worker_complete', status: 'complete', iterations: 1 },
+      ],
+    });
+
+    const { container } = renderGoalDetailPage();
+
+    expect((await screen.findAllByText('worker complete')).length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('.animate-spin')).toHaveLength(0);
   });
 
   test('shows goal text and status badge in header', async () => {

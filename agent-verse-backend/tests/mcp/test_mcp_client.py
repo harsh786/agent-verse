@@ -148,6 +148,224 @@ async def test_discover_tools_uses_jsonrpc_for_mcp_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_jira_rest_connector_exposes_search_tool() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://pinelabs.atlassian.net",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Basic test-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+
+    assert [tool.name for tool in tools] == ["jira_search_issues"]
+
+
+@pytest.mark.asyncio
+async def test_jira_named_mcp_endpoint_uses_jsonrpc_discovery() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://mcp.atlassian.com/v1/mcp",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Bearer rovo-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        route = respx.post("https://mcp.atlassian.com/v1/mcp").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "response-id",
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "searchJiraIssuesUsingJql",
+                                "description": "Search Jira issues",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                },
+            )
+        )
+        tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+
+    assert [tool.name for tool in tools] == ["searchJiraIssuesUsingJql"]
+    assert json.loads(route.calls[0].request.content)["method"] == "tools/list"
+
+
+@pytest.mark.asyncio
+async def test_jira_named_authv2_mcp_endpoint_uses_jsonrpc_discovery() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://mcp.atlassian.com/v1/mcp/authv2",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Bearer rovo-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        route = respx.post("https://mcp.atlassian.com/v1/mcp/authv2").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "response-id",
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "searchJiraIssuesUsingJql",
+                                "description": "Search Jira issues",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                },
+            )
+        )
+        tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+
+    assert [tool.name for tool in tools] == ["searchJiraIssuesUsingJql"]
+    assert json.loads(route.calls[0].request.content)["method"] == "tools/list"
+
+
+@pytest.mark.asyncio
+async def test_mcp_endpoint_initializes_session_and_parses_sse_response() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://mcp.atlassian.com/v1/mcp",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Bearer rovo-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    tools_list_payload = {
+        "jsonrpc": "2.0",
+        "id": "response-id",
+        "result": {
+            "tools": [
+                {
+                    "name": "searchJiraIssuesUsingJql",
+                    "description": "Search Jira issues",
+                    "inputSchema": {"type": "object"},
+                }
+            ]
+        },
+    }
+
+    with respx.mock:
+        route = respx.post("https://mcp.atlassian.com/v1/mcp").mock(
+            side_effect=[
+                httpx.Response(
+                    400,
+                    json={
+                        "jsonrpc": "2.0",
+                        "error": {"message": "Request must be an initialize request"},
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    headers={"Mcp-Session-Id": "session-1", "Content-Type": "text/event-stream"},
+                    text='event: message\ndata: {"jsonrpc":"2.0","id":"init","result":{}}\n\n',
+                ),
+                httpx.Response(202),
+                httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    text=f"event: message\ndata: {json.dumps(tools_list_payload)}\n\n",
+                ),
+            ]
+        )
+        tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+
+    assert [tool.name for tool in tools] == ["searchJiraIssuesUsingJql"]
+    assert json.loads(route.calls[1].request.content)["method"] == "initialize"
+    assert json.loads(route.calls[2].request.content)["method"] == "notifications/initialized"
+    assert route.calls[3].request.headers["Mcp-Session-Id"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_jira_rest_connector_dispatches_search_tool() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://pinelabs.atlassian.net",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Basic test-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        route = respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "total": 1,
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "issues": [
+                        {
+                            "id": "10001",
+                            "key": "AV-1",
+                            "fields": {
+                                "summary": "Fix goal execution",
+                                "status": {"name": "To Do"},
+                                "priority": {"name": "High"},
+                                "assignee": {"displayName": "Harsh Kumar"},
+                                "issuetype": {"name": "Bug"},
+                                "created": "2026-01-01T00:00:00.000+0000",
+                                "updated": "2026-01-02T00:00:00.000+0000",
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+        result = await client.call_tool(
+            server_id=server_id,
+            tool_name="jira_search_issues",
+            arguments={"jql": "assignee = currentUser()", "max_results": 50},
+            tenant_ctx=TENANT,
+        )
+
+    assert result.success is True
+    assert result.output["total"] == 1
+    assert result.output["issues"][0]["key"] == "AV-1"
+    request = route.calls[0].request
+    assert request.headers["Authorization"] == "Basic test-token"
+    body = json.loads(request.content)
+    assert body["jql"] == "assignee = currentUser()"
+    assert "startAt" not in body
+
+
+@pytest.mark.asyncio
 async def test_call_tool_success(
     registry_with_server: tuple[MCPRegistry, str],
 ) -> None:
@@ -255,6 +473,38 @@ async def test_call_tool_uses_jsonrpc_for_mcp_endpoint(
         "arguments": {"query": "project = TEST"},
     }
     assert body["id"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_marks_mcp_is_error_payload_failed(
+    registry_with_mcp_endpoint: tuple[MCPRegistry, str],
+) -> None:
+    registry, server_id = registry_with_mcp_endpoint
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        respx.post("https://mcp.atlassian.com/v1/mcp").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "response-id",
+                    "result": {
+                        "content": [{"type": "text", "text": "Input validation error"}],
+                        "isError": True,
+                    },
+                },
+            )
+        )
+        result = await client.call_tool(
+            server_id=server_id,
+            tool_name="search_jira",
+            arguments={"bad": "args"},
+            tenant_ctx=TENANT,
+        )
+
+    assert result.success is False
+    assert "Input validation error" in result.error
 
 
 @pytest.mark.asyncio

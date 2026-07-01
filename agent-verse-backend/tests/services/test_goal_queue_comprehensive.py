@@ -129,6 +129,30 @@ class TestCeleryGoalTaskQueue:
         kwargs = mock_task.apply_async.call_args[1]["kwargs"]
         assert kwargs["agent_id"] == "agent-abc"
 
+    def test_enqueue_goal_includes_connector_ids(self) -> None:
+        from app.services.goal_queue import CeleryGoalTaskQueue
+
+        mock_result = MagicMock()
+        mock_result.id = "task-id"
+        mock_task = MagicMock()
+        mock_task.apply_async = MagicMock(return_value=mock_result)
+
+        with patch("app.scaling.tasks.run_goal", mock_task):
+            with patch("app.scaling.celery_app.PLAN_QUEUE_MAP", {"free": "goals.free"}):
+                queue = CeleryGoalTaskQueue()
+                queue.enqueue_goal(
+                    goal_id="g1",
+                    tenant_id="t1",
+                    goal_text="Fetch Jira",
+                    priority="normal",
+                    dry_run=False,
+                    connector_ids=["jira-1"],
+                    plan="free",
+                )
+
+        kwargs = mock_task.apply_async.call_args[1]["kwargs"]
+        assert kwargs["connector_ids"] == ["jira-1"]
+
     def test_enqueue_goal_with_workflow_mode(self) -> None:
         from app.services.goal_queue import CeleryGoalTaskQueue
 

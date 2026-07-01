@@ -41,14 +41,20 @@ class ToolContext:
                 return matches[0]  # Return first registered (most recently discovered)
             return None
 
-        server_name, tool_name = name.split(".", 1)
-        server_name_lower = server_name.lower()
+        def _normalize(value: str) -> str:
+            return value.lower().replace(".", "").replace(" ", "")
+
+        server_name, tool_name = name.rsplit(".", 1)
+        server_name_key = _normalize(server_name)
         return next(
             (
                 tool
                 for tool in self.tools
                 if tool.name == tool_name
-                and server_name_lower in {tool.server_name.lower(), tool.server_id.lower()}
+                and (
+                    server_name_key in {_normalize(tool.server_name), _normalize(tool.server_id)}
+                    or (server_name_key == "jira" and "jira" in _normalize(tool.server_name))
+                )
             ),
             None,
         )
