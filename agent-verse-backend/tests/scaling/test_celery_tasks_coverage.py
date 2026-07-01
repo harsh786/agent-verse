@@ -1285,6 +1285,33 @@ async def test_find_and_fail_stuck_goals_with_mocked_db() -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_and_fail_stuck_goals_ignores_terminal_event_goals() -> None:
+    from app.scaling.tasks import _find_and_fail_stuck_goals
+
+    mock_result = MagicMock()
+    mock_result.fetchall.return_value = []
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=None)
+    mock_begin.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=mock_begin)
+    mock_factory = MagicMock(return_value=mock_session)
+
+    with patch("app.db.session.get_session_factory", return_value=mock_factory):
+        await _find_and_fail_stuck_goals()
+
+    sql = str(mock_session.execute.call_args.args[0])
+    assert "NOT EXISTS" in sql
+    assert "goal_events" in sql
+    assert "goal_complete" in sql
+    assert "worker_complete" in sql
+
+
+@pytest.mark.asyncio
 async def test_find_and_fail_stuck_goals_handles_db_error() -> None:
     from app.scaling.tasks import _find_and_fail_stuck_goals
 
@@ -1436,6 +1463,31 @@ async def test_run_with_signals_completes_when_agent_succeeds() -> None:
         )
 
     assert result is mock_state
+
+
+@pytest.mark.asyncio
+async def test_run_with_signals_forwards_initial_context() -> None:
+    """Worker wrapper must pass tool_context into AgentGraph.run."""
+    from app.scaling.tasks import _run_with_signals
+
+    mock_state = MagicMock()
+    mock_state.status.value = "complete"
+    mock_runner = MagicMock()
+    mock_runner.run = AsyncMock(return_value=mock_state)
+    initial_context = {"tool_prompt": "Available tools", "tool_context": object()}
+
+    with patch("app.scaling.tasks._get_sync_redis", return_value=None):
+        result = await _run_with_signals(
+            mock_runner,
+            "test goal",
+            MagicMock(),
+            AsyncMock(),
+            "goal-123",
+            initial_context=initial_context,
+        )
+
+    assert result is mock_state
+    assert mock_runner.run.await_args.kwargs["initial_context"] is initial_context
 
 
 @pytest.mark.asyncio

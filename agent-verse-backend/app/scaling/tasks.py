@@ -201,6 +201,7 @@ async def _run_with_signals(
     tenant_ctx: Any,
     event_callback: Any,
     goal_id: str,
+    initial_context: dict[str, Any] | None = None,
 ) -> Any:
     """Run agent_runner.run() while periodically polling pause/cancel signals.
 
@@ -215,6 +216,7 @@ async def _run_with_signals(
         agent_runner.run(
             goal=goal,
             tenant_ctx=tenant_ctx,
+            initial_context=initial_context,
             event_callback=event_callback,
         )
     )
@@ -251,11 +253,49 @@ async def _run_with_signals(
                     agent_runner.run(
                         goal=goal,
                         tenant_ctx=tenant_ctx,
+                        initial_context=initial_context,
                         event_callback=event_callback,
                     )
                 )
 
     return await run_task
+
+
+class _WorkerMCPAgentRunner:
+    def __init__(self, runner: Any, context_factory: Any) -> None:
+        self._runner = runner
+        self._context_factory = context_factory
+
+    async def run(
+        self,
+        *,
+        goal: str,
+        tenant_ctx: Any,
+        initial_context: dict[str, Any] | None = None,
+        event_callback: Any = None,
+    ) -> Any:
+        redis_client = None
+        context = dict(initial_context or {})
+        try:
+            redis_client, mcp_client, tool_context = await self._context_factory()
+            if mcp_client is not None:
+                setattr(self._runner, "_mcp_client", mcp_client)
+            if tool_context is not None:
+                context.update(
+                    {
+                        "tool_prompt": tool_context.to_prompt_block(),
+                        "tool_context": tool_context,
+                    }
+                )
+            return await self._runner.run(
+                goal=goal,
+                tenant_ctx=tenant_ctx,
+                initial_context=context or None,
+                event_callback=event_callback,
+            )
+        finally:
+            if redis_client is not None:
+                await redis_client.aclose()
 
 
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)
@@ -312,6 +352,7 @@ def run_goal(
     priority: str = "normal",
     dry_run: bool = False,
     agent_id: str = "",
+    connector_ids: list[str] | None = None,
     workflow_mode: str = "single_agent",
     goal_template: str = "",
 ) -> dict[str, Any]:
@@ -364,16 +405,23 @@ def run_goal(
     except Exception as _es_exc:
         logger.warning("emergency_stop_check_failed: %s", _es_exc)
 
+    db_factory: Any = None
     goal_bridge: Any = None
     event_store: Any = None
     try:
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory
         from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
 
-        db_factory = get_session_factory()
-        event_store = EventStore(db_factory)
-        goal_bridge = GoalService(db_session_factory=db_factory, event_store=event_store)
+        def _make_worker_goal_bridge() -> tuple[Any, Any, Any]:
+            fresh_db = _make_session_factory()
+            fresh_event_store = EventStore(fresh_db)
+            fresh_goal_bridge = GoalService(
+                db_session_factory=fresh_db, event_store=fresh_event_store
+            )
+            return fresh_db, fresh_event_store, fresh_goal_bridge
+
+        db_factory, event_store, goal_bridge = _make_worker_goal_bridge()
     except Exception as exc:
         logger.warning("Goal %s status bridge unavailable: %s", goal_id, exc)
 
@@ -383,7 +431,8 @@ def run_goal(
         if goal_bridge is None:
             return
         try:
-            await goal_bridge._db_update_goal_status(
+            _, _, bridge = _make_worker_goal_bridge()
+            await bridge._db_update_goal_status(
                 goal_id,
                 tenant_id,
                 status,
@@ -397,7 +446,8 @@ def run_goal(
         if event_store is None:
             return
         try:
-            await event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
+            _, fresh_event_store, _ = _make_worker_goal_bridge()
+            await fresh_event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
         except Exception as db_exc:
             logger.warning("DB event append failed (non-fatal): %s", db_exc)
         # C-1: Publish to Redis pub/sub so API-process SSE bridge receives it
@@ -418,7 +468,8 @@ def run_goal(
         if goal_bridge is None:
             return
         try:
-            await goal_bridge._db_ensure_goal_row(
+            _, _, bridge = _make_worker_goal_bridge()
+            await bridge._db_ensure_goal_row(
                 goal_id=goal_id,
                 tenant_id=tenant_id,
                 goal_text=effective_goal,
@@ -525,10 +576,10 @@ def run_goal(
     real_provider = _get_llm_provider(tenant_id)
 
     if real_provider is None:
-        import os
+        from app.core.config import get_provider_env
 
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-        openai_key = os.getenv("OPENAI_API_KEY", "")
+        anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
+        openai_key = get_provider_env("OPENAI_API_KEY")
         if anthropic_key:
             from app.providers.anthropic_provider import AnthropicProvider
 
@@ -557,6 +608,50 @@ def run_goal(
 
     _agent_runner: Any = None
     _use_agent_graph = False
+    async def _build_worker_mcp_context() -> tuple[Any, Any, Any]:
+        import redis.asyncio as aioredis
+
+        from app.agent.tool_context import ToolContext, ToolRef
+        from app.mcp.client import MCPClient
+        from app.mcp.registry import MCPRegistry
+        from app.providers.vault import (
+            RedisConnectorSecretStore,
+            get_vault,
+            resolve_connector_secret_ref_for_tenant,
+        )
+
+        redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+        secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+
+        async def _resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
+            return await resolve_connector_secret_ref_for_tenant(
+                ref, store=secret_store, tenant_ctx=tenant_ctx
+            )
+
+        registry = MCPRegistry(redis_client)
+        mcp_client = MCPClient(registry, secret_resolver=_resolve_secret, redis=redis_client)
+        worker_connector_ids = [str(item) for item in (connector_ids or [])]
+
+        tools: list[ToolRef] = []
+        connectors: list[dict[str, Any]] = []
+        for connector_id in worker_connector_ids:
+            cfg = await registry.get(connector_id, tenant_ctx=tenant_ctx)
+            if cfg is None:
+                continue
+            connectors.append({"id": connector_id, "name": cfg.name})
+            for discovered in await mcp_client.discover_tools(
+                server_id=connector_id, tenant_ctx=tenant_ctx
+            ):
+                tools.append(
+                    ToolRef(
+                        server_id=connector_id,
+                        server_name=discovered.server_name,
+                        name=discovered.name,
+                        description=discovered.description,
+                        input_schema=discovered.input_schema,
+                    )
+                )
+        return redis_client, mcp_client, ToolContext(connectors=connectors, tools=tools)
 
     if not _loop_is_patched:
         # Production path: Try AgentGraph first (full capabilities)
@@ -625,6 +720,9 @@ def run_goal(
                 long_term_memory=_ltm,
                 eval_runner=_eval,
                 cost_tracker=None,
+            )
+            _agent_runner = _WorkerMCPAgentRunner(
+                _agent_runner, _build_worker_mcp_context
             )
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
@@ -725,6 +823,7 @@ def run_goal(
             "status": state.status.value,
             "goal_id": goal_id,
             "agent_id": agent_id,
+            "connector_ids": connector_ids or [],
             "workflow_mode": workflow_mode,
             "priority": priority,
             "dry_run": dry_run,
@@ -1429,6 +1528,19 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
                             updated_at=NOW()
                         WHERE status IN ('executing','planning')
                           AND updated_at < :cutoff
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM goal_events ge
+                              WHERE ge.goal_id = goals.id
+                                AND ge.tenant_id = goals.tenant_id
+                                AND ge.event_type IN (
+                                    'goal_complete',
+                                    'worker_complete',
+                                    'goal_failed',
+                                    'worker_failed',
+                                    'goal_cancelled'
+                                )
+                          )
                         RETURNING id"""),
                 {"cutoff": cutoff}
             )

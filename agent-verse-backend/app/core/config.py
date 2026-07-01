@@ -7,6 +7,7 @@ Sensitive values (DB password, Redis password, vault master key) are resolved th
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -52,6 +53,10 @@ class Settings(BaseSettings):
 
     # --- LLM (default provider) ---
     default_llm_provider: str = "anthropic"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    google_api_key: str = ""
+    voyage_api_key: str = ""
 
     # --- feature flags ---
     civilization_enabled: bool = False
@@ -142,3 +147,15 @@ def get_settings() -> Settings:
                 "Set a strong secret before production SSO deployment!"
             )
     return settings
+
+
+def get_provider_env(name: str) -> str:
+    """Return provider secret from process env, falling back to typed settings."""
+    value = os.getenv(name, "")
+    if value:
+        return value
+    setting_name = name.lower()
+    try:
+        return str(getattr(get_settings(), setting_name, "") or "")
+    except Exception:
+        return ""

@@ -2,6 +2,7 @@
 
 import pytest
 
+import app.core.config as config
 from app.core.config import Settings, get_settings
 
 
@@ -34,3 +35,14 @@ def test_invalid_environment_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_get_settings_is_cached() -> None:
     assert get_settings() is get_settings()
+
+
+def test_provider_env_falls_back_to_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: Settings(openai_api_key="from-settings", _env_file=None),
+    )
+
+    assert config.get_provider_env("OPENAI_API_KEY") == "from-settings"

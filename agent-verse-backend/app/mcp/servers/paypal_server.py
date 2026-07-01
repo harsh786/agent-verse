@@ -130,14 +130,17 @@ async def _get_token() -> str:
     client_secret = os.getenv("PAYPAL_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         return ""
-    async with httpx.AsyncClient(timeout=10.0) as c:
-        r = await c.post(
-            f"{base}/v1/oauth2/token",
-            data={"grant_type": "client_credentials"},
-            auth=(client_id, client_secret),
-        )
-        if r.status_code == 200:
-            return r.json().get("access_token", "")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(
+                f"{base}/v1/oauth2/token",
+                data={"grant_type": "client_credentials"},
+                auth=(client_id, client_secret),
+            )
+            if r.status_code == 200:
+                return r.json().get("access_token", "")
+    except Exception:
+        return ""
     return ""
 
 

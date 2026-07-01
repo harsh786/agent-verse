@@ -50,7 +50,32 @@ function formatValue(value: unknown): string | undefined {
   return JSON.stringify(value, null, 2);
 }
 
-function eventSummary(event: Record<string, unknown>) {
+type EventSummaryContext = {
+  events: Record<string, unknown>[];
+  index: number;
+  goalStatus: string;
+};
+
+function hasLaterEvent(
+  context: EventSummaryContext,
+  predicate: (event: Record<string, unknown>) => boolean
+) {
+  return context.events.slice(context.index + 1).some(predicate);
+}
+
+function hasLaterType(context: EventSummaryContext, types: string[]) {
+  return hasLaterEvent(context, (event) => types.includes(readString(event.type) ?? ""));
+}
+
+function statusAfterTerminal(context: EventSummaryContext) {
+  if (hasLaterType(context, ["goal_failed", "worker_failed"])) return "failed";
+  if (hasLaterType(context, ["goal_complete", "worker_complete"])) return "complete";
+  if (["complete", "cancelled"].includes(context.goalStatus)) return "complete";
+  if (context.goalStatus === "failed") return "failed";
+  return "executing";
+}
+
+function eventSummary(event: Record<string, unknown>, context: EventSummaryContext) {
   const type = readString(event.type) ?? "event";
   const step = readString(event.step);
   const status = readString(event.status);
@@ -60,16 +85,39 @@ function eventSummary(event: Record<string, unknown>) {
   const details: string[] = [];
 
   switch (type) {
+    case "worker_started":
+      return { label: "worker started", status: status ?? statusAfterTerminal(context), details };
+    case "worker_complete":
+      return { label: "worker complete", status: status ?? "complete", details };
+    case "worker_failed":
+      return { label: "worker failed", status: "failed", details };
     case "goal_started":
-      return { label: "Goal started", status: status ?? "executing", details };
+      return { label: "Goal started", status: status ?? statusAfterTerminal(context), details };
+    case "goal_complete":
+      return { label: "goal complete", status: status ?? "complete", details };
+    case "goal_failed":
+      return { label: "goal failed", status: "failed", details };
+    case "goal_cancelled":
+      return { label: "goal cancelled", status: "failed", details };
     case "plan_ready": {
       if (Array.isArray(event.steps) && event.steps.length > 0) {
         details.push("Steps:", ...event.steps.map((item, index) => `${index + 1}. ${formatValue(item) ?? "Step"}`));
       }
       return { label: "Plan ready", status: status ?? "complete", details };
     }
-    case "step_started":
-      return { label: step ?? "Step started", status: status ?? "executing", details };
+    case "step_started": {
+      const completed = hasLaterEvent(
+        context,
+        (laterEvent) =>
+          readString(laterEvent.type) === "step_complete" &&
+          readString(laterEvent.step) === step
+      );
+      return {
+        label: step ?? "Step started",
+        status: status ?? (completed ? "complete" : statusAfterTerminal(context)),
+        details,
+      };
+    }
     case "step_complete":
       return { label: step ?? "Step complete", status: status ?? "complete", details };
     case "tool_call_complete": {
@@ -108,9 +156,19 @@ function eventSummary(event: Record<string, unknown>) {
   }
 }
 
-function StepRow({ event }: { event: Record<string, unknown> }) {
+function StepRow({
+  event,
+  events,
+  index,
+  goalStatus,
+}: {
+  event: Record<string, unknown>;
+  events: Record<string, unknown>[];
+  index: number;
+  goalStatus: string;
+}) {
   const [open, setOpen] = useState(false);
-  const summary = eventSummary(event);
+  const summary = eventSummary(event, { events, index, goalStatus });
   const status = summary.status;
   const Icon = status === "complete" ? CheckCircle : status === "failed" ? XCircle : Loader2;
   const iconColor =
@@ -473,7 +531,13 @@ export function GoalDetailPage() {
             ) : (
               <ul>
                 {events.map((evt, i) => (
-                  <StepRow key={(evt as any).event_id ?? `evt-${i}`} event={evt as Record<string, unknown>} />
+                  <StepRow
+                    key={(evt as any).event_id ?? `evt-${i}`}
+                    event={evt as Record<string, unknown>}
+                    events={events as Record<string, unknown>[]}
+                    index={i}
+                    goalStatus={goal.status}
+                  />
                 ))}
               </ul>
             )}

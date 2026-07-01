@@ -65,3 +65,29 @@ def test_tool_context_finds_unqualified_name_only_when_unambiguous() -> None:
     context = ToolContext(connectors=[], tools=[tool])
 
     assert context.find_tool("list_issues") is tool
+
+
+def test_tool_context_matches_dotted_variant_of_server_name() -> None:
+    tool = ToolRef(
+        server_id="8ffe2effc436449689c7a6cddaa14ba3",
+        server_name="PineLabs JIRA",
+        name="jira_search_issues",
+        description="Search Jira",
+        input_schema={},
+    )
+    context = ToolContext(connectors=[], tools=[tool])
+
+    assert context.find_tool("PineLabs.JIRA.jira_search_issues") is tool
+
+
+def test_tool_context_matches_generic_jira_server_alias() -> None:
+    tool = ToolRef(
+        server_id="8ffe2effc436449689c7a6cddaa14ba3",
+        server_name="PineLabs JIRA",
+        name="jira_search_issues",
+        description="Search Jira",
+        input_schema={},
+    )
+    context = ToolContext(connectors=[], tools=[tool])
+
+    assert context.find_tool("jira.jira_search_issues") is tool

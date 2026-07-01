@@ -26,3 +26,12 @@ def test_workflow_plan_validates_tools():
     assert "_validate_plan_tools" in src, (
         "graph.py must have plan tool validation"
     )
+
+
+def test_executor_prompt_requires_structured_tool_call_json():
+    """Executor prompt must match the JSON-only tool-call parser contract."""
+    from app.agent.prompts import EXECUTOR_SYSTEM
+
+    assert '"tool"' in EXECUTOR_SYSTEM
+    assert '"arguments"' in EXECUTOR_SYSTEM
+    assert "valid JSON" in EXECUTOR_SYSTEM

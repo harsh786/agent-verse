@@ -141,8 +141,10 @@ logger = get_logger(__name__)
 def _resolve_provider_for_app(settings: Settings) -> Any:
     """Resolve a real LLM provider from environment, or FakeProvider as last resort."""
     import os
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    openai_key = os.getenv("OPENAI_API_KEY", "")
+    from app.core.config import get_provider_env
+
+    anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
+    openai_key = get_provider_env("OPENAI_API_KEY")
 
     if anthropic_key:
         try:
@@ -420,9 +422,11 @@ def create_app(
     # LocalEmbedProvider if SENTENCE_TRANSFORMERS_MODEL set, else None.
     import os
     _embedder: Any = None
-    _openai_key = os.getenv("OPENAI_API_KEY", "")
-    _voyage_key = os.getenv("VOYAGE_API_KEY", "")
-    _anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    from app.core.config import get_provider_env
+
+    _openai_key = get_provider_env("OPENAI_API_KEY")
+    _voyage_key = get_provider_env("VOYAGE_API_KEY")
+    _anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
     if _voyage_key:
         try:
             from app.providers.voyage_provider import VoyageProvider
@@ -437,10 +441,10 @@ def create_app(
             )
         except Exception:
             pass
-    elif os.getenv("GOOGLE_API_KEY", ""):
+    elif get_provider_env("GOOGLE_API_KEY"):
         try:
             from app.providers.gemini_provider import GeminiProvider
-            _embedder = GeminiProvider(api_key=os.getenv("GOOGLE_API_KEY"))
+            _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
         except Exception:
             pass
     elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):

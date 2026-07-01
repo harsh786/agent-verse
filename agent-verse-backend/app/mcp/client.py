@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import inspect
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -47,7 +48,17 @@ class ToolCallResult:
 
 
 def _is_mcp_endpoint(url: str) -> bool:
-    return url.rstrip("/").endswith("/mcp")
+    path = url.rstrip("/")
+    return path.endswith("/mcp") or path.endswith("/mcp/authv2")
+
+
+def _is_jira_rest_endpoint(cfg: MCPServerConfig) -> bool:
+    raw_url = cfg.url or cfg.base_url
+    if _is_mcp_endpoint(raw_url):
+        return False
+    url = raw_url.lower()
+    name = cfg.name.lower()
+    return "jira" in name or "atlassian.net" in url
 
 
 def _jsonrpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -59,6 +70,16 @@ def _jsonrpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any
     if params is not None:
         payload["params"] = params
     return payload
+
+
+def _response_json(resp: httpx.Response) -> Any:
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" not in content_type:
+        return resp.json()
+    for line in resp.text.splitlines():
+        if line.startswith("data: "):
+            return json.loads(line[6:].strip())
+    return {}
 
 
 class MCPClient:
@@ -84,6 +105,7 @@ class MCPClient:
         self._redis: Any = redis
         # OAuth manager — wired externally
         self._oauth_manager: Any = None
+        self._mcp_sessions: dict[str, str] = {}
 
     @staticmethod
     def _accepts_tenant_context(resolver: SecretResolver) -> bool:
@@ -142,6 +164,47 @@ class MCPClient:
             return resolved or ""
         return str(value)
 
+    async def _ensure_mcp_session(
+        self,
+        client: httpx.AsyncClient,
+        cfg: MCPServerConfig,
+        headers: dict[str, str],
+    ) -> dict[str, str]:
+        session = self._mcp_sessions.get(cfg.server_id)
+        if session:
+            return {**headers, "Mcp-Session-Id": session}
+
+        init_resp = await client.post(
+            cfg.url.rstrip("/"),
+            json=_jsonrpc(
+                "initialize",
+                {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "agentverse", "version": "0.1.0"},
+                },
+            ),
+            headers=headers,
+        )
+        init_resp.raise_for_status()
+        session = init_resp.headers.get("mcp-session-id")
+        if not session:
+            return headers
+        self._mcp_sessions[cfg.server_id] = session
+        session_headers = {**headers, "Mcp-Session-Id": session}
+        await client.post(
+            cfg.url.rstrip("/"),
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=session_headers,
+        )
+        return session_headers
+
+    @staticmethod
+    def _requires_initialize(resp: httpx.Response) -> bool:
+        if resp.status_code not in {400, 401}:
+            return False
+        return "initialize" in resp.text.lower()
+
     async def discover_tools(
         self, *, server_id: str, tenant_ctx: TenantContext
     ) -> list[ToolDefinition]:
@@ -152,6 +215,25 @@ class MCPClient:
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
             return []
+        if _is_jira_rest_endpoint(cfg):
+            return [
+                ToolDefinition(
+                    name="jira_search_issues",
+                    description="Search Jira issues using JQL (Jira Query Language)",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "jql": {"type": "string"},
+                            "max_results": {"type": "integer", "default": 50},
+                            "start_at": {"type": "integer", "default": 0},
+                            "fields": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["jql"],
+                    },
+                    server_id=server_id,
+                    server_name=cfg.name,
+                )
+            ]
 
         headers = await self._build_auth_headers(
             cfg, tenant_ctx=tenant_ctx, server_id=server_id
@@ -169,10 +251,17 @@ class MCPClient:
                         json=_jsonrpc("tools/list"),
                         headers=headers,
                     )
+                    if self._requires_initialize(resp):
+                        headers = await self._ensure_mcp_session(client, cfg, headers)
+                        resp = await client.post(
+                            cfg.url.rstrip("/"),
+                            json=_jsonrpc("tools/list"),
+                            headers=headers,
+                        )
                 else:
                     resp = await client.get(f"{cfg.url.rstrip('/')}/tools", headers=headers)
                 resp.raise_for_status()
-                data = resp.json()
+                data = _response_json(resp)
                 if isinstance(data, list):
                     tools = data
                 elif isinstance(data, dict):
@@ -281,6 +370,83 @@ class MCPClient:
                 server_id=server.server_id,
             )
 
+    async def _dispatch_jira_rest_tool(
+        self,
+        server: MCPServerConfig,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> ToolCallResult:
+        if tool_name != "jira_search_issues":
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error="Unsupported Jira REST tool",
+                server_id=server_id,
+            )
+
+        headers = await self._build_auth_headers(
+            server, tenant_ctx=tenant_ctx, server_id=server_id
+        )
+        default_fields = [
+            "summary",
+            "status",
+            "assignee",
+            "priority",
+            "created",
+            "updated",
+            "issuetype",
+        ]
+        payload: dict[str, Any] = {
+            "jql": arguments["jql"],
+            "maxResults": arguments.get("max_results", 50),
+            "fields": arguments.get("fields", default_fields),
+        }
+        if arguments.get("next_page_token"):
+            payload["nextPageToken"] = arguments["next_page_token"]
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(
+                    f"{(server.url or server.base_url).rstrip('/')}/rest/api/3/search/jql",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=True,
+                output={
+                    "total": data.get("total", 0),
+                    "start_at": data.get("startAt", 0),
+                    "max_results": data.get("maxResults", 50),
+                    "issues": [
+                        {
+                            "id": issue.get("id", ""),
+                            "key": issue.get("key", ""),
+                            "summary": (issue.get("fields") or {}).get("summary", ""),
+                            "status": ((issue.get("fields") or {}).get("status") or {}).get("name", ""),
+                            "priority": ((issue.get("fields") or {}).get("priority") or {}).get("name", ""),
+                            "assignee": ((issue.get("fields") or {}).get("assignee") or {}).get("displayName", ""),
+                            "issue_type": ((issue.get("fields") or {}).get("issuetype") or {}).get("name", ""),
+                            "created": (issue.get("fields") or {}).get("created", ""),
+                            "updated": (issue.get("fields") or {}).get("updated", ""),
+                        }
+                        for issue in data.get("issues", [])
+                    ],
+                },
+                server_id=server_id,
+            )
+        except Exception as exc:
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=str(exc),
+                server_id=server_id,
+            )
+
     async def _call_tool_impl(
         self,
         cfg: MCPServerConfig,
@@ -300,7 +466,13 @@ class MCPClient:
                 if tdef.get("name") == tool_name or tdef.get("tool_name") == tool_name:
                     return await self._dispatch_openapi_tool(cfg, tdef, arguments)
 
-        # 3. Normal MCP/HTTP dispatch
+        # 3. Jira REST connector registered with an Atlassian base URL
+        if _is_jira_rest_endpoint(cfg):
+            return await self._dispatch_jira_rest_tool(
+                cfg, server_id, tool_name, arguments, tenant_ctx
+            )
+
+        # 4. Normal MCP/HTTP dispatch
         headers = await self._build_auth_headers(
             cfg, tenant_ctx=tenant_ctx, server_id=server_id
         )
@@ -311,6 +483,7 @@ class MCPClient:
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if using_jsonrpc:
+                headers = await self._ensure_mcp_session(client, cfg, headers)
                 resp = await client.post(
                     cfg.url.rstrip("/"),
                     json=_jsonrpc(
@@ -326,7 +499,7 @@ class MCPClient:
                     headers=headers,
                 )
             resp.raise_for_status()
-            payload = resp.json()
+            payload = _response_json(resp)
             is_jsonrpc_response = (
                 using_jsonrpc
                 or (
@@ -352,6 +525,22 @@ class MCPClient:
                 output = payload.get("result", payload)
             else:
                 output = payload
+            if isinstance(output, dict) and output.get("isError") is True:
+                content = output.get("content", [])
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    if isinstance(first, dict):
+                        error_text = str(first.get("text", output))
+                    else:
+                        error_text = str(first)
+                else:
+                    error_text = str(output)
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=error_text,
+                    server_id=server_id,
+                )
             return ToolCallResult(
                 tool_name=tool_name,
                 success=True,

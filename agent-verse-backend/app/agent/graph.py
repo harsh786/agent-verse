@@ -40,7 +40,7 @@ from app.agent.sanitization import (
     sanitize_tool_raw_output,
 )
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call
+from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import CostController
@@ -1200,6 +1200,8 @@ class AgentGraph:
                 )
         else:
             tool_call = extract_tool_call(raw_output)
+        if tool_call is not None:
+            tool_call = repair_tool_call_arguments(tool_call, step, goal=state.goal)
         if tool_call is not None:
             # GuardrailEngine v2: evaluate tool arguments BEFORE the MCP call
             _guardrail_engine_v2 = (

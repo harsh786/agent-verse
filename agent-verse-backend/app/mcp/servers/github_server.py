@@ -120,6 +120,21 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _call_tool_inner(tool_name, arguments)
+    except httpx.HTTPStatusError as exc:
+        error_body = ""
+        try:
+            error_body = exc.response.text[:500]
+        except Exception:
+            pass
+        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+    except Exception as exc:
+        logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
+        return {"error": str(exc)}
+
+
+async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(
         base_url=GITHUB_BASE_URL, headers=_headers(), timeout=30.0
     ) as client:

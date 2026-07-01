@@ -15,8 +15,10 @@ No markdown, no explanation, only the JSON object.
 
 EXECUTOR_SYSTEM = """\
 You are an expert task executor. Given a step to execute, perform it and report the result.
-Respond with a clear, concise description of what was done and what the outcome was.
-If you need to call a tool, describe exactly which tool and what arguments.
+If the step requires a tool, respond ONLY with valid JSON in this exact format:
+{"tool": "server_name.tool_name", "arguments": {"param": "value"}}
+No markdown, no explanation, only the JSON object.
+If no tool is needed, respond with a clear, concise description of what was done and what the outcome was.
 """
 
 VERIFIER_SYSTEM = """You are a goal-completion verifier for an autonomous AI agent.
