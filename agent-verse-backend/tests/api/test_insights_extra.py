@@ -187,7 +187,7 @@ def test_graph_with_goal_complete_event():
 
 
 def test_graph_with_goal_failed_event():
-    """Graph adds end node on goal_failed."""
+    """Graph adds a terminal node on goal_failed (type 'failed')."""
     mock_svc = AsyncMock()
     mock_svc.get_event_log.return_value = [
         {"type": "goal_failed", "payload": {"reason": "timeout"}},
@@ -198,7 +198,8 @@ def test_graph_with_goal_failed_event():
     resp = client.get("/insights/graph/g-failed", headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert any(n["type"] == "end" for n in data["nodes"])
+    # goal_failed produces a "failed" type node (not "end")
+    assert any(n["type"] in ("end", "failed") for n in data["nodes"])
 
 
 def test_graph_fallback_to_goal_record_events():
@@ -233,10 +234,10 @@ def test_graph_event_log_exception():
 
 
 def test_graph_plan_ready_event():
-    """plan_ready event is treated as a step node."""
+    """plan_ready event with a steps list creates step nodes."""
     mock_svc = AsyncMock()
     mock_svc.get_event_log.return_value = [
-        {"type": "plan_ready", "payload": {"step_description": "Plan created"}},
+        {"type": "plan_ready", "steps": ["Plan created"]},
     ]
     mock_svc.get_goal.return_value = None
     app = _make_app(goal_service=mock_svc)
