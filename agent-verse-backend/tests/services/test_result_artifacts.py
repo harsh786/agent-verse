@@ -238,3 +238,43 @@ def test_builds_generic_empty_artifact_without_output() -> None:
     assert artifact["kind"] == "empty"
     assert artifact["status"] == "empty"
     assert artifact["summary"] == "No structured result was produced."
+
+
+def test_builds_jira_table_from_tool_output_field_not_output_string() -> None:
+    """tool_output raw dict takes priority over the sanitized output string."""
+    events = [
+        {
+            "type": "tool_call_complete",
+            "tool": "jira_search_issues",
+            "success": True,
+            "output": "[dict omitted from event payload]",
+            "tool_output": {
+                "total": 10,
+                "issues": [
+                    {"key": "OPP-1", "summary": "Bug fix", "status": "Open",
+                     "priority": "High", "updated": "2026-07-01"},
+                    {"key": "OPP-2", "summary": "Feature", "status": "Closed",
+                     "priority": "Medium", "updated": "2026-07-01"},
+                ],
+            },
+        }
+    ]
+    artifact = build_result_artifact(goal="find jira", status="complete", events=events)
+    assert artifact["status"] == "success"
+    assert artifact["tables"][0]["rows"][0]["key"] == "OPP-1"
+    assert len(artifact["tables"][0]["rows"]) == 2
+    assert artifact["metrics"][0] == {"label": "Issues", "value": 2}
+
+
+def test_builds_jira_table_falls_back_to_output_when_tool_output_absent() -> None:
+    """Backward compat: if tool_output not present, parse output dict as before."""
+    events = [
+        {
+            "type": "tool_call_complete",
+            "tool": "jira_search_issues",
+            "success": True,
+            "output": {"issues": [{"key": "PCF-1", "summary": "Old path"}]},
+        }
+    ]
+    artifact = build_result_artifact(goal="find jira", status="complete", events=events)
+    assert artifact["tables"][0]["rows"][0]["key"] == "PCF-1"

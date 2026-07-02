@@ -1529,6 +1529,9 @@ class AgentGraph:
                                 "success": result.success,
                                 "output": self._sanitize_tool_event_value(result.output),
                                 "error": self._sanitize_tool_event_value(result.error),
+                                # tool_output preserves the raw structured dict for result_artifacts.py
+                                # without truncation so downstream consumers can access full data.
+                                "tool_output": result.output if isinstance(result.output, dict) else None,
                             }
                         )
                         # Check for artifact capture (RPA screenshot etc.)
