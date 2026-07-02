@@ -417,6 +417,49 @@ async def test_jira_rest_connector_dispatches_search_tool_without_url_protocol()
 
 
 @pytest.mark.asyncio
+async def test_jira_rest_connector_counts_issues_when_search_jql_omits_total() -> None:
+    redis = FakeRedis()
+    registry = MCPRegistry(redis=redis)
+    server_id = await registry.register(
+        MCPServerConfig(
+            name="PineLabs JIRA",
+            url="https://pinelabs.atlassian.net",
+            auth_type="custom_header",
+            auth_config={"Authorization": "Basic test-token"},
+        ),
+        tenant_ctx=TENANT,
+    )
+    client = MCPClient(registry=registry)
+
+    with respx.mock:
+        respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "isLast": False,
+                    "issues": [
+                        {
+                            "id": "10001",
+                            "key": "AV-1",
+                            "fields": {"summary": "Fix goal execution"},
+                        }
+                    ],
+                },
+            )
+        )
+        result = await client.call_tool(
+            server_id=server_id,
+            tool_name="jira_search_issues",
+            arguments={"jql": "assignee = currentUser()", "max_results": 50},
+            tenant_ctx=TENANT,
+        )
+
+    assert result.success is True
+    assert result.output["total"] == 1
+    assert result.output["issues"][0]["key"] == "AV-1"
+
+
+@pytest.mark.asyncio
 async def test_call_tool_success(
     registry_with_server: tuple[MCPRegistry, str],
 ) -> None:
