@@ -492,3 +492,96 @@ async def delegate_task(
         "session_id": session_id,
         "sub_task": body.sub_task[:200],
     }
+
+
+# ---------------------------------------------------------------------------
+# Session insights — AI-powered post-session analysis
+# ---------------------------------------------------------------------------
+
+@router.post("/sessions/{session_id}/insights")
+async def get_session_insights(request: Request, session_id: str) -> dict[str, Any]:
+    """Analyse a completed collaboration session and extract:
+    - Key decisions made
+    - Action items identified
+    - Open questions remaining
+    - Sentiment / agreement level
+    Returns structured JSON, optionally LLM-powered.
+    """
+    tenant = _require_tenant(request)
+    store = _store(request)
+
+    session = store.get_session(session_id, tenant_ctx=tenant)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    operations = store.list_operations(session_id, tenant_ctx=tenant)
+    rounds = getattr(session, "rounds", []) or []
+
+    # Collect all textual content from operations
+    content_pieces: list[str] = []
+    for op in operations:
+        raw_op = op if isinstance(op, dict) else {}
+        op_data = raw_op.get("operation", {}) or {}
+        if op_data.get("content"):
+            author = raw_op.get("author", "unknown")
+            content_pieces.append(f"[{author}]: {str(op_data['content'])[:500]}")
+
+    for r in rounds:
+        if isinstance(r, dict) and r.get("content"):
+            content_pieces.append(f"[{r.get('round_type','round')}]: {str(r['content'])[:500]}")
+
+    session_text = "\n".join(content_pieces[:50])  # cap at 50 entries
+    session_name = session.get("name", "Session") if isinstance(session, dict) else getattr(session, "name", "Session")
+
+    provider = getattr(request.app.state, "llm_provider", None)
+    if provider is None or not session_text.strip():
+        # Fallback: rule-based extraction
+        return {
+            "session_id": session_id,
+            "session_name": session_name,
+            "key_decisions": [session_text[:200]] if session_text else [],
+            "action_items": [],
+            "open_questions": [],
+            "agreement_level": "unknown",
+            "sentiment": "neutral",
+            "participant_count": len(operations),
+            "llm_powered": False,
+        }
+
+    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    system_prompt = (
+        "You are a meeting analyst. Analyse the following collaboration session transcript "
+        "and extract structured insights. Respond with valid JSON only:\n"
+        '{"key_decisions": ["..."], "action_items": ["..."], "open_questions": ["..."], '
+        '"agreement_level": "high|medium|low|none", "sentiment": "positive|neutral|negative", '
+        '"summary": "..."}'
+    )
+    user_msg = f"Session: {session_name}\n\nTranscript:\n{session_text}"
+    try:
+        resp = await provider.complete(
+            CompletionRequest(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=user_msg),
+                ],
+                max_tokens=800,
+            )
+        )
+        raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        data = {
+            "key_decisions": [],
+            "action_items": [],
+            "open_questions": [],
+            "agreement_level": "unknown",
+            "sentiment": "neutral",
+            "summary": "Insight extraction failed — LLM unavailable.",
+        }
+
+    return {
+        "session_id": session_id,
+        "session_name": session_name,
+        "llm_powered": True,
+        **data,
+    }

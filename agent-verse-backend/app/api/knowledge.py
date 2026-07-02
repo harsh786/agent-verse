@@ -1031,3 +1031,219 @@ async def federated_search_endpoint(
         "total": len(results),
         "collections_searched": len(collection_ids),
     }
+
+
+# ---------------------------------------------------------------------------
+# Intelligence: RAG Chat & Collection Analytics
+# ---------------------------------------------------------------------------
+
+class RagChatRequest(BaseModel):
+    question: str
+    collection_ids: list[str] = []   # empty = all tenant collections
+    top_k: int = 5
+    max_context_chars: int = 6000    # total context window for retrieved chunks
+    stream: bool = False
+
+
+@router.post("/chat")
+async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
+    """Answer a question using retrieval-augmented generation.
+
+    Retrieves relevant chunks from the knowledge store and asks the LLM
+    to answer using only those chunks. Returns the answer plus cited chunks.
+    """
+    tenant_ctx = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = _embedder(request)
+    provider = getattr(request.app.state, "llm_provider", None)
+
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    # Resolve collection IDs (default = all tenant collections)
+    collection_ids = body.collection_ids
+    if not collection_ids:
+        collections = store.list_collections(tenant_ctx=tenant_ctx)
+        collection_ids = [c.collection_id for c in collections]
+
+    if not collection_ids:
+        return {
+            "answer": "No knowledge collections found. Ingest some documents first.",
+            "citations": [],
+            "collections_searched": 0,
+            "chunks_retrieved": 0,
+        }
+
+    # Retrieve relevant chunks
+    top_k = max(1, min(20, body.top_k))
+    all_results: list[dict[str, Any]] = []
+    query_embedding: list[float] = []
+
+    # Embed query once if embedder is available
+    if embedder is not None:
+        try:
+            from app.providers.base import embed_texts  # noqa: PLC0415
+            vecs = await embed_texts([body.question], provider=embedder)
+            query_embedding = vecs[0]
+        except Exception:  # noqa: BLE001
+            pass
+
+    for cid in collection_ids[:10]:  # cap at 10 collections
+        try:
+            if query_embedding and hasattr(store, "hybrid_search_db"):
+                hits = await store.hybrid_search_db(
+                    body.question, query_embedding, cid, tenant_ctx, top_k=top_k
+                )
+            else:
+                hits = store.hybrid_search(
+                    body.question, query_embedding or [], cid, tenant_ctx, top_k=top_k
+                )
+            for h in hits:
+                all_results.append({
+                    "collection_id": cid,
+                    "chunk_id": getattr(h, "chunk_id", ""),
+                    "content": getattr(h, "content", ""),
+                    "score": round(getattr(h, "score", 0.0), 4),
+                    "source_url": getattr(h, "source_url", ""),
+                    "source_doc_id": getattr(h, "source_doc_id", ""),
+                    "page_number": getattr(h, "page_number", None),
+                })
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Sort by score, deduplicate
+    all_results.sort(key=lambda x: x["score"], reverse=True)
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for r in all_results:
+        key = r["content"][:128]
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    top_chunks = deduped[:top_k]
+
+    # Build context string, capped at max_context_chars
+    context_parts: list[str] = []
+    context_len = 0
+    used_chunks: list[dict[str, Any]] = []
+    for i, chunk in enumerate(top_chunks):
+        chunk_text = f"[{i+1}] {chunk['content']}"
+        if context_len + len(chunk_text) > body.max_context_chars:
+            break
+        context_parts.append(chunk_text)
+        context_len += len(chunk_text)
+        used_chunks.append(chunk)
+
+    context_str = "\n\n".join(context_parts)
+
+    # Prepare citations
+    citations = [
+        {
+            "index": i + 1,
+            "chunk_id": c["chunk_id"],
+            "collection_id": c["collection_id"],
+            "score": c["score"],
+            "source_url": c["source_url"],
+            "page_number": c["page_number"],
+            "excerpt": c["content"][:300] + ("…" if len(c["content"]) > 300 else ""),
+        }
+        for i, c in enumerate(used_chunks)
+    ]
+
+    if provider is None:
+        return {
+            "answer": (
+                f"Retrieved {len(used_chunks)} chunks (no LLM available for answer synthesis). "
+                "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY to enable full RAG chat."
+            ),
+            "citations": citations,
+            "collections_searched": len(collection_ids),
+            "chunks_retrieved": len(used_chunks),
+        }
+
+    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    system_prompt = (
+        "You are a helpful assistant. Answer the user's question using ONLY "
+        "the provided context excerpts. If the context doesn't contain enough "
+        "information, say so. Cite sources using bracket notation [1], [2], etc.\n\n"
+        f"Context:\n{context_str}"
+    )
+    try:
+        resp = await provider.complete(
+            CompletionRequest(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=body.question),
+                ],
+                max_tokens=1200,
+            )
+        )
+        answer = resp.content.strip()
+    except Exception as e:  # noqa: BLE001
+        answer = f"LLM answer generation failed: {e}. See citations for relevant content."
+
+    return {
+        "answer": answer,
+        "citations": citations,
+        "collections_searched": len(collection_ids),
+        "chunks_retrieved": len(used_chunks),
+        "question": body.question,
+    }
+
+
+@router.get("/collections/{collection_id}/stats")
+async def get_collection_stats(
+    request: Request, collection_id: str
+) -> dict[str, Any]:
+    """Return quality and freshness statistics for a knowledge collection."""
+    tenant_ctx = _require_tenant(request)
+    store = _knowledge_store(request)
+
+    # Verify collection exists
+    collections = store.list_collections(tenant_ctx=tenant_ctx)
+    col = next((c for c in collections if c.collection_id == collection_id), None)
+    if col is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    # Pull chunks from in-memory store for analytics
+    # The _data dict holds per-collection chunk lists in memory
+    raw_data = getattr(store, "_data", {})
+    cid_key = (tenant_ctx.tenant_id, collection_id)
+    chunk_objs = raw_data.get(cid_key, [])
+    doc_count = getattr(col, "document_count", 0)
+    chunk_count = len(chunk_objs)
+
+    # Compute avg embedding magnitude as a proxy for embedding health
+    embeddings_present = sum(1 for c in chunk_objs if getattr(c, "embedding", None))
+    embedding_coverage = round(embeddings_present / max(chunk_count, 1), 4)
+
+    # Source type distribution
+    source_types: dict[str, int] = {}
+    for c in chunk_objs:
+        stype = (getattr(c, "metadata", None) or {}).get("source_type", "unknown")
+        source_types[stype] = source_types.get(stype, 0) + 1
+
+    # Average chunk length
+    avg_chunk_len = int(
+        sum(len(getattr(c, "content", "")) for c in chunk_objs) / max(chunk_count, 1)
+    )
+
+    return {
+        "collection_id": collection_id,
+        "name": col.name,
+        "doc_count": doc_count,
+        "chunk_count": chunk_count,
+        "embedding_coverage_pct": round(embedding_coverage * 100, 1),
+        "avg_chunk_length": avg_chunk_len,
+        "source_type_distribution": source_types,
+        "embedder": getattr(col, "embedder", "unknown"),
+        "health_score": round(
+            min(
+                1.0,
+                (0.4 * embedding_coverage)
+                + (0.4 * min(1.0, chunk_count / 100))
+                + (0.2 * min(1.0, doc_count / 10)),
+            ),
+            3,
+        ),
+    }
