@@ -175,11 +175,41 @@ async def eval_analytics(
                 )
                 row = result.fetchone()
                 if row and row[0]:
+                    # Also fetch daily breakdown for trend visualization
+                    evals_by_day: list[dict[str, Any]] = []
+                    try:
+                        daily_result = await session.execute(
+                            _t(
+                                "SELECT"
+                                " DATE(run_at) as day,"
+                                " COUNT(*) as total,"
+                                " AVG(CASE WHEN passed THEN 1.0 ELSE 0.0 END) as pass_rate,"
+                                " AVG(score_task_completion) as avg_score"
+                                " FROM evaluations"
+                                " WHERE tenant_id = :tid"
+                                " AND run_at >= NOW() - (:days * INTERVAL '1 day')"
+                                " GROUP BY DATE(run_at)"
+                                " ORDER BY day ASC"
+                            ),
+                            {"tid": tenant_id, "days": days},
+                        )
+                        for dr in daily_result.fetchall():
+                            evals_by_day.append({
+                                "date": str(dr[0]),
+                                "total": int(dr[1] or 0),
+                                "pass_rate": round(float(dr[2] or 0), 4),
+                                "avg_score": round(float(dr[3] or 0), 4),
+                            })
+                    except Exception:
+                        pass  # Daily breakdown is best-effort
+
                     return {
                         "period_days": days,
-                        "total": row[0],
-                        "passed": row[6] or 0,
-                        "pass_rate": round((row[6] or 0) / max(row[0], 1), 4),
+                        "total_evals": int(row[0]),
+                        "total": int(row[0]),
+                        "passed": int(row[6] or 0),
+                        "pass_rate": round((int(row[6] or 0)) / max(int(row[0]), 1), 4),
+                        "avg_score": round(float(row[1] or 0), 4),  # use task_completion as primary
                         "avg_scores": {
                             "task_completion": round(float(row[1] or 0), 4),
                             "efficiency": round(float(row[2] or 0), 4),
@@ -187,15 +217,18 @@ async def eval_analytics(
                             "safety": round(float(row[4] or 0), 4),
                             "coherence": round(float(row[5] or 0), 4),
                         },
+                        "evals_by_day": evals_by_day,
                     }
         except Exception:
             pass  # fall through to empty response
 
     return {
         "period_days": days,
+        "total_evals": 0,
         "total": 0,
         "passed": 0,
         "pass_rate": 0.0,
+        "avg_score": 0.0,
         "avg_scores": {
             "task_completion": 0.0,
             "efficiency": 0.0,
@@ -203,6 +236,7 @@ async def eval_analytics(
             "safety": 0.0,
             "coherence": 0.0,
         },
+        "evals_by_day": [],
     }
 
 

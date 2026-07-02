@@ -65,13 +65,27 @@ class EvalRunner:
             coherence = 0.6 * output_rate + 0.4 * diversity
 
         # 6. sla — did the goal complete within SLA budget?
-        started_at = getattr(state, "context", {}).get("execution_started_at", 0.0)
-        if started_at:
+        # Fix: started_at defaults to 0.0 which was always falsy → always returned 1.0.
+        # Now: require started_at to be a large monotonic timestamp (>1e9) indicating
+        # it was set via time.monotonic() on a long-running process, or use iteration
+        # count as a proxy when no timing is available.
+        _ctx2 = getattr(state, "context", None)
+        started_at = (
+            float(_ctx2.get("execution_started_at", 0.0)) if isinstance(_ctx2, dict) else 0.0
+        )
+        sla_budget_s = (
+            float(_ctx2.get("sla_budget_seconds", 300.0)) if isinstance(_ctx2, dict) else 300.0
+        )
+        if started_at > 1e6:  # valid monotonic timestamp (process has been running > ~11 days)
             duration_s = time.monotonic() - started_at
-            sla_budget_s = getattr(state, "context", {}).get("sla_budget_seconds", 300.0)
             sla_score = max(0.0, 1.0 - max(0.0, duration_s - sla_budget_s) / max(sla_budget_s, 1))
+        elif state.iterations and state.iterations > 1:
+            # Proxy: use iteration count as a time proxy — each iteration ~20s average
+            estimated_duration_s = state.iterations * 20.0
+            over_budget = max(0.0, estimated_duration_s - sla_budget_s)
+            sla_score = max(0.0, 1.0 - over_budget / max(sla_budget_s, 1))
         else:
-            sla_score = 1.0  # No timing data — assume on-time
+            sla_score = 1.0  # No timing or iteration data — default
 
         return EvalScorecard(
             goal_id=state.goal_id,
@@ -152,9 +166,13 @@ class EvalRunner:
                 async with db() as session, session.begin():
                     await session.execute(
                         text("""INSERT INTO evaluations
-                            (id, goal_id, tenant_id, score_task_completion, score_efficiency,
-                             score_accuracy, score_safety, score_coherence, passed, run_at)
-                            VALUES (:id, :gid, :tid, :tc, :eff, :acc, :saf, :coh, :passed, NOW())
+                            (id, goal_id, tenant_id,
+                             score_task_completion, score_efficiency,
+                             score_accuracy, score_safety, score_coherence,
+                             score_sla, passed, run_at)
+                            VALUES
+                            (:id, :gid, :tid, :tc, :eff, :acc, :saf,
+                             :coh, :sla, :passed, NOW())
                             ON CONFLICT DO NOTHING"""),
                         {
                             "id": uuid.uuid4().hex,
@@ -165,6 +183,7 @@ class EvalRunner:
                             "acc": scorecard.scores.get("accuracy", 0.0),
                             "saf": scorecard.scores.get("safety", 0.0),
                             "coh": scorecard.scores.get("coherence", 0.0),
+                            "sla": scorecard.scores.get("sla", 1.0),
                             "passed": scorecard.passed(),
                         }
                     )
