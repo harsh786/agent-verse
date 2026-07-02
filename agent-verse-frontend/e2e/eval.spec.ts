@@ -3,6 +3,10 @@ import { test, expect, type Page } from '@playwright/test';
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
 async function setupAuth(page: Page) {
+  // Catch-all FIRST — blocks any unmocked localhost:8000 calls from triggering logout
+  await page.route(/localhost:8000/, (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'not found' }) })
+  );
   await page.addInitScript(() => {
     localStorage.setItem(
       'av-auth',
@@ -17,9 +21,19 @@ async function setupAuth(page: Page) {
       })
     );
     localStorage.setItem('av_api_key', 'test-key');
+    sessionStorage.setItem(
+      'av-auth',
+      JSON.stringify({
+        state: {
+          apiKey: 'test-key',
+          tenantId: 'test-tenant',
+          plan: 'free',
+          isAuthenticated: true,
+        },
+        version: 0,
+      })
+    );
   });
-
-  // RequireAuth session validation
   await page.route('**/tenants/me', (route) =>
     route.fulfill({
       status: 200,
@@ -43,12 +57,15 @@ async function mockEvalSupportApis(page: Page) {
     return route.continue();
   });
 
-  // EvalScorerSection fetches unapplied optimization suggestions
+  // Suggestions
   await page.route(/localhost:8000\/intelligence\/suggestions/, (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
   );
-  // Sidebar approvals query — prevent unmocked 401 error toast
-  await page.route(/localhost:8000\/governance\/approvals/, (route) =>
+  // Governance approvals stream
+  await page.route('**/governance/approvals/stream', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
+  );
+  await page.route('**/governance/approvals', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
   );
 }
