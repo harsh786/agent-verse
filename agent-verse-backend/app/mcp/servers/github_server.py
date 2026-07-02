@@ -119,153 +119,181 @@ def _headers() -> dict[str, str]:
     return h
 
 
-async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def call_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    credentials: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    creds = credentials or {}
+    token = (
+        creds.get("token")
+        or creds.get("api_token")
+        or creds.get("password")
+        or os.getenv("GITHUB_TOKEN", "")
+    )
+    base_url = (
+        creds.get("url")
+        or creds.get("base_url")
+        or os.getenv("GITHUB_BASE_URL", "https://api.github.com")
+    )
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        return await _call_tool_inner(tool_name, arguments)
+        async with httpx.AsyncClient(
+            base_url=base_url, headers=headers, timeout=30.0
+        ) as client:
+            return await _dispatch_github_tool(tool_name, arguments, client)
     except httpx.HTTPStatusError as exc:
         error_body = ""
         try:
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
 
 
-async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(
-        base_url=GITHUB_BASE_URL, headers=_headers(), timeout=30.0
-    ) as client:
-        if tool_name == "github_list_repos":
-            owner = arguments["owner"]
-            resp = await client.get(
-                f"/users/{owner}/repos",
-                params={"per_page": arguments.get("per_page", 30)},
-            )
-            resp.raise_for_status()
-            return {
-                "repos": [
-                    {
-                        "name": r["name"],
-                        "full_name": r["full_name"],
-                        "description": r.get("description"),
-                        "url": r["html_url"],
-                    }
-                    for r in resp.json()
-                ]
-            }
+async def _dispatch_github_tool(
+    tool_name: str, arguments: dict[str, Any], client: httpx.AsyncClient
+) -> dict[str, Any]:
+    if tool_name == "github_list_repos":
+        owner = arguments["owner"]
+        resp = await client.get(
+            f"/users/{owner}/repos",
+            params={"per_page": arguments.get("per_page", 30)},
+        )
+        resp.raise_for_status()
+        return {
+            "repos": [
+                {
+                    "name": r["name"],
+                    "full_name": r["full_name"],
+                    "description": r.get("description"),
+                    "url": r["html_url"],
+                }
+                for r in resp.json()
+            ]
+        }
 
-        elif tool_name == "github_get_file":
-            owner = arguments["owner"]
-            repo = arguments["repo"]
-            path = arguments["path"]
-            ref = arguments.get("ref", "main")
-            resp = await client.get(
-                f"/repos/{owner}/{repo}/contents/{path}",
-                params={"ref": ref},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            import base64
+    elif tool_name == "github_get_file":
+        owner = arguments["owner"]
+        repo = arguments["repo"]
+        path = arguments["path"]
+        ref = arguments.get("ref", "main")
+        resp = await client.get(
+            f"/repos/{owner}/{repo}/contents/{path}",
+            params={"ref": ref},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        import base64
 
-            content = (
-                base64.b64decode(data.get("content", "")).decode(
-                    "utf-8", errors="replace"
-                )
-                if data.get("encoding") == "base64"
-                else data.get("content", "")
+        content = (
+            base64.b64decode(data.get("content", "")).decode(
+                "utf-8", errors="replace"
             )
-            return {
-                "path": data["path"],
-                "sha": data["sha"],
-                "content": content,
-                "size": data["size"],
-            }
+            if data.get("encoding") == "base64"
+            else data.get("content", "")
+        )
+        return {
+            "path": data["path"],
+            "sha": data["sha"],
+            "content": content,
+            "size": data["size"],
+        }
 
-        elif tool_name == "github_list_issues":
-            owner, repo = arguments["owner"], arguments["repo"]
-            resp = await client.get(
-                f"/repos/{owner}/{repo}/issues",
-                params={
-                    "state": arguments.get("state", "open"),
-                    "per_page": arguments.get("per_page", 20),
-                },
-            )
-            resp.raise_for_status()
-            return {
-                "issues": [
-                    {
-                        "number": i["number"],
-                        "title": i["title"],
-                        "state": i["state"],
-                        "url": i["html_url"],
-                        "body": (i.get("body") or "")[:500],
-                    }
-                    for i in resp.json()
-                ]
-            }
+    elif tool_name == "github_list_issues":
+        owner, repo = arguments["owner"], arguments["repo"]
+        resp = await client.get(
+            f"/repos/{owner}/{repo}/issues",
+            params={
+                "state": arguments.get("state", "open"),
+                "per_page": arguments.get("per_page", 20),
+            },
+        )
+        resp.raise_for_status()
+        return {
+            "issues": [
+                {
+                    "number": i["number"],
+                    "title": i["title"],
+                    "state": i["state"],
+                    "url": i["html_url"],
+                    "body": (i.get("body") or "")[:500],
+                }
+                for i in resp.json()
+            ]
+        }
 
-        elif tool_name == "github_create_issue":
-            owner, repo = arguments["owner"], arguments["repo"]
-            payload = {
-                "title": arguments["title"],
-                "body": arguments.get("body", ""),
-                "labels": arguments.get("labels", []),
-            }
-            resp = await client.post(
-                f"/repos/{owner}/{repo}/issues", json=payload
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "issue_number": data["number"],
-                "url": data["html_url"],
-                "title": data["title"],
-            }
+    elif tool_name == "github_create_issue":
+        owner, repo = arguments["owner"], arguments["repo"]
+        payload = {
+            "title": arguments["title"],
+            "body": arguments.get("body", ""),
+            "labels": arguments.get("labels", []),
+        }
+        resp = await client.post(
+            f"/repos/{owner}/{repo}/issues", json=payload
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "issue_number": data["number"],
+            "url": data["html_url"],
+            "title": data["title"],
+        }
 
-        elif tool_name == "github_create_pr":
-            owner, repo = arguments["owner"], arguments["repo"]
-            payload = {
-                "title": arguments["title"],
-                "head": arguments["head"],
-                "base": arguments.get("base", "main"),
-                "body": arguments.get("body", ""),
-            }
-            resp = await client.post(
-                f"/repos/{owner}/{repo}/pulls", json=payload
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "pr_number": data["number"],
-                "url": data["html_url"],
-                "title": data["title"],
-            }
+    elif tool_name == "github_create_pr":
+        owner, repo = arguments["owner"], arguments["repo"]
+        payload = {
+            "title": arguments["title"],
+            "head": arguments["head"],
+            "base": arguments.get("base", "main"),
+            "body": arguments.get("body", ""),
+        }
+        resp = await client.post(
+            f"/repos/{owner}/{repo}/pulls", json=payload
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "pr_number": data["number"],
+            "url": data["html_url"],
+            "title": data["title"],
+        }
 
-        elif tool_name == "github_search_code":
-            resp = await client.get(
-                "/search/code",
-                params={
-                    "q": arguments["query"],
-                    "per_page": arguments.get("per_page", 10),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "total_count": data["total_count"],
-                "items": [
-                    {
-                        "name": i["name"],
-                        "path": i["path"],
-                        "url": i["html_url"],
-                        "repo": i["repository"]["full_name"],
-                    }
-                    for i in data.get("items", [])
-                ],
-            }
+    elif tool_name == "github_search_code":
+        resp = await client.get(
+            "/search/code",
+            params={
+                "q": arguments["query"],
+                "per_page": arguments.get("per_page", 10),
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "total_count": data["total_count"],
+            "items": [
+                {
+                    "name": i["name"],
+                    "path": i["path"],
+                    "url": i["html_url"],
+                    "repo": i["repository"]["full_name"],
+                }
+                for i in data.get("items", [])
+            ],
+        }
 
-        else:
-            return {"error": f"Unknown tool: {tool_name}"}
+    else:
+        return {"error": f"Unknown tool: {tool_name}"}

@@ -61,6 +61,26 @@ def _absolute_http_url(url: str) -> str:
     return f"https://{stripped}"
 
 
+def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
+    """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
+
+    auth_config entries are written first; the server-level URL always wins
+    (prevents auth_config["url"] from overwriting the real server URL).
+    """
+    result: dict[str, str] = {}
+    # auth_config entries first (connector-level credentials)
+    for key, value in (cfg.auth_config or {}).items():
+        if isinstance(value, str):
+            result[key] = value
+    # Server-level URL always wins over anything in auth_config
+    for url_field in ("url", "base_url"):
+        url_val = getattr(cfg, url_field, None)
+        if url_val and url_val != "builtin://":
+            result["url"] = str(url_val)
+            break
+    return result
+
+
 def _is_jira_rest_endpoint(cfg: MCPServerConfig) -> bool:
     raw_url = _absolute_http_url(cfg.url or cfg.base_url)
     if _is_mcp_endpoint(raw_url):
@@ -325,14 +345,20 @@ class MCPClient:
                 error="Built-in handler not available (lost after Redis round-trip)",
                 server_id=server.server_id,
             )
+        credentials = _extract_credentials_from_server(server)
         try:
-            output = await handler(tool_name, arguments)
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=True,
-                output=output,
-                server_id=server.server_id,
-            )
+            # Detect credentials support once via signature to avoid double-invocation
+            # and to prevent masking TypeErrors raised inside the handler body.
+            try:
+                sig = inspect.signature(handler)
+                accepts_credentials = "credentials" in sig.parameters
+            except (ValueError, TypeError):
+                accepts_credentials = False
+
+            if accepts_credentials:
+                output = await handler(tool_name, arguments, credentials=credentials)
+            else:
+                output = await handler(tool_name, arguments)
         except Exception as exc:
             return ToolCallResult(
                 tool_name=tool_name,
@@ -340,6 +366,20 @@ class MCPClient:
                 error=str(exc),
                 server_id=server.server_id,
             )
+        if isinstance(output, dict) and output.get("error"):
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=str(output["error"]),
+                output=output,
+                server_id=server.server_id,
+            )
+        return ToolCallResult(
+            tool_name=tool_name,
+            success=True,
+            output=output,
+            server_id=server.server_id,
+        )
 
     async def _dispatch_openapi_tool(
         self,
