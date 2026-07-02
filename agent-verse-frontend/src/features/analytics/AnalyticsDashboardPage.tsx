@@ -158,9 +158,19 @@ export function AnalyticsDashboardPage() {
             <h2 className="font-semibold text-sm mb-4">Eval Summary ({days}d)</h2>
             <div className="grid grid-cols-2 gap-3">
               {[
-                { label: 'Total Evals', value: evals.total_evals },
-                { label: 'Pass Rate', value: `${(evals.pass_rate * 100).toFixed(1)}%` },
-                { label: 'Avg Score', value: evals.avg_score.toFixed(2) },
+                { label: 'Total Evals', value: evals.total_evals ?? 0 },
+                {
+                  label: 'Pass Rate',
+                  value: evals.pass_rate != null
+                    ? `${((evals.pass_rate as number) * 100).toFixed(1)}%`
+                    : '—',
+                },
+                {
+                  label: 'Avg Score',
+                  value: evals.avg_score != null
+                    ? (evals.avg_score as number).toFixed(2)
+                    : '—',
+                },
               ].map(({ label, value }) => (
                 <div key={label} className="p-3 border rounded-lg">
                   <p className="text-xs text-muted-foreground">{label}</p>
