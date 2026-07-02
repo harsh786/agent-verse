@@ -6,6 +6,13 @@ interface DebateMessage {
   id?: string;
   from_agent_id?: string;
   topic?: string;
+  // API response format (from GET /civilizations/:id/debates)
+  outcome?: string;
+  result?: string;
+  participants?: string[];
+  rounds?: number;
+  concluded_at?: string;
+  // SSE message format (from stream events)
   payload?: {
     trigger?: string;
     debate_id?: string;
@@ -85,7 +92,7 @@ export function DebateViewer({ debates }: { debates: DebateMessage[] }) {
                 </div>
               )}
 
-              {/* Consensus */}
+              {/* Consensus (SSE format: payload.consensus) */}
               {payload.consensus && (
                 <div className="bg-green-50 border border-green-200 rounded p-2">
                   <div className="flex items-center gap-1.5 mb-1">
@@ -98,6 +105,32 @@ export function DebateViewer({ debates }: { debates: DebateMessage[] }) {
                     )}
                   </div>
                   <div className="text-xs text-gray-700">{payload.consensus}</div>
+                </div>
+              )}
+
+              {/* Outcome + result (API response format) */}
+              {!payload.consensus && debate.outcome && (
+                <div className={`border rounded p-2 ${
+                  debate.outcome === 'consensus'
+                    ? 'bg-green-50 border-green-200'
+                    : 'bg-yellow-50 border-yellow-200'
+                }`}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className={debate.outcome === 'consensus' ? 'text-green-600' : 'text-yellow-600'}>
+                      {debate.outcome === 'consensus' ? '✓' : '⏳'}
+                    </span>
+                    <span className={`text-xs font-medium capitalize ${
+                      debate.outcome === 'consensus' ? 'text-green-700' : 'text-yellow-700'
+                    }`}>
+                      {debate.outcome === 'consensus' ? 'Consensus Reached' : debate.outcome}
+                    </span>
+                    {debate.rounds !== undefined && (
+                      <span className="text-xs text-gray-400 ml-auto">{debate.rounds} rounds</span>
+                    )}
+                  </div>
+                  {debate.result && (
+                    <div className="text-xs text-gray-700">{debate.result}</div>
+                  )}
                 </div>
               )}
 
