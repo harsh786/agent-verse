@@ -347,8 +347,10 @@ export interface TenantResponse {
 export interface ApiKeyResponse {
   key_id: string;
   name: string;
+  scopes?: string[];
   created_at: string;
   last_used_at?: string;
+  expires_at?: string | null;
 }
 
 export const tenantsApi = {
@@ -356,13 +358,18 @@ export const tenantsApi = {
     request<TenantResponse>("/tenants/signup", { method: "POST", body: JSON.stringify(body) }),
   me: () => request<TenantResponse>("/tenants/me"),
   listKeys: () => request<ApiKeyResponse[]>("/tenants/me/keys"),
-  createKey: (name: string) =>
+  createKey: (name: string, scopes?: string[]) =>
     request<{ raw_key: string; key_id: string }>(
       "/tenants/me/keys",
-      { method: "POST", body: JSON.stringify({ name }) }
+      { method: "POST", body: JSON.stringify({ name, scopes: scopes ?? [] }) }
     ),
   revokeKey: (keyId: string) =>
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
+  rotateKey: (keyId: string) =>
+    request<{ raw_key: string; key_id: string }>(
+      `/tenants/me/keys/${keyId}/rotate`,
+      { method: "POST", body: JSON.stringify({ revoke_old: true }) }
+    ),
 };
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -373,6 +380,13 @@ export interface ApprovalRequest {
   action?: string;
   risk_level?: string;
   status: string;
+  // Extended fields returned by the world-class backend
+  created_at?: string;
+  resolved_at?: string;
+  note?: string;
+  approver?: string | null;
+  required_approvers?: number;
+  approvals_received?: number;
 }
 
 export interface GoalMetrics {
@@ -386,6 +400,7 @@ export interface GoalMetrics {
 
 // ── Governance extended types ─────────────────────────────────────────────────
 
+/** Legacy Policy shape (kept for backward compat with existing code) */
 export interface Policy {
   policy_id: string;
   name: string;
@@ -400,6 +415,75 @@ export interface CreatePolicyRequest {
   enabled?: boolean;
 }
 
+/** Governance Policy — matches backend /governance/policies response */
+export interface GovernancePolicy {
+  policy_id: string;
+  name: string;
+  description: string;
+  tools_pattern: string;
+  action: "deny" | "require_approval";
+  priority: number;
+  allowed_hours_utc?: number[];
+  allowed_weekdays?: number[];
+}
+
+export interface CreateGovernancePolicyRequest {
+  name: string;
+  description?: string;
+  tools_pattern: string;
+  action: "deny" | "require_approval";
+  priority?: number;
+  allowed_hours_utc?: number[];
+  allowed_weekdays?: number[];
+}
+
+export interface PolicySimulateResult {
+  simulation_results: Record<string, string>;
+  tenant_id: string;
+}
+
+export interface PolicyVersion {
+  id: string;
+  policy_id: string;
+  version_number: number;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  change_summary: string | null;
+  changed_by: string | null;
+  changed_at: string;
+}
+
+export interface SlaStats {
+  pending: number;
+  approved: number;
+  denied: number;
+  timed_out: number;
+  escalated: number;
+  within_sla: number;
+  avg_resolution_seconds: number;
+}
+
+export interface AuditChainResult {
+  verified: boolean;
+  verified_events: number;
+  broken_chain_at?: string;
+  chain_tip_hash?: string;
+}
+
+export interface GovBudget {
+  tenant_id: string;
+  per_goal_usd: number;
+  per_tenant_daily_usd: number;
+}
+
+export interface BatchApproveResult {
+  approved: number;
+  rejected: number;
+  not_found: number;
+  results: Array<{ request_id: string; result: string }>;
+}
+
 export const governanceApi = {
   listApprovals: () => request<ApprovalRequest[]>("/governance/approvals"),
   approve: (requestId: string, approver: string, note: string) =>
@@ -412,11 +496,51 @@ export const governanceApi = {
       method: "POST",
       body: JSON.stringify({ approver, note }),
     }),
+  batchApprove: (requestIds: string[], action: "approve" | "reject", approver: string, note = "") =>
+    request<BatchApproveResult>("/governance/hitl/batch-approve", {
+      method: "POST",
+      body: JSON.stringify({ request_ids: requestIds, action, approver, note }),
+    }),
+  getSlaStats: () => request<SlaStats>("/governance/approvals/sla-stats"),
+  listHistory: (limit = 50, statusFilter?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (statusFilter) qs.set("status_filter", statusFilter);
+    return request<ApprovalRequest[]>(`/governance/approvals/history?${qs.toString()}`);
+  },
   goalMetrics: () => request<GoalMetrics>("/goals/metrics"),
+  // Policies (correct shape matching backend)
+  listGovernancePolicies: () => request<GovernancePolicy[]>("/governance/policies"),
+  createGovernancePolicy: (data: CreateGovernancePolicyRequest) =>
+    request<GovernancePolicy>("/governance/policies", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  deletePolicy: (id: string) => request<void>(`/governance/policies/${id}`, { method: "DELETE" }),
+  simulatePolicies: (toolCalls: string[]) =>
+    request<PolicySimulateResult>("/governance/policies/simulate", {
+      method: "POST",
+      body: JSON.stringify({ tool_calls: toolCalls }),
+    }),
+  getPolicyVersions: (policyId: string) =>
+    request<PolicyVersion[]>(`/governance/policies/${policyId}/versions`),
+  rollbackPolicy: (policyId: string, targetVersion: number, reason: string) =>
+    request<{ policy_id: string; new_version: number; rolled_back_to: number; reason: string }>(
+      `/governance/policies/${policyId}/rollback`,
+      { method: "POST", body: JSON.stringify({ target_version: targetVersion, reason }) }
+    ),
+  // Budget
+  getBudget: () => request<GovBudget>("/governance/budget"),
+  setBudget: (data: { per_goal_usd: number; per_tenant_daily_usd: number }) =>
+    request<GovBudget>("/governance/budget", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  // Audit chain integrity
+  verifyAuditChain: () => request<AuditChainResult>("/governance/audit/integrity/verify"),
+  // Legacy — kept for backward compat
   listPolicies: () => request<Policy[]>("/governance/policies"),
   createPolicy: (data: CreatePolicyRequest) =>
     request<Policy>("/governance/policies", { method: "POST", body: JSON.stringify(data) }),
-  deletePolicy: (id: string) => request<void>(`/governance/policies/${id}`, { method: "DELETE" }),
   getPendingApprovals: () => request<ApprovalRequest[]>("/governance/hitl/pending"),
   approvalsStreamPath: () => "/governance/approvals/stream",
   policiesStreamPath: () => "/governance/policies/stream",
@@ -575,8 +699,9 @@ export interface RecallResult {
 
 export interface ToolReliabilityRow {
   tool_name: string;
+  success_count: number;
+  failure_count: number;
   total_calls: number;
-  failures: number;
   success_rate: number;
   [key: string]: unknown;
 }
@@ -592,9 +717,13 @@ export const memoryApi = {
     request<{ query: string; results: RecallResult[] }>(
       `/memory/recall?q=${encodeURIComponent(query)}&limit=${limit}`
     ).then((d) => d.results ?? []),
+  create: (data: { content: string; memory_type?: string; confidence?: number; tags?: string[] }) =>
+    request<MemoryEntry>("/memory", { method: "POST", body: JSON.stringify(data) }),
   delete: (id: string) =>
     request<{ deleted: string; status: string }>(`/memory/${id}`, { method: "DELETE" }),
+  clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
+  listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
 };
 
 // ── Artifacts ──────────────────────────────────────────────────────────────────
@@ -639,8 +768,10 @@ export interface ExecuteCodeResult {
 export interface WorkspaceFile {
   name: string;
   path: string;
-  size_bytes?: number;
+  type?: "file" | "directory";
   is_dir?: boolean;
+  size_bytes?: number;
+  modified_at?: number;
   [key: string]: unknown;
 }
 
@@ -685,6 +816,15 @@ function parseFilename(disposition: string | null, fallback: string): string {
   return match ? match[1] : fallback;
 }
 
+export interface TrainingPreview {
+  count: number;
+  avg_score: number;
+  min_score_found: number;
+  max_score_found: number;
+  score_distribution: Record<string, number>;
+  samples: Array<{ goal: string; eval_score: number; steps: number; tools: string[] }>;
+}
+
 export const trainingApi = {
   export: async (opts: {
     format: "openai" | "anthropic";
@@ -715,6 +855,15 @@ export const trainingApi = {
       count: Number(res.headers.get("X-Training-Examples") ?? 0),
     };
   },
+
+  preview: (opts: { minScore?: number; limit?: number }): Promise<TrainingPreview> => {
+    const params = new URLSearchParams();
+    params.set("min_score", String(opts.minScore ?? 0.8));
+    params.set("limit", String(opts.limit ?? 1000));
+    return request<TrainingPreview>(
+      `/intelligence/export-training-data/preview?${params.toString()}`
+    );
+  },
 };
 
 // ── Perception ─────────────────────────────────────────────────────────────────
@@ -724,6 +873,15 @@ export interface PerceptionStatus {
   vision_available: boolean;
   browser_actions: string[];
   image_formats: string[];
+}
+
+export interface BatchAnalysisResult {
+  url: string;
+  success: boolean;
+  analysis: string;
+  screenshot_b64: string;
+  text_content: string;
+  error: string | null;
 }
 
 export const perceptionApi = {
@@ -750,6 +908,24 @@ export const perceptionApi = {
       method: "POST",
       body: JSON.stringify({ url, selector }),
     }),
+  batchAnalyze: (urls: string[], question?: string) =>
+    request<{ results: BatchAnalysisResult[]; total: number; succeeded: number }>(
+      "/perception/batch-analyze",
+      { method: "POST", body: JSON.stringify({ urls, question }) }
+    ),
+  submitGoalWithImage: (body: {
+    goal: string;
+    image_b64?: string;
+    image_url?: string;
+    image_description?: string;
+    priority?: string;
+    dry_run?: boolean;
+    agent_id?: string | null;
+  }) =>
+    request<{ goal_id: string; has_visual_context: boolean; original_goal: string }>(
+      "/perception/goal-with-image",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
 };
 
 // ── A2A (read-only) ──────────────────────────────────────────────────────────
@@ -842,7 +1018,7 @@ export interface CreateNotificationChannelRequest {
   config: Record<string, unknown>;
 }
 
-export const notificationsApi = {
+ export const notificationsApi = {
   list: () => request<NotificationChannel[]>("/governance/notifications"),
   create: (body: CreateNotificationChannelRequest) =>
     request<{ channel_id: string; type: string; status: string }>(
@@ -851,6 +1027,12 @@ export const notificationsApi = {
     ),
   delete: (channelId: string) =>
     request<void>(`/governance/notifications/${channelId}`, { method: "DELETE" }),
+  /** Send a test notification to verify channel connectivity */
+  test: (channelId: string) =>
+    request<{ success: boolean; message: string }>(
+      `/governance/notifications/${channelId}/test`,
+      { method: "POST" }
+    ),
 };
 
 // ── RBAC: roles + IP allowlist ─────────────────────────────────────────────────
@@ -911,8 +1093,36 @@ export interface ConsentRecord {
   status: string;
 }
 
+// ── Compliance extended types ─────────────────────────────────────────────────
+
+export interface ComplianceFrameworkStatus {
+  framework: string;
+  compliant: boolean;
+  checks: Array<{ check: string; passed: boolean; detail?: string }>;
+  tenant_id: string;
+}
+
+export interface DataResidency {
+  region: string;
+  provider: string;
+  data_types: string[];
+}
+
+export interface Contract {
+  contract_id?: string;
+  contract_type: string;
+  status: string;   // "pending_signature" | "signed"
+  signed_by?: string;
+  signed_at?: string;
+}
+
 export const complianceApi = {
   listLegalHolds: () => request<LegalHold[]>("/governance/legal-holds"),
+  createLegalHold: (reason: string, expiresAt?: string) =>
+    request<{ status: string; tenant_id: string; reason: string }>(
+      "/governance/legal-hold",
+      { method: "POST", body: JSON.stringify({ reason, expires_at: expiresAt ?? null }) }
+    ),
   startGdprExport: () =>
     request<{ job_id: string; status: string; poll_url: string }>(
       "/compliance/export/start",
@@ -930,6 +1140,20 @@ export const complianceApi = {
       `/compliance/consent/${purpose}`,
       { method: "DELETE" },
     ),
+  getFrameworkStatus: (framework: "gdpr" | "hipaa" | "soc2") =>
+    request<ComplianceFrameworkStatus>(`/enterprise/compliance/${framework}`),
+  runComplianceCheck: (framework: "gdpr" | "hipaa" | "soc2") =>
+    request<ComplianceFrameworkStatus>(`/enterprise/compliance/${framework}/check`, { method: "POST" }),
+  getResidency: () => request<DataResidency>("/enterprise/compliance/residency"),
+  listContracts: () =>
+    request<Contract[] | { contracts: Contract[] }>("/enterprise/contracts").then(
+      (r) => Array.isArray(r) ? r : (r as { contracts: Contract[] }).contracts ?? []
+    ),
+  signContract: (contractType: string, signerName: string, signerEmail: string) =>
+    request<Contract>(`/enterprise/contracts/${contractType}/sign`, {
+      method: "POST",
+      body: JSON.stringify({ signer_name: signerName, signer_email: signerEmail }),
+    }),
 };
 
 // ── Eval Suites (Phase-5) ─────────────────────────────────────────────────────
@@ -1178,6 +1402,112 @@ export const templatesApi = {
     ),
 };
 
+// ── Marketplace V2 ───────────────────────────────────────────────────────────
+
+export interface MarketplaceV2Template {
+  template_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  long_description?: string;
+  domain: string;
+  subdomain?: string;
+  category?: string;
+  tags?: string[];
+  required_connectors: string[];
+  optional_connectors?: string[];
+  autonomy_mode: string;
+  author_name?: string;
+  icon_url?: string | null;
+  visibility: string;
+  review_status: string;
+  is_builtin: boolean;
+  is_verified: boolean;
+  install_count: number;
+  rating_avg?: number;
+  rating_count?: number;
+  version: string;
+  template_config?: {
+    goal_template?: string;
+    autonomy_mode?: string;
+    [key: string]: unknown;
+  };
+  parameters_schema?: {
+    properties?: Record<string, {
+      type?: string;
+      description?: string;
+      format?: string;
+      enum?: string[];
+      default?: string | number | boolean;
+    }>;
+    required?: string[];
+  };
+}
+
+export interface MarketplaceReview {
+  reviewer_tenant_id: string;
+  rating: number;
+  title?: string;
+  body?: string;
+  helpful_count: number;
+  verified_install: boolean;
+  created_at?: string;
+}
+
+export interface MarketplaceDeployResult {
+  success: boolean;
+  agent_id?: string;
+  agent_name?: string;
+  template_name?: string;
+  install_id?: string;
+  error?: string;
+}
+
+export const marketplaceApi = {
+  /** V2 — paginated listing with optional search + domain filter */
+  list: (params: { domain?: string; search?: string; page?: number; page_size?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.domain) q.set("domain", params.domain);
+    if (params.search) q.set("search", params.search);
+    if (params.page != null) q.set("page", String(params.page));
+    if (params.page_size != null) q.set("page_size", String(params.page_size));
+    const qs = q.toString();
+    return request<{ templates: MarketplaceV2Template[]; total: number; page: number; page_size: number }>(
+      `/marketplace/templates${qs ? `?${qs}` : ""}`
+    );
+  },
+  get: (id: string) => request<MarketplaceV2Template>(`/marketplace/templates/${id}`),
+  deploy: (id: string, params: Record<string, string> = {}, agentName?: string) =>
+    request<MarketplaceDeployResult>(`/marketplace/templates/${id}/deploy`, {
+      method: "POST",
+      body: JSON.stringify({ parameters: params, agent_name: agentName }),
+    }),
+  getReviews: (id: string) => request<MarketplaceReview[]>(`/marketplace/templates/${id}/reviews`),
+  addReview: (id: string, review: { rating: number; title?: string; body?: string }) =>
+    request<MarketplaceReview>(`/marketplace/templates/${id}/reviews`, {
+      method: "POST",
+      body: JSON.stringify(review),
+    }),
+  search: (query: string, domain?: string, limit = 20) =>
+    request<{ results: MarketplaceV2Template[]; total: number; query: string }>(
+      "/marketplace/search",
+      { method: "POST", body: JSON.stringify({ query, domain, limit }) }
+    ),
+  /** V1 publish — still used for community submissions */
+  publish: (data: {
+    name: string;
+    domain: string;
+    description: string;
+    goal_template: string;
+    autonomy_mode?: string;
+    connectors?: string[];
+  }) =>
+    request<{ template_id: string; name: string }>("/marketplace/publish", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+};
+
 // ── Agent Credentials (Spec 1) ────────────────────────────────────────────────
 
 export interface AgentCredential {
@@ -1250,6 +1580,15 @@ export interface GuardrailViolation {
   created_at: string;
 }
 
+export interface GuardrailStats {
+  total_24h: number;
+  total_all: number;
+  by_severity: Record<string, number>;
+  by_layer: Record<string, number>;
+  top_categories: Array<{ category: string; count: number }>;
+  risk_score_p95: number;
+}
+
 export const guardrailsApi = {
   list: () =>
     request<{ configs: GuardrailConfig[]; total: number } | GuardrailConfig[]>("/guardrails").then(
@@ -1257,17 +1596,24 @@ export const guardrailsApi = {
     ) as Promise<GuardrailConfig[]>,
   create: (body: CreateGuardrailRequest) =>
     request<GuardrailConfig>("/guardrails", { method: "POST", body: JSON.stringify(body) }),
-  update: (id: string, body: CreateGuardrailRequest) =>
+  update: (id: string, body: Partial<CreateGuardrailRequest> & { enabled?: boolean }) =>
     request<void>(`/guardrails/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   delete: (id: string) => request<void>(`/guardrails/${id}`, { method: "DELETE" }),
-  test: (body: { text: string; rule_id?: string }) =>
+  test: (body: { text: string; rule_id?: string; layer?: string }) =>
     request<GuardrailTestResult>("/guardrails/test", { method: "POST", body: JSON.stringify(body) }),
-  getViolations: (params?: { limit?: number }) =>
-    request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
-      `/guardrails/violations${params?.limit ? `?limit=${params.limit}` : ""}`
+  getViolations: (params?: { limit?: number; severity?: string; goal_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.severity) qs.set("severity", params.severity);
+    if (params?.goal_id) qs.set("goal_id", params.goal_id);
+    const q = qs.toString();
+    return request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
+      `/guardrails/violations${q ? `?${q}` : ""}`
     ).then(
       (res) => (Array.isArray(res) ? res : (res as any).violations ?? [])
-    ) as Promise<GuardrailViolation[]>,
+    ) as Promise<GuardrailViolation[]>;
+  },
+  getStats: () => request<GuardrailStats>("/guardrails/stats"),
 };
 
 // ── Costs (Spec 6) ───────────────────────────────────────────────────────────
