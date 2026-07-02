@@ -150,10 +150,23 @@ export interface GoalEvent {
 
 export interface EvalScorecard {
   goal_id: string;
-  score: number;
+  score?: number;
+  average_score?: number;
   passed: boolean;
-  criteria: Array<{ name: string; passed: boolean; score: number }>;
-  evaluated_at: string;
+  criteria?: Array<{ name: string; passed: boolean; score: number }>;
+  evaluated_at?: string;
+  status?: string;
+  scores?: {
+    task_completion?: number;
+    efficiency?: number;
+    accuracy?: number;
+    safety?: number;
+    coherence?: number;
+    sla?: number;
+    tool_relevance?: number;
+    [key: string]: number | undefined;
+  };
+  iterations?: number;
 }
 
 export const goalsApi = {
@@ -179,6 +192,8 @@ export const goalsApi = {
       .then((data) => data?.timeline ?? []),
   getEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`),
+  triggerEvaluation: (id: string) =>
+    request<EvalScorecard>(`/goals/${id}/eval`, { method: "POST" }),
 };
 
 // ── Agents ───────────────────────────────────────────────────────────────────

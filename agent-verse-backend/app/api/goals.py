@@ -363,6 +363,22 @@ async def get_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     return result
 
 
+@router.post("/{goal_id}/eval", status_code=status.HTTP_200_OK)
+async def trigger_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
+    """Trigger on-demand evaluation for a completed goal.
+
+    Runs EvalRunner with LLM-based accuracy and coherence scoring,
+    caches the result, and returns the full 7-dimension scorecard.
+    """
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+    try:
+        result: dict[str, Any] = await svc.run_eval(goal_id=goal_id, tenant_ctx=tenant)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return result
+
+
 @router.post("/{goal_id}/approve")
 async def approve_goal(
     request: Request, goal_id: str, body: ApproveRequest

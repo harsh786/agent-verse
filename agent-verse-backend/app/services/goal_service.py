@@ -1899,6 +1899,63 @@ class GoalService:
             "iterations": scorecard.iterations,
         }
 
+    async def run_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """Score a goal on demand and cache the result.
+
+        Unlike ``get_eval`` which returns cached scores, this always runs
+        the EvalRunner and stores the result. Enables the "Run Eval" button.
+        """
+        record = self._get_record(goal_id, tenant_ctx)
+
+        # Try to get live AgentState from the record
+        state = getattr(record, "agent_state", None)
+        if state is None:
+            # Reconstruct minimal state from record data
+            from app.agent.state import GoalStatus as _GS, AgentState as _AS
+            try:
+                goal_status = _GS(record.status.value)
+            except (ValueError, AttributeError):
+                goal_status = _GS.COMPLETE
+
+            state = _AS(
+                goal_id=goal_id,
+                goal=record.goal_text,
+                tenant_ctx=tenant_ctx,
+                status=goal_status,
+                steps=list(record.steps) if getattr(record, "steps", None) else [],
+                verification_success=(record.status == record.status.COMPLETE),
+                verification_feedback=record.execution_context.get(
+                    "verification_feedback", ""
+                ) if isinstance(record.execution_context, dict) else "",
+                events=list(record.events) if getattr(record, "events", None) else [],
+                iterations=int(
+                    record.execution_context.get("iterations", 1)
+                ) if isinstance(record.execution_context, dict) else 1,
+                context=dict(record.execution_context)
+                if isinstance(record.execution_context, dict) else {},
+            )
+
+        from app.intelligence.eval_runner import EvalRunner
+        runner = EvalRunner()
+        provider = getattr(self, "_app_provider", None)
+        scorecard = await runner.score_async(
+            state=state,
+            tenant_ctx=tenant_ctx,
+            provider=provider,
+        )
+
+        # Cache for subsequent GET requests
+        self._eval_scores[goal_id] = scorecard
+
+        return {
+            "goal_id": scorecard.goal_id,
+            "status": "evaluated",
+            "scores": scorecard.scores,
+            "average_score": scorecard.average_score(),
+            "passed": scorecard.passed(),
+            "iterations": scorecard.iterations,
+        }
+
     async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Cancel a running goal.  Idempotent if the goal is already terminal."""
         record = self._get_record(goal_id, tenant_ctx)

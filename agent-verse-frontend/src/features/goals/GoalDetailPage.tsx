@@ -13,6 +13,7 @@ import {
   Dna,
   GitCompare,
   Ghost,
+  FlaskConical,
 } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { goalsApi, governanceApi } from "@/lib/api/client";
@@ -359,6 +360,15 @@ export function GoalDetailPage() {
       !!goalId &&
       activeTab === "eval" &&
       isTerminal,
+  });
+
+  const triggerEvalMutation = useMutation({
+    mutationFn: () => goalsApi.triggerEvaluation(goalId!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["goal-eval", goalId] });
+      toast({ kind: "success", message: "Evaluation complete" });
+    },
+    onError: () => toast({ kind: "error", message: "Evaluation failed" }),
   });
 
   // HITL: fetch pending approvals — enabled only while waiting_human
@@ -775,49 +785,146 @@ export function GoalDetailPage() {
           tabIndex={0}
           className="space-y-4"
         >
-          {evalLoading ? (
-            <Skeleton className="h-40 w-full" />
-          ) : !evaluation ? (
-            <EmptyState
-              title="No evaluation"
-              description="Evaluation runs automatically after goal completion."
-            />
+          {/* Header row with Run Eval button */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold">Evaluation Scorecard</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                7-dimension assessment with LLM-as-judge accuracy &amp; coherence
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => triggerEvalMutation.mutate()}
+              disabled={triggerEvalMutation.isPending || !isTerminal}
+              aria-label="Run evaluation"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {triggerEvalMutation.isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Scoring…
+                </>
+              ) : (
+                <>
+                  <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
+                  {evaluation ? "Re-score" : "Run Eval"}
+                </>
+              )}
+            </button>
+          </div>
+
+          {evalLoading || triggerEvalMutation.isPending ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : !evaluation || (evaluation as any).status === "not_evaluated" ? (
+            <div className="rounded-xl border border-dashed bg-muted/20 p-8 text-center">
+              <FlaskConical className="mx-auto h-8 w-8 opacity-30 mb-3" aria-hidden="true" />
+              <p className="text-sm font-medium">No evaluation yet</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {isTerminal
+                  ? 'Click "Run Eval" to score this goal on 7 quality dimensions.'
+                  : "Evaluation runs automatically after goal completion."}
+              </p>
+            </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex items-center gap-4 p-4 rounded-lg border bg-card">
-                <div className="text-3xl font-bold">
-                  {((evaluation.score ?? 0) * 100).toFixed(0)}%
+              {/* Overall score hero */}
+              <div className={`flex items-center gap-4 p-4 rounded-xl border-2 ${
+                evaluation.passed
+                  ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/60 dark:bg-emerald-950/20"
+                  : "border-red-200 bg-red-50 dark:border-red-800/60 dark:bg-red-950/20"
+              }`}>
+                <div className={`text-4xl font-bold tabular-nums ${
+                  evaluation.passed
+                    ? "text-emerald-700 dark:text-emerald-300"
+                    : "text-red-700 dark:text-red-300"
+                }`}>
+                  {(((evaluation.average_score ?? (evaluation as any).score ?? 0)) * 100).toFixed(0)}%
                 </div>
                 <div>
-                  <p className="text-sm font-medium">Overall Score</p>
-                  <p
-                    className={`text-xs font-medium ${
-                      evaluation.passed ? "text-green-600" : "text-red-600"
-                    }`}
-                  >
-                    {evaluation.passed ? "PASSED" : "FAILED"}
-                  </p>
+                  <p className="text-sm font-semibold">Overall Score</p>
+                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    evaluation.passed
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                  }`}>
+                    {evaluation.passed ? "✓ PASSED" : "✗ FAILED"}
+                  </span>
+                  {evaluation.iterations != null && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {evaluation.iterations} iteration{evaluation.iterations !== 1 ? "s" : ""}
+                    </p>
+                  )}
                 </div>
               </div>
-              {evaluation.criteria && evaluation.criteria.length > 0 && (
-                <div className="grid grid-cols-2 gap-2">
-                  {evaluation.criteria.map((c) => (
-                    <div key={c.name} className="p-3 rounded border bg-card">
-                      <p className="text-xs text-muted-foreground capitalize">
-                        {c.name.replace(/_/g, " ")}
-                      </p>
-                      <p className="text-lg font-semibold">
-                        {(c.score * 100).toFixed(0)}%
-                      </p>
-                      <span
-                        className={`text-[10px] font-medium ${
-                          c.passed ? "text-green-600" : "text-red-500"
-                        }`}
-                      >
-                        {c.passed ? "✓ pass" : "✗ fail"}
-                      </span>
-                    </div>
-                  ))}
+
+              {/* 7-dimension breakdown with progress bars */}
+              {evaluation.scores && Object.keys(evaluation.scores).length > 0 && (
+                <div className="rounded-xl border bg-card overflow-hidden">
+                  <div className="px-4 py-3 border-b">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Dimension Breakdown
+                    </h4>
+                  </div>
+                  <div className="divide-y">
+                    {Object.entries(evaluation.scores).map(([dim, rawScore]) => {
+                      const score = (rawScore as number) ?? 0;
+                      const pct = Math.round(score * 100);
+                      const passed = pct >= 70;
+                      const LABELS: Record<string, string> = {
+                        task_completion: "Task Completion",
+                        efficiency: "Efficiency",
+                        accuracy: "Accuracy (LLM)",
+                        safety: "Safety",
+                        coherence: "Coherence (LLM)",
+                        sla: "SLA Compliance",
+                        tool_relevance: "Tool Relevance",
+                      };
+                      const COLORS: Record<string, string> = {
+                        task_completion: "bg-blue-500",
+                        efficiency: "bg-green-500",
+                        accuracy: "bg-violet-500",
+                        safety: "bg-orange-500",
+                        coherence: "bg-teal-500",
+                        sla: "bg-sky-500",
+                        tool_relevance: "bg-amber-500",
+                      };
+                      return (
+                        <div key={dim} className="flex items-center gap-3 px-4 py-3">
+                          <div className="w-36 flex-shrink-0">
+                            <p className="text-xs font-medium">
+                              {LABELS[dim] ?? dim.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${COLORS[dim] ?? "bg-primary"}`}
+                              style={{ width: `${pct}%` }}
+                              role="progressbar"
+                              aria-valuenow={pct}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-label={`${LABELS[dim] ?? dim} ${pct}%`}
+                            />
+                          </div>
+                          <span className="w-10 text-right flex-shrink-0 text-xs font-semibold tabular-nums">
+                            {pct}%
+                          </span>
+                          <span className={`text-[10px] font-bold w-4 flex-shrink-0 ${
+                            passed
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-red-500 dark:text-red-400"
+                          }`}>
+                            {passed ? "✓" : "✗"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
