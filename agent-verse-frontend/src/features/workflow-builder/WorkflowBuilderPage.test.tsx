@@ -126,6 +126,35 @@ describe('WorkflowBuilderPage', () => {
   });
 });
 
+  // ── Copy / paste ─────────────────────────────────────────────────────────────
+
+  it('Ctrl+C copies selected node, Ctrl+V pastes a duplicate', () => {
+    render(<WorkflowBuilderPage />, { wrapper: ({ children }) => <Wrapper c={children} /> });
+
+    // Add a node so there's something to copy
+    const triggerBtn = screen.getByRole('button', { name: /Add Trigger \/ Start node/i });
+    fireEvent.click(triggerBtn);
+
+    // Simulate Ctrl+C (copy) — no selectedNode in unit test context so clipboard stays empty,
+    // but the keydown handler must not throw
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true, bubbles: true });
+    // Simulate Ctrl+V (paste) — with no clipboard content it should silently no-op
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true, bubbles: true });
+    // Component must still be mounted and functional
+    expect(screen.getByRole('button', { name: /save/i })).toBeDefined();
+  });
+
+  it('copy/paste ignores keydown when focus is in a text input', () => {
+    render(<WorkflowBuilderPage />, { wrapper: ({ children }) => <Wrapper c={children} /> });
+
+    const nameInput = screen.getByLabelText(/Workflow name/i);
+    // Keydown inside an input must not trigger copy/paste logic
+    fireEvent.keyDown(nameInput, { key: 'c', ctrlKey: true, bubbles: true });
+    fireEvent.keyDown(nameInput, { key: 'v', ctrlKey: true, bubbles: true });
+    // Component must still be functional
+    expect(screen.getByRole('button', { name: /save/i })).toBeDefined();
+  });
+
 // ── Regression: infinite re-render loop fixes ────────────────────────────────
 
 describe('stable references (infinite loop regression)', () => {

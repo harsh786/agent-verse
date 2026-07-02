@@ -2,7 +2,7 @@
  * World-class visual workflow builder using @xyflow/react.
  * Drag-drop nodes from palette, connect them, configure inline, save, run.
  */
-import { useState, useCallback, useRef, DragEvent } from 'react';
+import { useState, useCallback, useRef, useEffect, DragEvent } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant,
   ReactFlowProvider, addEdge, useNodesState, useEdgesState,
@@ -122,6 +122,8 @@ function WorkflowBuilderInner() {
   const [running, setRunning] = useState(false);
   const [runOutput, setRunOutput] = useState<string>('');
   const nodeCounter = useRef(1);
+  // Clipboard: stores a shallow copy of the last-copied node for Ctrl+C / Ctrl+V
+  const clipboardNode = useRef<Node | null>(null);
 
   const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -157,6 +159,56 @@ function WorkflowBuilderInner() {
     // Prevent self-loops
     return connection.source !== connection.target;
   }, []);
+
+  // ── Copy / Paste (Ctrl+C / Ctrl+V or Cmd+C / Cmd+V) ──────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Ignore events originating from text inputs so typing "c" or "v" still works
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      const isMod = e.ctrlKey || e.metaKey;
+
+      if (isMod && e.key.toLowerCase() === 'c') {
+        // Copy selected node
+        if (selectedNode) {
+          clipboardNode.current = selectedNode;
+          toast({ kind: 'success', message: `Copied "${(selectedNode.data as WorkflowNodeData).label}"` });
+        }
+      }
+
+      if (isMod && e.key.toLowerCase() === 'v') {
+        // Paste copied node with +40px offset
+        const src = clipboardNode.current;
+        if (!src) return;
+        const id = `node_${nodeCounter.current++}`;
+        const pastedNode: Node = {
+          ...src,
+          id,
+          position: {
+            x: (src.position?.x ?? 200) + 40,
+            y: (src.position?.y ?? 200) + 40,
+          },
+          selected: false,
+          data: { ...(src.data as WorkflowNodeData) },
+        };
+        setNodes((nds) => [...nds, pastedNode]);
+        // Update clipboard position so consecutive pastes stagger nicely
+        clipboardNode.current = { ...src, position: pastedNode.position };
+        toast({ kind: 'success', message: `Pasted "${(src.data as WorkflowNodeData).label}"` });
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedNode, setNodes]);
+
 
   // ── Drag-and-drop handlers ───────────────────────────────────────────────
 
