@@ -37,6 +37,11 @@ async def execute_code(
     if tenant_ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
+    if body.timeout < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Minimum timeout is 1 second",
+        )
     if body.timeout > 60:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -139,4 +144,10 @@ async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     from app.tools.email_tool import email_send
 
-    return await email_send(body.to, body.subject, body.body, from_addr=body.from_addr)
+    result = await email_send(body.to, body.subject, body.body, from_addr=body.from_addr)
+    if not result.get("success", True):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=result.get("error", "Email send failed"),
+        )
+    return result

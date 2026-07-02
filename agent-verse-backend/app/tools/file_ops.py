@@ -76,7 +76,9 @@ class FileOps:
             stat = entry.stat()
             entries.append({
                 "name": entry.name,
+                "path": str(entry.relative_to(self._workspace)),  # relative path for open/delete
                 "type": "directory" if entry.is_dir() else "file",
+                "is_dir": entry.is_dir(),
                 "size_bytes": stat.st_size if entry.is_file() else 0,
                 "modified_at": stat.st_mtime,
             })
