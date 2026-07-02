@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -202,6 +202,62 @@ class GoalAnalyticsAggregator:
             results.append(m)
         return sorted(results, key=lambda x: x.call_count, reverse=True)
 
+    async def tool_metrics_db(self, tenant_id: str, days: int = 30) -> list[ToolMetrics]:
+        """Query tool call metrics from goal_events table in PostgreSQL.
+
+        Falls back to in-memory tool_metrics() when DB is unavailable.
+        """
+        if self._db is None or not tenant_id:
+            return self.tool_metrics(days=days)
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            e.payload->>'tool_name' AS tool_name,
+                            COUNT(*) AS call_count,
+                            SUM(CASE WHEN e.payload->>'status' = 'failed'
+                                          OR e.payload->>'error' IS NOT NULL
+                                     THEN 1 ELSE 0 END) AS failure_count,
+                            AVG((e.payload->>'latency_ms')::numeric) AS avg_latency_ms
+                        FROM goal_events e
+                        JOIN goals g ON g.id = e.goal_id
+                        WHERE g.tenant_id = :tid
+                          AND e.event_type IN
+                              ('tool_call_complete', 'tool_call_failed', 'step_complete')
+                          AND e.created_at > NOW() - (:days * INTERVAL '1 day')
+                          AND e.payload->>'tool_name' IS NOT NULL
+                        GROUP BY e.payload->>'tool_name'
+                        ORDER BY call_count DESC
+                        LIMIT 100
+                    """),
+                    {"tid": tenant_id, "days": days},
+                )
+                rows = result.fetchall()
+
+            results: list[ToolMetrics] = []
+            for row in rows:
+                tool_name = row[0] or "unknown"
+                call_count = int(row[1] or 0)
+                failure_count = int(row[2] or 0)
+                avg_latency = float(row[3] or 0.0)
+                results.append(
+                    ToolMetrics(
+                        tool_name=tool_name,
+                        call_count=call_count,
+                        failure_count=failure_count,
+                        avg_latency_ms=round(avg_latency, 2),
+                        failure_rate=round(failure_count / max(call_count, 1), 4),
+                    )
+                )
+            if results:
+                return results
+        except Exception as exc:
+            logger.warning("tool_metrics_db_failed", error=str(exc))
+        # Fallback to in-memory
+        return self.tool_metrics(days=days)
+
     def cost_trends(self, days: int = 30, bucket: str = "day") -> list[dict[str, Any]]:
         """Return daily/weekly cost aggregates."""
         since = datetime.now(UTC) - timedelta(days=days)
@@ -220,6 +276,75 @@ class GoalAnalyticsAggregator:
                 buckets[key] += cost
 
         return [{"period": k, "cost_usd": round(v, 6)} for k, v in sorted(buckets.items())]
+
+    async def cost_trends_db(
+        self, tenant_id: str, days: int = 30, bucket: str = "day"
+    ) -> list[dict[str, Any]]:
+        """Query cost trends from goals.cost_usd via DATE_TRUNC in PostgreSQL.
+
+        Returns list of {period, cost_usd} dicts, falling back to in-memory
+        cost_trends() when DB is unavailable.
+        """
+        if self._db is None or not tenant_id:
+            return self.cost_trends(days=days, bucket=bucket)
+        try:
+            from sqlalchemy import text
+
+            trunc = "day" if bucket == "day" else "week"
+            async with self._db() as session:
+                result = await session.execute(
+                    text(f"""
+                        SELECT
+                            DATE_TRUNC('{trunc}', created_at)::date AS period,
+                            SUM(COALESCE(cost_usd, 0)) AS cost_usd
+                        FROM goals
+                        WHERE tenant_id = :tid
+                          AND created_at > NOW() - (:days * INTERVAL '1 day')
+                        GROUP BY period
+                        ORDER BY period ASC
+                    """),
+                    {"tid": tenant_id, "days": days},
+                )
+                rows = result.fetchall()
+
+            db_results = [
+                {"period": str(row[0]), "cost_usd": round(float(row[1] or 0), 6)}
+                for row in rows
+            ]
+            if db_results:
+                return db_results
+        except Exception as exc:
+            logger.warning("cost_trends_db_failed", error=str(exc))
+        # Fallback to in-memory
+        return self.cost_trends(days=days, bucket=bucket)
+
+    async def cost_by_model_db(self, tenant_id: str, days: int = 30) -> dict[str, float]:
+        """Return cost aggregated by model from cost_ledger table."""
+        if self._db is None or not tenant_id:
+            return {}
+        try:
+            from sqlalchemy import text
+
+            async with self._db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            COALESCE(tool_name, 'unknown') AS model,
+                            SUM(cost_usd) AS total_cost
+                        FROM cost_ledger
+                        WHERE tenant_id = :tid
+                          AND created_at > NOW() - (:days * INTERVAL '1 day')
+                        GROUP BY model
+                        ORDER BY total_cost DESC
+                        LIMIT 20
+                    """),
+                    {"tid": tenant_id, "days": days},
+                )
+                rows = result.fetchall()
+            return {str(row[0]): round(float(row[1] or 0), 6) for row in rows}
+        except Exception as exc:
+            logger.warning("cost_by_model_db_failed", error=str(exc))
+        return {}
 
     def agent_metrics(self, days: int = 30) -> list[AgentMetrics]:
         """Per-agent goal performance."""
