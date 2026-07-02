@@ -1,0 +1,92 @@
+<h2>Connector-Agnostic Result Rendering</h2>
+<p class="subtitle">The UI should choose the best presentation from the response shape, not from the connector name.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Recommended: Adaptive Result Canvas</div>
+    <div class="mockup-body">
+      <div style="display:grid;gap:14px;font-family:Inter,system-ui,sans-serif;color:#0f172a">
+        <section style="border:1px solid #dbeafe;border-radius:16px;background:#eff6ff;padding:14px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div style="height:24px;width:24px;border-radius:999px;background:#22c55e;color:white;display:flex;align-items:center;justify-content:center">✓</div>
+            <strong>Search completed</strong>
+            <span style="margin-left:auto;font-size:12px;color:#475569">Tool: any connector</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+            <div style="background:white;border:1px solid #dbeafe;border-radius:10px;padding:8px"><small>Total</small><br><strong>42</strong></div>
+            <div style="background:white;border:1px solid #dbeafe;border-radius:10px;padding:8px"><small>Returned</small><br><strong>25</strong></div>
+            <div style="background:white;border:1px solid #dbeafe;border-radius:10px;padding:8px"><small>Complete</small><br><strong>No</strong></div>
+            <div style="background:white;border:1px solid #dbeafe;border-radius:10px;padding:8px"><small>Source</small><br><strong>GitHub/Jira/etc.</strong></div>
+          </div>
+        </section>
+
+        <section style="border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;background:white">
+          <div style="padding:12px 14px;border-bottom:1px solid #e2e8f0"><strong>Detected table result</strong><br><small style="color:#64748b">Array of similarly-shaped records: issues, PRs, tickets, tasks, users, files</small></div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <tr style="background:#f8fafc"><th style="text-align:left;padding:8px">ID</th><th style="text-align:left;padding:8px">Title</th><th style="text-align:left;padding:8px">Status</th><th style="text-align:left;padding:8px">Owner</th></tr>
+            <tr><td style="padding:8px;border-top:1px solid #e2e8f0">OPP-34746</td><td style="padding:8px;border-top:1px solid #e2e8f0">Removed logging</td><td style="padding:8px;border-top:1px solid #e2e8f0">To be deployed</td><td style="padding:8px;border-top:1px solid #e2e8f0">Abhay</td></tr>
+            <tr><td style="padding:8px;border-top:1px solid #e2e8f0">#1842</td><td style="padding:8px;border-top:1px solid #e2e8f0">Fix auth middleware</td><td style="padding:8px;border-top:1px solid #e2e8f0">Open</td><td style="padding:8px;border-top:1px solid #e2e8f0">Platform</td></tr>
+            <tr><td style="padding:8px;border-top:1px solid #e2e8f0">TASK-9</td><td style="padding:8px;border-top:1px solid #e2e8f0">Renew certificate</td><td style="padding:8px;border-top:1px solid #e2e8f0">Due soon</td><td style="padding:8px;border-top:1px solid #e2e8f0">SRE</td></tr>
+          </table>
+        </section>
+
+        <details style="border:1px solid #e2e8f0;border-radius:12px;padding:10px;background:#f8fafc">
+          <summary style="cursor:pointer;font-weight:600">Raw output and diagnostics</summary>
+          <pre style="white-space:pre-wrap;font-size:11px;color:#475569">{ success: true, connector: "...", query: "...", raw: "available for debugging" }</pre>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Rendering Rules</div>
+    <div class="mockup-body">
+      <div style="display:grid;gap:12px;font-family:Inter,system-ui,sans-serif;color:#0f172a">
+        <div style="border:1px solid #e2e8f0;border-radius:14px;padding:12px;background:white">
+          <strong>1. Table</strong>
+          <p style="margin:4px 0 0;color:#64748b">Use when output has arrays of objects: issues, PRs, tickets, users, logs, files.</p>
+        </div>
+        <div style="border:1px solid #e2e8f0;border-radius:14px;padding:12px;background:white">
+          <strong>2. Cards</strong>
+          <p style="margin:4px 0 0;color:#64748b">Use when output has few rich records with descriptions, links, and metadata.</p>
+        </div>
+        <div style="border:1px solid #e2e8f0;border-radius:14px;padding:12px;background:white">
+          <strong>3. Summary Text</strong>
+          <p style="margin:4px 0 0;color:#64748b">Use for narrative answers, single values, or tool-generated explanations.</p>
+        </div>
+        <div style="border:1px solid #e2e8f0;border-radius:14px;padding:12px;background:white">
+          <strong>4. JSON Inspector</strong>
+          <p style="margin:4px 0 0;color:#64748b">Fallback for unknown shapes, with collapsible raw output so users can debug.</p>
+        </div>
+        <div style="border:1px solid #fecaca;border-radius:14px;padding:12px;background:#fef2f2">
+          <strong>Error / zero result</strong>
+          <p style="margin:4px 0 0;color:#991b1b">Show query, connector, auth/search status, and next action. Do not silently say “0”.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="shape-based-renderer" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Shape-Based Renderer</h3>
+      <p>Recommended. Detect rows, cards, text, errors, and JSON from any connector output.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="connector-specific-renderer" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Connector-Specific Views</h3>
+      <p>Polished for Jira/GitHub/etc., but every connector needs custom UI and maintenance.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="llm-markdown" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>LLM Markdown Summary</h3>
+      <p>Flexible, but weak for accurate counts, tables, sorting, copy/export, and debugging.</p>
+    </div>
+  </div>
+</div>
