@@ -1,0 +1,70 @@
+<h2>How Should Jira Goal Results Render?</h2>
+<p class="subtitle">Choose the style that feels closest to VS Code/Codex-style agent output: readable first, raw JSON only when needed.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:16px;font-family:Inter,system-ui,sans-serif;color:#0f172a">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="height:22px;width:22px;border-radius:999px;background:#22c55e;color:white;display:flex;align-items:center;justify-content:center;font-size:14px">✓</div>
+          <strong>Step 2: Jira search complete</strong>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+          <div style="border:1px solid #e2e8f0;border-radius:10px;padding:8px"><small>Total</small><br><strong>10</strong></div>
+          <div style="border:1px solid #e2e8f0;border-radius:10px;padding:8px"><small>Assignee</small><br><strong>Abhay Dwivedi</strong></div>
+          <div style="border:1px solid #e2e8f0;border-radius:10px;padding:8px"><small>Status</small><br><strong>Complete</strong></div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <tr style="background:#f8fafc"><th style="text-align:left;padding:6px">Key</th><th style="text-align:left;padding:6px">Status</th><th style="text-align:left;padding:6px">Summary</th></tr>
+          <tr><td style="padding:6px;border-top:1px solid #e2e8f0">OPP-34746</td><td style="padding:6px;border-top:1px solid #e2e8f0">To be deployed</td><td style="padding:6px;border-top:1px solid #e2e8f0">Removed Logging...</td></tr>
+          <tr><td style="padding:6px;border-top:1px solid #e2e8f0">OPP-34672</td><td style="padding:6px;border-top:1px solid #e2e8f0">In-progress</td><td style="padding:6px;border-top:1px solid #e2e8f0">MID whitelisting...</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Result Card + Table</h3>
+      <p>Recommended. The execution step shows key metrics and a clean Jira issue table. Raw output stays available in a collapsible debug area.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#0f172a;background:#f8fafc;height:100%">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-family:Inter,system-ui,sans-serif">
+          <span style="color:#22c55e;font-size:18px">✓</span><strong>jira_search_issues succeeded</strong>
+        </div>
+        <pre style="white-space:pre-wrap;font-size:12px;line-height:1.45;margin:0">JQL: assignee = "Abhay Dwivedi"
+
+Found 10 issues:
+1. OPP-34746  To be deployed
+2. OPP-34672  In-progress
+3. OPP-34648  To be deployed
+4. OPP-34487  To Do</pre>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. CLI-Style Text</h3>
+      <p>Fast and simple. Looks like Codex terminal output, but less scannable for many rows and weaker for sorting/copying columns.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="padding:16px;font-family:Inter,system-ui,sans-serif;color:#0f172a">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="height:22px;width:22px;border-radius:999px;background:#22c55e;color:white;display:flex;align-items:center;justify-content:center;font-size:14px">✓</div>
+          <strong>Jira search complete</strong>
+        </div>
+        <div style="display:grid;gap:8px">
+          <div style="border:1px solid #e2e8f0;border-radius:12px;padding:10px"><strong>OPP-34746</strong><br><small>To be deployed · Abhay Dwivedi</small><br>Removed Logging in txn data service</div>
+          <div style="border:1px solid #e2e8f0;border-radius:12px;padding:10px"><strong>OPP-34672</strong><br><small>In-progress · Abhay Dwivedi</small><br>MID whitelisting in CG config</div>
+          <div style="border:1px solid #e2e8f0;border-radius:12px;padding:10px"><strong>OPP-34648</strong><br><small>To be deployed · Abhay Dwivedi</small><br>3ds Rupay changes</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Issue Cards</h3>
+      <p>More visual and mobile-friendly. Better for a handful of issues, but bulky when Jira returns dozens or hundreds.</p>
+    </div>
+  </div>
+</div>

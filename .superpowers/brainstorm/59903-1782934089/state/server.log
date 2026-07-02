@@ -1,0 +1,4 @@
+{"type":"server-started","port":64133,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:64133","screen_dir":"/Users/harsh.kumar01/Documents/Learning/Agent-Verse/.superpowers/brainstorm/59903-1782934089/content","state_dir":"/Users/harsh.kumar01/Documents/Learning/Agent-Verse/.superpowers/brainstorm/59903-1782934089/state"}
+{"type":"screen-added","file":"/Users/harsh.kumar01/Documents/Learning/Agent-Verse/.superpowers/brainstorm/59903-1782934089/content/jira-results-format-options.html"}
+{"type":"screen-added","file":"/Users/harsh.kumar01/Documents/Learning/Agent-Verse/.superpowers/brainstorm/59903-1782934089/content/adaptive-connector-results.html"}
+{"type":"server-stopped","reason":"idle timeout"}
