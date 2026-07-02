@@ -1,9 +1,11 @@
 """Memory management REST API."""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -28,6 +30,78 @@ def _get_db(request: Request) -> Any:
         except Exception:
             pass
     return db
+
+
+
+class CreateMemoryRequest(BaseModel):
+    content: str
+    memory_type: str = "fact"
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    tags: list[str] = []
+
+
+@router.post("", status_code=201)
+async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
+    """Manually create a long-term memory entry."""
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    memory_id = str(uuid.uuid4())
+
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO long_term_memory
+                            (id, tenant_id, content, memory_type, confidence, tags, created_at)
+                        VALUES (:id, :tid, :content, :mt, :conf, :tags, NOW())
+                    """),
+                    {
+                        "id": memory_id,
+                        "tid": tenant_ctx.tenant_id,
+                        "content": body.content,
+                        "mt": body.memory_type,
+                        "conf": body.confidence,
+                        "tags": body.tags,
+                    },
+                )
+            return {
+                "id": memory_id,
+                "content": body.content,
+                "memory_type": body.memory_type,
+                "confidence": body.confidence,
+                "tags": body.tags,
+                "created_at": "",
+            }
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("create_memory_db_failed: %s", exc)
+
+    # In-memory fallback
+    ltm = _get_ltm(request)
+    if ltm is not None:
+        raw = getattr(ltm, "_memories", {})
+        if isinstance(raw, dict):
+            if tenant_ctx.tenant_id not in raw:
+                raw[tenant_ctx.tenant_id] = []
+            from types import SimpleNamespace
+            mem_obj = SimpleNamespace(
+                id=memory_id, memory_id=memory_id,
+                content=body.content, memory_type=body.memory_type,
+                confidence=body.confidence, tags=body.tags, created_at="",
+                tenant_id=tenant_ctx.tenant_id,
+            )
+            raw[tenant_ctx.tenant_id].append(mem_obj)
+
+    return {
+        "id": memory_id,
+        "content": body.content,
+        "memory_type": body.memory_type,
+        "confidence": body.confidence,
+        "tags": body.tags,
+        "created_at": "",
+    }
 
 
 @router.get("")
@@ -63,15 +137,22 @@ async def list_memories(
             import logging
             logging.getLogger(__name__).warning("list_memories_db_failed: %s", exc)
 
-    # In-memory fallback
+    # In-memory fallback — _memories is dict[tenant_id, list[LongTermMemory]]
     if ltm is not None:
-        memories = getattr(ltm, "_memories", [])
-        if hasattr(memories[0], "tenant_id") if memories else False:
-            memories = [m for m in memories if getattr(m, "tenant_id", "") == tenant_ctx.tenant_id]
+        raw = getattr(ltm, "_memories", {})
+        tenant_memories: list = raw.get(tenant_ctx.tenant_id, []) if isinstance(raw, dict) else []
+        if memory_type:
+            tenant_memories = [m for m in tenant_memories if getattr(m, "memory_type", "") == memory_type]
         return [
-            {"id": getattr(m, "id", ""), "content": getattr(m, "content", ""),
-             "memory_type": getattr(m, "memory_type", ""), "confidence": getattr(m, "confidence", 0.8)}
-            for m in memories[:limit]
+            {
+                "id": getattr(m, "id", getattr(m, "memory_id", "")),
+                "content": getattr(m, "content", ""),
+                "memory_type": getattr(m, "memory_type", ""),
+                "confidence": getattr(m, "confidence", 0.8),
+                "tags": list(getattr(m, "tags", []) or []),
+                "created_at": getattr(m, "created_at", "") or "",
+            }
+            for m in tenant_memories[:limit]
         ]
     return []
 
@@ -203,10 +284,26 @@ async def get_tool_reliability(request: Request) -> list[dict]:
 @router.delete("", status_code=204)
 async def clear_all_memories(request: Request) -> None:
     """Clear all long-term memories for this tenant (GDPR erasure)."""
-    tenant = _require_tenant(request)
-    mem = getattr(request.app.state, "long_term_memory", None)
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+
+    if db is not None:
+        try:
+            from sqlalchemy import text
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("DELETE FROM long_term_memory WHERE tenant_id=:tid"),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+            return
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("clear_all_memories_db_failed: %s", exc)
+
+    # In-memory fallback
+    mem = _get_ltm(request)
     if mem is None:
         return
-    all_mems = mem.list_all(tenant_ctx=tenant)
-    for m in all_mems:
-        mem.delete(memory_id=m.memory_id, tenant_ctx=tenant)
+    raw = getattr(mem, "_memories", {})
+    if isinstance(raw, dict):
+        raw.pop(tenant_ctx.tenant_id, None)

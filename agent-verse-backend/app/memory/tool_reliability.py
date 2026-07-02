@@ -125,6 +125,7 @@ class ToolReliabilityStore:
                     "tool_name": r[0],
                     "success_count": r[1],
                     "failure_count": r[2],
+                    "total_calls": (r[1] or 0) + (r[2] or 0),
                     "success_rate": float(r[3] or 0),
                 }
                 for r in rows
