@@ -367,6 +367,24 @@ async def test_jira_search_issues_accepts_base_url_without_protocol():
 
 
 @pytest.mark.asyncio
+async def test_jira_search_issues_counts_returned_issues_when_total_missing():
+    from app.mcp.servers.jira_server import call_tool
+
+    resp_data = {
+        "isLast": False,
+        "issues": [{"id": "1", "key": "PROJ-1", "fields": _JIRA_ISSUE_FIELDS}],
+    }
+    mc = mk_client(post=make_resp(data=resp_data))
+    with patch.dict("os.environ", _JIRA), patch("httpx.AsyncClient") as cls:
+        cls.return_value = mc
+        result = await call_tool("jira_search_issues", {"jql": "project = PROJ"})
+
+    assert result["total"] == 1
+    assert result["issues"][0]["key"] == "PROJ-1"
+    assert "startAt" not in mc.post.await_args.kwargs["json"]
+
+
+@pytest.mark.asyncio
 async def test_jira_get_issue():
     from app.mcp.servers.jira_server import call_tool
 

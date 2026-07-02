@@ -425,11 +425,12 @@ class MCPClient:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+            issues = data.get("issues", [])
             return ToolCallResult(
                 tool_name=tool_name,
                 success=True,
                 output={
-                    "total": data.get("total", 0),
+                    "total": data.get("total", len(issues)),
                     "start_at": data.get("startAt", 0),
                     "max_results": data.get("maxResults", 50),
                     "issues": [
@@ -452,7 +453,7 @@ class MCPClient:
                             "created": (issue.get("fields") or {}).get("created", ""),
                             "updated": (issue.get("fields") or {}).get("updated", ""),
                         }
-                        for issue in data.get("issues", [])
+                        for issue in issues
                     ],
                 },
                 server_id=server_id,

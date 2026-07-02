@@ -261,14 +261,14 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             payload: dict[str, Any] = {
                 "jql": arguments["jql"],
                 "maxResults": arguments.get("max_results", 50),
-                "startAt": arguments.get("start_at", 0),
                 "fields": arguments.get("fields", default_fields),
             }
             resp = await client.post("/rest/api/3/search/jql", json=payload)
             resp.raise_for_status()
             data = resp.json()
+            issues = data.get("issues", [])
             return {
-                "total": data.get("total", 0),
+                "total": data.get("total", len(issues)),
                 "start_at": data.get("startAt", 0),
                 "max_results": data.get("maxResults", 50),
                 "issues": [
@@ -283,7 +283,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                         "created": i["fields"].get("created", ""),
                         "updated": i["fields"].get("updated", ""),
                     }
-                    for i in data.get("issues", [])
+                    for i in issues
                 ],
             }
 
