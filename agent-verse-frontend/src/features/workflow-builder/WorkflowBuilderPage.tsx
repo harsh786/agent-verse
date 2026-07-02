@@ -1,11 +1,13 @@
 /**
  * World-class visual workflow builder using @xyflow/react.
- * Drag-drop nodes, connect them, configure inline, save, run.
+ * Drag-drop nodes from palette, connect them, configure inline, save, run.
  */
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, DragEvent } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant,
-  addEdge, useNodesState, useEdgesState, type Node, type Edge, type Connection,
+  ReactFlowProvider, addEdge, useNodesState, useEdgesState,
+  useReactFlow, ConnectionMode,
+  type Node, type Edge, type Connection,
   MarkerType, Handle, Position,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -52,7 +54,7 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
       <Handle
         type="target"
         position={Position.Top}
-        className="!bg-slate-400 !border-slate-600 !w-3 !h-3"
+        className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
       />
       <div className="flex items-center gap-1.5 font-semibold mb-0.5">
         <span>{NODE_ICONS[data.type] ?? '◻'}</span>
@@ -75,7 +77,7 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!bg-slate-400 !border-slate-600 !w-3 !h-3"
+        className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
       />
     </div>
   );
@@ -83,6 +85,12 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
 
 const NODE_TYPES = { workflow: WorkflowNode };
 const SNAP_GRID: [number, number] = [16, 16]; // stable ref — prevents ReactFlow useEffect infinite loop
+
+const CONNECTION_LINE_STYLE: React.CSSProperties = {
+  stroke: '#6366f1',
+  strokeWidth: 2,
+  strokeDasharray: '5 5',
+};
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 
@@ -98,11 +106,12 @@ const PALETTE_NODES = [
   { type: 'end',            label: 'End'                },
 ];
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Inner Component (needs ReactFlowProvider context) ────────────────────────
 
-export function WorkflowBuilderPage() {
+function WorkflowBuilderInner() {
   const apiKey = useAuthStore((s) => s.apiKey); // primitive return avoids new-object-per-render re-render loop
   const qc = useQueryClient();
+  const { screenToFlowPosition } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -122,13 +131,13 @@ export function WorkflowBuilderPage() {
     enabled: !!apiKey,
   });
 
-  const addNode = useCallback((type: string, label: string) => {
+  const addNode = useCallback((type: string, label: string, position?: { x: number; y: number }) => {
     const id = `node_${nodeCounter.current++}`;
     setNodes((nds) => [
       ...nds,
       {
         id, type: 'workflow',
-        position: { x: 200 + Math.random() * 200, y: 100 + Math.random() * 200 },
+        position: position ?? { x: 200 + Math.random() * 200, y: 100 + Math.random() * 200 },
         data: { type, label, subtitle: '', status: null } satisfies WorkflowNodeData,
       },
     ]);
@@ -143,6 +152,37 @@ export function WorkflowBuilderPage() {
       }, eds)
     );
   }, [setEdges]);
+
+  const isValidConnection = useCallback((connection: Edge | Connection) => {
+    // Prevent self-loops
+    return connection.source !== connection.target;
+  }, []);
+
+  // ── Drag-and-drop handlers ───────────────────────────────────────────────
+
+  const onDragStart = useCallback((event: DragEvent<HTMLButtonElement>, nodeType: string, label: string) => {
+    event.dataTransfer.setData('application/workflow-node-type', nodeType);
+    event.dataTransfer.setData('application/workflow-node-label', label);
+    event.dataTransfer.effectAllowed = 'copy';
+  }, []);
+
+  const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const nodeType = event.dataTransfer.getData('application/workflow-node-type');
+    const label = event.dataTransfer.getData('application/workflow-node-label');
+    if (!nodeType) return;
+
+    const position = screenToFlowPosition({
+      x: event.clientX,
+      y: event.clientY,
+    });
+    addNode(nodeType, label, position);
+  }, [screenToFlowPosition, addNode]);
 
   const generateFromNL = async () => {
     if (!nlGoal.trim()) return;
@@ -301,21 +341,27 @@ export function WorkflowBuilderPage() {
             {PALETTE_NODES.map((n) => (
               <button
                 key={n.type}
+                draggable={true}
+                onDragStart={(e) => onDragStart(e, n.type, n.label)}
                 onClick={() => addNode(n.type, n.label)}
                 aria-label={`Add ${n.label} node`}
-                className={`w-full text-left text-xs p-2 rounded border ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity`}
+                className={`w-full text-left text-xs p-2 rounded border ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity cursor-grab active:cursor-grabbing`}
               >{NODE_ICONS[n.type]} {n.label}</button>
             ))}
           </div>
         </div>
 
         {/* Center: Canvas */}
-        <div className="flex-1 relative">
+        <div
+          className="flex-1 relative"
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+        >
           {isEmpty && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground pointer-events-none z-10">
               <div className="text-5xl mb-3">🔧</div>
               <div className="text-lg font-medium">Build your workflow</div>
-              <div className="text-sm mt-1">Add nodes from the palette or generate from natural language</div>
+              <div className="text-sm mt-1">Drag nodes from the palette or generate from natural language</div>
             </div>
           )}
           <ReactFlow
@@ -327,6 +373,9 @@ export function WorkflowBuilderPage() {
             nodeTypes={NODE_TYPES}
             fitView snapToGrid snapGrid={SNAP_GRID}
             deleteKeyCode="Backspace"
+            connectionMode={ConnectionMode.Strict}
+            connectionLineStyle={CONNECTION_LINE_STYLE}
+            isValidConnection={isValidConnection}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} />
             <Controls />
@@ -391,6 +440,16 @@ export function WorkflowBuilderPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Public export wrapped with ReactFlowProvider ─────────────────────────────
+
+export function WorkflowBuilderPage() {
+  return (
+    <ReactFlowProvider>
+      <WorkflowBuilderInner />
+    </ReactFlowProvider>
   );
 }
 
