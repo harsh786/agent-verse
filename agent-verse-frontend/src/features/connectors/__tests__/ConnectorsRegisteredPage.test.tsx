@@ -68,6 +68,12 @@ describe('Page rendering', () => {
     expect(screen.getByRole('button', { name: /register connector/i })).toBeInTheDocument();
   });
 
+  it('shows Browse Catalog link', async () => {
+    mockFetch([EMPTY_LIST]);
+    renderPage();
+    expect(await screen.findByRole('link', { name: /browse catalog/i })).toBeInTheDocument();
+  });
+
   it('shows empty state when no connectors', async () => {
     mockFetch([EMPTY_LIST]);
     renderPage();

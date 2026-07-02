@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
-import { connectorsApi, type ConnectorResponse } from '@/lib/api/client';
+import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
@@ -614,6 +614,9 @@ export function ConnectorsRegisteredPage() {
     return EMPTY_FORM;
   });
   const [formError, setFormError] = useState('');
+  const [authFieldOverrides] = useState<CatalogAuthField[]>(() =>
+    Array.isArray(prefill?.auth_fields) ? (prefill.auth_fields as CatalogAuthField[]) : []
+  );
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
 
   const { data: connectors = [], isLoading, error } = useQuery({
@@ -701,12 +704,20 @@ export function ConnectorsRegisteredPage() {
             MCP servers connected to your tenant — {connectors.length} registered
           </p>
         </div>
-        <button
-          onClick={openCreate}
-          className="bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:opacity-90 text-sm font-medium transition-opacity"
-        >
-          + Register Connector
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/connector-catalog"
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+          >
+            Browse Catalog
+          </Link>
+          <button
+            onClick={openCreate}
+            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:opacity-90 text-sm font-medium transition-opacity"
+          >
+            + Register Connector
+          </button>
+        </div>
       </div>
 
       {/* Connector table */}
@@ -908,22 +919,52 @@ export function ConnectorsRegisteredPage() {
                 }
               />
 
-              {/* Smart Auth Fields */}
-              {form.auth_type !== 'none' && (
-                <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
-                  <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${
-                      AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
-                    }`} />
-                    {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? 'Authentication'}
-                  </h3>
-                  <SmartAuthFields
-                    authType={form.auth_type}
-                    authValues={form.auth_values}
-                    connectorName={form.name}
-                    onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
-                  />
+              {/* Auth Fields — type-aware (from catalog) or generic */}
+              {authFieldOverrides.length > 0 ? (
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold">Credentials</label>
+                  {authFieldOverrides.map((field) => {
+                    const inputId = `prefill-field-${field.key}`;
+                    return (
+                      <div key={field.key}>
+                        <label htmlFor={inputId} className="block text-xs font-medium text-muted-foreground mb-1">
+                          {field.label}
+                          {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                        </label>
+                        <input
+                          id={inputId}
+                          type={field.field_type === 'password' ? 'password' : field.field_type === 'email' ? 'email' : 'text'}
+                          placeholder={field.placeholder}
+                          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+                          onChange={(e) => {
+                            setForm((f) => ({ ...f, auth_values: { ...f.auth_values, [field.key]: e.target.value } }));
+                          }}
+                        />
+                        {field.hint && (
+                          <p className="mt-1 text-xs text-muted-foreground">{field.hint}</p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
+              ) : (
+                /* Generic Smart Auth Fields */
+                form.auth_type !== 'none' && (
+                  <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
+                    <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${
+                        AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
+                      }`} />
+                      {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? 'Authentication'}
+                    </h3>
+                    <SmartAuthFields
+                      authType={form.auth_type}
+                      authValues={form.auth_values}
+                      connectorName={form.name}
+                      onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
+                    />
+                  </div>
+                )
               )}
 
               {/* Error */}

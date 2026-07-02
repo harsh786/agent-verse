@@ -269,11 +269,28 @@ export interface ConnectorResponse {
   status?: string;
 }
 
+export interface CatalogAuthField {
+  key: string;
+  label: string;
+  placeholder: string;
+  field_type: 'text' | 'password' | 'url' | 'email';
+  required: boolean;
+  hint: string;
+}
+
 export interface CatalogEntry {
   name: string;
+  display_name: string;
   description: string;
   auth_type: string;
   default_url: string;
+  icon: string;
+  category: string;
+  auth_fields: CatalogAuthField[];
+  has_builtin: boolean;
+  builtin_server_id: string;
+  is_configured: boolean;
+  connector_type: string;
 }
 
 // ── Connector extended types ──────────────────────────────────────────────────
@@ -286,7 +303,6 @@ export interface ConnectorTestResult {
 }
 
 export const connectorsApi = {
-  catalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   getCatalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   list: () => request<ConnectorResponse[]>("/connectors"),
   register: (body: ConnectorRequest) =>
