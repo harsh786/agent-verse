@@ -1,19 +1,39 @@
-import { useState } from "react";
+/**
+ * RbacPage — Access Control Center
+ *
+ * Two tabs:
+ *   Role Assignments — stats row, search, bulk-delete, table, hierarchy tree, role summary
+ *   IP Allowlist     — CIDR form with validation, entry table, network info banner
+ */
+import { useMemo, useState } from "react";
 import type { JSX } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2, ChevronRight, Plus, Users, Shield } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronRight,
+  Key,
+  Network,
+  Plus,
+  Search,
+  Shield,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { rbacApi } from "@/lib/api/client";
-import { Skeleton } from "@/components/ui/Skeleton";
-import { EmptyState } from "@/components/ui/EmptyState";
+import type { IpAllowlistEntry, RoleAssignment } from "@/lib/api/client";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const ROLES = ["admin", "approver", "operator", "viewer"] as const;
 type Role = (typeof ROLES)[number];
+type RbacTab = "roles" | "ip";
 
-// Role hierarchy definition (parent → children)
 const ROLE_HIERARCHY: Record<Role, Role[]> = {
-  admin: ["approver", "operator", "viewer"],
+  admin: ["approver", "operator"],
   approver: ["viewer"],
   operator: ["viewer"],
   viewer: [],
@@ -26,59 +46,86 @@ const ROLE_SCOPES: Record<Role, string[]> = {
   viewer: ["goals:read", "agents:read", "analytics:read"],
 };
 
-const ROLE_COLORS: Record<Role, string> = {
-  admin: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-  approver: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
-  operator: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-  viewer: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+const ROLE_DESCRIPTIONS: Record<Role, string> = {
+  admin: "Full tenant access; manages roles and policies",
+  approver: "Reviews and approves HITL requests",
+  operator: "Creates and cancels goals, reads agents",
+  viewer: "Read-only access to goals, agents, and analytics",
 };
 
-// ── CIDR validation ───────────────────────────────────────────────────────────
+const ROLE_PILL: Record<Role, string> = {
+  admin:
+    "bg-red-100 text-red-700 border border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+  approver:
+    "bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
+  operator:
+    "bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
+  viewer:
+    "bg-green-100 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+};
+
+const ROLE_ICON_BG: Record<Role, string> = {
+  admin: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+  approver: "bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400",
+  operator: "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400",
+  viewer: "bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400",
+};
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 function isValidCidr(cidr: string): boolean {
-  const re =
-    /^(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\/(3[0-2]|[12]?\d)$/;
-  return re.test(cidr);
+  return /^(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\/(3[0-2]|[12]?\d)$/.test(
+    cidr
+  );
 }
 
-// ── Role Hierarchy Tree ───────────────────────────────────────────────────────
+function fmtDate(iso?: string): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function resolveRoleKey(roleStr: string): Role {
+  return ROLES.find((r) => roleStr.startsWith(r)) ?? "viewer";
+}
+
+// ── RoleNode — hierarchy tree item ────────────────────────────────────────────
 
 function RoleNode({ role, depth = 0 }: { role: Role; depth?: number }): JSX.Element {
-  const [expanded, setExpanded] = useState(depth === 0);
+  const [open, setOpen] = useState(depth === 0);
   const children = ROLE_HIERARCHY[role];
 
   return (
-    <div className={depth > 0 ? "ml-6 border-l border-border pl-4" : ""}>
+    <div className={depth > 0 ? "ml-5 pl-4 border-l border-border" : ""}>
       <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-2 py-2 w-full text-left hover:bg-muted/30 rounded-lg px-2 -mx-2 transition-colors"
-        aria-expanded={expanded}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 py-1.5 w-full text-left hover:bg-muted/30 rounded px-1.5 -mx-1.5 transition-colors"
+        aria-expanded={open}
       >
         {children.length > 0 ? (
           <ChevronRight
-            className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}
+            className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-150 ${
+              open ? "rotate-90" : ""
+            }`}
           />
         ) : (
-          <div className="w-3.5 h-3.5" />
+          <span className="w-3.5 h-3.5 inline-block" />
         )}
-        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${ROLE_COLORS[role]}`}>
+        <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${ROLE_PILL[role]}`}>
           {role}
         </span>
-        <div className="flex gap-1 flex-wrap">
-          {ROLE_SCOPES[role].slice(0, 3).map((s) => (
-            <span key={s} className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">
-              {s}
-            </span>
-          ))}
-          {ROLE_SCOPES[role].length > 3 && (
-            <span className="text-xs text-muted-foreground">+{ROLE_SCOPES[role].length - 3}</span>
-          )}
-        </div>
+        <span className="text-xs text-muted-foreground truncate">
+          {ROLE_SCOPES[role].slice(0, 2).join(", ")}
+          {ROLE_SCOPES[role].length > 2 ? ` +${ROLE_SCOPES[role].length - 2}` : ""}
+        </span>
       </button>
-      {expanded && children.length > 0 && (
-        <div className="mt-1">
-          {children.map((child) => (
-            <RoleNode key={child} role={child} depth={depth + 1} />
+      {open && children.length > 0 && (
+        <div className="mt-0.5 mb-1">
+          {children.map((c) => (
+            <RoleNode key={c} role={c} depth={depth + 1} />
           ))}
         </div>
       )}
@@ -86,210 +133,137 @@ function RoleNode({ role, depth = 0 }: { role: Role; depth?: number }): JSX.Elem
   );
 }
 
-// ── Grant Role Modal ──────────────────────────────────────────────────────────
+// ── GrantRoleModal ─────────────────────────────────────────────────────────────
 
 interface GrantRoleModalProps {
   open: boolean;
   onClose: () => void;
-  onGranted: () => void;
 }
 
-function GrantRoleModal({ open, onClose, onGranted }: GrantRoleModalProps): JSX.Element | null {
+function GrantRoleModal({ open, onClose }: GrantRoleModalProps): JSX.Element | null {
   const qc = useQueryClient();
   const [userId, setUserId] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [condition, setCondition] = useState("");
 
-  const grantMutation = useMutation({
+  const grant = useMutation({
     mutationFn: () =>
       rbacApi.createRole(
-        userId,
-        condition ? `${role}:${condition}` : role
+        userId.trim(),
+        condition.trim() ? `${role}:${condition.trim()}` : role
       ),
     onSuccess: () => {
-      toast({ kind: "success", message: "Role assigned" });
+      toast({ kind: "success", message: "Role assigned successfully" });
       qc.invalidateQueries({ queryKey: ["rbac-roles"] });
-      onGranted();
-      onClose();
       setUserId("");
       setCondition("");
+      setRole("viewer");
+      onClose();
     },
-    onError: (e) => toast({ kind: "error", message: `Failed: assign role. ${String(e)}` }),
+    onError: (e) => toast({ kind: "error", message: `Failed to assign role: ${String(e)}` }),
   });
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
-      <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
-        <h2 className="text-lg font-semibold">Grant Role</h2>
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="grant-role-title"
+    >
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div className="relative bg-card border border-border rounded-xl shadow-2xl max-w-md w-full p-6 space-y-5">
 
-        <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">User ID or email</label>
+        {/* Title */}
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-full bg-primary/10">
+            <Key className="h-4 w-4 text-primary" aria-hidden />
+          </div>
+          <h2 id="grant-role-title" className="text-base font-semibold">
+            Grant Role
+          </h2>
+        </div>
+
+        {/* User ID */}
+        <div className="space-y-1.5">
+          <label htmlFor="grant-user-id" className="text-xs font-medium text-muted-foreground">
+            User ID or email
+          </label>
           <input
+            id="grant-user-id"
+            autoFocus
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
-            placeholder="user@example.com"
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background"
+            placeholder="user@example.com or usr_abc123"
+            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
 
-        <div>
-          <p className="text-xs font-medium text-muted-foreground mb-2">Role</p>
+        {/* Role picker */}
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Select Role</p>
           <div className="grid grid-cols-2 gap-2">
             {ROLES.map((r) => (
               <button
                 key={r}
+                type="button"
                 onClick={() => setRole(r)}
-                className={`px-3 py-2 rounded-lg text-xs border transition-colors ${
-                  role === r ? ROLE_COLORS[r] + " border-current" : "border-border hover:bg-muted"
+                className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg text-left border-2 transition-all ${
+                  role === r
+                    ? `${ROLE_PILL[r]} shadow-sm`
+                    : "border-border hover:border-muted-foreground/40 hover:bg-muted/50"
                 }`}
               >
-                <span className="font-medium capitalize">{r}</span>
-                <p className="text-muted-foreground mt-0.5 text-left">{ROLE_SCOPES[r].slice(0, 2).join(", ")}</p>
+                <span className="text-xs font-semibold capitalize">{r}</span>
+                <span className="text-xs text-muted-foreground leading-tight">
+                  {ROLE_SCOPES[r].slice(0, 2).join(", ")}
+                </span>
               </button>
             ))}
           </div>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">
-            Condition (optional)
+        {/* Condition */}
+        <div className="space-y-1.5">
+          <label htmlFor="grant-condition" className="text-xs font-medium text-muted-foreground">
+            Condition{" "}
+            <span className="font-normal opacity-60">(optional)</span>
           </label>
           <input
+            id="grant-condition"
             value={condition}
             onChange={(e) => setCondition(e.target.value)}
             placeholder='e.g. agent_id="abc123"'
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background font-mono"
+            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background font-mono focus:outline-none focus:ring-2 focus:ring-ring"
           />
-          <p className="text-xs text-muted-foreground mt-1">
-            Limit this role to specific resources.
+          <p className="text-xs text-muted-foreground">
+            Restrict this role to specific resources.
           </p>
         </div>
 
-        <div className="flex justify-end gap-3 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border rounded-md hover:bg-muted">
+        {/* Actions */}
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm border border-border rounded-md hover:bg-muted transition-colors"
+          >
             Cancel
           </button>
           <button
-            onClick={() => grantMutation.mutate()}
-            disabled={!userId.trim() || grantMutation.isPending}
-            className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50"
+            type="button"
+            onClick={() => grant.mutate()}
+            disabled={!userId.trim() || grant.isPending}
+            className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            {grantMutation.isPending ? "Granting…" : "Grant Role"}
+            {grant.isPending ? "Granting…" : "Grant Role"}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Custom Role Creator ───────────────────────────────────────────────────────
-
-const ALL_SCOPES = [
-  "goals:read", "goals:write", "goals:cancel", "goals:batch",
-  "agents:read", "agents:write", "agents:delete",
-  "knowledge:read", "knowledge:write",
-  "governance:read", "governance:approve",
-  "analytics:read", "analytics:export",
-] as const;
-
-function CustomRoleCreator(): JSX.Element {
-  const [name, setName] = useState("");
-  const [parentRole, setParentRole] = useState<Role>("viewer");
-  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-
-  const toggleScope = (scope: string): void => {
-    setSelectedScopes((prev) =>
-      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope]
-    );
-  };
-
-  const handleCreate = (): void => {
-    if (!name.trim()) return;
-    setCreating(true);
-    // In production, POST to /tenants/me/custom-roles
-    setTimeout(() => {
-      toast({ kind: "success", message: `Custom role "${name}" created` });
-      setName("");
-      setSelectedScopes([]);
-      setCreating(false);
-      setExpanded(false);
-    }, 500);
-  };
-
-  if (!expanded) {
-    return (
-      <button
-        onClick={() => setExpanded(true)}
-        className="flex items-center gap-2 text-sm text-primary hover:underline"
-      >
-        <Plus className="h-4 w-4" /> Create custom role
-      </button>
-    );
-  }
-
-  return (
-    <div className="bg-muted/30 border border-border rounded-xl p-5 space-y-4">
-      <h3 className="text-sm font-semibold">Create Custom Role</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Role Name</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="data-analyst"
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background font-mono"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">
-            Inherits from
-          </label>
-          <select
-            value={parentRole}
-            onChange={(e) => setParentRole(e.target.value as Role)}
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background"
-          >
-            {ROLES.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div>
-        <p className="text-xs font-medium text-muted-foreground mb-2">Additional Scopes</p>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
-          {ALL_SCOPES.map((scope) => (
-            <label key={scope} className="flex items-center gap-1.5 text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={selectedScopes.includes(scope)}
-                onChange={() => toggleScope(scope)}
-                className="rounded"
-              />
-              <span className="font-mono">{scope}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={handleCreate}
-          disabled={!name.trim() || creating}
-          className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50"
-        >
-          {creating ? "Creating…" : "Create Role"}
-        </button>
-        <button
-          onClick={() => setExpanded(false)}
-          className="px-4 py-2 text-sm border border-border rounded-md hover:bg-muted"
-        >
-          Cancel
-        </button>
       </div>
     </div>
   );
@@ -299,212 +273,555 @@ function CustomRoleCreator(): JSX.Element {
 
 export function RbacPage(): JSX.Element {
   const qc = useQueryClient();
+
+  // Tab
+  const [tab, setTab] = useState<RbacTab>("roles");
+
+  // Role Assignments state
+  const [search, setSearch] = useState("");
+  const [showGrant, setShowGrant] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteRoleId, setDeleteRoleId] = useState<string | null>(null);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+
+  // IP Allowlist state
   const [cidr, setCidr] = useState("");
   const [cidrDesc, setCidrDesc] = useState("");
   const [cidrError, setCidrError] = useState("");
-  const [showGrantModal, setShowGrantModal] = useState(false);
-  const [deleteRoleTarget, setDeleteRoleTarget] = useState<string | null>(null);
+  const [deleteIpId, setDeleteIpId] = useState<string | null>(null);
 
-  const roles = useQuery({ queryKey: ["rbac-roles"], queryFn: () => rbacApi.listRoles() });
-  const ips = useQuery({ queryKey: ["rbac-ip"], queryFn: () => rbacApi.listIpAllowlist() });
+  // Queries
+  const rolesQ = useQuery({
+    queryKey: ["rbac-roles"],
+    queryFn: () => rbacApi.listRoles(),
+  });
+  const ipsQ = useQuery({
+    queryKey: ["rbac-ip"],
+    queryFn: () => rbacApi.listIpAllowlist(),
+  });
 
+  // Mutations — role
   const deleteRole = useMutation({
     mutationFn: (id: string) => rbacApi.deleteRole(id),
     onSuccess: () => {
-      toast({ kind: "success", message: "Role assignment deleted" });
+      toast({ kind: "success", message: "Role assignment removed" });
       qc.invalidateQueries({ queryKey: ["rbac-roles"] });
-      setDeleteRoleTarget(null);
+      setDeleteRoleId(null);
+      setSelectedIds((prev) => { const n = new Set(prev); n.delete(deleteRoleId!); return n; });
     },
-    onError: (e) => toast({ kind: "error", message: `Failed: delete role. ${String(e)}` }),
+    onError: (e) => toast({ kind: "error", message: `Failed: ${String(e)}` }),
   });
 
+  const bulkDelete = useMutation({
+    mutationFn: (ids: string[]) => Promise.all(ids.map((id) => rbacApi.deleteRole(id))),
+    onSuccess: (_, ids) => {
+      toast({ kind: "success", message: `${ids.length} assignment${ids.length !== 1 ? "s" : ""} removed` });
+      qc.invalidateQueries({ queryKey: ["rbac-roles"] });
+      setSelectedIds(new Set());
+      setShowBulkConfirm(false);
+    },
+    onError: (e) => toast({ kind: "error", message: `Bulk delete failed: ${String(e)}` }),
+  });
+
+  // Mutations — IP
   const addIp = useMutation({
-    mutationFn: () => rbacApi.addIpAllowlist(cidr, cidrDesc),
+    mutationFn: () => rbacApi.addIpAllowlist(cidr.trim(), cidrDesc.trim()),
     onSuccess: () => {
-      toast({ kind: "success", message: "CIDR added" });
+      toast({ kind: "success", message: "CIDR added to allowlist" });
       setCidr("");
       setCidrDesc("");
       setCidrError("");
       qc.invalidateQueries({ queryKey: ["rbac-ip"] });
     },
-    onError: (e) => toast({ kind: "error", message: `Failed: add CIDR. ${String(e)}` }),
+    onError: (e) => toast({ kind: "error", message: `Failed to add CIDR: ${String(e)}` }),
   });
 
   const deleteIp = useMutation({
     mutationFn: (id: string) => rbacApi.deleteIpAllowlist(id),
     onSuccess: () => {
-      toast({ kind: "success", message: "CIDR deleted" });
+      toast({ kind: "success", message: "CIDR entry removed" });
       qc.invalidateQueries({ queryKey: ["rbac-ip"] });
+      setDeleteIpId(null);
     },
-    onError: (e) => toast({ kind: "error", message: `Failed: delete CIDR. ${String(e)}` }),
+    onError: (e) => toast({ kind: "error", message: `Failed: ${String(e)}` }),
   });
 
+  // Derived — stable references (avoid ??\u00a0[] creating a new array each render)
+  const allRoles = useMemo<RoleAssignment[]>(() => rolesQ.data ?? [], [rolesQ.data]);
+  const allIps = useMemo<IpAllowlistEntry[]>(() => ipsQ.data ?? [], [ipsQ.data]);
+
+  const filteredRoles = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return allRoles;
+    return allRoles.filter(
+      (r) => r.user_id.toLowerCase().includes(q) || r.role.toLowerCase().includes(q)
+    );
+  }, [allRoles, search]);
+
+  const roleCounts = useMemo<Record<Role, number>>(() => {
+    const c = { admin: 0, approver: 0, operator: 0, viewer: 0 } as Record<Role, number>;
+    for (const r of allRoles) c[resolveRoleKey(r.role)]++;
+    return c;
+  }, [allRoles]);
+
+  const allSelected =
+    filteredRoles.length > 0 && selectedIds.size === filteredRoles.length;
+  const someSelected = selectedIds.size > 0 && !allSelected;
+
+  // Handlers
   const handleAddIp = (): void => {
-    if (!isValidCidr(cidr)) {
-      setCidrError("Invalid CIDR format (e.g. 10.0.0.0/8)");
+    if (!isValidCidr(cidr.trim())) {
+      setCidrError("Invalid CIDR — use IPv4 notation, e.g. 10.0.0.0/8");
       return;
     }
     setCidrError("");
     addIp.mutate();
   };
 
+  const toggleSelect = (id: string): void =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const toggleSelectAll = (): void =>
+    setSelectedIds(
+      allSelected ? new Set() : new Set(filteredRoles.map((r) => r.id))
+    );
+
+  // Tab styles
+  const TAB_BASE = "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors";
+  const TAB_ON = `${TAB_BASE} border-primary text-foreground`;
+  const TAB_OFF = `${TAB_BASE} border-transparent text-muted-foreground hover:text-foreground`;
+
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold">Access Control</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Manage team roles, custom permissions, and network allowlists.
-        </p>
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+
+      {/* ── Page header ──────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Access Control</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage team roles, permissions, and network allowlists.
+          </p>
+        </div>
+        {tab === "roles" && (
+          <button
+            data-testid="grant-role-btn"
+            onClick={() => setShowGrant(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity"
+          >
+            <Plus className="h-4 w-4" /> Grant Role
+          </button>
+        )}
       </div>
 
-      {/* Role hierarchy tree */}
-      <section className="space-y-3">
-        <h2 className="font-semibold flex items-center gap-2">
-          <Shield className="h-4 w-4" /> Role Hierarchy
-        </h2>
-        <div className="bg-card border border-border rounded-xl p-5">
-          {ROLES.filter((r) => r === "admin").map((r) => (
-            <RoleNode key={r} role={r} />
-          ))}
-        </div>
-      </section>
-
-      {/* Team roles */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold flex items-center gap-2">
-            <Users className="h-4 w-4" /> Team Role Assignments
-          </h2>
+      {/* ── Tabs ─────────────────────────────────────────────────────────── */}
+      <div className="border-b border-border">
+        <nav className="flex gap-1" aria-label="RBAC sections">
           <button
-            onClick={() => setShowGrantModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-lg hover:opacity-90"
+            data-testid="tab-roles"
+            onClick={() => setTab("roles")}
+            className={tab === "roles" ? TAB_ON : TAB_OFF}
           >
-            <Plus className="h-3.5 w-3.5" /> Grant Role
+            <Users className="h-3.5 w-3.5" />
+            Role Assignments
+            {!rolesQ.isLoading && allRoles.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-muted text-muted-foreground font-mono">
+                {allRoles.length}
+              </span>
+            )}
           </button>
-        </div>
-
-        {roles.isLoading ? (
-          <Skeleton className="h-10 w-full" />
-        ) : (roles.data ?? []).length === 0 ? (
-          <EmptyState title="No role assignments" />
-        ) : (
-          <div className="space-y-2">
-            {(roles.data ?? []).map((r) => {
-              const roleKey = ROLES.find((ro) => r.role.startsWith(ro));
-              return (
-                <div
-                  key={r.id}
-                  className="flex items-center justify-between bg-card border border-border rounded-lg px-4 py-3 text-sm"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="font-medium">{r.user_id}</span>
-                    {roleKey && (
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ROLE_COLORS[roleKey]}`}>
-                        {r.role}
-                      </span>
-                    )}
-                    {ROLE_SCOPES[roleKey ?? "viewer"]?.slice(0, 2).map((s) => (
-                      <span key={s} className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono hidden md:inline">
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                  <button
-                    onClick={() => setDeleteRoleTarget(r.id)}
-                    aria-label={`Remove role ${r.id}`}
-                    className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <CustomRoleCreator />
-      </section>
-
-      {/* IP allowlist */}
-      <section className="space-y-3">
-        <h2 className="font-semibold">IP Allowlist</h2>
-        <div className="flex flex-wrap gap-3 items-end bg-card border border-border rounded-xl p-4">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            CIDR
-            <input
-              aria-label="CIDR"
-              value={cidr}
-              onChange={(e) => { setCidr(e.target.value); setCidrError(""); }}
-              placeholder="10.0.0.0/8"
-              className={`px-2 py-1.5 border rounded-md bg-background text-sm font-mono ${
-                cidrError ? "border-red-400" : "border-input"
-              }`}
-            />
-            {cidrError && <span className="text-red-500 text-xs">{cidrError}</span>}
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground flex-1 min-w-[12rem]">
-            Description
-            <input
-              value={cidrDesc}
-              onChange={(e) => setCidrDesc(e.target.value)}
-              className="px-2 py-1.5 border border-input rounded-md bg-background text-sm"
-            />
-          </label>
           <button
-            onClick={handleAddIp}
-            disabled={!cidr || addIp.isPending}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-50"
+            data-testid="tab-ip"
+            onClick={() => setTab("ip")}
+            className={tab === "ip" ? TAB_ON : TAB_OFF}
           >
-            Add CIDR
+            <Network className="h-3.5 w-3.5" />
+            IP Allowlist
+            {!ipsQ.isLoading && allIps.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-muted text-muted-foreground font-mono">
+                {allIps.length}
+              </span>
+            )}
           </button>
-        </div>
-        {ips.isLoading ? (
-          <Skeleton className="h-10 w-full" />
-        ) : (ips.data ?? []).length === 0 ? (
-          <EmptyState
-            title="No allowlist entries"
-            description="All IPs are allowed until an entry is added."
-          />
-        ) : (
-          <div className="space-y-2">
-            {(ips.data ?? []).map((e) => (
+        </nav>
+      </div>
+
+      {/* ════════════════════════════════════════════════════════════════════
+          Roles Tab
+      ════════════════════════════════════════════════════════════════════ */}
+      {tab === "roles" && (
+        <div className="space-y-5">
+
+          {/* Stats row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {ROLES.map((r) => (
               <div
-                key={e.id}
-                className="flex items-center justify-between bg-card border border-border rounded-lg px-4 py-2.5 text-sm"
+                key={r}
+                className="bg-card border border-border rounded-xl p-4 flex items-center gap-3"
               >
-                <span>
-                  <span className="font-mono">{e.cidr}</span>
-                  {e.description ? ` — ${e.description}` : ""}
-                </span>
-                <button
-                  onClick={() => deleteIp.mutate(e.id)}
-                  aria-label={`Remove CIDR ${e.id}`}
-                  className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                </button>
+                <div className={`p-2.5 rounded-full shrink-0 ${ROLE_ICON_BG[r]}`}>
+                  <Shield className="h-3.5 w-3.5" aria-hidden />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground capitalize leading-none mb-1.5">
+                    {r}
+                  </p>
+                  {rolesQ.isLoading ? (
+                    <Skeleton className="h-5 w-8" />
+                  ) : (
+                    <p className="text-xl font-bold leading-none tabular-nums">
+                      {roleCounts[r]}
+                    </p>
+                  )}
+                </div>
               </div>
             ))}
           </div>
-        )}
-      </section>
 
-      {/* Modals */}
-      <GrantRoleModal
-        open={showGrantModal}
-        onClose={() => setShowGrantModal(false)}
-        onGranted={() => qc.invalidateQueries({ queryKey: ["rbac-roles"] })}
-      />
+          {/* Search + bulk toolbar */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-[180px] max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+              <input
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setSelectedIds(new Set()); }}
+                placeholder="Search by user or role…"
+                className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setShowBulkConfirm(true)}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 border border-red-200 bg-red-50 rounded-lg hover:bg-red-100 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/40 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove {selectedIds.size} selected
+              </button>
+            )}
+          </div>
+
+          {/* Roles table */}
+          {rolesQ.isLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : filteredRoles.length === 0 ? (
+            <EmptyState
+              title={search ? "No matching assignments" : "No role assignments yet"}
+              description={
+                search
+                  ? "Try a different search term."
+                  : "Grant a role to give a team member access."
+              }
+              action={
+                !search ? (
+                  <button
+                    onClick={() => setShowGrant(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Grant Role
+                  </button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <div
+              data-testid="roles-table"
+              className="rounded-xl border border-border overflow-hidden"
+            >
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50 border-b border-border text-xs text-muted-foreground">
+                    <th className="w-10 px-3 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                        onChange={toggleSelectAll}
+                        className="rounded border-input cursor-pointer"
+                        aria-label="Select all"
+                      />
+                    </th>
+                    <th className="px-4 py-3 text-left font-medium">User</th>
+                    <th className="px-4 py-3 text-left font-medium">Role</th>
+                    <th className="px-4 py-3 text-left font-medium hidden md:table-cell">
+                      Created
+                    </th>
+                    <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredRoles.map((r) => {
+                    const roleKey = resolveRoleKey(r.role);
+                    const checked = selectedIds.has(r.id);
+                    return (
+                      <tr
+                        key={r.id}
+                        className={`group transition-colors hover:bg-muted/30 ${
+                          checked ? "bg-primary/5 dark:bg-primary/10" : ""
+                        }`}
+                      >
+                        <td className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelect(r.id)}
+                            className="rounded border-input cursor-pointer"
+                            aria-label={`Select ${r.user_id}`}
+                          />
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs">{r.user_id}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold ${ROLE_PILL[roleKey]}`}
+                          >
+                            {r.role}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground hidden md:table-cell">
+                          {fmtDate(r.created_at)}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            data-testid={`delete-role-${r.id}`}
+                            onClick={() => setDeleteRoleId(r.id)}
+                            aria-label={`Remove role for ${r.user_id}`}
+                            className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Bottom cards: hierarchy tree + role summary */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+            {/* Hierarchy tree */}
+            <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-muted-foreground" aria-hidden />
+                <h3 className="text-sm font-semibold">Role Hierarchy</h3>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Higher roles inherit permissions from roles beneath them.
+              </p>
+              <RoleNode role="admin" />
+            </div>
+
+            {/* Role summary */}
+            <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+                <h3 className="text-sm font-semibold">Role Summary</h3>
+              </div>
+              <div className="space-y-2.5">
+                {ROLES.map((r) => (
+                  <div key={r} className="flex items-start gap-2.5">
+                    <span
+                      className={`mt-0.5 px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${ROLE_PILL[r]}`}
+                    >
+                      {r}
+                    </span>
+                    <span className="text-xs text-muted-foreground leading-relaxed">
+                      {ROLE_DESCRIPTIONS[r]}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════
+          IP Allowlist Tab
+      ════════════════════════════════════════════════════════════════════ */}
+      {tab === "ip" && (
+        <div className="space-y-5">
+
+          {/* Info banner */}
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+            <Network className="h-4 w-4 mt-0.5 shrink-0" aria-hidden />
+            <div>
+              <p className="text-sm font-medium">Network Allowlist</p>
+              <p className="text-xs mt-0.5 opacity-80">
+                When entries are present, only traffic originating from listed CIDRs is
+                permitted. Remove all entries to allow any IP.
+              </p>
+            </div>
+          </div>
+
+          {/* Add CIDR form */}
+          <div
+            data-testid="ip-form"
+            className="bg-card border border-border rounded-xl p-5 space-y-4"
+          >
+            <h3 className="text-sm font-semibold">Add IP Range</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] gap-3 items-end">
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="cidr-input"
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  CIDR Block
+                </label>
+                <input
+                  id="cidr-input"
+                  value={cidr}
+                  onChange={(e) => { setCidr(e.target.value); setCidrError(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddIp()}
+                  placeholder="10.0.0.0/8"
+                  className={`px-3 py-2 border rounded-lg bg-background text-sm font-mono w-full sm:w-44 focus:outline-none focus:ring-2 focus:ring-ring ${
+                    cidrError
+                      ? "border-red-400 focus:ring-red-300"
+                      : "border-input"
+                  }`}
+                />
+                {cidrError && (
+                  <p className="text-xs text-red-500">{cidrError}</p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="cidr-desc"
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  Description
+                </label>
+                <input
+                  id="cidr-desc"
+                  value={cidrDesc}
+                  onChange={(e) => setCidrDesc(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddIp()}
+                  placeholder="Office network, VPN, CI cluster…"
+                  className="w-full px-3 py-2 border border-input rounded-lg bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <button
+                data-testid="add-cidr-btn"
+                onClick={handleAddIp}
+                disabled={!cidr.trim() || addIp.isPending}
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity whitespace-nowrap self-end"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {addIp.isPending ? "Adding…" : "Add CIDR"}
+              </button>
+            </div>
+          </div>
+
+          {/* IP list */}
+          {ipsQ.isLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : allIps.length === 0 ? (
+            <EmptyState
+              title="No allowlist entries"
+              description="All IPs are allowed until the first entry is added."
+            />
+          ) : (
+            <div
+              data-testid="ip-list"
+              className="rounded-xl border border-border overflow-hidden"
+            >
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50 border-b border-border text-xs text-muted-foreground">
+                    <th className="px-4 py-3 text-left font-medium">CIDR Block</th>
+                    <th className="px-4 py-3 text-left font-medium">Description</th>
+                    <th className="px-4 py-3 text-left font-medium hidden md:table-cell">
+                      Added
+                    </th>
+                    <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {allIps.map((entry) => (
+                    <tr
+                      key={entry.id}
+                      className="group hover:bg-muted/30 transition-colors"
+                    >
+                      <td className="px-4 py-3">
+                        <span className="font-mono text-xs bg-muted px-2 py-1 rounded">
+                          {entry.cidr}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {entry.description ? (
+                          entry.description
+                        ) : (
+                          <span className="italic opacity-40">No description</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground hidden md:table-cell">
+                        {fmtDate(entry.created_at)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          data-testid={`delete-ip-${entry.id}`}
+                          onClick={() => setDeleteIpId(entry.id)}
+                          aria-label={`Remove CIDR ${entry.cidr}`}
+                          className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Modals ───────────────────────────────────────────────────────── */}
+      <GrantRoleModal open={showGrant} onClose={() => setShowGrant(false)} />
 
       <ConfirmModal
-        open={!!deleteRoleTarget}
+        open={!!deleteRoleId}
         title="Remove role assignment?"
-        description="The user will lose this role's permissions immediately."
+        description="The user will immediately lose this role's permissions."
         confirmLabel="Remove"
         variant="danger"
         isLoading={deleteRole.isPending}
-        onConfirm={() => deleteRoleTarget && deleteRole.mutate(deleteRoleTarget)}
-        onCancel={() => setDeleteRoleTarget(null)}
+        onConfirm={() => deleteRoleId && deleteRole.mutate(deleteRoleId)}
+        onCancel={() => setDeleteRoleId(null)}
+      />
+
+      <ConfirmModal
+        open={showBulkConfirm}
+        title={`Remove ${selectedIds.size} assignment${selectedIds.size !== 1 ? "s" : ""}?`}
+        description="All selected users will immediately lose their role permissions."
+        confirmLabel={`Remove ${selectedIds.size}`}
+        variant="danger"
+        isLoading={bulkDelete.isPending}
+        onConfirm={() => bulkDelete.mutate([...selectedIds])}
+        onCancel={() => setShowBulkConfirm(false)}
+      />
+
+      <ConfirmModal
+        open={!!deleteIpId}
+        title="Remove CIDR entry?"
+        description="Traffic from this IP range may be blocked depending on remaining entries."
+        confirmLabel="Remove"
+        variant="danger"
+        isLoading={deleteIp.isPending}
+        onConfirm={() => deleteIpId && deleteIp.mutate(deleteIpId)}
+        onCancel={() => setDeleteIpId(null)}
       />
     </div>
   );
