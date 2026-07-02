@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Wrench, Clock, AlertTriangle } from "lucide-react";
+import { normalizeAdaptiveResult } from '@/features/goals/adaptiveResult';
+import { AdaptiveResultPanel } from '@/features/goals/components/AdaptiveResultPanel';
 
 interface ToolCallEvent {
   type: string;
@@ -39,14 +41,33 @@ function formatJson(value: unknown): string {
   }
 }
 
+function didToolCallSucceed(event: ToolCallEvent): boolean {
+  return event.success !== false && event.type !== "tool_call_failed";
+}
+
 function ToolDetail({ event }: { event: ToolCallEvent }) {
+  const toolName = String(event.tool_name || "Unknown Tool");
+  const succeeded = didToolCallSucceed(event);
+  const adaptiveResultInput = event.output ?? { error: event.error };
+  const adaptiveResult = event.output === undefined && event.error == null
+    ? undefined
+    : normalizeAdaptiveResult(adaptiveResultInput, {
+      toolName: event.tool_name,
+      serverId: event.server_id,
+      success: succeeded,
+      error: event.error,
+    });
+  const outputResult = adaptiveResult?.status === "failed" && event.tool_name
+    ? { ...adaptiveResult, title: `${event.tool_name} failed` }
+    : adaptiveResult;
+
   return (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold text-base">
-            {String(event.tool_name || "Unknown Tool")}
+            {toolName}
           </h3>
           {event.server_id && (
             <p className="text-xs text-muted-foreground font-mono mt-0.5">
@@ -62,12 +83,12 @@ function ToolDetail({ event }: { event: ToolCallEvent }) {
           )}
           <span
             className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-              event.success !== false
+              succeeded
                 ? "bg-green-100 text-green-700"
                 : "bg-red-100 text-red-700"
             }`}
           >
-            {event.success !== false ? "success" : "failed"}
+            {succeeded ? "success" : "failed"}
           </span>
         </div>
       </div>
@@ -96,14 +117,15 @@ function ToolDetail({ event }: { event: ToolCallEvent }) {
       </div>
 
       {/* Output */}
-      {event.output !== undefined && (
+      {outputResult && (
         <div>
           <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">
             Output
           </h4>
-          <pre className="bg-muted rounded-lg px-3 py-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono max-h-48">
-            {formatJson(event.output)}
-          </pre>
+          <AdaptiveResultPanel
+            compact
+            result={outputResult}
+          />
         </div>
       )}
 
@@ -143,7 +165,8 @@ export function ToolCallInspector({ toolEvents }: ToolCallInspectorProps) {
         {/* Left panel: tool call list */}
         <div className="w-64 flex-shrink-0 overflow-y-auto">
           {toolEvents.map((event, i) => {
-            const succeeded = event.success !== false;
+            const succeeded = didToolCallSucceed(event);
+            const statusText = succeeded ? "success" : "failed";
             return (
               <button
                 key={i}
@@ -154,10 +177,20 @@ export function ToolCallInspector({ toolEvents }: ToolCallInspectorProps) {
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span
+                    aria-hidden="true"
                     className={`flex-shrink-0 w-2 h-2 rounded-full ${succeeded ? "bg-green-500" : "bg-red-500"}`}
                   />
                   <span className="truncate font-medium text-xs">
                     {String(event.tool_name || "unknown")}
+                  </span>
+                  <span
+                    className={`ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                      succeeded
+                        ? "bg-green-100 text-green-700"
+                        : "bg-red-100 text-red-700"
+                    }`}
+                  >
+                    {statusText}
                   </span>
                 </div>
                 {event.server_id && (
