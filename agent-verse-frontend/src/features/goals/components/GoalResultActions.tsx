@@ -1,5 +1,6 @@
 import { Copy, Download, FileJson, FileText, Printer, RotateCcw } from 'lucide-react';
 import { artifactToCsv, artifactToMarkdown, type ResultArtifact } from '../resultArtifact';
+import { openPrintView } from './GoalPrintView';
 
 function downloadFile(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
@@ -58,9 +59,11 @@ const actionClass =
 export function GoalResultActions({
   artifact,
   onRerun,
+  goal = '',
 }: {
   artifact: ResultArtifact;
   onRerun: () => void;
+  goal?: string;
 }) {
   const hasTable = artifact.tables.length > 0;
   const canDownloadJson = artifact.downloads.includes('json');
@@ -109,7 +112,7 @@ export function GoalResultActions({
           Download Markdown
         </button>
       )}
-      <button type="button" onClick={() => window.print()} className={actionClass}>
+      <button type="button" onClick={() => openPrintView(artifact, goal)} className={actionClass}>
         <Printer className="h-4 w-4" aria-hidden="true" />
         Print / PDF
       </button>

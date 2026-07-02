@@ -105,7 +105,7 @@ export function GoalOutcomeHero({
         </div>
 
         <div className="rounded-2xl bg-background/95 p-3 text-foreground shadow-2xl ring-1 ring-white/10 backdrop-blur lg:max-w-sm">
-          <GoalResultActions artifact={artifact} onRerun={onRerun} />
+          <GoalResultActions artifact={artifact} onRerun={onRerun} goal={goal} />
         </div>
       </div>
     </section>
