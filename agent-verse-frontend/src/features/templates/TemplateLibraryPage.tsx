@@ -8,7 +8,103 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
 import { Plus, BookOpen, Search, X } from "lucide-react";
 
-const DOMAINS = ["general", "devops", "engineering", "data", "marketing", "sales", "support"];
+const DOMAINS = ["general", "devops", "engineering", "data", "marketing", "sales", "support", "legal", "finance"];
+
+type TemplateForm = { name: string; description: string; goal_text: string; domain: string };
+const EMPTY_FORM: TemplateForm = { name: "", description: "", goal_text: "", domain: "general" };
+
+function TemplateFormModal({
+  title,
+  initial,
+  onSubmit,
+  onClose,
+  isPending,
+}: {
+  title: string;
+  initial: TemplateForm;
+  onSubmit: (data: TemplateForm) => void;
+  onClose: () => void;
+  isPending: boolean;
+}) {
+  const [form, setForm] = useState<TemplateForm>(initial);
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
+      <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-lg w-full p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold">{title}</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="tpl-name">Name</label>
+            <input
+              id="tpl-name"
+              value={form.name}
+              onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              placeholder="Deploy microservice…"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="tpl-desc">Description</label>
+            <input
+              id="tpl-desc"
+              value={form.description}
+              onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              placeholder="Optional description"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="tpl-goal">
+              Goal template{" "}
+              <span className="text-muted-foreground font-normal">(use {`{{parameter}}`} for placeholders)</span>
+            </label>
+            <textarea
+              id="tpl-goal"
+              rows={3}
+              value={form.goal_text}
+              onChange={(e) => setForm((p) => ({ ...p, goal_text: e.target.value }))}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+              placeholder="Deploy {{service}} to {{environment}} with version {{tag}}"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="tpl-domain">Domain</label>
+            <select
+              id="tpl-domain"
+              value={form.domain}
+              onChange={(e) => setForm((p) => ({ ...p, domain: e.target.value }))}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              {DOMAINS.map((d) => (
+                <option key={d} value={d} className="capitalize">{d}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={() => onSubmit(form)}
+            disabled={!form.name || !form.goal_text || isPending}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {isPending ? "Saving…" : title}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function TemplateLibraryPage() {
   const qc = useQueryClient();
@@ -16,7 +112,7 @@ export function TemplateLibraryPage() {
   const [search, setSearch] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<GoalTemplate | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [newTemplate, setNewTemplate] = useState({ name: "", description: "", goal_text: "", domain: "general" });
+  const [editTemplate, setEditTemplate] = useState<GoalTemplate | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const { data: templates = [], isLoading } = useQuery({
@@ -26,12 +122,22 @@ export function TemplateLibraryPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => templatesApi.create(newTemplate),
+    mutationFn: (data: TemplateForm) => templatesApi.create(data),
     onSuccess: () => {
       toast({ kind: "success", message: "Template created!" });
       qc.invalidateQueries({ queryKey: ["templates"] });
       setCreateOpen(false);
-      setNewTemplate({ name: "", description: "", goal_text: "", domain: "general" });
+    },
+    onError: (e) => toast({ kind: "error", message: String(e) }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (data: TemplateForm) =>
+      templatesApi.update(editTemplate!.id, data),
+    onSuccess: () => {
+      toast({ kind: "success", message: "Template updated!" });
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      setEditTemplate(null);
     },
     onError: (e) => toast({ kind: "error", message: String(e) }),
   });
@@ -49,7 +155,11 @@ export function TemplateLibraryPage() {
   const filtered = templates.filter((t) => {
     if (search) {
       const q = search.toLowerCase();
-      return t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q) || t.goal_text.toLowerCase().includes(q);
+      return (
+        t.name.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.goal_text.toLowerCase().includes(q)
+      );
     }
     return true;
   });
@@ -122,7 +232,13 @@ export function TemplateLibraryPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((t) => (
-            <TemplateCard key={t.id} template={t} onUse={setSelectedTemplate} />
+            <TemplateCard
+              key={t.id}
+              template={t}
+              onUse={setSelectedTemplate}
+              onEdit={setEditTemplate}
+              onDelete={setDeleteId}
+            />
           ))}
         </div>
       )}
@@ -134,51 +250,29 @@ export function TemplateLibraryPage() {
 
       {/* Create modal */}
       {createOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setCreateOpen(false)} aria-hidden="true" />
-          <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-lg w-full p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold">New Template</h2>
-              <button onClick={() => setCreateOpen(false)} className="text-muted-foreground hover:text-foreground" aria-label="Close">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium mb-1" htmlFor="tpl-name">Name</label>
-                <input id="tpl-name" value={newTemplate.name} onChange={(e) => setNewTemplate((p) => ({ ...p, name: e.target.value }))}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary" placeholder="Deploy microservice…" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1" htmlFor="tpl-desc">Description</label>
-                <input id="tpl-desc" value={newTemplate.description} onChange={(e) => setNewTemplate((p) => ({ ...p, description: e.target.value }))}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary" placeholder="Optional description" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1" htmlFor="tpl-goal">
-                  Goal template <span className="text-muted-foreground font-normal">(use {`{{parameter}}`} for placeholders)</span>
-                </label>
-                <textarea id="tpl-goal" rows={3} value={newTemplate.goal_text} onChange={(e) => setNewTemplate((p) => ({ ...p, goal_text: e.target.value }))}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
-                  placeholder="Deploy {{service}} to {{environment}} with version {{tag}}" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1" htmlFor="tpl-domain">Domain</label>
-                <select id="tpl-domain" value={newTemplate.domain} onChange={(e) => setNewTemplate((p) => ({ ...p, domain: e.target.value }))}
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary">
-                  {DOMAINS.map((d) => <option key={d} value={d} className="capitalize">{d}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => createMutation.mutate()} disabled={!newTemplate.name || !newTemplate.goal_text || createMutation.isPending}
-                className="flex-1 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">
-                {createMutation.isPending ? "Creating…" : "Create Template"}
-              </button>
-              <button onClick={() => setCreateOpen(false)} className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50 transition-colors">Cancel</button>
-            </div>
-          </div>
-        </div>
+        <TemplateFormModal
+          title="New Template"
+          initial={EMPTY_FORM}
+          onSubmit={(data) => createMutation.mutate(data)}
+          onClose={() => setCreateOpen(false)}
+          isPending={createMutation.isPending}
+        />
+      )}
+
+      {/* Edit modal */}
+      {editTemplate && (
+        <TemplateFormModal
+          title="Edit Template"
+          initial={{
+            name: editTemplate.name,
+            description: editTemplate.description,
+            goal_text: editTemplate.goal_text,
+            domain: editTemplate.domain,
+          }}
+          onSubmit={(data) => updateMutation.mutate(data)}
+          onClose={() => setEditTemplate(null)}
+          isPending={updateMutation.isPending}
+        />
       )}
 
       <ConfirmModal
