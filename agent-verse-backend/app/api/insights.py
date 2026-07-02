@@ -165,50 +165,83 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
 
     for evt in events:
         evt_type = evt.get("type", "")
-        payload = evt.get("payload", {}) or {}
+        # Support both payload-wrapped events (from DB) and flat events (from SSE)
+        payload = evt.get("payload") or {}
 
-        if evt_type in ("step_start", "step_complete", "plan_ready"):
-            step_counter += 1
-            node_id = f"step_{step_counter}"
-            desc = payload.get("description") or payload.get("step_description") or f"Step {step_counter}"
-            nodes.append({
-                "id": node_id,
-                "type": "step",
-                "label": desc[:60],
-                "data": {
-                    "status": payload.get("status", "unknown"),
-                    "description": desc,
-                },
-            })
-            edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
-            prev_id = node_id
+        # ── Plan ready: create a step node per planned step ──────────────────
+        if evt_type == "plan_ready":
+            steps = evt.get("steps") or payload.get("steps") or []
+            for step_label in steps[:20]:
+                step_counter += 1
+                node_id = f"plan_step_{step_counter}"
+                nodes.append({
+                    "id": node_id,
+                    "type": "step",
+                    "label": str(step_label)[:60],
+                    "data": {"status": "planned", "description": str(step_label)},
+                })
+                edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
+                prev_id = node_id
 
-        elif evt_type in ("tool_call", "tool_result"):
-            tool_name = payload.get("tool_name") or payload.get("name") or "tool"
+        # ── Individual step events ────────────────────────────────────────────
+        elif evt_type in ("step_start", "step_started"):
+            step_label = (
+                evt.get("step") or payload.get("step") or payload.get("description")
+                or f"Step {step_counter + 1}"
+            )
+            dedup_key = f"step__{str(step_label)[:40]}"
+            if dedup_key not in node_ids:
+                step_counter += 1
+                node_id = f"step_{step_counter}"
+                node_ids.add(dedup_key)
+                nodes.append({
+                    "id": node_id,
+                    "type": "step",
+                    "label": str(step_label)[:60],
+                    "data": {"status": "running", "description": str(step_label)},
+                })
+                edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
+                prev_id = node_id
+
+        # ── Tool call events (actual event type is tool_call_complete) ────────
+        elif evt_type in ("tool_call", "tool_result", "tool_call_complete", "tool_call_failed"):
+            tool_name = (
+                evt.get("tool_name") or evt.get("tool")
+                or payload.get("tool_name") or payload.get("name")
+                or "tool"
+            )
             tool_counter[tool_name] = tool_counter.get(tool_name, 0) + 1
-            node_id = f"tool_{tool_name}_{tool_counter[tool_name]}"
+            node_id = f"tool_{tool_name.replace('.', '_').replace('/', '_')}_{tool_counter[tool_name]}"
             if node_id not in node_ids:
+                success = evt.get("success", evt_type != "tool_call_failed")
                 nodes.append({
                     "id": node_id,
                     "type": "tool",
-                    "label": tool_name,
+                    "label": str(tool_name)[:40],
                     "data": {
                         "tool_name": tool_name,
-                        "input": payload.get("arguments") or payload.get("input"),
-                        "output": payload.get("result") or payload.get("output"),
-                        "status": "success" if evt_type == "tool_result" else "pending",
+                        "server_id": evt.get("server_id"),
+                        "status": "success" if success else "failed",
                     },
                 })
                 node_ids.add(node_id)
                 edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
+                prev_id = node_id
 
-        elif evt_type in ("goal_complete", "goal_failed", "goal_cancelled"):
+        # ── Terminal events ───────────────────────────────────────────────────
+        elif evt_type in ("goal_complete", "goal_failed", "goal_cancelled",
+                          "worker_complete", "worker_failed"):
             end_id = "end"
             if end_id not in node_ids:
+                label = (
+                    "Complete" if evt_type in ("goal_complete", "worker_complete")
+                    else "Failed" if evt_type in ("goal_failed", "worker_failed")
+                    else "Cancelled"
+                )
                 nodes.append({
                     "id": end_id,
-                    "type": "end",
-                    "label": evt_type.replace("goal_", "").title(),
+                    "type": "end" if label != "Failed" else "failed",
+                    "label": label,
                     "data": {"status": evt_type},
                 })
                 node_ids.add(end_id)
