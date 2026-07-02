@@ -18,7 +18,12 @@ async def health(request: Request) -> JSONResponse:
     """Readiness check across all registered dependencies (503 if any are down)."""
     registry: HealthRegistry = request.app.state.health
     healthy, checks = await registry.run()
-    payload = {"status": "healthy" if healthy else "unhealthy", "checks": checks}
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
+        "checks": checks,
+        # Alias for backward-compat: old frontend code reads `health.dependencies`
+        "dependencies": checks,
+    }
     return JSONResponse(payload, status_code=200 if healthy else 503)
 
 

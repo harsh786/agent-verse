@@ -655,28 +655,107 @@ export const schedulesApi = {
 
 // ── Analytics ────────────────────────────────────────────────────────────────
 
-export interface CostMetrics {
+/** Analytics goals response — matches /analytics/goals endpoint.
+ *  Distinct from GoalMetrics (governance type) which matches /goals/metrics.
+ */
+export interface AnalyticsGoalMetrics {
+  period_days: number;
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  success_rate: number;
+  avg_duration_s: number;
+  avg_cost_usd: number;
   total_cost_usd: number;
+  by_status: Record<string, number>;
+}
+
+export interface AnalyticsToolMetrics {
+  period_days: number;
+  tools: Array<{
+    name: string;
+    tool_name: string;
+    total: number;
+    call_count: number;
+    failure_count: number;
+    failure_rate: number;
+    success: number;
+    failed: number;
+    success_rate: number;
+    avg_latency_ms: number;
+  }>;
+}
+
+export interface AnalyticsAgentMetrics {
+  period_days: number;
+  agents: Array<{
+    agent_id: string;
+    goal_count: number;
+    success_rate: number;
+    avg_eval_score: number;
+    avg_cost_usd: number;
+  }>;
+}
+
+export interface CostMetrics {
+  period_days: number;
+  total_cost_usd: number;
+  cost_today_usd: number;
+  goals_today: number;
+  total_goals: number;
+  avg_cost_per_goal: number;
+  /** Daily cost breakdown — use this for trend charts */
   cost_by_day: Array<{ date: string; cost_usd: number }>;
+  /** Cost broken down by model/tool */
   cost_by_model: Record<string, number>;
-  daily_budget_usd: number;
-  budget_utilization: number;
+  /** Legacy key — same data as cost_by_day but with "period" key */
+  trends: Array<{ period: string; cost_usd: number }>;
 }
 
 export interface EvalMetrics {
   total_evals: number;
+  total: number;
+  passed: number;
   pass_rate: number;
   avg_score: number;
-  evals_by_day: Array<{ date: string; pass_rate: number }>;
+  avg_scores: {
+    task_completion: number;
+    efficiency: number;
+    accuracy: number;
+    safety: number;
+    coherence: number;
+  };
+  evals_by_day: Array<{ date: string; pass_rate: number; avg_score: number }>;
+}
+
+export interface BenchmarkMetrics {
+  platform_avg_success_rate: number;
+  platform_avg_cost_usd: number;
+  platform_avg_eval_score: number;
+  your_success_rate: number;
+  your_cost_usd: number;
+  your_eval_score: number;
+  percentile_success: number;
+  percentile_cost: number;
+  comparison_label: string;
+  dimensions: {
+    your: Record<string, number>;
+    platform: Record<string, number>;
+  };
 }
 
 export const analyticsApi = {
   getGoalMetrics: (days = 30) =>
-    request<GoalMetrics>(`/analytics/goals?days=${days}`),
+    request<AnalyticsGoalMetrics>(`/analytics/goals?days=${days}`),
   getCostMetrics: (days = 30) =>
     request<CostMetrics>(`/analytics/costs?days=${days}`),
   getEvalMetrics: (days = 30) =>
     request<EvalMetrics>(`/analytics/evals?days=${days}`),
+  getToolMetrics: (days = 30) =>
+    request<AnalyticsToolMetrics>(`/analytics/tools?days=${days}`),
+  getAgentMetrics: (days = 30) =>
+    request<AnalyticsAgentMetrics>(`/analytics/agents?days=${days}`),
 };
 
 // ── Memory ───────────────────────────────────────────────────────────────────
@@ -1720,15 +1799,50 @@ export interface CostSummary {
 
 export interface AgentCost {
   agent_id: string;
-  agent_name: string;
+  /** agent_name is not returned by the backend; use agent_id for display. */
+  agent_name?: string;
   total_cost_usd: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
   goal_count: number;
   avg_cost_per_goal: number;
 }
 
 export interface CostPrediction {
-  estimated_cost_usd: { min: number; mean: number; max: number };
+  /** p50 predicted cost in USD */
+  predicted_cost_usd: number;
+  /** p95 predicted cost in USD */
+  p95_cost_usd: number;
   confidence: "low" | "medium" | "high";
+  basis: string;
+  breakdown: {
+    planning_usd: number;
+    execution_usd: number;
+    verification_usd: number;
+  };
+  budget_remaining_usd: number;
+}
+
+export interface CostModelBreakdown {
+  model: string;
+  total_cost_usd: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  call_count: number;
+}
+
+export interface CostTrend {
+  date: string;
+  cost_usd: number;
+  moving_avg_7d: number;
+  is_anomaly: boolean;
+}
+
+export interface CostProjection {
+  projected_monthly_usd: number;
+  daily_avg_usd: number;
+  days_of_data: number;
+  confidence: "low" | "high";
 }
 
 export interface BudgetConfig {
@@ -1762,15 +1876,34 @@ export interface CostAnomaly {
 }
 
 export const costsApi = {
-  getSummary: () => request<CostSummary>("/costs/summary"),
-  getPerAgent: () =>
-    request<{ agents: AgentCost[]; period_days?: number } | AgentCost[]>("/costs/per-agent").then(
-      (res) => (Array.isArray(res) ? res : (res as any).agents ?? [])
+  getSummary: (periodDays = 30) => request<CostSummary>(`/costs/summary?period_days=${periodDays}`),
+  getSummaryCsv: (periodDays = 30): Promise<Blob> => {
+    const apiKey = getApiKey();
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["X-API-Key"] = apiKey;
+    return fetch(`${API_BASE_URL}/costs/summary?format=csv&period_days=${periodDays}`, { headers })
+      .then((r) => r.blob());
+  },
+  getPerAgent: (periodDays = 30) =>
+    request<{ agents: AgentCost[]; period_days?: number }>(`/costs/per-agent?period_days=${periodDays}`).then(
+      (res) => res.agents ?? []
     ) as Promise<AgentCost[]>,
-  predict: (goal: string) =>
-    request<CostPrediction>("/costs/predict", { method: "POST", body: JSON.stringify({ goal }) }),
+  getCostByModel: (periodDays = 30) =>
+    request<{ models: CostModelBreakdown[]; period_days?: number }>(`/costs/by-model?period_days=${periodDays}`).then(
+      (res) => res.models ?? []
+    ) as Promise<CostModelBreakdown[]>,
+  getCostTrends: (periodDays = 30) =>
+    request<{ trends: CostTrend[]; period_days?: number }>(`/costs/trends?period_days=${periodDays}`).then(
+      (res) => res.trends ?? []
+    ) as Promise<CostTrend[]>,
+  getProjection: () => request<CostProjection>("/costs/projection"),
+  predict: (goalDescription: string, agentId?: string) =>
+    request<CostPrediction>("/costs/predict", {
+      method: "POST",
+      body: JSON.stringify({ goal_description: goalDescription, agent_id: agentId ?? null }),
+    }),
   getBudgets: () =>
-    request<{ daily_limit?: number; per_goal_usd?: number; per_tenant_daily_usd?: number; budget_pct_remaining?: number; daily_spent?: number }>("/costs/budgets"),
+    request<{ daily_limit?: number; per_goal_usd?: number; per_tenant_daily_usd?: number; per_agent_daily_usd?: Record<string, number>; budget_pct_remaining?: number; daily_spent?: number; daily_remaining?: number }>("/costs/budgets"),
   updateBudgets: (body: { per_goal_usd: number; per_tenant_daily_usd: number; per_agent_daily_usd?: Record<string, number>; alert_pct_thresholds?: number[] }) =>
     request<void>("/costs/budgets", { method: "PUT", body: JSON.stringify(body) }),
   getAnomalies: () =>
@@ -1782,7 +1915,7 @@ export const costsApi = {
         type: a.type ?? a.anomaly_type ?? "unknown",
         message: a.message ?? `${a.anomaly_type ?? "Anomaly"}: $${a.cost_actual_usd?.toFixed(2)} vs baseline $${a.cost_baseline_usd?.toFixed(2)} (${a.sigma_deviation}σ)`,
         cost_delta_usd: a.cost_delta_usd ?? (a.cost_actual_usd - a.cost_baseline_usd),
-        severity: a.severity ?? (a.sigma_deviation > 3 ? "high" : a.sigma_deviation > 2 ? "medium" : "low") as "low" | "medium" | "high",
+        severity: a.severity ?? (a.sigma_deviation >= 4 ? "high" : a.sigma_deviation >= 2.5 ? "medium" : "low") as "low" | "medium" | "high",
       }));
     }) as Promise<CostAnomaly[]>,
 };
@@ -1826,4 +1959,28 @@ export const selfImprovementApi = {
         body: JSON.stringify({ reason }),
       }
     ),
+  getBenchmarks: (days = 30) =>
+    request<BenchmarkMetrics>(`/intelligence/benchmarks?days=${days}`),
+  /** Return all 7 eval dimension names from /intelligence/eval/dimensions */
+  getEvalDimensions: () =>
+    request<{ dimensions: string[]; count: number }>("/intelligence/eval/dimensions"),
+};
+
+// ── Observability (spans / traces) ────────────────────────────────────────────
+
+export interface SpanRecord {
+  name: string;
+  trace_id: string;
+  span_id: string;
+  start_time: number;
+  end_time: number;
+  attributes: Record<string, unknown>;
+  status: string;
+  parent_span_id?: string;
+}
+
+export const observabilityApi = {
+  /** Fetch recent in-process trace spans for the waterfall viewer. */
+  getSpans: (limit = 100) =>
+    request<SpanRecord[]>(`/analytics/observability/spans?limit=${limit}`),
 };

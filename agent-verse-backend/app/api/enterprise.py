@@ -650,15 +650,27 @@ async def rollback_experiment(
 async def list_suggestions(
     request: Request, applied: bool | None = None
 ) -> list[dict[str, Any]]:
+    """Return suggestions shaped to match the frontend Suggestion interface:
+      {id, type, status, confidence, description, agent_id, created_at}
+
+    DB/in-memory mapping:
+      suggestion_id → id
+      category      → type
+      applied True  → status "applied", False → "pending"
+    """
+    from datetime import UTC, datetime as _dt
     ctx = _require_tenant(request)
     suggestions = _self_optimizer(request).list_suggestions(tenant_ctx=ctx, applied=applied)
+    now_iso = _dt.now(UTC).isoformat()
     return [
         {
-            "suggestion_id": s.suggestion_id,
-            "category": s.category,
+            "id": s.suggestion_id,
+            "type": s.category,
             "description": s.description,
             "confidence": s.confidence,
-            "applied": s.applied,
+            "agent_id": getattr(s, "agent_id", None),
+            "status": "applied" if s.applied else "pending",
+            "created_at": getattr(s, "created_at", now_iso) or now_iso,
         }
         for s in suggestions
     ]
@@ -686,11 +698,192 @@ async def reject_suggestion(request: Request, suggestion_id: str) -> dict[str, A
     return {"suggestion_id": suggestion_id, "rejected": True}
 
 
+@intelligence_router.get("/benchmarks")
+async def get_benchmarks(
+    request: Request,
+    days: int = 30,
+) -> dict[str, Any]:
+    """Return platform vs your-tenant benchmark comparison.
+
+    Response shape:
+      {platform_avg_success_rate, platform_avg_cost_usd, platform_avg_eval_score,
+       your_success_rate, your_cost_usd, your_eval_score,
+       percentile_success, percentile_cost, comparison_label,
+       dimensions: {task_completion, efficiency, accuracy, safety, coherence}}
+    """
+    ctx = _require_tenant(request)
+    tenant_id = ctx.tenant_id
+
+    db = _get_db(request)
+
+    # --- Your metrics ---
+    your_success_rate = 0.0
+    your_cost_usd = 0.0
+    your_eval_score = 0.0
+    your_dims: dict[str, float] = {}
+
+    if db is not None:
+        try:
+            from sqlalchemy import text as _t
+            async with db() as session:
+                # Success rate
+                goal_row = (await session.execute(_t("""
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END)
+                          AS completed
+                    FROM goals
+                    WHERE tenant_id = :tid
+                      AND created_at > NOW() - (:days * INTERVAL '1 day')
+                """), {"tid": tenant_id, "days": days})).fetchone()
+                if goal_row and goal_row[0]:
+                    your_success_rate = round(
+                        float(goal_row[1] or 0) / float(goal_row[0]), 4
+                    )
+
+                # Avg cost
+                cost_row = (await session.execute(_t("""
+                    SELECT AVG(cost_usd) FROM goals
+                    WHERE tenant_id = :tid
+                      AND cost_usd IS NOT NULL
+                      AND created_at > NOW() - (:days * INTERVAL '1 day')
+                """), {"tid": tenant_id, "days": days})).fetchone()
+                if cost_row and cost_row[0]:
+                    your_cost_usd = round(float(cost_row[0]), 6)
+
+                # Eval scores
+                eval_row = (await session.execute(_t("""
+                    SELECT
+                        AVG(score_task_completion),
+                        AVG(score_efficiency),
+                        AVG(score_accuracy),
+                        AVG(score_safety),
+                        AVG(score_coherence),
+                        AVG((COALESCE(score_task_completion,0)
+                             + COALESCE(score_efficiency,0)
+                             + COALESCE(score_accuracy,0)
+                             + COALESCE(score_safety,0)
+                             + COALESCE(score_coherence,0)) / 5.0)
+                    FROM evaluations
+                    WHERE tenant_id = :tid
+                      AND run_at > NOW() - (:days * INTERVAL '1 day')
+                """), {"tid": tenant_id, "days": days})).fetchone()
+                if eval_row and eval_row[5]:
+                    your_eval_score = round(float(eval_row[5]), 4)
+                    your_dims = {
+                        "task_completion": round(float(eval_row[0] or 0), 4),
+                        "efficiency": round(float(eval_row[1] or 0), 4),
+                        "accuracy": round(float(eval_row[2] or 0), 4),
+                        "safety": round(float(eval_row[3] or 0), 4),
+                        "coherence": round(float(eval_row[4] or 0), 4),
+                    }
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("benchmarks_your_metrics_failed: %s", exc)
+
+    # --- Platform averages (anonymized aggregates across all tenants) ---
+    platform_avg_success_rate = 0.72  # fallback defaults
+    platform_avg_cost_usd = 0.05
+    platform_avg_eval_score = 0.74
+    platform_dims: dict[str, float] = {
+        "task_completion": 0.75, "efficiency": 0.72, "accuracy": 0.76,
+        "safety": 0.88, "coherence": 0.71,
+    }
+
+    if db is not None:
+        try:
+            from sqlalchemy import text as _t
+            async with db() as session:
+                # Platform success rate across all tenants (anonymized)
+                plat_row = (await session.execute(_t("""
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END) AS ok,
+                        AVG(cost_usd) AS avg_cost
+                    FROM goals
+                    WHERE created_at > NOW() - (:days * INTERVAL '1 day')
+                """), {"days": days})).fetchone()
+                if plat_row and plat_row[0]:
+                    platform_avg_success_rate = round(
+                        float(plat_row[1] or 0) / float(plat_row[0]), 4
+                    )
+                    platform_avg_cost_usd = round(float(plat_row[2] or 0), 6)
+
+                plat_eval = (await session.execute(_t("""
+                    SELECT
+                        AVG(score_task_completion),
+                        AVG(score_efficiency),
+                        AVG(score_accuracy),
+                        AVG(score_safety),
+                        AVG(score_coherence)
+                    FROM evaluations
+                    WHERE run_at > NOW() - (:days * INTERVAL '1 day')
+                """), {"days": days})).fetchone()
+                if plat_eval and plat_eval[0]:
+                    dims = [float(v or 0) for v in plat_eval]
+                    platform_avg_eval_score = round(sum(dims) / 5.0, 4)
+                    platform_dims = {
+                        "task_completion": round(dims[0], 4),
+                        "efficiency": round(dims[1], 4),
+                        "accuracy": round(dims[2], 4),
+                        "safety": round(dims[3], 4),
+                        "coherence": round(dims[4], 4),
+                    }
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("benchmarks_platform_metrics_failed: %s", exc)
+
+    # --- Percentile computation ---
+    # Success rate percentile
+    if your_success_rate >= platform_avg_success_rate * 1.15:
+        percentile_success = 10
+        comparison_label = "Top 10%"
+    elif your_success_rate >= platform_avg_success_rate * 1.05:
+        percentile_success = 25
+        comparison_label = "Top 25%"
+    elif your_success_rate >= platform_avg_success_rate * 0.95:
+        percentile_success = 50
+        comparison_label = "Average"
+    else:
+        percentile_success = 75
+        comparison_label = "Below Average"
+
+    # Cost percentile (lower cost = better rank)
+    if platform_avg_cost_usd > 0:
+        if your_cost_usd <= platform_avg_cost_usd * 0.7:
+            percentile_cost = 10
+        elif your_cost_usd <= platform_avg_cost_usd * 0.9:
+            percentile_cost = 25
+        elif your_cost_usd <= platform_avg_cost_usd * 1.1:
+            percentile_cost = 50
+        else:
+            percentile_cost = 75
+    else:
+        percentile_cost = 50
+
+    return {
+        "platform_avg_success_rate": platform_avg_success_rate,
+        "platform_avg_cost_usd": platform_avg_cost_usd,
+        "platform_avg_eval_score": platform_avg_eval_score,
+        "your_success_rate": your_success_rate,
+        "your_cost_usd": your_cost_usd,
+        "your_eval_score": your_eval_score,
+        "percentile_success": percentile_success,
+        "percentile_cost": percentile_cost,
+        "comparison_label": comparison_label,
+        "dimensions": {
+            "your": your_dims or platform_dims,
+            "platform": platform_dims,
+        },
+    }
+
+
 # --- Eval Suites ---
 
 class CreateEvalSuiteRequest(BaseModel):
     suite_id: str | None = None
     name: str = ""
+    description: str = ""
 
 
 class AddGoldenTaskRequest(BaseModel):
@@ -711,19 +904,24 @@ async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> d
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
     suite_id = body.suite_id or _uuid.uuid4().hex
-    runner.create_suite(suite_id)
-    return {"suite_id": suite_id, "name": body.name, "task_count": 0}
+    runner.create_suite(suite_id, name=body.name or suite_id, description=body.description)
+    return {
+        "suite_id": suite_id,
+        "name": body.name or suite_id,
+        "description": body.description,
+        "task_count": 0,
+        "created_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    }
 
 
 @intelligence_router.get("/eval-suites")
 async def list_eval_suites(request: Request) -> list[dict[str, Any]]:
-    """List all eval suites."""
+    """List all eval suites with metadata."""
     _require_tenant(request)
     runner = getattr(request.app.state, "eval_suite_runner", None)
     if runner is None:
         return []
-    return [{"suite_id": s, "task_count": len(runner._suites.get(s, []))}
-            for s in runner.list_suites()]
+    return runner.list_suites_with_metadata()
 
 
 @intelligence_router.get("/eval-suites/{suite_id}")
@@ -804,6 +1002,13 @@ async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, A
          "passed": r.passed_tasks, "failed": r.failed_tasks, "run_at": r.run_at}
         for r in runner.get_results(suite_id)
     ]
+
+
+@intelligence_router.get("/eval/dimensions")
+async def get_eval_dimensions(request: Request) -> dict[str, Any]:
+    """Return all 7 evaluation dimension names produced by EvalRunner."""
+    from app.intelligence.eval_runner import EvalRunner
+    return {"dimensions": EvalRunner.DIMENSIONS, "count": len(EvalRunner.DIMENSIONS)}
 
 
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────

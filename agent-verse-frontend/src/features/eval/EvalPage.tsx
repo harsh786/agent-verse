@@ -1,8 +1,17 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Play, Shield, FlaskConical, BarChart3 } from 'lucide-react';
+import {
+  Play, Shield, FlaskConical, BarChart3, Download,
+  CheckCircle2, XCircle, Plus, X,
+} from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-import { API_BASE, evalSuitesApi } from '@/lib/api/client';
+import {
+  API_BASE,
+  evalSuitesApi,
+  goalsApi,
+  simulationApi,
+} from '@/lib/api/client';
+import { ThemedRadarChart } from '@/components/charts/ThemedRadarChart';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +19,8 @@ interface RedTeamResult {
   case_id: string;
   name?: string;
   status: 'passed' | 'failed' | 'error' | string;
+  attack_vector?: string;
+  risk_level?: string;
   details?: string;
 }
 
@@ -21,13 +32,18 @@ interface RedTeamReport {
   run_at?: string;
 }
 
-interface SimulationResult {
-  goal_id?: string;
-  status: string;
-  steps?: Array<{ step: string; tool?: string; output?: string }>;
+interface SimStep {
+  step: number | string;
+  tool?: string;
+  output?: string;
   cost_usd?: number;
-  iterations?: number;
-  message?: string;
+  mock_hit?: boolean;
+}
+
+interface AvailableTool {
+  name: string;
+  description: string;
+  server_id: string;
 }
 
 interface EvalScorecard {
@@ -36,17 +52,463 @@ interface EvalScorecard {
   average_score: number;
 }
 
-interface Suggestion {
-  suggestion_id: string;
-  category: string;
-  description: string;
-  confidence: number;
-  applied: boolean;
+type EvalTab = 'scorecard' | 'simulation' | 'redteam' | 'suites';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const ALL_7_DIMENSIONS = [
+  'task_completion',
+  'efficiency',
+  'accuracy',
+  'safety',
+  'coherence',
+  'sla',
+  'tool_relevance',
+] as const;
+
+const DIM_COLORS: Record<string, string> = {
+  task_completion: 'bg-indigo-500',
+  efficiency: 'bg-emerald-500',
+  accuracy: 'bg-purple-500',
+  safety: 'bg-orange-500',
+  coherence: 'bg-teal-500',
+  sla: 'bg-sky-500',
+  tool_relevance: 'bg-pink-500',
+};
+
+const DIM_LABEL: Record<string, string> = {
+  task_completion: 'Task Completion',
+  efficiency: 'Efficiency',
+  accuracy: 'Accuracy',
+  safety: 'Safety',
+  coherence: 'Coherence',
+  sla: 'SLA',
+  tool_relevance: 'Tool Relevance',
+};
+
+// ── Shared card styles ────────────────────────────────────────────────────────
+
+function Card({ children, className = '', onClick }: {
+  children: React.ReactNode;
+  className?: string;
+  onClick?: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <div className={`rounded-xl border border-white/[0.06] bg-white/[0.03] ${className}`} onClick={onClick}>
+      {children}
+    </div>
+  );
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Tab: Scorecard ────────────────────────────────────────────────────────────
 
-async function runRedTeam(apiKey: string): Promise<RedTeamReport> {
+async function fetchGoalEval(apiKey: string, goalId: string): Promise<EvalScorecard> {
+  const res = await fetch(`${API_BASE}/goals/${goalId}/eval`, {
+    headers: { 'X-API-Key': apiKey },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+function ScorecardTab({ apiKey }: { apiKey: string }) {
+  const [selectedGoalId, setSelectedGoalId] = useState('');
+  const [scorecard, setScorecard] = useState<EvalScorecard | null>(null);
+  const [prevScorecard, setPrevScorecard] = useState<EvalScorecard | null>(null);
+  const [history, setHistory] = useState<EvalScorecard[]>([]);
+
+  const { data: goalsData } = useQuery({
+    queryKey: ['eval-goals'],
+    queryFn: () => goalsApi.list(),
+    enabled: !!apiKey,
+  });
+  const goals = goalsData?.goals ?? [];
+
+  const evalMutation = useMutation({
+    mutationFn: () => fetchGoalEval(apiKey, selectedGoalId),
+    onSuccess: (data) => {
+      setPrevScorecard(scorecard);
+      setScorecard(data);
+      setHistory((h) => [...h.slice(-9), data]);
+    },
+  });
+
+  const radarData = ALL_7_DIMENSIONS.map((dim) => ({
+    metric: DIM_LABEL[dim],
+    value: scorecard?.scores[dim] ?? 0,
+  }));
+
+  function exportScorecard() {
+    if (!scorecard) return;
+    const blob = new Blob([JSON.stringify(scorecard, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `eval-${scorecard.goal_id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Controls */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={selectedGoalId}
+            onChange={(e) => setSelectedGoalId(e.target.value)}
+            className="flex-1 min-w-[200px] bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+          >
+            <option value="">Select a goal to evaluate…</option>
+            {goals.map((g) => {
+              const id = g.goal_id ?? g.id;
+              return (
+                <option key={id} value={id}>
+                  {g.goal.length > 70 ? `${g.goal.slice(0, 70)}…` : g.goal}
+                </option>
+              );
+            })}
+          </select>
+          <button
+            onClick={() => evalMutation.mutate()}
+            disabled={!selectedGoalId || evalMutation.isPending}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
+          >
+            <Play className="h-3.5 w-3.5" />
+            {evalMutation.isPending ? 'Running…' : 'Run Eval'}
+          </button>
+          {scorecard && (
+            <button
+              onClick={exportScorecard}
+              className="flex items-center gap-1.5 border border-white/10 text-white/60 hover:text-white px-3 py-2 rounded-lg text-sm transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export JSON
+            </button>
+          )}
+        </div>
+        {evalMutation.isError && (
+          <p className="text-sm text-red-400 mt-2">{String(evalMutation.error)}</p>
+        )}
+      </Card>
+
+      {scorecard ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Radar chart */}
+          <Card className="p-5">
+            <p className="text-xs text-white/40 mb-1 uppercase tracking-wide text-center">
+              Performance Radar
+            </p>
+            <p className="text-4xl font-bold tabular-nums text-white text-center">
+              {(scorecard.average_score * 100).toFixed(1)}
+            </p>
+            <p className="text-xs text-white/40 mb-4 text-center">avg score out of 100</p>
+            <ThemedRadarChart data={radarData} height={220} />
+          </Card>
+
+          {/* 7-dimension bars */}
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-white mb-4">All 7 Dimensions</h3>
+            <div className="space-y-3">
+              {ALL_7_DIMENSIONS.map((dim) => {
+                const raw = scorecard.scores[dim] ?? 0;
+                const pct = Math.min(100, Math.max(0, Math.round(raw * 100)));
+                const prev = prevScorecard?.scores[dim] ?? null;
+                const delta = prev != null ? raw - prev : null;
+                return (
+                  <div key={dim}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="font-medium text-white/80">{DIM_LABEL[dim]}</span>
+                      <div className="flex items-center gap-2">
+                        {delta != null && (
+                          <span className={`text-[10px] font-semibold ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-white/40'}`}>
+                            {delta > 0 ? '+' : ''}{(delta * 100).toFixed(1)}%
+                          </span>
+                        )}
+                        <span className="text-white/50 tabular-nums">{pct}%</span>
+                      </div>
+                    </div>
+                    <div className="w-full bg-white/5 rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full transition-all duration-500 ${DIM_COLORS[dim] ?? 'bg-indigo-500'}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+      ) : (
+        <Card className="p-8 text-center">
+          <BarChart3 className="h-10 w-10 text-white/20 mx-auto mb-3" />
+          <p className="text-sm text-white/50">Select a goal and run eval to see all 7 dimensions</p>
+          <p className="text-xs text-white/30 mt-1">
+            Scored on: {ALL_7_DIMENSIONS.map((d) => DIM_LABEL[d]).join(', ')}
+          </p>
+        </Card>
+      )}
+
+      {/* History sparklines */}
+      {history.length > 1 && (
+        <Card className="p-5">
+          <h3 className="text-sm font-semibold text-white mb-3">Eval History ({history.length} runs)</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/10">
+                  <th className="text-left py-2 text-white/40 font-normal">Run</th>
+                  {ALL_7_DIMENSIONS.map((d) => (
+                    <th key={d} className="text-right py-2 text-white/40 font-normal">{DIM_LABEL[d].slice(0, 6)}</th>
+                  ))}
+                  <th className="text-right py-2 text-white/40 font-normal">Avg</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {history.map((h, i) => (
+                  <tr key={i} className="hover:bg-white/[0.02]">
+                    <td className="py-2 text-white/50">#{i + 1}</td>
+                    {ALL_7_DIMENSIONS.map((d) => {
+                      const v = h.scores[d] ?? 0;
+                      return (
+                        <td key={d} className={`py-2 text-right tabular-nums ${v >= 0.8 ? 'text-emerald-400' : v >= 0.5 ? 'text-amber-400' : 'text-red-400'}`}>
+                          {(v * 100).toFixed(0)}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 text-right font-semibold text-white tabular-nums">
+                      {(h.average_score * 100).toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Tab: Simulation ───────────────────────────────────────────────────────────
+
+function SimulationTab({ apiKey }: { apiKey: string }) {
+  const [goal, setGoal] = useState('');
+  const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
+  const [mockJson, setMockJson] = useState('{}');
+  const [steps, setSteps] = useState<SimStep[]>([]);
+  const [simStatus, setSimStatus] = useState<string>('');
+  const [totalCost, setTotalCost] = useState<number | null>(null);
+  const [streaming, setStreaming] = useState(false);
+  const sseRef = useRef<EventSource | null>(null);
+
+  // Load available tools
+  const { data: toolsData, isLoading: toolsLoading } = useQuery({
+    queryKey: ['available-tools'],
+    queryFn: () => simulationApi.getAvailableTools(),
+    enabled: !!apiKey,
+  });
+  const availableTools: AvailableTool[] = toolsData?.tools ?? [];
+
+  function toggleTool(name: string) {
+    setSelectedTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  function runSimulation() {
+    let mockTools: Record<string, string> = {};
+    try {
+      mockTools = JSON.parse(mockJson || '{}');
+    } catch {
+      alert('Mock tools must be valid JSON');
+      return;
+    }
+
+    setSteps([]);
+    setSimStatus('');
+    setTotalCost(null);
+    setStreaming(true);
+
+    if (sseRef.current) sseRef.current.close();
+
+    // Use SSE streaming endpoint
+    const url = `${API_BASE}${simulationApi.streamPath()}`;
+    const body = JSON.stringify({ goal, mock_tools: mockTools, selected_tools: [...selectedTools] });
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      body,
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(res.statusText);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() ?? '';
+        for (const chunk of chunks) {
+          if (!chunk.startsWith('data:')) continue;
+          try {
+            const evt = JSON.parse(chunk.slice(5).trim());
+            if (evt.type === 'simulation_step') {
+              setSteps((prev) => [...prev, evt]);
+            } else if (evt.type === 'simulation_complete') {
+              setSimStatus(evt.status ?? 'complete');
+              setTotalCost(evt.cost_usd ?? null);
+            } else if (evt.type === 'simulation_error') {
+              setSimStatus('error: ' + (evt.message ?? 'unknown'));
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
+    }).catch((err) => {
+      setSimStatus('error: ' + err.message);
+    }).finally(() => {
+      setStreaming(false);
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Goal input */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-white/60 mb-1">Goal</label>
+          <textarea
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            placeholder="Describe the goal to simulate…"
+            rows={3}
+            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-indigo-500/50 resize-none"
+          />
+        </div>
+
+        {/* Available tools picker */}
+        <div>
+          <label className="block text-xs font-medium text-white/60 mb-2">
+            Available Tools {toolsLoading ? '(loading…)' : `(${availableTools.length} found)`}
+          </label>
+          {availableTools.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto" data-testid="tools-picker">
+              {availableTools.map((tool) => (
+                <label
+                  key={tool.name}
+                  className={`flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors ${
+                    selectedTools.has(tool.name)
+                      ? 'bg-indigo-500/10 border-indigo-500/30'
+                      : 'bg-white/5 border-white/10 hover:border-white/20'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedTools.has(tool.name)}
+                    onChange={() => toggleTool(tool.name)}
+                    className="mt-0.5 flex-shrink-0"
+                  />
+                  <div>
+                    <p className="text-xs font-medium text-white">{tool.name}</p>
+                    {tool.description && (
+                      <p className="text-[10px] text-white/40 line-clamp-1">{tool.description}</p>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-white/30 italic">
+              {toolsLoading ? 'Loading tools from MCP connectors…' : 'No tools available. Add MCP connectors to enable tool selection.'}
+            </p>
+          )}
+        </div>
+
+        {/* Mock JSON */}
+        <div>
+          <label className="block text-xs font-medium text-white/60 mb-1">Mock Tool Responses (JSON)</label>
+          <textarea
+            value={mockJson}
+            onChange={(e) => setMockJson(e.target.value)}
+            placeholder='{"github:list_issues": [{"id": 1, "title": "Bug fix"}]}'
+            rows={3}
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-white/20 outline-none focus:border-indigo-500/50 resize-none"
+          />
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            onClick={runSimulation}
+            disabled={!goal.trim() || streaming}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
+          >
+            {streaming ? (
+              <><span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" /> Simulating…</>
+            ) : (
+              <><Play className="h-3.5 w-3.5" /> Run Simulation</>
+            )}
+          </button>
+        </div>
+      </Card>
+
+      {/* Steps stream */}
+      {steps.length > 0 && (
+        <Card className="p-5">
+          <h3 className="text-sm font-semibold text-white mb-4">Execution Steps</h3>
+          <div className="space-y-2">
+            {steps.map((s, i) => (
+              <div key={i} className="flex items-start gap-3 p-3 bg-white/[0.02] rounded-lg border border-white/[0.04]">
+                <span className="text-xs font-mono text-white/30 flex-shrink-0 mt-0.5">
+                  {typeof s.step === 'number' ? `${String(s.step).padStart(2, '0')}` : s.step}
+                </span>
+                <div className="flex-1 min-w-0">
+                  {s.tool && <p className="text-xs font-medium text-indigo-300">{s.tool}</p>}
+                  {s.output && (
+                    <p className="text-xs text-white/60 font-mono mt-0.5 truncate">{String(s.output).slice(0, 120)}</p>
+                  )}
+                </div>
+                {s.cost_usd != null && (
+                  <span className="text-xs text-white/30 flex-shrink-0">${s.cost_usd.toFixed(4)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Final summary */}
+          {simStatus && (
+            <div className={`mt-4 p-3 rounded-lg border ${
+              simStatus === 'complete' ? 'bg-emerald-500/5 border-emerald-500/20' :
+              simStatus.startsWith('error') ? 'bg-red-500/5 border-red-500/20' :
+              'bg-indigo-500/5 border-indigo-500/20'
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-medium ${
+                  simStatus === 'complete' ? 'text-emerald-400' :
+                  simStatus.startsWith('error') ? 'text-red-400' : 'text-indigo-400'
+                }`}>
+                  {simStatus}
+                </span>
+                {totalCost != null && (
+                  <span className="text-xs text-white/40">Total cost: ${totalCost.toFixed(4)}</span>
+                )}
+              </div>
+              <p className="text-xs text-white/40 mt-1">{steps.length} steps · {selectedTools.size} tools selected</p>
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Tab: Red Team ─────────────────────────────────────────────────────────────
+
+async function runRedTeamApi(apiKey: string): Promise<RedTeamReport> {
   const res = await fetch(`${API_BASE}/enterprise/red-team`, {
     method: 'POST',
     headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
@@ -55,537 +517,177 @@ async function runRedTeam(apiKey: string): Promise<RedTeamReport> {
   return res.json();
 }
 
-async function runSimulation(
-  apiKey: string,
-  goal: string,
-  mockTools: string
-): Promise<SimulationResult> {
-  let tools: unknown = {};
-  try {
-    tools = JSON.parse(mockTools || '{}');
-  } catch {
-    throw new Error('mock_tools must be valid JSON');
-  }
-  const res = await fetch(`${API_BASE}/enterprise/simulation`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goal, mock_tools: tools }),
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-async function runEvalApi(apiKey: string, goalId: string): Promise<EvalScorecard> {
-  const res = await fetch(`${API_BASE}/goals/${goalId}/eval`, {
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-async function fetchSuggestionsApi(apiKey: string): Promise<Suggestion[]> {
-  const res = await fetch(`${API_BASE}/intelligence/suggestions?applied=false`, {
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-async function applySuggestionApi(apiKey: string, id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/intelligence/suggestions/${id}/apply`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-}
-
-async function rejectSuggestionApi(apiKey: string, id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/intelligence/suggestions/${id}/reject`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-}
-
-async function fetchGoalsForEval(
-  apiKey: string
-): Promise<{ goals: Array<{ id: string; goal_id?: string; goal: string; status: string }> }> {
-  const res = await fetch(`${API_BASE}/goals`, {
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-// ── Eval Scorer constants ─────────────────────────────────────────────────────
-
-const SCORE_DIMENSIONS = [
-  'task_completion',
-  'efficiency',
-  'accuracy',
-  'safety',
-  'coherence',
-] as const;
-
-const SCORE_DIMENSION_COLORS: Record<string, string> = {
-  task_completion: 'bg-blue-500',
-  efficiency: 'bg-green-500',
-  accuracy: 'bg-purple-500',
-  safety: 'bg-orange-500',
-  coherence: 'bg-teal-500',
-};
-
-const CATEGORY_BADGE_COLORS: Record<string, string> = {
-  performance: 'bg-blue-100 text-blue-800',
-  safety: 'bg-orange-100 text-orange-800',
-  efficiency: 'bg-green-100 text-green-800',
-  accuracy: 'bg-purple-100 text-purple-800',
-  coherence: 'bg-teal-100 text-teal-800',
-};
-
-// ── Red Team section ──────────────────────────────────────────────────────────
-
-function RedTeamSection({ apiKey }: { apiKey: string }) {
+function RedTeamTab({ apiKey }: { apiKey: string }) {
   const [report, setReport] = useState<RedTeamReport | null>(null);
+  const [progress, setProgress] = useState(0);
 
   const mutation = useMutation({
-    mutationFn: () => runRedTeam(apiKey),
-    onSuccess: (data) => setReport(data),
+    mutationFn: () => runRedTeamApi(apiKey),
+    onMutate: () => {
+      setProgress(0);
+      const id = setInterval(() => setProgress((p) => Math.min(p + 8, 90)), 400);
+      return () => clearInterval(id);
+    },
+    onSuccess: (data, _v, cleanup) => {
+      if (typeof cleanup === 'function') cleanup();
+      setProgress(100);
+      setReport(data);
+    },
+    onError: (_e, _v, cleanup) => {
+      if (typeof cleanup === 'function') cleanup();
+      setProgress(0);
+    },
   });
 
-  const passRate = report
-    ? Math.round((report.passed / (report.total || 1)) * 100)
-    : 0;
+  const passRate = report ? Math.round((report.passed / (report.total || 1)) * 100) : 0;
 
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Shield className="h-4 w-4 text-muted-foreground" />
-          <h2 className="font-semibold text-sm">Red Team Testing</h2>
-        </div>
-        <button
-          onClick={() => mutation.mutate()}
-          disabled={mutation.isPending}
-          className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-1.5 rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
-        >
-          <Play className="h-3.5 w-3.5" />
-          {mutation.isPending ? 'Running…' : 'Run Red Team'}
-        </button>
-      </div>
-
-      <div className="p-5">
-        {mutation.isError && (
-          <p className="text-sm text-red-500 mb-4">{String(mutation.error)}</p>
-        )}
-
-        {report ? (
-          <div className="space-y-4">
-            {/* Summary */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'Total Cases', value: report.total, color: 'text-foreground' },
-                { label: 'Passed', value: report.passed, color: 'text-green-600' },
-                { label: 'Failed', value: report.failed, color: 'text-red-600' },
-              ].map(({ label, value, color }) => (
-                <div
-                  key={label}
-                  className="bg-muted/40 rounded-lg p-3 text-center"
-                >
-                  <p className={`text-2xl font-bold ${color}`}>{value}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Progress bar */}
+    <div className="space-y-6">
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-orange-400" />
             <div>
-              <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>Pass rate</span>
-                <span>{passRate}%</span>
-              </div>
-              <div className="w-full bg-muted rounded-full h-2">
-                <div
-                  className={`h-2 rounded-full transition-all ${
-                    passRate >= 80 ? 'bg-green-500' : passRate >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${passRate}%` }}
-                />
-              </div>
+              <h3 className="text-sm font-semibold text-white">Red Team Testing</h3>
+              <p className="text-xs text-white/40 mt-0.5">Test resistance to prompt injection, policy bypass, and adversarial inputs</p>
             </div>
-
-            {/* Results table */}
-            {report.results && report.results.length > 0 && (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border">
-                    {['Case', 'Status', 'Details'].map((h) => (
-                      <th
-                        key={h}
-                        className="text-left py-2 font-medium text-muted-foreground text-xs"
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {report.results.map((r, i) => (
-                    <tr key={r.case_id ?? i} className="hover:bg-accent/50">
-                      <td className="py-2.5 font-medium text-xs">{r.name ?? r.case_id}</td>
-                      <td className="py-2.5">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            r.status === 'passed'
-                              ? 'bg-green-100 text-green-800'
-                              : r.status === 'failed'
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-yellow-100 text-yellow-800'
-                          }`}
-                        >
-                          {r.status}
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-xs text-muted-foreground">
-                        {r.details ?? '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
           </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Run the red team suite to test your agent's resistance to adversarial
-            inputs, prompt injection, and policy bypasses.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Simulation section ────────────────────────────────────────────────────────
-
-function SimulationSection({ apiKey }: { apiKey: string }) {
-  const [goal, setGoal] = useState('');
-  const [mockTools, setMockTools] = useState('{}');
-  const [result, setResult] = useState<SimulationResult | null>(null);
-
-  const mutation = useMutation({
-    mutationFn: () => runSimulation(apiKey, goal, mockTools),
-    onSuccess: (data) => setResult(data),
-  });
-
-  return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <div className="px-5 py-4 border-b border-border flex items-center gap-2">
-        <FlaskConical className="h-4 w-4 text-muted-foreground" />
-        <h2 className="font-semibold text-sm">Goal Simulation</h2>
-      </div>
-      <div className="p-5 space-y-4">
-        <div>
-          <label className="block text-xs font-medium mb-1">Goal</label>
-          <textarea
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-            placeholder="Describe the goal to simulate…"
-            rows={3}
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary resize-none"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1">Mock Tools (JSON)</label>
-          <textarea
-            value={mockTools}
-            onChange={(e) => setMockTools(e.target.value)}
-            placeholder='{"github:list_issues": [{"id": 1, "title": "Bug fix"}]}'
-            rows={4}
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm font-mono bg-background outline-none focus:ring-2 focus:ring-primary resize-none"
-          />
-        </div>
-
-        {mutation.isError && (
-          <p className="text-sm text-red-500">{String(mutation.error)}</p>
-        )}
-
-        <div className="flex justify-end">
           <button
             onClick={() => mutation.mutate()}
-            disabled={!goal.trim() || mutation.isPending}
-            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
+            disabled={mutation.isPending}
+            className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
           >
             <Play className="h-3.5 w-3.5" />
-            {mutation.isPending ? 'Simulating…' : 'Run Simulation'}
+            {mutation.isPending ? 'Running…' : 'Launch Red Team Suite'}
           </button>
         </div>
 
-        {result && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                  result.status === 'complete'
-                    ? 'bg-green-100 text-green-800'
-                    : result.status === 'failed'
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-blue-100 text-blue-800'
-                }`}
-              >
-                {result.status}
+        {mutation.isPending && (
+          <div>
+            <div className="flex justify-between text-xs text-white/40 mb-1">
+              <span>Testing…</span>
+              <span>{progress}%</span>
+            </div>
+            <div className="w-full bg-white/5 rounded-full h-2">
+              <div className="h-2 rounded-full bg-orange-500 transition-all duration-300" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        )}
+
+        {mutation.isError && (
+          <p className="text-sm text-red-400">{String(mutation.error)}</p>
+        )}
+      </Card>
+
+      {report && (
+        <>
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-4">
+            {[
+              { label: 'Total Cases', value: report.total, color: 'text-white' },
+              { label: 'Blocked', value: report.passed, color: 'text-emerald-400' },
+              { label: 'Leaked', value: report.failed, color: 'text-red-400' },
+            ].map(({ label, value, color }) => (
+              <Card key={label} className="p-4 text-center">
+                <p className={`text-3xl font-bold ${color}`}>{value}</p>
+                <p className="text-xs text-white/40 mt-1">{label}</p>
+              </Card>
+            ))}
+          </div>
+
+          {/* Security score */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-white">Security Score</span>
+              <span className={`text-2xl font-bold ${passRate >= 80 ? 'text-emerald-400' : passRate >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+                {passRate}%
               </span>
-              {result.cost_usd != null && (
-                <span className="text-xs text-muted-foreground">
-                  ${result.cost_usd.toFixed(4)} simulated cost
-                </span>
-              )}
             </div>
-            {result.message && (
-              <p className="text-sm text-muted-foreground">{result.message}</p>
-            )}
-            {result.steps && result.steps.length > 0 && (
-              <div className="bg-muted/40 rounded-lg p-3">
-                <p className="text-xs font-medium mb-2">Simulated Steps</p>
-                <ol className="space-y-1.5">
-                  {result.steps.map((s, i) => (
-                    <li key={i} className="text-xs">
-                      <span className="font-medium">{i + 1}. {s.step}</span>
-                      {s.tool && (
-                        <span className="text-muted-foreground"> → {s.tool}</span>
-                      )}
-                      {s.output && (
-                        <p className="text-muted-foreground mt-0.5 font-mono truncate">
-                          {s.output}
-                        </p>
-                      )}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-            <details>
-              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                Raw response
-              </summary>
-              <pre className="mt-2 text-xs font-mono text-muted-foreground overflow-auto">
-                {JSON.stringify(result, null, 2)}
-              </pre>
-            </details>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Eval Scorer section ───────────────────────────────────────────────────────
-
-function EvalScorerSection({ apiKey }: { apiKey: string }) {
-  const [selectedGoalId, setSelectedGoalId] = useState('');
-  const [scorecard, setScorecard] = useState<EvalScorecard | null>(null);
-
-  // Fetch goals for dropdown
-  const { data: goalsData } = useQuery({
-    queryKey: ['eval-goals'],
-    queryFn: () => fetchGoalsForEval(apiKey),
-    enabled: !!apiKey,
-  });
-  const goals = goalsData?.goals ?? [];
-
-  // Fetch suggestions (unapplied)
-  const {
-    data: suggestions = [],
-    isLoading: suggestionsLoading,
-    refetch: refetchSuggestions,
-  } = useQuery({
-    queryKey: ['eval-suggestions'],
-    queryFn: () => fetchSuggestionsApi(apiKey),
-    enabled: !!apiKey,
-  });
-
-  const evalMutation = useMutation({
-    mutationFn: () => runEvalApi(apiKey, selectedGoalId),
-    onSuccess: (data) => setScorecard(data),
-  });
-
-  const applyMutation = useMutation({
-    mutationFn: (id: string) => applySuggestionApi(apiKey, id),
-    onSuccess: () => refetchSuggestions(),
-  });
-
-  const rejectMutation = useMutation({
-    mutationFn: (id: string) => rejectSuggestionApi(apiKey, id),
-    onSuccess: () => refetchSuggestions(),
-  });
-
-  return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      {/* Header */}
-      <div className="px-5 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          <h2 className="font-semibold text-sm">Eval Scorer</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedGoalId}
-            onChange={(e) => setSelectedGoalId(e.target.value)}
-            className="border border-input rounded-lg px-3 py-1.5 text-sm bg-background outline-none focus:ring-2 focus:ring-primary max-w-xs"
-          >
-            <option value="">Select a goal…</option>
-            {goals.map((g) => {
-              const id = g.goal_id ?? g.id;
-              const label = g.goal.length > 60 ? `${g.goal.slice(0, 60)}…` : g.goal;
-              return (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              );
-            })}
-          </select>
-          <button
-            onClick={() => evalMutation.mutate()}
-            disabled={!selectedGoalId || evalMutation.isPending}
-            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-1.5 rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
-          >
-            <Play className="h-3.5 w-3.5" />
-            {evalMutation.isPending ? 'Running…' : 'Run Eval'}
-          </button>
-        </div>
-      </div>
-
-      <div className="p-5 space-y-6">
-        {evalMutation.isError && (
-          <p className="text-sm text-red-500">{String(evalMutation.error)}</p>
-        )}
-
-        {/* Scorecard */}
-        {scorecard ? (
-          <div className="space-y-4">
-            {/* Average score hero */}
-            <div className="bg-muted/40 rounded-xl py-5 text-center">
-              <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">
-                Average Score
-              </p>
-              <p className="text-5xl font-bold tabular-nums">
-                {(scorecard.average_score * 100).toFixed(1)}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">out of 100</p>
+            <div className="w-full bg-white/5 rounded-full h-3">
+              <div
+                className={`h-3 rounded-full transition-all ${passRate >= 80 ? 'bg-emerald-500' : passRate >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                style={{ width: `${passRate}%` }}
+              />
             </div>
-
-            {/* 5-dimension progress bars */}
-            <div className="space-y-3">
-              {SCORE_DIMENSIONS.map((dim) => {
-                const raw = scorecard.scores[dim] ?? 0;
-                const pct = Math.min(100, Math.max(0, Math.round(raw * 100)));
-                return (
-                  <div key={dim}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="font-medium capitalize">
-                        {dim.replace('_', ' ')}
-                      </span>
-                      <span className="text-muted-foreground tabular-nums">{pct}%</span>
-                    </div>
-                    <div className="w-full bg-muted rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full transition-all duration-500 ${
-                          SCORE_DIMENSION_COLORS[dim] ?? 'bg-primary'
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Select a goal and click <strong>Run Eval</strong> to score performance
-            across 5 dimensions: task completion, efficiency, accuracy, safety, and coherence.
-          </p>
-        )}
-
-        {/* Optimization Suggestions */}
-        <div>
-          <h3 className="font-semibold text-sm mb-3">Optimization Suggestions</h3>
-          {suggestionsLoading ? (
-            <p className="text-sm text-muted-foreground">Loading suggestions…</p>
-          ) : suggestions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No pending optimization suggestions.
+            <p className="text-xs text-white/40 mt-2">
+              {report.passed}/{report.total} attack vectors blocked
             </p>
-          ) : (
-            <div className="space-y-3">
-              {suggestions.map((s) => (
-                <div
-                  key={s.suggestion_id}
-                  className="border border-border rounded-lg p-4 space-y-2"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
-                        CATEGORY_BADGE_COLORS[s.category] ??
-                        'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      {s.category}
+          </Card>
+
+          {/* Results table */}
+          {report.results?.length > 0 && (
+            <Card className="overflow-hidden">
+              <div className="px-5 py-3 border-b border-white/10">
+                <h3 className="text-sm font-semibold text-white">Test Results</h3>
+              </div>
+              <div className="divide-y divide-white/5">
+                {report.results.map((r, i) => (
+                  <div key={r.case_id ?? i} className="flex items-center gap-4 px-5 py-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white">{r.name ?? r.case_id}</p>
+                      {r.attack_vector && (
+                        <p className="text-xs text-white/40 mt-0.5">{r.attack_vector}</p>
+                      )}
+                    </div>
+                    {r.risk_level && (
+                      <span className={`text-xs px-2 py-0.5 rounded border ${
+                        r.risk_level === 'critical' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                        r.risk_level === 'high' ? 'bg-orange-500/10 border-orange-500/20 text-orange-400' :
+                        'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'
+                      }`}>
+                        {r.risk_level}
+                      </span>
+                    )}
+                    <span className={`text-xs px-2 py-0.5 rounded border flex items-center gap-1 ${
+                      r.status === 'passed' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
+                      r.status === 'failed' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                      'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                    }`}>
+                      {r.status === 'passed' ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                      {r.status === 'passed' ? 'BLOCKED' : 'LEAKED'}
                     </span>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {Math.round(s.confidence * 100)}% confidence
-                    </span>
                   </div>
-                  <p className="text-sm">{s.description}</p>
-                  {/* Confidence bar */}
-                  <div className="w-full bg-muted rounded-full h-1.5">
-                    <div
-                      className="h-1.5 rounded-full bg-primary/60 transition-all duration-300"
-                      style={{ width: `${s.confidence * 100}%` }}
-                    />
-                  </div>
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={() => applyMutation.mutate(s.suggestion_id)}
-                      disabled={
-                        applyMutation.isPending || rejectMutation.isPending
-                      }
-                      className="px-3 py-1 bg-green-600 text-white text-xs rounded-md hover:bg-green-700 transition-colors disabled:opacity-50"
-                    >
-                      Apply
-                    </button>
-                    <button
-                      onClick={() => rejectMutation.mutate(s.suggestion_id)}
-                      disabled={
-                        applyMutation.isPending || rejectMutation.isPending
-                      }
-                      className="px-3 py-1 bg-muted text-muted-foreground text-xs rounded-md hover:bg-accent transition-colors disabled:opacity-50"
-                    >
-                      Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </Card>
           )}
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }
 
-// ── Eval Suites Section ───────────────────────────────────────────────────────
+// ── Tab: Suites ───────────────────────────────────────────────────────────────
 
-function EvalSuitesSection({ apiKey }: { apiKey: string }) {
+interface GoldenTaskForm {
+  goal: string;
+  expected_output_contains: string;
+  expected_tools: string;
+  forbidden_tools: string;
+  min_score: string;
+}
+
+function SuitesTab({ apiKey }: { apiKey: string }) {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [suiteName, setSuiteName] = useState('');
   const [suiteDesc, setSuiteDesc] = useState('');
+  const [activeSuiteId, setActiveSuiteId] = useState<string | null>(null);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [taskForm, setTaskForm] = useState<GoldenTaskForm>({
+    goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', min_score: '0.8',
+  });
 
   const { data: suites = [], isLoading } = useQuery({
     queryKey: ['eval-suites'],
     queryFn: () => evalSuitesApi.listSuites(),
     enabled: !!apiKey,
+  });
+
+  const { data: suiteResults } = useQuery({
+    queryKey: ['suite-results', activeSuiteId],
+    queryFn: () => evalSuitesApi.getSuiteResults(activeSuiteId!),
+    enabled: !!activeSuiteId,
   });
 
   const createMutation = useMutation({
@@ -598,86 +700,179 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
     },
   });
 
-  const runMutation = useMutation({
-    mutationFn: (id: string) => evalSuitesApi.runSuite(id),
+  const addTaskMutation = useMutation({
+    mutationFn: () => evalSuitesApi.addTask(activeSuiteId!, {
+      input: taskForm.goal,
+      expected_output: taskForm.expected_output_contains || undefined,
+      tags: taskForm.expected_tools ? taskForm.expected_tools.split(',').map((t) => t.trim()) : [],
+    }),
+    onSuccess: () => {
+      setShowAddTask(false);
+      setTaskForm({ goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', min_score: '0.8' });
+    },
   });
 
+  const runMutation = useMutation({
+    mutationFn: (id: string) => evalSuitesApi.runSuite(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['suite-results', activeSuiteId] }),
+  });
+
+  const typedSuites = suites as Array<{ suite_id: string; name?: string; task_count?: number; created_at?: string; description?: string }>;
+
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-        <h2 className="font-semibold text-sm">Eval Suites</h2>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-white">Eval Suites</h2>
         <button
           onClick={() => setShowCreate(true)}
-          aria-label="Create suite"
-          className="text-xs px-3 py-1.5 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
         >
-          + Create suite
+          <Plus className="h-3.5 w-3.5" />
+          Create Suite
         </button>
       </div>
 
+      {/* Create form */}
       {showCreate && (
-        <div className="p-4 border-b space-y-3">
-          <label className="block text-sm font-medium">
-            Suite name
-            <input
-              aria-label="Suite name"
-              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
-              value={suiteName}
-              onChange={(e) => setSuiteName(e.target.value)}
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Description
-            <input
-              className="mt-1 block w-full rounded border px-3 py-2 text-sm bg-background"
-              value={suiteDesc}
-              onChange={(e) => setSuiteDesc(e.target.value)}
-            />
-          </label>
+        <Card className="p-5 space-y-3">
+          <h3 className="text-sm font-semibold text-white">New Suite</h3>
+          <input
+            aria-label="Suite name"
+            placeholder="Suite name"
+            value={suiteName}
+            onChange={(e) => setSuiteName(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+          />
+          <input
+            placeholder="Description (optional)"
+            value={suiteDesc}
+            onChange={(e) => setSuiteDesc(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+          />
           <div className="flex gap-2">
             <button
               onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending || !suiteName.trim()}
-              className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md disabled:opacity-50"
+              disabled={!suiteName.trim() || createMutation.isPending}
+              className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50"
             >
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </button>
-            <button
-              onClick={() => setShowCreate(false)}
-              className="px-3 py-1.5 text-sm border rounded-md"
-            >
+            <button onClick={() => setShowCreate(false)} className="px-4 py-2 border border-white/10 text-white/60 text-sm rounded-lg">
               Cancel
             </button>
           </div>
-        </div>
+        </Card>
       )}
 
       {isLoading ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">Loading suites…</div>
-      ) : (suites as any[]).length === 0 ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">
-          No eval suites yet. Create one to group golden tasks and track regressions.
-        </div>
+        <div className="text-center py-8 text-sm text-white/40">Loading suites…</div>
+      ) : typedSuites.length === 0 ? (
+        <Card className="p-8 text-center">
+          <FlaskConical className="h-8 w-8 text-white/20 mx-auto mb-2" />
+          <p className="text-sm text-white/50">No eval suites yet</p>
+          <p className="text-xs text-white/30 mt-1">Create a suite to group golden tasks and track regressions</p>
+        </Card>
       ) : (
-        <div className="divide-y divide-border">
-          {(suites as any[]).map((suite: any) => (
-            <div key={suite.suite_id} className="flex items-center justify-between p-4">
-              <div>
-                <p className="text-sm font-medium">{suite.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {suite.task_count} tasks · created{' '}
-                  {new Date(suite.created_at).toLocaleDateString()}
-                </p>
-              </div>
-              <button
-                onClick={() => runMutation.mutate(suite.suite_id)}
-                disabled={runMutation.isPending}
-                className="text-xs px-3 py-1 rounded border text-green-700 hover:bg-green-50 disabled:opacity-50"
+        <div className="space-y-3">
+          {typedSuites.map((suite) => (
+            <Card
+              key={suite.suite_id}
+              className={`overflow-hidden cursor-pointer transition-colors ${activeSuiteId === suite.suite_id ? 'border-indigo-500/40' : ''}`}
+            >
+              <div
+                className="flex items-center justify-between px-5 py-4"
+                onClick={() => setActiveSuiteId(activeSuiteId === suite.suite_id ? null : suite.suite_id)}
               >
-                Run
+                <div>
+                  <p className="text-sm font-semibold text-white">{suite.name ?? suite.suite_id}</p>
+                  <p className="text-xs text-white/40 mt-0.5">
+                    {suite.task_count ?? 0} tasks
+                    {suite.created_at && ` · ${new Date(suite.created_at).toLocaleDateString()}`}
+                    {suite.description && ` · ${suite.description}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setActiveSuiteId(suite.suite_id); setShowAddTask(true); }}
+                    className="text-xs px-2.5 py-1 rounded border border-white/10 text-white/60 hover:text-white hover:border-white/20 transition-colors"
+                  >
+                    + Task
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setActiveSuiteId(suite.suite_id); runMutation.mutate(suite.suite_id); }}
+                    disabled={runMutation.isPending}
+                    className="text-xs px-2.5 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-50"
+                  >
+                    Run
+                  </button>
+                </div>
+              </div>
+
+              {/* Expanded: suite results */}
+              {activeSuiteId === suite.suite_id && suiteResults && suiteResults.length > 0 && (
+                <div className="border-t border-white/10 p-4">
+                  <h4 className="text-xs font-semibold text-white/60 mb-2">Recent Runs</h4>
+                  <div className="space-y-1.5">
+                    {(suiteResults as Array<{ run_id?: string; overall_score?: number; passed?: number; failed?: number; completed_at?: string }>).slice(-5).map((r, i) => (
+                      <div key={r.run_id ?? i} className="flex items-center gap-3 text-xs">
+                        <span className="text-white/30">#{i + 1}</span>
+                        <div className="flex-1 bg-white/5 rounded-full h-1.5">
+                          <div
+                            className="bg-emerald-500 h-1.5 rounded-full"
+                            style={{ width: `${((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-white/40">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Add task modal */}
+      {showAddTask && activeSuiteId && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowAddTask(false)}>
+          <Card className="w-full max-w-md p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white">Add Golden Task</h3>
+              <button onClick={() => setShowAddTask(false)} className="text-white/40 hover:text-white">
+                <X className="h-4 w-4" />
               </button>
             </div>
-          ))}
+            {[
+              { label: 'Goal', key: 'goal', placeholder: 'What should the agent do?' },
+              { label: 'Expected output contains', key: 'expected_output_contains', placeholder: 'Expected substring in output' },
+              { label: 'Expected tools (comma-separated)', key: 'expected_tools', placeholder: 'github:list_issues, slack:send_message' },
+              { label: 'Forbidden tools', key: 'forbidden_tools', placeholder: 'shell:execute, db:delete' },
+              { label: 'Min score', key: 'min_score', placeholder: '0.8' },
+            ].map(({ label, key, placeholder }) => (
+              <div key={key}>
+                <label className="text-xs text-white/60 block mb-1">{label}</label>
+                <input
+                  value={taskForm[key as keyof GoldenTaskForm]}
+                  onChange={(e) => setTaskForm((f) => ({ ...f, [key]: e.target.value }))}
+                  placeholder={placeholder}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+                />
+              </div>
+            ))}
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowAddTask(false)} className="px-4 py-2 border border-white/10 text-white/60 text-sm rounded-lg">
+                Cancel
+              </button>
+              <button
+                onClick={() => addTaskMutation.mutate()}
+                disabled={!taskForm.goal.trim() || addTaskMutation.isPending}
+                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50"
+              >
+                {addTaskMutation.isPending ? 'Adding…' : 'Add Task'}
+              </button>
+            </div>
+          </Card>
         </div>
       )}
     </div>
@@ -686,49 +881,50 @@ function EvalSuitesSection({ apiKey }: { apiKey: string }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-type EvalTab = 'evals' | 'suites';
-
 export function EvalPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
-  const [tab, setTab] = useState<EvalTab>('evals');
+  const [tab, setTab] = useState<EvalTab>('scorecard');
+
+  const TAB_LABELS: { id: EvalTab; label: string; icon: React.ReactNode }[] = [
+    { id: 'scorecard', label: 'Scorecard', icon: <BarChart3 className="h-3.5 w-3.5" /> },
+    { id: 'simulation', label: 'Simulation', icon: <FlaskConical className="h-3.5 w-3.5" /> },
+    { id: 'redteam', label: 'Red Team', icon: <Shield className="h-3.5 w-3.5" /> },
+    { id: 'suites', label: 'Suites', icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+  ];
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Eval & Testing</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Red team testing, goal simulation, and eval scoring
+        <h1 className="text-2xl font-bold text-white">Eval & Testing</h1>
+        <p className="text-sm text-white/50 mt-1">
+          7-dimension scoring, goal simulation, red team testing, and eval suites
         </p>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-4 border-b border-border">
-        {(['evals', 'suites'] as EvalTab[]).map((t) => (
+      <div className="flex gap-1 border-b border-white/10">
+        {TAB_LABELS.map(({ id, label, icon }) => (
           <button
-            key={t}
+            key={id}
             role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`pb-2 px-1 capitalize font-medium text-sm transition-colors ${
-              tab === t
-                ? 'border-b-2 border-primary text-primary'
-                : 'text-muted-foreground hover:text-foreground'
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors rounded-t-lg ${
+              tab === id
+                ? 'text-white border-b-2 border-indigo-400 bg-white/[0.03]'
+                : 'text-white/50 hover:text-white/80'
             }`}
           >
-            {t}
+            {icon}
+            {label}
           </button>
         ))}
       </div>
 
-      {tab === 'evals' && (
-        <>
-          <RedTeamSection apiKey={apiKey} />
-          <SimulationSection apiKey={apiKey} />
-          <EvalScorerSection apiKey={apiKey} />
-        </>
-      )}
-
-      {tab === 'suites' && <EvalSuitesSection apiKey={apiKey} />}
+      {tab === 'scorecard' && <ScorecardTab apiKey={apiKey} />}
+      {tab === 'simulation' && <SimulationTab apiKey={apiKey} />}
+      {tab === 'redteam' && <RedTeamTab apiKey={apiKey} />}
+      {tab === 'suites' && <SuitesTab apiKey={apiKey} />}
     </div>
   );
 }

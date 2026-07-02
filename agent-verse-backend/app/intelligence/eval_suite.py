@@ -214,19 +214,54 @@ class EvalSuiteRunner:
         self._suites: dict[str, list[GoldenTask]] = {}
         self._results: dict[str, list[EvalSuiteResult]] = {}
         self._llm_judge: LLMJudge | None = None
+        # Metadata stored when suites are created: {suite_id: {name, description, created_at}}
+        self._suite_metadata: dict[str, dict[str, str]] = {}
 
     def set_llm_judge(self, judge: LLMJudge) -> None:
         """Attach an LLM judge for semantic quality scoring."""
         self._llm_judge = judge
 
-    def create_suite(self, suite_id: str, tasks: list[GoldenTask] | None = None) -> None:
+    def create_suite(
+        self,
+        suite_id: str,
+        tasks: list[GoldenTask] | None = None,
+        *,
+        name: str = "",
+        description: str = "",
+    ) -> None:
         self._suites[suite_id] = tasks or []
+        self._suite_metadata[suite_id] = {
+            "name": name or suite_id,
+            "description": description,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
 
     def add_task(self, suite_id: str, task: GoldenTask) -> None:
         self._suites.setdefault(suite_id, []).append(task)
+        # Ensure metadata entry exists if suite was created without metadata
+        if suite_id not in self._suite_metadata:
+            self._suite_metadata[suite_id] = {
+                "name": suite_id,
+                "description": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
 
     def list_suites(self) -> list[str]:
         return list(self._suites.keys())
+
+    def list_suites_with_metadata(self) -> list[dict[str, str | int]]:
+        """Return suites with name, description, task_count, created_at."""
+        result = []
+        for suite_id in self._suites:
+            meta = self._suite_metadata.get(suite_id, {})
+            result.append({
+                "suite_id": suite_id,
+                "name": meta.get("name", suite_id),
+                "description": meta.get("description", ""),
+                "task_count": len(self._suites.get(suite_id, [])),
+                "created_at": meta.get("created_at", ""),
+            })
+        return result
 
     def get_results(self, suite_id: str) -> list[EvalSuiteResult]:
         return self._results.get(suite_id, [])
