@@ -518,7 +518,7 @@ class CostTracker:
                             FROM cost_ledger
                             WHERE tenant_id = :tid
                               AND cost_type  = 'llm'
-                              AND created_at >= NOW() - INTERVAL ':days days'
+                              AND created_at >= NOW() - INTERVAL '1 day' * :days
                             GROUP BY agent_id
                             ORDER BY total_cost DESC
                         """),
@@ -532,9 +532,190 @@ class CostTracker:
                     "total_prompt_tokens": int(r[2] or 0),
                     "total_completion_tokens": int(r[3] or 0),
                     "goal_count": int(r[4] or 0),
+                    "avg_cost_per_goal": float(r[1] or 0) / max(int(r[4] or 1), 1),
                 }
                 for r in rows
             ]
         except Exception as exc:
             logger.warning("per_agent_summary_failed", error=str(exc))
             return []
+
+    # ------------------------------------------------------------------
+    # Cost-by-model breakdown
+    # ------------------------------------------------------------------
+
+    async def get_cost_by_model(
+        self,
+        tenant_id: str,
+        days: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Return cost grouped by model for the given period."""
+        if self._db is None:
+            return []
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                rows = (
+                    await session.execute(
+                        _t("""
+                            SELECT
+                                COALESCE(model, 'unknown')  AS model,
+                                SUM(cost_usd)               AS total_cost,
+                                SUM(prompt_tokens)          AS total_prompt_tokens,
+                                SUM(completion_tokens)      AS total_completion_tokens,
+                                COUNT(*)                    AS call_count
+                            FROM cost_ledger
+                            WHERE tenant_id = :tid
+                              AND cost_type  = 'llm'
+                              AND created_at >= NOW() - INTERVAL '1 day' * :days
+                            GROUP BY model
+                            ORDER BY total_cost DESC
+                        """),
+                        {"tid": tenant_id, "days": days},
+                    )
+                ).fetchall()
+            return [
+                {
+                    "model": str(r[0]),
+                    "total_cost_usd": float(r[1] or 0),
+                    "total_prompt_tokens": int(r[2] or 0),
+                    "total_completion_tokens": int(r[3] or 0),
+                    "call_count": int(r[4] or 0),
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.warning("cost_by_model_failed", error=str(exc))
+            return []
+
+    # ------------------------------------------------------------------
+    # Daily cost trends with anomaly flags
+    # ------------------------------------------------------------------
+
+    async def get_cost_trends_with_anomalies(
+        self,
+        tenant_id: str,
+        days: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Return daily costs with a rolling 7-day average and anomaly flag.
+
+        Anomaly = daily cost > (7-day moving average * 2).
+        """
+        if self._db is None:
+            return []
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                rows = (
+                    await session.execute(
+                        _t("""
+                            WITH daily AS (
+                                SELECT
+                                    DATE(created_at AT TIME ZONE 'UTC') AS day,
+                                    SUM(cost_usd) AS cost_usd
+                                FROM cost_ledger
+                                WHERE tenant_id = :tid
+                                  AND cost_type  = 'llm'
+                                  AND created_at >= NOW() - INTERVAL '1 day' * :days
+                                GROUP BY day
+                                ORDER BY day
+                            ),
+                            with_avg AS (
+                                SELECT
+                                    day,
+                                    cost_usd,
+                                    AVG(cost_usd) OVER (
+                                        ORDER BY day
+                                        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+                                    ) AS moving_avg_7d
+                                FROM daily
+                            )
+                            SELECT
+                                day,
+                                cost_usd,
+                                moving_avg_7d,
+                                CASE WHEN cost_usd > moving_avg_7d * 2
+                                          AND moving_avg_7d > 0
+                                     THEN TRUE ELSE FALSE END AS is_anomaly
+                            FROM with_avg
+                            ORDER BY day
+                        """),
+                        {"tid": tenant_id, "days": days},
+                    )
+                ).fetchall()
+            return [
+                {
+                    "date": str(r[0]),
+                    "cost_usd": float(r[1] or 0),
+                    "moving_avg_7d": float(r[2] or 0),
+                    "is_anomaly": bool(r[3]),
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.warning("cost_trends_failed", error=str(exc))
+            return []
+
+    # ------------------------------------------------------------------
+    # Projected monthly cost (linear regression on last 7 days)
+    # ------------------------------------------------------------------
+
+    async def get_projected_monthly_cost(
+        self,
+        tenant_id: str,
+    ) -> dict[str, Any]:
+        """Linear extrapolation of the last 7 days of daily spend to a 30-day month.
+
+        Returns projected_monthly_usd, daily_avg_usd, days_of_data, confidence.
+        """
+        if self._db is None:
+            return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
+        try:
+            from sqlalchemy import text as _t
+            async with self._db() as session:
+                rows = (
+                    await session.execute(
+                        _t("""
+                            SELECT
+                                DATE(created_at AT TIME ZONE 'UTC') AS day,
+                                SUM(cost_usd) AS cost_usd
+                            FROM cost_ledger
+                            WHERE tenant_id = :tid
+                              AND cost_type  = 'llm'
+                              AND created_at >= NOW() - INTERVAL '7 days'
+                            GROUP BY day
+                            ORDER BY day
+                        """),
+                        {"tid": tenant_id},
+                    )
+                ).fetchall()
+
+            if not rows:
+                return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
+
+            costs = [float(r[1] or 0) for r in rows]
+            n = len(costs)
+            daily_avg = sum(costs) / n
+
+            # Simple linear regression: y = a + b*x
+            xs = list(range(n))
+            mean_x = sum(xs) / n
+            mean_y = daily_avg
+            num = sum((xs[i] - mean_x) * (costs[i] - mean_y) for i in range(n))
+            den = sum((xs[i] - mean_x) ** 2 for i in range(n)) or 1
+            slope = num / den
+
+            # Project next 30 days from today (x = n, n+1, ..., n+29)
+            projected_days = [daily_avg + slope * (n + i) for i in range(30)]
+            projected_monthly = max(sum(projected_days), 0.0)
+            confidence = "high" if n >= 5 else "low"
+
+            return {
+                "projected_monthly_usd": round(projected_monthly, 4),
+                "daily_avg_usd": round(daily_avg, 6),
+                "days_of_data": n,
+                "confidence": confidence,
+            }
+        except Exception as exc:
+            logger.warning("projected_monthly_failed", error=str(exc))
+            return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
