@@ -27,6 +27,8 @@ import { LiveCostTicker } from "@/components/live/LiveCostTicker";
 import { GoalEvidencePanel } from "./components/GoalEvidencePanel";
 import { GoalOutcomeHero } from "./components/GoalOutcomeHero";
 import { GoalResultCanvas } from "./components/GoalResultCanvas";
+import { normalizeAdaptiveResult } from "./adaptiveResult";
+import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import type { GoalEvent } from "@/lib/api/client";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
@@ -70,6 +72,10 @@ function formatValue(value: unknown): string | undefined {
   return JSON.stringify(value, null, 2);
 }
 
+function toolEventName(event: StreamGoalEvent): string {
+  return readString(event.tool_name) ?? readString(event.tool) ?? "Tool call";
+}
+
 function eventTimestamp(event: GoalEvent): string | undefined {
   return readString(event.created_at) ?? readString(event.ts);
 }
@@ -107,7 +113,7 @@ function eventSummary(event: StreamGoalEvent, context: EventSummaryContext) {
   const type = readString(event.type) ?? "event";
   const step = readString(event.step);
   const status = readString(event.status);
-  const toolName = readString(event.tool_name) ?? readString(event.tool) ?? "Tool call";
+  const toolName = toolEventName(event);
   const serverId = readString(event.server_id);
   const success = typeof event.success === "boolean" ? event.success : undefined;
   const details: string[] = [];
@@ -198,6 +204,17 @@ function StepRow({
   const [open, setOpen] = useState(false);
   const summary = eventSummary(event, { events, index, goalStatus });
   const status = summary.status;
+  const type = readString(event.type);
+  const isToolEvent = type === "tool_call_complete" || type === "tool_call_failed";
+  const serverId = readString(event.server_id);
+  const toolResult = isToolEvent
+    ? normalizeAdaptiveResult(event.output, {
+        toolName: toolEventName(event),
+        serverId,
+        success: typeof event.success === "boolean" ? event.success : readString(event.type) !== "tool_call_failed",
+        error: event.error,
+      })
+    : undefined;
   const Icon = status === "complete" ? CheckCircle : status === "failed" ? XCircle : Loader2;
   const iconColor =
     status === "complete"
@@ -216,7 +233,12 @@ function StepRow({
         <span className="flex-1 text-sm font-medium">{summary.label}</span>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
       </button>
-      {open && (
+      {open && isToolEvent && toolResult && (
+        <div className="px-4 pb-3">
+          <AdaptiveResultPanel compact result={toolResult} />
+        </div>
+      )}
+      {open && !isToolEvent && (
         <pre className="px-4 pb-3 text-xs overflow-x-auto whitespace-pre-wrap text-muted-foreground">
           {summary.details.length > 0 ? summary.details.join("\n") : JSON.stringify(event, null, 2)}
         </pre>
@@ -691,9 +713,9 @@ export function GoalDetailPage() {
           {events.length > 0 && <ExecutionTimeline events={events} />}
 
           {/* Tool Call Inspector */}
-          {events.some((e) => e.type === "tool_call_complete") && (
+          {events.some((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed") && (
             <ToolCallInspector
-              toolEvents={events.filter((e) => e.type === "tool_call_complete")}
+              toolEvents={events.filter((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed")}
             />
           )}
         </div>

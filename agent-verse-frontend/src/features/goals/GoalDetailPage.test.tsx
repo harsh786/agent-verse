@@ -19,7 +19,18 @@ vi.mock('@/lib/sse/useGoalStream', () => ({
         tool: 'jira.search',
         success: true,
         server_id: 'jira',
-        output: { issues: 2 },
+        output: {
+          total: 1,
+          issues: [
+            {
+              key: 'OPP-34746',
+              summary: 'Removed Logging in files in txn data service',
+              status: 'To be deployed',
+              assignee: 'Abhay Dwivedi',
+              url: 'https://jira.example.com/browse/OPP-34746',
+            },
+          ],
+        },
       },
       {
         type: 'tool_call_failed',
@@ -214,12 +225,67 @@ describe('GoalDetailPage', () => {
     expect(screen.getByText(/Execute plan/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByText('jira.search succeeded'));
-    expect(screen.getByText(/Server: jira/)).toBeInTheDocument();
-    expect(screen.getByText(/"issues": 2/)).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'OPP-34746' })).toHaveAttribute(
+      'href',
+      'https://jira.example.com/browse/OPP-34746'
+    );
 
     await userEvent.click(screen.getByText('github.create_pr failed'));
-    expect(screen.getByText(/Server: github/)).toBeInTheDocument();
-    expect(screen.getByText(/Token expired/)).toBeInTheDocument();
+    expect(screen.getByText('Server')).toBeInTheDocument();
+    expect(screen.getAllByText('github').length).toBeGreaterThan(0);
+    expect(screen.getByText('Token expired')).toBeInTheDocument();
+  });
+
+  test('renders expanded tool output as an adaptive table instead of raw JSON text', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /jira\.search succeeded/i }));
+
+    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'OPP-34746' })).toHaveAttribute(
+      'href',
+      'https://jira.example.com/browse/OPP-34746'
+    );
+    expect(screen.getByText('Removed Logging in files in txn data service')).toBeInTheDocument();
+    expect(screen.getByText('Abhay Dwivedi')).toBeInTheDocument();
+  });
+
+  test('includes failed tool calls in the inspector', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('Tool Call Inspector')).toBeInTheDocument();
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument();
+  });
+
+  test('does not fabricate Jira issue links when connector output omits a URL', async () => {
+    mockGoal('executing');
+    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+      connected: true,
+      streamingToken: null,
+      events: [
+        {
+          type: 'tool_call_complete',
+          tool: 'jira.search',
+          success: true,
+          server_id: 'jira',
+          output: {
+            total: 1,
+            issues: [{ key: 'OPP-34746', summary: 'Missing URL should stay as text' }],
+          } as unknown as string,
+        },
+      ],
+    });
+
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /jira\.search succeeded/i }));
+
+    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'OPP-34746' })).not.toBeInTheDocument();
+    expect(screen.getByText('OPP-34746')).toBeInTheDocument();
   });
 
   test('does not leave successful completed goal events spinning', async () => {
