@@ -6,7 +6,7 @@ import { useState, useCallback, useRef } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant,
   addEdge, useNodesState, useEdgesState, type Node, type Edge, type Connection,
-  MarkerType,
+  MarkerType, Handle, Position,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -44,19 +44,39 @@ interface WorkflowNodeData {
 function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: boolean }) {
   const color = NODE_COLORS[data.type] ?? 'bg-gray-100 border-gray-300';
   return (
-    <div className={`rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
+    <div
+      className={`rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${
+        selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''
+      }`}
+    >
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!bg-slate-400 !border-slate-600 !w-3 !h-3"
+      />
       <div className="flex items-center gap-1.5 font-semibold mb-0.5">
         <span>{NODE_ICONS[data.type] ?? '◻'}</span>
         <span className="truncate">{String(data.label)}</span>
       </div>
-      {data.subtitle && <div className="text-[10px] opacity-60 truncate">{String(data.subtitle)}</div>}
-      {data.status && (
-        <div className={`mt-1 text-[10px] font-medium ${
-          data.status === 'running'  ? 'text-blue-600'  :
-          data.status === 'complete' ? 'text-green-600' :
-          data.status === 'failed'   ? 'text-red-600'   : 'opacity-50'
-        }`}>● {data.status}</div>
+      {data.subtitle && (
+        <div className="text-[10px] opacity-60 truncate">{String(data.subtitle)}</div>
       )}
+      {data.status && (
+        <div
+          className={`mt-1 text-[10px] font-medium ${
+            data.status === 'running'  ? 'text-blue-600'  :
+            data.status === 'complete' ? 'text-green-600' :
+            data.status === 'failed'   ? 'text-red-600'   : 'opacity-50'
+          }`}
+        >
+          ● {data.status}
+        </div>
+      )}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!bg-slate-400 !border-slate-600 !w-3 !h-3"
+      />
     </div>
   );
 }
