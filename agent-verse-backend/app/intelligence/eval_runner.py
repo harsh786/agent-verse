@@ -12,6 +12,22 @@ from app.tenancy.context import TenantContext
 class EvalRunner:
     """Scores a completed AgentState on the 7 evaluation dimensions."""
 
+    # All 7 scoring dimensions produced by this runner
+    DIMENSIONS: list[str] = [
+        "task_completion",
+        "efficiency",
+        "accuracy",
+        "safety",
+        "coherence",
+        "sla",
+        "tool_relevance",
+    ]
+
+    @property
+    def score_dimensions(self) -> list[str]:
+        """Return all 7 dimension names scored by this runner."""
+        return self.DIMENSIONS
+
     def _score_tool_relevance(self, steps: list, iterations: int) -> float:
         """Score tool call efficiency: redundant/failed calls lower the score.
 
