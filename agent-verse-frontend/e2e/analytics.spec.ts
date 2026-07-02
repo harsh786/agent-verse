@@ -1,6 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
 
 async function setupAuth(page: Page) {
+  // Catch-all: block unmocked localhost:8000 requests from hitting the real backend
+  // (which returns 401 for test API keys and triggers logout). Registered FIRST
+  // so specific mocks added later have higher priority via Playwright's LIFO matching.
+  await page.route(/localhost:8000/, (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'not found' }) })
+  );
   await page.addInitScript(() => {
     localStorage.setItem(
       'av-auth',
@@ -26,47 +32,53 @@ async function setupAuth(page: Page) {
 }
 
 const MOCK_GOAL_METRICS = {
-  total_goals: 142,
+  period_days: 30,
+  total: 142,
+  completed: 124,
+  failed: 18,
+  cancelled: 0,
   success_rate: 0.87,
-  avg_duration_ms: 4200,
-  by_status: { complete: 124, failed: 18 },
+  avg_duration_s: 4.2,
+  avg_cost_usd: 0.05,
+  total_cost_usd: 7.1,
+  by_status: { complete: 124, failed: 18, cancelled: 0 },
 };
 
 const MOCK_COST_METRICS = {
-  total_usd: 12.5,
+  period_days: 30,
+  total_cost_usd: 12.5,
   by_day: [
-    { date: '2025-06-01', usd: 1.2 },
-    { date: '2025-06-02', usd: 2.1 },
+    { date: '2025-06-01', total_usd: 1.2 },
   ],
 };
 
 const MOCK_EVAL_METRICS = {
-  avg_score: 0.91,
+  period_days: 30,
   total_evals: 50,
+  pass_rate: 0.91,
+  avg_score: 0.88,
+  evals_by_day: [
+    { date: '2025-06-01', pass_rate: 0.90 },
+    { date: '2025-06-02', pass_rate: 0.92 },
+  ],
 };
 
 function mockAnalyticsApis(page: Page) {
   return page.route(/localhost:8000\/analytics/, (route) => {
     const url = route.request().url();
     if (url.includes('/goals')) {
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(MOCK_GOAL_METRICS),
-      });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_GOAL_METRICS) });
     }
     if (url.includes('/costs')) {
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(MOCK_COST_METRICS),
-      });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_COST_METRICS) });
     }
     if (url.includes('/evals')) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_EVAL_METRICS) });
+    }
+    if (url.includes('/tools')) {
       return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(MOCK_EVAL_METRICS),
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ tools: [{ name: 'jira_search_issues', success: 10, failed: 1, call_count: 11 }] }),
       });
     }
     return route.continue();
