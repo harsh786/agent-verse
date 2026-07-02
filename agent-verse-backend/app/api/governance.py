@@ -395,6 +395,11 @@ async def list_approvals(request: Request) -> list[dict[str, Any]]:
             "action": r.action,
             "risk_level": r.risk_level,
             "status": r.status,
+            "created_at": getattr(r, "created_at", ""),
+            "note": getattr(r, "note", ""),
+            "approver": getattr(r, "approver", None),
+            "required_approvers": getattr(r, "required_approvers", 1),
+            "approvals_received": getattr(r, "approvals_received", 0),
         }
         for r in pending
     ]
@@ -698,6 +703,30 @@ async def delete_notification_channel(request: Request, channel_id: str) -> None
     removed = svc.remove_channel(channel_id, tenant.tenant_id)
     if not removed:
         raise HTTPException(404, "Notification channel not found")
+
+
+@router.post("/notifications/{channel_id}/test")
+async def test_notification_channel(request: Request, channel_id: str) -> dict[str, Any]:
+    """Send a test notification to verify channel connectivity."""
+    tenant = _require_tenant(request)
+    svc = getattr(request.app.state, "notification_service", None)
+    if svc is None:
+        raise HTTPException(503, "Notification service unavailable")
+    channels = svc.get_channels(tenant.tenant_id)
+    channel = next((c for c in channels if c.channel_id == channel_id), None)
+    if channel is None:
+        raise HTTPException(404, "Notification channel not found")
+    try:
+        result = await svc.notify_approval_required(
+            request_id="test-" + uuid.uuid4().hex[:8],
+            goal_id="test-goal",
+            action="Test notification from AgentVerse",
+            risk_level="low",
+            tenant_id=tenant.tenant_id,
+        )
+        return {"success": True, "message": f"Test notification sent to {channel.channel_type} channel."}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "message": f"Delivery failed: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -1296,6 +1325,53 @@ async def verify_audit_chain(
 # ---------------------------------------------------------------------------
 # NEW (audit v2): SLA violation stats
 # ---------------------------------------------------------------------------
+
+
+@router.get("/approvals/history")
+async def list_approval_history(
+    request: Request,
+    limit: int = 50,
+    status_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return resolved approval requests from the DB (approved / rejected / timed_out)."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text as _text
+
+        sql = """
+            SELECT id, goal_id, action, risk_level, status, approver, note,
+                   created_at, resolved_at
+            FROM approval_requests
+            WHERE tenant_id = :tid AND status != 'pending'
+        """
+        params: dict[str, Any] = {"tid": tenant_ctx.tenant_id}
+        if status_filter:
+            sql += " AND status = :sf"
+            params["sf"] = status_filter
+        sql += f" ORDER BY created_at DESC LIMIT {min(limit, 200)}"
+
+        async with db() as session:
+            rows = (await session.execute(_text(sql), params)).fetchall()
+
+        return [
+            {
+                "request_id": r[0],
+                "goal_id": r[1],
+                "action": r[2],
+                "risk_level": r[3],
+                "status": r[4],
+                "approver": r[5],
+                "note": r[6],
+                "created_at": r[7].isoformat() if r[7] else "",
+                "resolved_at": r[8].isoformat() if r[8] else "",
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
 
 
 @router.get("/approvals/sla-stats")

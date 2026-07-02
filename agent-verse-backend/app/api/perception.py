@@ -138,6 +138,52 @@ class GoalWithImageRequest(BaseModel):
     agent_id: str | None = None
 
 
+class BatchAnalyzeRequest(BaseModel):
+    urls: list[str]
+    question: str = "What is the main purpose and content of this page?"
+
+
+@router.post("/batch-analyze")
+async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str, Any]:
+    """Analyze multiple URLs concurrently with the vision LLM.
+
+    Returns an ordered list of analysis results — one per input URL.
+    Invalid URLs are returned with success=False rather than raising.
+    """
+    _require_tenant(request)
+
+    if not body.urls:
+        raise HTTPException(status_code=400, detail="urls list must not be empty")
+    if len(body.urls) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 URLs per batch")
+
+    for url in body.urls:
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL must start with http:// or https://: {url}",
+            )
+
+    analyzer = _page_analyzer(request)
+    analyses = await analyzer.analyze_multiple(body.urls, question=body.question)
+
+    return {
+        "results": [
+            {
+                "url": a.url,
+                "success": a.success,
+                "analysis": a.llm_analysis or "",
+                "screenshot_b64": a.screenshot_b64 or "",
+                "text_content": (a.text_content or "")[:2000],
+                "error": a.error or None,
+            }
+            for a in analyses
+        ],
+        "total": len(analyses),
+        "succeeded": sum(1 for a in analyses if a.success),
+    }
+
+
 @router.post("/goal-with-image", status_code=202)
 async def submit_goal_with_image(
     request: Request, body: GoalWithImageRequest
