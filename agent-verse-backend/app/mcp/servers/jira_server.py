@@ -212,10 +212,10 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _jira_auth() -> dict[str, str]:
-    email = os.getenv("JIRA_EMAIL", "")
-    token = os.getenv("JIRA_API_TOKEN", "")
-    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+def _jira_auth(email: str | None = None, token: str | None = None) -> dict[str, str]:
+    _email = email or os.getenv("JIRA_EMAIL", "")
+    _token = token or os.getenv("JIRA_API_TOKEN", "")
+    creds = base64.b64encode(f"{_email}:{_token}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
         "Content-Type": "application/json",
@@ -223,9 +223,14 @@ def _jira_auth() -> dict[str, str]:
     }
 
 
-async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def call_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    credentials: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        return await _call_tool_inner(tool_name, arguments)
+        return await _call_tool_inner(tool_name, arguments, credentials=credentials)
     except httpx.HTTPStatusError as exc:
         error_body = ""
         with suppress(Exception):
@@ -240,12 +245,31 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": str(exc)}
 
 
-async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = _absolute_http_url(os.getenv("JIRA_BASE_URL", ""))
+async def _call_tool_inner(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    credentials: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    creds = credentials or {}
+    base = _absolute_http_url(
+        creds.get("url") or creds.get("base_url") or os.getenv("JIRA_BASE_URL", "")
+    )
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
 
-    headers = _jira_auth()
+    email = (
+        creds.get("username")
+        or creds.get("email")
+        or os.getenv("JIRA_EMAIL", "")
+    )
+    token = (
+        creds.get("password")
+        or creds.get("api_token")
+        or creds.get("token")
+        or os.getenv("JIRA_API_TOKEN", "")
+    )
+    headers = _jira_auth(email=email, token=token)
 
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
         if tool_name == "jira_search_issues":
