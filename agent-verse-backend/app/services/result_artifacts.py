@@ -70,7 +70,11 @@ def build_result_artifact(goal: str, status: str, events: list[dict[str, Any]]) 
     )
 
     if jira_event is not None:
-        output = _coerce_output(jira_event.get("output"))
+        # Prefer raw structured output (tool_output) over the sanitized string (output).
+        # graph.py emits tool_output for structured connector results to avoid
+        # truncation causing empty issue counts.
+        raw_output = jira_event.get("tool_output")
+        output = raw_output if isinstance(raw_output, dict) else _coerce_output(jira_event.get("output"))
         issues = output.get("issues") if isinstance(output.get("issues"), list) else []
         rows = _jira_rows(issues)
         issue_word = "issue" if len(rows) == 1 else "issues"
