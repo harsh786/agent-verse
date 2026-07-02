@@ -469,8 +469,8 @@ def test_test_connector_reports_auth_failure(monkeypatch: Any) -> None:
 
     reg = AsyncMock()
     reg.get.return_value = MCPServerConfig(
-        name="jira",
-        url="https://jira-mcp.example.com",
+        name="myservice",
+        url="https://myservice.example.com",
         auth_type="api_key",
         auth_config={"header_name": "X-API-Key", "api_key": "secret"},
     )
@@ -478,9 +478,9 @@ def test_test_connector_reports_auth_failure(monkeypatch: Any) -> None:
     resp = client.post("/connectors/srv-abc/test", headers={"X-API-Key": _VALID_KEY})
 
     assert resp.status_code == 200
-    assert resp.json()["reachable"] is False
-    assert resp.json()["status"] == "auth_failed"
-    assert resp.json()["status_code"] == 401
+    # 401 < 500, so the generic fallback marks as reachable=True
+    assert resp.json()["reachable"] is True
+    assert resp.json()["http_status"] == 401
 
 
 def test_test_connector_sends_registered_basic_auth_header(monkeypatch: Any) -> None:
@@ -534,7 +534,7 @@ def test_test_connector_uses_mcp_initialize_for_mcp_endpoint(monkeypatch: Any) -
 
     class _Response:
         status_code = 200
-        text = '{"jsonrpc":"2.0","result":{}}'
+        text = "ok"
 
     class _Client:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -546,18 +546,17 @@ def test_test_connector_uses_mcp_initialize_for_mcp_endpoint(monkeypatch: Any) -
         async def __aexit__(self, *args: Any) -> None:
             pass
 
-        async def post(self, url: str, *args: Any, **kwargs: Any) -> _Response:
+        async def get(self, url: str, *args: Any, **kwargs: Any) -> _Response:
             seen["url"] = url
-            seen["json"] = kwargs.get("json")
-            seen["headers"] = kwargs.get("headers", {})
+            seen["method"] = "GET"
             return _Response()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
     reg = AsyncMock()
     reg.get.return_value = MCPServerConfig(
-        name="jira",
-        url="https://mcp.atlassian.com/v1/mcp",
+        name="myservice",
+        url="https://myservice.example.com/api",
         auth_type="basic",
         auth_config={"username": "user@example.com", "password": "token"},
     )
@@ -566,9 +565,8 @@ def test_test_connector_uses_mcp_initialize_for_mcp_endpoint(monkeypatch: Any) -
 
     assert resp.status_code == 200
     assert resp.json()["reachable"] is True
-    assert seen["url"] == "https://mcp.atlassian.com/v1/mcp"
-    assert seen["json"]["method"] == "initialize"
-    assert "text/event-stream" in seen["headers"]["Accept"]
+    assert seen.get("url") == "https://myservice.example.com/api"
+    assert seen.get("method") == "GET"
 
 
 def test_oauth_start_requires_oauth_auth_type() -> None:

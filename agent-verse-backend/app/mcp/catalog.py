@@ -6,7 +6,83 @@ the registry instantiates an MCPServerConfig from the spec + their auth config.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class AuthFieldSpec:
+    key: str
+    label: str
+    placeholder: str
+    field_type: str  # "text" | "password" | "url" | "email"
+    required: bool = True
+    hint: str = ""
+
+
+# Per-connector auth field overrides (richer hints than generic)
+_CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
+    "jira": [
+        AuthFieldSpec("url", "Jira URL", "https://mycompany.atlassian.net", "url", hint="Your Atlassian Cloud or Server instance URL"),
+        AuthFieldSpec("username", "Email", "you@company.com", "email", hint="Your Atlassian account email address"),
+        AuthFieldSpec("password", "API Token", "ATATT3xFfGF0...", "password", hint="Create at id.atlassian.com/manage-profile/security/api-tokens"),
+    ],
+    "github": [
+        AuthFieldSpec("token", "Personal Access Token", "ghp_xxxxxxxxxxxx", "password", hint="Create at github.com/settings/tokens — needs repo scope"),
+        AuthFieldSpec("url", "GitHub URL", "https://api.github.com", "url", required=False, hint="Leave blank for github.com; override for GitHub Enterprise"),
+    ],
+    "confluence": [
+        AuthFieldSpec("url", "Confluence URL", "https://mycompany.atlassian.net", "url"),
+        AuthFieldSpec("username", "Email", "you@company.com", "email"),
+        AuthFieldSpec("password", "API Token", "ATATT3x...", "password"),
+    ],
+    "slack": [
+        AuthFieldSpec("token", "Bot Token", "xoxb-xxxxxxxxxxxx", "password", hint="Create a Slack App and use the Bot Token from OAuth & Permissions"),
+    ],
+    "linear": [
+        AuthFieldSpec("api_key", "API Key", "lin_api_xxxxxxxx", "password", hint="Create at linear.app/settings/api"),
+    ],
+    "gitlab": [
+        AuthFieldSpec("token", "Personal Access Token", "glpat-xxxx", "password"),
+        AuthFieldSpec("url", "GitLab URL", "https://gitlab.com/api/v4", "url", required=False),
+    ],
+    "hubspot": [
+        AuthFieldSpec("api_key", "Access Token", "pat-na1-xxxxxxxx", "password", hint="Use a Private App token from your HubSpot account"),
+    ],
+    "stripe": [
+        AuthFieldSpec("token", "Secret Key", "sk_live_xxxxxxxx", "password", hint="Find in Stripe Dashboard > Developers > API keys"),
+    ],
+    "datadog": [
+        AuthFieldSpec("DD-API-KEY", "API Key", "your-api-key", "password"),
+        AuthFieldSpec("DD-APPLICATION-KEY", "Application Key", "your-app-key", "password"),
+    ],
+    "sentry": [
+        AuthFieldSpec("token", "Auth Token", "sntrys_xxx", "password"),
+        AuthFieldSpec("SENTRY_ORG", "Organization Slug", "my-org", "text"),
+    ],
+    "aws": [
+        AuthFieldSpec("AWS_ACCESS_KEY_ID", "Access Key ID", "AKIAIOSFODNN7EXAMPLE", "text"),
+        AuthFieldSpec("AWS_SECRET_ACCESS_KEY", "Secret Access Key", "wJalrXUtnFEMI...", "password"),
+        AuthFieldSpec("AWS_DEFAULT_REGION", "Region", "us-east-1", "text", required=False),
+    ],
+    "postgresql": [
+        AuthFieldSpec("url", "Connection URL", "postgresql://user:pass@localhost:5432/mydb", "url"),
+    ],
+}
+
+# Generic defaults by auth_type
+_DEFAULT_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
+    "bearer": [AuthFieldSpec("token", "Access Token", "your-token", "password")],
+    "api_key": [AuthFieldSpec("api_key", "API Key", "your-api-key", "password")],
+    "basic": [
+        AuthFieldSpec("username", "Username", "your-username", "text"),
+        AuthFieldSpec("password", "Password", "your-password", "password"),
+    ],
+    "connection_string": [AuthFieldSpec("url", "Connection URL", "service://host:port/db", "url")],
+    "oauth_ac": [
+        AuthFieldSpec("client_id", "Client ID", "your-client-id", "text"),
+        AuthFieldSpec("client_secret", "Client Secret", "your-client-secret", "password"),
+    ],
+}
 
 
 @dataclass(frozen=True)
@@ -16,6 +92,15 @@ class ConnectorSpec:
     auth_type: str
     default_url: str
     icon: str = ""
+    category: str = "other"
+    builtin_server_id: str = ""
+    display_name: str = ""
+
+    @property
+    def auth_fields(self) -> list[AuthFieldSpec]:
+        if self.name in _CONNECTOR_AUTH_FIELDS:
+            return _CONNECTOR_AUTH_FIELDS[self.name]
+        return _DEFAULT_AUTH_FIELDS.get(self.auth_type, [])
 
 
 CONNECTOR_CATALOG: list[ConnectorSpec] = [
@@ -26,20 +111,29 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="bearer",
         default_url="https://api.github.com",
         icon="github",
+        category="devtools",
+        builtin_server_id="builtin-github",
+        display_name="GitHub",
     ),
     ConnectorSpec(
         name="jira",
         description="JIRA — project management, issue tracking, sprints",
-        auth_type="api_key",
+        auth_type="basic",
         default_url="https://your-domain.atlassian.net",
         icon="jira",
+        category="project_management",
+        builtin_server_id="builtin-jira",
+        display_name="Jira",
     ),
     ConnectorSpec(
         name="slack",
         description="Slack — messaging, channels, workflows, notifications",
-        auth_type="oauth_ac",
+        auth_type="bearer",
         default_url="https://slack.com/api",
         icon="slack",
+        category="communication",
+        builtin_server_id="builtin-slack",
+        display_name="Slack",
     ),
     ConnectorSpec(
         name="salesforce",
@@ -47,6 +141,8 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="oauth_ac",
         default_url="https://login.salesforce.com",
         icon="salesforce",
+        category="crm",
+        display_name="Salesforce",
     ),
     ConnectorSpec(
         name="linear",
@@ -54,6 +150,9 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="api_key",
         default_url="https://api.linear.app",
         icon="linear",
+        category="project_management",
+        builtin_server_id="builtin-linear",
+        display_name="Linear",
     ),
     ConnectorSpec(
         name="notion",
@@ -68,6 +167,9 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="bearer",
         default_url="https://sentry.io/api/0",
         icon="sentry",
+        category="observability",
+        builtin_server_id="builtin-sentry",
+        display_name="Sentry",
     ),
     ConnectorSpec(
         name="datadog",
@@ -75,6 +177,9 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="api_key",
         default_url="https://api.datadoghq.com",
         icon="datadog",
+        category="observability",
+        builtin_server_id="builtin-datadog",
+        display_name="Datadog",
     ),
     ConnectorSpec(
         name="stripe",
@@ -82,14 +187,20 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="bearer",
         default_url="https://api.stripe.com",
         icon="stripe",
+        category="finance",
+        builtin_server_id="builtin-stripe",
+        display_name="Stripe",
     ),
     # ── CRM / Support ────────────────────────────────────────────────────────
     ConnectorSpec(
         name="hubspot",
         description="HubSpot — CRM, contacts, deals, marketing automation",
-        auth_type="oauth_ac",
+        auth_type="bearer",
         default_url="https://api.hubapi.com",
         icon="hubspot",
+        category="crm",
+        builtin_server_id="builtin-hubspot",
+        display_name="HubSpot",
     ),
     ConnectorSpec(
         name="zendesk",
@@ -127,6 +238,9 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="connection_string",
         default_url="postgresql://localhost:5432/db",
         icon="postgresql",
+        category="database",
+        builtin_server_id="builtin-postgres",
+        display_name="PostgreSQL",
     ),
     ConnectorSpec(
         name="mysql",
@@ -238,6 +352,9 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="bearer",
         default_url="https://gitlab.com/api/v4",
         icon="gitlab",
+        category="devtools",
+        builtin_server_id="builtin-gitlab",
+        display_name="GitLab",
     ),
     ConnectorSpec(
         name="pagerduty",
@@ -249,9 +366,12 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ConnectorSpec(
         name="confluence",
         description="Confluence — wiki pages, spaces, team knowledge base",
-        auth_type="api_key",
+        auth_type="basic",
         default_url="https://your-domain.atlassian.net/wiki/rest/api",
         icon="confluence",
+        category="project_management",
+        builtin_server_id="builtin-confluence",
+        display_name="Confluence",
     ),
     # Email Marketing
     ConnectorSpec(

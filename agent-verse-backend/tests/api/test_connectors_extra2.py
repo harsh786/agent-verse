@@ -294,7 +294,7 @@ def test_test_connector_connection_exception() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["reachable"] is False
-    assert body["status"] == "unreachable"
+    assert body["status"] == "failed"
     assert body["server_id"] == server_id
 
 
