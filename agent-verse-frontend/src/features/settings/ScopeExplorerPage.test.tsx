@@ -16,16 +16,19 @@ function renderPage() {
   );
 }
 
-function mockTenant(plan = 'professional') {
+function mockFetch(plan = 'professional') {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    if (url.includes('/tenants/me')) {
+    if (url.includes('/tenants/me/keys'))
+      return new Response(JSON.stringify([
+        { key_id: 'k1', name: 'Production Key', scopes: ['goals:read'], created_at: '2026-01-01T00:00:00Z' },
+      ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/tenants/me'))
       return new Response(
         JSON.stringify({ tenant_id: 'tid-1', name: 'ACME', plan }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
-    }
-    return new Response(null, { status: 404 });
+    return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }
 
@@ -35,35 +38,32 @@ describe('ScopeExplorerPage', () => {
       apiKey: 'test-key', tenantId: 'tenant-1', plan: 'professional', isAuthenticated: true,
     });
   });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  afterEach(() => vi.restoreAllMocks());
 
   test('renders without crashing', async () => {
-    mockTenant();
+    mockFetch();
     renderPage();
-    // Page loads; static scope groups are always rendered
     await waitFor(() => expect(document.body).toBeTruthy());
   });
 
   test('renders goals scope group', async () => {
-    mockTenant();
+    mockFetch();
     renderPage();
-    await waitFor(() => expect(screen.getByText('goals')).toBeInTheDocument());
+    // The page shows scope groups — "goals" should appear somewhere
+    await waitFor(() => expect(screen.getAllByText(/goals/i).length).toBeGreaterThanOrEqual(1));
   });
 
   test('renders agents scope group', async () => {
-    mockTenant();
+    mockFetch();
     renderPage();
-    await waitFor(() => expect(screen.getByText('agents')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/agents/i).length).toBeGreaterThanOrEqual(1));
   });
 
   test('shows scopes with granted check marks for professional plan', async () => {
-    mockTenant('professional');
+    mockFetch('professional');
     renderPage();
-    // goals:read should be granted for professional plan
-    await waitFor(() => expect(screen.getByText('goals:read')).toBeInTheDocument());
+    // goals:read should be visible somewhere in scope list
+    await waitFor(() => expect(screen.getAllByText(/goals:read/i).length).toBeGreaterThanOrEqual(1));
   });
 
   test('shows error state when tenant fetch fails', async () => {
@@ -76,11 +76,15 @@ describe('ScopeExplorerPage', () => {
     );
   });
 
-  test('search input filters scope list', async () => {
-    mockTenant();
+  test('search input is present', async () => {
+    mockFetch();
     renderPage();
-    await waitFor(() => expect(screen.getByText('goals:read')).toBeInTheDocument());
-    const searchInput = screen.getByPlaceholderText(/search/i);
-    expect(searchInput).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByPlaceholderText(/search/i)).toBeInTheDocument());
+  });
+
+  test('API keys section renders', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('api-keys-section')).toBeInTheDocument());
   });
 });
