@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -348,3 +350,150 @@ async def events_stream(request: Request) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Intelligence endpoints
+# ---------------------------------------------------------------------------
+
+class SuggestScheduleRequest(BaseModel):
+    goal_description: str
+    context: str = ""       # optional additional context
+
+
+@router.get("/analytics")
+async def get_schedule_analytics(request: Request) -> dict[str, Any]:
+    """Aggregate analytics across all schedules for this tenant.
+
+    Returns counts by status and trigger type, plus a simple 7-day
+    firing cadence derived from last_fired_at timestamps.
+    """
+    tenant_ctx: TenantContext = _require_tenant(request)
+    store = _schedule_store(request)
+    records = store.list_all(tenant_ctx=tenant_ctx)
+
+    total = len(records)
+    active = sum(1 for r in records if not r.get("paused", False))
+    paused = total - active
+
+    by_type: dict[str, int] = {}
+    for r in records:
+        ttype = r.get("trigger_type") or (r.get("spec") or {}).get("trigger_type") or "unknown"
+        by_type[ttype] = by_type.get(ttype, 0) + 1
+
+    # Build a rough 7-day cadence histogram using last_fired_at
+    now = datetime.now(UTC)
+    fired_by_day: dict[str, int] = {}
+    for i in range(7):
+        day_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        fired_by_day[day_str] = 0
+
+    for r in records:
+        lf = r.get("last_fired_at")
+        if lf:
+            try:
+                dt = datetime.fromisoformat(str(lf).replace("Z", "+00:00"))
+                day_str = dt.strftime("%Y-%m-%d")
+                if day_str in fired_by_day:
+                    fired_by_day[day_str] += 1
+            except (ValueError, TypeError):
+                pass
+
+    return {
+        "total": total,
+        "active": active,
+        "paused": paused,
+        "by_trigger_type": by_type,
+        "fired_last_7_days": fired_by_day,
+        "schedules_summary": [
+            {
+                "schedule_id": r.get("schedule_id", ""),
+                "goal_template": r.get("goal_template", ""),
+                "trigger_type": r.get("trigger_type") or (r.get("spec") or {}).get("trigger_type") or "unknown",
+                "status": "paused" if r.get("paused") else "active",
+                "last_fired_at": r.get("last_fired_at"),
+                "next_run_at": r.get("next_run_at"),
+            }
+            for r in records[:20]   # cap at 20 for response size
+        ],
+    }
+
+
+@router.post("/suggest")
+async def suggest_schedule(
+    request: Request, body: SuggestScheduleRequest
+) -> dict[str, Any]:
+    """Use the LLM to suggest optimal schedule configurations for a goal.
+
+    Returns 3 ranked suggestions with rationale, trigger type, and
+    example cron/interval values.
+    """
+    _require_tenant(request)
+    provider = getattr(request.app.state, "llm_provider", None)
+    if provider is None:
+        # Fallback: return template suggestions without LLM
+        return {
+            "suggestions": [
+                {
+                    "rank": 1,
+                    "title": "Daily at 9 AM",
+                    "trigger_type": "cron",
+                    "cron_expr": "0 9 * * *",
+                    "interval_seconds": None,
+                    "rationale": "Good for daily recurring tasks during business hours.",
+                    "use_case": "Reports, summaries, digests",
+                },
+                {
+                    "rank": 2,
+                    "title": "Every 4 hours",
+                    "trigger_type": "interval",
+                    "cron_expr": None,
+                    "interval_seconds": 14400,
+                    "rationale": "Ideal for monitoring and alerting tasks.",
+                    "use_case": "Health checks, metrics collection",
+                },
+                {
+                    "rank": 3,
+                    "title": "Weekly Monday 8 AM",
+                    "trigger_type": "cron",
+                    "cron_expr": "0 8 * * 1",
+                    "interval_seconds": None,
+                    "rationale": "Low frequency for strategic or planning tasks.",
+                    "use_case": "Weekly planning, team summaries",
+                },
+            ],
+            "goal": body.goal_description,
+            "llm_powered": False,
+        }
+
+    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    system_prompt = (
+        "You are a scheduling expert for AI automation systems. "
+        "Given a goal description, suggest 3 optimal schedule configurations. "
+        "Respond with JSON only:\n"
+        '{"suggestions": [{"rank": 1, "title": "...", "trigger_type": "cron|interval", '
+        '"cron_expr": "..." or null, "interval_seconds": number or null, '
+        '"rationale": "...", "use_case": "..."}]}'
+    )
+    user_msg = f"Goal: {body.goal_description}\nContext: {body.context or 'none'}"
+    try:
+        resp = await provider.complete(
+            CompletionRequest(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=user_msg),
+                ],
+                max_tokens=600,
+            )
+        )
+        raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
+        data = _json.loads(raw)
+        suggestions = data.get("suggestions", [])
+    except Exception:  # noqa: BLE001
+        suggestions = []
+
+    return {
+        "suggestions": suggestions,
+        "goal": body.goal_description,
+        "llm_powered": True,
+    }
