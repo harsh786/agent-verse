@@ -21,6 +21,12 @@ import { test, expect, type Page } from '@playwright/test';
 // ── Auth + route helpers ───────────────────────────────────────────────────────
 
 async function setupAuth(page: Page) {
+  // Catch-all FIRST — blocks any unmocked localhost:8000 calls from reaching the
+  // real backend (which returns 401 and triggers logout). Specific mocks registered
+  // AFTER this have higher priority because Playwright uses LIFO matching.
+  await page.route(/localhost:8000/, (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'not found' }) })
+  );
   await page.addInitScript(() => {
     localStorage.setItem(
       'av-auth',
@@ -28,13 +34,25 @@ async function setupAuth(page: Page) {
         state: {
           apiKey: 'test-key',
           tenantId: 'test-tenant',
-          plan: 'free',           // match the proven working pattern exactly
+          plan: 'free',
           isAuthenticated: true,
         },
         version: 0,
       })
     );
     localStorage.setItem('av_api_key', 'test-key');
+    sessionStorage.setItem(
+      'av-auth',
+      JSON.stringify({
+        state: {
+          apiKey: 'test-key',
+          tenantId: 'test-tenant',
+          plan: 'free',
+          isAuthenticated: true,
+        },
+        version: 0,
+      })
+    );
   });
   await page.route('**/tenants/me', (route) =>
     route.fulfill({
@@ -42,11 +60,6 @@ async function setupAuth(page: Page) {
       contentType: 'application/json',
       body: JSON.stringify({ tenant_id: 'test-tenant', name: 'PineLabs', plan: 'free' }),
     })
-  );
-  // Catch-all for any other backend calls (analytics, connectors, etc.)
-  // so they don't hit the real server and trigger a 401→logout redirect.
-  await page.route(/localhost:8000\/(?!workflows|tenants)/, (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
   );
 }
 
