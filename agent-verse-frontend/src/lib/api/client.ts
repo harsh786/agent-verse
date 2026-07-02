@@ -606,6 +606,45 @@ export interface SearchResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface RpaIngestRequest {
+  collection_id: string;
+  urls: string[];
+  selector?: string;
+  screenshot?: boolean;
+  source_type?: string;
+  max_chars?: number;
+  include_links?: boolean;
+}
+
+export interface RpaIngestResult {
+  url: string;
+  success: boolean;
+  chunks_ingested: number;
+  total_chars?: number;
+  playwright_used?: boolean;
+  screenshot_captured?: boolean;
+  links_extracted?: number;
+  error?: string;
+}
+
+export interface RpaIngestResponse {
+  collection_id: string;
+  source_type: string;
+  urls_processed: number;
+  urls_succeeded: number;
+  total_chunks_ingested: number;
+  playwright_available: boolean;
+  results: RpaIngestResult[];
+}
+
+export interface KnowledgeCitation {
+  collection_id: string;
+  chunk_id: string;
+  score: number;
+  source_url: string;
+  excerpt: string;
+}
+
 export const knowledgeApi = {
   list: () => request<KnowledgeCollection[]>("/knowledge/collections"),
   listCollections: () => request<KnowledgeCollection[]>("/knowledge/collections"),
@@ -622,6 +661,12 @@ export const knowledgeApi = {
     request<SearchResult[]>(
       `/knowledge/search?collection_id=${collectionId}&q=${encodeURIComponent(query)}&limit=${limit}`
     ),
+  /** Ingest one or more URLs using Playwright (JS-rendered pages) */
+  ingestRpaUrls: (data: RpaIngestRequest) =>
+    request<RpaIngestResponse>("/knowledge/ingest/rpa-url", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 // ── Schedules ────────────────────────────────────────────────────────────────

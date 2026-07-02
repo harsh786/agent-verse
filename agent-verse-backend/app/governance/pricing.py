@@ -28,7 +28,22 @@ _DEFAULT_OUTPUT_RATE = 0.015
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate USD cost for a completion. Matches model name fragment."""
+    """Estimate USD cost for a completion. Matches model name fragment.
+
+    .. deprecated::
+        Use :func:`app.intelligence.cost_tracker.calculate_cost` instead.
+        This function uses a per-1k-token rate table that is no longer
+        maintained; ``calculate_cost`` uses the canonical per-1M rate table
+        in ``MODEL_PRICING`` which is kept up-to-date.
+    """
+    import warnings
+
+    warnings.warn(
+        "governance.pricing.estimate_cost() is deprecated. "
+        "Use app.intelligence.cost_tracker.calculate_cost() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     model_lower = model.lower()
     for fragment, (inp_rate, out_rate) in _PRICING.items():
         if fragment in model_lower:

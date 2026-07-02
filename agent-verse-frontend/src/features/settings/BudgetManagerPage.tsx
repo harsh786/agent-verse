@@ -204,11 +204,11 @@ export function BudgetManagerPage(): JSX.Element {
   const [goalInput, setGoalInput] = useState("");
 
   // ── Queries ─────────────────────────────────────────────────────────────────
-  const summaryQ = useQuery({ queryKey: ["cost-summary"], queryFn: costsApi.getSummary });
-  const budgetsQ = useQuery({ queryKey: ["cost-budgets"], queryFn: costsApi.getBudgets });
+  const summaryQ = useQuery({ queryKey: ["cost-summary"], queryFn: () => costsApi.getSummary() });
+  const budgetsQ = useQuery({ queryKey: ["cost-budgets"], queryFn: () => costsApi.getBudgets() });
   const govQ = useQuery({ queryKey: ["gov-budget"], queryFn: governanceApi.getBudget });
-  const perAgentQ = useQuery({ queryKey: ["cost-per-agent"], queryFn: costsApi.getPerAgent });
-  const anomaliesQ = useQuery({ queryKey: ["cost-anomalies"], queryFn: costsApi.getAnomalies });
+  const perAgentQ = useQuery({ queryKey: ["cost-per-agent"], queryFn: () => costsApi.getPerAgent() });
+  const anomaliesQ = useQuery({ queryKey: ["cost-anomalies"], queryFn: () => costsApi.getAnomalies() });
 
   // ── Initialise form from fetched data (once) ─────────────────────────────────
   useEffect(() => {
@@ -245,7 +245,6 @@ export function BudgetManagerPage(): JSX.Element {
 
   const predictMutation = useMutation({
     mutationFn: (goal: string) => costsApi.predict(goal),
-    onError: (e) => toast({ kind: "error", message: `Prediction failed: ${String(e)}` }),
   });
 
   const runGoalMutation = useMutation({
@@ -957,15 +956,20 @@ export function BudgetManagerPage(): JSX.Element {
                     {predictMutation.data.confidence} confidence
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-3">
-                  {(["min", "mean", "max"] as const).map((k) => (
+                <div className="grid grid-cols-2 gap-3">
+                  {(
+                    [
+                      ["p50", predictMutation.data!.predicted_cost_usd],
+                      ["p95", predictMutation.data!.p95_cost_usd],
+                    ] as [string, number][]
+                  ).map(([k, v]) => (
                     <div
                       key={k}
                       className="bg-card border border-border rounded-lg p-3 text-center"
                     >
                       <p className="text-xs text-muted-foreground uppercase">{k}</p>
                       <p className="text-lg font-bold mt-1">
-                        {fmtUsd(predictMutation.data!.estimated_cost_usd[k])}
+                        {fmtUsd(v)}
                       </p>
                     </div>
                   ))}
