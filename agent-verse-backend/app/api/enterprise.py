@@ -597,6 +597,55 @@ async def list_experiments(request: Request) -> list[dict]:
         return []
 
 
+from pydantic import BaseModel as _BaseModel  # noqa: E402
+
+
+class RollbackExperimentRequest(_BaseModel):
+    reason: str = "Manual rollback via UI"
+
+
+@intelligence_router.post("/experiments/{experiment_id}/rollback")
+async def rollback_experiment(
+    request: Request,
+    experiment_id: str,
+    body: RollbackExperimentRequest,
+) -> dict:
+    """Roll back a concluded experiment to its control configuration."""
+    ctx = _require_tenant(request)
+    self_opt_v2 = getattr(request.app.state, "self_optimizer_v2", None)
+    if self_opt_v2 is None:
+        from fastapi import HTTPException as _HTTPException, status as _status
+        raise _HTTPException(
+            status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Self-optimizer v2 not available",
+        )
+    try:
+        experiments = await self_opt_v2.list_experiments(tenant_id=ctx.tenant_id)
+    except Exception:
+        experiments = []
+    experiment = next(
+        (e for e in experiments if e.get("id") == experiment_id), None
+    )
+    if experiment is None:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
+    success = await self_opt_v2.rollback(
+        tenant_id=ctx.tenant_id,
+        agent_id=experiment["agent_id"],
+        experiment_id=experiment_id,
+        reason=body.reason,
+    )
+    if not success:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=400, detail="Rollback failed")
+    return {
+        "experiment_id": experiment_id,
+        "agent_id": experiment["agent_id"],
+        "status": "rolled_back",
+        "reason": body.reason,
+    }
+
+
 @intelligence_router.get("/suggestions")
 async def list_suggestions(
     request: Request, applied: bool | None = None

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { JSX } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, XCircle, AlertCircle, Clock, FlaskConical } from "lucide-react";
+import { CheckCircle2, XCircle, AlertCircle, Clock, FlaskConical, RotateCcw } from "lucide-react";
 import { selfImprovementApi } from "@/lib/api/client";
 import type { Experiment, Suggestion } from "@/lib/api/client";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -130,6 +130,16 @@ export function SelfImprovementPage(): JSX.Element {
     onError: (e) => toast({ kind: "error", message: `Failed: reject suggestion. ${String(e)}` }),
   });
 
+  const rollbackMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+      selfImprovementApi.rollbackExperiment(id, reason),
+    onSuccess: () => {
+      toast({ kind: "success", message: "Rolled back — agent restored to control configuration" });
+      qc.invalidateQueries({ queryKey: ["experiments"] });
+    },
+    onError: (e) => toast({ kind: "error", message: `Rollback failed: ${String(e)}` }),
+  });
+
   const experiments: Experiment[] = experimentsQuery.data ?? [];
   const suggestions: Suggestion[] = suggestionsQuery.data ?? [];
 
@@ -220,6 +230,26 @@ export function SelfImprovementPage(): JSX.Element {
                   </div>
                 </button>
                 {expandedExp === exp.id && <div className="px-5 pb-5"><ExperimentDetail experiment={exp} /></div>}
+                {/* Rollback available for concluded experiments */}
+                {expandedExp === exp.id && exp.status === "concluded" && (
+                  <div className="px-5 pb-4 border-t border-border pt-4 flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {exp.lift_pct !== null && exp.lift_pct > 0
+                        ? `Challenger improved by +${exp.lift_pct.toFixed(1)}% — rollback to restore control`
+                        : "Rollback to restore the original agent configuration"}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => rollbackMutation.mutate({ id: exp.id, reason: `Rolled back from UI. Lift: ${exp.lift_pct?.toFixed(1) ?? "N/A"}%.` })}
+                      disabled={rollbackMutation.isPending}
+                      aria-label={`Roll back experiment ${exp.name}`}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-300 disabled:opacity-50 transition-colors"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                      {rollbackMutation.isPending ? "Rolling back…" : "Rollback"}
+                    </button>
+                  </div>
+                )}
               </div>
             ))
           )}

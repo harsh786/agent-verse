@@ -1342,4 +1342,12 @@ export const selfImprovementApi = {
     request<void>(`/intelligence/suggestions/${id}/apply`, { method: "POST" }),
   rejectSuggestion: (id: string) =>
     request<void>(`/intelligence/suggestions/${id}/reject`, { method: "POST" }),
+  rollbackExperiment: (id: string, reason: string) =>
+    request<{ experiment_id: string; agent_id: string; status: string; reason: string }>(
+      `/intelligence/experiments/${id}/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }
+    ),
 };
