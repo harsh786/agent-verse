@@ -8,11 +8,18 @@ interface MockGoal {
   goal: string;
   status: string;
   created_at?: string;
+  result_artifact?: unknown;
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
 async function setupAuth(page: Page) {
+  // Catch-all: block unmocked localhost:8000 requests from hitting the real backend
+  // (which returns 401 for test API keys and triggers logout). Registered FIRST
+  // so specific mocks added later have higher priority via Playwright's LIFO matching.
+  await page.route(/localhost:8000/, (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'not found' }) })
+  );
   await page.addInitScript(() => {
     localStorage.setItem(
       'av-auth',
@@ -419,5 +426,37 @@ test.describe('Goals', () => {
 
     await page.getByText('Build the new feature').click();
     await expect(page).toHaveURL(/\/goals\/goal-row-click/, { timeout: 15000 });
+  });
+
+  test('completed goal with result_artifact shows all download buttons', async ({ page }) => {
+    const completeGoal = {
+      id: 'g-complete-dl',
+      goal_id: 'g-complete-dl',
+      goal: 'Find Jira issues',
+      status: 'complete',
+      result_artifact: {
+        version: 1, kind: 'table', title: 'Jira issues', summary: 'Found 2 Jira issues.',
+        status: 'success', metrics: [{ label: 'Issues', value: 2 }],
+        tables: [{ title: 'Issues', columns: [{ key: 'key', label: 'Key', type: 'text' }], rows: [{ key: 'OPP-1' }, { key: 'OPP-2' }] }],
+        evidence: {}, downloads: ['json', 'csv', 'markdown'], debug: {},
+      },
+    };
+
+    await setupAuth(page);
+    await mockGoalsApi(page, { goals: [completeGoal], goalDetail: completeGoal });
+    await mockAgentsApi(page);
+
+    await page.goto('/goals/g-complete-dl');
+    await page.route(/localhost:8000\/goals\/g-complete-dl\/stream/, (route) =>
+      route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: {"type":"goal_complete"}\n\n' })
+    );
+    await page.route(/localhost:8000\/goals\/g-complete-dl\/replay/, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ timeline: [] }) })
+    );
+
+    await expect(page.getByRole('button', { name: /download json/i })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /download csv/i })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: /download markdown/i })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: /print/i })).toBeVisible({ timeout: 10000 });
   });
 });
