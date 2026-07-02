@@ -23,6 +23,7 @@ const BudgetManagerPage = lazy(() => import("@/features/settings/BudgetManagerPa
 const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({ default: m.SelfImprovementPage })));
 const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
 
+import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -115,12 +116,14 @@ const spinner = <LoadingSpinner />;
 export default function App() {
   return (
     <Routes>
+      {/* ── Public routes ──────────────────────────────────────────────── */}
+      <Route path="/" element={<LandingPage />} />
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
       {/* OAuth2 callback — must be public (no auth required) */}
       <Route path="/auth/callback" element={<SSOCallbackPage />} />
       <Route
-        path="/"
+        path="/*"
         element={
           <RequireAuth>
             <ErrorBoundary>

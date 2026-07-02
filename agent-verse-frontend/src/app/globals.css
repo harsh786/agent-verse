@@ -101,3 +101,94 @@
 /* Experiment lift animation */
 @keyframes liftIn { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .experiment-entering { animation: liftIn 250ms ease-out forwards; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LANDING PAGE — world-class animations & visual system
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Import Syne display font */
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&display=swap');
+
+.font-display { font-family: 'Syne', system-ui, sans-serif; }
+
+/* ── Dot grid background ─────────────────────────────────────────────────── */
+.landing-grid-bg {
+  background-image:
+    radial-gradient(circle, rgba(139,92,246,0.25) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ── Noise grain texture ─────────────────────────────────────────────────── */
+.landing-noise {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 200px 200px;
+}
+
+/* ── Scroll-reveal ───────────────────────────────────────────────────────── */
+.landing-reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.landing-reveal--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Fade-in utilities ───────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in    { animation: fadeIn 0.7s ease both; }
+.animate-fade-in-up { animation: fadeInUp 0.7s cubic-bezier(0.22,1,0.36,1) both; }
+
+/* ── Cursor blink ────────────────────────────────────────────────────────── */
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+.animate-blink { animation: blink 1s step-end infinite; }
+
+/* ── Orb drift ───────────────────────────────────────────────────────────── */
+@keyframes orbDrift {
+  0%,100% { transform: translate(0, 0) scale(1); }
+  33%     { transform: translate(30px, -20px) scale(1.05); }
+  66%     { transform: translate(-20px, 15px) scale(0.97); }
+}
+@keyframes orbDriftSlow {
+  0%,100% { transform: translate(0, 0) scale(1); }
+  50%     { transform: translate(-40px, 30px) scale(1.08); }
+}
+.animate-orb-drift      { animation: orbDrift 14s ease-in-out infinite; }
+.animate-orb-drift-slow { animation: orbDriftSlow 22s ease-in-out infinite; }
+
+/* ── Terminal line entrance ──────────────────────────────────────────────── */
+@keyframes terminalLine {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.terminal-line { animation: terminalLine 200ms ease-out both; }
+
+/* ── Marquee ─────────────────────────────────────────────────────────────── */
+@keyframes marquee        { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes marqueeReverse { from { transform: translateX(-50%); } to { transform: translateX(0); } }
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 28s linear infinite;
+}
+.animate-marquee-reverse {
+  display: flex;
+  width: max-content;
+  animation: marqueeReverse 34s linear infinite;
+}
+.animate-marquee:hover,
+.animate-marquee-reverse:hover { animation-play-state: paused; }
+
+/* ── Smooth scroll ───────────────────────────────────────────────────────── */
+html { scroll-behavior: smooth; }
