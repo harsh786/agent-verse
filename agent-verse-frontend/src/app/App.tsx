@@ -116,14 +116,16 @@ const spinner = <LoadingSpinner />;
 export default function App() {
   return (
     <Routes>
-      {/* ── Public routes ──────────────────────────────────────────────── */}
+      {/* ── Public routes (no auth required) ──────────────────────────── */}
       <Route path="/" element={<LandingPage />} />
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
-      {/* OAuth2 callback — must be public (no auth required) */}
       <Route path="/auth/callback" element={<SSOCallbackPage />} />
+
+      {/* ── Authenticated app routes — pathless layout route ────────────
+          A pathless <Route> has no path prop; it acts as a layout wrapper.
+          Children still match their own full paths from the root.         */}
       <Route
-        path="/*"
         element={
           <RequireAuth>
             <ErrorBoundary>
@@ -132,7 +134,6 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="goals" element={<GoalsListPage />} />
         <Route path="goals/:goalId" element={<GoalDetailPage />} />
