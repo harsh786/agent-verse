@@ -830,23 +830,71 @@ Respond with ONLY valid JSON:
                 delta[k] = {"before": before.get(k), "after": after.get(k)}
         return delta
 
-    async def list_experiments(self, tenant_id: str) -> list[dict]:
-        """List A/B optimization experiments for a tenant (M-2)."""
+    async def list_experiments(self, tenant_id: str) -> list[dict[str, Any]]:
+        """List A/B optimization experiments for a tenant (M-2).
+
+        Returns records shaped to match the frontend Experiment interface:
+          {id, name, agent_id, status, control_config, challenger_config,
+           lift_pct, started_at, concluded_at}
+
+        DB column mapping:
+          candidate_config  → challenger_config  (frontend key)
+          bayesian_uplift   → lift_pct
+          completed_at      → concluded_at
+          status 'completed'/'rolled_back' → 'concluded'
+        """
         if self._db is None:
             return []
         try:
             from sqlalchemy import text as _t
             async with self._db() as session:
                 rows = (await session.execute(_t("""
-                    SELECT id, agent_id, status, challenger_config, control_config,
-                           challenger_wins, control_wins, created_at, concluded_at, winner_arm
+                    SELECT id, agent_id, name, status,
+                           candidate_config, control_config,
+                           bayesian_uplift, started_at, completed_at
                     FROM improvement_experiments
-                    WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT 50
+                    WHERE tenant_id = :tid ORDER BY started_at DESC LIMIT 50
                 """), {"tid": tenant_id})).fetchall()
-            cols = [
-                "id", "agent_id", "status", "challenger_config", "control_config",
-                "challenger_wins", "control_wins", "created_at", "concluded_at", "winner_arm",
-            ]
-            return [dict(zip(cols, r)) for r in rows]
+            result = []
+            for r in rows:
+                raw_status = str(r[3] or "running")
+                # Map DB statuses to frontend statuses
+                if raw_status in ("completed", "rolled_back", "failed"):
+                    fe_status = "concluded"
+                elif raw_status == "paused":
+                    fe_status = "pending"
+                else:
+                    fe_status = raw_status  # "running" passes through
+
+                challenger_cfg = r[4]
+                if isinstance(challenger_cfg, str):
+                    import json as _json
+                    try:
+                        challenger_cfg = _json.loads(challenger_cfg)
+                    except Exception:
+                        challenger_cfg = {}
+                challenger_cfg = challenger_cfg or {}
+
+                control_cfg = r[5]
+                if isinstance(control_cfg, str):
+                    import json as _json
+                    try:
+                        control_cfg = _json.loads(control_cfg)
+                    except Exception:
+                        control_cfg = {}
+                control_cfg = control_cfg or {}
+
+                result.append({
+                    "id": r[0],
+                    "agent_id": r[1],
+                    "name": r[2] or f"Experiment {str(r[0])[:8]}",
+                    "status": fe_status,
+                    "challenger_config": challenger_cfg,
+                    "control_config": control_cfg,
+                    "lift_pct": float(r[6]) if r[6] is not None else None,
+                    "started_at": r[7].isoformat() if r[7] else "",
+                    "concluded_at": r[8].isoformat() if r[8] else None,
+                })
+            return result
         except Exception:
             return []

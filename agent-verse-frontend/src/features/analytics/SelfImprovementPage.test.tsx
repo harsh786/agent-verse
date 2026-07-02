@@ -67,6 +67,16 @@ function mockFetch(experiments = MOCK_EXPERIMENTS, suggestions = MOCK_SUGGESTION
         status: 200, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (url.includes('/intelligence/benchmarks')) {
+      return new Response(JSON.stringify({
+        platform_avg_success_rate: 0.72, platform_avg_cost_usd: 0.05,
+        platform_avg_eval_score: 0.74, your_success_rate: 0.83,
+        your_cost_usd: 0.025, your_eval_score: 0.82,
+        percentile_success: 25, percentile_cost: 25,
+        comparison_label: 'Top 25%',
+        dimensions: { your: {}, platform: {} },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     return new Response(null, { status: 404 });
   });
 }
@@ -152,5 +162,46 @@ describe('SelfImprovementPage', () => {
     );
     renderPage();
     await waitFor(() => expect(document.body).toBeTruthy(), { timeout: 3000 });
+  });
+
+  test('shows benchmarks tab', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'benchmarks' })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole('tab', { name: 'benchmarks' }));
+    await waitFor(() => {
+      const headings = screen.queryAllByText(/Your Performance vs Platform/i);
+      expect(headings.length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
+  });
+
+  test('shows history tab with optimization timeline', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'history' })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole('tab', { name: 'history' }));
+    await waitFor(() => {
+      const headings = screen.queryAllByText(/Optimization Timeline/i);
+      expect(headings.length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
+  });
+
+  test('pending suggestion shows apply and reject buttons', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'suggestions' })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole('tab', { name: 'suggestions' }));
+    await waitFor(() => {
+      expect(screen.queryAllByText('Apply').length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
   });
 });

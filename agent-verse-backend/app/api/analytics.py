@@ -52,7 +52,10 @@ async def tool_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    tools = agg.tool_metrics(days=days)
+    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
+    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    # Use DB-backed method when tenant_id available (falls back to in-memory)
+    tools = await agg.tool_metrics_db(tenant_id=tenant_id, days=days)
     return {
         "period_days": days,
         "tools": [
@@ -80,10 +83,14 @@ async def cost_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    trends = agg.cost_trends(days=days, bucket=bucket)
-    total = sum(t["cost_usd"] for t in trends)
     tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
     tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+
+    # Use DB-backed methods when tenant_id available (fall back to in-memory)
+    trends = await agg.cost_trends_db(tenant_id=tenant_id, days=days, bucket=bucket)
+    cost_by_model = await agg.cost_by_model_db(tenant_id=tenant_id, days=days)
+
+    total = sum(t["cost_usd"] for t in trends)
     tenant_ctx = tenant
     m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
 
@@ -98,14 +105,24 @@ async def cost_analytics(
     else:
         cost_today = 0.0
 
+    # Normalize trends to use "date" key for frontend compatibility
+    cost_by_day = [
+        {"date": t.get("period", ""), "cost_usd": t["cost_usd"]}
+        for t in trends
+    ]
+
     return {
         "period_days": days,
         "bucket": bucket,
         "total_cost_usd": round(total, 6),
-        "cost_today_usd": round(cost_today, 6),  # accurate today-only value
+        "cost_today_usd": round(cost_today, 6),
         "goals_today": m.total,
         "total_goals": m.total,
         "avg_cost_per_goal": round(total / max(m.total, 1), 6),
+        # Frontend-expected keys:
+        "cost_by_day": cost_by_day,      # normalized with "date" key
+        "cost_by_model": cost_by_model,  # {model_name: total_cost_usd}
+        # Legacy key kept for backward compat:
         "trends": trends,
     }
 

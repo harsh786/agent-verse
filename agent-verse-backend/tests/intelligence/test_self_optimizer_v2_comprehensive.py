@@ -342,14 +342,25 @@ async def test_list_experiments_no_db_returns_empty():
 
 @pytest.mark.asyncio
 async def test_list_experiments_with_db():
+    from datetime import UTC, datetime
     redis = _make_redis()
+    # New column order (after fix): id, agent_id, name, status,
+    #   candidate_config, control_config, bayesian_uplift, started_at, completed_at
     mock_session = _make_db_session(fetchall_return=[
-        ("exp1", "a1", "running", "{}", "{}", 5, 3, "2026-01-01", None, None)
+        ("exp1", "a1", "My experiment", "running",
+         '{"temperature": 0.7}', '{"temperature": 0.2}',
+         5.0, datetime(2026, 1, 1, tzinfo=UTC), None)
     ])
     opt = _make_optimizer(redis=redis, db_session=mock_session)
     result = await opt.list_experiments("t1")
     assert len(result) == 1
     assert result[0]["id"] == "exp1"
+    assert result[0]["agent_id"] == "a1"
+    assert result[0]["name"] == "My experiment"
+    assert result[0]["status"] == "running"
+    # candidate_config maps to challenger_config in the frontend shape
+    assert result[0]["challenger_config"] == {"temperature": 0.7}
+    assert result[0]["lift_pct"] == 5.0
 
 
 # ── 11. on_goal_completed ────────────────────────────────────────────────────
