@@ -257,6 +257,41 @@ async def receive_a2a_task(
     }
 
 
+@router.get("/a2a/tasks")
+async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    """List recent A2A tasks for this tenant."""
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        # In-memory fallback: return tasks from the global dict
+        return list(_tasks.values())[-limit:][::-1]
+    try:
+        from sqlalchemy import text as _t
+        tenant_ctx = getattr(request.state, "tenant", None)
+        tid = tenant_ctx.tenant_id if tenant_ctx else None
+        q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"
+        params: dict[str, Any] = {}
+        if tid:
+            q += " WHERE tenant_id = :tid"
+            params["tid"] = tid
+        q += f" ORDER BY created_at DESC LIMIT {min(limit, 200)}"
+        async with db() as session:
+            rows = (await session.execute(_t(q), params)).fetchall()
+        return [
+            {
+                "task_id": r[0],
+                "goal": r[1],
+                "status": r[2],
+                "callback_url": r[3],
+                "requester_agent_id": r[4],
+                "created_at": r[5].isoformat() if r[5] else "",
+                "result": r[6],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return list(_tasks.values())[-limit:][::-1]
+
+
 @router.get("/a2a/tasks/{task_id}")
 async def get_a2a_task(request: Request, task_id: str) -> dict[str, Any]:
     """Get A2A task status and result."""

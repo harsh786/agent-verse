@@ -947,12 +947,79 @@ export interface A2ATask {
   status: string;
   result?: string;
   callback_url?: string;
+  requester_agent_id?: string;
   created_at?: string;
+}
+
+export interface A2ATaskSubmit {
+  goal: string;
+  context?: Record<string, unknown>;
+  callback_url?: string;
+  requester_agent_id?: string;
+  priority?: string;
 }
 
 export const a2aApi = {
   agentCard: () => request<AgentCard>("/.well-known/agent.json"),
   getTask: (taskId: string) => request<A2ATask>(`/a2a/tasks/${taskId}`),
+  listTasks: (limit = 50) => request<A2ATask[]>(`/a2a/tasks?limit=${limit}`),
+  submitTask: (data: A2ATaskSubmit) =>
+    request<{ task_id: string; status: string; message: string }>("/a2a/tasks", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+};
+
+// ── RPA ───────────────────────────────────────────────────────────────────────
+
+export interface RpaSession {
+  session_id: string;
+  status: "active" | "paused" | "closed" | string;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface RpaTool {
+  name: string;
+  description: string;
+  risk: "low" | "high" | "read" | string;
+  input_schema?: Record<string, unknown>;
+}
+
+export interface RpaExecuteResult {
+  success: boolean;
+  output: string;
+  artifact_url?: string;
+  artifact_name?: string;
+  duration_ms?: number;
+  error?: string;
+  tool_name: string;
+  session_id?: string;
+}
+
+export interface RpaScreenshot {
+  session_id: string;
+  screenshot_data_uri: string;
+  url?: string;
+  timestamp?: string;
+}
+
+export const rpaApi = {
+  listSessions: () => request<RpaSession[]>("/rpa/sessions"),
+  createSession: () => request<RpaSession>("/rpa/sessions", { method: "POST" }),
+  deleteSession: (id: string) => request<void>(`/rpa/sessions/${id}`, { method: "DELETE" }),
+  getScreenshot: (id: string) => request<RpaScreenshot>(`/rpa/sessions/${id}/screenshot`),
+  takeover: (id: string, reason: string) =>
+    request<{ session_id: string; status: string; live_url?: string; message: string }>(
+      `/rpa/sessions/${id}/takeover`,
+      { method: "POST", body: JSON.stringify({ reason }) }
+    ),
+  listTools: () => request<{ tools: RpaTool[] }>("/rpa/tools"),
+  execute: (toolName: string, args: Record<string, unknown>, sessionId?: string) =>
+    request<RpaExecuteResult>("/rpa/execute", {
+      method: "POST",
+      body: JSON.stringify({ tool_name: toolName, arguments: args, session_id: sessionId }),
+    }),
 };
 
 // ── Integrations (inbound webhooks; config + delivery visibility) ──────────────
@@ -1248,6 +1315,31 @@ export const simulationApi = {
     request<{ steps?: string[]; plan?: { steps: string[] } }>(
       "/goals",
       { method: "POST", body: JSON.stringify({ goal, dry_run: true }) }
+    ),
+  /** Run via the real enterprise simulation engine (non-streaming) */
+  run: (goal: string, mockTools: Record<string, string> = {}, agentId?: string) =>
+    request<{
+      run_id: string;
+      status: string;
+      steps: Array<{ step: number; tool?: string; output: string; mock_hit?: boolean; cost_usd?: number }>;
+      cost_usd: number;
+      iterations: number;
+      used_real_llm: boolean;
+      message?: string;
+      result?: string;
+    }>("/enterprise/simulation", {
+      method: "POST",
+      body: JSON.stringify({ goal, mock_tools: mockTools, agent_id: agentId }),
+    }),
+  /** Path for SSE streaming simulation — use with fetch() directly */
+  streamPath: () => "/enterprise/simulation/stream",
+  getRun: (runId: string) =>
+    request<{ run_id: string; status: string; steps: unknown[]; cost_usd: number }>(
+      `/enterprise/simulation/${runId}`
+    ),
+  getAvailableTools: () =>
+    request<{ tools: Array<{ name: string; description: string; server_id: string }>; total: number }>(
+      "/enterprise/simulation/available-tools"
     ),
 };
 
@@ -1640,19 +1732,33 @@ export interface CostPrediction {
 }
 
 export interface BudgetConfig {
-  daily_budget_usd: number;
-  per_goal_budget_usd: number;
-  per_agent_budgets: Record<string, number>;
-  alert_threshold_pct: number;
+  /** DB-backed: per_goal_usd / per_tenant_daily_usd / per_agent_daily_usd */
+  per_goal_usd: number;
+  per_tenant_daily_usd: number;
+  per_agent_daily_usd?: Record<string, number>;
+  alert_pct_thresholds: number[];
+  // legacy aliases (used by older components)
+  daily_budget_usd?: number;
+  per_goal_budget_usd?: number;
+  per_agent_budgets?: Record<string, number>;
+  alert_threshold_pct?: number;
 }
 
 export interface CostAnomaly {
-  id: string;
+  // Actual backend shape from /costs/anomalies
+  tenant_id?: string;
+  agent_id?: string;
+  anomaly_type: string;
+  cost_actual_usd: number;
+  cost_baseline_usd: number;
+  sigma_deviation: number;
   detected_at: string;
-  type: string;
-  message: string;
-  cost_delta_usd: number;
-  severity: "low" | "medium" | "high";
+  // Frontend-friendly aliases (computed on fetch)
+  id?: string;
+  type?: string;
+  message?: string;
+  cost_delta_usd?: number;
+  severity?: "low" | "medium" | "high";
 }
 
 export const costsApi = {
@@ -1663,13 +1769,22 @@ export const costsApi = {
     ) as Promise<AgentCost[]>,
   predict: (goal: string) =>
     request<CostPrediction>("/costs/predict", { method: "POST", body: JSON.stringify({ goal }) }),
-  getBudgets: () => request<BudgetConfig>("/costs/budgets"),
-  updateBudgets: (body: Partial<BudgetConfig>) =>
+  getBudgets: () =>
+    request<{ daily_limit?: number; per_goal_usd?: number; per_tenant_daily_usd?: number; budget_pct_remaining?: number; daily_spent?: number }>("/costs/budgets"),
+  updateBudgets: (body: { per_goal_usd: number; per_tenant_daily_usd: number; per_agent_daily_usd?: Record<string, number>; alert_pct_thresholds?: number[] }) =>
     request<void>("/costs/budgets", { method: "PUT", body: JSON.stringify(body) }),
   getAnomalies: () =>
-    request<{ anomalies: CostAnomaly[] } | CostAnomaly[]>("/costs/anomalies").then(
-      (res) => (Array.isArray(res) ? res : (res as any).anomalies ?? [])
-    ) as Promise<CostAnomaly[]>,
+    request<{ anomalies: CostAnomaly[] } | CostAnomaly[]>("/costs/anomalies").then((res) => {
+      const raw = Array.isArray(res) ? res : (res as { anomalies: CostAnomaly[] }).anomalies ?? [];
+      return raw.map((a, i) => ({
+        ...a,
+        id: a.id ?? `anomaly-${i}`,
+        type: a.type ?? a.anomaly_type ?? "unknown",
+        message: a.message ?? `${a.anomaly_type ?? "Anomaly"}: $${a.cost_actual_usd?.toFixed(2)} vs baseline $${a.cost_baseline_usd?.toFixed(2)} (${a.sigma_deviation}σ)`,
+        cost_delta_usd: a.cost_delta_usd ?? (a.cost_actual_usd - a.cost_baseline_usd),
+        severity: a.severity ?? (a.sigma_deviation > 3 ? "high" : a.sigma_deviation > 2 ? "medium" : "low") as "low" | "medium" | "high",
+      }));
+    }) as Promise<CostAnomaly[]>,
 };
 
 // ── Self-Improvement (Spec 9) ─────────────────────────────────────────────────

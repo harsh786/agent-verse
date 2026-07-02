@@ -75,11 +75,11 @@ function AnomalyPanel(): JSX.Element {
             }`}
           />
           <div className="min-w-0 flex-1">
-            <p className="font-medium capitalize">{anomaly.type.replace(/_/g, " ")}</p>
-            <p className="text-muted-foreground text-xs mt-0.5">{anomaly.message}</p>
+            <p className="font-medium capitalize">{(anomaly.type ?? anomaly.anomaly_type ?? "anomaly").replace(/_/g, " ")}</p>
+            <p className="text-muted-foreground text-xs mt-0.5">{anomaly.message ?? ""}</p>
           </div>
           <span className="text-xs text-muted-foreground flex-shrink-0">
-            +{formatCost(anomaly.cost_delta_usd)}
+            +{formatCost(anomaly.cost_delta_usd ?? 0)}
           </span>
         </div>
       ))}
