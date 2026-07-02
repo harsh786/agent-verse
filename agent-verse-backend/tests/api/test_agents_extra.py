@@ -144,6 +144,50 @@ class TestAgentStore:
         assert store.get("aid1", tenant_ctx=_CTX)["name"] == "Updated"
 
     @pytest.mark.asyncio
+    async def test_update_async_uses_asyncpg_safe_jsonb_cast(self):
+        class AsyncContext:
+            def __init__(self, value=None):
+                self.value = value
+
+            async def __aenter__(self):
+                return self.value if self.value is not None else self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class Result:
+            rowcount = 1
+
+        class Session:
+            def __init__(self):
+                self.statements = []
+                self.params = []
+
+            def begin(self):
+                return AsyncContext()
+
+            async def execute(self, statement, params=None):
+                self.statements.append(str(statement))
+                self.params.append(params or {})
+                return Result()
+
+        session = Session()
+        store = AgentStore(db_session_factory=lambda: AsyncContext(session))
+        store._data[(_CTX.tenant_id, "aid1")] = {"agent_id": "aid1", "name": "Original"}
+
+        with patch("app.db.rls.sqlalchemy_rls_context", return_value=AsyncContext()):
+            updated = await store.update_async(
+                "aid1",
+                {"connector_ids": ["jira-server"]},
+                tenant_ctx=_CTX,
+            )
+
+        assert updated is True
+        assert "connector_ids = CAST(:connector_ids AS jsonb)" in session.statements[0]
+        assert "::jsonb" not in session.statements[0]
+        assert session.params[0]["connector_ids"] == json.dumps(["jira-server"])
+
+    @pytest.mark.asyncio
     async def test_sync_from_db_returns_zero_without_db(self):
         store = AgentStore()
         result = await store.sync_from_db()
