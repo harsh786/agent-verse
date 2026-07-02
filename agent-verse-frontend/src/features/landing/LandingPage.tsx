@@ -1,120 +1,185 @@
 /**
- * AgentVerse — World-class marketing landing page.
+ * AgentVerse Landing Page — Obsidian Intelligence
  *
- * Design direction: Dark cosmic intelligence.
- * - Midnight + deep violet background with noise grain overlay
- * - Electric violet / cyan accent glow system
- * - Syne (display) + Inter (body) typography
- * - CSS-only scroll-reveal via IntersectionObserver
- * - Glassmorphism cards, animated grid, live terminal mockup
+ * Design: Dark-luxury editorial. Investor-grade. Every section earns attention.
+ * Fonts:  Syne (display) + Inter (body)
+ * Motion: CSS-only IntersectionObserver reveals, no external libs
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
 
-function useScrollReveal(threshold = 0.15) {
+function useReveal(threshold = 0.12) {
   const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-
+  const [on, setOn] = useState(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+    const io = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) { setOn(true); io.disconnect(); } },
       { threshold }
     );
-    obs.observe(el);
-    return () => obs.disconnect();
+    io.observe(el);
+    return () => io.disconnect();
   }, [threshold]);
-
-  return { ref, visible };
+  return { ref, on };
 }
 
-function useCounter(target: number, duration = 2000, started = false) {
-  const [val, setVal] = useState(0);
+function useCounter(target: number, duration = 1800, active = false) {
+  const [n, setN] = useState(0);
   useEffect(() => {
-    if (!started) return;
-    let frame: number;
-    const start = performance.now();
+    if (!active) return;
+    let raf: number;
+    const t0 = performance.now();
     const tick = (now: number) => {
-      const p = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - p, 3);
-      setVal(Math.floor(eased * target));
-      if (p < 1) frame = requestAnimationFrame(tick);
+      const p = Math.min((now - t0) / duration, 1);
+      setN(Math.floor((1 - Math.pow(1 - p, 4)) * target));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else setN(target);
     };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [target, duration, started]);
-  return val;
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, active]);
+  return n;
 }
 
-// ── Terminal demo lines ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Hero — Typewriter + animated grid
+// ─────────────────────────────────────────────────────────────────────────────
 
-const DEMO_LINES = [
-  { t: 0,    text: "$ agent submit --goal \"Find all Jira tickets assigned to Abhay\"", kind: "cmd" },
-  { t: 600,  text: "✓ Goal accepted  [id: f97bd161]", kind: "ok" },
-  { t: 1100, text: "→ Planning...  [Planner: GPT-4o]", kind: "dim" },
-  { t: 1800, text: "→ Step 1: Search Jira with JQL — assignee = \"Abhay Dwivedi\"", kind: "step" },
-  { t: 2600, text: "  ↳ Tool: jira_search_issues  [connector: PineLabs JIRA]", kind: "tool" },
-  { t: 3400, text: "  ✓ Found 47 issues across 6 projects", kind: "ok" },
-  { t: 4100, text: "→ Step 2: Verify result completeness", kind: "step" },
-  { t: 4700, text: "  ✓ Verification passed — confidence: 0.97", kind: "ok" },
-  { t: 5200, text: "✓ Goal complete  [2 steps · 0.7s · $0.0014]", kind: "success" },
-  { t: 5900, text: "→ Result artifact saved. Run `agent results f97bd161` to view.", kind: "dim" },
+const VERBS = [
+  "searches Jira across all projects.",
+  "reviews pull requests & files issues.",
+  "monitors services & pages on-call teams.",
+  "analyses pipeline failures & proposes fixes.",
+  "onboards new hires end-to-end.",
+  "generates weekly executive reports.",
+  "triages support tickets at scale.",
+  "closes CRM deals automatically.",
 ];
 
-const LINE_COLORS: Record<string, string> = {
-  cmd:     "text-violet-300",
-  ok:      "text-emerald-400",
-  dim:     "text-slate-500",
-  step:    "text-sky-300",
-  tool:    "text-amber-300",
-  success: "text-emerald-300 font-semibold",
-};
-
-function TerminalDemo() {
-  const { ref, visible } = useScrollReveal(0.2);
-  const [lines, setLines] = useState<typeof DEMO_LINES>([]);
-  const [cursor, setCursor] = useState(true);
+function Typewriter() {
+  const [idx, setIdx] = useState(0);
+  const [text, setText] = useState("");
+  const [writing, setWriting] = useState(true);
 
   useEffect(() => {
-    if (!visible) return;
-    const timers = DEMO_LINES.map(({ t }, i) =>
-      setTimeout(() => setLines((prev) => [...prev, DEMO_LINES[i]]), t)
-    );
-    const blink = setInterval(() => setCursor((c) => !c), 530);
-    return () => { timers.forEach(clearTimeout); clearInterval(blink); };
-  }, [visible]);
+    const word = VERBS[idx];
+    if (writing) {
+      if (text.length < word.length) {
+        const t = setTimeout(() => setText(word.slice(0, text.length + 1)), 52);
+        return () => clearTimeout(t);
+      }
+      const t = setTimeout(() => setWriting(false), 1800);
+      return () => clearTimeout(t);
+    } else {
+      if (text.length > 0) {
+        const t = setTimeout(() => setText(t => t.slice(0, -1)), 28);
+        return () => clearTimeout(t);
+      }
+      setIdx(i => (i + 1) % VERBS.length);
+      setWriting(true);
+    }
+  }, [text, writing, idx]);
 
   return (
-    <div ref={ref} className={`landing-reveal ${visible ? "landing-reveal--visible" : ""}`}>
-      <div className="relative mx-auto max-w-3xl">
-        {/* Glow halo */}
-        <div className="absolute -inset-6 bg-violet-600/10 blur-3xl rounded-3xl pointer-events-none" />
-        <div className="relative bg-[#0d0d14] border border-white/[0.08] rounded-2xl overflow-hidden shadow-2xl">
-          {/* Traffic lights */}
-          <div className="flex items-center gap-1.5 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
-            <span className="h-3 w-3 rounded-full bg-red-500/70" />
-            <span className="h-3 w-3 rounded-full bg-amber-400/70" />
-            <span className="h-3 w-3 rounded-full bg-emerald-400/70" />
-            <span className="ml-3 text-xs text-slate-500 font-mono">agentverse — terminal</span>
+    <span className="text-violet-300 font-medium">
+      {text}
+      <span className="inline-block w-[3px] h-[1.1em] bg-violet-400 align-middle ml-0.5 animate-blink" />
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent execution demo — animated step pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PIPELINE_STEPS = [
+  { id: "plan", label: "Plan", icon: "◈", color: "text-violet-400", detail: "LLM decomposes goal → ordered steps" },
+  { id: "rag", label: "Memory recall", icon: "◎", color: "text-indigo-400", detail: "Past plans & failures injected" },
+  { id: "exec", label: "Execute", icon: "▶", color: "text-sky-400", detail: "Tool calls via 227 connectors" },
+  { id: "guard", label: "Guardrails", icon: "⬡", color: "text-amber-400", detail: "PII scan · policy check · HITL gate" },
+  { id: "verify", label: "Verify", icon: "✓", color: "text-emerald-400", detail: "Verifier LLM confirms success" },
+  { id: "replan", label: "Replan if needed", icon: "↺", color: "text-rose-400", detail: "Auto-recover on failure" },
+];
+
+function PipelineDemo() {
+  const { ref, on } = useReveal(0.2);
+  const [active, setActive] = useState(-1);
+
+  useEffect(() => {
+    if (!on) return;
+    let i = 0;
+    const t = setInterval(() => {
+      setActive(i);
+      i++;
+      if (i >= PIPELINE_STEPS.length) { i = 0; }
+    }, 900);
+    return () => clearInterval(t);
+  }, [on]);
+
+  return (
+    <div ref={ref} className={`reveal ${on ? "reveal-on" : ""}`}>
+      <div className="relative mx-auto max-w-4xl">
+        <div className="absolute -inset-px bg-gradient-to-r from-violet-600/0 via-violet-600/20 to-violet-600/0 rounded-2xl blur-xl" />
+        <div className="relative bg-[#0c0c18] border border-white/[0.07] rounded-2xl overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center gap-2 px-5 py-3.5 border-b border-white/[0.06] bg-white/[0.015]">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-500/60" />
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500/60" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/60" />
+            <span className="ml-3 font-mono text-xs text-slate-500">agent execution pipeline</span>
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              live
+            </span>
           </div>
-          {/* Lines */}
-          <div className="px-5 py-5 font-mono text-sm leading-6 min-h-[280px]">
-            {lines.map((ln, i) => (
-              <div
-                key={i}
-                className={`${LINE_COLORS[ln.kind] ?? "text-slate-300"} terminal-line`}
-                style={{ animationDelay: `${i * 20}ms` }}
-              >
-                {ln.text}
-              </div>
-            ))}
-            {lines.length < DEMO_LINES.length && (
-              <span className={`inline-block w-2 h-4 bg-violet-400 align-middle ${cursor ? "opacity-100" : "opacity-0"} transition-opacity`} />
-            )}
+          {/* Goal */}
+          <div className="px-5 pt-5 pb-3">
+            <div className="flex items-center gap-2 mb-5">
+              <span className="text-xs text-slate-500 font-mono">goal:</span>
+              <span className="text-sm text-white font-medium">
+                &quot;Find all Jira tickets assigned to Abhay Dwivedi across all projects&quot;
+              </span>
+            </div>
+            {/* Steps */}
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+              {PIPELINE_STEPS.map((s, i) => (
+                <div
+                  key={s.id}
+                  className={`relative flex flex-col items-center gap-2 p-3 rounded-xl border transition-all duration-500 ${
+                    active === i
+                      ? "border-white/20 bg-white/[0.06] scale-105"
+                      : active > i
+                      ? "border-emerald-500/20 bg-emerald-900/10"
+                      : "border-white/[0.04] bg-white/[0.01] opacity-40"
+                  }`}
+                >
+                  <span className={`text-lg ${active === i ? s.color : active > i ? "text-emerald-400" : "text-slate-600"}`}>
+                    {active > i ? "✓" : s.icon}
+                  </span>
+                  <span className="text-[10px] font-medium text-slate-400 text-center leading-tight">{s.label}</span>
+                  {active === i && (
+                    <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-slate-400 bg-[#0c0c18] px-2 py-0.5 rounded border border-white/[0.06] z-10">
+                      {s.detail}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Result */}
+          <div className="px-5 pb-5 pt-8">
+            <div className={`flex items-center gap-3 p-3 rounded-lg border transition-all duration-700 ${
+              active >= PIPELINE_STEPS.length - 1 ? "border-emerald-500/30 bg-emerald-900/10" : "border-white/[0.04] opacity-20"
+            }`}>
+              <span className="text-emerald-400 text-sm">✓</span>
+              <span className="font-mono text-xs text-slate-300">Found 47 issues across 6 projects · 0.8s · $0.0014</span>
+            </div>
           </div>
         </div>
       </div>
@@ -122,502 +187,831 @@ function TerminalDemo() {
   );
 }
 
-// ── Feature card ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Capability cards — grouped
+// ─────────────────────────────────────────────────────────────────────────────
 
-const FEATURES = [
+type CapCard = {
+  icon: string;
+  title: string;
+  desc: string;
+  tag?: string;
+  glow: string;
+};
+
+const CAPABILITY_GROUPS: { label: string; caption: string; cards: CapCard[] }[] = [
   {
-    icon: "⚡",
-    title: "Zero-Code Autonomy",
-    desc: "Submit a natural language goal. AgentVerse plans, executes, verifies — and replans on failure — with no hardcoded workflows.",
-    glow: "from-violet-600/20",
+    label: "Autonomous Intelligence",
+    caption: "An agent brain that plans, executes, verifies and improves itself — no workflow builder needed.",
+    cards: [
+      {
+        icon: "🧠",
+        title: "Three-Role LLM Architecture",
+        desc: "Planner, Executor and Verifier are independent models, each tuned for their task. Swap any model per tenant without touching code.",
+        tag: "Core AI",
+        glow: "from-violet-600/25",
+      },
+      {
+        icon: "🔄",
+        title: "Replan on Failure",
+        desc: "When the Verifier rejects a step, the Planner receives the failure reason and prior failed attempts — then tries a fundamentally different approach. Up to 15 iterations.",
+        tag: "Resilience",
+        glow: "from-indigo-600/25",
+      },
+      {
+        icon: "🌲",
+        title: "Goal-Tree Decomposition",
+        desc: "Complex goals are recursively split into dependency-aware sub-goals executed in parallel by independent agents. Results are LLM-synthesized into one coherent answer.",
+        tag: "Parallelism",
+        glow: "from-sky-600/25",
+      },
+      {
+        icon: "🤔",
+        title: "Chain-of-Thought + Reflection",
+        desc: "Agents reason before planning (CoT node) and diagnose failures before replanning (Reflect node). Both are optional per-deployment toggles.",
+        tag: "Reasoning",
+        glow: "from-blue-600/25",
+      },
+      {
+        icon: "📊",
+        title: "7-Dimension Eval Scoring",
+        desc: "Every run is scored on task completion, efficiency, accuracy, safety, coherence, SLA and tool relevance. Scores drive automated self-improvement.",
+        tag: "Quality",
+        glow: "from-cyan-600/25",
+      },
+      {
+        icon: "⚡",
+        title: "Bayesian Self-Optimiser",
+        desc: "After 5 completions the optimizer runs Thompson sampling, generates an LLM-written improvement, deploys it to 50% traffic, and promotes or rolls back based on eval scores.",
+        tag: "Auto-ML",
+        glow: "from-purple-600/25",
+      },
+    ],
   },
   {
-    icon: "🔌",
-    title: "227 Connectors",
-    desc: "Jira, GitHub, Slack, Salesforce, HubSpot and 222 more. One registry. Real tool calls. Certified read/write parity.",
-    glow: "from-sky-600/20",
+    label: "Enterprise Governance",
+    caption: "Every action is auditable, approvalable, budget-controlled and compliance-ready.",
+    cards: [
+      {
+        icon: "🛡️",
+        title: "Human-in-the-Loop Gate",
+        desc: "High-risk keywords (deploy, delete, prod) pause execution and route to the approval queue. Cross-replica durability via Redis — approvals survive process restarts.",
+        tag: "HITL",
+        glow: "from-amber-600/25",
+      },
+      {
+        icon: "📜",
+        title: "Tamper-Evident Audit Trail",
+        desc: "SHA-256 hash-chained audit log with < 1 ms write latency via Redis WAL. PII auto-redacted across 14 field types before storage. SIEM export to Splunk, Elastic, Datadog, QRadar, ArcSight.",
+        tag: "Compliance",
+        glow: "from-orange-600/25",
+      },
+      {
+        icon: "🏛️",
+        title: "Glob-Pattern Policy Engine",
+        desc: "Policies match tools by glob (github:*), enforce time windows (IANA timezone-aware), support multi-approver quorum, and propagate across replicas via Redis pub/sub within milliseconds.",
+        tag: "Policies",
+        glow: "from-red-600/25",
+      },
+      {
+        icon: "💰",
+        title: "Atomic Budget Enforcement",
+        desc: "Per-goal and per-tenant daily budgets enforced via a Redis Lua script in a single round-trip. No overspend possible. Fail-closed in production.",
+        tag: "FinOps",
+        glow: "from-emerald-600/25",
+      },
+      {
+        icon: "🔒",
+        title: "GDPR / SOC2 / PCI-DSS",
+        desc: "Right-to-erasure (25 tables, FK-ordered), data portability export, data residency declaration, retention sweeps. Not simulated — implemented in production code.",
+        tag: "Regulation",
+        glow: "from-teal-600/25",
+      },
+      {
+        icon: "🧬",
+        title: "5-Layer Injection Defence",
+        desc: "Blocks direct prompts, base64-encoded attacks, ROT13, Unicode homoglyphs, and leetspeak substitutions. Detects PII (SSN, credit card) in outputs before delivery.",
+        tag: "Security",
+        glow: "from-rose-600/25",
+      },
+    ],
   },
   {
-    icon: "🛡️",
-    title: "HITL Governance",
-    desc: "High-risk actions pause for human approval. Audit trail, RBAC, cost budgets, PII guardrails — enterprise-grade by default.",
-    glow: "from-emerald-600/20",
+    label: "Universal Connectivity",
+    caption: "Connect to any tool, API or database — built-in or bring your own.",
+    cards: [
+      {
+        icon: "🔌",
+        title: "227 Production Connectors",
+        desc: "GitHub, Jira, Slack, Salesforce, HubSpot, Stripe, Datadog, Snowflake, Kubernetes, PostgreSQL, AWS, GCP and 215 more. Each connector is certified with read/write parity.",
+        tag: "Integrations",
+        glow: "from-violet-600/25",
+      },
+      {
+        icon: "🔐",
+        title: "9 Auth Modes",
+        desc: "Bearer, API key, Basic, Custom header, OAuth2 AC, OAuth2 CC, PKCE, mTLS, HMAC. Full PKCE flow manager with encrypted token refresh. Credentials stored in vault, never in plain text.",
+        tag: "Auth",
+        glow: "from-indigo-600/25",
+      },
+      {
+        icon: "📡",
+        title: "OpenAPI → Connector in Seconds",
+        desc: "Import any OpenAPI 3.x spec and every endpoint becomes an agent tool automatically. Any REST API becomes a connector without writing code.",
+        tag: "Extensibility",
+        glow: "from-sky-600/25",
+      },
+      {
+        icon: "🌐",
+        title: "Browser Automation (RPA)",
+        desc: "13 Playwright verbs: open URL, click, type, extract text, screenshot, wait for text, fill form, upload file, detect CAPTCHA, and more. Vision analysis on screenshots included.",
+        tag: "RPA",
+        glow: "from-blue-600/25",
+      },
+      {
+        icon: "🏪",
+        title: "8 Deployable Agent Templates",
+        desc: "Bug Fix, DevOps Watchdog, E2E Test Generator, HR Onboarding, Sales Follow-up, Support Triage, Code Review, Incident Response. Deploy in one API call.",
+        tag: "Marketplace",
+        glow: "from-cyan-600/25",
+      },
+      {
+        icon: "⚙️",
+        title: "Hot-Swap Connector Registry",
+        desc: "Add or remove connectors per tenant at runtime via Redis — no server restart required. Connectors are tenant-scoped and RLS-enforced at the DB layer.",
+        tag: "Operations",
+        glow: "from-purple-600/25",
+      },
+    ],
   },
   {
-    icon: "🔭",
-    title: "Real-Time Observability",
-    desc: "Live SSE execution stream, DNA graph visualisation, diff-runs, ghost runs, and per-goal scoring.",
-    glow: "from-amber-600/20",
-  },
-  {
-    icon: "🤖",
-    title: "Multi-Agent Patterns",
-    desc: "Supervisor/debate orchestration, goal-tree decomposition, A2A task delegation across replicas.",
-    glow: "from-pink-600/20",
-  },
-  {
-    icon: "📈",
-    title: "Self-Optimisation",
-    desc: "Agents analyse their own failures and propose prompt improvements. EvalRunner scores every run across 5 dimensions.",
-    glow: "from-cyan-600/20",
+    label: "Multi-Agent Civilization",
+    caption: "From a single agent to a self-governing society of AI agents working in concert.",
+    cards: [
+      {
+        icon: "🌍",
+        title: "Agent Civilization System",
+        desc: "A Constitutional framework governs a society of agents: spawn limits, budget allocation, autonomy ceilings, reputation scoring. Agents debate, vote, and collectively learn.",
+        tag: "Emergent AI",
+        glow: "from-violet-600/25",
+      },
+      {
+        icon: "⚖️",
+        title: "Debate & Voting",
+        desc: "3–5 agents independently propose solutions, cross-critique each other, then vote. Thompson-sampled consensus reduces hallucination on high-stakes decisions.",
+        tag: "Multi-Agent",
+        glow: "from-indigo-600/25",
+      },
+      {
+        icon: "👤",
+        title: "Supervisor Orchestration",
+        desc: "A top-level Supervisor decomposes goals into 2–6 sub-tasks, dispatches them concurrently across the registry, monitors SSE streams, and synthesises results.",
+        tag: "Orchestration",
+        glow: "from-sky-600/25",
+      },
+      {
+        icon: "🔗",
+        title: "Agent-to-Agent Protocol (A2A)",
+        desc: "Standardised capability declaration (AgentCard), task delegation (A2ATask), and cross-agent result passing. Compatible with emerging A2A protocol standards.",
+        tag: "Protocol",
+        glow: "from-blue-600/25",
+      },
+      {
+        icon: "📚",
+        title: "Shared Blackboard & Memory",
+        desc: "Agents post findings to a shared knowledge board. Long-term memory is stored as pgvector embeddings — recalled at planning time to avoid repeating mistakes.",
+        tag: "Memory",
+        glow: "from-cyan-600/25",
+      },
+      {
+        icon: "🧭",
+        title: "NL Scheduler",
+        desc: "\"Every weekday at 9 AM UTC\" → CRON spec. \"Every hour\" → INTERVAL. Compound schedules from one sentence. Natural language becomes a trigger pipeline.",
+        tag: "Scheduling",
+        glow: "from-purple-600/25",
+      },
+    ],
   },
 ];
 
-function FeatureCard({ icon, title, desc, glow, delay }: (typeof FEATURES)[0] & { delay: number }) {
-  const { ref, visible } = useScrollReveal(0.1);
+function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: number }) {
+  const { ref, on } = useReveal(0.08);
   return (
     <div
       ref={ref}
-      className={`landing-reveal ${visible ? "landing-reveal--visible" : ""} group relative overflow-hidden bg-white/[0.03] border border-white/[0.07] rounded-2xl p-6 hover:border-violet-500/30 hover:bg-white/[0.05] transition-all duration-300 cursor-default`}
+      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-all duration-300 cursor-default p-5`}
       style={{ transitionDelay: `${delay}ms`, animationDelay: `${delay}ms` }}
     >
-      <div className={`absolute inset-0 bg-gradient-to-br ${glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none`} />
-      <div className="text-3xl mb-4">{icon}</div>
-      <h3 className="text-base font-semibold text-white mb-2">{title}</h3>
-      <p className="text-sm text-slate-400 leading-relaxed">{desc}</p>
-    </div>
-  );
-}
-
-// ── Connector logos ───────────────────────────────────────────────────────────
-
-const CONNECTORS = [
-  { name: "Jira", color: "#2684FF" },
-  { name: "GitHub", color: "#f0f6fc" },
-  { name: "Slack", color: "#E01E5A" },
-  { name: "Salesforce", color: "#00A1E0" },
-  { name: "HubSpot", color: "#FF7A59" },
-  { name: "Linear", color: "#5E6AD2" },
-  { name: "Notion", color: "#ffffff" },
-  { name: "Confluence", color: "#2684FF" },
-  { name: "Asana", color: "#F06A6A" },
-  { name: "Trello", color: "#0052CC" },
-  { name: "Datadog", color: "#632CA6" },
-  { name: "PagerDuty", color: "#06AC38" },
-  { name: "GitLab", color: "#FC6D26" },
-  { name: "Bitbucket", color: "#2684FF" },
-  { name: "Zendesk", color: "#03363D" },
-  { name: "Stripe", color: "#635BFF" },
-];
-
-// ── Stats ─────────────────────────────────────────────────────────────────────
-
-function StatCounter({ value, suffix, label }: { value: number; suffix: string; label: string }) {
-  const { ref, visible } = useScrollReveal(0.2);
-  const count = useCounter(value, 2200, visible);
-  return (
-    <div ref={ref} className="text-center">
-      <div className="text-4xl md:text-5xl font-bold text-white font-display tabular-nums">
-        {count.toLocaleString()}{suffix}
-      </div>
-      <div className="text-sm text-slate-400 mt-2">{label}</div>
-    </div>
-  );
-}
-
-// ── How it works ──────────────────────────────────────────────────────────────
-
-const HOW_STEPS = [
-  { num: "01", title: "Submit a goal", desc: "Type any natural language objective — search Jira, draft a PR, analyse metrics, send alerts." },
-  { num: "02", title: "Watch it plan & execute", desc: "The planner decomposes your goal into steps, the executor calls real tools, the verifier confirms success." },
-  { num: "03", title: "Get structured results", desc: "A result artifact surfaces the outcome with evidence, supporting data and a shareable export." },
-];
-
-// ── Main component ────────────────────────────────────────────────────────────
-
-export function LandingPage() {
-  const navigate = useNavigate();
-  const [words] = useState(["Search Jira.", "Write code.", "Analyse metrics.", "Trigger alerts.", "Draft emails.", "Query databases."]);
-  const [wordIdx, setWordIdx] = useState(0);
-  const [displayed, setDisplayed] = useState("");
-  const [typing, setTyping] = useState(true);
-
-  // Typewriter
-  useEffect(() => {
-    const word = words[wordIdx];
-    if (typing) {
-      if (displayed.length < word.length) {
-        const t = setTimeout(() => setDisplayed(word.slice(0, displayed.length + 1)), 70);
-        return () => clearTimeout(t);
-      }
-      const t = setTimeout(() => setTyping(false), 1600);
-      return () => clearTimeout(t);
-    } else {
-      if (displayed.length > 0) {
-        const t = setTimeout(() => setDisplayed(displayed.slice(0, -1)), 40);
-        return () => clearTimeout(t);
-      }
-      setWordIdx((i) => (i + 1) % words.length);
-      setTyping(true);
-    }
-  }, [displayed, typing, wordIdx, words]);
-
-  return (
-    <div className="min-h-screen bg-[#080810] text-white overflow-x-hidden">
-      {/* ── Background layer ────────────────────────────────────────────── */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        {/* Dot grid */}
-        <div className="absolute inset-0 landing-grid-bg opacity-30" />
-        {/* Gradient orbs */}
-        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-violet-800/20 rounded-full blur-[120px] animate-orb-drift" />
-        <div className="absolute top-1/3 right-1/4 w-[400px] h-[400px] bg-sky-800/15 rounded-full blur-[100px] animate-orb-drift-slow" />
-        <div className="absolute bottom-0 left-1/2 w-[500px] h-[300px] bg-indigo-900/20 rounded-full blur-[80px]" />
-        {/* Noise grain */}
-        <div className="absolute inset-0 landing-noise opacity-[0.03]" />
-      </div>
-
-      {/* ── Nav ──────────────────────────────────────────────────────────── */}
-      <nav className="relative z-10 flex items-center justify-between px-6 md:px-12 py-5 border-b border-white/[0.05] backdrop-blur-sm bg-[#080810]/60">
-        <div className="flex items-center gap-2.5">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
-            <span className="text-white text-sm font-bold">AV</span>
-          </div>
-          <span className="font-display font-semibold text-white text-lg tracking-tight">AgentVerse</span>
+      <div className={`absolute inset-0 bg-gradient-to-br ${glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
+      <div className="relative">
+        <div className="flex items-start justify-between mb-3">
+          <span className="text-2xl">{icon}</span>
+          {tag && (
+            <span className="text-[10px] font-semibold tracking-wider uppercase text-slate-500 border border-white/[0.07] rounded-full px-2 py-0.5">
+              {tag}
+            </span>
+          )}
         </div>
-        <div className="hidden md:flex items-center gap-8 text-sm text-slate-400">
-          {["Features", "How it works", "Connectors", "Docs"].map((item) => (
-            <a key={item} href={`#${item.toLowerCase().replace(/ /g, "-")}`}
-              className="hover:text-white transition-colors duration-200">{item}</a>
+        <h3 className="font-semibold text-white text-sm mb-2 leading-snug">{title}</h3>
+        <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
+      </div>
+    </div>
+  );
+}
+
+function CapabilitySection({ label, caption, cards }: typeof CAPABILITY_GROUPS[0]) {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div className="py-20">
+      <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-12`}>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">{label}</h2>
+        <p className="text-slate-400 max-w-2xl mx-auto">{caption}</p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {cards.map((c, i) => (
+          <CapCard key={c.title} {...c} delay={i * 60} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Connector marquee
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CONNECTORS_ROW1 = [
+  { n: "Jira", c: "#2684FF" }, { n: "GitHub", c: "#e2e8f0" }, { n: "Slack", c: "#E01E5A" },
+  { n: "Salesforce", c: "#00A1E0" }, { n: "HubSpot", c: "#FF7A59" }, { n: "Datadog", c: "#632CA6" },
+  { n: "Stripe", c: "#635BFF" }, { n: "PagerDuty", c: "#06AC38" }, { n: "Linear", c: "#5E6AD2" },
+  { n: "Notion", c: "#ffffff" }, { n: "Confluence", c: "#2684FF" }, { n: "AWS", c: "#FF9900" },
+];
+const CONNECTORS_ROW2 = [
+  { n: "GitLab", c: "#FC6D26" }, { n: "Asana", c: "#F06A6A" }, { n: "Snowflake", c: "#29B5E8" },
+  { n: "Kubernetes", c: "#326CE5" }, { n: "Zendesk", c: "#03363D" }, { n: "Intercom", c: "#1F8DED" },
+  { n: "Google Cloud", c: "#4285F4" }, { n: "Terraform", c: "#7B42BC" }, { n: "Shopify", c: "#96BF48" },
+  { n: "Okta", c: "#007DC1" }, { n: "Figma", c: "#F24E1E" }, { n: "Monday.com", c: "#FF3D57" },
+];
+
+function ConnectorTag({ n, c }: { n: string; c: string }) {
+  return (
+    <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:border-white/15 transition-colors">
+      <span className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: c }} />
+      <span className="text-sm text-slate-300 whitespace-nowrap font-medium">{n}</span>
+    </div>
+  );
+}
+
+function ConnectorMarquee() {
+  return (
+    <div className="py-20">
+      <div className="text-center mb-12">
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-violet-400 mb-4">
+          <span className="h-px w-8 bg-violet-400/50" /> Universal Connectivity <span className="h-px w-8 bg-violet-400/50" />
+        </div>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+          227 production-certified connectors
+        </h2>
+        <p className="text-slate-400 max-w-xl mx-auto">
+          Every connector ships with certified read/write tool parity, encrypted credential storage and hot-swap registration.
+        </p>
+      </div>
+      {[CONNECTORS_ROW1, CONNECTORS_ROW2].map((row, ri) => (
+        <div key={ri} className="relative overflow-hidden mb-3">
+          <div className={`flex gap-3 ${ri === 0 ? "animate-marquee" : "animate-marquee-reverse"}`}>
+            {[...row, ...row].map((c, i) => <ConnectorTag key={i} {...c} />)}
+          </div>
+          <div className="absolute left-0 top-0 bottom-0 w-24 bg-gradient-to-r from-[#06060e] to-transparent pointer-events-none z-10" />
+          <div className="absolute right-0 top-0 bottom-0 w-24 bg-gradient-to-l from-[#06060e] to-transparent pointer-events-none z-10" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STATS = [
+  { val: 227, suffix: "+", label: "Certified connectors" },
+  { val: 9, suffix: "", label: "Auth protocols supported" },
+  { val: 15, suffix: "", label: "Multi-agent architectures" },
+  { val: 7, suffix: "", label: "Eval quality dimensions" },
+  { val: 13, suffix: "", label: "RPA browser actions" },
+  { val: 5, suffix: "", label: "Attack vector defences" },
+];
+
+function StatsSection() {
+  const { ref, on } = useReveal(0.2);
+  const counts = STATS.map(s => useCounter(s.val, 2000, on)); // eslint-disable-line react-hooks/rules-of-hooks
+  return (
+    <div className="py-20">
+      <div className="relative rounded-2xl overflow-hidden border border-white/[0.06] bg-gradient-to-br from-violet-900/15 via-[#0c0c18] to-indigo-900/10 p-12 md:p-16">
+        <div className="absolute inset-0 landing-grid-bg opacity-10" />
+        <div ref={ref} className="relative text-center mb-12">
+          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+            Built for production at every layer
+          </h2>
+          <p className="text-slate-400">Not a demo. Not a prototype. Every number comes from shipped code.</p>
+        </div>
+        <div className="relative grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8">
+          {STATS.map((s, i) => (
+            <div key={s.label} className="text-center">
+              <div className="font-display text-4xl md:text-5xl font-bold text-white tabular-nums">
+                {counts[i].toLocaleString()}{s.suffix}
+              </div>
+              <div className="text-xs text-slate-500 mt-2 leading-tight">{s.label}</div>
+            </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Architecture visual — horizontal flow
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ARCH_LAYERS = [
+  {
+    title: "Intelligence Layer",
+    items: ["LangGraph agent loop", "3-role LLM routing", "CoT & Reflection", "Goal-tree decomp."],
+    color: "border-violet-500/30 bg-violet-900/10",
+    dot: "bg-violet-500",
+  },
+  {
+    title: "Connectivity Layer",
+    items: ["227 connectors", "9 auth protocols", "OAuth2 + PKCE", "OpenAPI importer"],
+    color: "border-sky-500/30 bg-sky-900/10",
+    dot: "bg-sky-500",
+  },
+  {
+    title: "Governance Layer",
+    items: ["HITL approval gate", "Policy engine", "Cost controller", "Hash-chain audit"],
+    color: "border-amber-500/30 bg-amber-900/10",
+    dot: "bg-amber-500",
+  },
+  {
+    title: "Memory Layer",
+    items: ["pgvector RAG", "Execution memory", "Semantic cache", "Federated search"],
+    color: "border-emerald-500/30 bg-emerald-900/10",
+    dot: "bg-emerald-500",
+  },
+  {
+    title: "Reliability Layer",
+    items: ["Circuit breakers", "Per-tenant bulkhead", "LIFO rollback", "Dedup + idempotency"],
+    color: "border-rose-500/30 bg-rose-900/10",
+    dot: "bg-rose-500",
+  },
+];
+
+function ArchSection() {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div className="py-20">
+      <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+          <span className="h-px w-8 bg-slate-600" /> Architecture
+        </div>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+          Five production layers, zero compromise
+        </h2>
+        <p className="text-slate-400 max-w-xl mx-auto">
+          Each layer is independently deployable, fully observable, and designed to fail safely.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {ARCH_LAYERS.map(({ title, items, color, dot }, i) => {
+          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
+          return (
+            <div
+              key={title}
+              ref={r}
+              className={`reveal ${v ? "reveal-on" : ""} rounded-xl border p-5 ${color}`}
+              style={{ transitionDelay: `${i * 100}ms` }}
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <span className={`h-2 w-2 rounded-full ${dot}`} />
+                <span className="text-xs font-semibold text-white">{title}</span>
+              </div>
+              <ul className="space-y-2">
+                {items.map(it => (
+                  <li key={it} className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <span className="h-px w-3 bg-slate-600 flex-shrink-0" />{it}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Use-case spotlights
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SPOTLIGHTS = [
+  {
+    role: "Engineering Teams",
+    headline: "Turn every incident into a resolved ticket — automatically.",
+    bullets: [
+      "Monitors Datadog alerts → pages PagerDuty → creates Jira P1",
+      "Pulls relevant logs, diagnoses root cause with LLM reasoning",
+      "Proposes a fix, opens a PR, assigns reviewer",
+      "HITL gate pauses for approval before merging to prod",
+    ],
+    connectors: ["Datadog", "PagerDuty", "Jira", "GitHub"],
+    accent: "from-violet-600 to-indigo-600",
+    border: "border-violet-500/20",
+  },
+  {
+    role: "Sales & Revenue",
+    headline: "Close pipeline while your team sleeps.",
+    bullets: [
+      "Monitors Salesforce for deals idle > 7 days",
+      "Drafts personalised follow-up via HubSpot with deal context",
+      "Updates CRM stage, logs activity, creates next task",
+      "Weekly pipeline health report delivered to Slack",
+    ],
+    connectors: ["Salesforce", "HubSpot", "Slack"],
+    accent: "from-sky-600 to-cyan-600",
+    border: "border-sky-500/20",
+  },
+  {
+    role: "HR & Operations",
+    headline: "Every new hire fully set up before their first day.",
+    bullets: [
+      "Triggered by ATS hire event in Greenhouse",
+      "Provisions accounts across Okta, Slack, Jira, Notion",
+      "Assigns onboarding tasks, sends welcome sequence",
+      "Escalates to HR manager if any step fails approval",
+    ],
+    connectors: ["Greenhouse", "Okta", "Slack", "Notion"],
+    accent: "from-emerald-600 to-teal-600",
+    border: "border-emerald-500/20",
+  },
+];
+
+function SpotlightSection() {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div className="py-20">
+      <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+          <span className="h-px w-8 bg-slate-600" /> Use Cases
+        </div>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+          One platform. Every team.
+        </h2>
+        <p className="text-slate-400 max-w-xl mx-auto">
+          AgentVerse agents work across functions without custom integrations or manual handoffs.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {SPOTLIGHTS.map(({ role, headline, bullets, connectors, accent, border }, i) => {
+          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
+          return (
+            <div
+              key={role}
+              ref={r}
+              className={`reveal ${v ? "reveal-on" : ""} relative rounded-2xl border ${border} bg-white/[0.025] p-6 flex flex-col`}
+              style={{ transitionDelay: `${i * 120}ms` }}
+            >
+              <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${accent} text-white mb-4`}>
+                {role}
+              </div>
+              <h3 className="font-display font-bold text-white text-base mb-4 leading-snug">{headline}</h3>
+              <ul className="space-y-2.5 flex-1">
+                {bullets.map((b, j) => (
+                  <li key={j} className="flex items-start gap-2 text-sm text-slate-400">
+                    <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500 flex-shrink-0" />
+                    {b}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-5 pt-4 border-t border-white/[0.05] flex flex-wrap gap-1.5">
+                {connectors.map(c => (
+                  <span key={c} className="text-[10px] font-medium text-slate-500 border border-white/[0.06] rounded px-1.5 py-0.5">
+                    {c}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Observability strip
+// ─────────────────────────────────────────────────────────────────────────────
+
+const OBS_ITEMS = [
+  { icon: "📡", title: "Live SSE Execution Stream", desc: "Every agent step streamed in real time. No polling. Events arrive the moment they're emitted — across Celery workers via Redis pub/sub." },
+  { icon: "🔭", title: "OpenTelemetry Tracing", desc: "Named spans for plan, execute and verify with tenant_id, iteration and step_description attributes. Export to Jaeger or any OTLP collector." },
+  { icon: "🧬", title: "Goal DNA Visualisation", desc: "Force-graph exploration of every decision, tool call and verification in a goal run. Diff two runs. Ghost-run a goal with a different strategy." },
+  { icon: "📈", title: "Cost & Latency Analytics", desc: "Per-goal, per-agent, per-tenant cost tracking with daily budget enforcement. Real token-based billing — not LLM call counts." },
+];
+
+function ObsSection() {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div className="py-20">
+      <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+          <span className="h-px w-8 bg-slate-600" /> Observability
+        </div>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+          Full transparency into every decision
+        </h2>
+        <p className="text-slate-400 max-w-xl mx-auto">
+          See exactly what your agents thought, why they called which tools, and where costs went.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {OBS_ITEMS.map(({ icon, title, desc }, i) => {
+          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
+          return (
+            <div
+              key={title}
+              ref={r}
+              className={`reveal ${v ? "reveal-on" : ""} p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-colors`}
+              style={{ transitionDelay: `${i * 80}ms` }}
+            >
+              <div className="text-2xl mb-3">{icon}</div>
+              <h3 className="font-semibold text-white text-sm mb-2">{title}</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CTA
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CTASection({ onStart }: { onStart: () => void }) {
+  const { ref, on } = useReveal(0.2);
+  return (
+    <div className="py-24">
+      <div className="relative rounded-2xl overflow-hidden border border-white/[0.07]">
+        <div className="absolute inset-0 bg-gradient-to-br from-violet-900/30 via-[#0c0c18] to-indigo-900/20" />
+        <div className="absolute inset-0 landing-grid-bg opacity-10" />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[200px] bg-violet-700/20 blur-[80px] rounded-full pointer-events-none" />
+        <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} relative py-20 px-8 text-center`}>
+          <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-violet-400 mb-6">
+            <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
+            Ready to deploy
+          </div>
+          <h2 className="font-display text-4xl md:text-5xl font-bold text-white mb-5 leading-tight">
+            The operating system for<br />
+            <span className="bg-gradient-to-r from-violet-400 via-indigo-300 to-sky-400 bg-clip-text text-transparent">
+              autonomous enterprise AI.
+            </span>
+          </h2>
+          <p className="text-slate-400 text-lg max-w-lg mx-auto mb-10">
+            Multi-tenant. Governance-first. Connects to everything.
+            Submit a goal — your agents handle the rest.
+          </p>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <button
+              onClick={onStart}
+              className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              Launch your first agent →
+            </button>
+            <button
+              onClick={onStart}
+              className="px-8 py-4 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-white transition-all duration-200 hover:bg-white/[0.03]"
+            >
+              Sign in to dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nav
+// ─────────────────────────────────────────────────────────────────────────────
+
+function NavBar({ onStart }: { onStart: () => void }) {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const fn = () => setScrolled(window.scrollY > 24);
+    window.addEventListener("scroll", fn, { passive: true });
+    return () => window.removeEventListener("scroll", fn);
+  }, []);
+
+  return (
+    <nav className={`fixed top-0 inset-x-0 z-50 transition-all duration-300 ${
+      scrolled ? "bg-[#06060e]/90 backdrop-blur-md border-b border-white/[0.06]" : "bg-transparent"
+    }`}>
+      <div className="max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 h-16">
+        {/* Brand */}
+        <div className="flex items-center gap-2.5">
+          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
+            <span className="text-[11px] font-bold text-white">AV</span>
+          </div>
+          <span className="font-display font-semibold text-white text-base tracking-tight">AgentVerse</span>
+        </div>
+        {/* Links */}
+        <div className="hidden md:flex items-center gap-7">
+          {["Platform", "Connectors", "Governance", "Use Cases"].map(l => (
+            <a key={l} href={`#${l.toLowerCase().replace(" ", "-")}`}
+              className="text-sm text-slate-400 hover:text-white transition-colors">
+              {l}
+            </a>
+          ))}
+        </div>
+        {/* Actions */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate("/auth")}
-            className="px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors"
-          >
+          <button onClick={onStart} className="text-sm text-slate-400 hover:text-white transition-colors px-3 py-1.5">
             Sign in
           </button>
           <button
-            onClick={() => navigate("/auth")}
-            className="px-4 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors duration-200 shadow-lg shadow-violet-900/30"
+            onClick={onStart}
+            className="px-4 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors shadow-lg shadow-violet-900/30"
           >
             Get started
           </button>
         </div>
-      </nav>
+      </div>
+    </nav>
+  );
+}
 
-      {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section className="relative z-10 pt-28 pb-20 px-6 md:px-12 text-center max-w-5xl mx-auto">
-        {/* Badge */}
-        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-300 text-xs font-medium mb-8 animate-fade-in">
-          <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
-          <span>Autonomous AI agents — 227 connectors — enterprise-grade</span>
+// ─────────────────────────────────────────────────────────────────────────────
+// Footer
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Footer() {
+  return (
+    <footer className="border-t border-white/[0.05] py-14 px-6 md:px-10">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between gap-10">
+        <div className="max-w-xs">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="h-6 w-6 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
+              <span className="text-[9px] font-bold text-white">AV</span>
+            </div>
+            <span className="font-display font-semibold text-white">AgentVerse</span>
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            A multi-tenant operating system for autonomous AI agents. Governance-first. Enterprise-ready. Open architecture.
+          </p>
         </div>
-
-        {/* Headline */}
-        <h1 className="font-display text-5xl md:text-7xl font-bold text-white leading-[1.08] tracking-tight mb-6 animate-fade-in-up" style={{ animationDelay: "100ms" }}>
-          One goal.<br />
-          <span className="bg-gradient-to-r from-violet-400 via-indigo-400 to-sky-400 bg-clip-text text-transparent">
-            Infinite execution.
-          </span>
-        </h1>
-
-        {/* Typewriter sub */}
-        <p className="text-lg md:text-2xl text-slate-400 mb-3 animate-fade-in-up" style={{ animationDelay: "200ms" }}>
-          Tell your agent to
-        </p>
-        <div className="text-2xl md:text-3xl font-semibold text-white min-h-[2.5rem] mb-8 animate-fade-in-up" style={{ animationDelay: "260ms" }}>
-          <span className="text-violet-300">{displayed}</span>
-          <span className="inline-block w-0.5 h-7 bg-violet-400 ml-0.5 align-middle animate-blink" />
-        </div>
-
-        <p className="text-slate-400 text-base md:text-lg max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up" style={{ animationDelay: "340ms" }}>
-          AgentVerse is a vendor-agnostic multi-tenant operating system for autonomous AI agents.
-          Submit a natural language goal — the agent plans, calls real tools, verifies results
-          and replans on failure.{" "}
-          <span className="text-white font-medium">Zero hardcoded workflows.</span>
-        </p>
-
-        {/* CTAs */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-up" style={{ animationDelay: "420ms" }}>
-          <button
-            onClick={() => navigate("/auth")}
-            className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
-          >
-            <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
-            Launch your first agent →
-          </button>
-          <a href="#how-it-works"
-            className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-all duration-200 hover:bg-white/[0.03]">
-            See how it works
-          </a>
-        </div>
-
-        {/* Hero stats */}
-        <div className="flex flex-wrap justify-center gap-8 mt-16 animate-fade-in-up" style={{ animationDelay: "520ms" }}>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-8 text-sm">
           {[
-            { val: "227", label: "connectors" },
-            { val: "1905+", label: "E2E tests" },
-            { val: "<1s", label: "avg plan time" },
-            { val: "0", label: "hardcoded workflows" },
-          ].map(({ val, label }) => (
-            <div key={label} className="flex flex-col items-center">
-              <span className="text-2xl font-bold text-white font-display">{val}</span>
-              <span className="text-xs text-slate-500 mt-0.5">{label}</span>
+            { h: "Platform", ls: ["Autonomous Agents", "227 Connectors", "Governance", "Observability", "Marketplace"] },
+            { h: "Enterprise", ls: ["HITL Approval", "GDPR / SOC2", "Audit Trail", "SIEM Integration", "Multi-Tenancy"] },
+            { h: "Developers", ls: ["Python SDK", "TypeScript SDK", "GitHub Action", "OpenAPI Docs", "Certification"] },
+          ].map(({ h, ls }) => (
+            <div key={h}>
+              <div className="text-white font-medium mb-3">{h}</div>
+              {ls.map(l => (
+                <div key={l} className="mb-1.5">
+                  <a href="#" className="text-slate-500 hover:text-slate-300 transition-colors text-xs">{l}</a>
+                </div>
+              ))}
             </div>
           ))}
         </div>
-      </section>
+      </div>
+      <div className="max-w-7xl mx-auto mt-10 pt-6 border-t border-white/[0.04] flex flex-col sm:flex-row justify-between gap-2 text-[11px] text-slate-600">
+        <span>© 2026 AgentVerse. The autonomous AI operating system.</span>
+        <span>Multi-tenant · Governance-first · 227 connectors</span>
+      </div>
+    </footer>
+  );
+}
 
-      {/* ── Terminal Demo ─────────────────────────────────────────────────── */}
-      <section id="features" className="relative z-10 py-16 px-6 md:px-12">
-        <TerminalDemo />
-      </section>
+// ─────────────────────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────────────────────
 
-      {/* ── Features grid ────────────────────────────────────────────────── */}
-      <section className="relative z-10 py-20 px-6 md:px-12 max-w-6xl mx-auto">
-        <div className="text-center mb-14">
-          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-4">
-            Everything your agents need
-          </h2>
-          <p className="text-slate-400 max-w-xl mx-auto">
-            From planning to verification, governance to observability — the full stack for production-grade autonomous AI.
+export function LandingPage() {
+  const navigate = useNavigate();
+  const go = useCallback(() => navigate("/auth"), [navigate]);
+
+  return (
+    <div className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
+
+      {/* Background atmosphere */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <div className="absolute inset-0 landing-grid-bg opacity-20" />
+        <div className="absolute top-0 left-1/3 w-[700px] h-[700px] bg-violet-900/15 rounded-full blur-[130px] animate-orb-drift" />
+        <div className="absolute top-1/2 right-1/4 w-[500px] h-[500px] bg-indigo-900/12 rounded-full blur-[100px] animate-orb-drift-slow" />
+        <div className="absolute bottom-1/4 left-1/4 w-[400px] h-[400px] bg-sky-900/10 rounded-full blur-[90px]" />
+        <div className="absolute inset-0 landing-noise opacity-[0.025]" />
+      </div>
+
+      <NavBar onStart={go} />
+
+      <div className="relative z-10 max-w-7xl mx-auto px-6 md:px-10">
+
+        {/* ── Hero ─────────────────────────────────────────────────────── */}
+        <section className="pt-36 pb-16 text-center">
+          {/* Category badge */}
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-violet-500/25 bg-violet-500/8 text-violet-300 text-xs font-medium mb-8 animate-fade-in">
+            <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
+            Autonomous AI Operating System · Multi-tenant · Enterprise-grade
+          </div>
+
+          {/* Headline */}
+          <h1 className="font-display text-5xl md:text-7xl lg:text-[80px] font-extrabold text-white leading-[1.03] tracking-tight mb-7 animate-fade-in-up" style={{ animationDelay: "80ms" }}>
+            Your agents.<br />
+            <span className="bg-gradient-to-r from-violet-400 via-indigo-300 to-sky-400 bg-clip-text text-transparent">
+              Every tool. Zero code.
+            </span>
+          </h1>
+
+          {/* Typewriter */}
+          <div className="text-xl md:text-2xl text-slate-300 mb-4 animate-fade-in-up h-8" style={{ animationDelay: "180ms" }}>
+            Your agent&nbsp;<Typewriter />
+          </div>
+
+          <p className="text-slate-400 text-base md:text-lg max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up" style={{ animationDelay: "260ms" }}>
+            Submit a natural language goal. AgentVerse plans, executes across{" "}
+            <span className="text-white font-medium">227 real-world connectors</span>, verifies results, and replans on failure —
+            with enterprise governance baked in at every layer.
           </p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {FEATURES.map((f, i) => (
-            <FeatureCard key={f.title} {...f} delay={i * 80} />
-          ))}
-        </div>
-      </section>
 
-      {/* ── How it works ─────────────────────────────────────────────────── */}
-      <section id="how-it-works" className="relative z-10 py-20 px-6 md:px-12 max-w-5xl mx-auto">
-        <div className="text-center mb-14">
-          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-4">
-            How it works
-          </h2>
-          <p className="text-slate-400">Three steps from idea to structured result.</p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
-          {/* Connecting line on md+ */}
-          <div className="hidden md:block absolute top-12 left-[calc(16.7%+2rem)] right-[calc(16.7%+2rem)] h-px bg-gradient-to-r from-violet-500/30 via-sky-500/30 to-violet-500/30" />
-          {HOW_STEPS.map(({ num, title, desc }, i) => {
-            const { ref, visible } = useScrollReveal(0.1);
-            return (
-              <div
-                key={num}
-                ref={ref}
-                className={`landing-reveal ${visible ? "landing-reveal--visible" : ""} text-center`}
-                style={{ transitionDelay: `${i * 150}ms` }}
-              >
-                <div className="mx-auto mb-5 w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-700 flex items-center justify-center text-white font-bold font-mono text-sm shadow-lg shadow-violet-900/40">
-                  {num}
-                </div>
-                <h3 className="font-semibold text-white text-base mb-2">{title}</h3>
-                <p className="text-sm text-slate-400 leading-relaxed">{desc}</p>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+          {/* CTAs */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-up" style={{ animationDelay: "340ms" }}>
+            <button
+              onClick={go}
+              className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              Launch your first agent →
+            </button>
+            <a href="#platform" className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-all duration-200 hover:bg-white/[0.03]">
+              Explore the platform
+            </a>
+          </div>
 
-      {/* ── Connectors ───────────────────────────────────────────────────── */}
-      <section id="connectors" className="relative z-10 py-20 px-6 md:px-12 overflow-hidden">
-        <div className="text-center mb-12">
-          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-4">
-            Connects to everything
-          </h2>
-          <p className="text-slate-400">
-            227 certified connectors. Real tool calls. Production-ready authentication.
-          </p>
-        </div>
-        {/* Marquee row 1 */}
-        <div className="relative overflow-hidden mb-4">
-          <div className="flex gap-3 animate-marquee">
-            {[...CONNECTORS, ...CONNECTORS].map((c, i) => (
-              <div
-                key={i}
-                className="flex-shrink-0 px-4 py-2.5 rounded-lg border border-white/[0.07] bg-white/[0.03] flex items-center gap-2.5 hover:border-white/20 transition-colors"
-              >
-                <div className="h-2 w-2 rounded-full" style={{ backgroundColor: c.color }} />
-                <span className="text-sm text-slate-300 whitespace-nowrap">{c.name}</span>
+          {/* Quick proof row */}
+          <div className="flex flex-wrap justify-center gap-8 mt-14 animate-fade-in-up" style={{ animationDelay: "440ms" }}>
+            {[
+              { n: "227+", l: "connectors" },
+              { n: "9", l: "auth protocols" },
+              { n: "7", l: "eval dimensions" },
+              { n: "5", l: "LLM providers" },
+              { n: "<1ms", l: "audit write latency" },
+              { n: "0", l: "hardcoded workflows" },
+            ].map(({ n, l }) => (
+              <div key={l} className="flex flex-col items-center">
+                <span className="font-display text-2xl font-bold text-white">{n}</span>
+                <span className="text-[11px] text-slate-500 mt-0.5">{l}</span>
               </div>
             ))}
           </div>
-          <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-[#080810] to-transparent pointer-events-none z-10" />
-          <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-[#080810] to-transparent pointer-events-none z-10" />
-        </div>
-        {/* Marquee row 2 (reverse) */}
-        <div className="relative overflow-hidden">
-          <div className="flex gap-3 animate-marquee-reverse">
-            {[...CONNECTORS.slice(8), ...CONNECTORS.slice(0, 8), ...CONNECTORS.slice(8), ...CONNECTORS.slice(0, 8)].map((c, i) => (
-              <div
-                key={i}
-                className="flex-shrink-0 px-4 py-2.5 rounded-lg border border-white/[0.07] bg-white/[0.03] flex items-center gap-2.5 hover:border-white/20 transition-colors"
-              >
-                <div className="h-2 w-2 rounded-full" style={{ backgroundColor: c.color }} />
-                <span className="text-sm text-slate-300 whitespace-nowrap">{c.name}</span>
-              </div>
-            ))}
-          </div>
-          <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-[#080810] to-transparent pointer-events-none z-10" />
-          <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-[#080810] to-transparent pointer-events-none z-10" />
-        </div>
-      </section>
+        </section>
 
-      {/* ── Stats ────────────────────────────────────────────────────────── */}
-      <section className="relative z-10 py-20 px-6 md:px-12">
-        <div className="max-w-4xl mx-auto">
-          <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-br from-violet-900/20 to-indigo-900/10 p-10 md:p-16">
-            <div className="text-center mb-12">
-              <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
-                Built for scale
-              </h2>
-              <p className="text-slate-400">Numbers from a production-hardened codebase.</p>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-              <StatCounter value={227} suffix="+" label="Production connectors" />
-              <StatCounter value={1905} suffix="+" label="E2E tests" />
-              <StatCounter value={44} suffix="" label="DB migrations" />
-              <StatCounter value={15} suffix="+" label="Agent architectures" />
-            </div>
-          </div>
-        </div>
-      </section>
+        {/* ── Pipeline Demo ─────────────────────────────────────────────── */}
+        <section id="platform" className="py-6">
+          <PipelineDemo />
+        </section>
 
-      {/* ── Architecture highlights ───────────────────────────────────────── */}
-      <section className="relative z-10 py-20 px-6 md:px-12 max-w-6xl mx-auto">
-        <div className="text-center mb-14">
-          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-4">
-            Production architecture
-          </h2>
-          <p className="text-slate-400 max-w-xl mx-auto">
-            LangGraph state machines, Celery queue routing, Redis pub/sub SSE, row-level security — the full stack.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {[
-            {
-              title: "LangGraph Agent Loop",
-              desc: "initialize → plan → execute → verify → (complete | replan | waiting_human). Three distinct LLM roles, each independently tunable.",
-              icon: "🔄",
-              badge: "Core",
-              color: "violet",
-            },
-            {
-              title: "Multi-Tenant Queue Routing",
-              desc: "Celery workers route by plan tier: goals.free / starter / professional / enterprise. Enterprise tenants never share queues.",
-              icon: "📨",
-              badge: "Scaling",
-              color: "sky",
-            },
-            {
-              title: "Row-Level Security",
-              desc: "PostgreSQL RLS with SET LOCAL app.tenant_id. Tenant isolation enforced at the database, not just the app layer.",
-              icon: "🔐",
-              badge: "Security",
-              color: "emerald",
-            },
-            {
-              title: "Real-Time SSE Events",
-              desc: "Per-goal asyncio subscriber queues with replay-before-register ordering. No events dropped between stream open and live subscription.",
-              icon: "📡",
-              badge: "Realtime",
-              color: "amber",
-            },
-          ].map(({ title, desc, icon, badge, color }, i) => {
-            const { ref, visible } = useScrollReveal(0.1);
-            const badgeColors: Record<string, string> = {
-              violet: "bg-violet-500/10 text-violet-300 border-violet-500/20",
-              sky: "bg-sky-500/10 text-sky-300 border-sky-500/20",
-              emerald: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
-              amber: "bg-amber-500/10 text-amber-300 border-amber-500/20",
-            };
-            return (
-              <div
-                key={title}
-                ref={ref}
-                className={`landing-reveal ${visible ? "landing-reveal--visible" : ""} group p-6 rounded-2xl border border-white/[0.07] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04] transition-all duration-300`}
-                style={{ transitionDelay: `${i * 100}ms` }}
-              >
-                <div className="flex items-start gap-4">
-                  <div className="text-2xl mt-0.5">{icon}</div>
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <h3 className="font-semibold text-white text-sm">{title}</h3>
-                      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${badgeColors[color]}`}>{badge}</span>
-                    </div>
-                    <p className="text-sm text-slate-400 leading-relaxed">{desc}</p>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+        {/* ── All capability groups ──────────────────────────────────────── */}
+        {CAPABILITY_GROUPS.map(g => (
+          <CapabilitySection key={g.label} {...g} />
+        ))}
 
-      {/* ── CTA Banner ───────────────────────────────────────────────────── */}
-      <section className="relative z-10 py-24 px-6 md:px-12">
-        <div className="max-w-3xl mx-auto text-center">
-          {/* Glow */}
-          <div className="absolute left-1/2 -translate-x-1/2 w-[500px] h-[200px] bg-violet-700/20 blur-[80px] rounded-full pointer-events-none" />
-          <div className="relative">
-            <h2 className="font-display text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">
-              Your first autonomous agent
-              <br />
-              <span className="bg-gradient-to-r from-violet-400 to-sky-400 bg-clip-text text-transparent">
-                starts here.
-              </span>
-            </h2>
-            <p className="text-slate-400 text-lg mb-10 max-w-lg mx-auto">
-              Set up in minutes. No workflow builder. No drag and drop. Just a goal.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button
-                onClick={() => navigate("/auth")}
-                className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/50 transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-base"
-              >
-                <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
-                Start for free →
-              </button>
-              <button
-                onClick={() => navigate("/auth")}
-                className="px-8 py-4 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-white transition-all duration-200 text-base hover:bg-white/[0.03]"
-              >
-                View dashboard
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+        {/* ── Architecture ──────────────────────────────────────────────── */}
+        <ArchSection />
 
-      {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <footer className="relative z-10 border-t border-white/[0.05] py-12 px-6 md:px-12">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-start justify-between gap-8">
-          {/* Brand */}
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <div className="h-6 w-6 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
-                <span className="text-white text-[10px] font-bold">AV</span>
-              </div>
-              <span className="font-display font-semibold text-white">AgentVerse</span>
-            </div>
-            <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
-              A vendor-agnostic multi-tenant operating system for autonomous AI agents.
-            </p>
-          </div>
-          {/* Links */}
-          <div className="grid grid-cols-2 gap-8 text-sm">
-            <div>
-              <div className="text-white font-medium mb-3">Product</div>
-              {["Features", "Connectors", "Pricing", "Changelog"].map((l) => (
-                <div key={l} className="mb-1.5"><a href="#" className="text-slate-500 hover:text-slate-300 transition-colors">{l}</a></div>
-              ))}
-            </div>
-            <div>
-              <div className="text-white font-medium mb-3">Developers</div>
-              {["API Reference", "Python SDK", "TypeScript SDK", "GitHub"].map((l) => (
-                <div key={l} className="mb-1.5"><a href="#" className="text-slate-500 hover:text-slate-300 transition-colors">{l}</a></div>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="max-w-6xl mx-auto mt-10 pt-6 border-t border-white/[0.04] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-600">
-          <span>© 2026 AgentVerse. Built for autonomous intelligence.</span>
-          <span>React 19 · FastAPI · LangGraph · Celery · Postgres</span>
-        </div>
-      </footer>
+        {/* ── Connectors marquee ────────────────────────────────────────── */}
+        <ConnectorMarquee />
+
+        {/* ── Observability ─────────────────────────────────────────────── */}
+        <ObsSection />
+
+        {/* ── Use cases ─────────────────────────────────────────────────── */}
+        <SpotlightSection />
+
+        {/* ── Stats ─────────────────────────────────────────────────────── */}
+        <StatsSection />
+
+        {/* ── CTA ───────────────────────────────────────────────────────── */}
+        <CTASection onStart={go} />
+
+      </div>
+
+      <Footer />
     </div>
   );
 }
