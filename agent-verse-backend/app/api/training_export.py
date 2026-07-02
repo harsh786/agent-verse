@@ -20,10 +20,66 @@ router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 _MIN_EXPORT_SCORE = 0.8
 
 
+@router.get("/export-training-data/preview")
+async def preview_training_data(
+    min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
+    limit: int = Query(1000, ge=1, le=10000),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    """Preview training data stats without triggering a download.
+
+    Returns count, score distribution, and up to 3 sample records so the
+    operator can verify the filter settings before exporting.
+    """
+    goal_service = getattr(request.app.state, "goal_service", None)
+    db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
+
+    if db is not None:
+        examples = await _collect_training_examples_db(db, min_score, limit)
+    else:
+        examples = _collect_training_examples_memory(goal_service, min_score, limit)
+
+    scores = [e["eval_score"] for e in examples]
+    # Use ASCII hyphens in bucket keys (ruff RUF001)
+    buckets: dict[str, int] = {
+        "0.80-0.85": 0, "0.85-0.90": 0, "0.90-0.95": 0, "0.95-1.00": 0,
+    }
+    for s in scores:
+        if s < 0.85:
+            buckets["0.80-0.85"] += 1
+        elif s < 0.90:
+            buckets["0.85-0.90"] += 1
+        elif s < 0.95:
+            buckets["0.90-0.95"] += 1
+        else:
+            buckets["0.95-1.00"] += 1
+
+    samples = [
+        {
+            "goal": e["goal"][:120] + ("..." if len(e["goal"]) > 120 else ""),
+            "eval_score": e["eval_score"],
+            "steps": len(e.get("steps", [])),
+            "tools": list(
+                {s.get("tool_name", "") for s in e.get("steps", []) if s.get("tool_name")}
+            ),
+        }
+        for e in examples[:3]
+    ]
+
+    return {
+        "count": len(examples),
+        "avg_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "min_score_found": round(min(scores), 4) if scores else 0.0,
+        "max_score_found": round(max(scores), 4) if scores else 0.0,
+        "score_distribution": buckets,
+        "samples": samples,
+    }
+
+
 @router.post("/export-training-data")
 async def export_training_data(
     min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
-    format: str = Query("openai", pattern="^(openai|anthropic)$"),
+    output_format: str = Query("openai", alias="format", pattern="^(openai|anthropic)$"),
     limit: int = Query(1000, ge=1, le=10000),
     request: Request = None,  # type: ignore[assignment]
 ) -> StreamingResponse:
@@ -46,14 +102,14 @@ async def export_training_data(
     else:
         examples = _collect_training_examples_memory(goal_service, min_score, limit)
 
-    if format == "openai":
+    if output_format == "openai":
         jsonl_lines = [_to_openai_format(ex) for ex in examples]
     else:
         jsonl_lines = [_to_anthropic_format(ex) for ex in examples]
 
     content = "\n".join(json.dumps(line) for line in jsonl_lines)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    filename = f"agentverse_training_{format}_{timestamp}.jsonl"
+    filename = f"agentverse_training_{output_format}_{timestamp}.jsonl"
 
     return StreamingResponse(
         io.StringIO(content),
@@ -113,7 +169,7 @@ async def _collect_training_examples_db(
                         )
                     ).fetchall()
                 for sr in step_rows:
-                    desc, output, tool_calls = sr
+                    _desc, output, tool_calls = sr
                     tool_name = ""
                     if tool_calls and isinstance(tool_calls, list) and tool_calls:
                         tool_name = tool_calls[0].get("tool_name", "")
@@ -183,8 +239,9 @@ def _collect_training_examples_memory(
 
 def _to_openai_format(example: dict[str, Any]) -> dict[str, Any]:
     """Convert a goal execution to OpenAI fine-tuning JSONL format."""
+    _system = "You are an autonomous AI agent. Execute goals step by step."
     messages = [
-        {"role": "system", "content": "You are an autonomous AI agent. Execute goals step by step."},
+        {"role": "system", "content": _system},
         {"role": "user", "content": example["goal"]},
     ]
     for step in example.get("steps", []):
