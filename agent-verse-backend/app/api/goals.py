@@ -97,23 +97,30 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
         from app.agent.supervisor import SupervisorAgent
         provider = getattr(request.app.state, "_app_provider", None)
         goal_svc = _goal_service(request)
-        supervisor = SupervisorAgent(
-            provider=provider,
-            goal_service=goal_svc,
-            max_parallel=body.supervisor_max_parallel,
-        )
         try:
-            result = await supervisor.run(
-                goal=body.goal,
-                tenant_ctx=tenant,
-                execution_context=exec_ctx,
+            supervisor = SupervisorAgent(
+                planner_provider=provider,
+                goal_service=goal_svc,
+                max_parallel=body.supervisor_max_parallel,
             )
+            result = await supervisor.run(goal=body.goal, tenant_ctx=tenant)
             return {
-                "id": result.get("parent_goal_id", ""),
-                "goal_id": result.get("parent_goal_id", ""),
+                "id": "",
+                "goal_id": "",
                 "status": "multi_agent",
                 "mode": "supervisor",
-                "sub_goal_ids": result.get("sub_goal_ids", []),
+                "success": result.success,
+                "synthesized_result": result.synthesized_result,
+                "sub_tasks": [
+                    {
+                        "task_id": t.task_id,
+                        "goal": t.goal,
+                        "status": t.status,
+                        "result": t.result,
+                        "error": t.error,
+                    }
+                    for t in result.tasks
+                ],
                 "goal": body.goal,
             }
         except Exception as exc:

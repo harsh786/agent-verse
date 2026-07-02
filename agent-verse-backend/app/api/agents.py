@@ -371,7 +371,7 @@ class AgentStore:
                 for k, v in updates.items():
                     if isinstance(v, (list, dict)):
                         params[k] = json.dumps(v)
-                        set_parts.append(f"{k} = :{k}::jsonb")
+                        set_parts.append(f"{k} = CAST(:{k} AS jsonb)")
                     else:
                         params[k] = v
                         set_parts.append(f"{k} = :{k}")
@@ -469,6 +469,91 @@ class UpdateKnowledgeBindingRequest(BaseModel):
 class MetaAgentCreateRequest(BaseModel):
     command: str
     autorun: bool = False
+
+
+def _connector_lookup_key(value: Any) -> str:
+    return (
+        str(value)
+        .strip()
+        .lower()
+        .replace(".", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(" ", "")
+    )
+
+
+def _connector_id_from_value(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("server_id", "id", "connector_id", "type", "name"):
+            raw = value.get(key)
+            if raw is not None and str(raw).strip():
+                return str(raw).strip()
+        return ""
+    return str(value).strip()
+
+
+def _normalize_connector_ids(values: list[Any]) -> list[str]:
+    connector_ids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        connector_id = _connector_id_from_value(value)
+        if not connector_id or connector_id in seen:
+            continue
+        connector_ids.append(connector_id)
+        seen.add(connector_id)
+    return connector_ids
+
+
+async def _resolve_connector_ids(
+    request: Request, connector_ids: list[Any], tenant_ctx: TenantContext
+) -> list[str]:
+    normalized = _normalize_connector_ids(connector_ids)
+    if not normalized:
+        return []
+
+    registry = getattr(request.app.state, "mcp_registry", None)
+    if registry is None:
+        return normalized
+
+    try:
+        if hasattr(registry, "list_server_records"):
+            records = await registry.list_server_records(tenant_ctx=tenant_ctx)
+        elif hasattr(registry, "list_servers"):
+            servers = await registry.list_servers(tenant_ctx=tenant_ctx)
+            records = [
+                (str(getattr(server, "server_id", "") or ""), server)
+                for server in servers
+            ]
+        else:
+            return normalized
+    except Exception:
+        return normalized
+
+    lookup: dict[str, str] = {}
+    for server_id, cfg in records:
+        server_id_text = str(server_id or getattr(cfg, "server_id", "") or "").strip()
+        if not server_id_text:
+            continue
+        for value in (
+            server_id_text,
+            getattr(cfg, "server_id", ""),
+            getattr(cfg, "name", ""),
+        ):
+            key = _connector_lookup_key(value)
+            if key:
+                lookup.setdefault(key, server_id_text)
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for connector_id in normalized:
+        connector_key = _connector_lookup_key(connector_id)
+        resolved_id = lookup.get(connector_key, connector_id)
+        if resolved_id in seen:
+            continue
+        resolved.append(resolved_id)
+        seen.add(resolved_id)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -610,11 +695,17 @@ async def create_agent_nl(
             ),
         )
 
+    connector_ids = await _resolve_connector_ids(
+        request,
+        list(config.connectors),
+        tenant_ctx,
+    )
+
     record: dict[str, Any] = {
         "name": config.name,
         "goal_template": config.goal_template,
         "autonomy_mode": config.autonomy_mode,
-        "connector_ids": config.connectors,
+        "connector_ids": connector_ids,
         "trigger_config": {
             "trigger_type": config.trigger_type,
             "cron_expression": config.cron_expression,
@@ -631,7 +722,7 @@ async def create_agent_nl(
         "meta_agent_config": {
             "name": config.name,
             "goal_template": config.goal_template,
-            "connectors": config.connectors,
+            "connectors": connector_ids,
             "trigger_type": config.trigger_type,
             "event_channel": config.event_channel,
             "cron_expression": config.cron_expression,

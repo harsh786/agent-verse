@@ -35,6 +35,13 @@ class ToolContext:
 
     def find_tool(self, name: str) -> ToolRef | None:
         """Find a tool by unqualified name or by Server.tool_name."""
+        jira_search_aliases = {
+            "jirasearchissues",
+            "jiraissuesearch",
+            "jirasearch",
+            "searchjira",
+        }
+
         def _normalize(value: str) -> str:
             return value.lower().replace(".", "").replace(" ", "").replace("_", "")
 
@@ -43,7 +50,7 @@ class ToolContext:
             tool
             for tool in self.tools
             if name_key == _normalize(tool.name)
-            or (name_key in {"jirasearch", "searchjira"} and tool.name == "jira_search_issues")
+            or (name_key in jira_search_aliases and tool.name == "jira_search_issues")
         ]
         if alias_matches:
             return alias_matches[0]

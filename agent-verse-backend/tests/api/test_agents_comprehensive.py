@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +21,7 @@ _VALID_KEY = "av_test_agents_comp"
 def _make_app(
     agent_store: AgentStore | None = None,
     meta_agent: Any | None = None,
+    mcp_registry: Any | None = None,
 ) -> FastAPI:
     app = FastAPI()
 
@@ -31,6 +33,8 @@ def _make_app(
     app.include_router(agents_router)
     app.state.agent_store = agent_store or AgentStore()
     app.state.meta_agent = meta_agent or AsyncMock()
+    if mcp_registry is not None:
+        app.state.mcp_registry = mcp_registry
     return app
 
 
@@ -672,6 +676,55 @@ def test_create_agent_nl_success() -> None:
     body = resp.json()
     assert "agent" in body
     assert "meta_agent_config" in body
+
+
+def test_create_agent_nl_resolves_connector_names_to_registered_ids() -> None:
+    from app.intelligence.meta_agent import MetaAgentConfig
+
+    class Registry:
+        async def list_server_records(self, *, tenant_ctx: TenantContext):
+            return [
+                (
+                    "server-jira",
+                    SimpleNamespace(
+                        name="jira",
+                        server_id="server-jira",
+                    ),
+                ),
+                (
+                    "server-slack",
+                    SimpleNamespace(
+                        name="Slack",
+                        server_id="server-slack",
+                    ),
+                ),
+            ]
+
+    store = AgentStore()
+    meta = AsyncMock()
+    meta.plan = AsyncMock(
+        return_value=MetaAgentConfig(
+            name="jira-agent",
+            goal_template="Find assigned Jira issues",
+            connectors=["jira"],
+            autonomy_mode="supervised",
+        )
+    )
+    client = TestClient(
+        _make_app(store, meta, Registry()),
+        raise_server_exceptions=False,
+    )
+
+    resp = client.post(
+        "/agents/create",
+        json={"command": "Create a Jira agent"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["agent"]["connector_ids"] == ["server-jira"]
+    assert body["meta_agent_config"]["connectors"] == ["server-jira"]
 
 
 def test_create_agent_nl_blocks_fully_autonomous() -> None:

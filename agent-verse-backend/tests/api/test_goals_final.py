@@ -102,12 +102,18 @@ def test_submit_goal_supervisor_mode_success() -> None:
     app = _make_app(svc)
     app.state._app_provider = MagicMock()
 
+    from app.agent.supervisor import SubAgentTask, SupervisionResult
+
     with patch("app.agent.supervisor.SupervisorAgent") as mock_cls:
         mock_supervisor = AsyncMock()
-        mock_supervisor.run = AsyncMock(return_value={
-            "parent_goal_id": "pg1",
-            "sub_goal_ids": ["sg1", "sg2"],
-        })
+        mock_supervisor.run = AsyncMock(return_value=SupervisionResult(
+            success=True,
+            tasks=[
+                SubAgentTask(task_id="sg1", goal="sub-task 1", status="complete", result="ok"),
+                SubAgentTask(task_id="sg2", goal="sub-task 2", status="complete", result="ok"),
+            ],
+            synthesized_result="Both sub-tasks completed.",
+        ))
         mock_cls.return_value = mock_supervisor
 
         client = TestClient(app, raise_server_exceptions=False)
@@ -120,8 +126,9 @@ def test_submit_goal_supervisor_mode_success() -> None:
     assert resp.status_code in (200, 202)
     if resp.status_code in (200, 202):
         body = resp.json()
-        # If supervisor ran, mode should be supervisor; otherwise normal submit
-        assert "goal" in body or "id" in body
+        assert body["mode"] == "supervisor"
+        assert body["success"] is True
+        assert len(body["sub_tasks"]) == 2
 
 
 def test_submit_goal_supervisor_mode_exception_raises_500() -> None:

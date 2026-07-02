@@ -1,6 +1,7 @@
 """Comprehensive tests for app/intelligence/meta_agent.py — targeting 100% coverage."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -125,6 +126,32 @@ class TestMetaAgentPlannerFallback:
         assert len(config.policy_suggestions) == 2
 
     @pytest.mark.asyncio
+    async def test_connector_dicts_are_normalized_to_connector_ids(self):
+        """Connector objects from the LLM should not be stringified into agent IDs."""
+        llm_response = json.dumps({
+            "name": "jira-agent",
+            "goal_template": "Find assigned Jira issues",
+            "connectors": [
+                {
+                    "type": "jira",
+                    "credentials": {
+                        "username": "user@example.com",
+                        "api_token": "token",
+                        "server_url": "https://example.atlassian.net",
+                    },
+                },
+                {"id": "slack"},
+                "github",
+            ],
+        })
+        provider = FakeProvider(responses=[llm_response])
+        planner = MetaAgentPlanner(provider=provider)
+
+        config = await planner.plan(command="Create a Jira task agent", tenant_ctx=_CTX)
+
+        assert config.connectors == ["jira", "slack", "github"]
+
+    @pytest.mark.asyncio
     async def test_interval_seconds_coerced_to_int(self):
         """interval_seconds value should be coerced to int."""
         llm_response = json.dumps({
@@ -159,6 +186,35 @@ class TestMetaAgentPlannerFallback:
         assert "user" in roles
         user_msg = next(m for m in req.messages if m.role == "user")
         assert "My test command" in str(user_msg.content)
+
+    @pytest.mark.asyncio
+    async def test_provider_uses_its_default_model(self):
+        """The planner must not force a Claude model onto OpenAI-compatible providers."""
+        provider = FakeProvider(responses=[json.dumps({
+            "name": "default-model-agent",
+            "goal_template": "Use provider default",
+            "connectors": [],
+        })])
+        planner = MetaAgentPlanner(provider=provider)
+
+        await planner.plan(command="Use the provider default model", tenant_ctx=_CTX)
+
+        assert provider.call_history[0].model == ""
+
+    @pytest.mark.asyncio
+    async def test_slow_provider_falls_back_to_command(self):
+        """Slow provider calls should not block NL agent creation indefinitely."""
+        class SlowProvider:
+            async def complete(self, request):
+                await asyncio.sleep(1)
+
+        planner = MetaAgentPlanner(provider=SlowProvider(), timeout_seconds=0.01)
+
+        config = await planner.plan(command="Create a Jira agent", tenant_ctx=_CTX)
+
+        assert config.name == "unnamed-agent"
+        assert config.goal_template == "Create a Jira agent"
+        assert config.connectors == []
 
     @pytest.mark.asyncio
     async def test_empty_json_object_uses_defaults(self):

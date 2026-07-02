@@ -95,3 +95,16 @@ def test_repair_tool_call_arguments_preserves_all_projects_for_named_assignee() 
     )
 
     assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'
+
+
+def test_repair_tool_call_arguments_maps_dotted_jira_search_alias() -> None:
+    call = ToolCall(tool="jira.issue_search", arguments={"assignee": "Abhay Dwivedi"})
+
+    repaired = repair_tool_call_arguments(
+        call,
+        "Execute a Jira issue search",
+        goal="Find all the Jira assigned to Abhay Dwivedi",
+    )
+
+    assert repaired.tool == "jira_search_issues"
+    assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'

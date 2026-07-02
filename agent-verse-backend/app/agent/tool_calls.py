@@ -14,6 +14,24 @@ class ToolCall:
     arguments: dict[str, Any]
 
 
+_JIRA_SEARCH_TOOL_ALIASES = {
+    "jirasearchissues",
+    "jiraissuesearch",
+    "jirasearch",
+    "searchjira",
+}
+
+
+def _tool_name_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _canonical_tool_name(name: str) -> str:
+    if _tool_name_key(name) in _JIRA_SEARCH_TOOL_ALIASES:
+        return "jira_search_issues"
+    return name
+
+
 def extract_tool_call(text: str) -> ToolCall | None:
     """Parse a structured tool call from JSON or a markdown JSON block."""
     candidate = text.strip()
@@ -88,6 +106,9 @@ def _jql_from_goal_or_step(text: str) -> str:
 
 def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> ToolCall:
     """Fill obvious missing arguments from the planner step text."""
+    canonical_tool = _canonical_tool_name(call.tool)
+    if canonical_tool != call.tool:
+        call = ToolCall(tool=canonical_tool, arguments=call.arguments)
     if "jira_search_issues" not in call.tool:
         return call
     existing_jql = str(call.arguments.get("jql", ""))
