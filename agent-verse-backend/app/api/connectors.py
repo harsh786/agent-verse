@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -13,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
-from app.mcp.registry import MCPServerConfig
+from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.providers.vault import (
     connector_secret_ref,
     is_connector_secret_ref,
@@ -24,6 +25,7 @@ from app.providers.vault import (
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 _REDACTED = "<redacted>"
+_logger = logging.getLogger(__name__)
 _SENSITIVE_AUTH_KEY_PARTS = {
     "access_token",
     "api_key",
@@ -35,6 +37,23 @@ _SENSITIVE_AUTH_KEY_PARTS = {
     "secret",
     "token",
 }
+
+_BUILTIN_HANDLER_CACHE: dict[str, object] | None = None
+
+
+def _get_builtin_handler_for_name(connector_name: str):
+    """Return the builtin handler callable for connector_name, or None."""
+    global _BUILTIN_HANDLER_CACHE
+    if _BUILTIN_HANDLER_CACHE is None:
+        try:
+            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+            _BUILTIN_HANDLER_CACHE = {
+                cfg["name"].lower(): cfg["handler"]
+                for cfg in get_builtin_server_configs()
+            }
+        except Exception:
+            _BUILTIN_HANDLER_CACHE = {}
+    return _BUILTIN_HANDLER_CACHE.get(connector_name.lower().strip())
 
 
 class RegisterConnectorRequest(BaseModel):
@@ -237,17 +256,48 @@ def _mcp_initialize_payload() -> dict[str, Any]:
 
 
 @router.get("/catalog")
-async def get_catalog(request: Request) -> list[dict[str, Any]]:
-    _require_tenant(request)
-    return [
-        {
+async def list_catalog(request: Request) -> list[dict]:
+    """Return all connector types with auth field specs and per-tenant configured status."""
+    tenant = _require_tenant(request)
+    registry = _registry(request)
+
+    # Determine which connectors this tenant already has registered
+    configured_names: set[str] = set()
+    try:
+        servers = await registry.list_servers(tenant_ctx=tenant)
+        for srv in servers:
+            configured_names.add(srv.name.lower().strip())
+    except Exception as exc:
+        _logger.warning("list_catalog_registry_failed: %s", exc)
+
+    result = []
+    for spec in CONNECTOR_CATALOG:
+        fields = [
+            {
+                "key": f.key,
+                "label": f.label,
+                "placeholder": f.placeholder,
+                "field_type": f.field_type,
+                "required": f.required,
+                "hint": f.hint,
+            }
+            for f in spec.auth_fields
+        ]
+        result.append({
             "name": spec.name,
+            "display_name": spec.display_name or spec.name.replace("_", " ").title(),
             "description": spec.description,
             "auth_type": spec.auth_type,
             "default_url": spec.default_url,
-        }
-        for spec in CONNECTOR_CATALOG
-    ]
+            "icon": spec.icon,
+            "category": spec.category,
+            "auth_fields": fields,
+            "has_builtin": bool(spec.builtin_server_id),
+            "builtin_server_id": spec.builtin_server_id,
+            "is_configured": spec.name.lower() in configured_names,
+            "connector_type": spec.name,
+        })
+    return result
 
 
 @router.get("")
@@ -293,6 +343,12 @@ async def register_connector(
         )
 
     server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
+
+    # Auto-assign builtin handler when this connector matches a known builtin type.
+    builtin_handler = _get_builtin_handler_for_name(body.name)
+    if builtin_handler is not None:
+        MCPRegistry.register_builtin_handler(server_id, builtin_handler)
+
     try:
         await _persist_connector_secrets(
             pending_secrets,
@@ -355,86 +411,101 @@ async def update_connector(
     return _public_connector(server_id, cfg)
 
 
+_CONNECTOR_TEST_TOOLS: dict[str, tuple[str, dict]] = {
+    "jira": ("jira_search_issues", {"jql": "created >= -7d ORDER BY created DESC", "max_results": 1}),
+    "github": ("github_list_repos", {"owner": "octocat", "per_page": 1}),
+    "slack": ("slack_list_channels", {"limit": 1}),
+    "linear": ("linear_list_issues", {"limit": 1}),
+    "hubspot": ("hubspot_search_contacts", {"limit": 1}),
+    "stripe": ("stripe_list_customers", {"limit": 1}),
+    "gitlab": ("gitlab_list_projects", {"per_page": 1}),
+    "confluence": ("confluence_list_spaces", {"limit": 1}),
+    "sentry": ("sentry_list_issues", {"project_slug": "test", "limit": 1}),
+}
+
+
 @router.post("/{server_id}/test")
 async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
-    """Test connectivity to a registered MCP server by calling its /health endpoint."""
-    tenant_ctx = _require_tenant(request)
-    reg = _registry(request)
+    """Test a connector by making a real tool call with its registered credentials."""
+    tenant = _require_tenant(request)
+    registry = _registry(request)
+    started = time.time()
 
-    cfg = await reg.get(server_id, tenant_ctx=tenant_ctx)
+    cfg = await registry.get(server_id, tenant_ctx=tenant)
     if cfg is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Connector {server_id} not found",
-        )
+        raise HTTPException(status_code=404, detail="Connector not found")
 
-    t0 = time.monotonic()
-    try:
-        headers = await _build_auth_headers(cfg, secret_resolver=_secret_resolver(request))
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            if _is_mcp_endpoint(cfg.url):
-                headers = {
-                    **headers,
-                    "Accept": "application/json, text/event-stream",
-                    "Content-Type": "application/json",
-                }
-                resp = await client.post(
-                    cfg.url.rstrip("/"),
-                    json=_mcp_initialize_payload(),
-                    headers=headers,
-                )
-            else:
-                resp = await client.get(f"{cfg.url.rstrip('/')}/health", headers=headers)
-            latency_ms = round((time.monotonic() - t0) * 1000)
-            status_code = resp.status_code
-            reachable = 200 <= status_code < 300
-            if status_code in {401, 403}:
-                status_label = "auth_failed"
-            elif reachable:
-                status_label = "healthy"
-            elif status_code < 500:
-                status_label = "bad_response"
-            else:
-                status_label = "unreachable"
-    except Exception as exc:
-        latency_ms = round((time.monotonic() - t0) * 1000)
-        reachable = False
-        status_code = None
-        status_label = "unreachable"
-        error = str(exc)
-    else:
-        error = resp.text[:200] if not reachable else ""
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+    if mcp_client is None:
+        from app.mcp.client import MCPClient
+        mcp_client = MCPClient(registry=registry)
 
-    result = {
-        "server_id": server_id,
-        "name": cfg.name,
-        "url": cfg.url,
-        "reachable": reachable,
-        "status": status_label,
-        "status_code": status_code,
-        "latency_ms": latency_ms,
-        "error": error,
-    }
+    connector_name = cfg.name.lower().strip()
+    test_entry = _CONNECTOR_TEST_TOOLS.get(connector_name)
 
-    # Persist health snapshot
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db:
+    if test_entry:
+        tool_name, tool_args = test_entry
         try:
-            from app.db.models.mcp import ConnectorHealthSnapshot
-            from app.db.rls import sqlalchemy_rls_context
-            async with db() as session, session.begin(), \
-                       sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                session.add(ConnectorHealthSnapshot(
-                    server_id=server_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                    status=result.get("status", "unknown"),
-                    latency_ms=result.get("latency_ms"),
-                    error=result.get("error") or None,
-                ))
-        except Exception:
-            pass
+            result = await mcp_client.call_tool(
+                server_id=server_id,
+                tool_name=tool_name,
+                arguments=tool_args,
+                tenant_ctx=tenant,
+            )
+            latency_ms = round((time.time() - started) * 1000)
+            if result.success:
+                return {
+                    "server_id": server_id,
+                    "reachable": True,
+                    "latency_ms": latency_ms,
+                    "status": "passed",
+                }
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": result.error or "Tool call failed",
+                "latency_ms": latency_ms,
+            }
+        except Exception as exc:
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": str(exc),
+                "latency_ms": round((time.time() - started) * 1000),
+            }
 
-    return result
+    # Generic reachability check for connectors without a known test tool
+    url = cfg.url or cfg.base_url
+    if not url or url == "builtin://":
+        return {"server_id": server_id, "reachable": True, "status": "not_tested", "latency_ms": 0}
+
+    try:
+        headers: dict[str, str] = {}
+        for key, value in (cfg.auth_config or {}).items():
+            if isinstance(value, str) and ("token" in key.lower() or "authorization" in key.lower()):
+                headers["Authorization"] = f"Bearer {value}"
+                break
+        async with httpx.AsyncClient(timeout=10.0) as hclient:
+            resp = await hclient.get(url, headers=headers)
+        latency_ms = round((time.time() - started) * 1000)
+        reachable = resp.status_code < 500
+        return {
+            "server_id": server_id,
+            "reachable": reachable,
+            "status": "passed" if reachable else "failed",
+            "latency_ms": latency_ms,
+            "http_status": resp.status_code,
+        }
+    except Exception as exc:
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
 
 @router.get("/{server_id}/health")
