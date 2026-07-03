@@ -60,7 +60,7 @@ async def emit_event(
                     text("""
                         INSERT INTO civilization_events
                             (id, civilization_id, tenant_id, type, payload, ts)
-                        VALUES (:id, :cid, :tid, :type, :payload::jsonb, NOW())
+                        VALUES (:id, :cid, :tid, :type, CAST(:payload AS jsonb), NOW())
                     """),
                     {
                         "id": event_id,

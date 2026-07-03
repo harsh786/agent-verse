@@ -260,30 +260,32 @@ class Society:
                 decision = await self._router.route(
                     goal=goal, tenant_ctx=tenant_ctx, available_agents=active_agents
                 )
-                # Boost routing by reputation
-                if decision.agent_id and decision.agent_id in self._members:
-                    rep = self._members[decision.agent_id].get("reputation", 0.5)
+                # Boost routing by reputation when we have a match
+                if decision.agent_id and decision.agent_id in {a["agent_id"] for a in active_agents}:
+                    rep = self._members.get(decision.agent_id, {}).get("reputation", 0.5)
                     return {
                         "agent_id": decision.agent_id,
                         "mode": decision.mode,
                         "reason": decision.reason,
                         "confidence": min(1.0, decision.confidence * (0.5 + rep * 0.5)),
                     }
-                return {
-                    "agent_id": decision.agent_id,
-                    "mode": decision.mode,
-                    "reason": decision.reason,
-                    "confidence": decision.confidence,
-                }
+                # Router returned None or low confidence — fall through to reputation fallback
+                logger.info(
+                    "society_router_no_match",
+                    reason=getattr(decision, "reason", "low_confidence"),
+                    confidence=getattr(decision, "confidence", 0.0),
+                )
             except Exception as exc:
                 logger.warning("society_route_failed", error=str(exc))
 
         # Fallback: pick highest-reputation active member
+        # This fires when: (a) no router, (b) router returned agent_id=None (score < 0.3),
+        # (c) router exception. Always guarantees a member is selected.
         best = max(active_agents, key=lambda a: a.get("reputation", 0.5))
         return {
             "agent_id": best["agent_id"],
             "mode": "single_agent",
-            "reason": "highest reputation member",
+            "reason": "highest_reputation_fallback",
             "confidence": best.get("reputation", 0.5),
         }
 

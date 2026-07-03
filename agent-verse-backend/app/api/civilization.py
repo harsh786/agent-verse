@@ -367,6 +367,174 @@ async def update_constitution(
     return {"id": civ_id, "constitution": constitution.to_dict(), "updated": True}
 
 
+# ── Member management ──────────────────────────────────────────────────────────
+
+class AddMemberRequest(BaseModel):
+    agent_id: str
+    role: str = "worker"
+    budget_usd: float = 10.0
+
+
+@router.post("/{civ_id}/members", status_code=status.HTTP_201_CREATED)
+async def add_civilization_member(
+    request: Request, civ_id: str, body: AddMemberRequest
+) -> dict:
+    """Add an existing agent as a member of this civilization."""
+    _require_feature_enabled(request)
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(503, "Database not available")
+
+    # Verify civilization exists for this tenant
+    try:
+        from sqlalchemy import text
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
+            civ_row = (
+                await session.execute(
+                    text("SELECT id FROM civilizations WHERE id = :id AND tenant_id = :tid"),
+                    {"id": civ_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        if civ_row is None:
+            raise HTTPException(404, f"Civilization {civ_id} not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+    # Verify the agent exists for this tenant
+    agent_store = getattr(request.app.state, "agent_store", None)
+    if agent_store is not None:
+        agent = await agent_store.get_async(body.agent_id, tenant_ctx=tenant_ctx)
+        if agent is None:
+            raise HTTPException(404, f"Agent {body.agent_id} not found")
+
+    # Insert into civilization_agents (upsert on conflict)
+    import uuid as _uuid
+    member_id = _uuid.uuid4().hex
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO civilization_agents
+                        (id, civilization_id, agent_id, tenant_id, role, reputation,
+                         status, depth, budget_usd, budget_spent_usd, spawned_at, last_active_at)
+                    VALUES
+                        (:id, :civ_id, :agent_id, :tenant_id, :role, 0.8,
+                         'active', 0, :budget_usd, 0.0, NOW(), NOW())
+                    ON CONFLICT (civilization_id, agent_id)
+                    DO UPDATE SET
+                        role = EXCLUDED.role,
+                        status = 'active',
+                        budget_usd = EXCLUDED.budget_usd,
+                        last_active_at = NOW()
+                """),
+                {
+                    "id": member_id,
+                    "civ_id": civ_id,
+                    "agent_id": body.agent_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "role": body.role,
+                    "budget_usd": body.budget_usd,
+                },
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("add_member_failed", error=str(exc))
+        raise HTTPException(500, f"Failed to add member: {exc}")
+
+    return {
+        "civilization_id": civ_id,
+        "agent_id": body.agent_id,
+        "role": body.role,
+        "status": "active",
+        "budget_usd": body.budget_usd,
+        "message": "Agent added to civilization",
+    }
+
+
+@router.get("/{civ_id}/members")
+async def list_civilization_members(request: Request, civ_id: str) -> list[dict]:
+    """List all members of this civilization with agent config."""
+    _require_feature_enabled(request)
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+
+    try:
+        from sqlalchemy import text
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
+            rows = (
+                await session.execute(
+                    text("""
+                        SELECT
+                            ca.id, ca.agent_id, ca.role, ca.reputation, ca.status,
+                            ca.depth, ca.budget_usd, ca.budget_spent_usd,
+                            ca.spawned_at, ca.last_active_at,
+                            a.name AS agent_name, a.autonomy_mode, a.goal_template
+                        FROM civilization_agents ca
+                        LEFT JOIN agents a ON a.id = ca.agent_id
+                        WHERE ca.civilization_id = :cid AND ca.tenant_id = :tid
+                          AND ca.status NOT IN ('retired')
+                        ORDER BY ca.reputation DESC
+                    """),
+                    {"cid": civ_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
+
+        return [
+            {
+                "member_id": r[0],
+                "agent_id": r[1],
+                "role": r[2],
+                "reputation": float(r[3] or 0.5),
+                "status": r[4],
+                "depth": r[5],
+                "budget_usd": float(r[6] or 0),
+                "budget_spent_usd": float(r[7] or 0),
+                "spawned_at": r[8].isoformat() if r[8] else "",
+                "last_active_at": r[9].isoformat() if r[9] else "",
+                "agent_name": r[10] or "Unknown",
+                "autonomy_mode": r[11] or "supervised",
+                "goal_template": r[12] or "",
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.warning("list_members_failed", error=str(exc))
+        return []
+
+
+@router.delete("/{civ_id}/members/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_civilization_member(
+    request: Request, civ_id: str, agent_id: str
+) -> None:
+    """Remove (retire) an agent from the civilization."""
+    _require_feature_enabled(request)
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(503, "Database not available")
+
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            await session.execute(
+                text("""
+                    UPDATE civilization_agents
+                    SET status = 'retired', retired_at = NOW()
+                    WHERE civilization_id = :cid AND agent_id = :aid AND tenant_id = :tid
+                """),
+                {"cid": civ_id, "aid": agent_id, "tid": tenant_ctx.tenant_id},
+            )
+            await session.commit()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
 @router.post("/{civ_id}/goals", status_code=status.HTTP_202_ACCEPTED)
 async def submit_goal(request: Request, civ_id: str, body: SubmitGoalRequest) -> dict:
     """Submit a goal into the civilization society."""
