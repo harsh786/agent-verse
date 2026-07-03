@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context as _rls_ctx
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -204,7 +205,7 @@ async def create_civilization(request: Request, body: CreateCivilizationRequest)
 
     from sqlalchemy import text
     try:
-        async with db() as session, session.begin():
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
             await session.execute(
                 text("""
                     INSERT INTO civilizations
@@ -243,7 +244,7 @@ async def list_civilizations(request: Request) -> list[dict]:
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             rows = (
                 await session.execute(
                     text("""
@@ -283,7 +284,7 @@ async def get_civilization(request: Request, civ_id: str) -> dict:
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             row = (
                 await session.execute(
                     text(
@@ -342,7 +343,7 @@ async def update_constitution(
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
             result = await session.execute(
                 text("""
                     UPDATE civilizations
@@ -380,7 +381,7 @@ async def submit_goal(request: Request, civ_id: str, body: SubmitGoalRequest) ->
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             row = (
                 await session.execute(
                     text(
@@ -584,7 +585,7 @@ async def get_spawn_audit(request: Request, civ_id: str) -> list[dict]:
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             rows = (
                 await session.execute(
                     text("""
@@ -664,7 +665,7 @@ async def control_civilization(
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             row = (
                 await session.execute(
                     text(
@@ -708,7 +709,7 @@ async def control_civilization(
             constitution_data["spawn_rate_limit_per_min"] = int(rate)
             try:
                 from sqlalchemy import text
-                async with db() as session, session.begin():
+                async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
                     await session.execute(text(
                         "UPDATE civilizations SET constitution=:c::jsonb, updated_at=NOW() "
                         "WHERE id=:id AND tenant_id=:tid"
@@ -727,7 +728,7 @@ async def control_civilization(
             try:
                 from sqlalchemy import text
 
-                async with db() as session, session.begin():
+                async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
                     await session.execute(
                         text(
                             "UPDATE civilizations "
