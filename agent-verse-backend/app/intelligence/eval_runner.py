@@ -119,7 +119,7 @@ class EvalRunner:
         sla_budget_s = (
             float(_ctx2.get("sla_budget_seconds", 300.0)) if isinstance(_ctx2, dict) else 300.0
         )
-        if started_at > 1e6:  # valid monotonic timestamp
+        if started_at > 0:  # valid monotonic or epoch timestamp
             duration_s = time.monotonic() - started_at
             sla_score = max(0.0, 1.0 - max(0.0, duration_s - sla_budget_s) / max(sla_budget_s, 1))
         elif state.iterations and state.iterations > 1:
