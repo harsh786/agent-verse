@@ -428,6 +428,90 @@ async def resume_goal(request: Request, goal_id: str) -> dict[str, Any]:
     return result
 
 
+class GhostRunStrategyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    workflow_mode: str = "single_agent"
+    priority: str = "normal"
+    agent_id: str | None = None
+    model_override: str | None = None
+
+
+class GhostRunRequest(BaseModel):
+    goal: str = Field(..., min_length=1, max_length=10_000)
+    strategies: list[GhostRunStrategyRequest] = Field(default_factory=list)
+
+
+_DEFAULT_GHOST_STRATEGIES: list[dict[str, Any]] = [
+    {"name": "Standard", "workflow_mode": "single_agent", "priority": "normal"},
+    {"name": "Multi-Agent", "workflow_mode": "multi_agent", "priority": "normal"},
+    {"name": "High-Priority", "workflow_mode": "single_agent", "priority": "high"},
+]
+
+
+@router.post("/ghost-run", status_code=status.HTTP_202_ACCEPTED)
+async def ghost_run(request: Request, body: GhostRunRequest) -> dict[str, Any]:
+    """Submit the same goal with multiple strategies in parallel for A/B comparison.
+
+    Each strategy gets a unique goal_id so callers can track them individually via
+    ``GET /goals/{id}`` or ``GET /goals/{id}/stream``.
+
+    Failed strategies are reported inline — other strategies still execute and
+    the endpoint always returns HTTP 202 with a ``ghost_run_id``.
+    """
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+
+    strategies = body.strategies
+    if not strategies:
+        strategies = [GhostRunStrategyRequest(**s) for s in _DEFAULT_GHOST_STRATEGIES]
+
+    ghost_run_id = uuid.uuid4().hex
+
+    async def _submit_one(strategy: GhostRunStrategyRequest) -> dict[str, Any]:
+        try:
+            result = await svc.submit_goal(
+                goal=body.goal,
+                priority=strategy.priority,
+                dry_run=False,
+                tenant_ctx=tenant,
+                agent_id=strategy.agent_id,
+                workflow_mode=strategy.workflow_mode,
+                execution_context={
+                    "ghost_run_id": ghost_run_id,
+                    "strategy_name": strategy.name,
+                },
+            )
+            return {
+                "name": strategy.name,
+                "goal_id": result.get("goal_id") or result.get("id") or "",
+                "error": None,
+                "status": "queued",
+            }
+        except Exception as exc:
+            return {
+                "name": strategy.name,
+                "goal_id": None,
+                "error": str(exc),
+                "status": "failed",
+            }
+
+    strategy_results: list[dict[str, Any]] = list(
+        await asyncio.gather(*[_submit_one(s) for s in strategies])
+    )
+
+    goal_ids: dict[str, str] = {
+        r["name"]: r["goal_id"]
+        for r in strategy_results
+        if r.get("goal_id")
+    }
+
+    return {
+        "ghost_run_id": ghost_run_id,
+        "goal_ids": goal_ids,
+        "strategies": strategy_results,
+    }
+
+
 class BatchGoalRequest(BaseModel):
     goals: list[str] = Field(..., min_length=1, max_length=100)
     priority: str = "normal"
