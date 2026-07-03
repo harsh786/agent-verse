@@ -101,6 +101,28 @@ export interface GoalRequest {
   workflow_mode?: string;
 }
 
+// ── Ghost Run types ───────────────────────────────────────────────────────────
+
+export interface GhostRunStrategy {
+  name: string;
+  workflow_mode: string;
+  priority: string;
+  agent_id?: string;
+}
+
+export interface GhostRunStrategyResult {
+  name: string;
+  goal_id: string | null;
+  error: string | null;
+  status: string;
+}
+
+export interface GhostRunResponse {
+  ghost_run_id: string;
+  goal_ids: Record<string, string>;
+  strategies: GhostRunStrategyResult[];
+}
+
 export interface GoalResponse {
   id: string;
   goal_id?: string;
@@ -194,6 +216,11 @@ export const goalsApi = {
     request<EvalScorecard>(`/goals/${id}/eval`),
   triggerEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`, { method: "POST" }),
+  ghostRun: (body: { goal: string; strategies: GhostRunStrategy[] }) =>
+    request<GhostRunResponse>("/goals/ghost-run", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 // ── Agents ───────────────────────────────────────────────────────────────────
@@ -1406,10 +1433,19 @@ export const workflowsApi = {
     request<void>(`/workflows/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/workflows/${id}`, { method: "DELETE" }),
   run: (id: string, dryRun = false) =>
-    request<{ run_id: string; status: string }>(
+    request<{ run_id: string; status: string; steps_executed?: number; waves?: number; summary?: string }>(
       `/workflows/${id}/run${dryRun ? "?dry_run=true" : ""}`,
       { method: "POST" }
     ),
+  generate: (goal: string) =>
+    request<{
+      nodes: Array<{
+        id: string; type: string; label: string; subtitle?: string;
+        position: { x: number; y: number }; tool?: string;
+        depends_on?: string[]; can_parallel?: boolean;
+      }>;
+      edges: Array<{ id?: string; source: string; target: string }>;
+    }>("/workflows/generate", { method: "POST", body: JSON.stringify({ goal }) }),
 };
 
 // ── Simulation (governance sandbox) ──────────────────────────────────────────
@@ -1511,6 +1547,73 @@ export const playgroundApi = {
     request<PlaygroundResult>("/enterprise/simulation", {
       method: "POST",
       body: JSON.stringify({ goal, mock_tools: mockTools }),
+    }),
+};
+
+// ── Prompt Variants (PromptOptimizer A/B testing) ─────────────────────────────
+
+export interface PromptVariantItem {
+  id: string;
+  key: string;
+  name: string;
+  prompt_text: string;
+  is_control: boolean;
+  run_count: number;
+  mean_score: number | null;
+  p95_score: number | null;
+  promoted_at: string | null;
+}
+
+export interface PromptVariantReport {
+  id: string;
+  key: string;
+  name: string;
+  mean_score: number | null;
+  p95_score: number | null;
+  run_count: number;
+  win_rate: number | null;
+  statistical_significance: string | null;
+}
+
+export const promptVariantsApi = {
+  list: (key: string = "") =>
+    request<PromptVariantItem[]>(
+      key
+        ? `/intelligence/prompt-variants?key=${encodeURIComponent(key)}`
+        : "/intelligence/prompt-variants"
+    ),
+  create: (data: { key: string; name: string; prompt_text: string }) =>
+    request<PromptVariantItem>("/intelligence/prompt-variants", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  promote: (id: string) =>
+    request<{ id: string; key: string; promoted: boolean; promoted_at: string }>(
+      `/intelligence/prompt-variants/${id}/promote`,
+      { method: "POST" }
+    ),
+  delete: (id: string) =>
+    request<void>(`/intelligence/prompt-variants/${id}`, { method: "DELETE" }),
+  report: (id: string) =>
+    request<PromptVariantReport>(`/intelligence/prompt-variants/${id}/report`),
+};
+
+// ── Red Team API ───────────────────────────────────────────────────────────────
+
+export interface RedTeamResult {
+  report_id: string;
+  total: number;
+  passed: number;
+  failed: number;
+  run_at: string;
+  results: Array<{ case: string; passed: boolean; details?: string }>;
+}
+
+export const redTeamApi = {
+  run: (cases?: string[]) =>
+    request<RedTeamResult>("/enterprise/red-team", {
+      method: "POST",
+      body: JSON.stringify({ cases: cases ?? null }),
     }),
 };
 

@@ -1011,6 +1011,180 @@ async def get_eval_dimensions(request: Request) -> dict[str, Any]:
     return {"dimensions": EvalRunner.DIMENSIONS, "count": len(EvalRunner.DIMENSIONS)}
 
 
+# ── Prompt Variants (PromptOptimizer A/B testing) ─────────────────────────────
+
+def _prompt_optimizer_svc(request: Request) -> Any:
+    """Return the PromptOptimizer from app.state, falling back to the default instance."""
+    opt = getattr(request.app.state, "prompt_optimizer", None)
+    if opt is None:
+        from app.intelligence.prompt_optimizer import _default_optimizer
+        opt = _default_optimizer
+    return opt
+
+
+class CreateVariantRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    prompt_text: str = Field(..., min_length=1)
+
+
+@intelligence_router.get("/prompt-variants")
+async def list_prompt_variants(
+    request: Request, key: str = ""
+) -> list[dict[str, Any]]:
+    """List prompt variants for the tenant, optionally filtered by key."""
+    ctx = _require_tenant(request)
+    import statistics as _stats
+    opt = _prompt_optimizer_svc(request)
+    tenant_id = ctx.tenant_id
+    # prefer tenant-scoped variants, fall back to "global"
+    variants = list(opt._variants.get(tenant_id, {}).values())
+    if not variants:
+        variants = list(opt._variants.get("global", {}).values())
+    if key:
+        variants = [v for v in variants if v.prompt_key == key]
+    return [
+        {
+            "id": v.variant_id,
+            "key": v.prompt_key,
+            "name": v.name,
+            "prompt_text": v.prompt_text,
+            "is_control": v.is_control,
+            "run_count": v.run_count,
+            "mean_score": (
+                round(_stats.mean(v.eval_scores), 4) if v.eval_scores else None
+            ),
+            "p95_score": opt._percentile(v.eval_scores, 95) if v.eval_scores else None,
+            "promoted_at": v.promoted_at.isoformat() if v.promoted_at else None,
+        }
+        for v in variants
+    ]
+
+
+@intelligence_router.post("/prompt-variants", status_code=201)
+async def create_prompt_variant(
+    request: Request, body: CreateVariantRequest
+) -> dict[str, Any]:
+    """Register a new challenger prompt variant for A/B testing."""
+    ctx = _require_tenant(request)
+    opt = _prompt_optimizer_svc(request)
+    variant = opt.register_variant(
+        body.key,
+        body.name,
+        body.prompt_text,
+        tenant_id=ctx.tenant_id,
+        is_control=False,
+    )
+    return {
+        "id": variant.variant_id,
+        "key": variant.prompt_key,
+        "name": variant.name,
+        "prompt_text": variant.prompt_text,
+        "is_control": False,
+        "run_count": 0,
+        "mean_score": None,
+        "p95_score": None,
+        "promoted_at": None,
+    }
+
+
+@intelligence_router.post("/prompt-variants/{variant_id}/promote")
+async def promote_prompt_variant(
+    request: Request, variant_id: str
+) -> dict[str, Any]:
+    """Manually promote a challenger variant to control."""
+    ctx = _require_tenant(request)
+    from datetime import UTC, datetime as _dt
+    opt = _prompt_optimizer_svc(request)
+    tenant_id = ctx.tenant_id
+
+    # Find the variant across all tenant scopes (variant_ids are globally unique UUIDs)
+    target_variant = None
+    for tv in opt._variants.values():
+        if variant_id in tv:
+            target_variant = tv[variant_id]
+            break
+    if target_variant is None:
+        raise HTTPException(status_code=404, detail="Variant not found")
+
+    # Demote existing control variants for the same key + tenant
+    key_variants = [
+        v
+        for v in opt._variants.get(tenant_id, {}).values()
+        if v.prompt_key == target_variant.prompt_key
+    ]
+    for v in key_variants:
+        if v.is_control and v.variant_id != variant_id:
+            v.is_control = False
+            v.is_active = False
+
+    # Promote the target
+    target_variant.is_control = True
+    target_variant.is_active = True
+    target_variant.promoted_at = _dt.now(UTC)
+    opt._active.setdefault(tenant_id, {})[target_variant.prompt_key] = variant_id
+
+    return {
+        "id": variant_id,
+        "key": target_variant.prompt_key,
+        "promoted": True,
+        "promoted_at": target_variant.promoted_at.isoformat(),
+    }
+
+
+@intelligence_router.delete("/prompt-variants/{variant_id}", status_code=204)
+async def delete_prompt_variant(request: Request, variant_id: str) -> Response:
+    """Delete a prompt variant. Returns 204 No Content."""
+    ctx = _require_tenant(request)
+    opt = _prompt_optimizer_svc(request)
+    tenant_id = ctx.tenant_id
+    tenant_variants = opt._variants.get(tenant_id, {})
+    if variant_id not in tenant_variants:
+        # also check global scope
+        global_variants = opt._variants.get("global", {})
+        if variant_id not in global_variants:
+            raise HTTPException(status_code=404, detail="Variant not found")
+        del global_variants[variant_id]
+    else:
+        del tenant_variants[variant_id]
+    return Response(status_code=204)
+
+
+@intelligence_router.get("/prompt-variants/{variant_id}/report")
+async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any]:
+    """Get score report for a specific prompt variant."""
+    _require_tenant(request)
+    import statistics as _stats
+    opt = _prompt_optimizer_svc(request)
+
+    target_variant = None
+    for tv in opt._variants.values():
+        if variant_id in tv:
+            target_variant = tv[variant_id]
+            break
+    if target_variant is None:
+        raise HTTPException(status_code=404, detail="Variant not found")
+
+    return {
+        "id": variant_id,
+        "key": target_variant.prompt_key,
+        "name": target_variant.name,
+        "mean_score": (
+            round(_stats.mean(target_variant.eval_scores), 4)
+            if target_variant.eval_scores
+            else None
+        ),
+        "p95_score": (
+            opt._percentile(target_variant.eval_scores, 95)
+            if target_variant.eval_scores
+            else None
+        ),
+        "run_count": target_variant.run_count,
+        "win_rate": None,
+        "statistical_significance": None,
+    }
+
+
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────
 
 @compliance_router.post("/export/start")
