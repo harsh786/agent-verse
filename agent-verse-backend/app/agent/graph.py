@@ -1459,7 +1459,12 @@ class AgentGraph:
                         raw_output = error
                         raw_output_sanitized = True
                     elif tool_risk == "write_high":
-                        if self._hitl_gateway is None:
+                        # In fully-autonomous mode, skip HITL and execute directly.
+                        # In supervised/bounded-autonomous, request approval as usual.
+                        if self._autonomy_mode == "fully-autonomous":
+                            # Fall through to the actual tool execution below
+                            pass
+                        elif self._hitl_gateway is None:
                             error = self._sanitize_tool_raw_output(
                                 f"Jira tool '{tool_ref.name}' requires approval."
                             )
