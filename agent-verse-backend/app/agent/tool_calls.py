@@ -163,25 +163,27 @@ def _resolve_jira_account_id(display_name: str) -> str:
 def _resolve_jira_display_names_in_jql(jql: str) -> str:
     """Replace display-name strings in JQL assignee clauses with account IDs.
 
-    Jira Cloud does not support assignee = "Display Name" — it requires the
-    accountId.  This function detects patterns like:
-        assignee = "Abhay Dwivedi"
-        assignee in ("Abhay Dwivedi", "Jane Doe")
-    and replaces each quoted value with the resolved accountId (when available).
-    Values that already look like account IDs (contain ':') are left untouched.
+    Handles both single-quoted and double-quoted names:
+        assignee = "Abhay Dwivedi"   → assignee = "712020:..."
+        assignee = 'Abhay Dwivedi'   → assignee = "712020:..."
+    Values that already look like account IDs (contain ':') are untouched.
     """
-    def _replace_one(match: re.Match) -> str:
-        name = match.group(1)
-        # Already an account ID (e.g. "712020:abc...")
-        if ":" in name:
-            return match.group(0)
+    # First, normalise single-quoted values to double-quoted in JQL
+    # so the subsequent regex only needs to handle double quotes
+    jql = re.sub(r"assignee\s*=\s*'([^']+)'", r'assignee = "\1"', jql)
+    jql = re.sub(r"assignee\s+in\s*\(\s*'([^']+)'", r'assignee in ("\1"', jql)
+
+    def _replace_one(m: re.Match) -> str:
+        name = m.group(1)
+        if ":" in name:  # already an account ID
+            return m.group(0)
         aid = _resolve_jira_account_id(name)
         if aid:
-            return match.group(0).replace(f'"{name}"', f'"{aid}"')
-        return match.group(0)
+            return f'"{aid}"'
+        return m.group(0)
 
-    # Match quoted values after assignee = or inside assignee in (...)
-    return re.sub(r'"([^"]{3,60})"', _replace_one, jql)
+    # Match double-quoted strings that look like display names (3–80 chars, no colon)
+    return re.sub(r'"([^"]{3,80})"', _replace_one, jql)
 
 
 def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> ToolCall:
