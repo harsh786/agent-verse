@@ -26,7 +26,11 @@ async def goal_analytics(
     agg = _get_aggregator(request)
     tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
     tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
-    m = await agg.goal_metrics(tenant_id=tenant_id, days=days, agent_id=agent_id)
+    try:
+        m = await agg.goal_metrics(tenant_id=tenant_id, days=days, agent_id=agent_id)
+    except Exception:
+        from app.analytics.aggregator import GoalMetrics
+        m = GoalMetrics()
     return {
         "period_days": days,
         "total": m.total,
@@ -92,7 +96,11 @@ async def cost_analytics(
 
     total = sum(t["cost_usd"] for t in trends)
     tenant_ctx = tenant
-    m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
+    try:
+        m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
+    except Exception:
+        from app.analytics.aggregator import GoalMetrics
+        m = GoalMetrics()
 
     # Use GoalService's accurate cost_today_usd rather than summing the 30-day total
     goal_service = getattr(request.app.state, "goal_service", None) if request else None

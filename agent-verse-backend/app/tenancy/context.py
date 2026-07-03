@@ -27,7 +27,7 @@ PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
     PlanTier.FREE: PlanLimits(
         requests_per_minute=60,
         goals_per_day=1000,
-        max_agents=2,
+        max_agents=50,
         max_api_keys=2,
         max_knowledge_collections=1,
         goal_timeout_seconds=300,         # 5 minutes

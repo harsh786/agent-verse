@@ -67,6 +67,18 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** Extract a short display title from a goal's raw text.
+ *  Returns the first sentence / line, capped at 100 chars. */
+function goalTitle(goalText: string): string {
+  if (!goalText) return "Untitled goal";
+  // Take first non-empty line (goals are often multi-line instructions)
+  const firstLine = goalText.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? goalText;
+  // Trim to first sentence boundary where possible
+  const sentenceEnd = firstLine.search(/[.!?]/);
+  const candidate = sentenceEnd > 20 ? firstLine.slice(0, sentenceEnd + 1) : firstLine;
+  return candidate.length > 100 ? candidate.slice(0, 97) + "…" : candidate;
+}
+
 function formatValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (["string", "number", "boolean"].includes(typeof value)) return String(value);
@@ -438,7 +450,7 @@ export function GoalDetailPage() {
         </button>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-bold leading-snug">{goal.goal}</h1>
+            <h1 className="text-xl font-bold leading-snug">{goalTitle(goal.goal)}</h1>
             <p className="text-xs text-muted-foreground font-mono mt-1">{goal.goal_id}</p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
