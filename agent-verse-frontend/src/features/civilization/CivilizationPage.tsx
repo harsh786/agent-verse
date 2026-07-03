@@ -1,10 +1,22 @@
 /**
- * Civilization Theater — the main UI page.
- * Watch a goal get solved by a society, fully auditable.
+ * CivilizationPage — world-class Agent Civilization Theater.
+ *
+ * Design:
+ * - Dark command-center aesthetic (navy/slate palette)
+ * - Left: React Flow canvas (65%) with glassmorphic agent nodes
+ * - Right: Icon-tab panel (35%) — Overview, Blackboard, Learnings, Spawns, Debates, Constitution, Replay
+ * - Live event ticker at canvas bottom
+ * - Agent Inspector slide-over on node click
+ * - CivilizationList: bento grid with live metrics
  */
 import { useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Globe, Clipboard, BookOpen, GitBranch, Scale, Settings2,
+  Radio, BarChart2, ArrowLeft, Plus, Loader2, AlertTriangle,
+  Wifi, WifiOff, Zap,
+} from 'lucide-react';
 import { civilizationApi } from '../../lib/api/civilizationApi';
 import { useCivilizationStream } from '../../lib/sse/useCivilizationStream';
 import { CivilizationMap } from './CivilizationMap';
@@ -18,126 +30,257 @@ import { ConstitutionEditor } from './ConstitutionEditor';
 import { SpawnLineageTimeline } from './SpawnLineageTimeline';
 import type { CivilizationEvent, Civilization } from '../../lib/api/civilizationApi';
 
-type Panel = 'map' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
+type Panel = 'overview' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
+
+// ── Civilization List ─────────────────────────────────────────────────────────
+
+function StatusDot({ status }: { status: string }) {
+  return (
+    <span className={`w-2 h-2 rounded-full flex-shrink-0 inline-block ${
+      status === 'active' ? 'bg-green-400 animate-pulse' :
+      status === 'paused' ? 'bg-amber-400' :
+      'bg-slate-500'
+    }`} />
+  );
+}
 
 function CivilizationList() {
   const { data: civilizations, isLoading, error } = useQuery({
     queryKey: ['civilizations'],
     queryFn: () => civilizationApi.list(),
-    refetchInterval: 5000,
+    refetchInterval: 8000,
   });
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <div className="text-center">
-          <div className="animate-spin text-3xl mb-2">&#9696;</div>
-          <div className="text-sm">Loading civilizations...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-64 text-red-500">
-        <div className="text-center">
-          <div className="text-3xl mb-2">&#9888;</div>
-          <div className="text-sm">Failed to load civilizations. Is the backend running?</div>
-        </div>
-      </div>
-    );
-  }
 
   const civs = (civilizations as Civilization[] | undefined) ?? [];
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">&#127760; Agent Civilizations</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Select a civilization to enter the theater, or create a new one.
-        </p>
+    <div
+      className="min-h-screen"
+      style={{ background: 'linear-gradient(135deg, #0f172a 0%, #0d1625 100%)' }}
+    >
+      {/* Header */}
+      <div
+        className="border-b px-6 py-4"
+        style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(15,23,42,0.8)', backdropFilter: 'blur(12px)' }}
+      >
+        <div className="max-w-5xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-bold text-white flex items-center gap-2">
+              <Globe className="h-5 w-5 text-indigo-400" />
+              Agent Civilizations
+            </h1>
+            <p className="text-slate-500 text-sm mt-0.5">
+              Autonomous multi-agent societies — each solves goals collectively
+            </p>
+          </div>
+          {/* Future: create civ button */}
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs text-slate-400 cursor-not-allowed opacity-40"
+            style={{ borderColor: 'rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)' }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New Civilization
+          </div>
+        </div>
       </div>
 
-      {civs.length === 0 ? (
-        <div className="border-2 border-dashed rounded-xl p-12 text-center text-muted-foreground">
-          <div className="text-5xl mb-3">&#127759;</div>
-          <div className="text-lg font-medium mb-1">No civilizations yet</div>
-          <div className="text-sm">Create one from the backend or via the API to get started.</div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {civs.map((civ: Civilization) => (
-            <Link
-              key={civ.id}
-              to={`/civilization/${civ.id}`}
-              className="border rounded-xl p-4 hover:border-blue-400 hover:shadow-md transition-all bg-card group"
+      <div className="max-w-5xl mx-auto px-6 py-8">
+        {isLoading && (
+          <div className="flex items-center justify-center h-64 gap-3 text-slate-500">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span className="text-sm">Loading civilizations…</span>
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-center justify-center h-64">
+            <div
+              className="rounded-2xl p-6 text-center max-w-sm"
+              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
             >
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <h2 className="font-bold text-foreground group-hover:text-blue-600 transition-colors">
-                    {civ.name}
-                  </h2>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    {civ.id.slice(0, 16)}...
-                  </div>
-                </div>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                  civ.status === 'active' ? 'bg-green-100 text-green-700' :
-                  civ.status === 'paused' ? 'bg-amber-100 text-amber-700' :
-                  'bg-muted text-muted-foreground'
-                }`}>
-                  {civ.status}
-                </span>
-              </div>
+              <AlertTriangle className="h-8 w-8 text-red-400 mx-auto mb-3" />
+              <p className="text-sm font-medium text-red-300">Failed to load civilizations</p>
+              <p className="text-xs text-red-500 mt-1">Is the backend running?</p>
+            </div>
+          </div>
+        )}
 
-              {civ.metrics && (
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  <div className="bg-blue-50 rounded p-2 text-center">
-                    <div className="font-bold text-blue-700">{civ.metrics.active_members}</div>
-                    <div className="text-blue-500">Active</div>
-                  </div>
-                  <div className="bg-purple-50 rounded p-2 text-center">
-                    <div className="font-bold text-purple-700">{civ.metrics.total_members}</div>
-                    <div className="text-purple-500">Total</div>
-                  </div>
-                  <div className="bg-amber-50 rounded p-2 text-center">
-                    <div className="font-bold text-amber-700">
-                      ${civ.metrics.total_budget_spent_usd.toFixed(2)}
+        {!isLoading && !error && civs.length === 0 && (
+          <div className="flex items-center justify-center h-64">
+            <div
+              className="rounded-2xl p-10 text-center max-w-md"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '2px dashed rgba(255,255,255,0.08)' }}
+            >
+              <Globe className="h-12 w-12 text-slate-700 mx-auto mb-4" />
+              <p className="text-base font-semibold text-slate-300">No civilizations yet</p>
+              <p className="text-sm text-slate-600 mt-1">
+                Create one via the API or backend to get started
+              </p>
+            </div>
+          </div>
+        )}
+
+        {civs.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {civs.map((civ: Civilization) => {
+              const active = civ.metrics?.active_members ?? 0;
+              const total = civ.metrics?.total_members ?? 0;
+              const spent = civ.metrics?.total_budget_spent_usd ?? 0;
+              const rep = civ.metrics?.avg_reputation ?? 0;
+
+              return (
+                <Link
+                  key={civ.id}
+                  to={`/civilization/${civ.id}`}
+                  className="group block rounded-2xl transition-all duration-200 hover:scale-[1.01]"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
+                  }}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(99,102,241,0.4)';
+                    (e.currentTarget as HTMLAnchorElement).style.boxShadow = '0 8px 32px rgba(99,102,241,0.15)';
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.08)';
+                    (e.currentTarget as HTMLAnchorElement).style.boxShadow = '0 4px 24px rgba(0,0,0,0.3)';
+                  }}
+                >
+                  {/* Accent gradient top */}
+                  <div
+                    className="h-0.5 rounded-t-2xl"
+                    style={{ background: 'linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #6366f1 100%)' }}
+                  />
+
+                  <div className="p-5">
+                    {/* Header */}
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                          style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.25)' }}
+                        >
+                          <Globe className="h-5 w-5 text-indigo-400" />
+                        </div>
+                        <div>
+                          <h2 className="font-bold text-slate-100 group-hover:text-white transition-colors leading-tight">
+                            {civ.name}
+                          </h2>
+                          <p className="text-[10px] font-mono text-slate-600 mt-0.5">
+                            {civ.id.slice(0, 16)}…
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <StatusDot status={civ.status} />
+                        <span className="text-xs text-slate-400 capitalize">{civ.status}</span>
+                      </div>
                     </div>
-                    <div className="text-amber-500">Spent</div>
-                  </div>
-                </div>
-              )}
 
-              <div className="mt-3 text-xs text-muted-foreground">
-                Created {new Date(civ.created_at).toLocaleDateString()}
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
+                    {/* Metrics grid */}
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label: 'Active', value: active, color: '#3b82f6' },
+                        { label: 'Total', value: total, color: '#8b5cf6' },
+                        { label: 'Rep', value: `${Math.round(rep * 100)}%`, color: rep > 0.6 ? '#22c55e' : '#f59e0b' },
+                        { label: 'Spent', value: `$${spent.toFixed(2)}`, color: '#f59e0b' },
+                      ].map(m => (
+                        <div
+                          key={m.label}
+                          className="rounded-lg p-2 text-center"
+                          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                        >
+                          <p className="text-sm font-bold tabular-nums" style={{ color: m.color }}>
+                            {m.value}
+                          </p>
+                          <p className="text-[9px] text-slate-600 mt-px">{m.label}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="text-[10px] text-slate-600">
+                        Created {new Date(civ.created_at).toLocaleDateString()}
+                      </span>
+                      <span className="text-[10px] text-indigo-400 font-medium group-hover:text-indigo-300 transition-colors">
+                        Enter Theater →
+                      </span>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
+  );
+}
+
+// ── Civilization Theater ──────────────────────────────────────────────────────
+
+const PANEL_TABS: {
+  key: Panel;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { key: 'overview',      icon: BarChart2,  label: 'Overview',     shortLabel: 'Overview' },
+  { key: 'blackboard',    icon: Clipboard,  label: 'Blackboard',   shortLabel: 'Board' },
+  { key: 'learnings',     icon: BookOpen,   label: 'Learnings',    shortLabel: 'Learn' },
+  { key: 'spawns',        icon: GitBranch,  label: 'Spawn Audit',  shortLabel: 'Spawns' },
+  { key: 'debates',       icon: Scale,      label: 'Debates',      shortLabel: 'Debates' },
+  { key: 'constitution',  icon: Settings2,  label: 'Constitution', shortLabel: 'Rules' },
+  { key: 'replay',        icon: Radio,      label: 'Live Events',  shortLabel: 'Events' },
+];
+
+const EVENT_TYPE_COLOR: Record<string, string> = {
+  agent_spawned:   '#22c55e',
+  agent_retired:   '#94a3b8',
+  goal_assigned:   '#6366f1',
+  goal_complete:   '#22c55e',
+  goal_failed:     '#ef4444',
+  debate_started:  '#a855f7',
+  debate_resolved: '#22c55e',
+  finding_posted:  '#3b82f6',
+  learning_promoted: '#f59e0b',
+};
+
+function EventTypeBadge({ type }: { type: string }) {
+  const color = EVENT_TYPE_COLOR[type] ?? '#475569';
+  const label = type.replace(/_/g, ' ');
+  return (
+    <span
+      className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full border"
+      style={{
+        background: `${color}15`,
+        borderColor: `${color}40`,
+        color,
+      }}
+    >
+      {label}
+    </span>
   );
 }
 
 function CivilizationTheater({ civId }: { civId: string }) {
   const qc = useQueryClient();
-  const [activePanel, setActivePanel] = useState<Panel>('map');
+  const [activePanel, setActivePanel] = useState<Panel>('overview');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<CivilizationEvent[]>([]);
 
   const { data: civ } = useQuery({
     queryKey: ['civilization', civId],
     queryFn: () => civilizationApi.get(civId),
-    refetchInterval: 5000,
+    refetchInterval: 6000,
   });
 
   const { data: graph } = useQuery({
     queryKey: ['civilization-graph', civId],
     queryFn: () => civilizationApi.getGraph(civId),
-    refetchInterval: 3000,
+    refetchInterval: 4000,
   });
 
   const { data: blackboard } = useQuery({
@@ -151,7 +294,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
     queryKey: ['civilization-learnings', civId],
     queryFn: () => civilizationApi.getLearnings(civId),
     enabled: activePanel === 'learnings',
-    refetchInterval: 4000,
+    refetchInterval: 5000,
   });
 
   const { data: spawns } = useQuery({
@@ -169,8 +312,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
   });
 
   const handleEvent = useCallback((evt: CivilizationEvent) => {
-    setLiveEvents(prev => [...prev.slice(-50), evt]);
-    // Invalidate graph on spawn/retire
+    setLiveEvents(prev => [...prev.slice(-99), evt]);
     if (['agent_spawned', 'agent_retired'].includes(evt.type)) {
       void qc.invalidateQueries({ queryKey: ['civilization-graph', civId] });
       void qc.invalidateQueries({ queryKey: ['civilization', civId] });
@@ -194,150 +336,227 @@ function CivilizationTheater({ civId }: { civId: string }) {
     void qc.invalidateQueries({ queryKey: ['civilization', civId] });
   };
 
-  const TABS: { key: Panel; label: string }[] = [
-    { key: 'map', label: '🌐 Map & Metrics' },
-    { key: 'blackboard', label: '📋 Blackboard' },
-    { key: 'learnings', label: '🧠 Learning Ledger' },
-    { key: 'spawns', label: '🌱 Spawn Audit' },
-    { key: 'debates', label: '⚖️ Debates' },
-    { key: 'constitution', label: '⚙️ Constitution' },
-    { key: 'replay', label: '⏪ Replay' },
-  ];
+  const isPaused = civ?.status === 'paused';
+  const activeCount = civ?.metrics?.active_members ?? 0;
+  const totalCount = civ?.metrics?.total_members ?? 0;
 
   return (
-    <>
-      <div className="flex flex-col h-screen bg-background">
-        {/* Header */}
-        <div className="bg-card border-b border-border px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link to="/civilization" className="text-muted-foreground hover:text-foreground/70 text-sm">
-              &#8592; Civilizations
-            </Link>
-            <span className="text-border">/</span>
-            <div>
-              <h1 className="text-lg font-bold leading-tight">{civ?.name ?? 'Civilization'}</h1>
-              <div className="text-xs text-muted-foreground">Agent Civilization Theater</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`} />
-            <span className="text-xs text-muted-foreground">{connected ? 'Live' : 'Reconnecting...'}</span>
-            {civ?.metrics && (
-              <div className="text-xs text-muted-foreground bg-muted rounded px-2 py-1">
-                {civ.metrics.active_members} active &middot; {civ.metrics.total_members} total
-              </div>
+    <div
+      className="flex flex-col h-screen overflow-hidden"
+      style={{ background: '#0b1120' }}
+    >
+      {/* ── Top Header Bar ─────────────────────────────────────────────────── */}
+      <div
+        className="flex items-center gap-4 px-4 py-2.5 border-b flex-shrink-0"
+        style={{
+          background: 'rgba(15,23,42,0.98)',
+          borderColor: 'rgba(255,255,255,0.06)',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        {/* Breadcrumb */}
+        <Link
+          to="/civilization"
+          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Civilizations</span>
+        </Link>
+        <span className="text-slate-700 text-xs">/</span>
+
+        {/* Title */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4 text-indigo-400 flex-shrink-0" />
+            <h1 className="text-sm font-bold text-slate-100 truncate">
+              {civ?.name ?? 'Civilization'}
+            </h1>
+            {isPaused && (
+              <span className="text-[10px] px-1.5 py-px rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 flex-shrink-0">
+                PAUSED
+              </span>
             )}
           </div>
         </div>
 
-        {/* Control Bar */}
-        <ControlBar
-          civilizationId={civId}
-          status={civ?.status ?? 'active'}
-          onPause={handlePause}
-          onResume={handleResume}
-          onSubmitGoal={handleSubmitGoal}
-          onAdjustBudget={async (newBudget) => {
-            await civilizationApi.control(civId, 'set_budget', { budget_usd: newBudget });
-            void qc.invalidateQueries({ queryKey: ['civilization', civId] });
-          }}
-          currentBudget={civ?.constitution?.total_budget_usd}
-        />
-
-        {/* Main content */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Left: Map (always visible) */}
-          <div className="flex-1 min-w-0 relative">
-            <div className="h-full">
-              <CivilizationMap
-                nodes={graph?.nodes ?? []}
-                edges={graph?.edges ?? []}
-                onNodeClick={setSelectedAgentId}
-                liveEvents={liveEvents}
-              />
+        {/* Right: live KPIs */}
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {/* Agent counts */}
+          {totalCount > 0 && (
+            <div className="hidden md:flex items-center gap-2 text-xs">
+              <span
+                className="flex items-center gap-1.5 px-2 py-0.5 rounded-full"
+                style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)' }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                <span className="text-blue-300 font-medium">{activeCount} active</span>
+              </span>
+              <span className="text-slate-600">{totalCount} total</span>
             </div>
-            {/* Live event ticker */}
-            {liveEvents.length > 0 && (
-              <div className="absolute bottom-3 left-3 right-3 bg-black/60 text-white text-xs rounded p-2 max-h-16 overflow-hidden pointer-events-none">
+          )}
+
+          {/* Live indicator */}
+          <div className="flex items-center gap-1.5 text-xs">
+            {connected
+              ? <Wifi className="h-3.5 w-3.5 text-green-400" />
+              : <WifiOff className="h-3.5 w-3.5 text-red-400 animate-pulse" />
+            }
+            <span className={`hidden sm:inline ${connected ? 'text-green-400' : 'text-red-400'}`}>
+              {connected ? 'Live' : 'Reconnecting…'}
+            </span>
+          </div>
+
+          {/* Event count badge */}
+          {liveEvents.length > 0 && (
+            <div
+              className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full"
+              style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', color: '#a5b4fc' }}
+            >
+              <Zap className="h-3 w-3" />
+              {liveEvents.length}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Command / Control Bar ─────────────────────────────────────────── */}
+      <ControlBar
+        civilizationId={civId}
+        status={civ?.status ?? 'active'}
+        onPause={handlePause}
+        onResume={handleResume}
+        onSubmitGoal={handleSubmitGoal}
+        onAdjustBudget={async (newBudget) => {
+          await civilizationApi.control(civId, 'set_budget', { budget_usd: newBudget });
+          void qc.invalidateQueries({ queryKey: ['civilization', civId] });
+        }}
+        currentBudget={civ?.constitution?.total_budget_usd}
+      />
+
+      {/* ── Main Content ──────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── Canvas (left 65%) ──────────────────────────────────────────── */}
+        <div className="flex-1 relative overflow-hidden min-w-0">
+          <CivilizationMap
+            nodes={graph?.nodes ?? []}
+            edges={graph?.edges ?? []}
+            onNodeClick={setSelectedAgentId}
+            liveEvents={liveEvents}
+          />
+
+          {/* Live event ticker overlay */}
+          {liveEvents.length > 0 && (
+            <div
+              className="absolute bottom-4 left-4 right-4 pointer-events-none"
+              style={{ maxWidth: '480px' }}
+            >
+              <div
+                className="rounded-xl px-3 py-2 space-y-1"
+                style={{
+                  background: 'rgba(15,23,42,0.88)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  backdropFilter: 'blur(12px)',
+                }}
+              >
                 {liveEvents.slice(-3).reverse().map((e, i) => (
-                  <div key={`${e.id}-${i}`} className="truncate opacity-80">
-                    {e.ts?.slice(11, 19)} &middot; <span className="font-medium">{e.type}</span>
-                    {(e.payload as Record<string, unknown>)?.agent_id
-                      ? ` \u00b7 ${String((e.payload as Record<string, unknown>).agent_id).slice(0, 8)}`
-                      : ''}
+                  <div
+                    key={`${e.id}-${i}`}
+                    className="flex items-center gap-2 text-[11px]"
+                    style={{ opacity: 1 - i * 0.25 }}
+                  >
+                    <span className="text-slate-600 font-mono flex-shrink-0">
+                      {(e.ts ?? '').slice(11, 19)}
+                    </span>
+                    <EventTypeBadge type={e.type} />
+                    {(e.payload as Record<string, unknown>)?.agent_id != null && (
+                      <span className="text-slate-500 font-mono truncate">
+                        {String((e.payload as Record<string, unknown>).agent_id).slice(0, 10)}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Right Panel (35%) ─────────────────────────────────────────── */}
+        <div
+          className="w-[340px] xl:w-[380px] flex flex-col flex-shrink-0 border-l overflow-hidden"
+          style={{
+            background: 'rgba(15,23,42,0.97)',
+            borderColor: 'rgba(255,255,255,0.06)',
+          }}
+        >
+          {/* Tab bar — icon + label */}
+          <div
+            className="flex border-b overflow-x-auto scrollbar-none flex-shrink-0"
+            style={{ borderColor: 'rgba(255,255,255,0.06)' }}
+          >
+            {PANEL_TABS.map(({ key, icon: Icon, label, shortLabel }) => {
+              const isActive = activePanel === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setActivePanel(key)}
+                  title={label}
+                  className={`
+                    flex flex-col items-center justify-center gap-0.5 px-2.5 py-2.5 min-w-[48px] flex-1
+                    text-[10px] font-medium transition-colors border-b-2 whitespace-nowrap
+                    ${isActive
+                      ? 'border-indigo-500 text-indigo-300'
+                      : 'border-transparent text-slate-600 hover:text-slate-400 hover:border-slate-700'
+                    }
+                  `}
+                  aria-selected={isActive}
+                  role="tab"
+                >
+                  <Icon className={`h-4 w-4 ${isActive ? 'text-indigo-400' : ''}`} />
+                  <span className="hidden lg:inline">{shortLabel}</span>
+                </button>
+              );
+            })}
           </div>
 
-          {/* Right: Detail panels */}
-          <div className="w-96 border-l bg-card flex flex-col">
-            {/* Tabs */}
-            <div className="flex border-b overflow-x-auto scrollbar-none">
-              {TABS.map(tab => (
-                <button
-                  key={tab.key}
-                  onClick={() => setActivePanel(tab.key)}
-                  className={`px-3 py-2 text-xs whitespace-nowrap transition-colors ${
-                    activePanel === tab.key
-                      ? 'border-b-2 border-blue-600 text-blue-600 font-medium'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+          {/* Panel content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-0">
+            {activePanel === 'overview' && (
+              civ?.metrics
+                ? <CivilizationMetrics metrics={civ.metrics} />
+                : <PanelPlaceholder icon={BarChart2} message="Metrics will appear once agents are active." />
+            )}
 
-            {/* Panel content */}
-            <div className="flex-1 overflow-y-auto p-3">
-              {activePanel === 'map' && civ?.metrics && (
-                <CivilizationMetrics metrics={civ.metrics} />
-              )}
-              {activePanel === 'map' && !civ?.metrics && (
-                <div className="text-sm text-muted-foreground text-center py-8">
-                  Metrics will appear once agents are running.
-                </div>
-              )}
-              {activePanel === 'blackboard' && (
-                <BlackboardFeed entries={blackboard ?? []} />
-              )}
-              {activePanel === 'learnings' && (
-                <LearningLedger records={learnings ?? []} />
-              )}
-              {activePanel === 'spawns' && (
-                <SpawnLineageTimeline spawns={spawns ?? []} />
-              )}
-              {activePanel === 'debates' && (
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                <DebateViewer debates={(debates ?? []) as any[]} />
-              )}
-              {activePanel === 'constitution' && civ && (
-                <ConstitutionEditor
-                  constitution={civ.constitution}
-                  onSave={async (newConst) => {
-                    await civilizationApi.updateConstitution(civId, newConst);
-                    void qc.invalidateQueries({ queryKey: ['civilization', civId] });
-                  }}
-                />
-              )}
-              {activePanel === 'replay' && (
-                <div className="space-y-1">
-                  {liveEvents.length === 0 && (
-                    <div className="text-sm text-muted-foreground text-center py-4">
-                      Live events will appear here.
-                    </div>
-                  )}
-                  {liveEvents.map((e, i) => (
-                    <div key={`${e.id}-${i}`} className="flex gap-2 text-xs border-b pb-1">
-                      <span className="text-muted-foreground whitespace-nowrap">{e.ts?.slice(11, 19)}</span>
-                      <span className="text-blue-600 font-medium">{e.type}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {activePanel === 'blackboard' && (
+              <BlackboardFeed entries={blackboard ?? []} />
+            )}
+
+            {activePanel === 'learnings' && (
+              <LearningLedger records={learnings ?? []} />
+            )}
+
+            {activePanel === 'spawns' && (
+              <SpawnLineageTimeline spawns={spawns ?? []} />
+            )}
+
+            {activePanel === 'debates' && (
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              <DebateViewer debates={(debates ?? []) as any[]} />
+            )}
+
+            {activePanel === 'constitution' && civ && (
+              <ConstitutionEditor
+                constitution={civ.constitution}
+                onSave={async (newConst) => {
+                  await civilizationApi.updateConstitution(civId, newConst);
+                  void qc.invalidateQueries({ queryKey: ['civilization', civId] });
+                }}
+              />
+            )}
+
+            {activePanel === 'replay' && (
+              <ReplayPanel events={liveEvents} />
+            )}
           </div>
         </div>
       </div>
@@ -350,17 +569,72 @@ function CivilizationTheater({ civId }: { civId: string }) {
           onClose={() => setSelectedAgentId(null)}
         />
       )}
-    </>
+    </div>
   );
 }
 
-export function CivilizationPage() {
-  const { id: civId } = useParams<{ id: string }>();
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-  if (!civId) {
-    return <CivilizationList />;
+function PanelPlaceholder({
+  icon: Icon,
+  message,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  message: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
+      <div
+        className="w-12 h-12 rounded-xl flex items-center justify-center"
+        style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.15)' }}
+      >
+        <Icon className="h-6 w-6 text-slate-500" />
+      </div>
+      <p className="text-xs text-slate-600 max-w-[200px] leading-relaxed">{message}</p>
+    </div>
+  );
+}
+
+function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <PanelPlaceholder
+        icon={Radio}
+        message="Live events will stream here during execution."
+      />
+    );
   }
 
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
+        <span>{events.length} event{events.length !== 1 ? 's' : ''}</span>
+        <span className="flex items-center gap-1 text-green-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          Live
+        </span>
+      </div>
+      {[...events].reverse().map((e, i) => (
+        <div
+          key={`${e.id}-${i}`}
+          className="flex items-start gap-2 py-1.5 border-b last:border-0 text-xs"
+          style={{ borderColor: 'rgba(255,255,255,0.05)' }}
+        >
+          <span className="text-slate-600 font-mono text-[10px] flex-shrink-0 pt-0.5">
+            {(e.ts ?? '').slice(11, 19)}
+          </span>
+          <EventTypeBadge type={e.type} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Page router ───────────────────────────────────────────────────────────────
+
+export function CivilizationPage() {
+  const { id: civId } = useParams<{ id: string }>();
+  if (!civId) return <CivilizationList />;
   return <CivilizationTheater civId={civId} />;
 }
 

@@ -87,11 +87,14 @@ vi.mock('@xyflow/react', () => ({
   ReactFlow: ({ children }: { children?: React.ReactNode }) => (
     <div data-testid="react-flow">{children}</div>
   ),
+  ReactFlowProvider: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   Background: () => null,
+  BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
   Controls: () => null,
   MiniMap: () => null,
   useNodesState: (nodes: unknown[]) => [nodes, vi.fn(), vi.fn()],
   useEdgesState: (edges: unknown[]) => [edges, vi.fn(), vi.fn()],
+  useReactFlow: () => ({ fitView: vi.fn() }),
   Handle: () => null,
   Position: { Top: 'top', Bottom: 'bottom' },
 }));
@@ -100,6 +103,7 @@ vi.mock('@xyflow/react', () => ({
 vi.mock('recharts', () => ({
   BarChart: () => null,
   Bar: () => null,
+  Cell: () => null,
   XAxis: () => null,
   YAxis: () => null,
   Tooltip: () => null,
@@ -136,8 +140,9 @@ describe('CivilizationPage', () => {
 
   it('shows metrics when civilization is loaded', async () => {
     renderPage('c1');
+    // New UI uses "Active" as KPI label (not "Active Agents")
     await waitFor(() => {
-      expect(screen.getByText('Active Agents')).toBeInTheDocument();
+      expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
     }, { timeout: 3000 });
   });
 
@@ -150,8 +155,9 @@ describe('CivilizationPage', () => {
 
   it('switching to Blackboard tab shows findings', async () => {
     renderPage('c1');
-    await waitFor(() => screen.getByText('📋 Blackboard'), { timeout: 3000 });
-    fireEvent.click(screen.getByText('📋 Blackboard'));
+    // New tab uses title="Blackboard" on the button
+    await waitFor(() => screen.getByTitle('Blackboard'), { timeout: 3000 });
+    fireEvent.click(screen.getByTitle('Blackboard'));
     await waitFor(() => {
       expect(screen.getByText('Test finding')).toBeInTheDocument();
     }, { timeout: 3000 });
@@ -159,8 +165,9 @@ describe('CivilizationPage', () => {
 
   it('switching to Learning Ledger tab shows records', async () => {
     renderPage('c1');
-    await waitFor(() => screen.getByText('🧠 Learning Ledger'), { timeout: 3000 });
-    fireEvent.click(screen.getByText('🧠 Learning Ledger'));
+    // New tab uses title="Learnings"
+    await waitFor(() => screen.getByTitle('Learnings'), { timeout: 3000 });
+    fireEvent.click(screen.getByTitle('Learnings'));
     await waitFor(() => {
       expect(screen.getByText('Test learning')).toBeInTheDocument();
     }, { timeout: 3000 });
@@ -168,8 +175,9 @@ describe('CivilizationPage', () => {
 
   it('Control Bar renders pause button', async () => {
     renderPage('c1');
+    // New UI label is just "Pause" (not "Pause Civilization")
     await waitFor(() => {
-      expect(screen.getByText(/Pause Civilization/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /pause civilization/i })).toBeInTheDocument();
     }, { timeout: 3000 });
   });
 
