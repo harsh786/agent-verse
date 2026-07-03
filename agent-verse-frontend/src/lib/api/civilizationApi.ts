@@ -93,6 +93,22 @@ export interface CivilizationEvent {
   ts: string;
 }
 
+export interface CivilizationMember {
+  member_id: string;
+  agent_id: string;
+  role: string;
+  reputation: number;
+  status: string;
+  depth: number;
+  budget_usd: number;
+  budget_spent_usd: number;
+  spawned_at: string;
+  last_active_at: string;
+  agent_name: string;
+  autonomy_mode: string;
+  goal_template: string;
+}
+
 const BASE = '/civilizations';
 
 export const civilizationApi = {
@@ -123,4 +139,14 @@ export const civilizationApi = {
     }),
   killAgent: (civId: string, agentId: string) =>
     apiFetch<{ killed: string }>(`${BASE}/${civId}/agents/${agentId}/kill`, { method: 'POST' }),
+  // Member management
+  listMembers: (civId: string) =>
+    apiFetch<CivilizationMember[]>(`${BASE}/${civId}/members`),
+  addMember: (civId: string, agentId: string, role = 'worker', budgetUsd = 10) =>
+    apiFetch<{ agent_id: string; role: string; status: string }>(
+      `${BASE}/${civId}/members`,
+      { method: 'POST', body: JSON.stringify({ agent_id: agentId, role, budget_usd: budgetUsd }) }
+    ),
+  removeMember: (civId: string, agentId: string) =>
+    apiFetch<void>(`${BASE}/${civId}/members/${agentId}`, { method: 'DELETE' }),
 };

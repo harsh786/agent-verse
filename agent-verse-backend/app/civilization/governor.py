@@ -614,7 +614,7 @@ class Governor:
                         (id, civilization_id, tenant_id, requester_agent_id, requested_capability,
                          goal_text, decision, reason, verdict, created_at)
                     VALUES
-                        (:id, :cid, :tid, :req, :cap, :goal, :dec, :reason, :verdict::jsonb, NOW())
+                        (:id, :cid, :tid, :req, :cap, :goal, :dec, :reason, CAST(:verdict AS jsonb), NOW())
                 """), {
                     "id": uuid.uuid4().hex,
                     "cid": self._civilization_id,

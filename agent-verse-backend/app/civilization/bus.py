@@ -182,7 +182,7 @@ class CivilizationBus:
                     text("""
                         INSERT INTO bus_messages
                             (id, civilization_id, tenant_id, from_agent_id, topic, payload, ts)
-                        VALUES (:id, :cid, :tid, :from, :topic, :payload::jsonb, NOW())
+                        VALUES (:id, :cid, :tid, :from, :topic, CAST(:payload AS jsonb), NOW())
                     """),
                     {
                         "id": message_id,
@@ -207,7 +207,7 @@ class CivilizationBus:
                     text("""
                         INSERT INTO civilization_events
                             (id, civilization_id, tenant_id, type, payload, ts)
-                        VALUES (:id, :cid, :tid, :type, :payload::jsonb, NOW())
+                        VALUES (:id, :cid, :tid, :type, CAST(:payload AS jsonb), NOW())
                     """),
                     {
                         "id": uuid.uuid4().hex,

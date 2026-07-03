@@ -15,7 +15,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Globe, Clipboard, BookOpen, GitBranch, Scale, Settings2,
   Radio, BarChart2, ArrowLeft, Plus, Loader2, AlertTriangle,
-  Wifi, WifiOff, Zap,
+  Wifi, WifiOff, Zap, Users,
 } from 'lucide-react';
 import { civilizationApi } from '../../lib/api/civilizationApi';
 import { useCivilizationStream } from '../../lib/sse/useCivilizationStream';
@@ -28,9 +28,10 @@ import { AgentInspectorDrawer } from './AgentInspectorDrawer';
 import { DebateViewer } from './DebateViewer';
 import { ConstitutionEditor } from './ConstitutionEditor';
 import { SpawnLineageTimeline } from './SpawnLineageTimeline';
+import { MembersPanel } from './MembersPanel';
 import type { CivilizationEvent, Civilization } from '../../lib/api/civilizationApi';
 
-type Panel = 'overview' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
+type Panel = 'overview' | 'members' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
 
 // ── Civilization List ─────────────────────────────────────────────────────────
 
@@ -228,6 +229,7 @@ const PANEL_TABS: {
   shortLabel: string;
 }[] = [
   { key: 'overview',      icon: BarChart2,  label: 'Overview',     shortLabel: 'Overview' },
+  { key: 'members',       icon: Users,      label: 'Members',      shortLabel: 'Members' },
   { key: 'blackboard',    icon: Clipboard,  label: 'Blackboard',   shortLabel: 'Board' },
   { key: 'learnings',     icon: BookOpen,   label: 'Learnings',    shortLabel: 'Learn' },
   { key: 'spawns',        icon: GitBranch,  label: 'Spawn Audit',  shortLabel: 'Spawns' },
@@ -525,6 +527,10 @@ function CivilizationTheater({ civId }: { civId: string }) {
               civ?.metrics
                 ? <CivilizationMetrics metrics={civ.metrics} />
                 : <PanelPlaceholder icon={BarChart2} message="Metrics will appear once agents are active." />
+            )}
+
+            {activePanel === 'members' && (
+              <MembersPanel civId={civId} />
             )}
 
             {activePanel === 'blackboard' && (

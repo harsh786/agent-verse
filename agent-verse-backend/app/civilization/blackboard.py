@@ -91,7 +91,7 @@ class Blackboard:
                                  content, confidence, refs, version, created_at)
                             VALUES
                                 (:id, :cid, :tid, :author, :topic,
-                                 :content, :confidence, :refs::jsonb, 1, NOW())
+                                 :content, :confidence, CAST(:refs AS jsonb), 1, NOW())
                         """),
                         {
                             "id": entry_id,
