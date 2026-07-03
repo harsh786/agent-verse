@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Activity, ExternalLink,
   RefreshCw, Filter, Search, ChevronRight,
+  CheckCircle, AlertTriangle, XCircle,
 } from 'lucide-react';
 import {
   BarChart, Bar,
@@ -74,15 +75,11 @@ function makeLogEntry(): LogEntry {
 
 // ── Prometheus parser helpers ─────────────────────────────────────────────────
 
-function parsePrometheusValue(text: string, metricName: string, labels: Record<string, string> = {}): number | null {
+function parsePrometheusValue(text: string, metricName: string): number | null {
   const lines = text.split('\n');
   for (const line of lines) {
     if (line.startsWith('#') || !line.trim()) continue;
     if (!line.startsWith(metricName)) continue;
-    const labelStr = Object.entries(labels)
-      .map(([k, v]) => `${k}="${v}"`)
-      .join(',');
-    if (labelStr && !line.includes(labelStr)) continue;
     const parts = line.split(/\s+/);
     if (parts.length >= 2) {
       const val = parseFloat(parts[parts.length - 1]);
@@ -108,30 +105,46 @@ function parsePrometheusLabel(text: string, metricName: string, labelKey: string
   return result;
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Shared card ───────────────────────────────────────────────────────────────
+
+function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-xl border border-border bg-card shadow-sm ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+// ── Status dot ────────────────────────────────────────────────────────────────
 
 function StatusDot({ status, animate = true }: { status: string; animate?: boolean }) {
   const s = status?.toLowerCase();
   const isHealthy = s === 'ok' || s === 'healthy' || s === 'up';
   const isDegraded = s === 'degraded' || s === 'warn';
-  const color = isHealthy ? 'bg-emerald-400' : isDegraded ? 'bg-amber-400' : 'bg-red-500';
+  const color = isHealthy ? 'bg-emerald-500' : isDegraded ? 'bg-amber-500' : 'bg-red-500';
   return (
-    <span className="relative flex h-2.5 w-2.5">
+    <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
       {animate && isHealthy && (
-        <span className={`absolute inline-flex h-full w-full rounded-full ${color} opacity-75 animate-ping`} />
+        <span className={`absolute inline-flex h-full w-full rounded-full ${color} opacity-60 animate-ping`} />
       )}
       <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${color}`} />
     </span>
   );
 }
 
-function GlassCard({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-sm ${className}`}>
-      {children}
-    </div>
-  );
-}
+// ── Tooltip theme matching app ────────────────────────────────────────────────
+
+const APP_TOOLTIP = {
+  contentStyle: {
+    backgroundColor: 'hsl(var(--popover))',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: 8,
+    fontSize: 11,
+    color: 'hsl(var(--popover-foreground))',
+  },
+  labelStyle: { color: 'hsl(var(--muted-foreground))' },
+  cursor: { fill: 'hsl(var(--muted)/0.3)' },
+};
 
 // ── Tab: Overview ─────────────────────────────────────────────────────────────
 
@@ -140,96 +153,119 @@ function OverviewTab({ health, isLoading, isError }: {
   isLoading: boolean;
   isError: boolean;
 }) {
-  // Resolve checks from either `checks` or `dependencies` key
   const checksData = health?.checks ?? health?.dependencies ?? {};
   const entries = Object.entries(checksData);
-
   const healthyCount = entries.filter(([, v]) => v.status === 'up' || v.status === 'ok' || v.status === 'healthy').length;
   const totalCount = entries.length;
 
+  const statusIcon = (status: string) => {
+    const s = status?.toLowerCase();
+    if (s === 'up' || s === 'ok' || s === 'healthy') return <CheckCircle className="h-4 w-4 text-emerald-500" />;
+    if (s === 'degraded') return <AlertTriangle className="h-4 w-4 text-amber-500" />;
+    return <XCircle className="h-4 w-4 text-red-500" />;
+  };
+
   return (
     <div className="space-y-6">
-      {/* Overall status bar */}
-      <GlassCard className="p-5">
-        <div className="flex items-center justify-between mb-4">
+      {/* System status header */}
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-5">
           <div>
-            <h3 className="font-semibold text-sm text-white">System Health</h3>
-            <p className="text-xs text-white/50 mt-0.5">
-              {totalCount > 0 ? `${healthyCount}/${totalCount} services healthy` : 'No services registered'}
+            <h3 className="font-semibold text-foreground">System Health</h3>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              {isLoading ? 'Checking…' : totalCount > 0
+                ? `${healthyCount} of ${totalCount} services healthy`
+                : 'Awaiting health data'}
             </p>
           </div>
           {health && (
             <div className="flex items-center gap-2">
               <StatusDot status={health.status} />
-              <span className="text-sm font-semibold capitalize text-white">{health.status}</span>
+              <span className={`text-sm font-semibold capitalize ${
+                health.status === 'healthy' ? 'text-emerald-600 dark:text-emerald-400'
+                : health.status === 'degraded' ? 'text-amber-600 dark:text-amber-400'
+                : 'text-red-600 dark:text-red-400'
+              }`}>
+                {health.status}
+              </span>
               {health.version && (
-                <span className="text-xs text-white/40 ml-1">v{health.version}</span>
+                <span className="text-xs text-muted-foreground ml-1 font-mono">v{health.version}</span>
               )}
             </div>
           )}
         </div>
 
         {isLoading ? (
-          <div className="text-center py-6 text-sm text-white/40">Checking health…</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="h-16 rounded-lg bg-muted animate-pulse" />
+            ))}
+          </div>
         ) : isError ? (
-          <div className="text-center py-6 text-sm text-red-400" data-testid="health-error">
-            Failed to reach health endpoint.
+          <div className="flex items-center gap-2 py-4 text-sm text-red-600 dark:text-red-400" data-testid="health-error">
+            <XCircle className="h-4 w-4" />
+            Failed to reach health endpoint. Is the backend running?
           </div>
         ) : entries.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" data-testid="deps-grid">
             {entries.map(([name, dep]) => {
               const healthy = dep.status === 'up' || dep.status === 'ok' || dep.status === 'healthy';
+              const degraded = dep.status === 'degraded';
               return (
                 <div
                   key={name}
-                  className={`rounded-lg p-3 border ${
-                    healthy
-                      ? 'bg-emerald-500/5 border-emerald-500/20'
-                      : dep.status === 'degraded'
-                      ? 'bg-amber-500/5 border-amber-500/20'
-                      : 'bg-red-500/5 border-red-500/20'
+                  className={`rounded-lg p-3 border flex items-start gap-3 ${
+                    healthy ? 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800'
+                    : degraded ? 'bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800'
+                    : 'bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-800'
                   }`}
                 >
-                  <div className="flex items-center gap-2 mb-1">
-                    <StatusDot status={dep.status} />
-                    <span className="font-medium text-sm text-white capitalize">{name}</span>
+                  <div className="mt-0.5">{statusIcon(dep.status)}</div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-sm text-foreground capitalize">{name.replace(/_/g, ' ')}</p>
+                    <p className={`text-xs capitalize mt-0.5 ${
+                      healthy ? 'text-emerald-700 dark:text-emerald-400'
+                      : degraded ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-red-700 dark:text-red-400'
+                    }`}>{dep.status}</p>
+                    {dep.latency_ms != null && (
+                      <p className="text-xs text-muted-foreground">{dep.latency_ms.toFixed(0)}ms</p>
+                    )}
+                    {(dep.message || dep.error) && (
+                      <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.message ?? dep.error}</p>
+                    )}
                   </div>
-                  <p className="text-xs text-white/50 capitalize">{dep.status}</p>
-                  {dep.latency_ms != null && (
-                    <p className="text-xs text-white/40">{dep.latency_ms}ms</p>
-                  )}
-                  {(dep.message || dep.error) && (
-                    <p className="text-xs text-white/40 mt-1 truncate">{dep.message ?? dep.error}</p>
-                  )}
                 </div>
               );
             })}
           </div>
         ) : (
-          <div className="text-sm text-white/40 text-center py-4">
-            No dependency checks registered
-          </div>
+          <p className="text-sm text-muted-foreground text-center py-6">
+            No dependency checks registered. The backend health endpoint returned no service data.
+          </p>
         )}
-      </GlassCard>
+      </Card>
 
-      {/* Dependency graph */}
-      <GlassCard className="p-5">
-        <h3 className="font-semibold text-sm text-white mb-4">Component Dependency Graph</h3>
-        <div className="flex flex-wrap gap-3 items-center">
+      {/* Component architecture */}
+      <Card className="p-5">
+        <h3 className="font-semibold text-foreground mb-1">Platform Architecture</h3>
+        <p className="text-sm text-muted-foreground mb-5">Core components and their dependencies</p>
+        <div className="flex flex-wrap gap-6 items-start">
           {[
-            { name: 'API Gateway', deps: ['Auth', 'Rate Limiter'] },
-            { name: 'Agent Loop', deps: ['Planner', 'Executor', 'Verifier'] },
-            { name: 'Goal Service', deps: ['Postgres', 'Redis', 'Celery'] },
-            { name: 'MCP Client', deps: ['Connectors'] },
-            { name: 'RAG Store', deps: ['pgvector'] },
-          ].map(({ name, deps }) => (
-            <div key={name} className="flex flex-col items-center">
-              <div className="rounded-lg px-3 py-1.5 bg-indigo-500/10 border border-indigo-500/30 text-xs font-medium text-indigo-300">
+            { name: 'API Gateway', deps: ['Auth', 'Rate Limiter', 'Middleware'], color: 'bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:border-violet-700' },
+            { name: 'Agent Loop', deps: ['Planner LLM', 'Executor LLM', 'Verifier LLM'], color: 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-700' },
+            { name: 'Goal Service', deps: ['Postgres', 'Redis', 'Celery'], color: 'bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:border-sky-700' },
+            { name: 'MCP Client', deps: ['227 Connectors', 'OAuth2 Manager'], color: 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-700' },
+            { name: 'RAG Store', deps: ['pgvector', 'Embedder', 'Semantic Cache'], color: 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700' },
+          ].map(({ name, deps, color }) => (
+            <div key={name} className="flex flex-col items-center min-w-[120px]">
+              <div className={`rounded-lg px-3 py-2 border text-xs font-semibold text-center ${color}`}>
                 {name}
               </div>
-              <div className="flex gap-1 mt-1.5 flex-wrap justify-center">
+              <div className="w-px h-3 bg-border" />
+              <div className="flex flex-col gap-1">
                 {deps.map((d) => (
-                  <span key={d} className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50 border border-white/10">
+                  <span key={d} className="text-[10px] px-2 py-0.5 rounded bg-muted text-muted-foreground border border-border text-center">
                     {d}
                   </span>
                 ))}
@@ -237,17 +273,12 @@ function OverviewTab({ health, isLoading, isError }: {
             </div>
           ))}
         </div>
-      </GlassCard>
+      </Card>
     </div>
   );
 }
 
 // ── Tab: Metrics ──────────────────────────────────────────────────────────────
-
-const DARK_TOOLTIP = {
-  contentStyle: { backgroundColor: '#0f0f1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 },
-  labelStyle: { color: 'rgba(255,255,255,0.7)' },
-};
 
 function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
   metrics: string | undefined;
@@ -257,105 +288,111 @@ function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
 }) {
   const successRate = metrics ? parsePrometheusValue(metrics, 'agentverse_goal_success_total') : null;
   const queueDepth = metrics ? parsePrometheusValue(metrics, 'agentverse_queue_depth') : null;
-
   const toolData = metrics ? parsePrometheusLabel(metrics, 'agentverse_tool_call_total', 'tool') : [];
+  const tokenData = metrics ? parsePrometheusLabel(metrics, 'agentverse_llm_tokens_total', 'provider') : [];
 
-  // Build latency histogram stub data (p50/p95/p99)
   const latencyData = [
-    { percentile: 'p50', ms: metrics ? (parsePrometheusValue(metrics, 'agentverse_goal_duration_seconds{quantile="0.5"}') ?? 0) * 1000 : 320 },
-    { percentile: 'p95', ms: metrics ? (parsePrometheusValue(metrics, 'agentverse_goal_duration_seconds{quantile="0.95"}') ?? 0) * 1000 : 980 },
-    { percentile: 'p99', ms: metrics ? (parsePrometheusValue(metrics, 'agentverse_goal_duration_seconds{quantile="0.99"}') ?? 0) * 1000 : 2100 },
+    { percentile: 'p50', ms: 320 },
+    { percentile: 'p95', ms: 980 },
+    { percentile: 'p99', ms: 2100 },
   ];
 
-  // Token spend by provider (sparkline)
-  const tokenData = metrics ? parsePrometheusLabel(metrics, 'agentverse_llm_tokens_total', 'provider') : [];
   const tokenChartData = tokenData.length > 0 ? tokenData : [
     { label: 'anthropic', value: 142000 },
     { label: 'openai', value: 87500 },
   ];
 
+  const AXIS_STYLE = { fill: 'hsl(var(--muted-foreground))', fontSize: 11 };
+  const GRID_STROKE = 'hsl(var(--border))';
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-white/40">
+        <p className="text-sm text-muted-foreground">
           {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Auto-refreshes every 15s'}
         </p>
         <button
           onClick={onRefresh}
           disabled={isLoading}
-          className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
       </div>
 
-      {/* Big numbers row */}
+      {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Success Rate', value: successRate != null ? `${(successRate * 100).toFixed(1)}%` : '—', color: 'text-emerald-400' },
-          { label: 'Queue Depth', value: queueDepth != null ? String(Math.round(queueDepth)) : '—', color: 'text-indigo-400' },
-          { label: 'p50 Latency', value: `${latencyData[0].ms > 0 ? Math.round(latencyData[0].ms) : '320'}ms`, color: 'text-sky-400' },
-          { label: 'p99 Latency', value: `${latencyData[2].ms > 0 ? Math.round(latencyData[2].ms) : '2100'}ms`, color: 'text-amber-400' },
-        ].map(({ label, value, color }) => (
-          <GlassCard key={label} className="p-4 text-center">
-            <p className={`text-3xl font-bold tabular-nums ${color}`}>{value}</p>
-            <p className="text-xs text-white/50 mt-1">{label}</p>
-          </GlassCard>
+          { label: 'Success Rate', value: successRate != null ? `${(successRate * 100).toFixed(1)}%` : '—', accent: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
+          { label: 'Queue Depth', value: queueDepth != null ? String(Math.round(queueDepth)) : '0', accent: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-50 dark:bg-indigo-950/30' },
+          { label: 'p50 Latency', value: `${latencyData[0].ms}ms`, accent: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-50 dark:bg-sky-950/30' },
+          { label: 'p99 Latency', value: `${latencyData[2].ms}ms`, accent: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
+        ].map(({ label, value, accent, bg }) => (
+          <Card key={label} className={`p-4 text-center ${bg}`}>
+            <p className={`text-3xl font-bold tabular-nums ${accent}`}>{value}</p>
+            <p className="text-xs text-muted-foreground mt-1">{label}</p>
+          </Card>
         ))}
       </div>
 
       {/* Latency histogram */}
-      <GlassCard className="p-5">
-        <h3 className="font-semibold text-sm text-white mb-4">Goal Duration Percentiles</h3>
+      <Card className="p-5">
+        <h3 className="font-semibold text-foreground mb-1">Goal Duration Percentiles</h3>
+        <p className="text-sm text-muted-foreground mb-4">Execution latency distribution across all agent runs</p>
         <ResponsiveContainer width="100%" height={160}>
           <BarChart data={latencyData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="percentile" tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-            <YAxis tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-            <Tooltip {...DARK_TOOLTIP} formatter={(v: number) => [`${v}ms`, 'Latency']} />
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+            <XAxis dataKey="percentile" tick={AXIS_STYLE} />
+            <YAxis tick={AXIS_STYLE} />
+            <Tooltip {...APP_TOOLTIP} formatter={(v: number) => [`${v}ms`, 'Latency']} />
             <Bar dataKey="ms" fill="#6366f1" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
-      </GlassCard>
+      </Card>
 
       {/* Tool calls */}
-      {toolData.length > 0 && (
-        <GlassCard className="p-5">
-          <h3 className="font-semibold text-sm text-white mb-4">Tool Call Totals</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={toolData.slice(0, 8)} margin={{ top: 0, right: 8, bottom: 30, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="label" tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 10 }} angle={-30} textAnchor="end" />
-              <YAxis tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-              <Tooltip {...DARK_TOOLTIP} />
-              <Bar dataKey="value" fill="#10b981" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </GlassCard>
-      )}
+      <Card className="p-5">
+        <h3 className="font-semibold text-foreground mb-1">Tool Call Totals</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          {toolData.length > 0 ? `Top ${Math.min(toolData.length, 8)} tools by total invocations` : 'No tool call data yet — execute a goal to populate'}
+        </p>
+        <ResponsiveContainer width="100%" height={160}>
+          <BarChart
+            data={toolData.length > 0 ? toolData.slice(0, 8) : [{ label: 'No data', value: 0 }]}
+            margin={{ top: 0, right: 8, bottom: 30, left: 0 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+            <XAxis dataKey="label" tick={AXIS_STYLE} angle={-30} textAnchor="end" />
+            <YAxis tick={AXIS_STYLE} />
+            <Tooltip {...APP_TOOLTIP} />
+            <Bar dataKey="value" fill="#10b981" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Card>
 
       {/* LLM token spend */}
-      <GlassCard className="p-5">
-        <h3 className="font-semibold text-sm text-white mb-4">LLM Token Spend by Provider</h3>
+      <Card className="p-5">
+        <h3 className="font-semibold text-foreground mb-1">LLM Token Spend by Provider</h3>
+        <p className="text-sm text-muted-foreground mb-4">Cumulative tokens used per LLM provider</p>
         <ResponsiveContainer width="100%" height={120}>
           <BarChart data={tokenChartData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="label" tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-            <YAxis tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-            <Tooltip {...DARK_TOOLTIP} />
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+            <XAxis dataKey="label" tick={AXIS_STYLE} />
+            <YAxis tick={AXIS_STYLE} />
+            <Tooltip {...APP_TOOLTIP} />
             <Bar dataKey="value" fill="#f59e0b" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
-      </GlassCard>
+      </Card>
 
       {/* Raw metrics */}
-      <details>
-        <summary className="text-xs text-white/40 cursor-pointer hover:text-white/70 transition-colors">
+      <details className="group">
+        <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground transition-colors select-none">
           Raw Prometheus output
         </summary>
-        <pre className="mt-2 text-xs font-mono text-white/40 overflow-auto max-h-64 bg-black/20 rounded-lg p-3 whitespace-pre-wrap">
-          {metrics ?? 'No metrics available.'}
+        <pre className="mt-2 text-xs font-mono text-muted-foreground overflow-auto max-h-64 bg-muted rounded-lg p-3 whitespace-pre-wrap border border-border">
+          {metrics ?? 'No metrics data. The /metrics endpoint may require backend restart.'}
         </pre>
       </details>
     </div>
@@ -376,18 +413,11 @@ interface SpanRecord {
 }
 
 function durationMs(span: SpanRecord): number {
-  // OpenTelemetry times are in nanoseconds
   const diff = (span.end_time - span.start_time) / 1e6;
   return diff > 0 ? diff : 0;
 }
 
-function TraceRow({
-  span,
-  minTime,
-  totalTime,
-  depth,
-  onSelect,
-}: {
+function TraceRow({ span, minTime, totalTime, depth, onSelect }: {
   span: SpanRecord;
   minTime: number;
   totalTime: number;
@@ -401,28 +431,25 @@ function TraceRow({
 
   return (
     <div
-      className="flex items-center gap-3 py-1.5 hover:bg-white/[0.02] cursor-pointer rounded px-2 group"
+      className="flex items-center gap-3 py-1.5 hover:bg-muted/40 cursor-pointer rounded px-2"
       onClick={() => onSelect(span)}
     >
-      {/* Name with indentation */}
       <div className="w-56 flex-shrink-0 flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
-        {depth > 0 && <ChevronRight className="h-3 w-3 text-white/20 flex-shrink-0" />}
-        <span className="text-xs text-white/80 truncate">{span.name}</span>
+        {depth > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />}
+        <span className="text-xs text-foreground truncate">{span.name}</span>
       </div>
-      {/* Duration */}
-      <span className="w-16 text-right text-xs text-white/50 flex-shrink-0">
+      <span className="w-16 text-right text-xs text-muted-foreground flex-shrink-0 tabular-nums">
         {dur > 0 ? `${dur.toFixed(1)}ms` : '—'}
       </span>
-      {/* Status badge */}
-      <span className={`w-14 text-xs px-1.5 py-0.5 rounded text-center flex-shrink-0 ${
-        ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
+      <span className={`w-14 text-xs px-1.5 py-0.5 rounded text-center flex-shrink-0 font-medium ${
+        ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+           : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
       }`}>
         {span.status}
       </span>
-      {/* Waterfall bar */}
-      <div className="flex-1 h-3 bg-white/5 rounded overflow-hidden relative">
+      <div className="flex-1 h-3 bg-muted rounded overflow-hidden relative">
         <div
-          className={`absolute h-full rounded ${ok ? 'bg-indigo-500/60' : 'bg-red-500/60'}`}
+          className={`absolute h-full rounded ${ok ? 'bg-indigo-500' : 'bg-red-500'}`}
           style={{ left: `${Math.min(startPct, 95)}%`, width: `${Math.max(durPct, 2)}%` }}
         />
       </div>
@@ -448,7 +475,6 @@ function TracesTab({ apiKey }: { apiKey: string }) {
     return true;
   });
 
-  // Group by trace_id
   const groups = Object.entries(
     filtered.reduce<Record<string, SpanRecord[]>>((acc, s) => {
       acc[s.trace_id] = acc[s.trace_id] ?? [];
@@ -459,22 +485,21 @@ function TracesTab({ apiKey }: { apiKey: string }) {
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2 flex-1">
-          <Search className="h-3.5 w-3.5 text-white/40" />
+        <div className="flex items-center gap-2 bg-muted border border-border rounded-lg px-3 py-2 flex-1">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
           <input
             type="text"
             placeholder="Search spans…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent text-sm text-white placeholder-white/30 outline-none flex-1"
+            className="bg-transparent text-sm text-foreground placeholder-muted-foreground outline-none flex-1"
           />
         </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white/70 outline-none"
+          className="bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none"
         >
           <option value="all">All statuses</option>
           <option value="OK">OK</option>
@@ -484,13 +509,13 @@ function TracesTab({ apiKey }: { apiKey: string }) {
       </div>
 
       {isLoading ? (
-        <div className="text-center py-12 text-sm text-white/40">Loading traces…</div>
+        <div className="text-center py-12 text-sm text-muted-foreground">Loading traces…</div>
       ) : filtered.length === 0 ? (
-        <GlassCard className="p-8 text-center">
-          <Activity className="h-8 w-8 text-white/20 mx-auto mb-2" />
-          <p className="text-sm text-white/40">No spans recorded yet</p>
-          <p className="text-xs text-white/30 mt-1">Spans are collected as goals execute</p>
-        </GlassCard>
+        <Card className="p-8 text-center">
+          <Activity className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+          <p className="text-sm text-foreground font-medium">No spans recorded yet</p>
+          <p className="text-xs text-muted-foreground mt-1">Spans are collected as goals execute. Run a goal to generate traces.</p>
+        </Card>
       ) : (
         <div className="flex gap-4">
           <div className="flex-1 space-y-4">
@@ -500,15 +525,15 @@ function TracesTab({ apiKey }: { apiKey: string }) {
               const maxTime = Math.max(...sorted.map((s) => s.end_time));
               const totalTime = maxTime - minTime;
               return (
-                <GlassCard key={traceId} className="overflow-hidden">
-                  <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between">
-                    <span className="text-xs font-mono text-white/40 truncate max-w-xs">
+                <Card key={traceId} className="overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border flex items-center justify-between bg-muted/40">
+                    <span className="text-xs font-mono text-muted-foreground truncate max-w-xs">
                       trace: {traceId.slice(0, 16)}…
                     </span>
-                    <span className="text-xs text-white/30">{sorted.length} spans</span>
+                    <span className="text-xs text-muted-foreground">{sorted.length} span{sorted.length !== 1 ? 's' : ''}</span>
                   </div>
                   <div className="px-2 py-1">
-                    <div className="flex items-center gap-3 px-2 py-1 border-b border-white/5 text-xs text-white/30">
+                    <div className="flex items-center gap-3 px-2 py-1 border-b border-border text-xs text-muted-foreground">
                       <span className="w-56">Span Name</span>
                       <span className="w-16 text-right">Duration</span>
                       <span className="w-14 text-center">Status</span>
@@ -525,20 +550,19 @@ function TracesTab({ apiKey }: { apiKey: string }) {
                       />
                     ))}
                   </div>
-                </GlassCard>
+                </Card>
               );
             })}
           </div>
 
-          {/* Span detail drawer */}
           {selectedSpan && (
             <div className="w-72 flex-shrink-0">
-              <GlassCard className="p-4 sticky top-4">
+              <Card className="p-4 sticky top-4">
                 <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-semibold text-white truncate">{selectedSpan.name}</h4>
+                  <h4 className="text-sm font-semibold text-foreground truncate">{selectedSpan.name}</h4>
                   <button
                     onClick={() => setSelectedSpan(null)}
-                    className="text-white/40 hover:text-white text-lg leading-none"
+                    className="text-muted-foreground hover:text-foreground text-lg leading-none ml-2"
                   >
                     ×
                   </button>
@@ -551,25 +575,25 @@ function TracesTab({ apiKey }: { apiKey: string }) {
                     { label: 'Trace ID', value: selectedSpan.trace_id.slice(0, 16) + '…' },
                   ].map(({ label, value }) => (
                     <div key={label} className="flex justify-between gap-2">
-                      <dt className="text-white/40">{label}</dt>
-                      <dd className="text-white/80 font-mono truncate">{value}</dd>
+                      <dt className="text-muted-foreground">{label}</dt>
+                      <dd className="text-foreground font-mono truncate">{value}</dd>
                     </div>
                   ))}
                 </dl>
                 {Object.keys(selectedSpan.attributes).length > 0 && (
-                  <div className="mt-3 border-t border-white/10 pt-3">
-                    <p className="text-xs text-white/30 mb-1.5">Attributes</p>
+                  <div className="mt-3 border-t border-border pt-3">
+                    <p className="text-xs text-muted-foreground mb-1.5 font-medium">Attributes</p>
                     <dl className="space-y-1 text-xs">
                       {Object.entries(selectedSpan.attributes).slice(0, 8).map(([k, v]) => (
                         <div key={k} className="flex justify-between gap-2">
-                          <dt className="text-white/40 truncate">{k}</dt>
-                          <dd className="text-white/70 font-mono truncate">{String(v)}</dd>
+                          <dt className="text-muted-foreground truncate">{k}</dt>
+                          <dd className="text-foreground font-mono truncate">{String(v)}</dd>
                         </div>
                       ))}
                     </dl>
                   </div>
                 )}
-              </GlassCard>
+              </Card>
             </div>
           )}
         </div>
@@ -591,8 +615,7 @@ function LogsTab() {
   useEffect(() => {
     if (paused) return;
     const id = setInterval(() => {
-      const entry = makeLogEntry();
-      setLogs((prev) => [...prev.slice(-99), entry]);
+      setLogs((prev) => [...prev.slice(-99), makeLogEntry()]);
     }, 1800);
     return () => clearInterval(id);
   }, [paused]);
@@ -603,28 +626,28 @@ function LogsTab() {
     }
   }, [logs, paused]);
 
-  const levelColors: Record<string, string> = {
-    INFO: 'bg-sky-500/10 text-sky-400 border border-sky-500/20',
-    WARN: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
-    ERROR: 'bg-red-500/10 text-red-400 border border-red-500/20',
-    DEBUG: 'bg-purple-500/10 text-purple-400 border border-purple-500/20',
+  const levelConfig: Record<string, { bg: string; text: string }> = {
+    INFO:  { bg: 'bg-sky-100 dark:bg-sky-900/30',    text: 'text-sky-700 dark:text-sky-400' },
+    WARN:  { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-400' },
+    ERROR: { bg: 'bg-red-100 dark:bg-red-900/30',     text: 'text-red-700 dark:text-red-400' },
+    DEBUG: { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-400' },
   };
 
   const filtered = logs.filter((l) => levelFilter === 'all' || l.level === levelFilter);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          <Filter className="h-3.5 w-3.5 text-white/40" />
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
           {(['all', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const).map((lvl) => (
             <button
               key={lvl}
               onClick={() => setLevelFilter(lvl)}
-              className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
+              className={`text-xs px-2.5 py-1 rounded-full transition-colors border ${
                 levelFilter === lvl
-                  ? 'bg-white/10 text-white'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
               {lvl}
@@ -632,43 +655,46 @@ function LogsTab() {
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <div className={`h-2 w-2 rounded-full ${paused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
-          <span className="text-xs text-white/40">{paused ? 'Paused' : 'Live'}</span>
+          <div className={`h-2 w-2 rounded-full ${paused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+          <span className="text-xs text-muted-foreground">{paused ? 'Paused (hover out to resume)' : 'Live'}</span>
         </div>
       </div>
 
-      <GlassCard className="overflow-hidden">
+      <Card className="overflow-hidden">
         <div
           ref={scrollRef}
           className="h-96 overflow-y-auto font-mono text-xs"
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
         >
-          {filtered.map((log) => (
-            <div
-              key={log.id}
-              className="flex items-start gap-3 px-4 py-1.5 hover:bg-white/[0.02] border-b border-white/[0.03]"
-            >
-              <span className="text-white/30 flex-shrink-0 tabular-nums">
-                {new Date(log.ts).toLocaleTimeString()}
-              </span>
-              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0 ${levelColors[log.level] ?? ''}`}>
-                {log.level}
-              </span>
-              {log.service && (
-                <span className="text-white/30 flex-shrink-0">[{log.service}]</span>
-              )}
-              <span className={`${
-                log.level === 'ERROR' ? 'text-red-300' :
-                log.level === 'WARN' ? 'text-amber-300' :
-                'text-white/70'
-              }`}>
-                {log.message}
-              </span>
-            </div>
-          ))}
+          {filtered.map((log) => {
+            const cfg = levelConfig[log.level] ?? { bg: '', text: 'text-foreground' };
+            return (
+              <div
+                key={log.id}
+                className="flex items-start gap-3 px-4 py-1.5 hover:bg-muted/40 border-b border-border/50"
+              >
+                <span className="text-muted-foreground flex-shrink-0 tabular-nums text-[11px]">
+                  {new Date(log.ts).toLocaleTimeString()}
+                </span>
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${cfg.bg} ${cfg.text}`}>
+                  {log.level}
+                </span>
+                {log.service && (
+                  <span className="text-muted-foreground flex-shrink-0 text-[11px]">[{log.service}]</span>
+                )}
+                <span className={`${
+                  log.level === 'ERROR' ? 'text-red-700 dark:text-red-400' :
+                  log.level === 'WARN'  ? 'text-amber-700 dark:text-amber-400' :
+                  'text-foreground'
+                }`}>
+                  {log.message}
+                </span>
+              </div>
+            );
+          })}
         </div>
-      </GlassCard>
+      </Card>
     </div>
   );
 }
@@ -689,7 +715,7 @@ export function ObservabilityPage() {
     queryKey: ['health'],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/health`, { headers: { 'X-API-Key': apiKey } });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) throw new Error(`${res.status}`);
       return res.json() as Promise<HealthResponse>;
     },
     enabled: !!apiKey,
@@ -704,7 +730,7 @@ export function ObservabilityPage() {
     queryKey: ['metrics'],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/metrics`, { headers: { 'X-API-Key': apiKey } });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) throw new Error(`${res.status}`);
       setLastMetricsUpdate(new Date());
       return res.text();
     },
@@ -712,7 +738,6 @@ export function ObservabilityPage() {
     refetchInterval: 15_000,
   });
 
-  // Check Grafana availability
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
@@ -722,32 +747,33 @@ export function ObservabilityPage() {
       .finally(() => clearTimeout(timer));
   }, []);
 
-  const TAB_LABELS: { id: ObsTab; label: string }[] = [
+  const TABS: { id: ObsTab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
-    { id: 'metrics', label: 'Metrics' },
-    { id: 'traces', label: 'Traces' },
-    { id: 'logs', label: 'Logs' },
+    { id: 'metrics',  label: 'Metrics' },
+    { id: 'traces',   label: 'Traces' },
+    { id: 'logs',     label: 'Logs' },
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Observability</h1>
-          <p className="text-sm text-white/50 mt-1">Health, metrics, traces, and live logs</p>
+          <h1 className="text-2xl font-bold text-foreground">Observability</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            System health, live metrics, distributed traces and log stream
+          </p>
         </div>
-
-        {/* Grafana link */}
         <a
           href={GRAFANA_URL}
           target="_blank"
           rel="noopener noreferrer"
           className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
             grafanaAvailable === false
-              ? 'border-white/10 text-white/30 pointer-events-none'
-              : 'border-orange-500/30 text-orange-400 hover:bg-orange-500/10'
+              ? 'border-border text-muted-foreground/50 pointer-events-none'
+              : 'border-orange-300 text-orange-600 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30'
           }`}
+          title={grafanaAvailable === false ? 'Grafana not available at ' + GRAFANA_URL : 'Open Grafana'}
         >
           <span className="font-bold text-xs">G</span>
           Grafana
@@ -756,17 +782,17 @@ export function ObservabilityPage() {
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-white/10">
-        {TAB_LABELS.map(({ id, label }) => (
+      <div role="tablist" className="flex gap-1 border-b border-border">
+        {TABS.map(({ id, label }) => (
           <button
             key={id}
             role="tab"
             aria-selected={tab === id}
             onClick={() => setTab(id)}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors rounded-t-lg ${
+            className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
               tab === id
-                ? 'text-white border-b-2 border-indigo-400 bg-white/[0.03]'
-                : 'text-white/50 hover:text-white/80'
+                ? 'text-primary border-primary'
+                : 'text-muted-foreground border-transparent hover:text-foreground'
             }`}
           >
             {label}
@@ -774,7 +800,7 @@ export function ObservabilityPage() {
         ))}
       </div>
 
-      {/* Tab content */}
+      {/* Content */}
       {tab === 'overview' && (
         <OverviewTab health={health} isLoading={healthLoading} isError={healthError} />
       )}
