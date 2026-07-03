@@ -1066,6 +1066,9 @@ def create_app(
     app.state.eval_suite_runner = _eval_suite_runner
     app.state.self_optimizer = _self_optimizer
     app.state.self_optimizer_v2 = _self_optimizer_v2
+    # PromptOptimizer: always set in-memory default (upgraded with Redis in lifespan)
+    from app.intelligence.prompt_optimizer import _default_optimizer as _prompt_optimizer_default
+    app.state.prompt_optimizer = _prompt_optimizer_default
     # Enterprise
     app.state.compliance_controller = _compliance_controller
     app.state.compliance_checker = _compliance_checker  # v2: no hardcoded booleans
