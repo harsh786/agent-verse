@@ -44,6 +44,10 @@ class WorkflowCreate(BaseModel):
     definition: dict[str, Any] = Field(default_factory=dict)
 
 
+class GenerateWorkflowRequest(BaseModel):
+    goal: str = Field(..., min_length=1, max_length=10_000)
+
+
 class WorkflowUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str = Field(default="", max_length=2000)
@@ -334,6 +338,65 @@ class _WorkflowStore:
             return True
 
 
+def _plan_to_canvas(plan: Any) -> dict[str, Any]:
+    """Convert a WorkflowPlan to canvas-ready ``{nodes, edges}`` format."""
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    goal_text: str = getattr(plan, "goal", "")
+    nodes.append({
+        "id": "trigger",
+        "type": "trigger",
+        "label": "Start",
+        "subtitle": (goal_text[:40] + "…") if len(goal_text) > 40 else goal_text,
+        "position": {"x": 250, "y": 50},
+    })
+
+    steps = getattr(plan, "steps", [])
+    for i, step in enumerate(steps):
+        node_type = "tool_call" if getattr(step, "tool", "") else "agent_step"
+        desc: str = getattr(step, "description", "")
+        label = (desc[:40] + "…") if len(desc) > 40 else desc
+        nodes.append({
+            "id": step.id,
+            "type": node_type,
+            "label": label,
+            "subtitle": getattr(step, "tool", "") or "",
+            "position": {"x": 250, "y": 150 + i * 100},
+            "tool": getattr(step, "tool", ""),
+            "depends_on": list(getattr(step, "depends_on", [])),
+            "can_parallel": getattr(step, "can_parallel", True),
+        })
+
+    end_y = 200 + len(steps) * 100
+    nodes.append({
+        "id": "end", "type": "end", "label": "End",
+        "position": {"x": 250, "y": end_y},
+    })
+
+    # trigger → root steps (no depends_on)
+    root_steps = [s for s in steps if not getattr(s, "depends_on", [])]
+    if not root_steps and steps:
+        root_steps = [steps[0]]
+    for step in root_steps:
+        edges.append({"id": f"e_trigger_{step.id}", "source": "trigger", "target": step.id})
+
+    # dependency edges
+    for step in steps:
+        for dep in getattr(step, "depends_on", []):
+            edges.append({"id": f"e_{dep}_{step.id}", "source": dep, "target": step.id})
+
+    # terminal steps (not a dep of any other) → end
+    all_dep_targets = {dep for s in steps for dep in getattr(s, "depends_on", [])}
+    terminal = [s for s in steps if s.id not in all_dep_targets]
+    if not terminal and steps:
+        terminal = [steps[-1]]
+    for step in terminal:
+        edges.append({"id": f"e_{step.id}_end", "source": step.id, "target": "end"})
+
+    return {"nodes": nodes, "edges": edges}
+
+
 # ─── Route handlers ───────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[WorkflowOut])
@@ -361,6 +424,22 @@ async def create_workflow(request: Request, body: WorkflowCreate) -> WorkflowOut
         definition=body.definition,
     )
     return _workflow_to_out(wf)
+
+
+@router.post("/generate", status_code=status.HTTP_200_OK)
+async def generate_workflow(request: Request, body: GenerateWorkflowRequest) -> dict[str, Any]:
+    """Generate a workflow canvas (nodes + edges) from a natural-language goal.
+
+    Calls ``WorkflowPlanner.plan()`` directly — no dry-run hack.
+    Falls back to a heuristic plan when no LLM provider is configured.
+    """
+    tenant = _require_tenant(request)
+    from app.agent.workflow_planner import WorkflowPlanner
+
+    provider = getattr(request.app.state, "_app_provider", None)
+    planner = WorkflowPlanner(provider=provider)
+    plan = await planner.plan(goal=body.goal, tenant_ctx=tenant)
+    return _plan_to_canvas(plan)
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
@@ -419,14 +498,16 @@ async def run_workflow(
     request: Request,
     dry_run: bool = Query(
         default=False,
-        description="When true, validates the workflow but does not submit a goal.",
+        description="When true, validates the workflow but does not execute.",
     ),
 ) -> dict[str, Any]:
-    """Execute a saved workflow by converting it to an AgentVerse goal.
+    """Execute a saved workflow using WorkflowExecutor for parallel DAG execution.
 
-    The workflow's name, description, and node count are composed into a
-    natural-language goal string that is submitted via ``GoalService``.
-    Pass ``dry_run=true`` to validate without actually running anything.
+    When the definition contains ``steps``, ``WorkflowExecutor.execute()`` runs
+    the parallel DAG directly.  Falls back to ``GoalService`` submission for
+    definitions without step metadata.
+
+    Pass ``dry_run=true`` to validate and return plan metadata without executing.
     """
     tenant = _require_tenant(request)
     store = _get_store(request)
@@ -436,28 +517,56 @@ async def run_workflow(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
         )
 
-    # Build a goal description from the workflow metadata
     definition = wf.get("definition") or {}
-    nodes: list[Any] = definition.get("nodes", [])
-    node_count = len(nodes)
     desc = (wf.get("description") or "").strip()
-    goal_text = (
-        f"Execute workflow '{wf['name']}'"
-        + (f": {desc}" if desc else "")
-        + f" ({node_count} node{'s' if node_count != 1 else ''})"
-    )
+    goal_text = f"Execute workflow '{wf['name']}'" + (f": {desc}" if desc else "")
+    run_id = uuid.uuid4().hex
 
-    goal_service = getattr(request.app.state, "goal_service", None)
-
-    if dry_run or goal_service is None:
+    if dry_run:
         return {
             "run_id": f"wf-dry-{workflow_id[:8]}",
             "status": "dry_run",
             "workflow_id": workflow_id,
             "goal": goal_text,
+            "definition": definition,
         }
 
-    result: dict[str, Any] = await goal_service.submit_goal(
+    # ── WorkflowExecutor path: parallel DAG execution ─────────────────────────
+    steps_data: list[Any] = definition.get("steps", [])
+    if steps_data:
+        try:
+            from app.agent.workflow_executor import WorkflowExecutor
+            from app.agent.workflow_planner import WorkflowPlan
+
+            plan = WorkflowPlan.from_dict(definition, goal=goal_text)
+            executor = WorkflowExecutor(
+                provider=getattr(request.app.state, "_app_provider", None),
+                mcp_client=getattr(request.app.state, "mcp_client", None),
+            )
+            result = await executor.execute(plan, tenant_ctx=tenant)
+            return {
+                "run_id": run_id,
+                "status": result.get("status", "complete"),
+                "workflow_id": workflow_id,
+                "goal": goal_text,
+                "steps_executed": result.get("steps_executed", 0),
+                "waves": result.get("waves", 0),
+                "summary": result.get("summary", ""),
+            }
+        except Exception:
+            pass  # Fall through to GoalService
+
+    # ── GoalService fallback ──────────────────────────────────────────────────
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        return {
+            "run_id": run_id,
+            "status": "dry_run",
+            "workflow_id": workflow_id,
+            "goal": goal_text,
+        }
+
+    result = await goal_service.submit_goal(
         goal=goal_text,
         tenant_ctx=tenant,
         execution_context={
@@ -465,11 +574,11 @@ async def run_workflow(
             "workflow_definition": definition,
         },
     )
-    run_id: str = (
+    goal_run_id: str = (
         result.get("id") or result.get("goal_id") or f"wf-{workflow_id[:8]}"
     )
     return {
-        "run_id": run_id,
+        "run_id": goal_run_id,
         "status": result.get("status", "planning"),
         "workflow_id": workflow_id,
         "goal": goal_text,

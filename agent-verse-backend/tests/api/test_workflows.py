@@ -238,8 +238,8 @@ def test_run_nonexistent_workflow_returns_404() -> None:
     assert resp.status_code == 404
 
 
-def test_run_workflow_goal_includes_node_count() -> None:
-    """Verify the generated goal string mentions the node count."""
+def test_run_workflow_goal_includes_workflow_name() -> None:
+    """Verify the generated goal string includes the workflow name."""
     mock_svc = AsyncMock()
     mock_svc.submit_goal.return_value = {"id": "g1", "status": "planning"}
     app = _make_app(goal_service=mock_svc)
@@ -260,7 +260,7 @@ def test_run_workflow_goal_includes_node_count() -> None:
 
     call_kwargs = mock_svc.submit_goal.call_args
     goal_text: str = call_kwargs.kwargs.get("goal", "") or call_kwargs.args[0]
-    assert "3 nodes" in goal_text
+    assert "Complex Flow" in goal_text
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
