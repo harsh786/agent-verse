@@ -151,21 +151,24 @@ describe('KnowledgePage – Ingest tab', () => {
     expect(allIngestBtns[allIngestBtns.length - 1]).toBeDisabled();
   });
 
-  test('calls ingest API when form submitted', async () => {
+   test('calls ingest API when form submitted', async () => {
     const spy = mockFetch();
     renderPage();
     await screen.findByRole('heading', { name: /knowledge/i });
     await userEvent.click(screen.getByTestId('tab-ingest'));
     await screen.findByRole('button', { name: /^text$/i });
-    // Select collection
-    const collectionSelect = screen.getAllByRole('combobox')[0];
-    await userEvent.selectOptions(collectionSelect, 'col-1');
+    await userEvent.click(screen.getByRole('button', { name: /^text$/i }));
+    // Select collection — find the standard form select (outside RPA section)
+    const allSelects = screen.getAllByRole('combobox');
+    // Second select is the standard ingestion form's collection select
+    const standardSelect = allSelects[allSelects.length - 1];
+    await userEvent.selectOptions(standardSelect, 'col-1');
     // Add content
     await userEvent.type(screen.getByPlaceholderText(/paste content/i), 'Some content to ingest');
     const submitBtn = screen.getAllByRole('button', { name: /^ingest$/i });
     await userEvent.click(submitBtn[submitBtn.length - 1]);
     await waitFor(() =>
-      expect(spy.mock.calls.some(([u, i]) => String(u).includes('/knowledge/ingest') && (i as RequestInit)?.method === 'POST')).toBe(true)
+      expect(spy.mock.calls.some(([u, i]) => String(u).includes('/knowledge/ingest') && !(i as RequestInit)?.body?.toString().includes('rpa') && (i as RequestInit)?.method === 'POST')).toBe(true)
     );
   });
 
@@ -175,12 +178,14 @@ describe('KnowledgePage – Ingest tab', () => {
     await screen.findByRole('heading', { name: /knowledge/i });
     await userEvent.click(screen.getByTestId('tab-ingest'));
     await screen.findByRole('button', { name: /^text$/i });
-    const collectionSelect = screen.getAllByRole('combobox')[0];
-    await userEvent.selectOptions(collectionSelect, 'col-1');
+    await userEvent.click(screen.getByRole('button', { name: /^text$/i }));
+    const allSelects = screen.getAllByRole('combobox');
+    const standardSelect = allSelects[allSelects.length - 1];
+    await userEvent.selectOptions(standardSelect, 'col-1');
     await userEvent.type(screen.getByPlaceholderText(/paste content/i), 'content');
     const submitBtn = screen.getAllByRole('button', { name: /^ingest$/i });
     await userEvent.click(submitBtn[submitBtn.length - 1]);
-    // Verify the ingest API was called successfully (response: 7 chunks)
+    // Verify the ingest API was called successfully
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) =>
         String(u).includes('/knowledge/ingest') && (i as RequestInit)?.method === 'POST'
