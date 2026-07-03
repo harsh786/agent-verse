@@ -264,6 +264,22 @@ class MCPClient:
                 )
             ]
 
+        # Builtin servers — return tool definitions directly from the stored config.
+        # The builtin_handler is a Python callable, not an HTTP endpoint; trying
+        # to call builtin:// via HTTP would always fail.
+        if cfg.builtin_handler is not None and cfg.tool_definitions:
+            return [
+                ToolDefinition(
+                    name=str(t.get("name", "")),
+                    description=str(t.get("description", "")),
+                    input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
+                    server_id=server_id,
+                    server_name=cfg.name,
+                )
+                for t in cfg.tool_definitions
+                if t.get("name")
+            ]
+
         headers = await self._build_auth_headers(
             cfg, tenant_ctx=tenant_ctx, server_id=server_id
         )

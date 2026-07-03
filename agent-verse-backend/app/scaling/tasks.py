@@ -96,6 +96,19 @@ try:
 except Exception:
     pass
 
+# Register builtin MCP handlers in the worker process so that the
+# process-local _BUILTIN_HANDLER_REGISTRY is populated. Without this,
+# builtin servers (confluence, jira, etc.) read from Redis but lose
+# their Python handler after serialization and fall back to HTTP dispatch.
+try:
+    from app.mcp.registry import MCPRegistry as _MCPRegistry
+    from app.mcp.servers.registry_wiring import get_builtin_server_configs as _get_builtins
+    for _bc in _get_builtins():
+        if _bc.get("handler") is not None:
+            _MCPRegistry.register_builtin_handler(_bc["server_id"], _bc["handler"])
+except Exception:
+    pass
+
 
 _CELERY_QUEUE_NAMES = ("goals", "schedules", "maintenance")
 _SECRET_REDIS_SCHEDULE_FIELDS = frozenset(
