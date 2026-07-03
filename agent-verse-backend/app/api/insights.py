@@ -130,9 +130,9 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     if goal_svc is None:
         raise HTTPException(503, "Goal service not available")
 
-    # Load goal events
+    # Load goal events — use get_events (not get_event_log which does not exist)
     try:
-        events: list[dict[str, Any]] = await goal_svc.get_event_log(
+        events: list[dict[str, Any]] = await goal_svc.get_events(
             goal_id=goal_id, tenant_ctx=tenant
         )
     except Exception:
@@ -214,14 +214,23 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
             node_id = f"tool_{tool_name.replace('.', '_').replace('/', '_')}_{tool_counter[tool_name]}"
             if node_id not in node_ids:
                 success = evt.get("success", evt_type != "tool_call_failed")
+                # Extract output preview (first 120 chars)
+                raw_output = (
+                    evt.get("output") or evt.get("result")
+                    or payload.get("output") or payload.get("result") or ""
+                )
+                output_preview = str(raw_output)[:120] if raw_output else ""
                 nodes.append({
                     "id": node_id,
                     "type": "tool",
                     "label": str(tool_name)[:40],
                     "data": {
                         "tool_name": tool_name,
-                        "server_id": evt.get("server_id"),
+                        "server_id": evt.get("server_id") or payload.get("server_id"),
                         "status": "success" if success else "failed",
+                        "output_preview": output_preview,
+                        "duration_ms": evt.get("duration_ms"),
+                        "error": evt.get("error") if not success else None,
                     },
                 })
                 node_ids.add(node_id)
