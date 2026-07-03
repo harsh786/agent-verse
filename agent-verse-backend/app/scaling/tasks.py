@@ -619,6 +619,27 @@ def run_goal(
         and getattr(_aloop_mod, "AgentLoop", None) is not _REAL_AGENT_LOOP_CLASS
     )
 
+    # Resolve the agent's autonomy_mode from the DB so that fully-autonomous
+    # agents bypass the HITL gate on write_high tool calls.
+    _agent_autonomy_mode = "bounded-autonomous"
+    if agent_id and db_factory is not None:
+        try:
+            from sqlalchemy import text as _sa_text
+            from app.db.rls import sqlalchemy_rls_context as _rls
+
+            async def _lookup_agent_autonomy() -> str:
+                async with db_factory() as _sess, _rls(_sess, tenant_id):
+                    row = (await _sess.execute(
+                        _sa_text("SELECT autonomy_mode FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
+                        {"aid": agent_id, "tid": tenant_id},
+                    )).fetchone()
+                    return str(row[0]) if row and row[0] else "bounded-autonomous"
+
+            _agent_autonomy_mode = _run_async(_lookup_agent_autonomy())
+            logger.info("worker_agent_autonomy goal=%s agent=%s mode=%s", goal_id, agent_id, _agent_autonomy_mode)
+        except Exception as _ae:
+            logger.debug("worker_agent_autonomy_lookup_failed: %s", _ae)
+
     _agent_runner: Any = None
     _use_agent_graph = False
     async def _build_worker_mcp_context() -> tuple[Any, Any, Any]:
@@ -722,6 +743,7 @@ def run_goal(
                 executor=provider,
                 verifier=provider,
                 model_router=_model_router,
+                autonomy_mode=_agent_autonomy_mode,
                 result_processor=ResultProcessor(),
                 dedup_cache=DeduplicationCache(),
                 rollback_engine=RollbackEngine(),
