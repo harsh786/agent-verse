@@ -94,7 +94,7 @@ function Card({ children, className = '', onClick }: {
   onClick?: (e: React.MouseEvent) => void;
 }) {
   return (
-    <div className={`rounded-xl border border-white/[0.06] bg-white/[0.03] ${className}`} onClick={onClick}>
+    <div className={`rounded-xl border border-border bg-card ${className}`} onClick={onClick}>
       {children}
     </div>
   );
@@ -156,7 +156,7 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
           <select
             value={selectedGoalId}
             onChange={(e) => setSelectedGoalId(e.target.value)}
-            className="flex-1 min-w-[200px] bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+            className="flex-1 min-w-[200px] bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none"
           >
             <option value="">Select a goal to evaluate…</option>
             {goals.map((g) => {
@@ -171,7 +171,7 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
           <button
             onClick={() => evalMutation.mutate()}
             disabled={!selectedGoalId || evalMutation.isPending}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-foreground px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
           >
             <Play className="h-3.5 w-3.5" />
             {evalMutation.isPending ? 'Running…' : 'Run Eval'}
@@ -179,7 +179,7 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
           {scorecard && (
             <button
               onClick={exportScorecard}
-              className="flex items-center gap-1.5 border border-white/10 text-white/60 hover:text-white px-3 py-2 rounded-lg text-sm transition-colors"
+              className="flex items-center gap-1.5 border border-border text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg text-sm transition-colors"
             >
               <Download className="h-3.5 w-3.5" />
               Export JSON
@@ -195,19 +195,19 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Radar chart */}
           <Card className="p-5">
-            <p className="text-xs text-white/40 mb-1 uppercase tracking-wide text-center">
+            <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wide text-center">
               Performance Radar
             </p>
-            <p className="text-4xl font-bold tabular-nums text-white text-center">
+            <p className="text-4xl font-bold tabular-nums text-foreground text-center">
               {(scorecard.average_score * 100).toFixed(1)}
             </p>
-            <p className="text-xs text-white/40 mb-4 text-center">avg score out of 100</p>
+            <p className="text-xs text-muted-foreground mb-4 text-center">avg score out of 100</p>
             <ThemedRadarChart data={radarData} height={220} />
           </Card>
 
           {/* 7-dimension bars */}
           <Card className="p-5">
-            <h3 className="text-sm font-semibold text-white mb-4">All 7 Dimensions</h3>
+            <h3 className="text-sm font-semibold text-foreground mb-4">All 7 Dimensions</h3>
             <div className="space-y-3">
               {ALL_7_DIMENSIONS.map((dim) => {
                 const raw = scorecard.scores[dim] ?? 0;
@@ -217,17 +217,17 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
                 return (
                   <div key={dim}>
                     <div className="flex justify-between text-xs mb-1">
-                      <span className="font-medium text-white/80">{DIM_LABEL[dim]}</span>
+                      <span className="font-medium text-foreground">{DIM_LABEL[dim]}</span>
                       <div className="flex items-center gap-2">
                         {delta != null && (
-                          <span className={`text-[10px] font-semibold ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-white/40'}`}>
+                          <span className={`text-[10px] font-semibold ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
                             {delta > 0 ? '+' : ''}{(delta * 100).toFixed(1)}%
                           </span>
                         )}
-                        <span className="text-white/50 tabular-nums">{pct}%</span>
+                        <span className="text-muted-foreground tabular-nums">{pct}%</span>
                       </div>
                     </div>
-                    <div className="w-full bg-white/5 rounded-full h-2">
+                    <div className="w-full bg-muted rounded-full h-2">
                       <div
                         className={`h-2 rounded-full transition-all duration-500 ${DIM_COLORS[dim] ?? 'bg-indigo-500'}`}
                         style={{ width: `${pct}%` }}
@@ -241,9 +241,9 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
         </div>
       ) : (
         <Card className="p-8 text-center">
-          <BarChart3 className="h-10 w-10 text-white/20 mx-auto mb-3" />
-          <p className="text-sm text-white/50">Select a goal and run eval to see all 7 dimensions</p>
-          <p className="text-xs text-white/30 mt-1">
+          <BarChart3 className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">Select a goal and run eval to see all 7 dimensions</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">
             Scored on: {ALL_7_DIMENSIONS.map((d) => DIM_LABEL[d]).join(', ')}
           </p>
         </Card>
@@ -252,22 +252,22 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
       {/* History sparklines */}
       {history.length > 1 && (
         <Card className="p-5">
-          <h3 className="text-sm font-semibold text-white mb-3">Eval History ({history.length} runs)</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Eval History ({history.length} runs)</h3>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-white/10">
-                  <th className="text-left py-2 text-white/40 font-normal">Run</th>
+                <tr className="border-b border-border">
+                  <th className="text-left py-2 text-muted-foreground font-normal">Run</th>
                   {ALL_7_DIMENSIONS.map((d) => (
-                    <th key={d} className="text-right py-2 text-white/40 font-normal">{DIM_LABEL[d].slice(0, 6)}</th>
+                    <th key={d} className="text-right py-2 text-muted-foreground font-normal">{DIM_LABEL[d].slice(0, 6)}</th>
                   ))}
-                  <th className="text-right py-2 text-white/40 font-normal">Avg</th>
+                  <th className="text-right py-2 text-muted-foreground font-normal">Avg</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
                 {history.map((h, i) => (
-                  <tr key={i} className="hover:bg-white/[0.02]">
-                    <td className="py-2 text-white/50">#{i + 1}</td>
+                  <tr key={i} className="hover:bg-card">
+                    <td className="py-2 text-muted-foreground">#{i + 1}</td>
                     {ALL_7_DIMENSIONS.map((d) => {
                       const v = h.scores[d] ?? 0;
                       return (
@@ -276,7 +276,7 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
                         </td>
                       );
                     })}
-                    <td className="py-2 text-right font-semibold text-white tabular-nums">
+                    <td className="py-2 text-right font-semibold text-foreground tabular-nums">
                       {(h.average_score * 100).toFixed(1)}
                     </td>
                   </tr>
@@ -381,19 +381,19 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
       {/* Goal input */}
       <Card className="p-5 space-y-4">
         <div>
-          <label className="block text-xs font-medium text-white/60 mb-1">Goal</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Goal</label>
           <textarea
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             placeholder="Describe the goal to simulate…"
             rows={3}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-indigo-500/50 resize-none"
+            className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder-muted-foreground outline-none focus:border-indigo-500/50 resize-none"
           />
         </div>
 
         {/* Available tools picker */}
         <div>
-          <label className="block text-xs font-medium text-white/60 mb-2">
+          <label className="block text-xs font-medium text-muted-foreground mb-2">
             Available Tools {toolsLoading ? '(loading…)' : `(${availableTools.length} found)`}
           </label>
           {availableTools.length > 0 ? (
@@ -404,7 +404,7 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
                   className={`flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors ${
                     selectedTools.has(tool.name)
                       ? 'bg-indigo-500/10 border-indigo-500/30'
-                      : 'bg-white/5 border-white/10 hover:border-white/20'
+                      : 'bg-muted border-border hover:border-border'
                   }`}
                 >
                   <input
@@ -414,16 +414,16 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
                     className="mt-0.5 flex-shrink-0"
                   />
                   <div>
-                    <p className="text-xs font-medium text-white">{tool.name}</p>
+                    <p className="text-xs font-medium text-foreground">{tool.name}</p>
                     {tool.description && (
-                      <p className="text-[10px] text-white/40 line-clamp-1">{tool.description}</p>
+                      <p className="text-[10px] text-muted-foreground line-clamp-1">{tool.description}</p>
                     )}
                   </div>
                 </label>
               ))}
             </div>
           ) : (
-            <p className="text-xs text-white/30 italic">
+            <p className="text-xs text-muted-foreground/60 italic">
               {toolsLoading ? 'Loading tools from MCP connectors…' : 'No tools available. Add MCP connectors to enable tool selection.'}
             </p>
           )}
@@ -431,13 +431,13 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
 
         {/* Mock JSON */}
         <div>
-          <label className="block text-xs font-medium text-white/60 mb-1">Mock Tool Responses (JSON)</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Mock Tool Responses (JSON)</label>
           <textarea
             value={mockJson}
             onChange={(e) => setMockJson(e.target.value)}
             placeholder='{"github:list_issues": [{"id": 1, "title": "Bug fix"}]}'
             rows={3}
-            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-white/20 outline-none focus:border-indigo-500/50 resize-none"
+            className="w-full bg-black/30 border border-border rounded-lg px-3 py-2 text-xs font-mono text-foreground placeholder-white/20 outline-none focus:border-indigo-500/50 resize-none"
           />
         </div>
 
@@ -445,7 +445,7 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
           <button
             onClick={runSimulation}
             disabled={!goal.trim() || streaming}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-foreground px-5 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
           >
             {streaming ? (
               <><span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" /> Simulating…</>
@@ -459,21 +459,21 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
       {/* Steps stream */}
       {steps.length > 0 && (
         <Card className="p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">Execution Steps</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-4">Execution Steps</h3>
           <div className="space-y-2">
             {steps.map((s, i) => (
-              <div key={i} className="flex items-start gap-3 p-3 bg-white/[0.02] rounded-lg border border-white/[0.04]">
-                <span className="text-xs font-mono text-white/30 flex-shrink-0 mt-0.5">
+              <div key={i} className="flex items-start gap-3 p-3 bg-card rounded-lg border border-border">
+                <span className="text-xs font-mono text-muted-foreground/60 flex-shrink-0 mt-0.5">
                   {typeof s.step === 'number' ? `${String(s.step).padStart(2, '0')}` : s.step}
                 </span>
                 <div className="flex-1 min-w-0">
                   {s.tool && <p className="text-xs font-medium text-indigo-300">{s.tool}</p>}
                   {s.output && (
-                    <p className="text-xs text-white/60 font-mono mt-0.5 truncate">{String(s.output).slice(0, 120)}</p>
+                    <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">{String(s.output).slice(0, 120)}</p>
                   )}
                 </div>
                 {s.cost_usd != null && (
-                  <span className="text-xs text-white/30 flex-shrink-0">${s.cost_usd.toFixed(4)}</span>
+                  <span className="text-xs text-muted-foreground/60 flex-shrink-0">${s.cost_usd.toFixed(4)}</span>
                 )}
               </div>
             ))}
@@ -494,10 +494,10 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
                   {simStatus}
                 </span>
                 {totalCost != null && (
-                  <span className="text-xs text-white/40">Total cost: ${totalCost.toFixed(4)}</span>
+                  <span className="text-xs text-muted-foreground">Total cost: ${totalCost.toFixed(4)}</span>
                 )}
               </div>
-              <p className="text-xs text-white/40 mt-1">{steps.length} steps · {selectedTools.size} tools selected</p>
+              <p className="text-xs text-muted-foreground mt-1">{steps.length} steps · {selectedTools.size} tools selected</p>
             </div>
           )}
         </Card>
@@ -548,14 +548,14 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-orange-400" />
             <div>
-              <h3 className="text-sm font-semibold text-white">Red Team Testing</h3>
-              <p className="text-xs text-white/40 mt-0.5">Test resistance to prompt injection, policy bypass, and adversarial inputs</p>
+              <h3 className="text-sm font-semibold text-foreground">Red Team Testing</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Test resistance to prompt injection, policy bypass, and adversarial inputs</p>
             </div>
           </div>
           <button
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
-            className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 text-foreground px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
           >
             <Play className="h-3.5 w-3.5" />
             {mutation.isPending ? 'Running…' : 'Launch Red Team Suite'}
@@ -564,11 +564,11 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
 
         {mutation.isPending && (
           <div>
-            <div className="flex justify-between text-xs text-white/40 mb-1">
+            <div className="flex justify-between text-xs text-muted-foreground mb-1">
               <span>Testing…</span>
               <span>{progress}%</span>
             </div>
-            <div className="w-full bg-white/5 rounded-full h-2">
+            <div className="w-full bg-muted rounded-full h-2">
               <div className="h-2 rounded-full bg-orange-500 transition-all duration-300" style={{ width: `${progress}%` }} />
             </div>
           </div>
@@ -584,13 +584,13 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
           {/* Summary */}
           <div className="grid grid-cols-3 gap-4">
             {[
-              { label: 'Total Cases', value: report.total, color: 'text-white' },
+              { label: 'Total Cases', value: report.total, color: 'text-foreground' },
               { label: 'Blocked', value: report.passed, color: 'text-emerald-400' },
               { label: 'Leaked', value: report.failed, color: 'text-red-400' },
             ].map(({ label, value, color }) => (
               <Card key={label} className="p-4 text-center">
                 <p className={`text-3xl font-bold ${color}`}>{value}</p>
-                <p className="text-xs text-white/40 mt-1">{label}</p>
+                <p className="text-xs text-muted-foreground mt-1">{label}</p>
               </Card>
             ))}
           </div>
@@ -598,18 +598,18 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
           {/* Security score */}
           <Card className="p-5">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-white">Security Score</span>
+              <span className="text-sm font-medium text-foreground">Security Score</span>
               <span className={`text-2xl font-bold ${passRate >= 80 ? 'text-emerald-400' : passRate >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
                 {passRate}%
               </span>
             </div>
-            <div className="w-full bg-white/5 rounded-full h-3">
+            <div className="w-full bg-muted rounded-full h-3">
               <div
                 className={`h-3 rounded-full transition-all ${passRate >= 80 ? 'bg-emerald-500' : passRate >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
                 style={{ width: `${passRate}%` }}
               />
             </div>
-            <p className="text-xs text-white/40 mt-2">
+            <p className="text-xs text-muted-foreground mt-2">
               {report.passed}/{report.total} attack vectors blocked
             </p>
           </Card>
@@ -617,16 +617,16 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
           {/* Results table */}
           {report.results?.length > 0 && (
             <Card className="overflow-hidden">
-              <div className="px-5 py-3 border-b border-white/10">
-                <h3 className="text-sm font-semibold text-white">Test Results</h3>
+              <div className="px-5 py-3 border-b border-border">
+                <h3 className="text-sm font-semibold text-foreground">Test Results</h3>
               </div>
               <div className="divide-y divide-white/5">
                 {report.results.map((r, i) => (
                   <div key={r.case_id ?? i} className="flex items-center gap-4 px-5 py-3">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white">{r.name ?? r.case_id}</p>
+                      <p className="text-sm text-foreground">{r.name ?? r.case_id}</p>
                       {r.attack_vector && (
-                        <p className="text-xs text-white/40 mt-0.5">{r.attack_vector}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{r.attack_vector}</p>
                       )}
                     </div>
                     {r.risk_level && (
@@ -722,10 +722,10 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-white">Eval Suites</h2>
+        <h2 className="text-sm font-semibold text-foreground">Eval Suites</h2>
         <button
           onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
+          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-foreground px-3 py-1.5 rounded-lg text-sm transition-colors"
         >
           <Plus className="h-3.5 w-3.5" />
           Create Suite
@@ -735,29 +735,29 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
       {/* Create form */}
       {showCreate && (
         <Card className="p-5 space-y-3">
-          <h3 className="text-sm font-semibold text-white">New Suite</h3>
+          <h3 className="text-sm font-semibold text-foreground">New Suite</h3>
           <input
             aria-label="Suite name"
             placeholder="Suite name"
             value={suiteName}
             onChange={(e) => setSuiteName(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+            className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none"
           />
           <input
             placeholder="Description (optional)"
             value={suiteDesc}
             onChange={(e) => setSuiteDesc(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+            className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none"
           />
           <div className="flex gap-2">
             <button
               onClick={() => createMutation.mutate()}
               disabled={!suiteName.trim() || createMutation.isPending}
-              className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50"
+              className="px-4 py-2 bg-indigo-600 text-foreground text-sm rounded-lg disabled:opacity-50"
             >
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </button>
-            <button onClick={() => setShowCreate(false)} className="px-4 py-2 border border-white/10 text-white/60 text-sm rounded-lg">
+            <button onClick={() => setShowCreate(false)} className="px-4 py-2 border border-border text-muted-foreground text-sm rounded-lg">
               Cancel
             </button>
           </div>
@@ -765,12 +765,12 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
       )}
 
       {isLoading ? (
-        <div className="text-center py-8 text-sm text-white/40">Loading suites…</div>
+        <div className="text-center py-8 text-sm text-muted-foreground">Loading suites…</div>
       ) : typedSuites.length === 0 ? (
         <Card className="p-8 text-center">
-          <FlaskConical className="h-8 w-8 text-white/20 mx-auto mb-2" />
-          <p className="text-sm text-white/50">No eval suites yet</p>
-          <p className="text-xs text-white/30 mt-1">Create a suite to group golden tasks and track regressions</p>
+          <FlaskConical className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No eval suites yet</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">Create a suite to group golden tasks and track regressions</p>
         </Card>
       ) : (
         <div className="space-y-3">
@@ -784,8 +784,8 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                 onClick={() => setActiveSuiteId(activeSuiteId === suite.suite_id ? null : suite.suite_id)}
               >
                 <div>
-                  <p className="text-sm font-semibold text-white">{suite.name ?? suite.suite_id}</p>
-                  <p className="text-xs text-white/40 mt-0.5">
+                  <p className="text-sm font-semibold text-foreground">{suite.name ?? suite.suite_id}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
                     {suite.task_count ?? 0} tasks
                     {suite.created_at && ` · ${new Date(suite.created_at).toLocaleDateString()}`}
                     {suite.description && ` · ${suite.description}`}
@@ -794,7 +794,7 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={(e) => { e.stopPropagation(); setActiveSuiteId(suite.suite_id); setShowAddTask(true); }}
-                    className="text-xs px-2.5 py-1 rounded border border-white/10 text-white/60 hover:text-white hover:border-white/20 transition-colors"
+                    className="text-xs px-2.5 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-border transition-colors"
                   >
                     + Task
                   </button>
@@ -810,19 +810,19 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
 
               {/* Expanded: suite results */}
               {activeSuiteId === suite.suite_id && suiteResults && suiteResults.length > 0 && (
-                <div className="border-t border-white/10 p-4">
-                  <h4 className="text-xs font-semibold text-white/60 mb-2">Recent Runs</h4>
+                <div className="border-t border-border p-4">
+                  <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Runs</h4>
                   <div className="space-y-1.5">
                     {(suiteResults as Array<{ run_id?: string; overall_score?: number; passed?: number; failed?: number; completed_at?: string }>).slice(-5).map((r, i) => (
                       <div key={r.run_id ?? i} className="flex items-center gap-3 text-xs">
-                        <span className="text-white/30">#{i + 1}</span>
-                        <div className="flex-1 bg-white/5 rounded-full h-1.5">
+                        <span className="text-muted-foreground/60">#{i + 1}</span>
+                        <div className="flex-1 bg-muted rounded-full h-1.5">
                           <div
                             className="bg-emerald-500 h-1.5 rounded-full"
                             style={{ width: `${((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100}%` }}
                           />
                         </div>
-                        <span className="text-white/40">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
+                        <span className="text-muted-foreground">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
                       </div>
                     ))}
                   </div>
@@ -838,8 +838,8 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowAddTask(false)}>
           <Card className="w-full max-w-md p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-white">Add Golden Task</h3>
-              <button onClick={() => setShowAddTask(false)} className="text-white/40 hover:text-white">
+              <h3 className="text-sm font-semibold text-foreground">Add Golden Task</h3>
+              <button onClick={() => setShowAddTask(false)} className="text-muted-foreground hover:text-foreground">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -851,23 +851,23 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
               { label: 'Min score', key: 'min_score', placeholder: '0.8' },
             ].map(({ label, key, placeholder }) => (
               <div key={key}>
-                <label className="text-xs text-white/60 block mb-1">{label}</label>
+                <label className="text-xs text-muted-foreground block mb-1">{label}</label>
                 <input
                   value={taskForm[key as keyof GoldenTaskForm]}
                   onChange={(e) => setTaskForm((f) => ({ ...f, [key]: e.target.value }))}
                   placeholder={placeholder}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none"
+                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none"
                 />
               </div>
             ))}
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowAddTask(false)} className="px-4 py-2 border border-white/10 text-white/60 text-sm rounded-lg">
+              <button onClick={() => setShowAddTask(false)} className="px-4 py-2 border border-border text-muted-foreground text-sm rounded-lg">
                 Cancel
               </button>
               <button
                 onClick={() => addTaskMutation.mutate()}
                 disabled={!taskForm.goal.trim() || addTaskMutation.isPending}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50"
+                className="px-4 py-2 bg-indigo-600 text-foreground text-sm rounded-lg disabled:opacity-50"
               >
                 {addTaskMutation.isPending ? 'Adding…' : 'Add Task'}
               </button>
@@ -895,14 +895,14 @@ export function EvalPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Eval & Testing</h1>
-        <p className="text-sm text-white/50 mt-1">
+        <h1 className="text-2xl font-bold text-foreground">Eval & Testing</h1>
+        <p className="text-sm text-muted-foreground mt-1">
           7-dimension scoring, goal simulation, red team testing, and eval suites
         </p>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-white/10">
+      <div className="flex gap-1 border-b border-border">
         {TAB_LABELS.map(({ id, label, icon }) => (
           <button
             key={id}
@@ -911,8 +911,8 @@ export function EvalPage() {
             onClick={() => setTab(id)}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors rounded-t-lg ${
               tab === id
-                ? 'text-white border-b-2 border-indigo-400 bg-white/[0.03]'
-                : 'text-white/50 hover:text-white/80'
+                ? 'text-foreground border-b-2 border-indigo-400 bg-card'
+                : 'text-muted-foreground hover:text-foreground'
             }`}
           >
             {icon}

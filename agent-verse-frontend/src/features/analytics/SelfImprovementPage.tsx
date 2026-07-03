@@ -522,7 +522,7 @@ export function SelfImprovementPage(): JSX.Element {
                     <button
                       onClick={() => applyMutation.mutate(s.id)}
                       disabled={applyMutation.isPending}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-md text-xs hover:bg-green-700 disabled:opacity-50"
+                      className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-foreground rounded-md text-xs hover:bg-green-700 disabled:opacity-50"
                     >
                       <CheckCircle2 className="h-3.5 w-3.5" /> Apply
                     </button>

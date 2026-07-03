@@ -879,9 +879,9 @@ function WorkflowBuilderInner() {
           onClick={() => { setNodes([]); setEdges([]); setCurrentWfId(null); setWorkflowName('My Workflow'); historyStack.current = [{ nodes: [], edges: [] }]; historyIdx.current = 0; setValidationErrors([]); }}
           className="text-xs px-2 py-1 border rounded hover:bg-muted"
         >New</button>
-        <button onClick={save} aria-label="Save workflow" className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
-        <button onClick={() => run(true)} disabled={running} aria-label="Dry Run" className="text-xs px-3 py-1 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50">Dry Run</button>
-        <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">{running ? 'Running…' : '▶ Run'}</button>
+        <button onClick={save} aria-label="Save workflow" className="text-xs px-3 py-1 bg-blue-600 text-foreground rounded hover:bg-blue-700">Save</button>
+        <button onClick={() => run(true)} disabled={running} aria-label="Dry Run" className="text-xs px-3 py-1 bg-yellow-500 text-foreground rounded hover:bg-yellow-600 disabled:opacity-50">Dry Run</button>
+        <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-green-600 text-foreground rounded hover:bg-green-700 disabled:opacity-50">{running ? 'Running…' : '▶ Run'}</button>
       </div>
 
       {/* Validation banner */}
@@ -910,7 +910,7 @@ function WorkflowBuilderInner() {
               onClick={generateFromNL}
               disabled={generating || !nlGoal.trim()}
               aria-label="Generate workflow from natural language"
-              className="w-full mt-1 text-xs bg-purple-600 text-white rounded py-1 disabled:opacity-50"
+              className="w-full mt-1 text-xs bg-purple-600 text-foreground rounded py-1 disabled:opacity-50"
             >{generating ? '…' : '✨ Generate'}</button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">

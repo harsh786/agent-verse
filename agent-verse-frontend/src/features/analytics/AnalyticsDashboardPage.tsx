@@ -478,7 +478,7 @@ export function AnalyticsDashboardPage() {
                     return next;
                   })}
                   className={`px-2 py-0.5 rounded-full text-xs transition-colors ${
-                    evalDimensions.has(dim) ? 'text-white' : 'bg-muted text-muted-foreground'
+                    evalDimensions.has(dim) ? 'text-foreground' : 'bg-muted text-muted-foreground'
                   }`}
                   style={evalDimensions.has(dim) ? { backgroundColor: CHART_COLORS[i % CHART_COLORS.length] } : undefined}
                 >

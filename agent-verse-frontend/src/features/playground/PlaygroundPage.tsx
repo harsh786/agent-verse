@@ -521,7 +521,7 @@ export function PlaygroundPage(): JSX.Element {
           <div className="flex gap-2">
             <button
               onClick={clearAll}
-              className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium"
+              className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 bg-violet-600 text-foreground rounded-lg hover:bg-violet-700 font-medium"
             >
               <Plus className="h-3.5 w-3.5" /> New Scenario
             </button>
@@ -582,7 +582,7 @@ export function PlaygroundPage(): JSX.Element {
                 <div className="flex gap-1">
                   <button
                     onClick={saveScenario}
-                    className="flex-1 text-xs bg-violet-600 text-white rounded px-2 py-1 hover:bg-violet-700"
+                    className="flex-1 text-xs bg-violet-600 text-foreground rounded px-2 py-1 hover:bg-violet-700"
                   >
                     Save
                   </button>
@@ -744,14 +744,14 @@ export function PlaygroundPage(): JSX.Element {
               <button
                 onClick={() => void runSim()}
                 disabled={!goal.trim()}
-                className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-violet-600 to-violet-700 text-white rounded-xl text-sm font-medium hover:from-violet-700 hover:to-violet-800 disabled:opacity-40 shadow-sm"
+                className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-violet-600 to-violet-700 text-foreground rounded-xl text-sm font-medium hover:from-violet-700 hover:to-violet-800 disabled:opacity-40 shadow-sm"
               >
                 <Play className="h-4 w-4" /> Run Simulation
               </button>
             ) : (
               <button
                 onClick={abortSim}
-                className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 shadow-sm"
+                className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-foreground rounded-xl text-sm font-medium hover:bg-red-700 shadow-sm"
               >
                 <Square className="h-4 w-4" /> Abort
               </button>
@@ -794,7 +794,7 @@ export function PlaygroundPage(): JSX.Element {
               >
                 <div className="flex items-start gap-3">
                   <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-bold text-white mt-0.5 ${stepDotColor(step.type, step.status)}`}
+                    className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-bold text-foreground mt-0.5 ${stepDotColor(step.type, step.status)}`}
                   >
                     {step.status === "done" ? (
                       <CheckCircle2 className="h-3.5 w-3.5" />
