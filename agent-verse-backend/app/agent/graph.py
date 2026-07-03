@@ -368,41 +368,74 @@ class AgentGraph:
                 ltm_text = "\n".join(f"- {m.content}" for m in ltm)
                 context_parts.append(f"[Domain knowledge]\n{ltm_text}")
 
-        # 3. KnowledgeStore hybrid search using agent's allowed_collection_ids
-        if self._knowledge_store is not None and self._agent_collection_ids:
+        # 3. KnowledgeStore hybrid search
+        # Uses agent's allowed_collection_ids if set; otherwise searches ALL tenant collections.
+        if self._knowledge_store is not None:
             try:
-                # Get query embedding if embedder is available
-                query_embedding: list[float] = []
-                if self._embedder is not None:
-                    try:
-                        from app.providers.base import EmbedRequest
-                        _embed_resp = await self._embedder.embed(EmbedRequest(texts=[agent_state.goal]))
-                        if _embed_resp.embeddings:
-                            query_embedding = _embed_resp.embeddings[0]
-                    except Exception:
-                        pass
-                knowledge_contexts = []
-                for collection_id in self._agent_collection_ids[:3]:  # max 3 collections
-                    results = await self._knowledge_store.hybrid_search_db(
-                        query=agent_state.goal,
-                        query_embedding=query_embedding,
-                        collection_id=collection_id,
-                        tenant_ctx=tenant_ctx,
-                        top_k=3,
-                    )
-                    for result in results:
-                        content = getattr(result, "content", str(result))
-                        if content:
-                            knowledge_contexts.append(
-                                f"[From collection {collection_id}]\n{content[:300]}"
+                # Determine which collections to search
+                search_collections = list(self._agent_collection_ids[:3])
+                if not search_collections:
+                    # Fall back to all tenant collections (up to 3)
+                    _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+                    search_collections = [c.collection_id for c in _all_cols[:3]]
+
+                if search_collections:
+                    query_embedding: list[float] = []
+                    if self._embedder is not None:
+                        try:
+                            from app.providers.base import EmbedRequest
+                            _embed_resp = await self._embedder.embed(
+                                EmbedRequest(texts=[agent_state.goal])
                             )
-                if knowledge_contexts:
-                    agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
-                    self._logger.info(
-                        "knowledge_store_rag_hit",
-                        collections=len(self._agent_collection_ids),
-                        chunks=len(knowledge_contexts),
-                    )
+                            if _embed_resp.embeddings:
+                                query_embedding = _embed_resp.embeddings[0]
+                        except Exception:
+                            pass
+
+                    knowledge_contexts: list[str] = []
+                    knowledge_citations: list[dict[str, Any]] = []
+
+                    for collection_id in search_collections:
+                        results = await self._knowledge_store.hybrid_search_db(
+                            query=agent_state.goal,
+                            query_embedding=query_embedding,
+                            collection_id=collection_id,
+                            tenant_ctx=tenant_ctx,
+                            top_k=3,
+                        )
+                        for result in results:
+                            content = getattr(result, "content", str(result))
+                            score = getattr(result, "score", 0.0)
+                            source_url = getattr(result, "source_url", "")
+                            if content:
+                                knowledge_contexts.append(
+                                    f"[Collection: {collection_id}, score: {score:.2f}]\n"
+                                    f"{content[:300]}"
+                                )
+                                knowledge_citations.append({
+                                    "collection_id": collection_id,
+                                    "chunk_id": getattr(result, "chunk_id", ""),
+                                    "score": round(score, 4),
+                                    "source_url": source_url,
+                                    "excerpt": content[:200],
+                                })
+
+                    if knowledge_contexts:
+                        agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
+                        agent_state.context["rag_citations"] = knowledge_citations
+                        # Emit knowledge_retrieved event for the SSE stream
+                        agent_state.events.append({
+                            "type": "knowledge_retrieved",
+                            "collections_searched": search_collections,
+                            "chunks_found": len(knowledge_contexts),
+                            "citations": knowledge_citations[:5],
+                        })
+                        self._logger.info(
+                            "knowledge_store_rag_hit",
+                            collections=len(search_collections),
+                            chunks=len(knowledge_contexts),
+                            agent_collections=bool(self._agent_collection_ids),
+                        )
             except Exception as _ks_exc:
                 self._logger.warning("knowledge_store_rag_failed", error=str(_ks_exc))
 
@@ -475,6 +508,13 @@ class AgentGraph:
         tool_prompt = agent_state.context.get("tool_prompt")
         if isinstance(tool_prompt, str) and tool_prompt:
             extra_parts.append(f"[Available connector tools]\n{tool_prompt}")
+
+        # Inject civilization blackboard context (shared agent findings)
+        blackboard_ctx: str = agent_state.context.get("blackboard_context", "")
+        if blackboard_ctx:
+            extra_parts.append(
+                f"[Civilization blackboard — shared knowledge from other agents]\n{blackboard_ctx}"
+            )
 
         # Append any visual/image context from perception pipeline
         image_context = agent_state.context.get("image_context", "")

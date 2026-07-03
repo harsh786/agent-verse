@@ -154,9 +154,29 @@ class CivilizationOrchestrator:
                 # Fall through to single agent
 
         # Submit goal via GoalService for the selected agent
+        # — first, enrich execution_context with blackboard knowledge
+        blackboard_context: list[dict] = []
+        if self._blackboard is not None:
+            try:
+                blackboard_context = await self._blackboard.query(
+                    topic=None,       # all topics
+                    min_confidence=0.65,
+                    limit=5,
+                )
+            except Exception:
+                pass
+
         result_goal_id = goal_id
         if self._goal_service is not None and agent_id:
             try:
+                bb_context_str = ""
+                if blackboard_context:
+                    bb_context_str = "\n".join(
+                        f"- [{e.get('topic', '')}] {str(e.get('content', ''))[:200]}"
+                        f" (confidence: {e.get('confidence', 0):.2f})"
+                        for e in blackboard_context
+                    )
+
                 result = await self._goal_service.submit_goal(
                     goal=goal,
                     tenant_ctx=self._tenant_ctx,
@@ -166,6 +186,8 @@ class CivilizationOrchestrator:
                         "civilization_id": self._civ_id,
                         "orchestrator_goal_id": goal_id,
                         "parent_goal_id": goal_id,  # For cost rollup
+                        "blackboard_context": bb_context_str,
+                        "blackboard_entry_count": len(blackboard_context),
                     },
                 )
                 result_goal_id = result.get("goal_id", goal_id)
