@@ -14,6 +14,13 @@ from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.tenancy.context import TenantContext
 
+# Check if Playwright is available at module load time
+try:
+    from playwright.async_api import async_playwright as _check_playwright  # noqa: F401
+    _PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    _PLAYWRIGHT_AVAILABLE = False
+
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 # Embedding dimension used for random dummy embeddings when no real embedder is present.
@@ -55,6 +62,17 @@ class UrlIngestRequest(BaseModel):
     collection_id: str
     url: str
     source_type: str = "web"  # web|github|confluence|jira|slack
+
+
+class RpaUrlIngestRequest(BaseModel):
+    """Ingest one or more URLs using headless Playwright for JS-rendered content."""
+    collection_id: str
+    urls: list[str]              # supports batch ingestion (max 20)
+    selector: str = "body"       # CSS selector for text extraction
+    screenshot: bool = False     # capture screenshot and store as metadata
+    source_type: str = "rpa-web" # stored in metadata for attribution
+    max_chars: int = 50_000      # per-URL char cap
+    include_links: bool = False  # whether to extract link URLs from the page
 
 
 class GitHubIngestRequest(BaseModel):
@@ -1246,4 +1264,175 @@ async def get_collection_stats(
             ),
             3,
         ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# RPA-backed URL ingestion (JavaScript-rendered pages via Playwright)
+# ---------------------------------------------------------------------------
+
+@router.post("/ingest/rpa-url", status_code=201)
+async def ingest_from_rpa_url(
+    request: Request, body: RpaUrlIngestRequest,
+) -> dict[str, Any]:
+    """Ingest one or more URLs using headless Playwright (Chromium).
+
+    Unlike /ingest/url (httpx), this endpoint renders JavaScript, supports
+    batch URLs, and optionally captures screenshots. Falls back to httpx
+    when Playwright is not installed.
+    """
+    import re as _re
+
+    tenant_ctx = _require_tenant(request)
+    store = _knowledge_store(request)
+    embedder = getattr(request.app.state, "embedder", None)
+
+    if not body.urls:
+        raise HTTPException(status_code=400, detail="urls list must not be empty")
+    if len(body.urls) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 URLs per batch")
+
+    for url in body.urls:
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL must start with http:// or https://: {url}",
+            )
+
+    # Use module-level flag and import playwright inside if available
+    _playwright_ok = _PLAYWRIGHT_AVAILABLE
+    if _playwright_ok:
+        from playwright.async_api import async_playwright as _async_playwright  # noqa: PLC0415
+
+    total_chunks = 0
+    results: list[dict[str, Any]] = []
+
+    for url in body.urls:
+        content: str = ""
+        screenshot_b64: str = ""
+        links: list[str] = []
+        playwright_used = False
+
+        if _playwright_ok:
+            try:
+                async with _async_playwright() as _pw:
+                    _browser = await _pw.chromium.launch(headless=True)
+                    _ctx = await _browser.new_context(
+                        viewport={"width": 1280, "height": 900},
+                        user_agent="AgentVerse-Knowledge/1.0",
+                    )
+                    _page = await _ctx.new_page()
+                    _page.set_default_timeout(30_000)
+                    await _page.goto(url, wait_until="networkidle", timeout=30_000)
+
+                    content = await _page.inner_text(body.selector)
+                    content = content[: body.max_chars]
+
+                    if body.include_links:
+                        _anchors = await _page.evaluate(
+                            "Array.from(document.querySelectorAll('a[href]'))"
+                            ".map(a => a.href).filter(h => h.startsWith('http'))"
+                        )
+                        links = list(dict.fromkeys(_anchors))[:50]
+
+                    if body.screenshot:
+                        import base64 as _b64
+                        _ss_bytes = await _page.screenshot(full_page=False)
+                        screenshot_b64 = _b64.b64encode(_ss_bytes).decode()
+
+                    await _browser.close()
+                playwright_used = True
+            except Exception as exc:  # noqa: BLE001
+                import httpx as _httpx
+                try:
+                    async with _httpx.AsyncClient(timeout=30.0) as _client:
+                        _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
+                        _resp.raise_for_status()
+                        raw = _resp.text
+                        content = _re.sub(r"<[^>]+>", " ", raw)
+                        content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
+                except Exception:  # noqa: BLE001
+                    results.append({
+                        "url": url, "success": False, "error": str(exc),
+                        "chunks_ingested": 0, "playwright_used": False,
+                    })
+                    continue
+        else:
+            import httpx as _httpx
+            try:
+                async with _httpx.AsyncClient(timeout=30.0) as _client:
+                    _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
+                    _resp.raise_for_status()
+                    raw = _resp.text
+                    content = _re.sub(r"<[^>]+>", " ", raw)
+                    content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "url": url, "success": False, "error": str(exc),
+                    "chunks_ingested": 0, "playwright_used": False,
+                })
+                continue
+
+        if not content.strip():
+            results.append({
+                "url": url, "success": False, "error": "No content extracted",
+                "chunks_ingested": 0, "playwright_used": playwright_used,
+            })
+            continue
+
+        from app.knowledge.chunker_v2 import chunk_by_tokens  # noqa: PLC0415
+        raw_chunks = chunk_by_tokens(content, max_tokens=512, overlap_tokens=64)
+        if not raw_chunks:
+            raw_chunks = [content.strip()]
+
+        chunk_dicts: list[dict[str, Any]] = []
+        for i, chunk_text in enumerate(raw_chunks):
+            chunk_dicts.append({
+                "content": chunk_text,
+                "source_url": url,
+                "source_type": body.source_type,
+                "source_doc_id": url,
+                "page_number": None,
+                "metadata": {
+                    "source_url": url,
+                    "source_type": body.source_type,
+                    "playwright_used": str(playwright_used),
+                    "selector": body.selector,
+                    "chunk_index": str(i),
+                },
+            })
+
+        if links:
+            link_content = f"Page links from {url}:\n" + "\n".join(links)
+            chunk_dicts.append({
+                "content": link_content,
+                "source_url": url,
+                "source_type": f"{body.source_type}-links",
+                "source_doc_id": f"{url}#links",
+                "page_number": None,
+                "metadata": {"source_url": url, "source_type": f"{body.source_type}-links"},
+            })
+
+        ingested = await _ingest_chunks_from_source(
+            store, chunk_dicts, body.collection_id, tenant_ctx, embedder
+        )
+        total_chunks += ingested
+        results.append({
+            "url": url,
+            "success": True,
+            "chunks_ingested": ingested,
+            "total_chars": len(content),
+            "playwright_used": playwright_used,
+            "screenshot_captured": bool(screenshot_b64),
+            "links_extracted": len(links),
+        })
+
+    return {
+        "collection_id": body.collection_id,
+        "source_type": body.source_type,
+        "urls_processed": len(body.urls),
+        "urls_succeeded": sum(1 for r in results if r.get("success")),
+        "total_chunks_ingested": total_chunks,
+        "playwright_available": _playwright_ok,
+        "results": results,
     }
