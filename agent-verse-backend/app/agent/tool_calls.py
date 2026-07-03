@@ -98,10 +98,90 @@ def _jql_from_goal_or_step(text: str) -> str:
         return "assignee = currentUser() AND created >= -26w ORDER BY created DESC"
     named_assignee = _named_assignee_from_text(text)
     if named_assignee:
+        # Jira Cloud requires account IDs in JQL, not display names.
+        # Try to resolve the display name to an account ID via the Jira user API.
+        # Fall back to displayName search which works on some Jira instances.
+        account_id = _resolve_jira_account_id(named_assignee)
+        if account_id:
+            return f'assignee = "{account_id}" ORDER BY created DESC'
+        # Fallback: displayName quoted search (works on Jira Server / some Cloud)
         return f'assignee = "{named_assignee}" ORDER BY created DESC'
     if "last 6 months" in lower:
         return "created >= -26w ORDER BY created DESC"
     return ""
+
+
+def _resolve_jira_account_id(display_name: str) -> str:
+    """Look up a Jira user account ID by display name.
+
+    Calls GET /rest/api/3/user/search?query=<name> using the credentials
+    configured via JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN env vars.
+    Returns the accountId of the first exact (case-insensitive) display name
+    match, or an empty string if not found or credentials are unavailable.
+    """
+    import base64
+    import os
+    import urllib.request
+
+    base = os.getenv("JIRA_BASE_URL", "").rstrip("/")
+    email = os.getenv("JIRA_EMAIL", "")
+    token = os.getenv("JIRA_API_TOKEN", "")
+    if not base or not email or not token:
+        return ""
+
+    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+    url = (
+        f"{base}/rest/api/3/user/search"
+        f"?query={urllib.request.quote(display_name)}&maxResults=10"
+    )
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Basic {creds}",
+                "Accept": "application/json",
+            },
+        )
+        import json as _json
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            users = _json.loads(resp.read())
+        if not isinstance(users, list):
+            return ""
+        lower_name = display_name.lower()
+        for user in users:
+            if user.get("displayName", "").lower() == lower_name:
+                return str(user.get("accountId", ""))
+        # Partial match fallback
+        for user in users:
+            if lower_name in user.get("displayName", "").lower():
+                return str(user.get("accountId", ""))
+        return ""
+    except Exception:
+        return ""
+
+
+def _resolve_jira_display_names_in_jql(jql: str) -> str:
+    """Replace display-name strings in JQL assignee clauses with account IDs.
+
+    Jira Cloud does not support assignee = "Display Name" — it requires the
+    accountId.  This function detects patterns like:
+        assignee = "Abhay Dwivedi"
+        assignee in ("Abhay Dwivedi", "Jane Doe")
+    and replaces each quoted value with the resolved accountId (when available).
+    Values that already look like account IDs (contain ':') are left untouched.
+    """
+    def _replace_one(match: re.Match) -> str:
+        name = match.group(1)
+        # Already an account ID (e.g. "712020:abc...")
+        if ":" in name:
+            return match.group(0)
+        aid = _resolve_jira_account_id(name)
+        if aid:
+            return match.group(0).replace(f'"{name}"', f'"{aid}"')
+        return match.group(0)
+
+    # Match quoted values after assignee = or inside assignee in (...)
+    return re.sub(r'"([^"]{3,60})"', _replace_one, jql)
 
 
 def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> ToolCall:
@@ -118,6 +198,10 @@ def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> Too
     if repaired_jql:
         return ToolCall(tool=call.tool, arguments={**call.arguments, "jql": repaired_jql})
     if existing_jql:
+        # Even if JQL looks valid, resolve any display names → account IDs
+        resolved_jql = _resolve_jira_display_names_in_jql(existing_jql)
+        if resolved_jql != existing_jql:
+            return ToolCall(tool=call.tool, arguments={**call.arguments, "jql": resolved_jql})
         return call
     match = re.search(r"JQL\s+['\"]([^'\"]+)['\"]", step, flags=re.IGNORECASE)
     if match is None:
