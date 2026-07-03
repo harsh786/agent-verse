@@ -105,7 +105,8 @@ function mockFetch(overrides?: {
       });
     }
     if (url.includes('/costs/per-agent')) {
-      return new Response(JSON.stringify(overrides?.perAgent ?? MOCK_PER_AGENT), {
+      const agentsData = overrides?.perAgent ?? MOCK_PER_AGENT;
+      return new Response(JSON.stringify({ agents: agentsData, period_days: 30 }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

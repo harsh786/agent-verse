@@ -12,7 +12,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BookOpen, Brain, BarChart2, CheckCircle, ChevronRight, ClipboardCopy,
-  Database, ExternalLink, FileText, Loader2, MessageSquare, Plus,
+  Database, ExternalLink, Eye, FileText, Globe, Link, Loader2, MessageSquare, Plus,
   RefreshCw, Search, Sparkles, Trash2, Upload, Zap, XCircle,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
@@ -308,6 +308,142 @@ const SOURCE_TYPES = [
   { value: 'jira', label: 'Jira' }, { value: 'slack', label: 'Slack' },
 ];
 
+// ── RPA URL Scraper ───────────────────────────────────────────────────────────
+
+interface RpaUrlResult {
+  url: string; success: boolean; chunks_ingested: number; total_chars?: number;
+  playwright_used?: boolean; screenshot_captured?: boolean; links_extracted?: number; error?: string;
+}
+interface RpaIngestResp {
+  collection_id: string; source_type: string; urls_processed: number; urls_succeeded: number;
+  total_chunks_ingested: number; playwright_available: boolean; results: RpaUrlResult[];
+}
+
+function RpaScrapeSection({ collections }: { collections: Collection[] }) {
+  const qc = useQueryClient();
+  const [collectionId, setCollectionId] = useState('');
+  const [urlsText, setUrlsText] = useState('');
+  const [screenshot, setScreenshot] = useState(false);
+  const [includeLinks, setIncludeLinks] = useState(false);
+  const [rpaResult, setRpaResult] = useState<RpaIngestResp | null>(null);
+
+  const urls = urlsText.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('http'));
+
+  const rpaMutation = useMutation({
+    mutationFn: () => apiFetch<RpaIngestResp>('/knowledge/ingest/rpa-url', {
+      method: 'POST',
+      body: JSON.stringify({
+        collection_id: collectionId, urls, screenshot,
+        include_links: includeLinks, source_type: 'rpa-web', max_chars: 50000,
+      }),
+    }),
+    onSuccess: (r) => {
+      setRpaResult(r);
+      void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
+      toast({ kind: 'success', message: `Scraped ${r.urls_succeeded}/${r.urls_processed} URLs → ${r.total_chunks_ingested} chunks.` });
+    },
+    onError: (e) => toast({ kind: 'error', message: String(e) }),
+  });
+
+  return (
+    <div data-testid="rpa-scrape-section" className="bg-gradient-to-br from-violet-50 to-blue-50 border-2 border-violet-200 rounded-xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold flex items-center gap-2 text-violet-800">
+            <Globe className="h-4 w-4" /> RPA Web Scraper
+            <span className="text-xs bg-violet-100 text-violet-600 px-2 py-0.5 rounded-full font-normal">Playwright</span>
+          </h3>
+          <p className="text-xs text-violet-600 mt-0.5">
+            Renders JavaScript-heavy pages including SPAs, React apps, and dynamic content.
+          </p>
+        </div>
+        {rpaResult && (
+          <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full ${rpaResult.playwright_available ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+            {rpaResult.playwright_available ? <CheckCircle className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
+            {rpaResult.playwright_available ? 'Playwright active' : 'httpx fallback'}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+        <div className="sm:col-span-2">
+          <label className="block text-xs font-medium text-violet-700 mb-1">Target collection *</label>
+          <select value={collectionId} onChange={(e) => setCollectionId(e.target.value)}
+            className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm bg-white">
+            <option value="">Select collection…</option>
+            {collections.map((c) => <option key={c.collection_id} value={c.collection_id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="sm:col-span-3">
+          <label className="block text-xs font-medium text-violet-700 mb-1">
+            URLs to scrape <span className="font-normal text-muted-foreground">(one per line, max 20)</span>
+          </label>
+          <textarea data-testid="rpa-urls-input" value={urlsText} onChange={(e) => setUrlsText(e.target.value)}
+            rows={4} placeholder={'https://docs.example.com/api\nhttps://blog.example.com/post-1'}
+            className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm bg-white font-mono resize-none" />
+          <p className="text-xs text-violet-500 mt-0.5">{urls.length} valid URL{urls.length !== 1 ? 's' : ''} detected</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-4">
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" id="rpa-screenshot" checked={screenshot} onChange={(e) => setScreenshot(e.target.checked)} className="rounded" />
+          <Eye className="h-3.5 w-3.5 text-violet-500" />
+          <span>Capture screenshot</span>
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={includeLinks} onChange={(e) => setIncludeLinks(e.target.checked)} className="rounded" />
+          <Link className="h-3.5 w-3.5 text-violet-500" />
+          <span>Extract page links</span>
+        </label>
+      </div>
+
+      <button data-testid="rpa-scrape-btn" onClick={() => rpaMutation.mutate()}
+        disabled={!collectionId || urls.length === 0 || rpaMutation.isPending}
+        className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-violet-700">
+        {rpaMutation.isPending ? (
+          <><Loader2 className="h-4 w-4 animate-spin" /> Scraping {urls.length} URL{urls.length !== 1 ? 's' : ''}…</>
+        ) : (
+          <><Globe className="h-4 w-4" /> Scrape with RPA</>
+        )}
+      </button>
+
+      {rpaMutation.isPending && (
+        <div className="flex items-center gap-3 text-sm text-violet-600 bg-violet-50 rounded-lg p-3">
+          <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+          <p className="font-medium">Launching Playwright browser… Rendering pages, extracting text, chunking, embedding</p>
+        </div>
+      )}
+
+      {rpaResult && (
+        <div data-testid="rpa-results" className="space-y-2">
+          <div className="flex items-center gap-3 text-sm">
+            <span className="font-medium">{rpaResult.urls_succeeded}/{rpaResult.urls_processed} URLs scraped</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="font-semibold text-violet-700">{rpaResult.total_chunks_ingested} chunks indexed</span>
+          </div>
+          {rpaResult.results.map((r) => (
+            <div key={r.url} className={`flex items-start gap-2 text-xs p-2 rounded-lg ${r.success ? 'bg-green-50 border border-green-100' : 'bg-red-50 border border-red-100'}`}>
+              {r.success ? <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" /> : <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />}
+              <div className="flex-1 min-w-0">
+                <a href={r.url} target="_blank" rel="noreferrer" className="font-mono text-blue-600 hover:underline truncate block max-w-xs">{r.url}</a>
+                {r.success ? (
+                  <p className="text-green-600 mt-0.5">
+                    {r.chunks_ingested} chunks · {r.total_chars?.toLocaleString()} chars
+                    {r.playwright_used && ' · Playwright'}
+                  </p>
+                ) : (
+                  <p className="text-red-600 mt-0.5">{r.error}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IngestTab() {
   const [selectedSource, setSelectedSource] = useState('text');
   const [collectionId, setCollectionId] = useState('');
@@ -353,7 +489,19 @@ function IngestTab() {
   }, [collectionId, fileMutation]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      {/* RPA Scraper — shown first as the primary wow feature */}
+      <RpaScrapeSection collections={collections} />
+
+      {/* Divider */}
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="flex-1 h-px bg-border" />
+        <span>or ingest from other sources</span>
+        <div className="flex-1 h-px bg-border" />
+      </div>
+
+      {/* Standard ingestion */}
+      <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-xs text-muted-foreground mb-1">Collection *</label>
@@ -442,11 +590,10 @@ function IngestTab() {
         {ingestMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
         {ingestMutation.isPending ? 'Ingesting…' : 'Ingest'}
       </button>
+      </div>
     </div>
   );
 }
-
-// ── Search Tab ────────────────────────────────────────────────────────────────
 
 function SearchTab() {
   const [query, setQuery] = useState('');
