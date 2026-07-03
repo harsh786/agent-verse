@@ -121,7 +121,6 @@ def _resolve_jira_account_id(display_name: str) -> str:
     """
     import base64
     import os
-    import urllib.request
 
     base = os.getenv("JIRA_BASE_URL", "").rstrip("/")
     email = os.getenv("JIRA_EMAIL", "")
@@ -130,34 +129,31 @@ def _resolve_jira_account_id(display_name: str) -> str:
         return ""
 
     creds = base64.b64encode(f"{email}:{token}".encode()).decode()
-    url = (
-        f"{base}/rest/api/3/user/search"
-        f"?query={urllib.request.quote(display_name)}&maxResults=10"
-    )
+    headers = {"Authorization": f"Basic {creds}", "Accept": "application/json"}
+
     try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Authorization": f"Basic {creds}",
-                "Accept": "application/json",
-            },
-        )
-        import json as _json
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            users = _json.loads(resp.read())
-        if not isinstance(users, list):
-            return ""
-        lower_name = display_name.lower()
-        for user in users:
-            if user.get("displayName", "").lower() == lower_name:
-                return str(user.get("accountId", ""))
-        # Partial match fallback
-        for user in users:
-            if lower_name in user.get("displayName", "").lower():
-                return str(user.get("accountId", ""))
-        return ""
+        import httpx
+
+        with httpx.Client(headers=headers, timeout=8.0) as client:
+            resp = client.get(
+                f"{base}/rest/api/3/user/search",
+                params={"query": display_name, "maxResults": 10},
+            )
+            resp.raise_for_status()
+            users = resp.json()
     except Exception:
         return ""
+
+    if not isinstance(users, list):
+        return ""
+    lower_name = display_name.lower()
+    for user in users:
+        if user.get("displayName", "").lower() == lower_name:
+            return str(user.get("accountId", ""))
+    for user in users:
+        if lower_name in user.get("displayName", "").lower():
+            return str(user.get("accountId", ""))
+    return ""
 
 
 def _resolve_jira_display_names_in_jql(jql: str) -> str:
