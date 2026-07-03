@@ -205,12 +205,12 @@ async def create_civilization(request: Request, body: CreateCivilizationRequest)
 
     from sqlalchemy import text
     try:
-        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
+        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
             await session.execute(
                 text("""
                     INSERT INTO civilizations
                         (id, tenant_id, name, status, constitution, created_at, updated_at)
-                    VALUES (:id, :tid, :name, 'active', :constitution::jsonb, NOW(), NOW())
+                    VALUES (:id, :tid, :name, 'active', cast(:constitution as jsonb), NOW(), NOW())
                 """),
                 {
                     "id": civ_id,
@@ -343,11 +343,11 @@ async def update_constitution(
     try:
         from sqlalchemy import text
 
-        async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
+        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
             result = await session.execute(
                 text("""
                     UPDATE civilizations
-                    SET constitution = :constitution::jsonb, updated_at = NOW()
+                    SET constitution = cast(:constitution as jsonb), updated_at = NOW()
                     WHERE id = :id AND tenant_id = :tid
                     RETURNING id
                 """),
@@ -709,9 +709,9 @@ async def control_civilization(
             constitution_data["spawn_rate_limit_per_min"] = int(rate)
             try:
                 from sqlalchemy import text
-                async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
+                async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
                     await session.execute(text(
-                        "UPDATE civilizations SET constitution=:c::jsonb, updated_at=NOW() "
+                        "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "
                         "WHERE id=:id AND tenant_id=:tid"
                     ), {
                         "c": json.dumps(constitution_data),
@@ -728,11 +728,11 @@ async def control_civilization(
             try:
                 from sqlalchemy import text
 
-                async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id), session.begin():
+                async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
                     await session.execute(
                         text(
                             "UPDATE civilizations "
-                            "SET constitution=:c::jsonb, updated_at=NOW() "
+                            "SET constitution=cast(:c as jsonb), updated_at=NOW() "
                             "WHERE id=:id AND tenant_id=:tid"
                         ),
                         {

@@ -167,7 +167,7 @@ class CivilizationOrchestrator:
                 pass
 
         result_goal_id = goal_id
-        if self._goal_service is not None and agent_id:
+        if self._goal_service is not None:
             try:
                 bb_context_str = ""
                 if blackboard_context:
@@ -182,10 +182,11 @@ class CivilizationOrchestrator:
                     tenant_ctx=self._tenant_ctx,
                     agent_id=agent_id,
                     priority=priority,
+                    dry_run=False,
                     execution_context={
                         "civilization_id": self._civ_id,
                         "orchestrator_goal_id": goal_id,
-                        "parent_goal_id": goal_id,  # For cost rollup
+                        "parent_goal_id": goal_id,
                         "blackboard_context": bb_context_str,
                         "blackboard_entry_count": len(blackboard_context),
                     },
