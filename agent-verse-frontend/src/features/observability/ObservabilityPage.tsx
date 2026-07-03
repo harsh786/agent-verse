@@ -58,8 +58,8 @@ const LOG_MESSAGES = [
   { level: 'INFO' as const, message: 'Eval scorecard persisted to DB', service: 'eval-runner' },
   { level: 'INFO' as const, message: 'HITL approval request created', service: 'hitl' },
   { level: 'DEBUG' as const, message: 'Tenant context resolved: tenant_id=t_a1b2c3', service: 'middleware' },
-  { level: 'ERROR' as const, message: 'Tool execution failed: shell:execute denied by policy', service: 'governance' },
   { level: 'INFO' as const, message: 'LangGraph checkpoint saved to Redis', service: 'checkpointer' },
+  { level: 'INFO' as const, message: 'Knowledge base RAG hit (3 chunks, similarity 0.91)', service: 'rag' },
 ];
 
 function makeLogEntry(): LogEntry {
