@@ -139,7 +139,7 @@ function StepTimeline({ steps }: { steps: SimStep[] }): JSX.Element | null {
               step.status === "done"
                 ? "bg-green-500 text-white"
                 : step.status === "running"
-                ? "bg-blue-500 text-white animate-pulse"
+                ? "bg-blue-500 text-foreground animate-pulse"
                 : step.status === "error"
                 ? "bg-red-500 text-white"
                 : "bg-muted text-muted-foreground"
@@ -596,7 +596,7 @@ function VariantCard({
           <button
             onClick={onPromote}
             disabled={promoting}
-            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50"
+            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-violet-600 text-foreground rounded-lg hover:bg-violet-700 disabled:opacity-50"
           >
             <Crown className="h-3 w-3" /> Promote
           </button>
@@ -715,7 +715,7 @@ function PromptLabTab(): JSX.Element {
                 })
               }
               disabled={!newName.trim() || !newPrompt.trim() || createMutation.isPending}
-              className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm hover:bg-violet-700 disabled:opacity-50"
+              className="px-4 py-2 bg-violet-600 text-foreground rounded-lg text-sm hover:bg-violet-700 disabled:opacity-50"
             >
               {createMutation.isPending ? "Creating…" : "Create"}
             </button>
@@ -924,7 +924,7 @@ function ScoreTab(): JSX.Element {
           <button
             onClick={() => void runRedTeam()}
             disabled={redTeamRunning}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-foreground rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50"
           >
             {redTeamRunning ? (
               <>
