@@ -10,7 +10,6 @@ import { useAuthStore } from "@/stores/auth";
 import { goalsApi, agentsApi, knowledgeApi, credentialsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -294,13 +293,13 @@ export function AgentDetailPage() {
   };
 
   // Phase-5: new tab queries
-  const { data: permissions, isLoading: permsLoading } = useQuery({
+  const { data: permissions, isLoading: permsLoading, error: permsError } = useQuery({
     queryKey: ['agent-permissions', agentId],
     queryFn: () => agentsApi.getPermissions(agentId!),
     enabled: !!agentId && tab === 'permissions',
   });
 
-  const { data: rolloutGate, isLoading: rolloutLoading } = useQuery({
+  const { data: rolloutGate, isLoading: rolloutLoading, error: rolloutError } = useQuery({
     queryKey: ['agent-rollout', agentId],
     queryFn: () => agentsApi.getRolloutGate(agentId!),
     enabled: !!agentId && tab === 'rollout',
@@ -685,28 +684,44 @@ export function AgentDetailPage() {
         <div className="space-y-4">
           {permsLoading ? (
             <Skeleton className="h-24 w-full" />
+          ) : permsError ? (
+            <EmptyState title="Failed to load permissions" description={String(permsError)} />
           ) : !permissions ? (
             <EmptyState title="No permissions configured" />
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-3 rounded-lg border bg-card">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Read scopes</p>
-                <ul className="space-y-1">
-                  {permissions.read.map((s) => (
-                    <li key={s} className="text-sm font-mono bg-muted rounded px-2 py-0.5">{s}</li>
-                  ))}
-                </ul>
+          ) : (() => {
+            // Backend returns { agent_id, permissions: [{tool_name, level, ...}] | {} }
+            // Normalise to array
+            const raw = (permissions as any);
+            const permList: any[] = Array.isArray(raw)
+              ? raw
+              : Array.isArray(raw?.permissions)
+              ? raw.permissions
+              : typeof raw?.permissions === 'object' && raw?.permissions !== null
+              ? Object.entries(raw.permissions).map(([k, v]) => ({ tool_name: k, level: v }))
+              : [];
+
+            if (permList.length === 0) {
+              return <EmptyState title="No permissions configured" description="This agent has no tool-level permission rules." />;
+            }
+
+            return (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-2 bg-muted/40 border-b text-xs font-semibold uppercase tracking-wide text-muted-foreground grid grid-cols-4 gap-2">
+                  <span>Tool</span><span>Level</span><span>Daily limit</span><span>Per-goal limit</span>
+                </div>
+                {permList.map((p: any, i: number) => (
+                  <div key={i} className="px-4 py-2.5 border-b last:border-0 text-sm grid grid-cols-4 gap-2 bg-card items-center">
+                    <span className="font-mono text-xs">{p.tool_name ?? p.tool ?? '—'}</span>
+                    <span className={`capitalize text-xs font-medium ${p.level === 'deny' ? 'text-red-600' : p.level === 'allow' ? 'text-green-600' : 'text-muted-foreground'}`}>
+                      {p.level ?? '—'}
+                    </span>
+                    <span className="text-muted-foreground">{p.daily_limit ?? '∞'}</span>
+                    <span className="text-muted-foreground">{p.per_goal_limit ?? '∞'}</span>
+                  </div>
+                ))}
               </div>
-              <div className="p-3 rounded-lg border bg-card">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Write scopes</p>
-                <ul className="space-y-1">
-                  {permissions.write.map((s) => (
-                    <li key={s} className="text-sm font-mono bg-muted rounded px-2 py-0.5">{s}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -743,27 +758,58 @@ export function AgentDetailPage() {
         <div className="space-y-3">
           {rolloutLoading ? (
             <Skeleton className="h-24 w-full" />
+          ) : rolloutError ? (
+            <EmptyState title="Failed to load rollout gate" description={String(rolloutError)} />
           ) : !rolloutGate ? (
             <EmptyState
               title="No rollout gate configured"
               description="Rollout gates control traffic steering to this agent version."
             />
-          ) : (
-            <div className="p-4 rounded-lg border bg-card space-y-2">
-              <div className="flex items-center gap-3">
-                <StatusBadge status={rolloutGate.gate_status} />
-                <span className="text-sm font-medium">{rolloutGate.traffic_pct}% traffic</span>
-              </div>
-              {rolloutGate.conditions.length > 0 && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">Conditions</p>
-                  <ul className="list-disc pl-4 text-sm space-y-1">
-                    {rolloutGate.conditions.map((c, i) => <li key={i}>{c}</li>)}
-                  </ul>
+          ) : (() => {
+            // Backend returns { gate_passed, reason, run_count, pass_rate, avg_score, agent_id }
+            const raw = rolloutGate as any;
+            const gatePassed: boolean = raw.gate_passed ?? raw.gate_status === 'passed';
+            const passRate: number = raw.pass_rate ?? 0;
+            const runCount: number = raw.run_count ?? 0;
+            const avgScore: number = raw.avg_score ?? 0;
+            const reason: string = raw.reason ?? '';
+            const conditions: string[] = Array.isArray(raw.conditions) ? raw.conditions : [];
+
+            return (
+              <div className="p-4 rounded-lg border bg-card space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold ${gatePassed ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                    {gatePassed ? '✓ Gate passed' : '✗ Gate blocked'}
+                  </span>
                 </div>
-              )}
-            </div>
-          )}
+                <div className="grid grid-cols-3 gap-3 text-sm">
+                  <div className="bg-muted/40 rounded-lg p-3">
+                    <p className="text-xs text-muted-foreground">Pass rate</p>
+                    <p className="font-semibold text-lg">{(passRate * 100).toFixed(1)}%</p>
+                  </div>
+                  <div className="bg-muted/40 rounded-lg p-3">
+                    <p className="text-xs text-muted-foreground">Runs</p>
+                    <p className="font-semibold text-lg">{runCount}</p>
+                  </div>
+                  <div className="bg-muted/40 rounded-lg p-3">
+                    <p className="text-xs text-muted-foreground">Avg score</p>
+                    <p className="font-semibold text-lg">{(avgScore * 100).toFixed(0)}%</p>
+                  </div>
+                </div>
+                {reason && (
+                  <p className="text-sm text-muted-foreground italic">{reason}</p>
+                )}
+                {conditions.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Conditions</p>
+                    <ul className="list-disc pl-4 text-sm space-y-1">
+                      {conditions.map((c, i) => <li key={i}>{c}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 

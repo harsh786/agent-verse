@@ -5,7 +5,9 @@ import { AdaptiveResultPanel } from '@/features/goals/components/AdaptiveResultP
 
 interface ToolCallEvent {
   type: string;
+  /** Backend emits as "tool_name" or "tool" depending on the code path. */
   tool_name?: string;
+  tool?: string;
   server_id?: string;
   arguments?: unknown;
   output?: unknown;
@@ -46,19 +48,19 @@ function didToolCallSucceed(event: ToolCallEvent): boolean {
 }
 
 function ToolDetail({ event }: { event: ToolCallEvent }) {
-  const toolName = String(event.tool_name || "Unknown Tool");
+  const toolName = String(event.tool_name ?? event.tool ?? "Unknown Tool");
   const succeeded = didToolCallSucceed(event);
   const adaptiveResultInput = event.output ?? { error: event.error };
   const adaptiveResult = event.output === undefined && event.error == null
     ? undefined
     : normalizeAdaptiveResult(adaptiveResultInput, {
-      toolName: event.tool_name,
+      toolName: event.tool_name ?? event.tool,
       serverId: event.server_id,
       success: succeeded,
       error: event.error,
     });
-  const outputResult = adaptiveResult?.status === "failed" && event.tool_name
-    ? { ...adaptiveResult, title: `${event.tool_name} failed` }
+  const outputResult = adaptiveResult?.status === "failed" && (event.tool_name ?? event.tool)
+    ? { ...adaptiveResult, title: `${event.tool_name ?? event.tool} failed` }
     : adaptiveResult;
 
   return (
@@ -181,7 +183,7 @@ export function ToolCallInspector({ toolEvents }: ToolCallInspectorProps) {
                     className={`flex-shrink-0 w-2 h-2 rounded-full ${succeeded ? "bg-green-500" : "bg-red-500"}`}
                   />
                   <span className="truncate font-medium text-xs">
-                    {String(event.tool_name || "unknown")}
+                    {String(event.tool_name ?? event.tool ?? "unknown")}
                   </span>
                   <span
                     className={`ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${

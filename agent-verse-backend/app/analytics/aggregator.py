@@ -102,6 +102,22 @@ class GoalAnalyticsAggregator:
             logger.warning("analytics_db_query_failed", error=str(exc))
             return []
 
+    @staticmethod
+    def _parse_created_at(g: Any) -> datetime | None:
+        """Return a timezone-aware datetime for goal.created_at regardless of type."""
+        v = getattr(g, "created_at", None)
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
+        if isinstance(v, str) and v:
+            try:
+                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+            except (ValueError, AttributeError):
+                return None
+        return None
+
     def _get_all_goals(
         self,
         since: datetime | None = None,
@@ -114,7 +130,11 @@ class GoalAnalyticsAggregator:
             else []
         )
         if since:
-            goals = [g for g in goals if hasattr(g, "created_at") and g.created_at >= since]
+            # created_at may be a datetime or ISO string — normalise before comparing
+            goals = [
+                g for g in goals
+                if (ts := self._parse_created_at(g)) is not None and ts >= since
+            ]
         if agent_id:
             goals = [g for g in goals if getattr(g, "agent_id", None) == agent_id]
         return goals
@@ -268,10 +288,14 @@ class GoalAnalyticsAggregator:
             created = getattr(g, "created_at", None)
             cost = getattr(g, "cost_usd", 0.0) or 0.0
             if created:
+                # created may be str or datetime — normalise to datetime
+                created_dt = self._parse_created_at(g)
+                if created_dt is None:
+                    continue
                 key = (
-                    created.strftime("%Y-%m-%d")
+                    created_dt.strftime("%Y-%m-%d")
                     if bucket == "day"
-                    else created.strftime("%Y-W%V")
+                    else created_dt.strftime("%Y-W%V")
                 )
                 buckets[key] += cost
 
