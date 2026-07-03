@@ -71,6 +71,11 @@ class ToolContext:
                 and (
                     server_name_key in {_normalize(tool.server_name), _normalize(tool.server_id)}
                     or (server_name_key == "jira" and "jira" in _normalize(tool.server_name))
+                    # Confluence aliases: confluence, confluenceapi, confluencecloud, etc.
+                    or (
+                        "confluence" in _normalize(tool.server_name)
+                        and "confluence" in server_name_key
+                    )
                 )
             ),
             None,
