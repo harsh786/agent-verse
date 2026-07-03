@@ -1438,6 +1438,10 @@ class AgentGraph:
                         )
                 else:
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
+                    # In fully-autonomous mode, treat write_high as write_low
+                    # (skip HITL gate, proceed directly to execution).
+                    if tool_risk == "write_high" and self._autonomy_mode == "fully-autonomous":
+                        tool_risk = "write_low"
                     if tool_risk == "destructive":
                         error = self._sanitize_tool_raw_output(
                             f"Jira tool '{tool_ref.name}' denied as destructive."
@@ -1459,12 +1463,7 @@ class AgentGraph:
                         raw_output = error
                         raw_output_sanitized = True
                     elif tool_risk == "write_high":
-                        # In fully-autonomous mode, skip HITL and execute directly.
-                        # In supervised/bounded-autonomous, request approval as usual.
-                        if self._autonomy_mode == "fully-autonomous":
-                            # Fall through to the actual tool execution below
-                            pass
-                        elif self._hitl_gateway is None:
+                        if self._hitl_gateway is None:
                             error = self._sanitize_tool_raw_output(
                                 f"Jira tool '{tool_ref.name}' requires approval."
                             )
