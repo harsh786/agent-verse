@@ -23,7 +23,7 @@ _VALID_KEY2 = "av_test_templates_other"
 
 def _make_app() -> tuple[FastAPI, _TemplateStore]:
     """Build app and swap module-level template_store with a fresh instance."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     # Replace module-level store so the router picks it up
     tmpl_module.template_store = store
 

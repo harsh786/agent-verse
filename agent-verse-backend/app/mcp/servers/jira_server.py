@@ -282,8 +282,27 @@ async def _call_tool_inner(
                 "updated",
                 "issuetype",
             ]
+            # Accept multiple argument key names the LLM might use for the JQL query
+            jql = (
+                arguments.get("jql")
+                or arguments.get("query")
+                or arguments.get("jql_query")
+                or arguments.get("jql_string")
+                or arguments.get("search_query")
+                or ""
+            )
+            if not jql:
+                return {
+                    "error": (
+                        "Missing required parameter 'jql'. "
+                        "Please provide a JQL query string, e.g. "
+                        "jql='project = BAU AND status = Open'"
+                    ),
+                    "total": 0,
+                    "issues": [],
+                }
             payload: dict[str, Any] = {
-                "jql": arguments["jql"],
+                "jql": jql,
                 "maxResults": arguments.get("max_results", 50),
                 "fields": arguments.get("fields", default_fields),
             }
@@ -312,7 +331,7 @@ async def _call_tool_inner(
             }
 
         elif tool_name == "jira_get_issue":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             resp = await client.get(f"/rest/api/3/issue/{key}")
             resp.raise_for_status()
             i = resp.json()
@@ -334,8 +353,8 @@ async def _call_tool_inner(
 
         elif tool_name == "jira_create_issue":
             fields: dict[str, Any] = {
-                "project": {"key": arguments["project_key"]},
-                "summary": arguments["summary"],
+                "project": {"key": arguments.get("project_key", "")},
+                "summary": arguments.get("summary", ""),
                 "issuetype": {"name": arguments.get("issue_type", "Task")},
             }
             if arguments.get("description"):
@@ -364,7 +383,7 @@ async def _call_tool_inner(
             return {"id": data["id"], "key": data["key"], "self": data.get("self", "")}
 
         elif tool_name == "jira_update_issue":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             fields = {}
             if "summary" in arguments:
                 fields["summary"] = arguments["summary"]
@@ -391,7 +410,7 @@ async def _call_tool_inner(
             return {"updated": True, "key": key}
 
         elif tool_name == "jira_add_comment":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             payload = {
                 "body": {
                     "type": "doc",
@@ -410,7 +429,7 @@ async def _call_tool_inner(
             return {"comment_id": data.get("id"), "created": data.get("created", "")}
 
         elif tool_name == "jira_transition_issue":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             payload: dict[str, Any] = {"transition": {"id": arguments["transition_id"]}}
             if arguments.get("comment"):
                 payload["update"] = {
@@ -438,7 +457,7 @@ async def _call_tool_inner(
             return {"transitioned": True, "key": key, "transition_id": arguments["transition_id"]}
 
         elif tool_name == "jira_get_transitions":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             resp = await client.get(f"/rest/api/3/issue/{key}/transitions")
             resp.raise_for_status()
             data = resp.json()
@@ -450,7 +469,7 @@ async def _call_tool_inner(
             }
 
         elif tool_name == "jira_assign_issue":
-            key = arguments["issue_id_or_key"]
+            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
             account_id = arguments["account_id"]
             payload = {"accountId": account_id if account_id != "null" else None}
             resp = await client.put(f"/rest/api/3/issue/{key}/assignee", json=payload)

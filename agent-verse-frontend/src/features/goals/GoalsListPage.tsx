@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Plus, Search, XCircle, BookOpen, Ghost } from "lucide-react";
 import { agentsApi, goalsApi } from "@/lib/api/client";
 import { CostEstimateWidget } from "@/features/goals/components/CostEstimateWidget";
+import { TemplatePickerModal } from "@/features/templates/components/TemplatePickerModal";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
@@ -36,6 +37,7 @@ export function GoalsListPage() {
   const [selectedAgentId, setSelectedAgentId] = useState("auto");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -92,15 +94,15 @@ export function GoalsListPage() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold text-sm">Submit a new goal</h2>
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <a
-              href="/templates"
-              onClick={(e) => { e.preventDefault(); navigate("/templates"); }}
+            <button
+              type="button"
+              onClick={() => setShowTemplatePicker(true)}
               className="flex items-center gap-1 hover:text-foreground transition-colors"
               aria-label="Browse goal templates"
             >
               <BookOpen className="h-3 w-3" aria-hidden="true" />
               Templates
-            </a>
+            </button>
             <a
               href="/goals/ghost-run"
               onClick={(e) => { e.preventDefault(); navigate("/goals/ghost-run"); }}
@@ -298,6 +300,17 @@ export function GoalsListPage() {
             setPageSize(s);
             setPage(1);
           }}
+        />
+      )}
+
+      {/* Template picker modal — pre-fills goal textarea */}
+      {showTemplatePicker && (
+        <TemplatePickerModal
+          onUseInGoal={(text) => {
+            setGoalText(text);
+            setShowTemplatePicker(false);
+          }}
+          onClose={() => setShowTemplatePicker(false)}
         />
       )}
     </div>

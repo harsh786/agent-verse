@@ -18,9 +18,11 @@ interface TemplateCardProps {
   onUse: (template: GoalTemplate) => void;
   onEdit: (template: GoalTemplate) => void;
   onDelete: (id: string) => void;
+  /** When true, hide edit/delete controls and use compact "Select" button label. */
+  pickerMode?: boolean;
 }
 
-export function TemplateCard({ template, onUse, onEdit, onDelete }: TemplateCardProps) {
+export function TemplateCard({ template, onUse, onEdit, onDelete, pickerMode = false }: TemplateCardProps) {
   const domainColor = DOMAIN_COLORS[template.domain] ?? DOMAIN_COLORS.general;
   return (
     <div className="bg-card border border-border rounded-xl p-5 hover:border-primary/30 hover:shadow-sm transition-all flex flex-col gap-3">
@@ -35,22 +37,26 @@ export function TemplateCard({ template, onUse, onEdit, onDelete }: TemplateCard
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${domainColor}`}>
             {template.domain}
           </span>
-          <button
-            onClick={() => onEdit(template)}
-            className="p-1 rounded hover:bg-muted/70 text-muted-foreground hover:text-foreground transition-colors"
-            aria-label={`Edit template: ${template.name}`}
-            title="Edit"
-          >
-            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <button
-            onClick={() => onDelete(template.id)}
-            className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-600 dark:hover:text-red-400 transition-colors"
-            aria-label={`Delete template: ${template.name}`}
-            title="Delete"
-          >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
+          {!pickerMode && (
+            <>
+              <button
+                onClick={() => onEdit(template)}
+                className="p-1 rounded hover:bg-muted/70 text-muted-foreground hover:text-foreground transition-colors"
+                aria-label={`Edit template: ${template.name}`}
+                title="Edit"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <button
+                onClick={() => onDelete(template.id)}
+                className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                aria-label={`Delete template: ${template.name}`}
+                title="Delete"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -75,17 +81,19 @@ export function TemplateCard({ template, onUse, onEdit, onDelete }: TemplateCard
       )}
 
       <div className="flex items-center justify-between mt-auto pt-2 border-t border-border">
-        <span className="text-xs text-muted-foreground">
-          Used {template.use_count} time{template.use_count !== 1 ? "s" : ""}
-          {template.version > 1 && <span className="ml-1.5 opacity-60">v{template.version}</span>}
-        </span>
+        {!pickerMode && (
+          <span className="text-xs text-muted-foreground">
+            Used {template.use_count} time{template.use_count !== 1 ? "s" : ""}
+            {template.version > 1 && <span className="ml-1.5 opacity-60">v{template.version}</span>}
+          </span>
+        )}
         <button
           onClick={() => onUse(template)}
-          className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          className={`flex items-center gap-1.5 text-xs font-medium text-primary hover:underline ${pickerMode ? "ml-auto" : ""}`}
           aria-label={`Use template: ${template.name}`}
         >
           <Zap className="h-3 w-3" aria-hidden="true" />
-          Use template
+          {pickerMode ? "Select" : "Use template"}
           <ChevronRight className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>

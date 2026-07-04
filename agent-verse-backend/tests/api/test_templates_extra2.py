@@ -116,7 +116,7 @@ def _make_db_factory(*, one: Any = None, many: list = None) -> Any:
 
 
 def _make_app(goal_service: Any = None) -> tuple[FastAPI, _TemplateStore]:
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     tmpl_module.template_store = store
 
     app = FastAPI()
@@ -179,7 +179,7 @@ def test_orm_to_dict_with_string_fields() -> None:
 async def test_template_store_list_db_backed() -> None:
     """_TemplateStore.list() with _db set calls _list_db (lines 75, 145-155)."""
     fake = _fake_tmpl(name="DB Template")
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(many=[fake])
 
     results = await store.list("tid-tmpl-ex2")
@@ -190,7 +190,7 @@ async def test_template_store_list_db_backed() -> None:
 async def test_template_store_list_db_with_domain_filter() -> None:
     """_TemplateStore.list() passes domain to _list_db (lines 75, 145-155)."""
     fake = _fake_tmpl(name="DevOps Tmpl", domain="devops")
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(many=[fake])
 
     results = await store.list("tid-tmpl-ex2", domain="devops")
@@ -205,7 +205,7 @@ async def test_template_store_list_db_with_domain_filter() -> None:
 async def test_template_store_get_db_found() -> None:
     """_TemplateStore.get() with _db set and row found (lines 79, 158-167)."""
     fake = _fake_tmpl(id="tmpl-xyz")
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=fake)
 
     result = await store.get("tid-tmpl-ex2", "tmpl-xyz")
@@ -216,7 +216,7 @@ async def test_template_store_get_db_found() -> None:
 
 async def test_template_store_get_db_not_found() -> None:
     """_TemplateStore.get() with _db set and no row (lines 79, 158-167)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=None)
 
     result = await store.get("tid-tmpl-ex2", "nonexistent")
@@ -230,7 +230,7 @@ async def test_template_store_get_db_not_found() -> None:
 
 async def test_template_store_create_db_backed() -> None:
     """_TemplateStore.create() with _db creates GoalTemplate + calls _orm_to_dict (lines 94, 171-183)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory()  # No pre-seeded rows needed; create constructs its own obj
 
     result = await store.create(
@@ -254,7 +254,7 @@ async def test_template_store_create_db_backed() -> None:
 async def test_template_store_update_db_found() -> None:
     """_TemplateStore.update() with _db set and row found (lines 108, 187-207)."""
     fake = _fake_tmpl(id="tmpl-upd", name="Old Name", version=1)
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=fake)
 
     result = await store.update(
@@ -273,7 +273,7 @@ async def test_template_store_update_db_found() -> None:
 
 async def test_template_store_update_db_not_found() -> None:
     """_TemplateStore.update() with _db set, no row → returns None (lines 108, 187-207)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=None)
 
     result = await store.update(
@@ -296,7 +296,7 @@ async def test_template_store_update_db_not_found() -> None:
 async def test_template_store_delete_db_found() -> None:
     """_TemplateStore.delete() with _db, row found → deletes + returns True (lines 119, 210-223)."""
     fake = _fake_tmpl(id="tmpl-del")
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=fake)
 
     deleted = await store.delete("tid-tmpl-ex2", "tmpl-del")
@@ -305,7 +305,7 @@ async def test_template_store_delete_db_found() -> None:
 
 async def test_template_store_delete_db_not_found() -> None:
     """_TemplateStore.delete() with _db, no row → returns False (lines 119, 210-223)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory(one=None)
 
     deleted = await store.delete("tid-tmpl-ex2", "nonexistent")
@@ -319,7 +319,7 @@ async def test_template_store_delete_db_not_found() -> None:
 
 async def test_increment_use_count_db_backed() -> None:
     """increment_use_count with _db calls DB execute (lines 128-139)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
     store._db = _make_db_factory()  # DB execute is no-op in mock; passes silently
 
     # Should not raise
@@ -328,7 +328,7 @@ async def test_increment_use_count_db_backed() -> None:
 
 async def test_increment_use_count_db_exception_silenced() -> None:
     """increment_use_count with _db swallows exceptions silently (line 137-138)."""
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
 
     # DB factory that raises on every execute
     class _ErrSession:

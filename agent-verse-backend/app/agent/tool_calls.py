@@ -33,38 +33,123 @@ def _canonical_tool_name(name: str) -> str:
 
 
 def extract_tool_call(text: str) -> ToolCall | None:
-    """Parse a structured tool call from JSON or a markdown JSON block."""
+    """
+    Parse a structured tool call from the LLM's response text.
+
+    Handles:
+    - Plain JSON: {"tool": "jira_search_issues", "arguments": {...}}
+    - Markdown code blocks: ```json {...} ```
+    - Trailing garbage after valid JSON
+    - Common malformed JSON (single quotes, trailing commas)
+    - Nested tool calls: {"tool": ..., "input": {...}} or {"function": {"name": ...}}
+    """
     candidate = text.strip()
-    match = re.search(r"```(?:json)?\s*(.*?)```", candidate, flags=re.DOTALL)
+
+    # A bare JSON array is never a valid tool call
+    if candidate.startswith("["):
+        return None
+    match = re.search(r"```(?:json|tool_call)?\s*(.*?)```", candidate, flags=re.DOTALL)
     if match:
         candidate = match.group(1).strip()
 
-    try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
+    # Try direct JSON parse
+    obj = _try_parse_json(candidate)
+
+    # If failed, try to extract JSON object from the text
+    if obj is None:
+        json_match = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if json_match:
+            obj = _try_parse_json(json_match.group())
+
     if not isinstance(obj, dict):
         return None
 
-    tool = obj.get("tool") or obj.get("tool_name")
+    # Resolve tool name from various formats LLMs use
+    tool = (
+        obj.get("tool")
+        or obj.get("tool_name")
+        or obj.get("function_name")
+        or obj.get("name")
+        # Anthropic function calling: {"function": {"name": ..., "arguments": ...}}
+        or (obj.get("function") or {}).get("name")
+    )
     if not tool:
         return None
     tool_text = str(tool)
+
+    # Skip placeholder/template values
     if (
         tool_text in {"server_name.tool_name", "tool_name", "python.datetime"}
         or tool_text.startswith("server_name.")
     ):
         return None
 
-    if "arguments" in obj:
-        args = obj["arguments"]
-    elif "args" in obj:
-        args = obj["args"]
-    else:
-        args = {}
+    # Resolve arguments from various formats
+    args = (
+        obj.get("arguments")
+        or obj.get("args")
+        or obj.get("input")
+        or obj.get("parameters")
+        or obj.get("params")
+        # Anthropic: {"function": {"name": ..., "arguments": {...}}}
+        or (obj.get("function") or {}).get("arguments")
+        or {}
+    )
     if not isinstance(args, dict):
-        return None
+        # If args is a JSON string, try to parse it to a dict
+        if isinstance(args, str):
+            parsed = _try_parse_json(args)
+            if isinstance(parsed, dict):
+                args = parsed
+            else:
+                return None  # Unparseable string args
+        else:
+            return None  # List, number, etc. — can't map to named params
+
     return ToolCall(tool=tool_text, arguments=args)
+
+
+def _try_parse_json(text: str) -> dict | None:
+    """Attempt to parse JSON with several repair strategies."""
+    if not text:
+        return None
+
+    # Strategy 1: Standard parse
+    try:
+        result = json.loads(text)
+        return result if isinstance(result, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: Find the first { ... } balanced block
+    try:
+        start = text.index("{")
+        depth = 0
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : i + 1]
+                    result = json.loads(candidate)
+                    return result if isinstance(result, dict) else None
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # Strategy 3: Repair common LLM JSON issues (single quotes, trailing commas)
+    try:
+        repaired = text
+        # Single quotes → double quotes (careful not to break apostrophes in values)
+        repaired = re.sub(r"(?<![\\])'([^']*)'(?=\s*[:{,\]}])", r'"\1"', repaired)
+        # Trailing commas before } or ]
+        repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+        result = json.loads(repaired)
+        return result if isinstance(result, dict) else None
+    except (json.JSONDecodeError, Exception):
+        pass
+
+    return None
 
 
 def _looks_like_placeholder_jql(jql: str) -> bool:

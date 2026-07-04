@@ -41,6 +41,10 @@ Rules:
 - "reason": string — specific, actionable explanation
 - "retry": boolean (only when success=false) — true if replanning could fix it, false if permanently blocked
 - NEVER output markdown, code blocks, or any text outside the JSON object
+- CRITICAL: if any step shows [TOOL FAILED] or [STEP ERROR], the goal is NOT successfully achieved
+- CRITICAL: if the step output is a raw Python error (e.g. "'jql'" or "KeyError") rather than actual data, the goal FAILED
+- CRITICAL: "Found 0 issues" when issues were expected is a FAILURE unless 0 is the correct answer
+- CRITICAL: a tool being called is NOT sufficient for success — the tool must return actual results
 """
 
 GOAL_TREE_SYSTEM = """\

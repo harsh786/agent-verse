@@ -28,7 +28,6 @@ import {
   ReactFlow,
   Background,
   BackgroundVariant,
-  Controls,
   MarkerType,
   MiniMap,
   type Node,
@@ -43,7 +42,6 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  ChevronRight,
   Clock,
   Code2,
   Download,
@@ -60,13 +58,13 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
-import { insightsApi, type ExecutionGraph } from '@/lib/api/client';
+import { insightsApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { layeredLayout, type FlowNodeInput, type FlowEdgeInput } from '@/components/graph/FlowCanvas';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface DnaNodeData {
+interface DnaNodeData extends Record<string, unknown> {
   label: string;
   nodeType: 'start' | 'step' | 'tool' | 'end' | 'failed';
   status?: string;
@@ -93,7 +91,7 @@ const NODE_STYLES: Record<string, {
 // ── Custom Node Component ─────────────────────────────────────────────────────
 
 function DnaNode({ data, selected }: NodeProps) {
-  const d = data as DnaNodeData;
+  const d = data as unknown as DnaNodeData;
   // Override tool node style if it failed
   const typeKey = (d.nodeType === 'tool' && d.status === 'failed') ? 'failed' : (d.nodeType || 'step');
   const style = NODE_STYLES[typeKey] ?? NODE_STYLES.step;
@@ -146,7 +144,7 @@ function NodeInspector({
   onClose: () => void;
 }) {
   if (!node) return null;
-  const d = node.data as DnaNodeData;
+  const d = node.data as unknown as DnaNodeData;
   const typeKey = (d.nodeType === 'tool' && d.status === 'failed') ? 'failed' : (d.nodeType || 'step');
   const style = NODE_STYLES[typeKey] ?? NODE_STYLES.step;
   const Icon = style.icon;
@@ -429,7 +427,7 @@ function InnerGraph({
       <MiniMap
         style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px' }}
         nodeColor={(n) => {
-          const d = n.data as DnaNodeData;
+          const d = n.data as unknown as DnaNodeData;
           const t = (d.nodeType === 'tool' && d.status === 'failed') ? 'failed' : (d.nodeType || 'step');
           const map: Record<string, string> = {
             start: '#3b82f6', step: '#8b5cf6', tool: '#f59e0b', end: '#22c55e', failed: '#ef4444',
@@ -468,7 +466,7 @@ export function GoalDNAPage() {
   });
 
   // Build ReactFlow nodes + edges from the API response
-  const { nodes, edges } = useMemo<{ nodes: Node[]; edges: Edge[] }>(() => {
+  const { nodes, edges } = useMemo<{ nodes: Node<DnaNodeData>[]; edges: Edge[] }>(() => {
     if (!graph) return { nodes: [], edges: [] };
 
     const nodeInputs: FlowNodeInput[] = graph.nodes.map((n) => ({
@@ -485,7 +483,7 @@ export function GoalDNAPage() {
 
     const positions = layeredLayout(nodeInputs, edgeInputs);
 
-    const flowNodes: Node[] = graph.nodes.map((n) => ({
+    const flowNodes: Node<DnaNodeData>[] = graph.nodes.map((n) => ({
       id: n.id,
       type: 'custom',
       position: positions[n.id] ?? { x: 0, y: 0 },
@@ -495,19 +493,19 @@ export function GoalDNAPage() {
         label: n.label,
         nodeType: n.type as DnaNodeData['nodeType'],
         ...n.data,
-        toolName: (n.data as Record<string, unknown>)?.tool_name ?? (n.data as Record<string, unknown>)?.toolName,
-        serverId: (n.data as Record<string, unknown>)?.server_id ?? (n.data as Record<string, unknown>)?.serverId,
-        outputPreview: (n.data as Record<string, unknown>)?.output_preview,
-        durationMs: (n.data as Record<string, unknown>)?.duration_ms,
-        error: (n.data as Record<string, unknown>)?.error,
-      } satisfies DnaNodeData,
+        toolName: ((n.data as Record<string, unknown>)?.tool_name ?? (n.data as Record<string, unknown>)?.toolName) as string | undefined,
+        serverId: ((n.data as Record<string, unknown>)?.server_id ?? (n.data as Record<string, unknown>)?.serverId) as string | undefined,
+        outputPreview: ((n.data as Record<string, unknown>)?.output_preview) as string | undefined,
+        durationMs: ((n.data as Record<string, unknown>)?.duration_ms) as number | undefined,
+        error: ((n.data as Record<string, unknown>)?.error) as string | undefined,
+      } as DnaNodeData,
     }));
 
     // Animate edges connected to tool nodes
     const flowEdges: Edge[] = graph.edges.map((e) => {
       const targetNode = graph.nodes.find((n) => n.id === e.target);
       const isToolEdge = targetNode?.type === 'tool';
-      const isFailedEdge = targetNode?.type === 'failed' || (targetNode as Record<string, unknown>)?.data?.status === 'failed';
+      const isFailedEdge = targetNode?.type === 'failed' || ((targetNode?.data as Record<string, unknown>)?.status as string) === 'failed';
       return {
         id: e.id,
         source: e.source,
@@ -631,8 +629,8 @@ export function GoalDNAPage() {
                     </div>
                     <div className="pb-2 min-w-0">
                       <p className={`text-[10px] font-medium truncate ${s.text}`}>{n.label}</p>
-                      {(n.data as Record<string, unknown>)?.tool_name && (
-                        <p className="text-[9px] text-muted-foreground font-mono truncate">{String((n.data as Record<string, unknown>).tool_name)}</p>
+                      {Boolean((n.data as Record<string, unknown>)?.tool_name) && (
+                        <p className="text-[9px] text-muted-foreground font-mono truncate">{((n.data as Record<string, unknown>).tool_name as string) || ''}</p>
                       )}
                     </div>
                   </div>
