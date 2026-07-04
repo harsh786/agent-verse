@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import text
 
 from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import TenantContext
@@ -36,6 +39,7 @@ class SelfOptimizer:
         self._suggestions: dict[str, list[OptimizationSuggestion]] = {}
         self._eval_history: dict[str, list[EvalScorecard]] = {}
         self._applied_changes: dict[str, list] = {}
+        self._db: Any = None  # Set externally to enable async DB persistence
 
     def record_eval(
         self, *, goal_id: str, scorecard: EvalScorecard, tenant_ctx: TenantContext
@@ -99,6 +103,20 @@ class SelfOptimizer:
 
         tid = tenant_ctx.tenant_id
         self._suggestions.setdefault(tid, []).extend(suggestions)
+
+        # Async-persist suggestions when DB is wired
+        if self._db is not None:
+            import asyncio as _asyncio
+            for _s in suggestions:
+                _s.tenant_id = tenant_ctx.tenant_id
+                try:
+                    loop = _asyncio.get_running_loop()
+                    loop.create_task(
+                        self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
+                    )
+                except RuntimeError:
+                    pass  # Not in async context — caller can persist separately
+
         return suggestions
 
     def list_suggestions(
@@ -202,3 +220,51 @@ class SelfOptimizer:
                 s.rejected = True
                 return True
         return False
+
+    async def persist_suggestion(
+        self,
+        suggestion: "OptimizationSuggestion",
+        *,
+        tenant_ctx: "TenantContext",
+        db: Any = None,
+        source_goal_id: str = "",
+    ) -> None:
+        """Persist a suggestion to self_optimization_suggestions table.
+
+        Non-fatal — DB write failure is logged and swallowed so suggestion
+        generation never blocks goal execution.
+        """
+        if db is None:
+            return
+        try:
+            async with db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO self_optimization_suggestions
+                            (id, tenant_id, suggestion_id, category, change_type,
+                             description, before_text, after_text, confidence,
+                             applied, rejected, source_goal_id, created_at)
+                        VALUES
+                            (:id, :tenant_id, :suggestion_id, :category, :change_type,
+                             :description, :before_text, :after_text, :confidence,
+                             :applied, :rejected, :source_goal_id, NOW())
+                        ON CONFLICT (id) DO NOTHING
+                    """),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "suggestion_id": suggestion.suggestion_id,
+                        "category": suggestion.category,
+                        "change_type": suggestion.change_type or "",
+                        "description": suggestion.description or "",
+                        "before_text": suggestion.before or "",
+                        "after_text": suggestion.after or "",
+                        "confidence": float(suggestion.confidence),
+                        "applied": suggestion.applied,
+                        "rejected": suggestion.rejected,
+                        "source_goal_id": source_goal_id or "",
+                    },
+                )
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("suggestion_persist_failed", error=str(exc))
