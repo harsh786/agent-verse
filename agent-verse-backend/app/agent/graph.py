@@ -2040,11 +2040,14 @@ class AgentGraph:
                 except Exception:
                     pass
 
-        # Trigger self-optimization when a goal scores poorly (BUG 5 fix)
+        # Trigger self-optimization when a goal scores below the excellence threshold.
+        # Using < 1.0 ensures we collect improvement insights for all non-perfect goals
+        # (practically every real goal), enabling continuous learning.  The suggestions
+        # themselves are internally gated by fine-grained conditions inside analyze_and_suggest.
         if (
             self._self_optimizer is not None
             and scorecard is not None
-            and scorecard.average_score() < 0.5
+            and scorecard.average_score() < 1.0
         ):
             _so_task = asyncio.create_task(
                 self._trigger_self_optimization(agent_state, scorecard, tenant_ctx)
@@ -2114,8 +2117,15 @@ class AgentGraph:
         tenant_ctx: TenantContext,
         initial_context: dict[str, Any] | None = None,
         event_callback: EventCallback | None = None,
+        goal_id: str | None = None,
     ) -> AgentState:
-        """Execute the agent graph and return the final AgentState."""
+        """Execute the agent graph and return the final AgentState.
+
+        ``goal_id`` — when provided (e.g. the Celery task's external goal_id),
+        this value is injected into the AgentState so that all DB writes
+        (evaluations, decision_traces, checkpoints) reference the correct row
+        in the ``goals`` table and do not violate the FK constraint.
+        """
         from opentelemetry import context as otel_context
         from opentelemetry import trace as otel_trace
 
@@ -2151,6 +2161,14 @@ class AgentGraph:
                 # Optionally seed the agent state with caller-provided context
                 if initial_context:
                     seed = AgentState(goal=goal, tenant_ctx=tenant_ctx, context=initial_context)
+                    # Inject external goal_id so evaluations/decision_traces FK succeeds
+                    if goal_id:
+                        seed.goal_id = goal_id
+                    input_state["agent_state"] = seed
+                elif goal_id:
+                    # No initial_context but caller supplied a goal_id: seed a minimal state
+                    seed = AgentState(goal=goal, tenant_ctx=tenant_ctx)
+                    seed.goal_id = goal_id
                     input_state["agent_state"] = seed
 
                 try:

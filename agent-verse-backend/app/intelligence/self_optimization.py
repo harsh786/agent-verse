@@ -55,20 +55,23 @@ class SelfOptimizer:
         error_log: str,
         tenant_ctx: TenantContext,
     ) -> list[OptimizationSuggestion]:
-        """Analyze a low-scoring eval and produce suggestions."""
+        """Analyze a completed eval and produce optimization suggestions."""
         suggestions: list[OptimizationSuggestion] = []
 
-        if scorecard.average_score() < 0.5:
+        avg = scorecard.average_score()
+
+        # Continuous improvement: any non-perfect goal is worth a suggestion
+        if avg < 0.9:
             suggestions.append(
                 OptimizationSuggestion(
                     category="prompt",
                     description=(
-                        "Goal decomposition score is low — add more specific "
-                        "planning instructions"
+                        f"Goal scored {avg:.2f} — review planner instructions for "
+                        "more precise task decomposition and completion criteria"
                     ),
                     before="Current planner system prompt",
                     after="Enhanced prompt with domain-specific decomposition guidance",
-                    confidence=0.7,
+                    confidence=0.7 if avg < 0.5 else 0.5,
                 )
             )
 
