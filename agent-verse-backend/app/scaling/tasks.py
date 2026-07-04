@@ -231,6 +231,7 @@ async def _run_with_signals(
             tenant_ctx=tenant_ctx,
             initial_context=initial_context,
             event_callback=event_callback,
+            goal_id=goal_id,
         )
     )
 
@@ -268,6 +269,7 @@ async def _run_with_signals(
                         tenant_ctx=tenant_ctx,
                         initial_context=initial_context,
                         event_callback=event_callback,
+                        goal_id=goal_id,
                     )
                 )
 
@@ -286,6 +288,7 @@ class _WorkerMCPAgentRunner:
         tenant_ctx: Any,
         initial_context: dict[str, Any] | None = None,
         event_callback: Any = None,
+        goal_id: str | None = None,
     ) -> Any:
         redis_client = None
         context = dict(initial_context or {})
@@ -305,6 +308,7 @@ class _WorkerMCPAgentRunner:
                 tenant_ctx=tenant_ctx,
                 initial_context=context or None,
                 event_callback=event_callback,
+                goal_id=goal_id,
             )
         finally:
             if redis_client is not None:

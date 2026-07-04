@@ -1387,6 +1387,7 @@ class GoalService:
                     tenant_ctx=tenant_ctx,
                     initial_context=initial_context or None,
                     event_callback=callback,
+                    goal_id=goal_id,
                 )
             except asyncio.CancelledError:
                 if record is not None and record.status != GoalStatus.CANCELLED:
@@ -2078,13 +2079,22 @@ class GoalService:
         return {"goal_id": goal_id, "status": "resumed"}
 
     async def get_events(self, goal_id: str, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
-        """Return a snapshot of all SSE events emitted so far for *goal_id*."""
-        record = self._get_record(goal_id, tenant_ctx)
-        if not record.events:
-            persisted_events = await self._list_persisted_events(goal_id, tenant_ctx)
-            if persisted_events:
-                return persisted_events
-        return list(record.events)
+        """Return a snapshot of all SSE events emitted so far for *goal_id*.
+
+        Uses the same in-memory → DB fallback pattern as :meth:`get_goal` so
+        that events are available even after a server restart or when the goal
+        was executed by a Celery worker in a separate process.
+        """
+        # Try in-memory cache first; fall back to DB (mirrors get_goal logic)
+        record = self._goals.get(goal_id)
+        if record is None or record.tenant_id != tenant_ctx.tenant_id:
+            record = await self._db_get_goal_record(goal_id, tenant_ctx)
+        if record is None:
+            raise NotFoundError(f"Goal not found: {goal_id}")
+        # Merge in-memory + DB-persisted events without duplicates.
+        # This handles Celery multi-process mode where record.events is empty
+        # on the API server but events are durably stored in the event store.
+        return await self._events_for_replay(goal_id, record, tenant_ctx)
 
     async def subscribe_events(
         self,
