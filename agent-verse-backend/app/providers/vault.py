@@ -167,16 +167,20 @@ class CredentialVault:
         """
         return self._fernet.decrypt(ciphertext.encode()).decode()
 
-    async def rotate_key(self, new_master_key: bytes, db: Any = None, redis: Any = None) -> dict:
+    async def rotate_key(self, new_master_key: bytes, db: Any = None, redis: Any = None) -> dict[str, Any]:
         """Re-encrypt all stored secrets with a new master key.
 
-        Process (atomic per-secret):
-        1. Scan all connector secret keys in Redis
-        2. For each key: decrypt with old Fernet, re-encrypt with new Fernet, write back
-        3. Record key version in DB
-        4. Update self._key to new key
+        Process (transactional):
+        1. Derive new Fernet key using the same KDF as __init__ (ensures consistency after restart)
+        2. Scan all connector secret keys in Redis
+        3. Phase 1: Decrypt ALL secrets with old Fernet in memory
+        4. Phase 2: Re-encrypt ALL with new Fernet in memory
+        5. Write ALL new values to Redis in a single pipeline (atomic batch)
+        6. Update self._fernet and self._key ONLY after successful writes
+        7. Record key version in DB
         """
         from app.observability.logging import get_logger
+
         logger = get_logger(__name__)
 
         if not isinstance(new_master_key, bytes) or len(new_master_key) < 32:
@@ -185,23 +189,21 @@ class CredentialVault:
         rotated = 0
         failed = 0
 
+        # Derive new Fernet using the SAME function as __init__ to ensure key consistency
+        # after restart.  The old code used a raw salt b"agentverse-vault" (16 bytes) which
+        # differs from _derive_fernet_key's SHA-256-hashed salt → wrong derived key (C2-a).
+        from cryptography.fernet import Fernet as _Fernet
+
+        new_master_str = (
+            new_master_key.decode("utf-8", errors="replace")
+            if isinstance(new_master_key, bytes)
+            else new_master_key
+        )
+        fernet_key_new = _derive_fernet_key(new_master_str)
+        fernet_new = _Fernet(fernet_key_new)
+
         if redis is not None:
             try:
-                # Build new Fernet from the new master key
-                import base64 as _b64
-                from cryptography.fernet import Fernet as _Fernet
-                from cryptography.hazmat.primitives import hashes as _hashes
-                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as _PBKDF2
-
-                _kdf_new = _PBKDF2(
-                    algorithm=_hashes.SHA256(),
-                    length=32,
-                    salt=b"agentverse-vault",
-                    iterations=480000,
-                )
-                fernet_key_new = _b64.urlsafe_b64encode(_kdf_new.derive(new_master_key))
-                fernet_new = _Fernet(fernet_key_new)
-
                 # Use existing self._fernet as fernet_old (holds the current encryption key)
                 fernet_old = self._fernet
 
@@ -210,36 +212,65 @@ class CredentialVault:
                 async for key in redis.scan_iter(match="mcp:connector_secrets:*", count=200):
                     keys.append(key)
 
+                # Phase 1: Decrypt all secrets in memory before writing anything.
+                # Skip keys that cannot be decrypted (may be non-secret data); abort only
+                # on infrastructure errors so a partial scan never leaves mixed-key state.
+                pairs: list[tuple[Any, str]] = []
                 for key in keys:
+                    encrypted = await redis.get(key)
+                    if not encrypted:
+                        continue
+                    raw = encrypted.encode() if isinstance(encrypted, str) else encrypted
                     try:
-                        encrypted = await redis.get(key)
-                        if not encrypted:
-                            continue
-
-                        # Decrypt with old key
-                        raw = encrypted.encode() if isinstance(encrypted, str) else encrypted
                         plaintext = fernet_old.decrypt(raw)
-
-                        # Re-encrypt with new key
-                        new_encrypted = fernet_new.encrypt(plaintext).decode()
-                        await redis.set(key, new_encrypted)
-                        rotated += 1
                     except Exception as exc:
-                        logger.warning(
-                            "secret_rotation_failed_for_key", key=key, error=str(exc)
-                        )
                         failed += 1
+                        logger.warning(
+                            "secret_rotation_cannot_decrypt",
+                            key=str(key)[:50],
+                            error=str(exc)[:80],
+                        )
+                        continue  # skip undecryptable (may be non-secret data)
+                    pairs.append((key, fernet_new.encrypt(plaintext).decode()))
+
+                # Phase 2: Write all re-encrypted values in a single pipeline (all-or-nothing).
+                # redis.pipeline() may be a coroutine (AsyncMock in tests, or some async
+                # Redis clients) — use the same defensive pattern as semantic_cache.py.
+                # pipe.set() / pipe.execute() may also be coroutines depending on the
+                # Redis client version; guard with iscoroutine() so we work with both
+                # real redis.asyncio (sync pipeline commands) and async mocks.
+                if pairs:
+                    import asyncio as _asyncio
+
+                    pipe = redis.pipeline()
+                    if _asyncio.iscoroutine(pipe):
+                        pipe = await pipe
+                    for key, value in pairs:
+                        cmd = pipe.set(key, value)
+                        if _asyncio.iscoroutine(cmd):
+                            await cmd
+                    exec_result = pipe.execute()
+                    if _asyncio.iscoroutine(exec_result):
+                        await exec_result
+                    rotated = len(pairs)
+
+                # Only update in-process state after successful Redis writes (C2-b fix).
+                self._fernet = fernet_new
+                self._key = new_master_key
+
             except Exception as exc:
                 logger.warning("vault_key_rotation_redis_scan_failed", error=str(exc))
-
-        # Update self._key so from_byok-style callers have the new raw key
-        self._key = new_master_key
+        else:
+            # No Redis — update in-process state unconditionally (nothing to re-encrypt).
+            self._fernet = fernet_new
+            self._key = new_master_key
 
         # Record in DB
         if db is not None:
             try:
-                import uuid
                 import hashlib as _hashlib
+                import uuid
+
                 from sqlalchemy import text
                 key_hash = _hashlib.sha256(new_master_key).hexdigest()[:16] + "..."
                 async with db() as session, session.begin():
@@ -258,7 +289,7 @@ class CredentialVault:
         return {"rotated_secrets": rotated, "failed": failed, "status": "rotation_complete"}
 
     @classmethod
-    def from_byok(cls, customer_key: bytes) -> "CredentialVault":
+    def from_byok(cls, customer_key: bytes) -> CredentialVault:
         """Create a vault instance using a customer-provided encryption key (BYOK).
 
         The customer_key must be exactly 32 bytes. This allows enterprise customers

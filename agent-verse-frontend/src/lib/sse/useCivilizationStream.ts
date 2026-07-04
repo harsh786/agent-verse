@@ -1,9 +1,13 @@
 /**
  * SSE hook for Civilization live events.
  * Mirrors useGoalStream with exponential backoff reconnect.
+ *
+ * Auth error short-circuit: 401 / 403 responses immediately invoke logout() and
+ * do NOT retry — retrying against an expired/invalid token creates a request storm.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { CivilizationEvent } from '../api/civilizationApi';
+import { useAuthStore } from '@/stores/auth';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -26,8 +30,20 @@ export function useCivilizationStream(
   const connect = useCallback(async () => {
     if (!civilizationId) return;
 
+    // Read auth token fresh on each (re)connect — not captured once at mount.
+    const { apiKey: storeKey, ssoMode, accessToken } = useAuthStore.getState();
     const apiKey =
-      sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '';
+      storeKey ||
+      sessionStorage.getItem('av_api_key') ||
+      localStorage.getItem('av_api_key') ||
+      '';
+
+    const authHeaders: Record<string, string> = ssoMode && accessToken
+      ? { Authorization: `Bearer ${accessToken}` }
+      : apiKey
+      ? { 'X-API-Key': apiKey }
+      : {};
+
     const url = `${API_BASE}/civilizations/${civilizationId}/stream`;
 
     controllerRef.current?.abort();
@@ -36,11 +52,17 @@ export function useCivilizationStream(
 
     try {
       const resp = await fetch(url, {
-        headers: { 'X-API-Key': apiKey, Accept: 'text/event-stream' },
+        headers: { ...authHeaders, Accept: 'text/event-stream' },
         signal: controller.signal,
       });
 
       if (!resp.ok || !resp.body) {
+        setConnected(false);
+        // 401/403 — auth failure. Stop immediately; retrying will not succeed.
+        if (resp.status === 401 || resp.status === 403) {
+          useAuthStore.getState().logout();
+          return;
+        }
         throw new Error(`SSE error ${resp.status}`);
       }
 
@@ -62,7 +84,13 @@ export function useCivilizationStream(
           if (line.startsWith('data: ')) {
             try {
               const evt = JSON.parse(line.slice(6)) as CivilizationEvent;
-              setEvents(prev => [...prev.slice(-200), evt]); // keep last 200
+              setEvents(prev => {
+                // Dedup by id; keep last 200 entries
+                if (prev.some((e) => e.id === evt.id)) {
+                  return prev; // duplicate — skip
+                }
+                return [...prev.slice(-199), evt]; // cap at 200 events
+              });
               onEventRef.current?.(evt);
             } catch {
               // ignore parse errors

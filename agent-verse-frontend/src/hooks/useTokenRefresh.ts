@@ -77,18 +77,22 @@ export function useTokenRefresh(): void {
     lastAttemptRef.current = Date.now();
 
     // Always read fresh state to avoid stale closures
-    const { refreshToken, logout, updateAccessToken } = useAuthStore.getState();
+    const { refreshToken: currentRefreshToken, logout, updateAccessToken } = useAuthStore.getState();
 
-    if (!refreshToken) {
+    if (!currentRefreshToken) {
       logout();
       return;
     }
 
     try {
-      const res = await fetch(
-        `${API_BASE}/auth/refresh?refresh_token_value=${encodeURIComponent(refreshToken)}`,
-        { method: "POST" }
-      );
+      // Send the refresh token in the POST body — NEVER in the URL.
+      // Putting it in the query string leaks it into access logs, browser history,
+      // and HTTP Referer headers.
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: currentRefreshToken }),
+      });
 
       if (!res.ok) {
         // 401/400 → refresh token is invalid or expired; force logout
@@ -105,7 +109,7 @@ export function useTokenRefresh(): void {
       updateAccessToken(data.access_token, data.expires_in);
 
       // Rolling refresh: update refresh token if server issued a new one
-      if (data.refresh_token && data.refresh_token !== refreshToken) {
+      if (data.refresh_token && data.refresh_token !== currentRefreshToken) {
         useAuthStore.setState({ refreshToken: data.refresh_token });
       }
 
@@ -118,4 +122,24 @@ export function useTokenRefresh(): void {
       }, MIN_REFRESH_INTERVAL_MS);
     }
   }
+}
+
+/**
+ * Standalone token-refresh function — exported for testing.
+ * Sends the token in the POST body; never in the URL.
+ */
+export async function refreshToken(token: string): Promise<{
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+}> {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: token }),
+  });
+  if (!res.ok) {
+    throw new Error(`Token refresh failed with status ${res.status}`);
+  }
+  return res.json() as Promise<{ access_token: string; refresh_token?: string; expires_in: number }>;
 }

@@ -169,10 +169,20 @@ class AuditWriter:
       - Non-blocking — callers see <1 ms latency (one RPUSH).
       - At-least-once — events survive in Redis until AuditFlusher inserts
         them to Postgres.
+
+    Hash-chain context
+    ------------------
+    Every event carries ``tool_name``, ``actor_label``, ``ip_address``, and
+    ``metadata`` fields that are included in the SHA-256 chain hash computed
+    at flush time by :class:`AuditFlusher`.  ``_chain_initialized`` tracks
+    whether the per-process chain tip has been seeded from the DB (preventing
+    false tamper alarms on restart).
     """
 
     def __init__(self, redis: Any) -> None:
         self._redis = redis
+        # H15: chain-tip seeding flag — set True once the DB tip has been loaded
+        self._chain_initialized: bool = False
 
     async def write(self, event: AuditEvent) -> None:
         """Push one event to the WAL.  Never raises."""
@@ -215,19 +225,108 @@ class AuditFlusher:
 
     On Postgres failure: events are pushed to the dead-letter Redis list
     ``audit:wal:dlq`` for manual replay.
+
+    Flusher lock
+    ------------
+    When multiple replicas start simultaneously each creates its own
+    ``AuditFlusher`` task.  A Redis SETNX lock ``audit_flusher:lock`` is
+    acquired for the duration of each flush batch so only one replica inserts
+    a given batch, preventing hash-chain forks.
+
+    Chain seeding
+    -------------
+    ``_chain_cache`` is lazy-seeded from Postgres on the first flush for each
+    tenant via ``_ensure_chain_initialized``.  Without this, every process
+    restart would reset the in-process tip to ``""`` and the verifier would
+    report a broken chain.
     """
+
+    # Redis key for the distributed flusher lock
+    _FLUSHER_LOCK_KEY = "audit_flusher:lock"
+    _FLUSHER_LOCK_TTL = WAL_FLUSH_INTERVAL * 3  # seconds
 
     def __init__(self, redis: Any, db_factory: Any) -> None:
         self._redis = redis
         self._db = db_factory
         # tenant_id → hash of the last flushed event (in-process cache)
         self._chain_cache: dict[str, str] = {}
+        # tenant_id → True once the DB tip has been loaded for that tenant
+        self._chain_initialized: dict[str, bool] = {}
+
+    async def _ensure_chain_initialized(
+        self, tenant_id: str, session: Any
+    ) -> None:
+        """Seed the in-process chain tip from the DB for *tenant_id*.
+
+        Called once per tenant per process lifetime before the first hash is
+        computed.  Without seeding, a restarted replica would start from ``""``
+        and the hash verifier would detect a spurious break in the chain.
+        """
+        if self._chain_initialized.get(tenant_id):
+            return
+        try:
+            from sqlalchemy import text as _text
+
+            result = await session.execute(
+                _text(
+                    "SELECT event_hash FROM audit_events "
+                    "WHERE tenant_id = :tid "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"tid": tenant_id},
+            )
+            row = result.fetchone()
+            self._chain_cache[tenant_id] = row[0] if row else ""
+        except Exception as exc:
+            logger.warning(
+                "audit_chain_seed_failed tenant_id=%s error=%s",
+                tenant_id,
+                str(exc),
+            )
+            # Fall back to empty string — chain will start fresh from this point
+            self._chain_cache.setdefault(tenant_id, "")
+        finally:
+            self._chain_initialized[tenant_id] = True
 
     async def flush(self) -> int:
         """Drain up to WAL_BATCH_SIZE events from Redis and insert to Postgres.
 
+        Acquires a short-lived Redis lock so that only one replica processes
+        each flush window, preventing hash-chain forks across replicas.
+
         Returns the number of events successfully flushed.
         """
+        # Acquire flusher lock (SETNX — only the winner proceeds)
+        lock_acquired = await self._try_acquire_flusher_lock()
+        if not lock_acquired:
+            return 0  # Another replica is flushing right now
+
+        try:
+            return await self._flush_batch()
+        finally:
+            await self._release_flusher_lock()
+
+    async def _try_acquire_flusher_lock(self) -> bool:
+        """Attempt SETNX on the flusher lock.  Returns True if acquired."""
+        try:
+            acquired = await self._redis.set(
+                self._FLUSHER_LOCK_KEY,
+                "1",
+                nx=True,
+                ex=self._FLUSHER_LOCK_TTL,
+            )
+            return bool(acquired)
+        except Exception:
+            # Redis unavailable — allow flush to proceed without lock
+            return True
+
+    async def _release_flusher_lock(self) -> None:
+        """Release the flusher lock."""
+        with contextlib.suppress(Exception):
+            await self._redis.delete(self._FLUSHER_LOCK_KEY)
+
+    async def _flush_batch(self) -> int:
+        """Core flush implementation (called under the flusher lock)."""
         pipeline = self._redis.pipeline(transaction=False)
         for _ in range(WAL_BATCH_SIZE):
             pipeline.lpop(WAL_KEY)
@@ -238,25 +337,28 @@ class AuditFlusher:
             return 0
 
         events_to_insert: list[dict[str, Any]] = []
-        for raw in raw_events:
-            try:
-                event_dict = json.loads(raw)
-                tenant_id = str(event_dict.get("tenant_id", ""))
-
-                prev_hash = self._chain_cache.get(tenant_id, "")
-                ae = AuditEvent(**event_dict)
-                ae.prev_hash = prev_hash
-                ae.event_hash = ae.compute_hash(prev_hash)
-                self._chain_cache[tenant_id] = ae.event_hash
-
-                events_to_insert.append(ae.to_dict())
-            except Exception as exc:
-                logger.error("audit_flush_deserialize_error", error=str(exc))
-
-        if not events_to_insert:
-            return 0
-
         async with self._db() as db:
+            for raw in raw_events:
+                try:
+                    event_dict = json.loads(raw)
+                    tenant_id = str(event_dict.get("tenant_id", ""))
+
+                    # H15: seed chain tip from DB on first encounter per tenant
+                    await self._ensure_chain_initialized(tenant_id, db)
+
+                    prev_hash = self._chain_cache.get(tenant_id, "")
+                    ae = AuditEvent(**event_dict)
+                    ae.prev_hash = prev_hash
+                    ae.event_hash = ae.compute_hash(prev_hash)
+                    self._chain_cache[tenant_id] = ae.event_hash
+
+                    events_to_insert.append(ae.to_dict())
+                except Exception as exc:
+                    logger.error("audit_flush_deserialize_error", error=str(exc))
+
+            if not events_to_insert:
+                return 0
+
             try:
                 from sqlalchemy import text
 

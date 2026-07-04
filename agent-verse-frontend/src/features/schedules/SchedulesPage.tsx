@@ -117,11 +117,11 @@ function TriggerBadge({ type }: { type: string }) {
     cron: 'bg-violet-100 text-violet-700',
     interval: 'bg-blue-100 text-blue-700',
     webhook: 'bg-orange-100 text-orange-700',
-    once: 'bg-gray-100 text-gray-600',
+    once: 'bg-muted text-muted-foreground',
     rest: 'bg-green-100 text-green-700',
   };
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors[type] ?? 'bg-gray-100 text-gray-600'}`}>
+    <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors[type] ?? 'bg-muted text-muted-foreground'}`}>
       {type}
     </span>
   );
@@ -514,7 +514,7 @@ function AIAdvisorTab({ onUseTemplate }: { onUseTemplate: (s: AISuggestion) => v
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="font-medium text-sm">Suggestions for: <span className="text-muted-foreground">{goalDesc}</span></h3>
-            <span className={`text-xs px-2 py-0.5 rounded ${llmPowered ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-600'}`}>
+            <span className={`text-xs px-2 py-0.5 rounded ${llmPowered ? 'bg-violet-100 text-violet-700' : 'bg-muted text-muted-foreground'}`}>
               {llmPowered ? '✦ AI-powered' : 'Template'}
             </span>
           </div>

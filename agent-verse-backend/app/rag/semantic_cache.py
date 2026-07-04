@@ -378,17 +378,41 @@ class SemanticCache:
 
     async def warm(
         self,
-        patterns: list[dict[str, Any]],
-        embedder: Any,
-        tenant_id: str,
+        patterns: list[dict[str, Any]] | None = None,
+        embedder: Any = None,
+        tenant_id: str = "",
+        *,
+        queries: list[str] | None = None,
+        embeddings: list[Any] | None = None,
     ) -> int:
         """
         Pre-populate the cache with known step→response patterns.
 
-        patterns: list of {"query": str, "response": str}
-        embedder: an LLMProvider with embed() method
-        Returns: number of patterns successfully cached
+        Two calling conventions are supported:
+          1. New: warm(queries=[...], embeddings=[...], tenant_id=...)
+             Uses pre-computed embeddings — no extra embedding API call.
+          2. Original: warm(patterns=[{"query": ..., "response": ...}], embedder=..., tenant_id=...)
+             Computes embeddings on-the-fly using the provided embedder.
+
+        Returns: number of patterns successfully cached.
         """
+        # New path: pre-computed embeddings provided directly
+        if queries is not None and embeddings is not None:
+            count = 0
+            for query, embedding in zip(queries, embeddings, strict=False):
+                try:
+                    await self.store_async(
+                        embedding=embedding,
+                        query=query,
+                        response="",  # placeholder — used for prefetch warming only
+                        tenant_id=tenant_id,
+                    )
+                    count += 1
+                except Exception:
+                    pass
+            return count
+
+        # Original path: patterns + embedder
         if not patterns or embedder is None:
             return 0
         try:

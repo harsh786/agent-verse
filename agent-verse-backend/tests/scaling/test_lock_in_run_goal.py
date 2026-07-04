@@ -13,14 +13,15 @@ def test_run_goal_skips_when_lock_not_acquired():
         # Mock db session factory at the source to avoid real DB
         with patch("app.db.session.get_session_factory",
                    side_effect=RuntimeError("no db")):
-            # Mock the lock to return False (already locked)
+            # Mock the _SyncGoalLock to report lock not acquired
             with patch(
-                "app.reliability.distributed_lock.GoalExecutionLock"
+                "app.scaling.tasks._SyncGoalLock"
             ) as MockLock:
                 instance = MockLock.return_value
-                instance.acquire = AsyncMock(return_value=False)
-                instance.release = AsyncMock()
-                with patch("redis.asyncio.from_url", MagicMock()):
+                # sync acquire returns False — lock already held
+                instance.acquire = MagicMock(return_value=False)
+                instance.release = MagicMock()
+                with patch("redis.from_url", MagicMock()):
                     result = run_goal.apply(
                         args=["g-locked", "test-tenant", "do the thing"]
                     )

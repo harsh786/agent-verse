@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 
 
@@ -44,10 +46,11 @@ def test_extract_tool_call_ignores_placeholder_tool_name() -> None:
     assert extract_tool_call('{"tool": "python.datetime", "arguments": {}}') is None
 
 
-def test_repair_tool_call_arguments_extracts_missing_jira_jql_from_step() -> None:
+@pytest.mark.asyncio
+async def test_repair_tool_call_arguments_extracts_missing_jira_jql_from_step() -> None:
     call = ToolCall(tool="PineLabs.JIRA.jira_search_issues", arguments={})
 
-    repaired = repair_tool_call_arguments(
+    repaired = await repair_tool_call_arguments(
         call,
         "Use Jira with the JQL "
         "'assignee = currentUser() AND created >= -26w ORDER BY created DESC'",
@@ -58,13 +61,14 @@ def test_repair_tool_call_arguments_extracts_missing_jira_jql_from_step() -> Non
     }
 
 
-def test_repair_tool_call_arguments_replaces_placeholder_jira_jql_from_goal() -> None:
+@pytest.mark.asyncio
+async def test_repair_tool_call_arguments_replaces_placeholder_jira_jql_from_goal() -> None:
     call = ToolCall(
         tool="PineLabs.JIRA.jira_search_issues",
         arguments={"jql": "project = TEST AND status = Open", "max_results": 100},
     )
 
-    repaired = repair_tool_call_arguments(
+    repaired = await repair_tool_call_arguments(
         call,
         "Use Jira search",
         goal="fetch all jira issues in last 6 months",
@@ -74,10 +78,11 @@ def test_repair_tool_call_arguments_replaces_placeholder_jira_jql_from_goal() ->
     assert repaired.arguments["max_results"] == 100
 
 
-def test_repair_tool_call_arguments_builds_cross_project_assignee_jql() -> None:
+@pytest.mark.asyncio
+async def test_repair_tool_call_arguments_builds_cross_project_assignee_jql() -> None:
     call = ToolCall(tool="jira_search_issues", arguments={"jql": "project = TEST"})
 
-    repaired = repair_tool_call_arguments(
+    repaired = await repair_tool_call_arguments(
         call,
         "Use Jira search",
         goal="Find all the JIRA assigned on Abhay Dwivedi",
@@ -86,10 +91,11 @@ def test_repair_tool_call_arguments_builds_cross_project_assignee_jql() -> None:
     assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'
 
 
-def test_repair_tool_call_arguments_preserves_all_projects_for_named_assignee() -> None:
+@pytest.mark.asyncio
+async def test_repair_tool_call_arguments_preserves_all_projects_for_named_assignee() -> None:
     call = ToolCall(tool="jira_search_issues", arguments={})
 
-    repaired = repair_tool_call_arguments(
+    repaired = await repair_tool_call_arguments(
         call,
         "Search all projects for Jira assigned to Abhay Dwivedi",
     )
@@ -97,10 +103,11 @@ def test_repair_tool_call_arguments_preserves_all_projects_for_named_assignee() 
     assert repaired.arguments["jql"] == 'assignee = "Abhay Dwivedi" ORDER BY created DESC'
 
 
-def test_repair_tool_call_arguments_maps_dotted_jira_search_alias() -> None:
+@pytest.mark.asyncio
+async def test_repair_tool_call_arguments_maps_dotted_jira_search_alias() -> None:
     call = ToolCall(tool="jira.issue_search", arguments={"assignee": "Abhay Dwivedi"})
 
-    repaired = repair_tool_call_arguments(
+    repaired = await repair_tool_call_arguments(
         call,
         "Execute a Jira issue search",
         goal="Find all the Jira assigned to Abhay Dwivedi",

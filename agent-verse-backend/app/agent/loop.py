@@ -24,7 +24,7 @@ from app.agent.prompts import EXECUTOR_SYSTEM, PLANNER_SYSTEM, VERIFIER_SYSTEM
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import CostController
-from app.governance.hitl import HITLGateway
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix
 from app.memory.execution import ExecutionMemory
 from app.observability.logging import get_logger
@@ -41,8 +41,31 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 _DEFAULT_MAX_ITERATIONS = 15
 
-# Keywords that indicate a high-risk step requiring HITL approval
-_HIGH_RISK_KEYWORDS = ("deploy", "delete", "drop", "rm", "prod", "production", "destroy")
+# Keywords that indicate a high-risk step requiring HITL approval.
+# "rm" is intentionally omitted here — it requires word-boundary matching
+# (see _is_high_risk_step) to avoid false positives on words like "perform",
+# "format", "reformulate", etc.
+_HIGH_RISK_KEYWORDS = frozenset((
+    "deploy", "delete", "drop", "prod", "production",
+    "destroy", "wipe", "truncate", "purge", "nuke",
+))
+
+# Pre-compiled regex for the "rm" command — matches only the standalone word
+# to prevent false positives in common English words (perform, format, …).
+_RM_PATTERN = re.compile(r"\brm\b")
+
+
+def _is_high_risk_step(step: str) -> bool:
+    """Return True if the step contains a high-risk keyword or the 'rm' command.
+
+    Uses the ``_HIGH_RISK_KEYWORDS`` frozenset for O(1) substring lookup on
+    unambiguous keywords, plus a word-boundary regex for ``rm`` to avoid false
+    positives on words such as "perform", "format", "reformulate", etc.
+    """
+    lower = step.lower()
+    if any(kw in lower for kw in _HIGH_RISK_KEYWORDS):
+        return True
+    return bool(_RM_PATTERN.search(lower))
 
 
 def _parse_json_response(text: str, key: str | None = None) -> dict[str, Any]:
@@ -110,6 +133,7 @@ class AgentLoop:
         dedup_cache: DeduplicationCache | None = None,
         result_processor: ResultProcessor | None = None,
         exec_memory: ExecutionMemory | None = None,
+        autonomy_mode: str = "bounded-autonomous",
     ) -> None:
         self._planner = planner
         self._executor = executor
@@ -124,6 +148,7 @@ class AgentLoop:
         self._dedup_cache = dedup_cache
         self._result_processor = result_processor
         self._exec_memory = exec_memory
+        self._autonomy_mode = autonomy_mode
 
     async def run(
         self,
@@ -257,19 +282,36 @@ class AgentLoop:
 
         # ── Step 7: HITL gate ────────────────────────────────────────────────
         if self._hitl_gateway is not None:
-            risk_level = (
-                "high"
-                if any(kw in step.lower() for kw in _HIGH_RISK_KEYWORDS)
-                else "low"
-            )
+            risk_level = "high" if _is_high_risk_step(step) else "low"
             if risk_level == "high":
-                self._hitl_gateway.request_approval(
+                req = self._hitl_gateway.request_approval(
                     goal_id=state.goal_id,
                     action=step,
                     risk_level=risk_level,
                     tenant_ctx=tenant_ctx,
                 )
-                # Auto-proceed after logging the approval request
+                req_id = str(req.request_id)
+                if self._autonomy_mode == "supervised":
+                    status = await self._hitl_gateway.wait_for_approval(
+                        req_id, tenant_ctx=tenant_ctx
+                    )
+                    if status == ApprovalStatus.REJECTED:
+                        raise PermissionError(
+                            f"Step '{step}' rejected by human approver"
+                        )
+                    elif status == ApprovalStatus.TIMED_OUT:
+                        raise PermissionError(
+                            f"Step '{step}' timed out awaiting human approval"
+                        )
+                    # APPROVED — fall through to execute
+                else:
+                    # Non-supervised: log the request but do not block
+                    logger.info(
+                        "hitl_approval_requested",
+                        request_id=req_id,
+                        step=step[:200],
+                        autonomy_mode=self._autonomy_mode,
+                    )
 
         # ── Step 8: Execute LLM call ─────────────────────────────────────────
         recent_outputs = "\n".join(s.output for s in state.steps[-3:] if s.output)

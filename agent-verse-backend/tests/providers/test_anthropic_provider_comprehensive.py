@@ -147,7 +147,16 @@ async def test_complete_extracts_system_from_messages() -> None:
     assert len(captured_kwargs) == 1
     kw = captured_kwargs[0]
     # system message should be passed as top-level kwarg
-    assert kw.get("system") == "You are a helpful assistant."
+    # Phase 2: may be plain string OR list with cache_control
+    system_val = kw.get("system")
+    if isinstance(system_val, list):
+        assert any(
+            item.get("text") == "You are a helpful assistant."
+            for item in system_val
+            if isinstance(item, dict)
+        ), f"System text not found: {system_val}"
+    else:
+        assert system_val == "You are a helpful assistant."
     # system message should NOT appear in 'messages' list
     for m in kw["messages"]:
         assert m["role"] != "system"
@@ -180,7 +189,16 @@ async def test_complete_request_system_overrides_message_system() -> None:
         )
 
     kw = captured_kwargs[0]
-    assert kw.get("system") == "Direct system prompt"
+    system_val = kw.get("system")
+    # Phase 2: system may be a plain string OR a list with cache_control (Anthropic prompt caching)
+    if isinstance(system_val, list):
+        assert any(
+            item.get("text") == "Direct system prompt"
+            for item in system_val
+            if isinstance(item, dict)
+        ), f"Expected system text not found in list: {system_val}"
+    else:
+        assert system_val == "Direct system prompt"
 
 
 @pytest.mark.asyncio

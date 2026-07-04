@@ -18,7 +18,7 @@ ENTERPRISE = TenantContext(tenant_id="t2", plan=PlanTier.ENTERPRISE, api_key_id=
 
 
 def test_goal_limit_not_exceeded():
-    check_daily_goal_limit(FREE, 999)  # limit is 1000, should not raise
+    check_daily_goal_limit(FREE, 24)  # limit is 25, should not raise
 
 
 def test_goal_limit_exceeded():

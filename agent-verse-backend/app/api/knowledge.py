@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, SecretStr
 
+from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
@@ -328,6 +329,10 @@ async def search_knowledge(
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
+
+    # Input validation: clamp top_k and cap query length
+    top_k = max(1, min(top_k, 100))
+    q = q[:10000]
 
     embedder = getattr(request.app.state, "embedder", None)
 
@@ -750,6 +755,12 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     content = ""
     metadata: dict[str, Any] = {"source_url": body.url, "source_type": body.source_type}
 
+    # SSRF guard — reject internal/metadata URLs before fetching
+    try:
+        assert_public_url(body.url, context="/ingest/url")
+    except SSRFError as exc:
+        raise HTTPException(status_code=400, detail=f"URL blocked for security reasons: {exc}") from exc
+
     try:
         if body.source_type == "web":
             import httpx
@@ -782,7 +793,9 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, f"Failed to fetch content from URL: {exc}")
+        import logging as _logging
+        _logging.getLogger(__name__).warning("ingest_url_fetch_failed: %s", exc)
+        raise HTTPException(500, "Failed to fetch content from the requested URL") from exc
 
     if not content.strip():
         raise HTTPException(422, "No content extracted from URL")
@@ -1343,6 +1356,17 @@ async def ingest_from_rpa_url(
         screenshot_b64: str = ""
         links: list[str] = []
         playwright_used = False
+
+        # SSRF guard — reject internal/metadata URLs before fetching
+        try:
+            assert_public_url(url, context="/ingest/rpa-url")
+        except SSRFError as exc:
+            results.append({
+                "url": url, "success": False,
+                "error": f"URL blocked for security reasons: {exc}",
+                "chunks_ingested": 0, "playwright_used": False,
+            })
+            continue
 
         if _playwright_ok:
             try:

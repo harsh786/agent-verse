@@ -41,7 +41,7 @@ class HybridSearchResult:
     source_url: str = ""
     source_doc_id: str = ""
     page_number: int | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -234,19 +234,15 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
         top_k: int = 5,
     ) -> list[HybridSearchResult]:
-        """PostgreSQL hybrid search using pgvector cosine + pg_trgm.
+        """PostgreSQL hybrid search via the RRF-fused retrieval engine.
 
-        FIX 1: Explicit ``tenant_id`` filter in WHERE clause (defence-in-depth
-                on top of RLS — guards against RLS misconfiguration).
-        FIX 2: Variable embedding dimensions — queries ``knowledge_chunks_{dim}``
-                when the collection is registered in ``knowledge_collections``;
-                falls back to the legacy ``documents`` table otherwise.
-        FIX 7: Embedding passed as a PostgreSQL vector literal
-                (``[v1,v2,...]``) instead of Python's ``str(list)`` which can
-                produce inconsistent float formatting.
+        Delegates to ``app.rag.engine.hybrid_search`` which runs three parallel
+        retrieval legs (pgvector ANN + FTS + pg_trgm) and fuses them with
+        Reciprocal Rank Fusion.  Results are mapped back to ``HybridSearchResult``
+        for API compatibility.
 
         Falls back to in-memory ``hybrid_search()`` if DB is not available or
-        if the query fails.
+        if the engine call fails.
         """
         if self._db is None:
             return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
@@ -255,95 +251,84 @@ class KnowledgeStore:
             from sqlalchemy import text
 
             from app.db.rls import sqlalchemy_rls_context
+            from app.rag.engine import RetrievalResult
+            from app.rag.engine import hybrid_search as _engine_search
 
-            # FIX 7: Explicit PostgreSQL vector literal format for precision.
-            qvec_str = (
-                "[" + ",".join(f"{v:.6f}" for v in query_embedding) + "]"
-                if query_embedding
-                else None
-            )
-            if qvec_str is None:
-                return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+            # Determine embedding dimension for correct table routing.
+            embedding_dim: int | None = None
+            async with self._db() as session, sqlalchemy_rls_context(
+                session, tenant_ctx.tenant_id
+            ):
+                try:
+                    col_res = await session.execute(
+                        text(
+                            "SELECT embedding_dim FROM knowledge_collections "
+                            "WHERE id = :cid AND tenant_id = :tid"
+                        ),
+                        {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                    )
+                    col_row = col_res.fetchone()
+                    if col_row and col_row[0] in (768, 1024, 1536, 3072):
+                        embedding_dim = int(col_row[0])
+                except Exception:
+                    pass
 
-            async with self._db() as session:
-                async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                    # FIX 2: Detect collection's embedding dimension and pick
-                    # the appropriate knowledge_chunks_{dim} table.
-                    table = "documents"  # legacy fallback
-                    try:
-                        col_res = await session.execute(
-                            text(
-                                "SELECT embedding_dim FROM knowledge_collections "
-                                "WHERE id = :cid AND tenant_id = :tid"
-                            ),
-                            {
-                                "cid": collection_id,
-                                "tid": tenant_ctx.tenant_id,
-                            },
-                        )
-                        col_row = col_res.fetchone()
-                        if col_row and col_row.embedding_dim in (768, 1024, 1536, 3072):
-                            table = f"knowledge_chunks_{col_row.embedding_dim}"
-                    except Exception:
-                        pass  # keep using legacy 'documents' table
+                engine_results: list[RetrievalResult] = await _engine_search(
+                    session=session,
+                    query=query,
+                    query_embedding=query_embedding or None,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    retrieval_mode="hybrid",
+                    embedding_dim=embedding_dim,
+                )
 
-                    # Build SELECT — legacy table has extra citation columns;
-                    # knowledge_chunks_* tables surface them via metadata JSONB.
-                    if table == "documents":
-                        extra_cols = (
-                            "COALESCE(source_url, '') AS source_url,\n"
-                            "                            COALESCE(source_doc_id, '') AS source_doc_id,\n"
-                            "                            page_number,"
-                        )
-                    else:
-                        extra_cols = (
-                            "'' AS source_url,\n"
-                            "                            '' AS source_doc_id,\n"
-                            "                            NULL::integer AS page_number,"
-                        )
-
-                    # FIX 1: Add explicit tenant_id to WHERE clause.
-                    sql = text(f"""
-                        SELECT
-                            id AS chunk_id,
-                            content,
-                            (0.7 * (1 - (embedding <=> :qvec::vector)) +
-                             0.3 * similarity(content, :query)) AS score,
-                            (1 - (embedding <=> :qvec::vector)) AS vector_score,
-                            similarity(content, :query) AS trigram_score,
-                            {extra_cols}
-                            COALESCE(metadata, '{{}}') AS metadata
-                        FROM {table}
-                        WHERE collection_id = :cid
-                          AND tenant_id = :tid
-                        ORDER BY score DESC
-                        LIMIT :k
-                    """)
-                    result = await session.execute(sql, {
-                        "qvec": qvec_str,     # FIX 7: vector literal
-                        "query": query,
-                        "cid": collection_id,
-                        "tid": tenant_ctx.tenant_id,  # FIX 1: explicit tenant filter
-                        "k": top_k,
-                    })
-                    rows = result.fetchall()
-                    return [
-                        HybridSearchResult(
-                            chunk_id=str(r.chunk_id),
-                            content=r.content,
-                            score=float(r.score or 0),
-                            vector_score=float(r.vector_score or 0),
-                            trigram_score=float(r.trigram_score or 0),
-                            source_url=getattr(r, "source_url", "") or "",
-                            source_doc_id=getattr(r, "source_doc_id", "") or "",
-                            page_number=getattr(r, "page_number", None),
-                            metadata=dict(getattr(r, "metadata", {}) or {}),
-                        )
-                        for r in rows
-                    ]
+            return [
+                HybridSearchResult(
+                    chunk_id=r.chunk_id,
+                    content=r.content,
+                    score=r.score,
+                    vector_score=0.0,   # RRF fused — per-leg scores not exposed
+                    trigram_score=0.0,
+                    source_url=str(r.source_metadata.get("source_url", "") or ""),
+                    source_doc_id=str(r.source_metadata.get("source_doc_id", "") or ""),
+                    page_number=r.source_metadata.get("page_number"),
+                    metadata=r.source_metadata,
+                )
+                for r in engine_results
+            ]
         except Exception as exc:
             _log.warning("DB hybrid search failed, falling back to in-memory: %s", exc)
             return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+
+    async def search(
+        self,
+        query: str,
+        collection_id: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Duck-typed search adapter for ``federated_search``.
+
+        Runs the in-memory hybrid search (without embeddings) and returns
+        results as plain dicts compatible with the federated search pipeline.
+        This method satisfies the ``store.search(query, cid, top_k)`` protocol
+        expected by ``app.knowledge.federated_search.federated_search``.
+        """
+        # Build a minimal tenant context from collections we have in memory.
+        results: list[dict[str, Any]] = []
+        for (_tid, cid), store in self._data.items():
+            if cid != collection_id:
+                continue
+            for chunk in store.chunks:
+                tri = _trigram_score(query, chunk.content)
+                results.append({
+                    "chunk_id": chunk.chunk_id,
+                    "content": chunk.content,
+                    "score": tri,
+                    "metadata": chunk.metadata,
+                })
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[:top_k]
 
     async def ingest_document(
         self,
@@ -443,16 +428,24 @@ class KnowledgeStore:
         freshness_ttl_hours: int,
         content_hash: str,
     ) -> None:
-        """Persist a document chunk with citation fields to PostgreSQL.
+        """Persist a document chunk to the correct ``knowledge_chunks_{dim}`` table.
+
+        FIX 4.3: Writes to ``knowledge_chunks_{dim}`` instead of the legacy
+        ``documents`` table.  The embedding dimension is resolved by querying
+        ``knowledge_collections``; falls back to 1536 when unknown.
+
+        Citation fields (source_url, source_type, source_doc_id, page_number,
+        freshness_ttl_hours) are stored in the metadata JSONB column since the
+        dynamic-dimension tables do not have dedicated citation columns.
 
         FIX 7: Embedding is formatted as an explicit PostgreSQL vector literal
-        ``[v1.000000,v2.000000,...]`` instead of Python's ``str(list)`` which
-        can produce ``[0.1, 0.2, ...]`` — a format that differs from pgvector's
-        expected ``[0.100000,0.200000,...]`` and may cause cast failures.
+        ``[v1.000000,v2.000000,...]`` instead of Python's ``str(list)``.
         """
         if self._db is None:
             return
         try:
+            import json
+
             from sqlalchemy import text
 
             from app.db.rls import sqlalchemy_rls_context
@@ -464,36 +457,51 @@ class KnowledgeStore:
                 else None
             )
 
+            # Merge citation fields into metadata JSONB.
+            full_metadata = dict(metadata)
+            full_metadata.setdefault("source_url", source_url)
+            full_metadata.setdefault("source_type", source_type)
+            full_metadata.setdefault("source_doc_id", source_doc_id)
+            full_metadata.setdefault("page_number", page_number)
+            full_metadata.setdefault("freshness_ttl_hours", freshness_ttl_hours)
+
             async with self._db() as session, session.begin():
                 async with sqlalchemy_rls_context(session, tenant_id):
+                    # FIX 4.3: Resolve embedding dimension → correct table.
+                    dim = 1536
+                    try:
+                        dim_res = await session.execute(
+                            text(
+                                "SELECT embedding_dim FROM knowledge_collections "
+                                "WHERE id = :cid AND tenant_id = :tid"
+                            ),
+                            {"cid": collection_id, "tid": tenant_id},
+                        )
+                        dim_row = dim_res.fetchone()
+                        if dim_row and dim_row[0] in (768, 1024, 1536, 3072):
+                            dim = int(dim_row[0])
+                    except Exception:
+                        pass
+
+                    table_name = f"knowledge_chunks_{dim}"
                     await session.execute(
-                        text("""
-                            INSERT INTO documents
-                                (id, collection_id, tenant_id, source, content, content_hash,
-                                 embedding, chunk_index, metadata,
-                                 source_url, source_type, source_doc_id,
-                                 page_number, freshness_ttl_hours)
+                        text(f"""
+                            INSERT INTO {table_name}
+                                (id, collection_id, tenant_id, content, content_hash,
+                                 embedding, chunk_index, metadata)
                             VALUES
-                                (:id, :cid, :tid, :src, :content, :hash,
-                                 :emb::vector, 0, :meta::jsonb,
-                                 :source_url, :source_type, :source_doc_id,
-                                 :page_number, :ttl)
+                                (:id, :cid, :tid, :content, :hash,
+                                 :emb::vector, 0, :meta::jsonb)
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
                             "id": chunk_id,
                             "cid": collection_id,
                             "tid": tenant_id,
-                            "src": source_type,
                             "content": content,
                             "hash": content_hash,
-                            "emb": emb_str,          # FIX 7: vector literal
-                            "meta": str(metadata),
-                            "source_url": source_url,
-                            "source_type": source_type,
-                            "source_doc_id": source_doc_id,
-                            "page_number": page_number,
-                            "ttl": freshness_ttl_hours,
+                            "emb": emb_str,
+                            "meta": json.dumps(full_metadata),
                         },
                     )
         except Exception as exc:

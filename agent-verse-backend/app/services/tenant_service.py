@@ -7,11 +7,11 @@ can be wired and tested without a running database.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import secrets
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -64,6 +64,8 @@ class TenantService:
 
         The raw API key appears **once** in this response and is never stored.
         Raises :class:`~app.core.errors.ConflictError` if the e-mail is taken.
+
+        Writes to DB first, then updates in-memory cache, then invalidates Redis.
         """
         normalised = email.lower()
         if normalised in self._email_index:
@@ -71,35 +73,12 @@ class TenantService:
 
         tenant_id = uuid.uuid4().hex
         plan = PlanTier.FREE
-
-        self._tenants[tenant_id] = {
-            "tenant_id": tenant_id,
-            "name": name,
-            "email": email,
-            "plan": plan.value,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-        self._email_index[normalised] = tenant_id
-
-        # Create the initial API key
         raw_key = _generate_raw_key(plan.value)
         key_id = uuid.uuid4().hex
         key_hash = _hash_key(raw_key)
-        self._keys[key_id] = {
-            "key_id": key_id,
-            "tenant_id": tenant_id,
-            "name": "Default",
-            "scopes": [],
-            "expires_at": None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": datetime.now(UTC).isoformat(),
-            "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
-        }
-        self._hash_to_key_id[key_hash] = key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+        created_at = datetime.now(UTC).isoformat()
 
-        # Persist before returning so the one-time API key survives reloads/restarts.
+        # ── 1. DB-first write (transactional) ────────────────────────────────
         await self._db_create_tenant_with_api_key(
             tenant_id=tenant_id,
             name=name,
@@ -108,6 +87,32 @@ class TenantService:
             key_id=key_id,
             key_hash=key_hash,
         )
+
+        # ── 2. Update in-memory cache after successful DB write ───────────────
+        self._tenants[tenant_id] = {
+            "tenant_id": tenant_id,
+            "name": name,
+            "email": email,
+            "plan": plan.value,
+            "created_at": created_at,
+        }
+        self._email_index[normalised] = tenant_id
+        self._keys[key_id] = {
+            "key_id": key_id,
+            "tenant_id": tenant_id,
+            "name": "Default",
+            "scopes": [],
+            "expires_at": None,
+            "key_hash": key_hash,
+            "is_active": True,
+            "created_at": created_at,
+            "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
+        }
+        self._hash_to_key_id[key_hash] = key_id
+        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+
+        # ── 3. Invalidate Redis cache so stale entries are evicted immediately ─
+        await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
         return {
             "tenant_id": tenant_id,
@@ -174,10 +179,10 @@ class TenantService:
         self._hash_to_key_id[key_hash] = key_id
         self._tenant_keys.setdefault(tenant_id, []).append(key_id)
 
-        # Fire-and-forget DB persistence
-        asyncio.create_task(
-            self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
-        )
+        # DB persistence (transactional — await to ensure key is durable before returning)
+        await self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
+        # Invalidate tenant cache since the key roster changed
+        await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
         return {
             "key_id": key_id,
@@ -195,8 +200,10 @@ class TenantService:
         if key is None or key["tenant_id"] != tenant_id:
             raise NotFoundError(f"API key not found: {key_id}")
         key["is_active"] = False
-        # Fire-and-forget DB persistence
-        asyncio.create_task(self._db_revoke_api_key(key_id, tenant_id))
+        # DB persistence (transactional — await to ensure revocation is durable)
+        await self._db_revoke_api_key(key_id, tenant_id)
+        # Invalidate tenant cache so revoked key is not served from cache
+        await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
     async def resolve_api_key(self, raw_key: str) -> TenantContext | None:
         """Validate *raw_key* and return the :class:`TenantContext`, or ``None``.
@@ -582,3 +589,121 @@ class TenantService:
         except Exception as exc:
             logging.getLogger(__name__).warning("DB sync failed: %s", exc)
             return 0
+
+    # ── Redis read-through cache helpers ──────────────────────────────────────
+
+    async def _get_tenant_from_db(
+        self,
+        tenant_id: str,
+        *,
+        db: Any = None,
+    ) -> TenantContext | None:
+        """Fetch a single tenant from PostgreSQL and return a TenantContext.
+
+        Returns ``None`` if no DB factory is available or the tenant is not found.
+        """
+        db_session = db or self._db
+        if db_session is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.tenant import Tenant
+
+            async with db_session() as session:
+                result = await session.execute(
+                    select(Tenant).where(
+                        Tenant.id == tenant_id,
+                        Tenant.is_active == True,  # noqa: E712
+                    )
+                )
+                t = result.scalar_one_or_none()
+                if t is None:
+                    return None
+                return TenantContext(
+                    tenant_id=t.id,
+                    plan=PlanTier(t.plan_tier),
+                    api_key_id="",
+                    roles=(),
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).warning("_get_tenant_from_db failed: %s", exc)
+            return None
+
+    async def get_tenant_cached(
+        self,
+        tenant_id: str,
+        redis: Any = None,
+        db: Any = None,
+    ) -> TenantContext | None:
+        """Get tenant context with Redis read-through cache (TTL 5 minutes).
+
+        Lookup order: Redis → PostgreSQL → in-memory dict.
+        A successful DB fetch is written back to Redis automatically.
+        """
+        import json as _json
+
+        cache_key = f"tenant:{tenant_id}"
+
+        # ── L1: Redis cache hit ────────────────────────────────────────────
+        if redis is not None:
+            try:
+                raw = await redis.get(cache_key)
+                if raw:
+                    data = _json.loads(raw)
+                    return TenantContext(
+                        tenant_id=data["tenant_id"],
+                        plan=PlanTier(data.get("plan", "free")),
+                        api_key_id=data.get("api_key_id", ""),
+                        roles=tuple(data.get("roles", [])),
+                    )
+            except Exception:
+                pass  # Redis errors are non-fatal — fall through
+
+        # ── L2: DB fetch + populate cache ─────────────────────────────────
+        if db is not None:
+            try:
+                tenant = await self._get_tenant_from_db(tenant_id, db=db)
+                if tenant is not None and redis is not None:
+                    with suppress(Exception):
+                        await redis.set(
+                            cache_key,
+                            _json.dumps({
+                                "tenant_id": tenant.tenant_id,
+                                "plan": tenant.plan.value,
+                                "api_key_id": tenant.api_key_id,
+                                "roles": list(tenant.roles),
+                            }),
+                            ex=300,  # 5-minute TTL
+                        )
+                return tenant
+            except Exception:
+                pass  # DB errors fall through to in-memory
+
+        # ── L3: In-memory fallback ─────────────────────────────────────────
+        raw_dict = self._tenants.get(tenant_id)
+        if raw_dict is None:
+            return None
+        try:
+            return TenantContext(
+                tenant_id=raw_dict["tenant_id"],
+                plan=PlanTier(raw_dict.get("plan", "free")),
+                api_key_id=raw_dict.get("api_key_id", ""),
+                roles=tuple(raw_dict.get("roles", [])),
+            )
+        except Exception:
+            return None
+
+    async def invalidate_tenant_cache(self, tenant_id: str, redis: Any = None) -> None:
+        """Invalidate cached tenant data after any mutation.
+
+        Removes the ``tenant:{tenant_id}`` key from Redis only.
+        The in-memory ``self._tenants`` dict is the source of truth when there
+        is no DB — it must NOT be cleared here, otherwise key lookups return 401.
+        Only clear from Redis (the read-through cache layer).
+        """
+        if redis is not None:
+            with suppress(Exception):
+                await redis.delete(f"tenant:{tenant_id}")
+        # NOTE: Do NOT pop from self._tenants — that dict is the authoritative
+        # in-memory store (used by resolve_api_key). Only Redis is a cache.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import hashlib
 import os
@@ -11,6 +12,7 @@ from datetime import UTC
 from typing import Any, cast
 
 from app.observability.logging import get_logger
+from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app
 
 logger = get_logger(__name__)
@@ -67,6 +69,42 @@ def _get_sync_redis() -> Any:
     """Get a synchronous Redis client using the module-level pool."""
     import redis
     return redis.Redis(connection_pool=_get_redis_pool())
+
+
+class _SyncGoalLock:
+    """Synchronous Redis-based distributed lock for Celery tasks.
+
+    Uses ``SET NX PX`` for acquisition and a Lua script for atomic
+    check-and-delete on release.  All operations are synchronous so they
+    can be called directly from a Celery task without creating a new
+    asyncio event loop — avoiding the event-loop-mismatch bug where
+    ``redis.asyncio`` clients created in one ``_run_async()`` call become
+    unusable inside a different loop created by the next call.
+    """
+
+    KEY_PREFIX = "goal_lock:"
+    _RELEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+    def __init__(self, redis_client: Any, lock_value: str) -> None:
+        self._redis = redis_client
+        self._value = lock_value
+
+    def acquire(self, goal_id: str, ttl_ms: int = 1_800_000) -> bool:
+        """Return True if the lock was acquired; False if another worker holds it."""
+        key = f"{self.KEY_PREFIX}{goal_id}"
+        result = self._redis.set(key, self._value, px=ttl_ms, nx=True)
+        return bool(result)
+
+    def release(self, goal_id: str) -> None:
+        """Release the lock only if this instance owns it (atomic Lua check-and-delete)."""
+        key = f"{self.KEY_PREFIX}{goal_id}"
+        with contextlib.suppress(Exception):
+            self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._value)
 
 
 async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
@@ -346,10 +384,11 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
     from app.db.models.goal import Goal
+    from app.db.rls import system_session
     from app.db.session import get_session_factory
     try:
         db = get_session_factory()
-        async with db() as session, session.begin():
+        async with db() as session, session.begin(), system_session(session):
             await session.execute(
                 update(Goal)
                 .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
@@ -392,7 +431,10 @@ def run_goal(
         from app.services.llm_config_store import get_llm_config_store
         _config_store = get_llm_config_store()
         if _config_store:
-            _tenant_cfg = _run_async(_config_store.get(tenant_id)) or {}
+            _tenant_cfg = _run_async(_config_store.get_config(tenant_id)) or {}
+            if _tenant_cfg is None:
+                logger.warning("tenant_llm_config_not_found", tenant_id=tenant_id)
+                _tenant_cfg = {}
             _plan_str = _tenant_cfg.get("plan", "professional")
     except Exception:
         pass
@@ -426,12 +468,12 @@ def run_goal(
     goal_bridge: Any = None
     event_store: Any = None
     try:
-        from app.db.session import _make_session_factory
+        from app.db.session import get_session_factory
         from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
 
         def _make_worker_goal_bridge() -> tuple[Any, Any, Any]:
-            fresh_db = _make_session_factory()
+            fresh_db = get_session_factory()
             fresh_event_store = EventStore(fresh_db)
             fresh_goal_bridge = GoalService(
                 db_session_factory=fresh_db, event_store=fresh_event_store
@@ -523,22 +565,24 @@ def run_goal(
         )
 
     # ── Distributed lock: at-most-once execution per goal ─────────────────────
-    _lock = None
-    _lock_redis = None
+    # Use a synchronous lock (_SyncGoalLock) to avoid event-loop-mismatch bugs:
+    # each _run_async() call creates a fresh event loop, so an async Redis client
+    # created during acquire() would be bound to a different loop from the one
+    # used during release(), silently breaking the release.
+    _lock: _SyncGoalLock | None = None
     try:
         _redis_url = celery_app.conf.broker_url or ""
         if _redis_url:
-            import redis.asyncio as _aioredis
-            _lock_redis = _aioredis.from_url(_redis_url, decode_responses=True)
-            from app.reliability.distributed_lock import GoalExecutionLock
-            _lock = GoalExecutionLock(_lock_redis)
-            _acquired = _run_async(_lock.acquire(goal_id, ttl_ms=1_800_000))
+            import uuid as _uuid
+
+            import redis as _sync_redis_mod
+            _lock_redis_sync = _sync_redis_mod.from_url(_redis_url, decode_responses=True)
+            _lock = _SyncGoalLock(_lock_redis_sync, _uuid.uuid4().hex)
+            _acquired = _lock.acquire(goal_id, ttl_ms=1_800_000)
             if not _acquired:
                 logger.warning(
                     "Goal %s already executing in another worker — skipping", goal_id
                 )
-                if _lock_redis:
-                    _run_async(_lock_redis.aclose())
                 return {
                     "status": "skipped",
                     "goal_id": goal_id,
@@ -564,15 +608,8 @@ def run_goal(
         )
         # Release distributed lock before early return
         if _lock:
-            try:
-                _run_async(_lock.release(goal_id))
-            except Exception:
-                pass
-        if _lock_redis:
-            try:
-                _run_async(_lock_redis.aclose())
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                _lock.release(goal_id)
         # Decrement concurrent-goal counter — dry-run goals still terminate
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
         return {
@@ -771,6 +808,28 @@ def run_goal(
             except Exception:
                 pass
 
+            # Build LLM response cache and semantic cache for the worker
+            _llm_response_cache = None
+            _semantic_cache_worker = None
+            _redis_for_worker = None
+            try:
+                from app.rag.llm_response_cache import LLMResponseCache
+                _redis_url_worker = os.getenv("REDIS_URL", "")
+                if _redis_url_worker:
+                    import redis.asyncio as _aioredis_worker
+                    _redis_for_worker = _aioredis_worker.from_url(
+                        _redis_url_worker, decode_responses=False
+                    )
+                _llm_response_cache = LLMResponseCache(redis=_redis_for_worker)
+            except Exception:
+                pass
+
+            try:
+                from app.rag.semantic_cache import SemanticCache
+                _semantic_cache_worker = SemanticCache(redis=_redis_for_worker)
+            except Exception:
+                pass
+
             # Build separate verifier for cross-model verification (reduces self-confirmation bias)
             _verifier_for_graph = provider  # default: same as executor
             try:
@@ -800,6 +859,8 @@ def run_goal(
                 long_term_memory=_ltm,
                 eval_runner=_eval,
                 cost_tracker=None,
+                llm_response_cache=_llm_response_cache,
+                semantic_cache=_semantic_cache_worker,
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
@@ -962,15 +1023,8 @@ def run_goal(
     finally:
         # Release distributed lock
         if _lock:
-            try:
-                _run_async(_lock.release(goal_id))
-            except Exception:
-                pass
-        if _lock_redis:
-            try:
-                _run_async(_lock_redis.aclose())
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                _lock.release(goal_id)
 
 
 @celery_app.task(name="app.scaling.tasks.run_scheduled_goal", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
@@ -1208,6 +1262,7 @@ def _record_schedule_fire_metric(status: str) -> None:
 
 
 @celery_app.task(name="app.scaling.tasks.record_queue_depths", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@beat_task_guard(lock_ttl_seconds=120)
 def record_queue_depths(self: Any) -> dict[str, Any]:
     """Record Celery Redis queue depths for autoscaling and dashboards."""
     import os
@@ -1385,6 +1440,7 @@ health_check_mcp = check_mcp_health
 
 
 @celery_app.task(name="app.scaling.tasks.fire_due_schedules", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@beat_task_guard(lock_ttl_seconds=300)
 def fire_due_schedules(self: Any) -> dict[str, Any]:
     """Fire all cron/interval schedules that are due within the current minute."""
     import json
@@ -1612,9 +1668,10 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
     try:
         from sqlalchemy import text
 
+        from app.db.rls import system_session
         from app.db.session import get_session_factory
         db = get_session_factory()
-        async with db() as session, session.begin():
+        async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text("""UPDATE goals
                         SET status='failed',
@@ -1660,9 +1717,10 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
     try:
         from sqlalchemy import text
 
+        from app.db.rls import system_session
         from app.db.session import get_session_factory
         db = get_session_factory()
-        async with db() as session, session.begin():
+        async with db() as session, session.begin(), system_session(session):
             for table in ["goal_events", "decision_traces"]:
                 try:
                     r = await session.execute(
@@ -1696,9 +1754,10 @@ async def _expire_db_approvals() -> list[str]:
     try:
         from sqlalchemy import text
 
+        from app.db.rls import system_session
         from app.db.session import get_session_factory
         db = get_session_factory()
-        async with db() as session, session.begin():
+        async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text(
                     """UPDATE approval_requests
@@ -2133,6 +2192,7 @@ def enforce_hitl_sla() -> dict:
 
 
 @celery_app.task(name="app.scaling.tasks.flush_audit_wal", queue="maintenance")
+@beat_task_guard(lock_ttl_seconds=180)
 def flush_audit_wal() -> dict:
     """Drain Redis WAL buffer to Postgres audit_events table."""
     async def _run() -> dict:

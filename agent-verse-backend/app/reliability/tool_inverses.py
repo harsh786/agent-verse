@@ -27,21 +27,67 @@ def register_inverse(tool_name: str, fn: Callable) -> None:
     _INVERSE_REGISTRY[tool_name] = fn
 
 
-def get_inverse_fn(tool_name: str, arguments: dict[str, Any]) -> Callable[[], Any]:
-    """Return a zero-arg callable that undoes the named tool call.
+def get_inverse_fn(
+    tool_name: str, arguments: dict[str, Any] | None = None
+) -> Callable[[], Any] | Callable[..., Any] | None:
+    """Return a callable that undoes the named tool call.
 
-    Backward-compatible: registered functions may be:
-    - sync 1-arg: ``lambda args: ...`` (old style, used in tests)
-    - async 2-arg: ``async def fn(args, mcp_client): ...`` (new style, built-ins)
+    Two modes depending on whether *arguments* is supplied:
+
+    **New mode** (``arguments=None``, preferred):
+        Returns an *async* callable ``inverse_fn(*args, **kwargs)`` wrapping
+        the registered function, or ``None`` if no inverse is registered.
+        Use this mode when the caller can ``await`` the result directly, e.g.
+        in ``rollback_all_async(executed_tool_calls=...)``.  The wrapper
+        forwards all positional/keyword arguments (including ``tool_call`` and
+        ``mcp_client``) through to the registered function, includes
+        ``tool_name`` in logged context, and swallows exceptions so one bad
+        inverse never aborts the whole rollback sequence.
+
+    **Legacy mode** (``arguments`` provided):
+        Returns a zero-arg *sync* callable that schedules the real async work
+        as a ``create_task`` when a running loop is present, or via
+        ``asyncio.run()`` otherwise.  Registered functions may be:
+
+        - sync 1-arg: ``lambda args: ...`` (old style, used in tests)
+        - async 2-arg: ``async def fn(args, mcp_client): ...`` (built-ins)
+
+        Returns ``lambda: None`` when no inverse is registered (never raises).
     """
     fn = _INVERSE_REGISTRY.get(tool_name)
-    if fn is None:
-        return lambda: None  # No inverse registered
-    captured_args = dict(arguments)
-    captured_client = _mcp_client
 
     import asyncio
     import inspect
+
+    # ── New mode: return awaitable or None ──────────────────────────────────
+    if arguments is None:
+        if fn is None:
+            return None  # Caller should check for None before awaiting
+
+        async def inverse_fn(*args: Any, **kwargs: Any) -> Any:
+            try:
+                if asyncio.iscoroutinefunction(fn):
+                    return await fn(*args, **kwargs)
+                result = fn(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    return await result
+                return result
+            except Exception as exc:
+                logger.warning(
+                    "rollback_inverse_failed tool=%s error=%s",
+                    tool_name,
+                    str(exc)[:100],
+                )
+                return None
+
+        return inverse_fn
+
+    # ── Legacy mode: zero-arg sync wrapper (backward-compat) ────────────────
+    if fn is None:
+        return lambda: None  # No inverse registered
+
+    captured_args = dict(arguments)
+    captured_client = _mcp_client
 
     async def _async_inverse() -> None:
         try:

@@ -43,7 +43,9 @@ async function request<T>(
   const { ssoMode, accessToken } = useAuthStore.getState();
   const apiKey = getApiKey();
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    // Don't set Content-Type for FormData — the browser must set it with the multipart
+    // boundary. Forcing application/json here would lose the boundary and corrupt the upload.
+    ...(!(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
     ...(options.headers as Record<string, string> | undefined),
   };
   // SSO mode: send Keycloak JWT as a Bearer token; the backend middleware
@@ -90,6 +92,26 @@ export class ApiError extends Error {
 
 /** Public alias for use in feature-level API modules (e.g. civilizationApi). */
 export const apiFetch = request;
+
+/**
+ * Upload a file (or any FormData payload) to the given path.
+ * Content-Type is intentionally NOT set so the browser supplies the multipart boundary.
+ */
+export function uploadFile<T>(path: string, formData: FormData): Promise<T> {
+  return request<T>(path, { method: "POST", body: formData });
+}
+
+/**
+ * Generic JSON request helper — exported for testing and ad-hoc use.
+ * Sets Content-Type: application/json automatically (FormData excluded by the
+ * request() function, but data passed here is always serialised as JSON).
+ */
+export function apiRequest<T>(method: string, path: string, data?: unknown): Promise<T> {
+  return request<T>(path, {
+    method,
+    ...(data !== undefined ? { body: JSON.stringify(data) } : {}),
+  });
+}
 
 // ── Goals ────────────────────────────────────────────────────────────────────
 

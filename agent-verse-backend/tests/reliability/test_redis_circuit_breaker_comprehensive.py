@@ -109,8 +109,9 @@ class TestCanCallAsync:
             if "state" in key:
                 return "open"  # string, not bytes
             if "opened_at" in key:
-                # Return current time so cooldown hasn't elapsed
-                return str(time.monotonic())
+                # H16: opened_at is now wall-clock (time.time()); return current
+                # wall-clock epoch so the cooldown has NOT elapsed
+                return str(time.time())
             return None
 
         mock_redis.get = mock_get

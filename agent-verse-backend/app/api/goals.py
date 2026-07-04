@@ -13,7 +13,23 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from app.core.errors import NotFoundError
+from app.observability.logging import get_logger as _get_logger
 from app.tenancy.context import TenantContext
+
+_logger = _get_logger(__name__)
+
+
+def _not_found_response(request: Request, exc: Exception) -> HTTPException:
+    """Return a sanitized 404 with correlation_id — avoids leaking internal IDs."""
+    correlation_id = (
+        getattr(getattr(request, "state", None), "correlation_id", None)
+        or str(uuid.uuid4())[:8]
+    )
+    _logger.info("goal_not_found", correlation_id=correlation_id, detail=str(exc))
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Resource not found [{correlation_id}]",
+    )
 
 router = APIRouter(prefix="/goals", tags=["goals"])
 
@@ -258,7 +274,7 @@ async def get_goal(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     return result
 
 
@@ -347,7 +363,7 @@ async def get_audit_log(request: Request, goal_id: str) -> list[dict[str, Any]]:
             goal_id=goal_id, tenant_ctx=tenant
         )
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     return entries
 
 
@@ -359,7 +375,7 @@ async def get_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = await svc.get_eval(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     return result
 
 
@@ -375,7 +391,7 @@ async def trigger_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = await svc.run_eval(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     return result
 
 
@@ -396,7 +412,7 @@ async def approve_goal(
             tenant_ctx=tenant,
         )
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     return result
 
 
@@ -408,7 +424,7 @@ async def pause_goal(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = await svc.pause_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return result
@@ -422,7 +438,7 @@ async def resume_goal(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         result: dict[str, Any] = await svc.resume_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return result
@@ -575,7 +591,7 @@ async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]
     try:
         await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise _not_found_response(request, exc) from exc
     # Query DB for traces
     # db_session_factory is not on app.state — get it from the session module
     from app.db.session import get_session_factory

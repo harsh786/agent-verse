@@ -136,7 +136,11 @@ class TestRedisCostController:
         mock = AsyncMock()
         mock.incrbyfloat = AsyncMock(side_effect=[goal_val, daily_val])
         mock.expire = AsyncMock()
+        mock.expireat = AsyncMock()
         mock.get = AsyncMock(return_value=str(daily_val))
+        # Force the non-Lua fallback path so these unit tests exercise logic,
+        # not Lua script atomicity (which belongs in integration tests).
+        mock.register_script = None
         return mock
 
     async def test_check_and_record_within_budget(self) -> None:
@@ -171,6 +175,8 @@ class TestRedisCostController:
 
     async def test_redis_error_fails_open_in_dev(self) -> None:
         mock_redis = AsyncMock()
+        mock_redis.register_script = None
+        mock_redis.get = AsyncMock(return_value=None)
         mock_redis.incrbyfloat.side_effect = ConnectionError("Redis down")
         ctrl = RedisCostController(mock_redis)
         ctx = _ctx()
@@ -180,6 +186,8 @@ class TestRedisCostController:
 
     async def test_redis_error_fails_closed_in_prod(self) -> None:
         mock_redis = AsyncMock()
+        mock_redis.register_script = None
+        mock_redis.get = AsyncMock(return_value=None)
         mock_redis.incrbyfloat.side_effect = ConnectionError("Redis down")
         ctrl = RedisCostController(mock_redis)
         ctx = _ctx()

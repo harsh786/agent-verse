@@ -12,6 +12,7 @@ task-type model is not configured.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,6 +105,70 @@ class ModelRouter:
     @classmethod
     def from_provider_name(cls, provider_name: str) -> ModelRouter:
         return cls(provider_name=provider_name)
+
+    # Simple goal keywords → use cheaper model tier
+    _SIMPLE_PATTERNS = re.compile(
+        r"\b(list|show|get|find|search|what is|who is|when|count|how many|"
+        r"check status|ping|describe|summarize in one|give me the)\b",
+        re.IGNORECASE,
+    )
+    _COMPLEX_PATTERNS = re.compile(
+        r"\b(create|build|deploy|implement|design|architect|automate|"
+        r"migrate|refactor|analyze and|generate report|compare|"
+        r"multi.step|workflow|pipeline|integrate)\b",
+        re.IGNORECASE,
+    )
+
+    def complexity_tier(self, goal: str) -> str:
+        """
+        Classify goal complexity: 'simple' | 'medium' | 'complex'
+        Used to downgrade the model for cheap goals to save cost.
+        """
+        if self._COMPLEX_PATTERNS.search(goal):
+            return "complex"
+        if self._SIMPLE_PATTERNS.search(goal):
+            return "simple"
+        return "medium"
+
+    def model_for_goal(self, task_type: str, goal: str = "") -> str:
+        """
+        Like model_for() but downgrades to a cheaper model for simple goals.
+        For planning: simple goals use execution_model instead of planning_model.
+        For verification: always uses verification_model regardless of complexity.
+        """
+        base_model = self.model_for(task_type)
+        if not goal or task_type == "verification":
+            return base_model
+        tier = self.complexity_tier(goal)
+        if tier == "simple" and task_type == "planning":
+            # Downgrade: use execution model for simple planning (cheaper)
+            cheaper = self._config.execution_model
+            if cheaper:
+                logger.debug(
+                    "model_downgraded_simple_goal",
+                    original=base_model,
+                    downgraded=cheaper,
+                    goal_prefix=goal[:50],
+                )
+                return cheaper
+        return base_model
+
+
+    def with_override(self, model: str) -> "ModelRouter":  # noqa: UP037
+        """Return a NEW ModelRouter (copy-on-write) with all task types overridden to `model`.
+        The original router is unchanged — prevents per-goal override from leaking across goals.
+        """
+        from copy import copy
+        new_router = copy(self)
+        new_config = ModelRouterConfig(
+            planning_model=model,
+            execution_model=model,
+            verification_model=model,
+            embedding_model=self._config.embedding_model,  # keep embedding model
+            fallback_model=model,
+        )
+        new_router._config = new_config
+        return new_router
 
 
 def get_router_for_tenant(tenant_cfg: dict[str, Any]) -> ModelRouter:

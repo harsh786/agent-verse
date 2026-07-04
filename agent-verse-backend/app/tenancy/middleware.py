@@ -24,6 +24,49 @@ from starlette.types import ASGIApp
 
 from app.tenancy.context import TenantContext
 
+# ---------------------------------------------------------------------------
+# H4: In-process rate-limit fallback (used when Redis is unavailable)
+# ---------------------------------------------------------------------------
+# Maps tenant_id → (window_start: float, count: int)
+_fallback_counters: dict[str, tuple[float, int]] = {}
+_FALLBACK_RPM_LIMIT = 120  # conservative cap applied on top of the plan limit
+
+
+async def _check_rate_limit_with_fallback(
+    tenant_id: str, redis: Any, rpm_limit: int
+) -> bool:
+    """Check rate limit, using in-process counter when Redis is unavailable.
+
+    Returns True if the request should be allowed, False if it should be
+    rate-limited.  Never fails open — always enforces at least
+    ``min(rpm_limit, _FALLBACK_RPM_LIMIT)`` even without Redis.
+    """
+    if redis is not None:
+        try:
+            from app.tenancy.rate_limiter import SlidingWindowRateLimiter
+            from app.tenancy.store import TenantScopedStore
+
+            store = TenantScopedStore(redis=redis, tenant_id=tenant_id)
+            limiter = SlidingWindowRateLimiter(store=store)
+            allowed, _, _ = await limiter.check_and_record("api", limit=rpm_limit)
+            return allowed
+        except Exception:
+            pass  # Redis error — fall through to in-process fallback
+
+    # In-process fallback: conservative sliding window without Redis
+    import time as _time
+
+    now = _time.monotonic()
+    window_start, count = _fallback_counters.get(tenant_id, (now, 0))
+    if now - window_start > 60:  # new 60-second window
+        _fallback_counters[tenant_id] = (now, 1)
+        return True
+    effective_limit = min(rpm_limit, _FALLBACK_RPM_LIMIT)
+    if count >= effective_limit:
+        return False  # fail-closed: enforce limit even without Redis
+    _fallback_counters[tenant_id] = (window_start, count + 1)
+    return True
+
 # Paths that do not require API-key authentication
 _BYPASS_PREFIXES = (
     "/health",
@@ -199,6 +242,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
             if not allowed:
                 return _rate_limit_response(reset_at)
+        else:
+            # H4: No Redis — use in-process fallback instead of failing open
+            import time as _time
+
+            from app.tenancy.context import PLAN_LIMITS
+
+            limits = PLAN_LIMITS[tenant_ctx.plan]
+            rl_limit = limits.requests_per_minute
+            if not await _check_rate_limit_with_fallback(
+                tenant_ctx.tenant_id, None, rpm_limit=rl_limit
+            ):
+                return _rate_limit_response(_time.time() + 60)
 
         response = await call_next(request)
 

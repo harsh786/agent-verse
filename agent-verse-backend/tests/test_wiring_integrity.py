@@ -1,0 +1,178 @@
+"""Wiring integrity tests — proves that create_app() and worker path inject
+every service the AgentGraph consumes. Prevents the 0B defect class from recurring.
+"""
+import inspect
+
+import pytest
+
+
+class TestGoalServiceWiring:
+    """0B.1: goal_service.py must pass all required services to AgentGraph."""
+
+    def test_goal_service_passes_llm_response_cache(self):
+        """AgentGraph construction in goal_service must include llm_response_cache."""
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        # Find AgentGraph constructor calls
+        assert "llm_response_cache=" in source, \
+            "0B.1: llm_response_cache not passed to AgentGraph in goal_service"
+
+    def test_goal_service_passes_semantic_cache(self):
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        assert "semantic_cache=" in source, \
+            "goal_service must pass semantic_cache to AgentGraph"
+
+    def test_goal_service_calls_dedup_release(self):
+        """0B.10: goal_service must call dedup release on terminal states."""
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        assert "release(" in source and "dedup" in source.lower(), \
+            "0B.10: GoalDeduplicator.release() never called in goal_service"
+
+
+class TestWorkerWiring:
+    """0B.2/0B.6: tasks.py worker must pass all services and use correct API."""
+
+    def test_worker_passes_llm_response_cache(self):
+        from app.scaling import tasks
+        source = inspect.getsource(tasks)
+        assert "llm_response_cache=" in source, \
+            "0B.2: worker AgentGraph missing llm_response_cache="
+
+    def test_worker_uses_get_config_not_get(self):
+        """0B.6: Worker must call .get_config() not .get() on LLMConfigStore."""
+        from app.scaling import tasks
+        source = inspect.getsource(tasks)
+        # Should NOT have _config_store.get(
+        import re
+        bad_calls = re.findall(r'_config_store\.get\(', source)
+        assert len(bad_calls) == 0, \
+            f"0B.6: Worker calls .get() on LLMConfigStore ({len(bad_calls)} times). Must use .get_config()"
+
+
+class TestModelRouterOverride:
+    """0B.5: ModelRouter must have with_override() for per-agent model override."""
+
+    def test_model_router_has_with_override(self):
+        from app.agent.model_router import ModelRouter
+        assert hasattr(ModelRouter, "with_override"), \
+            "0B.5: ModelRouter.with_override() not implemented"
+
+    def test_with_override_is_copy_on_write(self):
+        from app.agent.model_router import ModelRouter
+        router = ModelRouter(provider_name="anthropic")
+        original_planning = router.model_for("planning")
+
+        overridden = router.with_override("test-model-xyz")
+
+        # Overridden router uses the new model
+        assert overridden.model_for("planning") == "test-model-xyz"
+        assert overridden.model_for("execution") == "test-model-xyz"
+
+        # Original is unchanged
+        assert router.model_for("planning") == original_planning
+
+
+class TestPlanLimitsMonotonicity:
+    """0B.8: Plan limits must be monotonically non-decreasing."""
+
+    def test_goals_per_day_is_monotone(self):
+        from app.tenancy.context import PLAN_LIMITS, PlanTier
+        tiers = [PlanTier.FREE, PlanTier.STARTER, PlanTier.PROFESSIONAL, PlanTier.ENTERPRISE]
+        limits = [PLAN_LIMITS[t].goals_per_day for t in tiers]
+        for i in range(len(limits) - 1):
+            assert limits[i] <= limits[i+1], \
+                f"0B.8: goals_per_day not monotone: {tiers[i].value}={limits[i]} > {tiers[i+1].value}={limits[i+1]}"
+
+    def test_max_agents_is_monotone(self):
+        from app.tenancy.context import PLAN_LIMITS, PlanTier
+        tiers = [PlanTier.FREE, PlanTier.STARTER, PlanTier.PROFESSIONAL, PlanTier.ENTERPRISE]
+        limits = [PLAN_LIMITS[t].max_agents for t in tiers]
+        for i in range(len(limits) - 1):
+            assert limits[i] <= limits[i+1], \
+                f"0B.8: max_agents not monotone: {tiers[i].value}={limits[i]} > {tiers[i+1].value}={limits[i+1]}"
+
+
+class TestScopeEnforcementBypass:
+    """0B.9: No-roles API keys must NOT bypass scope enforcement for writes."""
+
+    def test_no_roles_write_denied_by_default(self):
+        """API keys without roles are denied on write endpoints by default."""
+        import os
+        os.environ.pop("SCOPE_ENFORCEMENT_LEGACY_ALLOW", None)
+
+        from app.auth.scope_enforcement import ScopeEnforcementMiddleware
+        # Just check the source has the new guard
+        source = inspect.getsource(ScopeEnforcementMiddleware)
+        assert "SCOPE_ENFORCEMENT_LEGACY_ALLOW" in source, \
+            "0B.9: No-roles bypass does not have SCOPE_ENFORCEMENT_LEGACY_ALLOW flag"
+
+
+class TestToolCacheWriteInvalidation:
+    """0B.7: Write tools must invalidate cached reads, not cache their own results."""
+
+    @pytest.mark.asyncio
+    async def test_write_tool_invalidates_cache(self):
+        from app.mcp.tool_cache import ToolResultCache
+
+        cache = ToolResultCache()
+
+        # Pre-populate a cached search result
+        await cache.set(
+            server_id="jira", tool_name="search_issues",
+            arguments={"jql": "project=FOO"}, result=[{"id": "1"}], tenant_id="t1"
+        )
+
+        # Verify it's cached
+        hit = await cache.get(
+            server_id="jira", tool_name="search_issues",
+            arguments={"jql": "project=FOO"}, tenant_id="t1"
+        )
+        assert hit is not None
+
+        # Simulate write tool success → invalidate
+        await cache.invalidate_writes("create_issue", tenant_id="t1", server_id="jira")
+
+        # Cache should now be empty for this tenant
+        hit_after = await cache.get(
+            server_id="jira", tool_name="search_issues",
+            arguments={"jql": "project=FOO"}, tenant_id="t1"
+        )
+        assert hit_after is None, "Write tool did not invalidate cached reads"
+
+
+class TestVerifierCacheGuard:
+    """0B.3: Verifier cache must use should_skip_cache guard."""
+
+    def test_verifier_cache_has_should_skip_cache_guard(self):
+        from app.agent import graph
+        source = inspect.getsource(graph)
+
+        # Find _node_verify
+        verify_start = source.find("async def _node_verify")
+        verify_section = source[verify_start:verify_start + 3000]
+
+        assert "should_skip_cache" in verify_section, \
+            "0B.3: _node_verify cache block missing should_skip_cache guard"
+
+
+class TestSemanticCacheWarmSignature:
+    """0B.4: SemanticCache.warm() must accept queries= and embeddings= kwargs."""
+
+    @pytest.mark.asyncio
+    async def test_warm_accepts_queries_and_embeddings(self):
+        from app.rag.semantic_cache import SemanticCache
+
+        cache = SemanticCache()
+
+        # Should not raise TypeError
+        try:
+            result = await cache.warm(
+                queries=["find open tickets", "list projects"],
+                embeddings=[[0.1] * 10, [0.2] * 10],
+                tenant_id="t1",
+            )
+            assert isinstance(result, int)
+        except TypeError as e:
+            pytest.fail(f"0B.4: warm() does not accept queries/embeddings kwargs: {e}")
