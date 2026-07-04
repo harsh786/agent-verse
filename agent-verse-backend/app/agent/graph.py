@@ -34,6 +34,7 @@ from app.agent.prompts import (
     VERIFIER_SYSTEM,
 )
 from app.agent.sanitization import (
+    _EXECUTOR_CONTEXT_MAX_LENGTH,
     sanitize_event,
     sanitize_event_value,
     sanitize_tool_event_value,
@@ -1118,7 +1119,11 @@ class AgentGraph:
                 # In bounded/fully-autonomous: just log, don't block
 
         # 8. Execute via LLM executor
-        recent_outputs = "\n".join(s.output for s in state.steps[-3:] if s.output)
+        recent_outputs = "\n".join(
+            (s.output or "")[:_EXECUTOR_CONTEXT_MAX_LENGTH]
+            for s in state.steps[-3:]
+            if s.output
+        )
         context_parts = []
         if recent_outputs:
             context_parts.append(f"Recent outputs:\n{recent_outputs}")
