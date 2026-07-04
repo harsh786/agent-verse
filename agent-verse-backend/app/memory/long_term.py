@@ -201,6 +201,75 @@ class LongTermMemoryStore:
                 get_logger(__name__).warning("ltm_db_write_failed", error=str(exc))
         return mid
 
+    async def store_rpa_extraction(
+        self,
+        *,
+        url: str,
+        extracted_text: str,
+        goal_id: str,
+        tenant_ctx: "TenantContext",
+        db: Any = None,
+        embedder: Any = None,
+        chunk_size: int = 500,
+        source_type: str = "rpa_extraction",
+    ) -> list[str]:
+        """Store RPA-extracted page content into LTM.
+
+        Short content (<50 chars) is ignored as noise.
+        Content exceeding chunk_size is split into overlapping chunks so
+        individual facts are retrievable via semantic search.
+
+        Returns list of memory_ids created (empty if content was too short).
+        """
+        text = (extracted_text or "").strip()
+        if len(text) < 50:
+            return []
+
+        # Determine tags
+        if source_type == "rpa_vision":
+            tags = ["rpa", "vision", "screenshot-analysis"]
+        else:
+            tags = ["rpa", "web-extraction"]
+
+        # Split into chunks with 50-char overlap
+        chunks: list[str] = []
+        if len(text) <= chunk_size:
+            chunks = [text]
+        else:
+            start = 0
+            overlap = 50
+            while start < len(text):
+                end = start + chunk_size
+                chunks.append(text[start:end])
+                start += chunk_size - overlap
+                if start >= len(text):
+                    break
+
+        memory_ids: list[str] = []
+        total = len(chunks)
+        for i, chunk in enumerate(chunks):
+            if total > 1:
+                content = f"[From {url} chunk {i + 1}/{total}] {chunk}"
+            else:
+                content = f"[From {url}] {chunk}"
+
+            memory = LongTermMemory(
+                content=content,
+                source_goal_id=goal_id,
+                memory_type="rpa_extraction",
+                confidence=0.85,
+                tags=tags,
+            )
+            mid = await self.store_async(
+                memory=memory,
+                tenant_ctx=tenant_ctx,
+                db=db,
+                embedder=embedder,
+            )
+            memory_ids.append(mid)
+
+        return memory_ids
+
     async def recall_async(
         self,
         query: str,

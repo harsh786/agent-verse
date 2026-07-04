@@ -509,6 +509,24 @@ class AgentGraph:
         if isinstance(tool_prompt, str) and tool_prompt:
             extra_parts.append(f"[Available connector tools]\n{tool_prompt}")
 
+        # ── Schema-Aware Prompt Injection ──────────────────────────────────────
+        # Inject full JSON schemas for available tools so the LLM uses exact
+        # parameter names and never halluccinates argument keys.
+        try:
+            _tool_ctx = agent_state.context.get("tool_context")
+            if _tool_ctx is not None:
+                _tools = getattr(_tool_ctx, "tools", []) or []
+                if _tools:
+                    from app.mcp.tool_intelligence import SchemaAwarePromptInjector
+                    _schema_block = SchemaAwarePromptInjector.build_tool_schema_block(_tools)
+                    if _schema_block:
+                        extra_parts.append(_schema_block)
+                        extra_parts.append(
+                            SchemaAwarePromptInjector.build_tool_call_format_reminder()
+                        )
+        except Exception:
+            pass  # Never block execution on schema injection failure
+
         # Inject civilization blackboard context (shared agent findings)
         blackboard_ctx: str = agent_state.context.get("blackboard_context", "")
         if blackboard_ctx:
@@ -1395,6 +1413,51 @@ class AgentGraph:
                                     time.monotonic() - tool_call_started,
                                 )
                                 raw_output_sanitized = True
+                                # ── RPA → LTM persistence ──────────────────
+                                # Store extracted text and vision analysis so
+                                # future goals can recall what was found on
+                                # this page via semantic search.
+                                if (
+                                    rpa_result.success
+                                    and self._long_term_memory is not None
+                                    and rpa_tool_name in (
+                                        "rpa_extract_text", "rpa_screenshot"
+                                    )
+                                    and rpa_result.output
+                                    and len(rpa_result.output) > 50
+                                ):
+                                    _rpa_url = (tool_call.arguments or {}).get(
+                                        "url",
+                                        (state.context.get("_current_rpa_url", "")
+                                         if isinstance(state.context, dict) else "")
+                                    )
+                                    _rpa_src = (
+                                        "rpa_vision"
+                                        if rpa_tool_name == "rpa_screenshot"
+                                        else "rpa_extraction"
+                                    )
+                                    _rpa_ltm_task = asyncio.create_task(
+                                        self._long_term_memory.store_rpa_extraction(
+                                            url=str(_rpa_url or "unknown"),
+                                            extracted_text=rpa_result.output,
+                                            goal_id=str(
+                                                getattr(state, "goal_id", "")
+                                            ),
+                                            tenant_ctx=tenant_ctx,
+                                            db=self._db_session_factory,
+                                            embedder=self._embedder,
+                                            source_type=_rpa_src,
+                                        )
+                                    )
+                                    self._background_tasks.add(_rpa_ltm_task)
+                                    _rpa_ltm_task.add_done_callback(
+                                        self._background_tasks.discard
+                                    )
+                                # Track current URL for extraction attribution
+                                if rpa_tool_name == "rpa_open_url":
+                                    _nav_url = (tool_call.arguments or {}).get("url", "")
+                                    if isinstance(state.context, dict) and _nav_url:
+                                        state.context["_current_rpa_url"] = _nav_url
                             except Exception as _rpa_exc:
                                 raw_output = f"RPA execution error: {_rpa_exc}"
                                 await self._emit({
@@ -1535,10 +1598,12 @@ class AgentGraph:
                                 time.monotonic() - tool_call_started,
                             )
                             raise
-                        # Apply PII check to raw tool output
+                        # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
                         raw_output_text = ""
-                        if isinstance(result, dict):
-                            raw_output_text = str(result.get("content") or result.get("result") or "")
+                        if isinstance(result.output, dict):
+                            raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                        elif isinstance(result.output, str):
+                            raw_output_text = result.output[:500]
                         if self._guardrail_checker and raw_output_text:
                             pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
                             if pii_issues:
@@ -1565,6 +1630,24 @@ class AgentGraph:
                                         pass
                         raw_result_output = self._sanitize_tool_raw_output(result.output)
                         raw_result_error = self._sanitize_tool_raw_output(result.error)
+
+                        # ── C4 Fix: Populate StepResult.tool_calls ─────────────
+                        # This allows the verifier's [TOOL FAILED] markers to fire.
+                        if state.steps:
+                            state.steps[-1].tool_calls.append({
+                                "tool_name": tool_ref.name,
+                                "server_id": tool_ref.server_id,
+                                "success": result.success,
+                                "error": result.error or "",
+                                "output": str(result.output)[:300] if result.output else "",
+                            })
+
+                        # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
+                        raw_output_text = ""
+                        if isinstance(result.output, dict):
+                            raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                        elif isinstance(result.output, str):
+                            raw_output_text = result.output[:500]
                         await self._emit(
                             {
                                 "type": "tool_call_complete",
@@ -1579,14 +1662,9 @@ class AgentGraph:
                             }
                         )
                         # Check for artifact capture (RPA screenshot etc.)
-                        _artifact_uri: str = ""
-                        _artifact_name: str = ""
-                        if isinstance(result, dict):
-                            _artifact_uri = result.get("artifact_url", "") or ""
-                            _artifact_name = result.get("artifact_name", "") or ""
-                        else:
-                            _artifact_uri = getattr(result, "artifact_url", "") or ""
-                            _artifact_name = getattr(result, "artifact_name", "") or ""
+                        # result is always ToolCallResult — use getattr not dict access
+                        _artifact_uri: str = getattr(result, "artifact_url", "") or ""
+                        _artifact_name: str = getattr(result, "artifact_name", "") or ""
                         if _artifact_uri and not _artifact_uri.startswith("data:"):
                             await self._emit({
                                 "type": "artifact_captured",
@@ -1744,9 +1822,22 @@ class AgentGraph:
         tenant_ctx: TenantContext = state["tenant_ctx"]
 
         agent_state.status = GoalStatus.VERIFYING
-        summary = "\n".join(
-            f"- {s.description}: {s.output}" for s in agent_state.steps[-5:]
-        )
+
+        # Build a rich step summary that explicitly flags failed tool calls so
+        # the verifier LLM doesn't hallucinate success when tools errored out.
+        def _step_summary(s: Any) -> str:
+            parts = [f"- {s.description}: {s.output}"]
+            # Include any tool call failures explicitly
+            for tc in getattr(s, "tool_calls", []) or []:
+                if not tc.get("success", True):
+                    parts.append(
+                        f"  [TOOL FAILED] {tc.get('tool_name','?')}: {tc.get('error','unknown error')}"
+                    )
+            if getattr(s, "error", None):
+                parts.append(f"  [STEP ERROR] {s.error}")
+            return "\n".join(parts)
+
+        summary = "\n".join(_step_summary(s) for s in agent_state.steps[-5:])
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
