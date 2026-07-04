@@ -57,3 +57,40 @@ def test_validate_tool_name_accepts_rpa_tools():
     allowed: set[str] = set()  # empty — no MCP tools
     result = validate_tool_name("rpa_open_url", allowed)
     assert result is None, "RPA tools must always be accepted"
+
+
+# ── Vector 3: Executor context limit ─────────────────────────────────────────
+
+def test_executor_context_limit_is_larger_than_sse_limit():
+    """Executor LLM context limit must be >= 5000 chars."""
+    from app.agent.sanitization import (
+        _TOOL_EVENT_MAX_LENGTH,
+        _EXECUTOR_CONTEXT_MAX_LENGTH,
+    )
+    assert _EXECUTOR_CONTEXT_MAX_LENGTH >= 5000, (
+        f"Executor context limit must be >= 5000, got {_EXECUTOR_CONTEXT_MAX_LENGTH}"
+    )
+    assert _EXECUTOR_CONTEXT_MAX_LENGTH > _TOOL_EVENT_MAX_LENGTH, (
+        "Executor context limit must be larger than SSE event limit"
+    )
+
+
+def test_sanitize_tool_raw_output_respects_custom_max_length():
+    """sanitize_tool_raw_output must respect an explicit max_length override."""
+    from app.agent.sanitization import sanitize_tool_raw_output
+
+    long_text = "x" * 6000
+    result = sanitize_tool_raw_output(long_text, max_length=5000)
+    assert len(result) <= 5000 + len("...[truncated]"), (
+        "Output must be capped at max_length + marker"
+    )
+    assert "...[truncated]" in result
+
+
+def test_sanitize_tool_raw_output_uses_1000_default():
+    """Default max_length is 1000 for backward compat (SSE events)."""
+    from app.agent.sanitization import sanitize_tool_raw_output
+
+    long_text = "x" * 2000
+    result = sanitize_tool_raw_output(long_text)
+    assert len(result) <= 1000 + len("...[truncated]")
