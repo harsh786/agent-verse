@@ -188,6 +188,62 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
     ])
 
 
+def _build_verifier_provider(settings: Any = None) -> Any:
+    """Build a separate LLM provider for the verifier role.
+
+    Priority:
+    1. VERIFIER_API_KEY env var — explicit separate key.
+    2. Cross-model: if OPENAI_API_KEY is primary, try ANTHROPIC_API_KEY for verifier.
+    3. Returns None — caller should fall back to primary provider.
+
+    Cross-model verification breaks self-confirmation bias: if the executor
+    used OpenAI, having Anthropic verify reduces hallucinated success rates.
+    """
+    import os
+    from app.core.config import get_provider_env
+
+    verifier_key = os.getenv("VERIFIER_API_KEY", "")
+    anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
+    openai_key = get_provider_env("OPENAI_API_KEY")
+
+    # 1. Explicit dedicated verifier key
+    if verifier_key:
+        if verifier_key.startswith("sk-ant-"):
+            try:
+                from app.providers.anthropic_provider import AnthropicProvider
+                logger.info("verifier_provider_anthropic_dedicated_key")
+                return AnthropicProvider(api_key=verifier_key)
+            except Exception as exc:
+                logger.warning("verifier_anthropic_init_failed", error=str(exc))
+        else:
+            try:
+                from app.providers.openai_compatible import OpenAICompatibleProvider
+                logger.info("verifier_provider_openai_dedicated_key")
+                return OpenAICompatibleProvider(api_key=verifier_key)
+            except Exception as exc:
+                logger.warning("verifier_openai_init_failed", error=str(exc))
+
+    # 2. Cross-model: primary is OpenAI → try Anthropic for verifier
+    if openai_key and anthropic_key:
+        try:
+            from app.providers.anthropic_provider import AnthropicProvider
+            logger.info("verifier_provider_anthropic_cross_model")
+            return AnthropicProvider(api_key=anthropic_key)
+        except Exception as exc:
+            logger.warning("verifier_crossmodel_anthropic_failed", error=str(exc))
+
+    # 3. No separate provider available
+    logger.info(
+        "verifier_provider_same_as_primary",
+        message=(
+            "No separate verifier key — verifier reuses executor provider. "
+            "Set VERIFIER_API_KEY or both OPENAI_API_KEY + ANTHROPIC_API_KEY "
+            "for cross-model verification."
+        ),
+    )
+    return None
+
+
 # ── Minimal in-memory Redis fallback (used when pools are not started) ─────────
 
 class _FakeRedis:
