@@ -340,3 +340,47 @@ def validate_tool_name(tool_name: str, allowed_tools: set[str]) -> str | None:
         f"Available tools: {available_sample}. "
         "Choose one of the available tools or respond with INSUFFICIENT DATA."
     )
+
+
+def validate_tool_arguments(
+    arguments: dict | None,
+    schema: dict | None,
+) -> list[str]:
+    """Validate *arguments* against a JSON Schema dict.
+
+    Checks:
+    - All ``required`` fields are present.
+    - No extra fields beyond ``properties`` are present.
+
+    Returns a list of human-readable error strings (empty = valid).
+    Only validates ``type: object`` schemas; returns [] for any other shape.
+    Intentionally lenient on type mismatches (leave those to the server).
+    """
+    if not schema or not arguments:
+        return []
+
+    if schema.get("type") != "object":
+        return []
+
+    errors: list[str] = []
+    properties: dict = schema.get("properties") or {}
+    required: list[str] = schema.get("required") or []
+
+    # 1. Missing required fields
+    for field in required:
+        if field not in arguments:
+            errors.append(
+                f"Missing required argument '{field}'. "
+                f"Expected type: {properties.get(field, {}).get('type', 'unknown')}."
+            )
+
+    # 2. Unknown fields (warn — some servers are lenient but LLM should know)
+    if properties:
+        for key in arguments:
+            if key not in properties:
+                errors.append(
+                    f"Unexpected argument '{key}' is not in the tool schema. "
+                    f"Valid fields: {list(properties.keys())}."
+                )
+
+    return errors

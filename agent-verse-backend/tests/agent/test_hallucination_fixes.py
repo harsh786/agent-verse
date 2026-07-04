@@ -118,3 +118,64 @@ def test_verifier_summary_includes_all_failed_steps():
     assert "Step 2" in summary, "Failed step 2 must appear even though not in last 5"
     assert "Error in step 2" in summary, "Error message must be in summary"
     assert "FAILED STEPS" in summary.upper() or "[STEP ERROR]" in summary
+
+
+# ── Vector 4: Argument schema validation ─────────────────────────────────────
+
+def test_validate_tool_arguments_catches_missing_required():
+    """validate_tool_arguments must reject calls missing required fields."""
+    from app.agent.tool_calls import validate_tool_arguments
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "jql": {"type": "string"},
+            "max_results": {"type": "integer"},
+        },
+        "required": ["jql"],
+    }
+
+    errors = validate_tool_arguments({"max_results": 10}, schema)
+    assert len(errors) >= 1
+    assert any("jql" in e for e in errors), f"Must mention missing field 'jql'. Got: {errors}"
+
+
+def test_validate_tool_arguments_catches_unknown_fields():
+    """validate_tool_arguments must flag arguments not in schema properties."""
+    from app.agent.tool_calls import validate_tool_arguments
+
+    schema = {
+        "type": "object",
+        "properties": {"jql": {"type": "string"}},
+        "required": ["jql"],
+    }
+
+    errors = validate_tool_arguments({"jql": "project=X", "nonexistent_field": "oops"}, schema)
+    assert any("nonexistent_field" in e for e in errors), (
+        f"Must flag unknown field. Got: {errors}"
+    )
+
+
+def test_validate_tool_arguments_passes_valid_call():
+    """validate_tool_arguments must return empty list for valid arguments."""
+    from app.agent.tool_calls import validate_tool_arguments
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "jql": {"type": "string"},
+            "max_results": {"type": "integer"},
+        },
+        "required": ["jql"],
+    }
+
+    errors = validate_tool_arguments({"jql": "project=X AND status=Open"}, schema)
+    assert errors == [], f"No errors expected for valid args. Got: {errors}"
+
+
+def test_validate_tool_arguments_handles_missing_schema():
+    """validate_tool_arguments must return empty list when schema is None/empty."""
+    from app.agent.tool_calls import validate_tool_arguments
+
+    assert validate_tool_arguments({"any": "thing"}, None) == []
+    assert validate_tool_arguments({"any": "thing"}, {}) == []
