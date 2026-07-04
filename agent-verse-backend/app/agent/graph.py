@@ -1743,106 +1743,131 @@ class AgentGraph:
                             )
                             raw_output_sanitized = True
                     else:
-                        try:
-                            with self._tracer.start_as_current_span("agentverse.tool.call") as span:
-                                span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
-                                result = await self._mcp_client.call_tool(
-                                    server_id=tool_ref.server_id,
-                                    tool_name=tool_ref.name,
-                                    arguments=tool_call.arguments,
-                                    tenant_ctx=tenant_ctx,
+                        # V4: Validate arguments against JSON schema before MCP dispatch
+                        from app.agent.tool_calls import validate_tool_arguments as _validate_args
+                        _tool_schema = getattr(tool_ref, "input_schema", None) or {}
+                        _arg_errors_v4 = _validate_args(tool_call.arguments or {}, _tool_schema)
+                        if _arg_errors_v4:
+                            _arg_error_msg = (
+                                f"[ARGUMENT VALIDATION FAILED] Tool '{tool_call.tool}' "
+                                f"called with invalid arguments:\n"
+                                + "\n".join(f"  - {e}" for e in _arg_errors_v4)
+                                + "\nPlease retry with correct arguments from the tool schema."
+                            )
+                            raw_output = self._sanitize_tool_raw_output(_arg_error_msg)
+                            raw_output_sanitized = True
+                            await self._emit({
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": _arg_error_msg[:300],
+                            })
+                            record_tool_call(
+                                tool_call.tool,
+                                getattr(tool_ref, "server_id", "unknown"),
+                                "arg_validation_failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                        else:
+                            try:
+                                with self._tracer.start_as_current_span("agentverse.tool.call") as span:
+                                    span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
+                                    result = await self._mcp_client.call_tool(
+                                        server_id=tool_ref.server_id,
+                                        tool_name=tool_ref.name,
+                                        arguments=tool_call.arguments,
+                                        tenant_ctx=tenant_ctx,
+                                    )
+                            except Exception:
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "failed",
+                                    time.monotonic() - tool_call_started,
                                 )
-                        except Exception:
+                                raise
+                            # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
+                            raw_output_text = ""
+                            if isinstance(result.output, dict):
+                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                            elif isinstance(result.output, str):
+                                raw_output_text = result.output[:500]
+                            if self._guardrail_checker and raw_output_text:
+                                pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
+                                if pii_issues:
+                                    await self._emit({
+                                        "type": "pii_redacted",
+                                        "tool": getattr(tool_call, "tool", "") if tool_call else "",
+                                        "issues": pii_issues,
+                                    })
+                                    if self._audit_log is not None:
+                                        try:
+                                            self._audit_log.record(
+                                                AuditEvent(
+                                                    goal_id=state.goal_id,
+                                                    tool_name="guardrail_checker",
+                                                    action_level=ActionLevel.ALLOW_LOG,
+                                                    outcome="pii_redacted",
+                                                    step_id=state.steps[-1].step_id if state.steps else "",
+                                                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                                                    note=f"issues_count={len(pii_issues)} step={step[:100]}",
+                                                ),
+                                                tenant_ctx=tenant_ctx,
+                                            )
+                                        except Exception:
+                                            pass
+                            raw_result_output = self._sanitize_tool_raw_output(result.output)
+                            raw_result_error = self._sanitize_tool_raw_output(result.error)
+
+                            # ── C4 Fix: Populate StepResult.tool_calls ─────────────
+                            # This allows the verifier's [TOOL FAILED] markers to fire.
+                            if state.steps:
+                                state.steps[-1].tool_calls.append({
+                                    "tool_name": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "success": result.success,
+                                    "error": result.error or "",
+                                    "output": str(result.output)[:300] if result.output else "",
+                                })
+
+                            # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
+                            raw_output_text = ""
+                            if isinstance(result.output, dict):
+                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                            elif isinstance(result.output, str):
+                                raw_output_text = result.output[:500]
+                            await self._emit(
+                                {
+                                    "type": "tool_call_complete",
+                                    "tool": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "success": result.success,
+                                    "output": self._sanitize_tool_event_value(result.output),
+                                    "error": self._sanitize_tool_event_value(result.error),
+                                    # tool_output preserves the raw structured dict for result_artifacts.py
+                                    # without truncation so downstream consumers can access full data.
+                                    "tool_output": result.output if isinstance(result.output, dict) else None,
+                                }
+                            )
+                            # Check for artifact capture (RPA screenshot etc.)
+                            # result is always ToolCallResult — use getattr not dict access
+                            _artifact_uri: str = getattr(result, "artifact_url", "") or ""
+                            _artifact_name: str = getattr(result, "artifact_name", "") or ""
+                            if _artifact_uri and not _artifact_uri.startswith("data:"):
+                                await self._emit({
+                                    "type": "artifact_captured",
+                                    "artifact_type": "screenshot",
+                                    "artifact_url": _artifact_uri,
+                                    "artifact_name": _artifact_name,
+                                    "tool": tool_ref.name,
+                                })
                             record_tool_call(
                                 tool_ref.name,
                                 tool_ref.server_id,
-                                "failed",
+                                "success" if result.success else "failed",
                                 time.monotonic() - tool_call_started,
                             )
-                            raise
-                        # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
-                        raw_output_text = ""
-                        if isinstance(result.output, dict):
-                            raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
-                        elif isinstance(result.output, str):
-                            raw_output_text = result.output[:500]
-                        if self._guardrail_checker and raw_output_text:
-                            pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
-                            if pii_issues:
-                                await self._emit({
-                                    "type": "pii_redacted",
-                                    "tool": getattr(tool_call, "tool", "") if tool_call else "",
-                                    "issues": pii_issues,
-                                })
-                                if self._audit_log is not None:
-                                    try:
-                                        self._audit_log.record(
-                                            AuditEvent(
-                                                goal_id=state.goal_id,
-                                                tool_name="guardrail_checker",
-                                                action_level=ActionLevel.ALLOW_LOG,
-                                                outcome="pii_redacted",
-                                                step_id=state.steps[-1].step_id if state.steps else "",
-                                                api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
-                                                note=f"issues_count={len(pii_issues)} step={step[:100]}",
-                                            ),
-                                            tenant_ctx=tenant_ctx,
-                                        )
-                                    except Exception:
-                                        pass
-                        raw_result_output = self._sanitize_tool_raw_output(result.output)
-                        raw_result_error = self._sanitize_tool_raw_output(result.error)
-
-                        # ── C4 Fix: Populate StepResult.tool_calls ─────────────
-                        # This allows the verifier's [TOOL FAILED] markers to fire.
-                        if state.steps:
-                            state.steps[-1].tool_calls.append({
-                                "tool_name": tool_ref.name,
-                                "server_id": tool_ref.server_id,
-                                "success": result.success,
-                                "error": result.error or "",
-                                "output": str(result.output)[:300] if result.output else "",
-                            })
-
-                        # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
-                        raw_output_text = ""
-                        if isinstance(result.output, dict):
-                            raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
-                        elif isinstance(result.output, str):
-                            raw_output_text = result.output[:500]
-                        await self._emit(
-                            {
-                                "type": "tool_call_complete",
-                                "tool": tool_ref.name,
-                                "server_id": tool_ref.server_id,
-                                "success": result.success,
-                                "output": self._sanitize_tool_event_value(result.output),
-                                "error": self._sanitize_tool_event_value(result.error),
-                                # tool_output preserves the raw structured dict for result_artifacts.py
-                                # without truncation so downstream consumers can access full data.
-                                "tool_output": result.output if isinstance(result.output, dict) else None,
-                            }
-                        )
-                        # Check for artifact capture (RPA screenshot etc.)
-                        # result is always ToolCallResult — use getattr not dict access
-                        _artifact_uri: str = getattr(result, "artifact_url", "") or ""
-                        _artifact_name: str = getattr(result, "artifact_name", "") or ""
-                        if _artifact_uri and not _artifact_uri.startswith("data:"):
-                            await self._emit({
-                                "type": "artifact_captured",
-                                "artifact_type": "screenshot",
-                                "artifact_url": _artifact_uri,
-                                "artifact_name": _artifact_name,
-                                "tool": tool_ref.name,
-                            })
-                        record_tool_call(
-                            tool_ref.name,
-                            tool_ref.server_id,
-                            "success" if result.success else "failed",
-                            time.monotonic() - tool_call_started,
-                        )
-                        raw_output = raw_result_output if result.success else raw_result_error
-                        raw_output_sanitized = True
+                            raw_output = raw_result_output if result.success else raw_result_error
+                            raw_output_sanitized = True
 
         # 9. Result processor / graph sanitizer — redact secrets, truncate
         if not raw_output_sanitized:
