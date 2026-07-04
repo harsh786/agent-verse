@@ -11,13 +11,14 @@ because the approval result is stored in a Redis list (not process memory).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Generator, cast
 
 from app.tenancy.context import TenantContext
 
@@ -54,9 +55,9 @@ class _AwaitableBool:
             return self._value == other._value
         return NotImplemented
 
-    def __await__(self):  # type: ignore[override]
+    def __await__(self) -> Generator[Any, None, bool]:
         return self._value
-        yield  # noqa: unreachable — makes this a generator function so __await__ is valid
+        yield  # makes this a generator function so __await__ is valid
 
 
 @dataclass(eq=False)
@@ -87,10 +88,10 @@ class ApprovalRequest:
 
     # ── Dual-mode (sync + await) support ──────────────────────────────────────
 
-    def __await__(self):  # type: ignore[override]
+    def __await__(self) -> Generator[Any, None, "ApprovalRequest"]:
         """Enable ``req = await gateway.request_approval(...)``."""
         return self
-        yield  # noqa: unreachable — makes this a generator function
+        yield  # makes this a generator function — required for __await__
 
     def __str__(self) -> str:
         return self.request_id
@@ -98,7 +99,7 @@ class ApprovalRequest:
     def __repr__(self) -> str:
         return f"ApprovalRequest(request_id={self.request_id!r}, status={self.status!r})"
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         """Allow comparison with plain request_id strings for backward compat."""
         if isinstance(other, str):
             return self.request_id == other
@@ -106,7 +107,7 @@ class ApprovalRequest:
             return self.request_id == other.request_id
         return NotImplemented
 
-    def __hash__(self) -> int:  # type: ignore[override]
+    def __hash__(self) -> int:
         """Hash equals hash(request_id) so ApprovalRequest works as a dict key."""
         return hash(self.request_id)
 
@@ -134,7 +135,7 @@ class HITLGateway:
         risk_level: str = "high",
         tenant_ctx: TenantContext,
         required_approvers: int = 1,  # P1.3: multi-person approval threshold
-        context: dict | None = None,
+        context: dict[str, Any] | None = None,
     ) -> ApprovalRequest:
         """Create an approval request and return it (non-blocking).
 
@@ -160,7 +161,7 @@ class HITLGateway:
             import asyncio as _aio
             try:
                 loop = _aio.get_running_loop()
-                loop.create_task(
+                _task = loop.create_task(  # noqa: RUF006
                     self._db_persist_approval_request(req, tenant_ctx.tenant_id)
                 )
             except RuntimeError:
@@ -171,7 +172,7 @@ class HITLGateway:
             import asyncio as _aio
             try:
                 loop = _aio.get_running_loop()
-                loop.create_task(
+                _task = loop.create_task(  # noqa: RUF006
                     self._notification_service.notify_approval_required(
                         request_id=req.request_id,
                         goal_id=goal_id,
@@ -222,6 +223,13 @@ class HITLGateway:
     ) -> ApprovalStatus:
         """Block until the request is resolved or timeout expires.
 
+        Dual-listen strategy (C6.2): races the in-process asyncio.Event against a
+        Redis BLPOP so approvals from *any* replica unblock this waiter.
+
+        The timeout path uses a CAS guard — TIMED_OUT is only written when the
+        request is still PENDING, preventing it from overwriting a concurrent
+        APPROVED (H17).
+
         Returns the final ApprovalStatus (APPROVED, REJECTED, or TIMED_OUT).
         """
         req = self._requests.get((tenant_ctx.tenant_id, request_id))
@@ -229,11 +237,60 @@ class HITLGateway:
             return ApprovalStatus.REJECTED
 
         timeout_s = timeout if timeout is not None else self._timeout
+
+        # Task 1: in-process event (local replica or same-process approve/reject)
+        local_task: asyncio.Task[Any] = asyncio.create_task(req._event.wait())
+
+        # Task 2: Redis BLPOP (cross-replica approval delivery)
+        redis_task: asyncio.Task[Any] | None = None
+        if self._redis is not None:
+            redis_task = asyncio.create_task(
+                self._wait_for_result(request_id, timeout=timeout_s)
+            )
+
+        tasks: list[asyncio.Task[Any]] = [local_task]
+        if redis_task is not None:
+            tasks.append(redis_task)
+
         try:
-            await asyncio.wait_for(req._event.wait(), timeout=timeout_s)
-        except TimeoutError:
-            req.status = ApprovalStatus.TIMED_OUT
-            req._event.set()  # Unblock any other waiters
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Cancel whichever task(s) didn't win
+            for t in pending:
+                t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+
+            if not done:
+                # Timeout expired — CAS guard: only set TIMED_OUT if still PENDING (H17)
+                if req.status == ApprovalStatus.PENDING:
+                    req.status = ApprovalStatus.TIMED_OUT
+                req._event.set()  # Unblock any other waiters on this request
+            else:
+                # If Redis BLPOP resolved first, update local status from the payload (C6.2)
+                if redis_task is not None and redis_task in done:
+                    try:
+                        redis_result = redis_task.result()
+                        if redis_result and isinstance(redis_result, dict):
+                            action = redis_result.get("action", "")
+                            if action == "approved" and req.status == ApprovalStatus.PENDING:
+                                req.status = ApprovalStatus.APPROVED
+                                req._event.set()
+                            elif action == "rejected" and req.status == ApprovalStatus.PENDING:
+                                req.status = ApprovalStatus.REJECTED
+                                req._event.set()
+                    except Exception:
+                        pass
+
+        except asyncio.CancelledError:
+            local_task.cancel()
+            if redis_task is not None:
+                redis_task.cancel()
+            raise
 
         return req.status
 
@@ -267,6 +324,20 @@ class HITLGateway:
         if req.approvals_received >= req.required_approvers:
             req.status = ApprovalStatus.APPROVED
             req._event.set()  # Unblock waiting agent
+            # C6.1: Publish cross-replica notification via Redis BLPOP
+            if self._redis is not None:
+                try:
+                    loop = asyncio.get_running_loop()
+                    _task = loop.create_task(  # noqa: RUF006
+                        self.publish_resolution(
+                            request_id=req.request_id,
+                            action="approved",
+                            approver=approver,
+                            note=note,
+                        )
+                    )
+                except RuntimeError:
+                    pass  # No running loop (sync-only context) — skip Redis publish
         return _AwaitableBool(True)
 
     async def reject(
@@ -302,14 +373,34 @@ class HITLGateway:
                 )
             except Exception:
                 pass
+            # C6.2: Also publish to the BLPOP result key for cross-replica waiters
+            with contextlib.suppress(Exception):
+                await self.publish_resolution(
+                    request_id=req.request_id,
+                    action="rejected",
+                    approver=approver,
+                    note=note,
+                )
 
         return True
 
-    def list_pending(self, *, tenant_ctx: TenantContext) -> list[ApprovalRequest]:
+    def list_pending(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        goal_id: str | None = None,
+    ) -> list[ApprovalRequest]:
+        """Return pending approval requests for the tenant.
+
+        When *goal_id* is given only requests belonging to that goal are
+        returned (C6.4 — prevents goal-B's pending approval from pausing goal-A).
+        """
         return [
             req
             for (tid, _), req in self._requests.items()
-            if tid == tenant_ctx.tenant_id and req.status == ApprovalStatus.PENDING
+            if tid == tenant_ctx.tenant_id
+            and req.status == ApprovalStatus.PENDING
+            and (goal_id is None or req.goal_id == goal_id)
         ]
 
     # ------------------------------------------------------------------
@@ -343,7 +434,10 @@ class HITLGateway:
                 result = await self._redis.blpop(result_key, timeout=blpop_timeout)
                 if result:
                     _, data = result
-                    return json.loads(data.decode() if isinstance(data, bytes) else data)
+                    return cast(
+                        "dict[str, Any]",
+                        json.loads(data.decode() if isinstance(data, bytes) else data),
+                    )
             except Exception as exc:
                 from app.observability.logging import get_logger
 
@@ -382,7 +476,7 @@ class HITLGateway:
         from datetime import UTC
         expired = []
         now = datetime.now(UTC)
-        for (tenant_id, req_id), req in list(self._requests.items()):
+        for (_tenant_id, req_id), req in list(self._requests.items()):
             if req.status != ApprovalStatus.PENDING:
                 continue
             expires_at = getattr(req, "_expires_at_dt", None)

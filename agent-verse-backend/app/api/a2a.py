@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -99,15 +100,23 @@ async def _update_task_status(task_id: str, status: str, result: str, db: Any) -
         logger.warning("a2a_task_update_failed", error=str(exc))
 
 
-async def _get_task(task_id: str, db: Any) -> dict[str, Any] | None:
-    """Fetch A2A task from DB or in-memory dict."""
+async def _get_task(task_id: str, db: Any, tenant_id: str | None = None) -> dict[str, Any] | None:
+    """Fetch A2A task from DB or in-memory dict.
+
+    When *tenant_id* is provided the query is filtered to that tenant so one
+    tenant cannot enumerate another tenant's tasks (H2 — cross-tenant IDOR).
+    """
     if db is not None:
         try:
             from sqlalchemy import text
             async with db() as session:
                 result = await session.execute(
-                    text("SELECT id, goal_text, status, result, callback_url, created_at FROM a2a_tasks WHERE id=:id"),
-                    {"id": task_id}
+                    text(
+                        "SELECT id, goal_text, status, result, callback_url, created_at"
+                        " FROM a2a_tasks WHERE id=:id"
+                        + (" AND tenant_id=:tid" if tenant_id else "")
+                    ),
+                    {"id": task_id, **({"tid": tenant_id} if tenant_id else {})},
                 )
                 row = result.fetchone()
             if row:
@@ -118,7 +127,13 @@ async def _get_task(task_id: str, db: Any) -> dict[str, Any] | None:
                 }
         except Exception:
             pass
-    return _tasks.get(task_id)
+    # In-memory fallback: filter by tenant_id when provided
+    task = _tasks.get(task_id)
+    if task is None:
+        return None
+    if tenant_id and task.get("tenant_id") != tenant_id:
+        return None  # Cross-tenant access denied
+    return task
 
 
 async def _send_callback(callback_url: str, task_id: str, status: str, result: str) -> None:
@@ -180,6 +195,13 @@ async def receive_a2a_task(
     secret = _get_a2a_secret()
     if not _verify_hmac(raw_body, signature, secret):
         raise HTTPException(401, "Invalid A2A signature")
+
+    # SSRF guard — validate callback URL before accepting the task
+    if body.callback_url:
+        try:
+            assert_public_url(body.callback_url, context="A2A callback")
+        except SSRFError as exc:
+            raise HTTPException(status_code=400, detail="Callback URL is not permitted") from exc
 
     task_id = uuid.uuid4().hex
     db = getattr(request.app.state, "db_session_factory", None)
@@ -261,13 +283,17 @@ async def receive_a2a_task(
 async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, Any]]:
     """List recent A2A tasks for this tenant."""
     db = getattr(request.app.state, "db_session_factory", None)
+    tenant_ctx = getattr(request.state, "tenant", None)
+    tid = tenant_ctx.tenant_id if tenant_ctx else None
     if db is None:
-        # In-memory fallback: return tasks from the global dict
-        return list(_tasks.values())[-limit:][::-1]
+        # In-memory fallback: always filter by tenant_id to prevent IDOR
+        tenant_tasks = [
+            t for t in _tasks.values()
+            if tid is None or t.get("tenant_id") == tid
+        ]
+        return tenant_tasks[-limit:][::-1]
     try:
         from sqlalchemy import text as _t
-        tenant_ctx = getattr(request.state, "tenant", None)
-        tid = tenant_ctx.tenant_id if tenant_ctx else None
         q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"
         params: dict[str, Any] = {}
         if tid:
@@ -289,14 +315,22 @@ async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, An
             for r in rows
         ]
     except Exception:
-        return list(_tasks.values())[-limit:][::-1]
+        # DB-down fallback: filter by tenant_id to prevent IDOR
+        tenant_tasks = [
+            t for t in _tasks.values()
+            if tid is None or t.get("tenant_id") == tid
+        ]
+        return tenant_tasks[-limit:][::-1]
 
 
 @router.get("/a2a/tasks/{task_id}")
 async def get_a2a_task(request: Request, task_id: str) -> dict[str, Any]:
     """Get A2A task status and result."""
     db = getattr(request.app.state, "db_session_factory", None)
-    task = await _get_task(task_id, db)
+    # H2: filter by tenant to prevent cross-tenant IDOR
+    tenant_ctx = getattr(request.state, "tenant", None)
+    tid = tenant_ctx.tenant_id if tenant_ctx else None
+    task = await _get_task(task_id, db, tenant_id=tid)
     if task is None:
         raise HTTPException(404, f"Task {task_id} not found")
     return task

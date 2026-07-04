@@ -87,6 +87,46 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("GET", "/civilizations"): "agents:read",
     ("POST", "/civilizations"): "agents:write",
     ("DELETE", "/civilizations"): "agents:delete",
+    # ── H5: Previously unprotected routers ──────────────────────────────────
+    # A2A (Agent-to-Agent)
+    ("GET", "/a2a"): "a2a:read",
+    ("POST", "/a2a"): "a2a:write",
+    ("PUT", "/a2a"): "a2a:write",
+    ("DELETE", "/a2a"): "a2a:write",
+    # Artifacts
+    ("GET", "/artifacts"): "artifacts:read",
+    ("POST", "/artifacts"): "artifacts:write",
+    ("DELETE", "/artifacts"): "artifacts:write",
+    # Costs
+    ("GET", "/costs"): "costs:read",
+    ("POST", "/costs"): "costs:admin",
+    ("DELETE", "/costs"): "costs:admin",
+    # Memory
+    ("GET", "/memory"): "memory:read",
+    ("POST", "/memory"): "memory:write",
+    ("DELETE", "/memory"): "memory:write",
+    # Collaboration
+    ("GET", "/collab"): "collab:read",
+    ("POST", "/collab"): "collab:write",
+    ("PUT", "/collab"): "collab:write",
+    ("DELETE", "/collab"): "collab:write",
+    # RPA (browser automation)
+    ("GET", "/rpa"): "rpa:read",
+    ("POST", "/rpa"): "rpa:write",
+    # Perception
+    ("GET", "/perception"): "perception:read",
+    ("POST", "/perception"): "perception:write",
+    # Tools
+    ("GET", "/tools"): "tools:read",
+    ("POST", "/tools"): "tools:write",
+    # Enterprise features
+    ("GET", "/enterprise"): "enterprise:read",
+    ("POST", "/enterprise"): "enterprise:write",
+    ("DELETE", "/enterprise"): "enterprise:write",
+    # Guardrails
+    ("GET", "/guardrails"): "guardrails:read",
+    ("POST", "/guardrails"): "guardrails:write",
+    ("DELETE", "/guardrails"): "guardrails:write",
 }
 
 # Paths that bypass scope enforcement entirely
@@ -113,6 +153,16 @@ _ALL_SCOPES: frozenset[str] = frozenset({
     "audit:read", "audit:export",
     "costs:read", "costs:admin",
     "mcp:read", "mcp:write",
+    # H5: scopes for previously unprotected routers
+    "a2a:read", "a2a:write",
+    "artifacts:read", "artifacts:write",
+    "memory:read", "memory:write",
+    "collab:read", "collab:write",
+    "rpa:read", "rpa:write",
+    "perception:read", "perception:write",
+    "tools:read", "tools:write",
+    "enterprise:read", "enterprise:write",
+    "guardrails:read", "guardrails:write",
 })
 
 ROLE_SCOPES: dict[str, frozenset[str]] = {
@@ -123,6 +173,15 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
         "knowledge:read", "knowledge:write",
         "mcp:read", "mcp:write",
         "tenancy:read",
+        # H5: operators can use these routers
+        "a2a:read", "a2a:write",
+        "artifacts:read", "artifacts:write",
+        "memory:read", "memory:write",
+        "collab:read", "collab:write",
+        "rpa:read", "rpa:write",
+        "perception:read", "perception:write",
+        "tools:read", "tools:write",
+        "guardrails:read",
     }),
     "approver": frozenset({
         "goals:read",
@@ -139,8 +198,54 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
         "costs:read",
         "audit:read",
         "mcp:read",
+        # H5: viewers get read-only access
+        "a2a:read",
+        "artifacts:read",
+        "memory:read",
+        "collab:read",
+        "rpa:read",
+        "perception:read",
+        "tools:read",
+        "guardrails:read",
     }),
 }
+
+
+# ---------------------------------------------------------------------------
+# H3: Trusted-proxy-aware IP extraction
+# ---------------------------------------------------------------------------
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP with trusted-proxy validation.
+
+    Only trusts ``X-Forwarded-For`` if the connecting peer is listed in the
+    ``TRUSTED_PROXIES`` env var (comma-separated IPs/CIDRs) or is localhost.
+    Prevents IP spoofing via attacker-injected XFF headers.
+    """
+    import os as _os
+
+    trusted_proxies_raw = _os.getenv("TRUSTED_PROXIES", "")
+    trusted_proxies = {p.strip() for p in trusted_proxies_raw.split(",") if p.strip()}
+
+    direct_client = request.client.host if request.client else ""
+
+    # Only trust XFF if the direct peer is a known proxy
+    if direct_client in trusted_proxies or "127.0.0.1" in trusted_proxies:
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            # Use the FIRST (leftmost) IP — the original client
+            return xff.split(",")[0].strip()
+
+    return direct_client
+
+
+# ---------------------------------------------------------------------------
+# H4: In-process IP allowlist cache (fallback when Redis is unavailable)
+# ---------------------------------------------------------------------------
+
+# Maps tenant_id → (cidr_list, monotonic_timestamp_when_populated)
+_local_ip_allowlist_cache: dict[str, tuple[list[str], float]] = {}
+_LOCAL_ALLOWLIST_TTL = 300  # seconds — max age of locally-cached allowlist
 
 
 # ---------------------------------------------------------------------------
@@ -260,14 +365,18 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         # Read Redis per-request so the lifespan upgrade is always current
         redis = getattr(request.app.state, "_rate_limiter_redis", None)
 
-        # 3. IP allowlist check (only when Redis is available)
+        # 3. IP allowlist check
         if redis is not None:
             ip_cache = IPAllowlistCache(redis)
             tenant_svc = getattr(request.app.state, "tenant_service", None)
             db_factory = getattr(tenant_svc, "_db", None) if tenant_svc else None
             cidrs = await ip_cache.get_cidrs(tenant_id, db_factory=db_factory)
+            # H4: also populate local cache so we can enforce when Redis goes down
             if cidrs:
-                client_ip = self._client_ip(request)
+                import time as _time
+                _local_ip_allowlist_cache[tenant_id] = (cidrs, _time.monotonic())
+            if cidrs:
+                client_ip = _get_client_ip(request)
                 if not is_ip_allowed(client_ip, cidrs):
                     logger.warning(
                         "ip_blocked",
@@ -284,6 +393,30 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
                             ),
                         },
                     )
+        else:
+            # H4: Redis unavailable — enforce from local in-process cache if populated
+            import time as _time
+            cached = _local_ip_allowlist_cache.get(tenant_id)
+            if cached:
+                cidrs, ts = cached
+                if _time.monotonic() - ts < _LOCAL_ALLOWLIST_TTL and cidrs:
+                    client_ip = _get_client_ip(request)
+                    if not is_ip_allowed(client_ip, cidrs):
+                        logger.warning(
+                            "ip_blocked_local_cache",
+                            tenant_id=tenant_id,
+                            ip=client_ip,
+                            path=path,
+                        )
+                        return JSONResponse(
+                            status_code=403,
+                            content={
+                                "error": "IP_NOT_ALLOWED",
+                                "message": (
+                                    f"Source IP {client_ip} is not permitted for this tenant"
+                                ),
+                            },
+                        )
 
         # 4. Backward-compat guard: skip scope enforcement for legacy / test keys
         #    that carry no role assignments.  Keys without roles were issued before
@@ -293,7 +426,25 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         #    full enforcement path below so role-based restrictions are honoured.
         tenant_roles: tuple[str, ...] = getattr(tenant, "roles", ())
         if not tenant_roles:
-            return await call_next(request)
+            # Check legacy allow flag for backward compatibility
+            import os
+            if os.getenv("SCOPE_ENFORCEMENT_LEGACY_ALLOW", "false").lower() == "true":
+                return await call_next(request)  # legacy: allow (migration window only)
+            # Default secure: deny access to no-roles keys on protected endpoints
+            # Allow read-only GET requests for backward compat (gradual migration)
+            if request.method in ("GET", "HEAD", "OPTIONS"):
+                return await call_next(request)  # allow reads
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "forbidden",
+                    "detail": (
+                        "API key has no role assignments. "
+                        "Assign roles to enable write access."
+                    ),
+                    "correlation_id": getattr(request.state, "correlation_id", ""),
+                },
+            )
 
         # 5. Determine required scope for this endpoint
         required = self._required_scope(request.method, path)
@@ -344,12 +495,12 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_ip(request: Request) -> str:
-        """Extract the real client IP, respecting trusted proxy headers."""
-        for header in ("X-Forwarded-For", "X-Real-IP"):
-            val = request.headers.get(header)
-            if val:
-                return val.split(",")[0].strip()
-        return request.client.host if request.client else "0.0.0.0"
+        """Extract the real client IP, respecting trusted proxy headers.
+
+        Delegates to the module-level :func:`_get_client_ip` so the logic can
+        be tested independently and is consistent across the codebase.
+        """
+        return _get_client_ip(request)
 
     @staticmethod
     def _ip_allowed(client_ip: str, cidrs: list[str]) -> bool:

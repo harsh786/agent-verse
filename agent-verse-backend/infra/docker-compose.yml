@@ -7,6 +7,7 @@ name: agentverse-backend
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: agentverse
       POSTGRES_PASSWORD: agentverse
@@ -23,6 +24,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
@@ -69,6 +71,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
@@ -186,6 +189,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
@@ -205,6 +209,10 @@ services:
       # SLACK_TENANT_ID: ""
       # ALERTMANAGER_TENANT_ID: ""
       # DATADOG_TENANT_ID: ""
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     depends_on:
       redis:
         condition: service_healthy
@@ -213,7 +221,7 @@ services:
       pgbouncer:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -223,6 +231,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "beat", "--loglevel=info"]
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -248,7 +257,7 @@ services:
       pgbouncer:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -332,6 +341,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: http://localhost:8000
+    restart: unless-stopped
     ports:
       - "5173:80"
     depends_on:

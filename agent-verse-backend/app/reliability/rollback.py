@@ -102,18 +102,58 @@ class RollbackEngine:
                 logger.error("Rollback failed for '%s': %s", action, exc)
         return rolled_back
 
-    async def rollback_all_async(self) -> list[str]:
+    async def rollback_all_async(
+        self,
+        executed_tool_calls: list | None = None,
+        tenant_ctx: object | None = None,
+    ) -> list[str]:
         """Execute all inverse operations in LIFO order, awaiting each one.
 
-        Preferred over ``rollback_all()`` in async contexts — guarantees each
-        inverse actually completes before moving to the next.
+        Two modes:
 
-        Returns list of successfully rolled-back action names. Errors are logged
-        but do not abort the remaining rollback sequence.
+        **Tool-call mode** (``executed_tool_calls`` provided):
+            Iterates over the supplied list in reverse order.  For each entry
+            it looks up the inverse function by ``tool_call.tool_name`` via
+            the :mod:`app.reliability.tool_inverses` registry, then *awaits*
+            it with ``(tool_call=tool_call, mcp_client=_mcp_client)``.  This
+            guarantees every MCP rollback call actually completes — no
+            fire-and-forget tasks.
+
+        **Stack mode** (``executed_tool_calls`` is ``None``, default):
+            Falls back to the internal ``_stack`` accumulated via
+            :meth:`register` / :meth:`register_typed`.  Coroutine inverses are
+            awaited; sync inverses are called directly.
+
+        Returns list of successfully rolled-back action names.  Errors are
+        logged but do not abort the remaining rollback sequence.
         """
         import asyncio
 
         rolled_back: list[str] = []
+
+        # ── Tool-call mode: use tool_inverses registry, fully awaited ───────
+        if executed_tool_calls is not None:
+            from app.reliability.tool_inverses import _mcp_client, get_inverse_fn
+
+            for tool_call in reversed(list(executed_tool_calls)):
+                tool_name = getattr(tool_call, "tool_name", "")
+                inverse = get_inverse_fn(tool_name)
+                if inverse is None:
+                    logger.info("rollback_no_inverse tool=%s", tool_name)
+                    continue
+                try:
+                    await inverse(tool_call=tool_call, mcp_client=_mcp_client)
+                    rolled_back.append(tool_name)
+                    logger.info("Rolled back async: %s", tool_name)
+                except Exception as exc:
+                    logger.warning(
+                        "rollback_inverse_error tool=%s error=%s",
+                        tool_name,
+                        str(exc)[:80],
+                    )
+            return rolled_back
+
+        # ── Stack mode: legacy _stack path ──────────────────────────────────
         while self._stack:
             action, inverse = self._stack.pop()
             try:

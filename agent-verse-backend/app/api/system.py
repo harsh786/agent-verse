@@ -73,3 +73,15 @@ async def jwks_endpoint(request: Request) -> dict[str, Any]:
             pass
 
     return response_data
+
+
+@router.get("/providers/catalog")
+async def get_provider_catalog_endpoint() -> dict[str, Any]:
+    """Return available LLM provider configs (no API keys exposed).
+
+    Reads from the provider registry — returns whichever providers are
+    configured via environment variables on this instance.
+    """
+    from app.providers.registry import get_provider_catalog
+
+    return {"providers": get_provider_catalog()}

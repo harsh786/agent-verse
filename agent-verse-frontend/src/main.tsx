@@ -10,7 +10,13 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      retry: 1,
+      // Don't retry 401/403 — the session is invalid and retrying will never succeed.
+      // Retry other errors up to 3 times.
+      retry: (failureCount: number, error: unknown) => {
+        const status = (error as { status?: number })?.status;
+        if (status === 401 || status === 403) return false;
+        return failureCount < 3;
+      },
     },
   },
 });

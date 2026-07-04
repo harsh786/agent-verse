@@ -41,6 +41,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.a2a import router as a2a_router
+from app.api.agent_directory import router as agent_directory_router
+from app.api.solutions import router as solutions_router
+from app.api.admin import router as admin_router
 from app.api.agents import AgentStore
 from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
@@ -139,53 +142,41 @@ logger = get_logger(__name__)
 
 
 def _resolve_provider_for_app(settings: Settings) -> Any:
-    """Resolve a real LLM provider from environment, or FakeProvider as last resort."""
+    """Resolve a real LLM provider from environment, or FakeProvider as last resort.
+
+    Uses the declarative ProviderRegistry (Phase 5) which supports Anthropic,
+    OpenAI-compatible, Gemini, Groq, and Ollama — auto-detected from env vars
+    or driven by the LLM_PROVIDERS JSON array override.
+    """
     import os
-    from app.core.config import get_provider_env
 
-    anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
-    openai_key = get_provider_env("OPENAI_API_KEY")
+    from app.providers.registry import resolve_provider
 
-    if anthropic_key:
-        try:
-            from app.providers.anthropic_provider import AnthropicProvider
-            return AnthropicProvider(api_key=anthropic_key)
-        except Exception:
-            pass
+    _app_provider = resolve_provider()
 
-    if openai_key:
-        try:
-            from app.providers.openai_compatible import OpenAICompatibleProvider
-            return OpenAICompatibleProvider(api_key=openai_key)
-        except Exception:
-            pass
-
-    # No real provider — warn and fall back to Fake
-    logger.warning(
-        "no_real_llm_provider_for_meta_services",
-        message=(
-            "MetaAgentPlanner and NLScheduler are using FakeProvider. "
-            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real NL→agent and NL→schedule parsing."
+    # Production safety guard: refuse to start with FakeProvider in production.
+    if isinstance(_app_provider, FakeProvider):
+        env = os.getenv("ENVIRONMENT", "development").lower()
+        if env == "production":
+            raise RuntimeError(
+                "FATAL: No LLM provider configured for production. "
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
+                "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
+            )
+        logger.warning(
+            "fake_provider_active_dev_only",
+            message=(
+                "FakeProvider is active. "
+                "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real goal execution."
+            ),
         )
-    )
-    env = os.getenv("ENVIRONMENT", "development").lower()
-    if env == "production":
-        raise RuntimeError(
-            "FATAL: No LLM provider configured for production. "
-            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable."
-        )
-    logger.warning(
-        "fake_provider_active_dev_only",
-        message=(
-            "FakeProvider is active. "
-            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real goal execution."
-        ),
-    )
-    return FakeProvider(responses=[
-        '{"steps": ["Complete the requested task"]}',
-        "Task executed successfully",
-        '{"success": true, "reason": "Goal achieved"}',
-    ])
+        return FakeProvider(responses=[
+            '{"steps": ["Complete the requested task"]}',
+            "Task executed successfully",
+            '{"success": true, "reason": "Goal achieved"}',
+        ])
+
+    return _app_provider
 
 
 def _build_verifier_provider(settings: Any = None) -> Any:
@@ -374,20 +365,54 @@ class _FakeLuaScript:
         self._script = script
 
     async def __call__(self, keys: list[str], args: list[str]) -> str:
-        """Execute the Lua script atomically using the FakeRedis lock."""
-        key = keys[0]
-        increment = float(args[0])
-        limit = float(args[1])
-        expiry_ts = int(args[2])
+        """Execute the Lua script atomically using the FakeRedis lock.
+
+        Handles two script formats:
+        * 1-key / 3-arg  — legacy ``try_record_and_check`` daily-only script.
+        * 2-key / 5-arg  — ``check_and_record_async`` goal+daily script.
+        """
+        import time as _time
+
         async with self._redis._get_lock():
-            current = float(self._redis._d.get(key, 0))
-            if current + increment > limit:
-                raise Exception("BUDGET_EXCEEDED")
-            new_val = current + increment
-            self._redis._d[key] = str(new_val)
-            import time
-            self._redis._ttl[key] = float(expiry_ts) - time.time() + time.monotonic()
-            return str(new_val)
+            if len(keys) == 2:  # noqa: PLR2004 — new goal+daily format
+                # args: cost, goal_limit, daily_limit, goal_expiry, daily_expiry
+                goal_key, daily_key = keys[0], keys[1]
+                cost = float(args[0])
+                goal_limit = float(args[1])
+                daily_limit = float(args[2])
+                goal_expiry = int(args[3])
+                daily_expiry = int(args[4])
+
+                goal_current = float(self._redis._d.get(goal_key, 0))
+                daily_current = float(self._redis._d.get(daily_key, 0))
+
+                if goal_limit > 0 and goal_current + cost > goal_limit:
+                    raise Exception("GOAL_BUDGET_EXCEEDED")
+                if daily_limit > 0 and daily_current + cost > daily_limit:
+                    raise Exception("DAILY_BUDGET_EXCEEDED")
+
+                new_goal = goal_current + cost
+                new_daily = daily_current + cost
+                self._redis._d[goal_key] = str(new_goal)
+                self._redis._d[daily_key] = str(new_daily)
+                now = _time.time()
+                mono = _time.monotonic()
+                self._redis._ttl[goal_key] = float(goal_expiry) - now + mono
+                self._redis._ttl[daily_key] = float(daily_expiry) - now + mono
+                return f"{new_goal}:{new_daily}"
+            else:
+                # Legacy 1-key / 3-arg format used by try_record_and_check
+                key = keys[0]
+                increment = float(args[0])
+                limit = float(args[1])
+                expiry_ts = int(args[2])
+                current = float(self._redis._d.get(key, 0))
+                if current + increment > limit:
+                    raise Exception("BUDGET_EXCEEDED")
+                new_val = current + increment
+                self._redis._d[key] = str(new_val)
+                self._redis._ttl[key] = float(expiry_ts) - _time.time() + _time.monotonic()
+                return str(new_val)
 
 
 # ── error handlers ─────────────────────────────────────────────────────────────
@@ -442,6 +467,12 @@ def create_app(
     _nl_sched = NLScheduler(provider=_app_provider)
     _knowledge_store = KnowledgeStore()
     _semantic_cache = SemanticCache()
+    # In-memory ToolResultCache (upgraded with Redis in lifespan)
+    try:
+        from app.mcp.tool_cache import ToolResultCache
+        _tool_cache_inmem = ToolResultCache()
+    except Exception:
+        _tool_cache_inmem = None
     _fake_redis = _FakeRedis()
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
     _oauth_manager = OAuthFlowManager()
@@ -867,13 +898,22 @@ def create_app(
                     except Exception:
                         pass
 
-                # MCPClient: Redis circuit-breaker + oauth.
+                # MCPClient: Redis circuit-breaker + oauth + tool cache.
                 _mcp = getattr(app.state, "mcp_client", None)
                 if _mcp is not None:
                     if hasattr(_mcp, "_redis"):
                         _mcp._redis = redis_for_runtime
                     if hasattr(_mcp, "_oauth_manager"):
                         _mcp._oauth_manager = getattr(app.state, "oauth_manager", None)
+                    # Wire ToolResultCache (created fresh with Redis backend)
+                    try:
+                        from app.mcp.tool_cache import ToolResultCache as _TRC
+                        _tool_cache = _TRC(redis=redis_for_runtime)
+                        _mcp._tool_cache = _tool_cache
+                        app.state.tool_cache = _tool_cache
+                        logger.info("tool_result_cache_wired")
+                    except Exception as _tce:
+                        logger.warning("tool_result_cache_wire_failed", error=str(_tce))
 
                 # RPA session manager: Redis-backed session registry for restart survival.
                 _rpa_sm = getattr(app.state, "rpa_session_manager", None)
@@ -889,6 +929,23 @@ def create_app(
                 _sem_cache = getattr(app.state, "semantic_cache", None)
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):
                     _sem_cache._redis = redis_for_runtime
+
+                # GoalDeduplicator: wire Redis for cross-replica dedup.
+                try:
+                    from app.services.dedup import _default_deduplicator as _goal_dedup
+                    _goal_dedup._redis = redis_for_runtime
+                    logger.info("goal_deduplicator_redis_wired")
+                except Exception as _gd_exc:
+                    logger.warning("goal_dedup_redis_wire_failed", error=str(_gd_exc))
+
+                # LLMResponseCache: wire Redis for cross-replica LLM cache.
+                try:
+                    from app.rag.llm_response_cache import LLMResponseCache as _LLMRC
+                    _llm_rc = _LLMRC(redis=redis_for_runtime)
+                    app.state.llm_response_cache = _llm_rc
+                    logger.info("llm_response_cache_wired")
+                except Exception as _lrc_exc:
+                    logger.warning("llm_response_cache_wire_failed", error=str(_lrc_exc))
 
                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
                 try:
@@ -1082,6 +1139,9 @@ def create_app(
     app.state._app_provider = _app_provider
     app.state.mcp_registry = _mcp_registry
     app.state.mcp_client = _mcp_client
+    app.state.tool_cache = _tool_cache_inmem
+    if _mcp_client is not None and _tool_cache_inmem is not None:
+        _mcp_client._tool_cache = _tool_cache_inmem
     app.state.oauth_manager = _oauth_manager
     app.state.agent_store = _agent_store
     app.state.meta_agent = _meta_agent
@@ -1211,6 +1271,12 @@ def create_app(
     # A2A + collaboration
     app.include_router(a2a_router)
     app.include_router(collab_router)
+    # A2A Agent Directory (.well-known/agents — Phase 8)
+    app.include_router(agent_directory_router)
+    logger.info("a2a_directory_router_registered")
+    # Domain Solution Packages (Phase 7)
+    app.include_router(solutions_router)
+    logger.info("solutions_router_registered")
     # Enterprise + marketplace + intelligence
     app.include_router(enterprise_router)
     app.include_router(marketplace_router)
@@ -1247,6 +1313,9 @@ def create_app(
     # Guardrails
     app.include_router(guardrails_router)
     logger.info("guardrails_router_registered")
+    # Platform admin (cross-tenant, X-Admin-Key authenticated)
+    app.include_router(admin_router)
+    logger.info("admin_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

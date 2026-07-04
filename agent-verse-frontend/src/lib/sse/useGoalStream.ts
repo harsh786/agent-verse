@@ -8,6 +8,10 @@
  * Retries are cancelled on terminal events (goal_complete / goal_failed /
  * goal_cancelled) and on component unmount.
  *
+ * Auth error short-circuit: 401 / 403 responses immediately invoke logout() and
+ * do NOT retry — retrying against an expired/invalid token would create a storm
+ * of requests that will never succeed.
+ *
  * Token streaming:
  * - `token_chunk` events update `streamingToken` with the step name and cumulative text.
  * - `step_complete` / `step_completed` events clear `streamingToken` (the LLM finished).
@@ -15,6 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useAuthStore } from "@/stores/auth";
 
 export interface GoalEvent {
   type: string;
@@ -46,20 +51,23 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   const onEventRef = useRef(opts?.onEvent);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track the last SSE event ID so reconnects can resume without gaps.
+  // The backend can emit "id: <value>" lines; when present the browser stores
+  // lastEventId on the MessageEvent.  With a fetch-based reader we extract it
+  // from the raw frame ("id: " prefix) and store it here.
+  const lastEventIdRef = useRef<string>('');
 
   onEventRef.current = opts?.onEvent;
 
   useEffect(() => {
     if (!goalId) return;
 
-    // Reset retry counter and streaming state whenever we connect to a new goal
+    // Reset retry counter, streaming state, and last-event-id whenever we
+    // connect to a new goal.
     retryCountRef.current = 0;
+    lastEventIdRef.current = '';
     setStreamingToken(null);
 
-    const apiKey =
-      sessionStorage.getItem("av_api_key") ??
-      localStorage.getItem("av_api_key") ??
-      "";
     const API_BASE_URL =
       (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
     const url = `${API_BASE_URL}/goals/${goalId}/stream`;
@@ -83,12 +91,34 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
       const abort = new AbortController();
       abortRef.current = abort;
 
+      // Read the auth token fresh on each (re)connect attempt — not captured
+      // once at mount — so a token rotation between retries is picked up.
+      const { apiKey: storeKey, ssoMode, accessToken } = useAuthStore.getState();
+      const apiKey =
+        storeKey ||
+        sessionStorage.getItem("av_api_key") ||
+        localStorage.getItem("av_api_key") ||
+        "";
+
+      const authHeaders: Record<string, string> = ssoMode && accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : apiKey
+        ? { "X-API-Key": apiKey }
+        : {};
+
+      // Attach Last-Event-ID so the backend can replay missed events on
+      // reconnect (RFC 6202 / SSE spec).  Only sent when we have a previous ID.
+      const resumeHeaders: Record<string, string> = lastEventIdRef.current
+        ? { "Last-Event-ID": lastEventIdRef.current }
+        : {};
+
       let terminalReceived = false;
 
       try {
         const res = await fetch(url, {
           headers: {
-            "X-API-Key": apiKey,
+            ...authHeaders,
+            ...resumeHeaders,
             Accept: "text/event-stream",
           },
           signal: abort.signal,
@@ -96,6 +126,12 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
 
         if (!res.ok || !res.body) {
           setConnected(false);
+          // 401/403 — auth failure. Stop retrying immediately; every retry will
+          // also get a 401/403, creating a storm of failing requests.
+          if (res.status === 401 || res.status === 403) {
+            useAuthStore.getState().logout();
+            return;
+          }
           scheduleReconnect();
           return;
         }
@@ -115,6 +151,15 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
           buffer = frames.pop() ?? "";
 
           for (const frame of frames) {
+            // Extract SSE "id:" field from the frame before parsing data lines.
+            // RFC 6202: an "id" field sets the last event ID for the stream.
+            for (const line of frame.split("\n")) {
+              if (line.startsWith("id: ")) {
+                const id = line.slice(4).trim();
+                if (id) lastEventIdRef.current = id;
+              }
+            }
+
             for (const line of frame.split("\n")) {
               const data = line.startsWith("data: ") ? line.slice(6).trim() : null;
               if (!data) continue;
@@ -132,8 +177,14 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
                   continue;
                 }
 
-                // Structural events — push to events array
-                setEvents((prev) => [...prev, parsed]);
+                // Structural events — push to events array with dedup + cap
+                setEvents((prev) => {
+                  const eventId = parsed["event_id"] as string | undefined;
+                  if (eventId && prev.some((e) => (e["event_id"] as string | undefined) === eventId)) {
+                    return prev; // duplicate — skip
+                  }
+                  return [...prev, parsed].slice(-1000); // cap at 1000 events
+                });
                 onEventRef.current?.(parsed);
 
                 // A step completing clears any in-progress streaming display

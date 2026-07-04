@@ -3,12 +3,18 @@
 Each tool per tenant has its own set of circuit breaker keys in Redis:
   cb:{tenant_id}:{tool_name}:state    → "closed" | "open" | "half_open"
   cb:{tenant_id}:{tool_name}:failures → integer count
-  cb:{tenant_id}:{tool_name}:opened_at → epoch float (monotonic)
+  cb:{tenant_id}:{tool_name}:opened_at → epoch float (wall-clock, time.time())
 
-A TTL of 2× the cooldown period is applied so stale keys self-expire.
+A TTL of 2x the cooldown period is applied so stale keys self-expire.
 
 Falls back to the in-memory :class:`~app.reliability.circuit_breaker.CircuitBreaker`
 if Redis is unavailable, so a Redis outage never takes down the whole service.
+
+H16 fix: ``opened_at`` now stores ``time.time()`` (wall-clock UTC epoch) rather
+than ``time.monotonic()``.  Monotonic clocks are per-process and cannot be
+meaningfully compared across replicas; wall-clock epoch timestamps are shared
+across all processes on all hosts and therefore give correct cross-replica
+elapsed-time calculations.
 """
 from __future__ import annotations
 
@@ -23,31 +29,42 @@ class RedisCircuitBreaker:
 
     Args:
         redis_client: An ``redis.asyncio.Redis``-compatible async client.
+                      *Alias*: ``redis`` (convenience param, lower priority).
         tenant_id:    Tenant owning this breaker.
         tool_name:    Tool (or service) this breaker guards.
+        key:          Override the full Redis key prefix (e.g. for tests).
+                      When supplied, ``tenant_id`` / ``tool_name`` are ignored
+                      for key construction.
         failure_threshold: Consecutive failures required to open the circuit.
         cooldown_seconds:  Seconds to wait before allowing a half-open probe.
+                           *Alias*: ``reset_timeout``.
     """
 
     def __init__(
         self,
         *,
-        redis_client: Any,
-        tenant_id: str,
-        tool_name: str,
+        redis_client: Any = None,
+        redis: Any = None,
+        tenant_id: str = "",
+        tool_name: str = "",
+        key: str = "",
         failure_threshold: int = 3,
         cooldown_seconds: float = 60.0,
+        reset_timeout: float = 0.0,
     ) -> None:
-        self._redis = redis_client
+        # Accept either redis_client= (canonical) or redis= (alias)
+        self._redis = redis_client if redis_client is not None else redis
         self._tenant_id = tenant_id
         self._tool_name = tool_name
         self._threshold = failure_threshold
-        self._cooldown = cooldown_seconds
-        self._prefix = f"cb:{tenant_id}:{tool_name}"
+        # reset_timeout= is an alias for cooldown_seconds= (test-friendly name)
+        self._cooldown = reset_timeout if reset_timeout else cooldown_seconds
+        # key= overrides derived prefix (useful in tests)
+        self._prefix = key if key else f"cb:{tenant_id}:{tool_name}"
         # In-memory fallback used when Redis is unreachable
         self._fallback = CircuitBreaker(
             failure_threshold=failure_threshold,
-            cooldown_seconds=cooldown_seconds,
+            cooldown_seconds=self._cooldown,
         )
 
     # ── key helpers ────────────────────────────────────────────────────────────
@@ -71,6 +88,8 @@ class RedisCircuitBreaker:
         """Return True if a call is allowed now (checks Redis state).
 
         Handles the OPEN → HALF_OPEN transition after the cooldown expires.
+        Uses ``time.time()`` (wall-clock) to compare against the stored
+        ``opened_at`` timestamp so the comparison is valid across replicas.
         """
         try:
             state_str = await self._redis.get(self._key("state"))
@@ -83,7 +102,8 @@ class RedisCircuitBreaker:
                 opened_at_str = await self._redis.get(self._key("opened_at"))
                 if opened_at_str:
                     opened_at = float(opened_at_str)
-                    if time.monotonic() - opened_at >= self._cooldown:
+                    # H16: use wall-clock (time.time()) for cross-replica correctness
+                    if time.time() - opened_at >= self._cooldown:
                         # Promote to HALF_OPEN to allow a single probe call
                         await self._redis.set(
                             self._key("state"), CircuitState.HALF_OPEN.value
@@ -104,7 +124,13 @@ class RedisCircuitBreaker:
             failures = await self._redis.incr(self._key("failures"))
             if failures >= self._threshold:
                 await self._redis.set(self._key("state"), CircuitState.OPEN.value)
-                await self._redis.set(self._key("opened_at"), str(time.monotonic()))
+                # H16: store wall-clock epoch so cross-replica elapsed-time math works
+                ttl = int(self._cooldown * 2)
+                await self._redis.set(
+                    self._key("opened_at"),
+                    str(time.time()),
+                    ex=ttl,  # auto-expire so stale open-state keys are cleaned up
+                )
             # Auto-expire keys so stale open circuits don't block forever
             ttl = int(self._cooldown * 2)
             await self._redis.expire(self._key("state"), ttl)
@@ -142,3 +168,4 @@ class RedisCircuitBreaker:
     @property
     def state(self) -> CircuitState:
         return self._fallback.state
+

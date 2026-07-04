@@ -3,8 +3,12 @@
  * fetch + X-API-Key (native EventSource cannot set headers), ReadableStream
  * reader, frames split on "\n\n", exponential backoff (1s..30s, max 8 attempts),
  * retries cancelled on terminalTypes events and unmount.
+ *
+ * Auth error short-circuit: 401 / 403 responses immediately invoke logout() and
+ * do NOT retry — retrying against an expired/invalid token creates a request storm.
  */
 import { useEffect, useRef, useState } from "react";
+import { useAuthStore } from "@/stores/auth";
 
 export interface StreamEvent {
   type: string;
@@ -39,10 +43,6 @@ export function useEventStream(
     if (!path || !enabled) return;
     retryCountRef.current = 0;
 
-    const apiKey =
-      sessionStorage.getItem("av_api_key") ??
-      localStorage.getItem("av_api_key") ??
-      "";
     const API_BASE_URL =
       (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
     const url = `${API_BASE_URL}${path}`;
@@ -60,14 +60,34 @@ export function useEventStream(
     const startConnection = async () => {
       const abort = new AbortController();
       abortRef.current = abort;
+
+      // Read auth token fresh on each (re)connect — not captured once at mount.
+      const { apiKey: storeKey, ssoMode, accessToken } = useAuthStore.getState();
+      const apiKey =
+        storeKey ||
+        sessionStorage.getItem("av_api_key") ||
+        localStorage.getItem("av_api_key") ||
+        "";
+
+      const authHeaders: Record<string, string> = ssoMode && accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : apiKey
+        ? { "X-API-Key": apiKey }
+        : {};
+
       let terminalReceived = false;
       try {
         const res = await fetch(url, {
-          headers: { "X-API-Key": apiKey, Accept: "text/event-stream" },
+          headers: { ...authHeaders, Accept: "text/event-stream" },
           signal: abort.signal,
         });
         if (!res.ok || !res.body) {
           setConnected(false);
+          // 401/403 — auth failure. Stop immediately; retrying will not succeed.
+          if (res.status === 401 || res.status === 403) {
+            useAuthStore.getState().logout();
+            return;
+          }
           scheduleReconnect();
           return;
         }
@@ -87,7 +107,14 @@ export function useEventStream(
               if (!data) continue;
               try {
                 const parsed = JSON.parse(data) as StreamEvent;
-                setEvents((prev) => [...prev, parsed]);
+                // Dedup by event_id when present; cap array at 1000 entries.
+                setEvents((prev) => {
+                  const eventId = parsed["event_id"] as string | undefined;
+                  if (eventId && prev.some((e) => (e["event_id"] as string | undefined) === eventId)) {
+                    return prev; // duplicate — skip
+                  }
+                  return [...prev, parsed].slice(-1000);
+                });
                 onEventRef.current?.(parsed);
                 if (terminalTypes.includes(parsed.type)) {
                   retryCountRef.current = 0;

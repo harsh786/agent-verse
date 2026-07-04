@@ -247,7 +247,29 @@ async def test_execute_with_circuit_breaker_open_skips() -> None:
     assert state.status == GoalStatus.COMPLETE
 
 
-async def test_execute_with_hitl_gateway_high_risk_step() -> None:
+async def test_execute_with_hitl_gateway_supervised_rejects() -> None:
+    """C1: supervised mode, high-risk step, rejection → PermissionError (not auto-proceed)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.governance.hitl import ApprovalStatus
+
+    hitl = MagicMock(spec=HITLGateway)
+    hitl.request_approval.return_value = MagicMock(request_id="req-x")
+    hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.REJECTED)
+
+    loop = _make_loop(
+        planner=FakeProvider(responses=['{"steps": ["deploy to production server"]}']),
+        executor=FakeProvider(responses=["deployed"]),
+        verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
+        hitl_gateway=hitl,
+        autonomy_mode="supervised",
+    )
+    with pytest.raises(PermissionError, match="rejected"):
+        await loop.run(goal="Deploy", tenant_ctx=_CTX)
+
+
+async def test_execute_with_hitl_gateway_non_supervised_proceeds() -> None:
+    """Non-supervised mode: high-risk step logs approval request but auto-proceeds."""
     hitl = HITLGateway(timeout_seconds=300.0)
     loop = _make_loop(
         planner=FakeProvider(responses=['{"steps": ["deploy to production server"]}']),
@@ -256,7 +278,7 @@ async def test_execute_with_hitl_gateway_high_risk_step() -> None:
         hitl_gateway=hitl,
     )
     state = await loop.run(goal="Deploy", tenant_ctx=_CTX)
-    # HITL gateway logs but auto-proceeds (non-blocking)
+    # Non-supervised mode: HITL logs the request but does NOT block
     assert state.status == GoalStatus.COMPLETE
 
 

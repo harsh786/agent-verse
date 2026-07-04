@@ -182,6 +182,7 @@ class AgentGraph:
         model_router: Any | None = None,
         # Semantic cache + embedder
         semantic_cache: Any | None = None,
+        llm_response_cache: Any | None = None,
         embedder: Any | None = None,
         # Phase 2 feature flags
         enable_cot: bool = False,
@@ -222,6 +223,7 @@ class AgentGraph:
         self._eval_runner = eval_runner
         self._model_router: Any = model_router
         self._semantic_cache: Any = semantic_cache
+        self._llm_response_cache: Any = llm_response_cache
         self._embedder: Any = embedder
         self._enable_cot = enable_cot
         self._enable_reflection = enable_reflection
@@ -258,6 +260,9 @@ class AgentGraph:
         self._goal_service: Any = None
         # Tenant context reference — set during run()
         self._tenant_ctx_ref: Any = None
+        # Lock protecting concurrent mutations of shared state (e.g. total_cost_usd)
+        # during parallel-wave execution.
+        self._state_lock = asyncio.Lock()
         from app.observability.logging import get_logger as _get_logger
         self._logger = _get_logger(__name__)
 
@@ -597,6 +602,25 @@ class AgentGraph:
         if cot_reasoning:
             extra_parts.append(f"[Chain-of-thought reasoning]\n{cot_reasoning}")
 
+        # ── Skill selection ────────────────────────────────────────────────────
+        try:
+            from app.agent.skill_selector import SkillSelector
+            _skill_sel = SkillSelector()
+            _selected_skills = _skill_sel.select(
+                agent_state.goal, max_skills=2, max_tokens=400
+            )
+            if _selected_skills:
+                _skills_block = _skill_sel.build_skills_context(_selected_skills)
+                extra_parts.append(_skills_block)
+                # Narrow tool selection to skill's allowed_tools if specified
+                _skill_tools: set[str] = set()
+                for _sk in _selected_skills:
+                    _skill_tools.update(_sk.allowed_tools)
+                if _skill_tools:
+                    agent_state.context["skill_allowed_tools"] = list(_skill_tools)
+        except Exception:
+            pass  # skills must never block execution
+
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
@@ -627,24 +651,69 @@ class AgentGraph:
                 f"Do NOT repeat the rejected action. Replan with a different approach."
             )
 
-        # Phase 5: inject live tool schemas from MCP registry into system prompt
+        # Phase 5 / 2.1: inject live tool schemas from MCP registry into system prompt.
+        # When embedder is available, CapabilitySearch selects only the top-K goal-relevant
+        # tools (largest token-cost win). Falls back to full-list injection otherwise.
         tool_context_text = ""
         if self._mcp_client is not None and tenant_ctx is not None:
             try:
                 all_tools = await self._mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
                 if all_tools:
-                    tool_lines = []
-                    for t in all_tools[:20]:  # cap at 20 tools to stay within context
-                        schema_str = ""
-                        if hasattr(t, "input_schema") and t.input_schema:
-                            schema_str = (
-                                f" | schema: "
-                                f"{json.dumps(t.input_schema, separators=(',', ':'))[:200]}"
+                    _tool_injected = False
+                    # 2.1: CapabilitySearch — select top-K goal-relevant tools only
+                    if self._embedder is not None:
+                        try:
+                            from app.mcp.capability_search import CapabilitySearch
+                            cap_search = CapabilitySearch(
+                                tools=all_tools,
+                                embedder=self._embedder,
                             )
-                        tool_lines.append(
-                            f"  - {t.name}: {t.description[:100]}{schema_str}"
-                        )
-                    tool_context_text = "\n\n[Available tools]\n" + "\n".join(tool_lines)
+                            relevant_matches = await cap_search.search(
+                                query=agent_state.goal,
+                                tenant_ctx=tenant_ctx,
+                                top_k=12,
+                            )
+                            if relevant_matches:
+                                # Build input_schema lookup from original tools
+                                _tool_schema_map = {
+                                    getattr(t, "name", ""): getattr(t, "input_schema", {})
+                                    for t in all_tools
+                                }
+                                tool_lines = []
+                                for m in relevant_matches[:12]:
+                                    schema_str = ""
+                                    input_schema = _tool_schema_map.get(m.tool_name)
+                                    if input_schema:
+                                        schema_str = (
+                                            f" | schema: "
+                                            f"{json.dumps(input_schema, separators=(',', ':'))[:300]}"
+                                        )
+                                    tool_lines.append(
+                                        f"  - {m.tool_name}: {m.description[:100]}{schema_str}"
+                                    )
+                                tool_context_text = (
+                                    "\n\n[Relevant tools for this goal]\n"
+                                    + "\n".join(tool_lines)
+                                )
+                                _tool_injected = True
+                        except Exception as _cap_exc:
+                            self._logger.debug(
+                                "capability_search_fallback", error=str(_cap_exc)[:60]
+                            )
+                    # Fallback: full-list injection (no embedder, or capability search failed)
+                    if not _tool_injected:
+                        tool_lines = []
+                        for t in all_tools[:20]:  # cap at 20 tools to stay within context
+                            schema_str = ""
+                            if hasattr(t, "input_schema") and t.input_schema:
+                                schema_str = (
+                                    f" | schema: "
+                                    f"{json.dumps(t.input_schema, separators=(',', ':'))[:200]}"
+                                )
+                            tool_lines.append(
+                                f"  - {t.name}: {t.description[:100]}{schema_str}"
+                            )
+                        tool_context_text = "\n\n[Available tools]\n" + "\n".join(tool_lines)
             except Exception as _tc_exc:
                 self._logger.warning("tool_schema_injection_failed", error=str(_tc_exc))
         system_content = system_content + tool_context_text
@@ -652,23 +721,115 @@ class AgentGraph:
         # Determine planning model via model_router if wired
         planning_model = "claude-opus-4-8"
         if self._model_router is not None:
-            routed = self._model_router.model_for("planning")
+            routed = self._model_router.model_for_goal("planning", goal=agent_state.goal)
             if routed:
                 planning_model = routed
+            # Cost Auto-Downgrade: use cheaper model when budget > 60% consumed
+            if self._cost_controller is not None:
+                try:
+                    _cost_tier = await self._cost_controller.get_cost_tier(
+                        goal_id=agent_state.goal_id,
+                        tenant_ctx=tenant_ctx,
+                    )
+                    if _cost_tier == "economy":
+                        _economy_model = self._model_router.model_for("verification")
+                        if _economy_model:
+                            self._logger.info(
+                                "cost_downgrade_economy",
+                                original=planning_model,
+                                downgraded=_economy_model,
+                            )
+                            planning_model = _economy_model
+                    elif _cost_tier == "standard":
+                        _standard_model = self._model_router.model_for("execution")
+                        if _standard_model:
+                            self._logger.info(
+                                "cost_downgrade_standard",
+                                original=planning_model,
+                                downgraded=_standard_model,
+                            )
+                            planning_model = _standard_model
+                except Exception:
+                    pass
 
-        req = CompletionRequest(
-            messages=[
-                Message(role="system", content=system_content),
-                Message(role="user", content=user_content),
-            ],
-            model=planning_model,
-        )
-        with self._tracer.start_as_current_span("agentverse.plan") as span:
-            span.set_attribute("plan.iteration", agent_state.iterations)
-            span.set_attribute("tenant.id", tenant_ctx.tenant_id)
-            _plan_start = time.monotonic()
-            resp = await self._planner.complete(req)
-            record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
+        # ── Prompt Compression: reduce token count before LLM call ────────────
+        try:
+            from app.agent.prompt_compressor import _default_compressor as _compressor
+            system_content = _compressor.compress(system_content)
+            user_content = _compressor.compress(user_content)
+        except Exception:
+            pass
+
+        # ── LLM Response Cache: skip planner call on identical goals ──────────
+        _llm_rc = getattr(self, "_llm_response_cache", None)
+        if _llm_rc is not None and not _llm_rc.should_skip_cache(user_content):
+            try:
+                _cached_plan = await _llm_rc.get(
+                    system=system_content,
+                    user=user_content,
+                    model=planning_model,
+                    tenant_id=tenant_ctx.tenant_id,
+                    task_type="planning",
+                )
+                if _cached_plan is not None:
+                    self._logger.info("llm_cache_plan_hit", tenant=tenant_ctx.tenant_id)
+                    # Use cached response directly — skip the LLM call
+                    # Jump straight to parsing (replicate post-resp.content code)
+                    resp_content = _cached_plan
+                    # Store locally so the existing parse block below can use it
+                    class _FakeResp:
+                        content = resp_content
+                    resp = _FakeResp()
+                    record_plan_duration(agent_state.iterations, 0.0)
+                    # bypass the real LLM call below
+                    _llm_plan_cached = True
+                else:
+                    _llm_plan_cached = False
+            except Exception:
+                _llm_plan_cached = False
+        else:
+            _llm_plan_cached = False
+
+        if not _llm_plan_cached:
+            req = CompletionRequest(
+                messages=[
+                    Message(role="system", content=system_content),
+                    Message(role="user", content=user_content),
+                ],
+                model=planning_model,
+            )
+            with self._tracer.start_as_current_span("agentverse.plan") as span:
+                span.set_attribute("plan.iteration", agent_state.iterations)
+                span.set_attribute("tenant.id", tenant_ctx.tenant_id)
+                _plan_start = time.monotonic()
+                resp = await self._planner.complete(req)
+                record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
+            # 2.3: Per-goal planner cost tracking
+            try:
+                from app.observability.cost_breakdown import record_role_cost as _rrc
+                _rrc(
+                    goal_id=agent_state.goal_id,
+                    role="planner",
+                    model=planning_model,
+                    input_tok=getattr(resp, "input_tokens", 0),
+                    output_tok=getattr(resp, "output_tokens", 0),
+                    cost=0.0,
+                )
+            except Exception:
+                pass
+            # Store in LLM cache for future identical requests
+            if _llm_rc is not None:
+                try:
+                    await _llm_rc.set(
+                        system=system_content,
+                        user=user_content,
+                        model=planning_model,
+                        response=resp.content,
+                        tenant_id=tenant_ctx.tenant_id,
+                        task_type="planning",
+                    )
+                except Exception:
+                    pass
         parsed = _parse_json(resp.content, key="steps")
         raw_steps = parsed.get("steps", [resp.content])
 
@@ -697,6 +858,39 @@ class AgentGraph:
 
         agent_state.plan = _plan_display
         await self._emit({"type": "plan_ready", "steps": _plan_display, "iteration": iteration})
+        # ── Predictive Prefetch: embed all step descriptions now so semantic
+        # cache lookups during execution are instant (sub-millisecond) ──────────
+        if self._embedder is not None and self._semantic_cache is not None:
+            async def _prefetch_steps() -> None:
+                try:
+                    step_texts = []
+                    for _s in _plan_display:
+                        if isinstance(_s, str):
+                            step_texts.append(_s)
+                        elif isinstance(_s, dict):
+                            step_texts.append(_s.get("description") or _s.get("step") or str(_s))
+                    if not step_texts:
+                        return
+                    # Batch embed all steps
+                    _embeds = await self._embedder.embed_batch(step_texts)
+                    # Warm the semantic cache with step embeddings
+                    if hasattr(self._semantic_cache, "warm"):
+                        await self._semantic_cache.warm(
+                            queries=step_texts,
+                            embeddings=_embeds,
+                            tenant_id=tenant_ctx.tenant_id,
+                        )
+                    self._logger.debug(
+                        "predictive_prefetch_complete",
+                        steps=len(step_texts),
+                        tenant=tenant_ctx.tenant_id,
+                    )
+                except Exception as _pf_exc:
+                    self._logger.debug("predictive_prefetch_failed", error=str(_pf_exc)[:60])
+
+            _pf_task = asyncio.create_task(_prefetch_steps())
+            self._background_tasks.add(_pf_task)
+            _pf_task.add_done_callback(self._background_tasks.discard)
         return {"agent_state": agent_state, "plan": plan, "iteration": iteration}
 
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
@@ -1308,9 +1502,10 @@ class AgentGraph:
                 resp.input_tokens,
                 resp.output_tokens,
             )
-            state.context["total_cost_usd"] = (
-                state.context.get("total_cost_usd", 0.0) + _actual_cost
-            )
+            async with self._state_lock:
+                state.context["total_cost_usd"] = (
+                    state.context.get("total_cost_usd", 0.0) + _actual_cost
+                )
             ok = await self._cost_controller.check_and_record(
                 goal_id=state.goal_id,
                 cost_usd=_actual_cost,
@@ -1329,9 +1524,10 @@ class AgentGraph:
                     resp.usage.prompt_tokens,
                     resp.usage.completion_tokens,
                 )
-                state.context["total_cost_usd"] = (
-                    state.context.get("total_cost_usd", 0.0) + _real_cost
-                )
+                async with self._state_lock:
+                    state.context["total_cost_usd"] = (
+                        state.context.get("total_cost_usd", 0.0) + _real_cost
+                    )
                 await self._cost_tracker.record_llm_usage(
                     model=_model_name,
                     prompt_tokens=resp.usage.prompt_tokens,
@@ -1343,6 +1539,19 @@ class AgentGraph:
                 )
             except Exception as _ct_exc:
                 self._logger.warning("cost_tracker_record_failed", error=str(_ct_exc))
+        # 2.3: Per-goal executor cost tracking
+        try:
+            from app.observability.cost_breakdown import record_role_cost as _rrc
+            _rrc(
+                goal_id=state.goal_id,
+                role="executor",
+                model=_exec_model,
+                input_tok=getattr(resp, "input_tokens", 0),
+                output_tok=getattr(resp, "output_tokens", 0),
+                cost=_actual_cost if "_actual_cost" in locals() else 0.0,
+            )
+        except Exception:
+            pass
         raw_output = resp.content
         raw_output_sanitized = False
 
@@ -1363,7 +1572,7 @@ class AgentGraph:
         else:
             tool_call = extract_tool_call(raw_output)
         if tool_call is not None:
-            tool_call = repair_tool_call_arguments(tool_call, step, goal=state.goal)
+            tool_call = await repair_tool_call_arguments(tool_call, step, goal=state.goal)
         # Validate tool name before dispatching
         if tool_call is not None and tool_call.tool:
             from app.agent.tool_calls import validate_tool_name as _validate_tn
@@ -1732,16 +1941,53 @@ class AgentGraph:
                                     "risk": tool_risk,
                                 }
                             )
-                            raw_output = self._sanitize_tool_raw_output(
-                                f"Waiting for approval to call {tool_ref.name}."
-                            )
-                            record_tool_call(
-                                tool_ref.name,
-                                tool_ref.server_id,
-                                "approval",
-                                time.monotonic() - tool_call_started,
-                            )
-                            raw_output_sanitized = True
+                            if self._autonomy_mode == "supervised":
+                                _hitl_start = time.monotonic()
+                                final_status = await self._hitl_gateway.wait_for_approval(
+                                    req_id, tenant_ctx=tenant_ctx
+                                )
+                                record_approval_wait(time.monotonic() - _hitl_start)
+                                if final_status == ApprovalStatus.REJECTED:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' was rejected by human approver."
+                                    )
+                                elif final_status == ApprovalStatus.TIMED_OUT:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' approval timed out."
+                                    )
+                                # APPROVED: now actually dispatch the tool call
+                                await self._emit({"type": "approval_granted", "request_id": req_id})
+                                _approved_result = await self._mcp_client.call_tool(
+                                    server_id=tool_ref.server_id,
+                                    tool_name=tool_ref.name,
+                                    arguments=tool_call.arguments,
+                                    tenant_ctx=tenant_ctx,
+                                )
+                                raw_output = (
+                                    _approved_result.output
+                                    if _approved_result.success
+                                    else str(_approved_result.error)
+                                )
+                                raw_output_sanitized = False
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "success" if _approved_result.success else "failed",
+                                    time.monotonic() - tool_call_started,
+                                )
+                            else:
+                                # Non-supervised: log the request but do not block
+                                raw_output = self._sanitize_tool_raw_output(
+                                    f"High-risk tool '{tool_ref.name}' "
+                                    "requires approval (non-supervised mode)."
+                                )
+                                raw_output_sanitized = True
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "approval",
+                                    time.monotonic() - tool_call_started,
+                                )
                     else:
                         # V4: Validate arguments against JSON schema before MCP dispatch
                         from app.agent.tool_calls import validate_tool_arguments as _validate_args
@@ -1958,6 +2204,29 @@ class AgentGraph:
                 tenant_ctx=tenant_ctx,
             )
 
+        # 13. Claim grounding check — verify LLM claims against tool outputs
+        try:
+            from app.agent.grounding import annotate_ungrounded, check_grounding
+            _tool_outputs_for_grounding = [
+                str(tc.get("output", ""))
+                for tc in (state.steps[-1].tool_calls if state.steps else [])
+                if tc.get("output")
+            ]
+            if raw_output and _tool_outputs_for_grounding:
+                _ground_result = check_grounding(
+                    output=raw_output,
+                    tool_outputs=_tool_outputs_for_grounding,
+                )
+                if not _ground_result.grounded:
+                    raw_output = annotate_ungrounded(raw_output, _ground_result)
+                    await self._emit({
+                        "type": "grounding_warning",
+                        "ungrounded_claims": _ground_result.ungrounded_claims[:5],
+                        "step": step,
+                    })
+        except Exception:
+            pass  # grounding check must never block execution
+
         return raw_output
 
     async def _execute_step_with_cache(
@@ -2029,6 +2298,11 @@ class AgentGraph:
         # the verifier LLM doesn't hallucinate success when tools errored out.
         # Uses module-level _build_verifier_summary to include ALL failed steps.
         summary = _build_verifier_summary(agent_state.steps)
+        try:
+            from app.agent.prompt_compressor import _default_compressor as _pc
+            summary = _pc.compress(summary)
+        except Exception:
+            pass
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
@@ -2036,21 +2310,69 @@ class AgentGraph:
                 _verify_model = self._model_router.model_for("verification") or ""
             except Exception:
                 pass
-        req = CompletionRequest(
-            messages=[
-                Message(role="system", content=VERIFIER_SYSTEM),
-                Message(
-                    role="user",
-                    content=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
-                ),
-            ],
-            model=_verify_model,
-        )
-        with self._tracer.start_as_current_span("agentverse.verify") as span:
-            span.set_attribute("verify.iteration", agent_state.iterations)
-            _verify_start = time.monotonic()
-            resp = await self._verifier.complete(req)
-            record_verify_duration(time.monotonic() - _verify_start)
+        # ── LLM Response Cache for verifier ───────────────────────────────────
+        _llm_rc = getattr(self, "_llm_response_cache", None)
+        _verify_cached = False
+        _verify_user = f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}"
+        if _llm_rc is not None and not _llm_rc.should_skip_cache(_verify_user):
+            try:
+                _cached_verify = await _llm_rc.get(
+                    system=VERIFIER_SYSTEM,
+                    user=_verify_user,
+                    model=_verify_model,
+                    tenant_id=tenant_ctx.tenant_id,
+                    task_type="verification",
+                )
+                if _cached_verify is not None:
+                    self._logger.info("llm_cache_verify_hit", tenant=tenant_ctx.tenant_id)
+                    class _FakeResp:
+                        content = _cached_verify
+                    resp = _FakeResp()
+                    _verify_cached = True
+            except Exception:
+                pass
+        if not _verify_cached:
+            req = CompletionRequest(
+                messages=[
+                    Message(role="system", content=VERIFIER_SYSTEM),
+                    Message(
+                        role="user",
+                        content=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
+                    ),
+                ],
+                model=_verify_model,
+            )
+            with self._tracer.start_as_current_span("agentverse.verify") as span:
+                span.set_attribute("verify.iteration", agent_state.iterations)
+                _verify_start = time.monotonic()
+                resp = await self._verifier.complete(req)
+                record_verify_duration(time.monotonic() - _verify_start)
+            # 2.3: Per-goal verifier cost tracking
+            try:
+                from app.observability.cost_breakdown import record_role_cost as _rrc
+                _rrc(
+                    goal_id=agent_state.goal_id,
+                    role="verifier",
+                    model=_verify_model,
+                    input_tok=getattr(resp, "input_tokens", 0),
+                    output_tok=getattr(resp, "output_tokens", 0),
+                    cost=0.0,
+                )
+            except Exception:
+                pass
+            # Store in LLM cache for future identical requests
+            if _llm_rc is not None:
+                try:
+                    await _llm_rc.set(
+                        system=VERIFIER_SYSTEM,
+                        user=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
+                        model=_verify_model,
+                        response=resp.content,
+                        tenant_id=tenant_ctx.tenant_id,
+                        task_type="verification",
+                    )
+                except Exception:
+                    pass
         # Bug 1 fix: use _parse_verifier_response which handles JSON and text formats
         parsed = _parse_verifier_response(resp.content)
         success: bool = bool(parsed.get("success", False))
@@ -2062,6 +2384,19 @@ class AgentGraph:
         agent_state.verification_success = success
         agent_state.verification_feedback = reason
         await self._emit({"type": "verification_done", "success": success, "reason": reason})
+
+        # Record verifier verdict for calibration
+        try:
+            self._logger.info(
+                "verifier_verdict",
+                goal_id=agent_state.goal_id,
+                success=success,
+                model=_verify_model,
+                iteration=agent_state.iterations,
+                tenant_id=tenant_ctx.tenant_id,
+            )
+        except Exception:
+            pass
 
         if success:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
@@ -2246,7 +2581,7 @@ class AgentGraph:
         if self._autonomy_mode == "supervised" and self._hitl_gateway is not None:
             tenant_ctx: TenantContext | None = state.get("tenant_ctx")
             if tenant_ctx is not None:
-                pending = self._hitl_gateway.list_pending(tenant_ctx=tenant_ctx)
+                pending = self._hitl_gateway.list_pending(tenant_ctx=tenant_ctx, goal_id=agent_state.goal_id)
                 if pending:
                     agent_state.status = GoalStatus.WAITING_HUMAN
                     return "waiting_human"
@@ -2298,7 +2633,7 @@ class AgentGraph:
                         self._civilization_id = civ_id
                         self._civilization_spawn_enabled = True
                 self._tenant_ctx_ref = tenant_ctx
-                thread_id = uuid.uuid4().hex
+                thread_id = f"goal-{goal_id}" if goal_id else uuid.uuid4().hex
                 config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 
                 input_state: GraphState = {

@@ -8,7 +8,7 @@ reverted when the transaction ends — no explicit cleanup needed.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -52,3 +52,37 @@ async def sqlalchemy_rls_context(
             await session.execute(text("SELECT set_config('app.tenant_id', '', true)"))
         except Exception:
             pass
+
+
+@asynccontextmanager
+async def system_session(session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    """Set session for system-level maintenance, bypassing tenant RLS.
+
+    Issues ``SET LOCAL row_security = off`` so the calling transaction can
+    read/write rows across all tenants without RLS filtering.  Falls back to
+    setting a recognisable ``__system__`` marker if the DB role lacks the
+    ``BYPASSRLS`` privilege (the system marker can be matched by a permissive
+    superuser-equivalent RLS policy when BYPASSRLS is unavailable).
+
+    Must be used **inside** an open transaction (i.e., after ``session.begin()``
+    or inside an ``async with session.begin()`` block) so that ``SET LOCAL``
+    is transaction-scoped and automatically reverts on commit/rollback.
+
+    Usage::
+
+        async with db() as session, session.begin():
+            async with system_session(session):
+                await session.execute(text("UPDATE goals SET ..."))
+    """
+    from sqlalchemy import text
+
+    try:
+        await session.execute(text("SET LOCAL row_security = off"))
+    except Exception:
+        # Fallback for roles without BYPASSRLS: set a recognisable system GUC.
+        # A corresponding permissive RLS policy on each table can allow this value.
+        with suppress(Exception):
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', '__system__', true)")
+            )
+    yield session

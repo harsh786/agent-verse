@@ -281,7 +281,7 @@ function AskAITab() {
                       <div className="flex-1 min-w-0">
                         <p className="text-muted-foreground line-clamp-2">{c.excerpt}</p>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${c.score > 0.8 ? 'bg-green-100 text-green-700' : c.score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${c.score > 0.8 ? 'bg-green-100 text-green-700' : c.score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'}`}>
                             {(c.score * 100).toFixed(0)}%
                           </span>
                           {c.source_url && <a href={c.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-blue-500 hover:underline"><ExternalLink className="h-3 w-3" />source</a>}
@@ -369,7 +369,7 @@ function RpaScrapeSection({ collections }: { collections: Collection[] }) {
         <div className="sm:col-span-2">
           <label className="block text-xs font-medium text-violet-700 mb-1">Target collection *</label>
           <select value={collectionId} onChange={(e) => setCollectionId(e.target.value)}
-            className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm bg-white">
+            className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background">
             <option value="">Select collection…</option>
             {collections.map((c) => <option key={c.collection_id} value={c.collection_id}>{c.name}</option>)}
           </select>
@@ -380,7 +380,7 @@ function RpaScrapeSection({ collections }: { collections: Collection[] }) {
           </label>
           <textarea data-testid="rpa-urls-input" value={urlsText} onChange={(e) => setUrlsText(e.target.value)}
             rows={4} placeholder={'https://docs.example.com/api\nhttps://blog.example.com/post-1'}
-            className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm bg-white font-mono resize-none" />
+            className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background font-mono resize-none" />
           <p className="text-xs text-violet-500 mt-0.5">{urls.length} valid URL{urls.length !== 1 ? 's' : ''} detected</p>
         </div>
       </div>
@@ -657,7 +657,7 @@ function SearchTab() {
           {results.map((r, i) => (
             <div key={r.doc_id ?? r.chunk_id ?? i} className="bg-card border border-border rounded-xl p-4 space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.score > 0.8 ? 'bg-green-100 text-green-700' : r.score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                 <span className={`px-2 py-0.5 rounded text-xs font-medium ${r.score > 0.8 ? 'bg-green-100 text-green-700' : r.score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'}`}>
                   {(r.score * 100).toFixed(1)}% match
                 </span>
                 <div className="flex gap-1">

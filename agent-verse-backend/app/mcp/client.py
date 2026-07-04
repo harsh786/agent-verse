@@ -19,6 +19,7 @@ from typing import Any, cast
 import httpx
 
 from app.mcp.registry import MCPRegistry, MCPServerConfig
+from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.providers.vault import is_connector_secret_ref, resolve_connector_secret_ref
 from app.tenancy.context import TenantContext
 
@@ -141,6 +142,8 @@ class MCPClient:
         # Per-session tool schema cache: server_id → list[ToolDefinition]
         # Avoids calling discover_tools() on every call_tool() invocation
         self._schema_cache: dict[str, list[Any]] = {}
+        # Tool result cache (ToolResultCache or None) — wired externally
+        self._tool_cache: Any = None
 
     @staticmethod
     def _accepts_tenant_context(resolver: SecretResolver) -> bool:
@@ -582,6 +585,20 @@ class MCPClient:
         if cfg.builtin_handler is not None:
             return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
 
+        # SSRF guard — validate server URL before any outbound HTTP call
+        _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
+        if _request_url and not _request_url.startswith("builtin://"):
+            try:
+                assert_public_url(_request_url, context=f"MCP server {server_id}")
+            except SSRFError as exc:
+                logger.warning("ssrf_guard_blocked_mcp", server_id=server_id, error=str(exc))
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error="Server URL blocked by SSRF guard",
+                    server_id=server_id,
+                )
+
         # 2. OpenAPI-imported tool stored in tool_definitions
         if cfg.tool_definitions:
             for tdef in cfg.tool_definitions:
@@ -716,6 +733,30 @@ class MCPClient:
         if cb is not None:
             try:
                 if not await cb.can_call_async():
+                    # Try stale cache fallback before raising
+                    _tc = getattr(self, "_tool_cache", None)
+                    if _tc is not None:
+                        try:
+                            _stale = await _tc.get_stale(
+                                server_id=server_id,
+                                tool_name=tool_name,
+                                arguments=arguments,
+                                tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                            )
+                            if _stale is not None:
+                                logger.info(
+                                    "circuit_breaker_stale_cache_served",
+                                    server=server_id,
+                                    tool=tool_name,
+                                )
+                                return ToolCallResult(
+                                    tool_name=tool_name,
+                                    success=True,
+                                    output=_stale,
+                                    server_id=server_id,
+                                )
+                        except Exception:
+                            pass
                     raise CircuitBreakerOpenError(
                         f"Circuit breaker open for {server_id}. Retrying after cooldown."
                     )
@@ -801,10 +842,70 @@ class MCPClient:
         except Exception as _ti_exc:
             logger.debug("tool_intelligence_resolve_skipped: %s", _ti_exc)
 
+        # ── Tool Result Cache: return immediately on cache hit ─────────────────
+        _tc = getattr(self, "_tool_cache", None)
+        if _tc is not None:
+            try:
+                _cached_result = await _tc.get(
+                    server_id=server_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    tenant_id=_tenant_id,
+                )
+                if _cached_result is not None:
+                    return ToolCallResult(
+                        tool_name=tool_name,
+                        success=True,
+                        output=_cached_result,
+                        server_id=server_id,
+                    )
+            except Exception:
+                pass
+
+        # Exfiltration guard for write tools
+        try:
+            from app.agent.exfil_guard import check_tool_args_for_exfil
+            _blocked, _reason = check_tool_args_for_exfil(
+                tool_name, arguments, tenant_id=_tenant_id
+            )
+            if _blocked:
+                logger.warning("exfil_guard_blocked", tool=tool_name, reason=_reason[:100])
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=f"Tool call blocked by data exfiltration guard: {_reason}",
+                    server_id=server_id,
+                )
+        except Exception:
+            pass  # exfil guard must never block execution on error
+
         try:
             result = await self._call_tool_impl(
                 cfg, server_id, tool_name, arguments, tenant_ctx
             )
+
+            # Store successful result in tool cache (with stale backup)
+            if result.success and _tc is not None:
+                try:
+                    from app.mcp.tool_cache import classify_tool
+                    if classify_tool(tool_name) == "write":
+                        # Write tool succeeded — invalidate cached reads for this server
+                        await _tc.invalidate_writes(
+                            tool_name=tool_name,
+                            tenant_id=_tenant_id,
+                            server_id=server_id,
+                        )
+                    else:
+                        await _tc.set_with_stale(
+                            server_id=server_id,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            result=result.output,
+                            tenant_id=_tenant_id,
+                            duration_ms=(_time.monotonic() - _t0) * 1000,
+                        )
+                except Exception:
+                    pass
 
             # ── Self-healing: retry if argument error ──────────────────────────
             if (

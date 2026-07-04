@@ -80,7 +80,19 @@ class AnthropicProvider:
             "max_tokens": request.max_tokens,
         }
         if system_prompt is not anthropic.NOT_GIVEN:
-            kwargs["system"] = system_prompt
+            # 2.2: Prompt caching — wrap system prompt in a content block with
+            # cache_control so Anthropic can cache the stable prefix across calls.
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": (
+                        system_prompt
+                        if isinstance(system_prompt, str)
+                        else str(system_prompt)
+                    ),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         if request.tools:
             kwargs["tools"] = [
                 {

@@ -717,7 +717,7 @@ class GoalService:
         # Apply model override to the model router before building the graph
         if _model_override and _model_router is not None:
             try:
-                _model_router.set_override(_model_override)
+                _model_router = _model_router.with_override(_model_override)  # copy-on-write
             except Exception:
                 pass  # Model router may not support override — use default
 
@@ -785,6 +785,7 @@ class GoalService:
             # RAG / intelligence services
             embedder=_embedder,
             semantic_cache=_semantic_cache,
+            llm_response_cache=getattr(app_state, "llm_response_cache", None),
             model_router=_model_router,
             # Distributed per-tenant concurrency bulkhead
             bulkhead_registry=_bulkhead_registry,
@@ -1183,6 +1184,14 @@ class GoalService:
             await decrement_concurrent_goals(
                 tenant_id=record.tenant_id, redis=self._redis
             )
+            # Release dedup key so future identical goals can be submitted
+            try:
+                from app.services.dedup import _default_deduplicator as _goal_dedup
+                _goal_text = getattr(record, "goal_text", "") or ""
+                if _goal_text:
+                    await _goal_dedup.release(record.tenant_id, _goal_text)
+            except Exception:
+                pass
         # Publish terminal events to Redis pub/sub for cross-replica SSE delivery.
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:
             try:
@@ -1470,7 +1479,36 @@ class GoalService:
                 redis=getattr(self, "_redis", None),
             )
 
+            # ── Goal-level deduplication ────────────────────────────────────────
+            # If an identical goal is already in-flight for this tenant, return
+            # the existing goal_id rather than spawning a duplicate Celery task.
+            try:
+                from app.services.dedup import _default_deduplicator as _goal_dedup
+                _dedup_redis = getattr(self, "_redis", None)
+                if _dedup_redis is not None and not hasattr(_goal_dedup, "_redis_wired"):
+                    _goal_dedup._redis = _dedup_redis
+                    _goal_dedup._redis_wired = True  # type: ignore[attr-defined]
+                _existing_id = await _goal_dedup.get_existing(
+                    tenant_ctx.tenant_id, goal
+                )
+                if _existing_id:
+                    return {
+                        "goal_id": _existing_id,
+                        "status": "running",
+                        "deduplicated": True,
+                        "message": "Identical goal already in progress",
+                    }
+            except Exception as _dd_exc:
+                _svc_logger.debug("goal_dedup_skipped", error=str(_dd_exc)[:60])
+
             goal_id = uuid.uuid4().hex
+
+            # Register goal_id for deduplication (allow others to find it)
+            try:
+                from app.services.dedup import _default_deduplicator as _goal_dedup
+                await _goal_dedup.register(tenant_ctx.tenant_id, goal, goal_id)
+            except Exception:
+                pass
 
             # Auto-route to best agent when agent_id not specified
             if agent_id is None and self._app_state is not None:
