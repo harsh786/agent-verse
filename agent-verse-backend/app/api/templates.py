@@ -64,19 +64,189 @@ class InstantiateRequest(BaseModel):
     priority: str = "normal"
 
 
+_BUILTIN_TEMPLATES: list[dict[str, Any]] = [
+    # DevOps
+    {
+        "name": "Deploy Service to Environment",
+        "description": "Deploy any service to a target environment with a version tag.",
+        "goal_text": "Deploy {{service}} to {{environment}} with version {{tag}}. Verify the deployment succeeds and all health checks pass.",
+        "domain": "devops",
+    },
+    {
+        "name": "Create Incident Report",
+        "description": "Document a production incident with root cause and action items.",
+        "goal_text": "Create an incident report for the {{service}} outage on {{date}}. Include root cause analysis, impact summary, and remediation steps.",
+        "domain": "devops",
+    },
+    {
+        "name": "Scale Kubernetes Deployment",
+        "description": "Scale a Kubernetes deployment up or down.",
+        "goal_text": "Scale the {{deployment}} deployment in the {{namespace}} namespace to {{replicas}} replicas. Confirm rollout completes without errors.",
+        "domain": "devops",
+    },
+    # Engineering
+    {
+        "name": "Fix Bug and Open PR",
+        "description": "Investigate a bug, apply a fix, and open a pull request.",
+        "goal_text": "Fix the bug described in {{issue_id}} in the {{repository}} repository. Write a regression test, apply the fix, and open a pull request targeting {{branch}}.",
+        "domain": "engineering",
+    },
+    {
+        "name": "Code Review Summary",
+        "description": "Summarize a pull request and flag issues.",
+        "goal_text": "Review pull request {{pr_url}} in {{repository}}. Summarize the changes, highlight potential issues (security, performance, logic), and post a review comment.",
+        "domain": "engineering",
+    },
+    {
+        "name": "Generate API Documentation",
+        "description": "Generate OpenAPI documentation for a service.",
+        "goal_text": "Generate OpenAPI 3.0 documentation for the {{service_name}} service at {{base_url}}. Include all endpoints, request/response schemas, and authentication details. Save to {{output_path}}.",
+        "domain": "engineering",
+    },
+    # Data
+    {
+        "name": "Run Data Pipeline",
+        "description": "Execute a named data pipeline and report results.",
+        "goal_text": "Run the {{pipeline_name}} data pipeline for date range {{start_date}} to {{end_date}}. Report row counts, validation errors, and total processing time.",
+        "domain": "data",
+    },
+    {
+        "name": "Generate Analytics Report",
+        "description": "Pull metrics from a data source and format a report.",
+        "goal_text": "Generate a {{report_type}} analytics report for {{metric_name}} from {{start_date}} to {{end_date}}. Include trend analysis, anomalies, and actionable insights.",
+        "domain": "data",
+    },
+    # Marketing
+    {
+        "name": "Draft Marketing Campaign",
+        "description": "Create a multi-channel marketing campaign brief.",
+        "goal_text": "Draft a {{campaign_type}} marketing campaign for {{product_name}} targeting {{audience}}. Include email copy, social media posts, and a landing page headline. Tone: {{tone}}.",
+        "domain": "marketing",
+    },
+    {
+        "name": "Competitor Analysis",
+        "description": "Research and compare competitors in a market.",
+        "goal_text": "Analyze the top 5 competitors of {{company_name}} in the {{market}} market. Compare features, pricing, and positioning. Summarise key differentiators and opportunities.",
+        "domain": "marketing",
+    },
+    # Sales
+    {
+        "name": "Lead Follow-up Email",
+        "description": "Draft a personalised follow-up email for a sales lead.",
+        "goal_text": "Write a follow-up email to {{lead_name}} at {{company}} about {{product_name}}. Reference our previous conversation on {{last_contact_date}}. Keep it under 150 words and include a clear CTA.",
+        "domain": "sales",
+    },
+    {
+        "name": "Sales Forecast Summary",
+        "description": "Summarise pipeline data for a sales forecast.",
+        "goal_text": "Summarise the {{team_name}} sales pipeline for Q{{quarter}} {{year}}. List top 10 deals by ARR, probability-weighted total, and forecast vs quota.",
+        "domain": "sales",
+    },
+    # Support
+    {
+        "name": "Customer Support Triage",
+        "description": "Triage and categorise a batch of support tickets.",
+        "goal_text": "Triage the open support tickets in {{queue_name}} from {{start_date}} to {{end_date}}. Categorise by priority (P1-P4), assign to the correct team, and flag any SLA breaches.",
+        "domain": "support",
+    },
+    # Legal
+    {
+        "name": "Contract Review Checklist",
+        "description": "Review a contract document for key clauses and risks.",
+        "goal_text": "Review the {{contract_type}} contract in {{document_url}}. Flag non-standard clauses, missing boilerplate, liability limits, and termination conditions. Output a risk matrix.",
+        "domain": "legal",
+    },
+    # Finance
+    {
+        "name": "Expense Report Reconciliation",
+        "description": "Reconcile expense reports against budget.",
+        "goal_text": "Reconcile expense reports for {{department}} in {{month}} {{year}}. Flag expenses over {{threshold_usd}} USD, duplicate submissions, and missing receipts. Produce a summary CSV.",
+        "domain": "finance",
+    },
+]
+
+
 class _TemplateStore:
     """In-memory + optional DB store for goal templates."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, seed_builtins: bool = True) -> None:
         self._mem: dict[str, dict[str, Any]] = {}
         self._db: Any = None
+        # Track which tenants have had built-ins seeded (in-memory mode only)
+        self._seeded_tenants: set[str] = set()
+        # Allow tests to opt out of seeding to preserve pre-existing assertions
+        self._seed_builtins = seed_builtins
 
     def set_db(self, db_factory: Any) -> None:
         self._db = db_factory
 
+    def _seed_builtins_for_tenant(self, tenant_id: str) -> None:
+        """Seed read-only starter templates for a tenant (in-memory mode only)."""
+        if not self._seed_builtins:
+            return
+        if tenant_id in self._seeded_tenants:
+            return
+        self._seeded_tenants.add(tenant_id)
+        now = datetime.now(UTC)
+        for tpl in _BUILTIN_TEMPLATES:
+            t: dict[str, Any] = {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}")),
+                "tenant_id": tenant_id,
+                "name": tpl["name"],
+                "description": tpl["description"],
+                "goal_text": tpl["goal_text"],
+                "domain": tpl["domain"],
+                "parameters": _extract_parameters(tpl["goal_text"]),
+                "use_count": 0,
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._mem[t["id"]] = t
+
+    async def _seed_builtins_db(self, tenant_id: str) -> None:
+        """Idempotently seed starter templates in DB mode (INSERT ... ON CONFLICT DO NOTHING)."""
+        if not self._seed_builtins:
+            return
+        if tenant_id in self._seeded_tenants:
+            return
+        self._seeded_tenants.add(tenant_id)
+        try:
+            from sqlalchemy import text as _t
+            now = datetime.now(UTC)
+            async with self._db() as session:
+                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                for tpl in _BUILTIN_TEMPLATES:
+                    tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
+                    params = _extract_parameters(tpl["goal_text"])
+                    import json
+                    await session.execute(
+                        _t("""
+                            INSERT INTO goal_templates
+                                (id, tenant_id, name, description, goal_text, domain, parameters,
+                                 use_count, version, created_at, updated_at)
+                            VALUES
+                                (:id, :tenant_id, :name, :description, :goal_text, :domain,
+                                 :parameters::jsonb, 0, 1, :now, :now)
+                            ON CONFLICT (id) DO NOTHING
+                        """),
+                        {
+                            "id": tpl_id, "tenant_id": tenant_id, "name": tpl["name"],
+                            "description": tpl["description"], "goal_text": tpl["goal_text"],
+                            "domain": tpl["domain"], "parameters": json.dumps(params), "now": now,
+                        },
+                    )
+                await session.commit()
+        except Exception:
+            pass  # Seeding is best-effort; templates can still be created manually
+
     async def list(self, tenant_id: str, domain: str | None = None) -> list[dict[str, Any]]:
         if self._db:
+            # Seed built-ins on first request per tenant (idempotent via ON CONFLICT)
+            await self._seed_builtins_db(tenant_id)
             return await self._list_db(tenant_id, domain)
+        # In-memory mode: seed built-ins on first request per tenant
+        self._seed_builtins_for_tenant(tenant_id)
         rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]
         if domain:
             rows = [t for t in rows if t["domain"] == domain]

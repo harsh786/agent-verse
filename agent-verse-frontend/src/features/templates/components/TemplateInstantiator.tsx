@@ -3,14 +3,20 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { toast } from "@/stores/toast";
-import { X, Play, Eye, Copy } from "lucide-react";
+import { X, Play, Eye, Copy, ArrowRight } from "lucide-react";
 
 interface TemplateInstantiatorProps {
   template: GoalTemplate;
   onClose: () => void;
+  /**
+   * When provided (e.g. opened from the Goals page), a "Use in Goal" button is
+   * shown that calls this callback with the interpolated text instead of
+   * navigating away.  "Run Now" is still available alongside it.
+   */
+  onUseInGoal?: (instantiatedText: string) => void;
 }
 
-export function TemplateInstantiator({ template, onClose }: TemplateInstantiatorProps) {
+export function TemplateInstantiator({ template, onClose, onUseInGoal }: TemplateInstantiatorProps) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [params, setParams] = useState<Record<string, string>>(
@@ -42,6 +48,14 @@ export function TemplateInstantiator({ template, onClose }: TemplateInstantiator
 
   const allFilled = template.parameters.filter((p) => p.required).every((p) => params[p.name]?.trim());
 
+  const handleUseInGoal = () => {
+    if (!onUseInGoal) return;
+    // Increment use_count without submitting, then hand off the text
+    templatesApi.instantiate(template.id, params, false).catch(() => {});
+    onUseInGoal(preview);
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
@@ -55,6 +69,11 @@ export function TemplateInstantiator({ template, onClose }: TemplateInstantiator
 
         {/* Parameter inputs */}
         <div className="space-y-3">
+          {template.parameters.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              This template has no parameters — it will be used as-is.
+            </p>
+          )}
           {template.parameters.map((p) => (
             <div key={p.name}>
               <label className="block text-xs font-medium mb-1" htmlFor={`param-${p.name}`}>
@@ -81,21 +100,37 @@ export function TemplateInstantiator({ template, onClose }: TemplateInstantiator
           <p className="text-sm text-foreground">{preview}</p>
         </div>
 
-        <div className="flex gap-3">
-          <button
-            onClick={() => instantiate.mutate(true)}
-            disabled={!allFilled || instantiate.isPending}
-            className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            <Play className="h-4 w-4" aria-hidden="true" />
-            {instantiate.isPending ? "Submitting…" : "Run Now"}
-          </button>
+        <div className="flex flex-wrap gap-2">
+          {/* "Use in Goal" — pre-fills the goal textarea on the Goals page */}
+          {onUseInGoal && (
+            <button
+              onClick={handleUseInGoal}
+              disabled={!allFilled && template.parameters.length > 0}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              Use in Goal
+            </button>
+          )}
+
+          {/* "Run Now" — submit immediately (shown on template library page) */}
+          {!onUseInGoal && (
+            <button
+              onClick={() => instantiate.mutate(true)}
+              disabled={!allFilled || instantiate.isPending}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              <Play className="h-4 w-4" aria-hidden="true" />
+              {instantiate.isPending ? "Submitting…" : "Run Now"}
+            </button>
+          )}
+
           <button
             onClick={() => {
               navigator.clipboard?.writeText(preview).catch(() => {});
               toast({ kind: "success", message: "Goal text copied to clipboard!" });
             }}
-            disabled={!allFilled}
+            disabled={!allFilled && template.parameters.length > 0}
             className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50 transition-colors flex items-center gap-1.5 disabled:opacity-50"
             title="Copy instantiated goal text to clipboard"
           >
@@ -113,3 +148,4 @@ export function TemplateInstantiator({ template, onClose }: TemplateInstantiator
     </div>
   );
 }
+

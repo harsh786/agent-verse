@@ -20,7 +20,8 @@ def _make_app() -> FastAPI:
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(templates_router)
-    app.state.template_store = _TemplateStore()
+    # seed_builtins=False keeps tests isolated from built-in starter templates
+    app.state.template_store = _TemplateStore(seed_builtins=False)
     # Override the module-level store with test store
     import app.api.templates as _mod
     _mod.template_store = app.state.template_store
@@ -90,7 +91,7 @@ def test_tenant_isolation() -> None:
     ctx_a = TenantContext(tenant_id="ta", plan=PlanTier.FREE, api_key_id="ka")
     ctx_b = TenantContext(tenant_id="tb", plan=PlanTier.FREE, api_key_id="kb")
     app = FastAPI()
-    store = _TemplateStore()
+    store = _TemplateStore(seed_builtins=False)
 
     async def _resolve(key: str) -> TenantContext | None:
         if key == "ka":
@@ -108,3 +109,100 @@ def test_tenant_isolation() -> None:
     tmpl_id = client.post("/templates", json={"name": "A", "goal_text": "x"}, headers={"X-API-Key": "ka"}).json()["id"]
     assert client.get(f"/templates/{tmpl_id}", headers={"X-API-Key": "kb"}).status_code == 404
     assert client.get("/templates", headers={"X-API-Key": "kb"}).json() == []
+
+
+# ── Built-in seed tests ───────────────────────────────────────────────────────
+
+def test_list_templates_seeds_builtins_on_first_call() -> None:
+    """GET /templates returns built-in starter templates on first call for a tenant."""
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return _CTX if key == _VALID_KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(templates_router)
+    import app.api.templates as _mod
+    # seed_builtins=True (default) — simulate production behaviour
+    store = _TemplateStore(seed_builtins=True)
+    _mod.template_store = store
+
+    client = TestClient(app)
+    resp = client.get("/templates", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    # Should have at least the 15 built-ins
+    assert len(data) >= 15
+    domains = {t["domain"] for t in data}
+    assert domains >= {"devops", "engineering", "data", "marketing", "sales", "support", "legal", "finance"}
+
+
+def test_seeded_templates_have_parameters_auto_extracted() -> None:
+    """Built-in templates with {{params}} have parameters auto-extracted."""
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return _CTX if key == _VALID_KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(templates_router)
+    import app.api.templates as _mod
+    store = _TemplateStore(seed_builtins=True)
+    _mod.template_store = store
+
+    client = TestClient(app)
+    templates = client.get("/templates", headers=_HEADERS).json()
+    # "Deploy Service to Environment" should have service/environment/tag params
+    deploy = next((t for t in templates if "Deploy Service" in t["name"]), None)
+    assert deploy is not None
+    param_names = {p["name"] for p in deploy["parameters"]}
+    assert {"service", "environment", "tag"} <= param_names
+
+
+def test_seeded_templates_idempotent() -> None:
+    """Calling list() twice for the same tenant does not duplicate built-ins."""
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return _CTX if key == _VALID_KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(templates_router)
+    import app.api.templates as _mod
+    store = _TemplateStore(seed_builtins=True)
+    _mod.template_store = store
+
+    client = TestClient(app)
+    first = client.get("/templates", headers=_HEADERS).json()
+    second = client.get("/templates", headers=_HEADERS).json()
+    assert len(first) == len(second), "Duplicate templates seeded on second call"
+
+
+def test_seeded_templates_instantiable() -> None:
+    """A seeded built-in template can be instantiated via POST."""
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return _CTX if key == _VALID_KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(templates_router)
+    import app.api.templates as _mod
+    store = _TemplateStore(seed_builtins=True)
+    _mod.template_store = store
+
+    client = TestClient(app)
+    templates = client.get("/templates", headers=_HEADERS).json()
+    # Pick the "Deploy Service to Environment" template
+    deploy = next(t for t in templates if "Deploy Service" in t["name"])
+    resp = client.post(f"/templates/{deploy['id']}/instantiate", json={
+        "parameters": {"service": "api-gateway", "environment": "staging", "tag": "v2.1.0"},
+        "submit": False,
+    }, headers=_HEADERS)
+    assert resp.status_code == 200
+    assert "api-gateway" in resp.json()["instantiated_goal"]
+    assert "staging" in resp.json()["instantiated_goal"]

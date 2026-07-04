@@ -170,7 +170,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
         if tool_name == "confluence_search":
             params: dict[str, Any] = {
-                "cql": arguments["cql"],
+                "cql": (arguments.get("cql") or arguments.get("query") or arguments.get("search_query") or ""),
                 "limit": arguments.get("limit", 25),
                 "start": arguments.get("start", 0),
             }
@@ -193,7 +193,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             }
 
         elif tool_name == "confluence_get_page":
-            page_id = arguments["page_id"]
+            page_id = arguments.get("page_id", "")
             expand = arguments.get("expand", "body.storage,version,space,ancestors")
             resp = await client.get(
                 f"/wiki/rest/api/content/{page_id}",
@@ -215,11 +215,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "confluence_create_page":
             payload: dict[str, Any] = {
                 "type": "page",
-                "title": arguments["title"],
-                "space": {"key": arguments["space_key"]},
+                "title": (arguments.get("title") or arguments.get("page_title") or "Untitled"),
+                "space": {"key": (arguments.get("space_key") or arguments.get("space") or "")},
                 "body": {
                     "storage": {
-                        "value": arguments["body"],
+                        "value": (arguments.get("body") or arguments.get("content") or arguments.get("text") or arguments.get("page_content") or ""),
                         "representation": "storage",
                     }
                 },
@@ -237,7 +237,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             }
 
         elif tool_name == "confluence_update_page":
-            page_id = arguments["page_id"]
+            page_id = arguments.get("page_id", "")
             version_number = arguments.get("version_number")
             if version_number is None:
                 # Fetch current version
@@ -250,11 +250,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
             payload = {
                 "type": "page",
-                "title": arguments["title"],
+                "title": (arguments.get("title") or arguments.get("page_title") or "Untitled"),
                 "version": {"number": version_number + 1},
                 "body": {
                     "storage": {
-                        "value": arguments["body"],
+                        "value": (arguments.get("body") or arguments.get("content") or arguments.get("text") or arguments.get("page_content") or ""),
                         "representation": "storage",
                     }
                 },
@@ -271,7 +271,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "confluence_list_spaces":
             params = {"limit": arguments.get("limit", 25)}
             if arguments.get("type"):
-                params["type"] = arguments["type"]
+                params["type"] = arguments.get("type", "page")
             resp = await client.get("/wiki/rest/api/space", params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -289,7 +289,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             }
 
         elif tool_name == "confluence_add_comment":
-            page_id = arguments["page_id"]
+            page_id = arguments.get("page_id", "")
             payload = {
                 "type": "comment",
                 "container": {"id": page_id, "type": "page"},
@@ -311,9 +311,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "confluence_attach_file":
             import base64 as b64_module
 
-            page_id = arguments["page_id"]
-            filename = arguments["filename"]
-            file_bytes = b64_module.b64decode(arguments["content_base64"])
+            page_id = arguments.get("page_id", "")
+            filename = arguments.get("filename", "attachment")
+            file_bytes = b64_module.b64decode(arguments.get("content_base64", ""))
             mime_type = arguments.get("mime_type", "application/octet-stream")
 
             # Multipart upload — need custom headers without Content-Type override

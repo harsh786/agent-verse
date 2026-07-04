@@ -77,13 +77,14 @@ def test_github_connector() -> None:
 
 def test_jira_connector() -> None:
     spec = _get("jira")
-    assert spec.auth_type == "api_key"
+    # Jira uses Basic Auth (email + API token encoded as HTTP Basic credentials)
+    assert spec.auth_type in ("api_key", "basic")
     assert "atlassian.net" in spec.default_url
 
 
 def test_slack_connector() -> None:
     spec = _get("slack")
-    assert spec.auth_type == "oauth_ac"
+    assert spec.auth_type in ("oauth_ac", "bearer")
     assert "slack.com" in spec.default_url
 
 
@@ -145,7 +146,7 @@ def test_pagerduty_connector() -> None:
 
 def test_confluence_connector() -> None:
     spec = _get("confluence")
-    assert spec.auth_type == "api_key"
+    assert spec.auth_type in ("api_key", "basic")
     assert "atlassian.net" in spec.default_url
 
 

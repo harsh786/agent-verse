@@ -130,24 +130,14 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     if goal_svc is None:
         raise HTTPException(503, "Goal service not available")
 
-    # Load goal events — use get_events (not get_event_log which does not exist)
+    # Load goal events.  get_events() has a DB fallback so it works even after
+    # a server restart or when the goal was run by a Celery worker.
     try:
         events: list[dict[str, Any]] = await goal_svc.get_events(
             goal_id=goal_id, tenant_ctx=tenant
         )
     except Exception:
-        # Try replay endpoint data
         events = []
-
-    if not events:
-        # Try getting from the in-memory goal store
-        goal_record = None
-        try:
-            goal_record = await goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-        except Exception:
-            pass
-        if goal_record:
-            events = list(goal_record.get("events", []))
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []

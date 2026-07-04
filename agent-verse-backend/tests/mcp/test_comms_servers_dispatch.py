@@ -77,7 +77,7 @@ async def test_slack_list_channels():
     from app.mcp.servers.slack_server import call_tool
 
     mc = mk_client(
-        get=make_resp(data={"channels": [{"id": "C123", "name": "general"}]})
+        get=make_resp(data={"ok": True, "channels": [{"id": "C123", "name": "general"}]})
     )
     with patch.dict("os.environ", _SLACK), patch("httpx.AsyncClient") as Cls:
         Cls.return_value = mc
@@ -91,7 +91,7 @@ async def test_slack_get_channel_history():
 
     mc = mk_client(
         get=make_resp(
-            data={"messages": [{"ts": "1234.5678", "text": "hi", "user": "U123"}]}
+            data={"ok": True, "messages": [{"ts": "1234.5678", "text": "hi", "user": "U123"}]}
         )
     )
     with patch.dict("os.environ", _SLACK), patch("httpx.AsyncClient") as Cls:
@@ -107,6 +107,7 @@ async def test_slack_search_messages():
     mc = mk_client(
         get=make_resp(
             data={
+                "ok": True,
                 "messages": {
                     "matches": [
                         {"text": "hello", "channel": {"name": "general"}, "ts": "1234.5678"}

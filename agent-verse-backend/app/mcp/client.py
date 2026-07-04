@@ -120,6 +120,7 @@ class MCPClient:
         timeout: float = 30.0,
         secret_resolver: SecretResolver | None = None,
         redis: Any = None,
+        llm_provider: Any = None,
     ) -> None:
         self._registry = registry
         self._timeout = timeout
@@ -132,6 +133,8 @@ class MCPClient:
         # Circuit breaker support — wired externally by setting _redis
         self._circuit_breakers: dict[str, Any] = {}
         self._redis: Any = redis
+        # LLM provider for self-healing tool argument repair
+        self._provider: Any = llm_provider
         # OAuth manager — wired externally
         self._oauth_manager: Any = None
         self._mcp_sessions: dict[str, str] = {}
@@ -244,6 +247,43 @@ class MCPClient:
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
             return []
+
+        # ── Builtin servers MUST be checked first ─────────────────────────────
+        # The builtin_handler is a Python callable that is NOT serialised to Redis.
+        # After a Redis round-trip it will be None, but the URL prefix "builtin://"
+        # identifies these servers unambiguously. Always return their stored
+        # tool_definitions, and lazily restore the handler from the process-local
+        # MCPRegistry._BUILTIN_HANDLER_REGISTRY dict registered at startup / worker init.
+        is_builtin = (
+            cfg.builtin_handler is not None
+            or (cfg.base_url or "").startswith("builtin://")
+            or (cfg.url or "").startswith("builtin://")
+        )
+        if is_builtin and cfg.tool_definitions:
+            # Lazily restore the builtin handler into this process if missing
+            if cfg.builtin_handler is None:
+                try:
+                    from app.mcp.registry import MCPRegistry as _MCPReg
+                    restored = _MCPReg.get_builtin_handler(server_id)
+                    if restored is not None:
+                        cfg = cfg.model_copy(update={"builtin_handler": restored})
+                except Exception:
+                    pass
+            return [
+                ToolDefinition(
+                    name=str(t.get("name", "")),
+                    description=str(t.get("description", "")),
+                    input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
+                    server_id=server_id,
+                    server_name=cfg.name,
+                )
+                for t in cfg.tool_definitions
+                if t.get("name")
+            ]
+
+        # ── Non-builtin Jira REST connector ───────────────────────────────────
+        # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
+        # exposes a synthetic jira_search_issues tool via the Jira REST API.
         if _is_jira_rest_endpoint(cfg):
             return [
                 ToolDefinition(
@@ -262,22 +302,6 @@ class MCPClient:
                     server_id=server_id,
                     server_name=cfg.name,
                 )
-            ]
-
-        # Builtin servers — return tool definitions directly from the stored config.
-        # The builtin_handler is a Python callable, not an HTTP endpoint; trying
-        # to call builtin:// via HTTP would always fail.
-        if cfg.builtin_handler is not None and cfg.tool_definitions:
-            return [
-                ToolDefinition(
-                    name=str(t.get("name", "")),
-                    description=str(t.get("description", "")),
-                    input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
-                    server_id=server_id,
-                    server_name=cfg.name,
-                )
-                for t in cfg.tool_definitions
-                if t.get("name")
             ]
 
         headers = await self._build_auth_headers(
@@ -355,6 +379,16 @@ class MCPClient:
         """Call a built-in server's Python handler directly."""
         handler = server.builtin_handler
         if handler is None:
+            # The handler is a Python callable that cannot survive Redis serialisation.
+            # Try to restore it from the process-local registry populated by
+            # MCPRegistry.register_builtin_handler() — called at startup in the web
+            # process and at context-build time in Celery workers (Fix 2).
+            try:
+                from app.mcp.registry import MCPRegistry as _MCPReg
+                handler = _MCPReg.get_builtin_handler(server.server_id)
+            except Exception:
+                pass
+        if handler is None:
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,
@@ -421,10 +455,20 @@ class MCPClient:
                         http_method, url, json=arguments, headers=headers
                     )
                 resp.raise_for_status()
+                body = resp.json()
+                # H1 Fix: HTTP 200 with {"error": "..."} body must be treated as failure
+                if isinstance(body, dict) and body.get("error"):
+                    return ToolCallResult(
+                        tool_name=tool_name,
+                        success=False,
+                        error=str(body["error"]),
+                        output=body,
+                        server_id=server.server_id,
+                    )
                 return ToolCallResult(
                     tool_name=tool_name,
                     success=True,
-                    output=resp.json(),
+                    output=body,
                     server_id=server.server_id,
                 )
         except Exception as exc:
@@ -703,10 +747,81 @@ class MCPClient:
 
         _tenant_id = getattr(tenant_ctx, "tenant_id", "")
         _t0 = _time.monotonic()
+
+        # ── Universal Intelligence Layer ───────────────────────────────────────
+        # Step 1: Resolve arguments against the tool's JSON schema before the
+        # first call so the LLM's parameter name variations are fixed upstream.
+        try:
+            from app.mcp.tool_intelligence import get_resolver, get_healer
+            _resolver = get_resolver()
+            _healer = get_healer(getattr(self, "_provider", None))
+
+            # Get the tool schema — try multiple sources:
+            # Source A: cfg.tool_definitions (builtin + OpenAPI servers)
+            # Source B: live discover_tools() call (external MCP servers)
+            _tool_schema: dict | None = None
+            for _tdef in (cfg.tool_definitions or []):
+                if _tdef.get("name") == tool_name:
+                    _tool_schema = (
+                        _tdef.get("parameters")
+                        or _tdef.get("inputSchema")
+                        or _tdef.get("input_schema")
+                        or {}
+                    )
+                    break
+
+            # Source B: If not found in stored definitions, call discover_tools()
+            # This handles external HTTP/JSONRPC MCP servers whose schemas come
+            # from the live endpoint, not from stored tool_definitions.
+            if not _tool_schema:
+                try:
+                    _live_tools = await self.discover_tools(
+                        server_id=server_id, tenant_ctx=tenant_ctx
+                    )
+                    for _lt in _live_tools:
+                        if _lt.name == tool_name:
+                            _tool_schema = _lt.input_schema or {}
+                            break
+                except Exception:
+                    pass
+
+            # Normalise arguments against schema (zero-cost, no LLM)
+            if _tool_schema:
+                arguments = _resolver.resolve(_tool_schema, arguments)
+        except Exception as _ti_exc:
+            logger.debug("tool_intelligence_resolve_skipped: %s", _ti_exc)
+
         try:
             result = await self._call_tool_impl(
                 cfg, server_id, tool_name, arguments, tenant_ctx
             )
+
+            # ── Self-healing: retry if argument error ──────────────────────────
+            if (
+                not result.success
+                and _healer.is_argument_error(result.error)  # type: ignore[union-attr]
+            ):
+                try:
+                    logger.info(
+                        "self_heal_triggered",
+                        tool=tool_name,
+                        error=str(result.error)[:100],
+                    )
+                    _healed_args = await _healer.heal(  # type: ignore[union-attr]
+                        tool_name=tool_name,
+                        tool_schema=_tool_schema,  # type: ignore[name-defined]
+                        original_arguments=arguments,
+                        failed_result=result,
+                        resolver=_resolver,  # type: ignore[name-defined]
+                    )
+                    if _healed_args != arguments:
+                        result = await self._call_tool_impl(
+                            cfg, server_id, tool_name, _healed_args, tenant_ctx
+                        )
+                        if result.success:
+                            logger.info("self_heal_succeeded", tool=tool_name)
+                except Exception as _heal_exc:
+                    logger.warning("self_heal_error: %s", _heal_exc)
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
                 with suppress(Exception):
