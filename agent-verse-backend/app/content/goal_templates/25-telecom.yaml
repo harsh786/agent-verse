@@ -1,0 +1,39 @@
+- name: Predict Customer Churn
+  domain: telecom
+  description: Identify high churn-risk customers and generate retention offers.
+  goal_text: >-
+    Predict churn for {{segment}} segment ({{count}} customers) for {{period}}.
+    Flag customers with churn score above {{threshold}}. Generate personalised retention
+    offers for high-risk customers. Send priority list to {{retention_email}}.
+  source_use_cases:
+    - "25-telecom/UC-1"
+
+- name: Classify and Route Network Alarms
+  domain: telecom
+  description: Classify network alarms by severity and route to correct NOC team.
+  goal_text: >-
+    Classify {{alarm_count}} network alarms in {{domain}}. Correlate parent-child
+    alarms and suppress duplicates. Assign severity (critical/major/minor). Route to
+    {{noc_teams}}. Escalate critical unacknowledged alarms after {{escalation_mins}} minutes.
+  source_use_cases:
+    - "25-telecom/UC-2"
+
+- name: Resolve Billing Dispute
+  domain: telecom
+  description: Validate and resolve a customer billing dispute against CDR records.
+  goal_text: >-
+    Resolve billing dispute for {{msisdn}} ({{customer_name}}). Dispute amount:
+    ₹{{amount}} for period {{period}}. Validate against CDR records. Process correction
+    if valid. Escalate if above ₹{{auto_limit}}. Respond via {{channel}}.
+  source_use_cases:
+    - "25-telecom/UC-3"
+
+- name: Segment Telecom Subscribers
+  domain: telecom
+  description: Segment subscribers by ARPU, data usage, and tenure for targeted offers.
+  goal_text: >-
+    Segment {{count}} {{subscriber_type}} subscribers for {{circle}}. Analyse ARPU,
+    data usage, voice usage, and tenure. Create {{segment_count}} segments with clear
+    profiles. Generate product-offer matrix per segment. Report to {{marketing_email}}.
+  source_use_cases:
+    - "25-telecom/UC-4"

@@ -1,0 +1,205 @@
+- template_id: tpl-log-freight-invoice
+  slug: log-freight-invoice-auditor
+  name: Freight Invoice Auditor
+  domain: logistics
+  description: Audits freight invoices against contracted rates, identifies overcharges, duplicate bills, and generates dispute letters automatically.
+  source_use_cases:
+    - "16-logistics/UC-1"
+  system_prompt: >-
+    You are a freight audit specialist. Compare every invoice line to the contracted
+    rate card. Flag overcharges, accessorial charges not in contract, and duplicate
+    invoices. Generate dispute letters only for confirmed discrepancies above ₹500.
+  goal_template: >-
+    Audit {invoice_count} freight invoices from {carrier_name} for period {period}.
+    Compare to rate contract {contract_ref}. Flag discrepancies above ₹{min_dispute_amount}.
+    Generate dispute letter and summary report to {finance_email}.
+  parameters_schema:
+    properties:
+      invoice_count: {type: integer}
+      carrier_name: {type: string}
+      period: {type: string}
+      contract_ref: {type: string}
+      min_dispute_amount: {type: number, default: 500}
+      finance_email: {type: string, format: email}
+    required: [carrier_name, period, contract_ref, finance_email]
+  required_connectors: [document_reader, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Audit 120 Blue Dart invoices for Q1 2026 vs contract BC-2025-001. Dispute >₹500. Report to finance@co.in."
+      expected_tools: [document_reader, email]
+      expected_output_contains: ["overcharge", "dispute", "audit"]
+  tags: [logistics, freight, invoice-audit]
+  revenue_model: "₹2,000/audit batch; ₹15,000/mo unlimited"
+  roi_note: "Average 3-8% freight cost recovery; 6h audit → 30min"
+  version: "1.0.0"
+
+- template_id: tpl-log-shipment-tracking
+  slug: log-shipment-tracking-automation
+  name: Shipment Tracking Automation
+  domain: logistics
+  description: Monitors multi-carrier shipments, sends proactive delivery alerts to customers, and escalates delays to ops team.
+  source_use_cases:
+    - "16-logistics/UC-2"
+  system_prompt: >-
+    You are a shipment tracking coordinator. Monitor all active shipments every 4 hours.
+    Send proactive delay alerts before customers complain. Escalate shipments delayed by
+    more than 24h to the ops escalation team. Log all status changes.
+  goal_template: >-
+    Track {shipment_count} active shipments across {carrier_list}. Send status updates
+    to customers every {update_frequency_hrs} hours. Escalate to {ops_email} if any
+    shipment is delayed by more than {delay_threshold_hrs} hours.
+  parameters_schema:
+    properties:
+      shipment_count: {type: integer}
+      carrier_list: {type: array, items: {type: string}}
+      update_frequency_hrs: {type: integer, default: 12}
+      ops_email: {type: string, format: email}
+      delay_threshold_hrs: {type: integer, default: 24}
+    required: [carrier_list, ops_email]
+  required_connectors: [web_search, email, google_sheets, twilio]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track 50 Delhivery + FedEx shipments. 12-hourly updates. Escalate ops@3plco.in for 24h+ delays."
+      expected_output_contains: ["tracking", "delay", "update"]
+  tags: [logistics, tracking, shipment]
+  revenue_model: "₹50/shipment tracked; ₹10,000/mo unlimited"
+  roi_note: "Proactive alerts reduce WISMO calls by 60%"
+  version: "1.0.0"
+
+- template_id: tpl-log-customs-clearance
+  slug: log-customs-clearance-assistant
+  name: Customs Clearance Assistant
+  domain: logistics
+  description: Prepares EXIM documentation, checks HS codes, calculates duties, and files bills of entry/shipping bills on ICEGATE.
+  source_use_cases:
+    - "16-logistics/UC-3"
+  system_prompt: >-
+    You are a customs clearance specialist. Validate HS code accuracy against the
+    HSN master. Calculate basic customs duty, IGST, and applicable exemptions correctly.
+    Never file a Bill of Entry without human approval. Flag any FTA benefit opportunities.
+  goal_template: >-
+    Prepare customs {document_type} for {shipment_description} (HS Code: {hs_code}).
+    Origin: {origin_country}. Invoice value: {invoice_value_usd} USD. Calculate duties,
+    check FTA applicability, and file on ICEGATE after {approver_name} approval.
+  parameters_schema:
+    properties:
+      document_type: {type: string, enum: [bill_of_entry, shipping_bill, advance_ruling]}
+      shipment_description: {type: string}
+      hs_code: {type: string}
+      origin_country: {type: string}
+      invoice_value_usd: {type: number}
+      approver_name: {type: string}
+    required: [document_type, shipment_description, hs_code, origin_country, invoice_value_usd]
+  required_connectors: [icegate, web_search, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare bill of entry for industrial machinery (HS 8479.89) from Germany, USD 50,000. Check FTA."
+      expected_output_contains: ["HS code", "duty", "ICEGATE"]
+  tags: [logistics, customs, exim, india]
+  revenue_model: "₹2,000/shipment; ₹20,000/mo unlimited"
+  roi_note: "3-day clearance → 1 day; zero HS code errors"
+  version: "1.0.0"
+
+- template_id: tpl-log-carrier-rate
+  slug: log-carrier-rate-comparison
+  name: Carrier Rate Comparison Agent
+  domain: logistics
+  description: Compares real-time rates from multiple carriers for a given lane, factors SLA requirements, and recommends optimal carrier.
+  source_use_cases:
+    - "16-logistics/UC-4"
+  system_prompt: >-
+    You are a carrier selection specialist. Compare rates and transit times objectively.
+    Factor carrier reliability scores and service-level commitments. Present ranked
+    options with clear trade-offs. Always present at least 3 options.
+  goal_template: >-
+    Compare carriers for {shipment_type} ({weight_kg} kg, {dimensions}) from {origin}
+    to {destination}. Required delivery by {required_by}. Show top {top_n} carriers with
+    rates, transit time, and reliability score.
+  parameters_schema:
+    properties:
+      shipment_type: {type: string, enum: [ftl, ltl, courier, air, sea]}
+      weight_kg: {type: number}
+      dimensions: {type: string}
+      origin: {type: string}
+      destination: {type: string}
+      required_by: {type: string, format: date}
+      top_n: {type: integer, default: 3}
+    required: [shipment_type, weight_kg, origin, destination, required_by]
+  required_connectors: [web_search, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Compare carriers for LTL 200kg Mumbai to Pune by 2026-07-20. Top 3 options."
+      expected_output_contains: ["rate", "transit", "carrier"]
+  tags: [logistics, carrier, rate-comparison]
+  revenue_model: "₹200/comparison; ₹5,000/mo unlimited"
+  roi_note: "10% average freight cost reduction through rate comparison"
+  version: "1.0.0"
+
+- template_id: tpl-log-warehouse-alert
+  slug: log-warehouse-inventory-alert
+  name: Warehouse Inventory Alert Agent
+  domain: logistics
+  description: Monitors warehouse stock levels, triggers reorder alerts at safety stock, and flags slow-moving and near-expiry inventory.
+  source_use_cases:
+    - "16-logistics/UC-5"
+  system_prompt: >-
+    You are a warehouse inventory analyst. Calculate reorder points using average daily
+    usage and lead time. Alert on items crossing safety stock. Flag near-expiry items
+    (within expiry_days). Recommend disposal actions for dead stock above age_threshold.
+  goal_template: >-
+    Monitor inventory at {warehouse_name} for {sku_count} SKUs. Alert {warehouse_mgr_email}
+    when stock falls below safety level. Flag items expiring within {expiry_days} days
+    and dead stock older than {dead_stock_days} days.
+  parameters_schema:
+    properties:
+      warehouse_name: {type: string}
+      sku_count: {type: integer}
+      warehouse_mgr_email: {type: string, format: email}
+      expiry_days: {type: integer, default: 30}
+      dead_stock_days: {type: integer, default: 90}
+    required: [warehouse_name, warehouse_mgr_email]
+  required_connectors: [database_query, email, google_sheets]
+  optional_connectors: [slack]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Monitor Mumbai DC for 500 SKUs. Alert wm@3pl.in for safety stock breaches, 30-day expiry, 90-day dead stock."
+      expected_output_contains: ["reorder", "expiry", "inventory"]
+  tags: [logistics, warehouse, inventory]
+  revenue_model: "₹5,000/warehouse/mo"
+  roi_note: "Stockouts reduced 70%; expiry waste reduced 40%"
+  version: "1.0.0"
+
+- template_id: tpl-log-last-mile
+  slug: log-last-mile-optimizer
+  name: Last-Mile Delivery Optimizer
+  domain: logistics
+  description: Clusters delivery addresses, optimises route sequences, and assigns delivery agents to minimise distance and time.
+  source_use_cases:
+    - "16-logistics/UC-6"
+  system_prompt: >-
+    You are a last-mile logistics optimiser. Cluster deliveries by zone first, then
+    optimise routes within each cluster. Factor delivery time windows and load capacity.
+    Provide turn-by-turn sequence for each delivery agent.
+  goal_template: >-
+    Optimise last-mile routes for {delivery_count} deliveries in {city} for date {delivery_date}.
+    {agent_count} delivery agents, each with {capacity_kg} kg capacity. Respect time
+    windows {time_window_start} to {time_window_end}. Minimise total distance.
+  parameters_schema:
+    properties:
+      delivery_count: {type: integer}
+      city: {type: string}
+      delivery_date: {type: string, format: date}
+      agent_count: {type: integer}
+      capacity_kg: {type: number, default: 30}
+      time_window_start: {type: string, default: "09:00"}
+      time_window_end: {type: string, default: "18:00"}
+    required: [delivery_count, city, delivery_date, agent_count]
+  required_connectors: [google_sheets, web_search, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Optimise 150 deliveries in Bangalore on 2026-07-15. 8 agents, 30kg capacity. 9 AM to 6 PM window."
+      expected_output_contains: ["route", "cluster", "sequence"]
+  tags: [logistics, last-mile, route-optimization]
+  revenue_model: "₹200/route plan; ₹8,000/mo unlimited"
+  roi_note: "15-20% distance reduction; 30% faster deliveries"
+  version: "1.0.0"

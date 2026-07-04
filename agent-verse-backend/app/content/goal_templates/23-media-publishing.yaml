@@ -1,0 +1,39 @@
+- name: Moderate User-Generated Content
+  domain: media-publishing
+  description: Screen a batch of user-submitted content against platform policies.
+  goal_text: >-
+    Moderate {{count}} new {{content_type}} submissions on {{platform}}. Apply policies:
+    {{policy_categories}}. Auto-remove confirmed violations at {{confidence_pct}}%
+    confidence. Route borderline content to {{review_queue}} for human review.
+  source_use_cases:
+    - "23-media-publishing/UC-1"
+
+- name: Analyse Content Engagement Performance
+  domain: media-publishing
+  description: Analyse content performance to identify top-performing topics and optimal publish times.
+  goal_text: >-
+    Analyse {{count}} content items for {{publication}} over {{period}}. Identify top
+    {{top_topics}} performing topics, optimal publish windows, and audience segments.
+    Generate content strategy recommendations for {{editor_email}}.
+  source_use_cases:
+    - "23-media-publishing/UC-3"
+
+- name: Create Content Publishing Schedule
+  domain: media-publishing
+  description: Generate a multi-week content publishing schedule across channels.
+  goal_text: >-
+    Create {{weeks}}-week publishing schedule for {{publication}}. {{articles_per_week}}
+    articles/week across {{channels}}. Mix: {{trending_pct}}% trending, {{evergreen_pct}}%
+    evergreen. Avoid topic overlap within {{overlap_days}} days. Send to {{editor_email}}.
+  source_use_cases:
+    - "23-media-publishing/UC-4"
+
+- name: Conduct Technical SEO Audit
+  domain: media-publishing
+  description: Audit a publication website for SEO health and generate fix recommendations.
+  goal_text: >-
+    Audit SEO health of {{website_url}} for {{page_count}} pages. Check Core Web Vitals,
+    structured data, duplicate content, and mobile usability. Prioritise top {{issues_count}}
+    issues by traffic impact. Generate fix roadmap for {{webmaster_email}}.
+  source_use_cases:
+    - "23-media-publishing/UC-5"

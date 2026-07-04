@@ -40,6 +40,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.billing import router as billing_router
+from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.api.a2a import router as a2a_router
 from app.api.agent_directory import router as agent_directory_router
 from app.api.solutions import router as solutions_router
@@ -86,6 +88,7 @@ from app.api.templates import template_store as _template_store
 from app.api.tenants import router as tenants_router
 from app.api.tools import router as tools_router
 from app.api.training_export import router as training_export_router
+from app.api.lab import router as lab_router
 from app.api.workflows import _WorkflowStore as WorkflowStore
 from app.api.workflows import router as workflows_router
 from app.auth.agent_identity import AgentIdentityService
@@ -133,6 +136,7 @@ from app.services.event_store import EventStore
 from app.services.goal_queue import CeleryGoalTaskQueue
 from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
+from app.services.usage_service import UsageService
 from app.services.tenant_service import TenantService
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 from app.triggers.nl_scheduler import NLScheduler
@@ -711,6 +715,12 @@ def create_app(
             db_factory = get_session_factory()
             event_store = EventStore(db_factory)
 
+            # Wire DB into UsageService so buffer flushes actually reach Postgres.
+            _usage_svc = getattr(app.state, "usage_service", None)
+            if _usage_svc is not None:
+                _usage_svc._db = db_factory
+                logger.info("usage_service_db_wired")
+
             _tenant_svc_with_db = TenantService(db_session_factory=db_factory)
             _goal_svc_with_db = GoalService(
                 audit_log=_audit_log,
@@ -929,6 +939,20 @@ def create_app(
                 _sem_cache = getattr(app.state, "semantic_cache", None)
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):
                     _sem_cache._redis = redis_for_runtime
+
+                # SemanticCache: wire pgvector ANN backend for O(log n) L2 lookup.
+                try:
+                    from app.rag.vector_cache_backend import select_cache_backend as _scb_select
+                    _sem_cache_backend = await _scb_select(
+                        db_factory=db_factory,
+                        redis=redis_for_runtime,
+                    )
+                    _sc = getattr(app.state, "semantic_cache", None)
+                    if _sc is not None:
+                        _sc._backend = _sem_cache_backend
+                    logger.info("semantic_cache_backend_wired")
+                except Exception as _scb_exc:
+                    logger.warning("semantic_cache_backend_wire_failed", error=str(_scb_exc))
 
                 # GoalDeduplicator: wire Redis for cross-replica dedup.
                 try:
@@ -1157,6 +1181,17 @@ def create_app(
     except Exception as _ar_exc:
         logger.warning("agent_router_init_failed", error=str(_ar_exc))
         app.state.agent_router = None
+    # ── Phase 2A: ToolSelector (goal-aware top-k tool retrieval) ─────────────
+    try:
+        from app.agent.tool_selector import ToolSelector
+        from app.mcp.capability_search import CapabilitySearch
+        _capability_search = CapabilitySearch(embedder=_embedder)
+        _tool_selector = ToolSelector(capability_search=_capability_search)
+        app.state.tool_selector = _tool_selector
+        logger.info("tool_selector_registered")
+    except Exception as _ts_exc:
+        logger.warning("tool_selector_init_failed", error=str(_ts_exc))
+        app.state.tool_selector = None
     # Governance
     app.state.hitl_gateway = _hitl
     app.state.audit_log = _audit_log
@@ -1177,6 +1212,9 @@ def create_app(
     app.state.agent_identity_service = _agent_identity_svc
     # GuardrailEngine v2 (six-layer input/output guardrails)
     app.state.guardrail_engine = _guardrail_engine_v2
+    # Usage Metering (Phase 1e billing)
+    _usage_service = UsageService()
+    app.state.usage_service = _usage_service
     # Intelligence
     app.state.eval_runner = _eval_runner
     app.state.eval_suite_runner = _eval_suite_runner
@@ -1301,6 +1339,9 @@ def create_app(
     # Visual Workflow Builder
     app.include_router(workflows_router)
     logger.info("workflows_router_registered")
+    # Agent Lab (unified playground, simulation, model comparison)
+    app.include_router(lab_router)
+    logger.info("lab_router_registered")
     # Insights & Intelligence
     app.include_router(insights_router)
     logger.info("insights_router_registered")
@@ -1313,6 +1354,12 @@ def create_app(
     # Guardrails
     app.include_router(guardrails_router)
     logger.info("guardrails_router_registered")
+    # Billing & usage metering (Phase 1e)
+    app.include_router(billing_router)
+    logger.info("billing_router_registered")
+    # Cost metrics API (Phase 2 Group F)
+    app.include_router(cost_breakdown_api_router)
+    logger.info("cost_breakdown_api_router_registered")
     # Platform admin (cross-tenant, X-Admin-Key authenticated)
     app.include_router(admin_router)
     logger.info("admin_router_registered")

@@ -1,0 +1,55 @@
+- name: Process KYC Document Verification
+  domain: banking-fintech
+  description: Verify KYC documents for a new or existing customer against DigiLocker and CKYC registry.
+  goal_text: >-
+    Verify KYC documents for customer {{customer_name}} (ID: {{customer_id}}). Check
+    {{document_types}} via DigiLocker, validate against CKYC registry, compute KYC
+    completeness score, flag missing or expired documents, and generate a KYC status
+    report for compliance officer {{compliance_officer_email}}.
+  source_use_cases:
+    - "20-banking/UC-1"
+
+- name: Generate Loan Eligibility Report
+  domain: banking-fintech
+  description: Assess and report loan eligibility for an applicant based on income and credit profile.
+  goal_text: >-
+    Generate a loan eligibility report for {{applicant_name}} (PAN: {{pan}}) for a
+    {{loan_type}} loan. Verify income of ₹{{monthly_income}} per month, check
+    CIBIL/bureau score, compute maximum loan eligibility, EMI options for {{tenure_months}}
+    months at {{interest_rate}}% rate, and recommended loan structure.
+  source_use_cases:
+    - "20-banking/UC-2"
+
+- name: Investigate Fraud Alert
+  domain: banking-fintech
+  description: Investigate a flagged fraudulent transaction and determine if it is genuine fraud.
+  goal_text: >-
+    Investigate fraud alert {{alert_id}} on account {{account_id}}. Flagged transaction:
+    ₹{{amount}} at {{merchant}} on {{transaction_date}}. Check transaction velocity in last
+    {{hours}} hours, geo-anomaly, device change, and past fraud history. Score fraud
+    probability and recommend block (yes/no) with confidence level.
+  source_use_cases:
+    - "20-banking/UC-3"
+
+- name: Onboard New Banking Customer
+  domain: banking-fintech
+  description: Complete end-to-end digital onboarding for a new bank customer.
+  goal_text: >-
+    Onboard {{customer_name}} as a new banking customer for {{account_type}} account.
+    Collect KYC documents, verify via DigiLocker, check CKYC, assign customer ID, open
+    account in core banking, set up internet banking, and send welcome kit with account
+    number, IFSC, and product details to {{email}} and {{mobile}}.
+  source_use_cases:
+    - "20-banking/UC-4"
+
+- name: Prepare Credit Risk Assessment
+  domain: banking-fintech
+  description: Perform a full credit risk assessment for a loan applicant or borrower.
+  goal_text: >-
+    Perform credit risk assessment for {{borrower_name}} ({{entity_type}}) for
+    {{facility_type}} of ₹{{facility_amount}}. Analyze {{years}}-year financials,
+    compute DSCR {{dscr_formula}}, check bureau score, assess {{industry}} industry
+    risk, and assign a credit grade (AAA to D) with sanction recommendation and
+    suggested covenants.
+  source_use_cases:
+    - "20-banking/UC-5"

@@ -66,6 +66,15 @@ class OpenAICompatibleProvider:
                 }
                 for t in request.tools
             ]
+        if request.response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": request.response_schema,
+                },
+            }
 
         response = await self._client.chat.completions.create(**kwargs)
 
@@ -232,4 +241,7 @@ class OpenAICompatibleProvider:
         return self._vision
 
     def supports_tool_use(self) -> bool:
+        return True
+
+    def supports_structured_output(self) -> bool:
         return True

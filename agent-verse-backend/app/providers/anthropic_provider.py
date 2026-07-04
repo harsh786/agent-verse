@@ -93,7 +93,18 @@ class AnthropicProvider:
                     "cache_control": {"type": "ephemeral"},
                 }
             ]
-        if request.tools:
+        if request.response_schema is not None and not request.tools:
+            # Force-tool structured output for Anthropic: inject a synthetic tool
+            # and force the model to call it so we always get structured JSON back.
+            kwargs["tools"] = [
+                {
+                    "name": "emit_structured_response",
+                    "description": "Emit the structured response",
+                    "input_schema": request.response_schema,
+                }
+            ]
+            kwargs["tool_choice"] = {"type": "tool", "name": "emit_structured_response"}
+        elif request.tools:
             kwargs["tools"] = [
                 {
                     "name": t.name,
@@ -123,14 +134,32 @@ class AnthropicProvider:
         except Exception:
             pass  # Metrics must never break the API call
 
-        text_content = " ".join(
-            block.text for block in response.content if hasattr(block, "text")
-        )
-        tool_calls = [
-            {"name": block.name, "input": block.input, "id": block.id}
-            for block in response.content
-            if block.type == "tool_use"
-        ]
+        # Extract content: structured output path returns tool_use input as JSON
+        import json as _json
+
+        _struct_block = None
+        if request.response_schema is not None and not request.tools:
+            _struct_block = next(
+                (
+                    block
+                    for block in response.content
+                    if block.type == "tool_use" and block.name == "emit_structured_response"
+                ),
+                None,
+            )
+
+        if _struct_block is not None:
+            text_content = _json.dumps(_struct_block.input)
+            tool_calls = []
+        else:
+            text_content = " ".join(
+                block.text for block in response.content if hasattr(block, "text")
+            )
+            tool_calls = [
+                {"name": block.name, "input": block.input, "id": block.id}
+                for block in response.content
+                if block.type == "tool_use"
+            ]
 
         return CompletionResponse(
             content=text_content,
@@ -265,4 +294,7 @@ class AnthropicProvider:
         return True
 
     def supports_tool_use(self) -> bool:
+        return True
+
+    def supports_structured_output(self) -> bool:
         return True

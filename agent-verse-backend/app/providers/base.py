@@ -45,6 +45,9 @@ class CompletionRequest:
     max_tokens: int = 4096
     temperature: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    response_schema: dict[str, Any] | None = None  # JSON Schema; when set, provider MUST
+                                                    # return content that is a single valid
+                                                    # JSON object matching it
 
 
 @dataclass
@@ -138,6 +141,10 @@ class LLMProvider(Protocol):
     def supports_vision(self) -> bool: ...
 
     def supports_tool_use(self) -> bool: ...
+
+    def supports_structured_output(self) -> bool:
+        """Return True if this provider supports structured JSON output."""
+        return False
 
 
 # -- Standalone helpers --------------------------------------------------------

@@ -1,0 +1,226 @@
+- template_id: tpl-energy-meter-anomaly
+  slug: energy-meter-anomaly-detector
+  name: Smart Meter Anomaly Detector
+  domain: energy-utilities
+  description: Analyses smart meter data to detect energy theft, meter tampering, and consumption anomalies for utility revenue protection.
+  source_use_cases:
+    - "30-energy-utilities/UC-1"
+  system_prompt: >-
+    You are an energy analytics specialist. Detect anomalies in consumption patterns
+    using statistical benchmarks for the meter category. Flag sudden drops (possible
+    theft), missing readings (tampering), and consumption spikes. Rank alerts by
+    revenue impact. Route high-priority cases for field inspection.
+  goal_template: >-
+    Analyse smart meter data for {meter_count} meters in {feeder_name}. Flag anomalies:
+    consumption drop > {drop_threshold_pct}%, missing reads > {missing_days} days, or
+    spikes > {spike_multiplier}x baseline. Rank by estimated revenue loss. Alert
+    {revenue_protection_email}.
+  parameters_schema:
+    properties:
+      meter_count: {type: integer}
+      feeder_name: {type: string}
+      drop_threshold_pct: {type: integer, default: 50}
+      missing_days: {type: integer, default: 3}
+      spike_multiplier: {type: number, default: 3.0}
+      revenue_protection_email: {type: string, format: email}
+    required: [meter_count, feeder_name, revenue_protection_email]
+  required_connectors: [database_query, email, google_sheets]
+  optional_connectors: [aws_iot]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Analyse 5,000 meters on Feeder-F21. Flag >50% consumption drop, 3+ missing days. Alert revenue team."
+      expected_output_contains: ["anomaly", "consumption", "tampering"]
+  tags: [energy, smart-meter, revenue-protection]
+  revenue_model: "₹1/meter/mo; ₹50,000/mo per feeder zone"
+  roi_note: "AT&C losses reduced 2-3%; ₹10-15L/month revenue recovered"
+  version: "1.0.0"
+
+- template_id: tpl-energy-load-forecast
+  slug: energy-load-forecasting
+  name: Load Forecasting Agent
+  domain: energy-utilities
+  description: Generates day-ahead and week-ahead load forecasts for power procurement and grid scheduling using weather and historical data.
+  source_use_cases:
+    - "30-energy-utilities/UC-2"
+  system_prompt: >-
+    You are a power systems analyst. Forecast load using historical patterns, weather
+    data, and seasonal factors. Generate 24-hour and 7-day forecasts with confidence
+    intervals. Flag if forecast deviates significantly from schedule. Factor public
+    holidays and industrial shutdown periods.
+  goal_template: >-
+    Generate {forecast_horizon} load forecast for {utility_name} ({area_name} area)
+    for {forecast_date}. Peak demand baseline: {baseline_mw} MW. Incorporate weather
+    forecast and holiday calendar. Generate 95% confidence intervals. Submit to
+    {load_despatch_email} by {submission_time}.
+  parameters_schema:
+    properties:
+      forecast_horizon: {type: string, enum: [day_ahead, week_ahead, month_ahead]}
+      utility_name: {type: string}
+      area_name: {type: string}
+      forecast_date: {type: string, format: date}
+      baseline_mw: {type: number}
+      load_despatch_email: {type: string, format: email}
+      submission_time: {type: string, default: "06:00"}
+    required: [forecast_horizon, utility_name, area_name, forecast_date, load_despatch_email]
+  required_connectors: [web_search, database_query, email, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Day-ahead load forecast for MSEDCL Pune area for 2026-07-15. Baseline 850MW. Submit to despatch by 6AM."
+      expected_output_contains: ["forecast", "MW", "confidence"]
+  tags: [energy, load-forecasting, grid]
+  revenue_model: "₹1,00,000/mo per utility zone"
+  roi_note: "Forecast error MAPE <3%; procurement cost savings ₹10-20L/month"
+  version: "1.0.0"
+
+- template_id: tpl-energy-tariff
+  slug: energy-tariff-compliance-checker
+  name: Tariff Compliance Checker
+  domain: energy-utilities
+  description: Validates consumer billing against CERC/SERC tariff orders, identifies incorrect tariff categorisation, and generates correction billing.
+  source_use_cases:
+    - "30-energy-utilities/UC-3"
+  system_prompt: >-
+    You are a tariff compliance specialist. Validate every bill element against the
+    applicable SERC tariff order. Check consumer category classification. Verify
+    demand charges, energy charges, and surcharges are correctly applied. Generate
+    correction bills for misclassified consumers. Document regulatory basis for every
+    charge.
+  goal_template: >-
+    Validate tariff compliance for {consumer_count} {consumer_category} consumers
+    in {circle_name} under {serc_name} tariff order {tariff_order_ref}. Flag
+    mis-categorised consumers and billing errors above ₹{min_error_amount}. Generate
+    correction bills. Report to {billing_manager_email}.
+  parameters_schema:
+    properties:
+      consumer_count: {type: integer}
+      consumer_category: {type: string}
+      circle_name: {type: string}
+      serc_name: {type: string}
+      tariff_order_ref: {type: string}
+      min_error_amount: {type: number, default: 1000}
+      billing_manager_email: {type: string, format: email}
+    required: [consumer_count, consumer_category, circle_name, billing_manager_email]
+  required_connectors: [database_query, web_search, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Validate tariff for 1000 HT industrial consumers in Pune circle under MERC TO 2025-26. Flag >₹1000 errors."
+      expected_output_contains: ["tariff", "compliance", "correction"]
+  tags: [energy, tariff, billing, regulatory]
+  revenue_model: "₹1/consumer/check; ₹50,000/mo unlimited"
+  roi_note: "Billing errors recovered; regulatory risk mitigated"
+  version: "1.0.0"
+
+- template_id: tpl-energy-asset-maint
+  slug: energy-asset-maintenance-scheduler
+  name: Energy Asset Maintenance Scheduler
+  domain: energy-utilities
+  description: Schedules preventive maintenance for transformers, feeders, and substation equipment based on age, loading, and inspection history.
+  source_use_cases:
+    - "30-energy-utilities/UC-4"
+  system_prompt: >-
+    You are a power systems maintenance engineer. Schedule PM based on manufacturer
+    recommendations, asset age, loading profile, and inspection findings. Prioritise
+    assets with overloading or abnormal temperature readings. Coordinate with grid
+    despatch for planned outages. Maintain maintenance history register.
+  goal_template: >-
+    Schedule preventive maintenance for {asset_count} {asset_type} assets in {circle_name}.
+    Prioritise {critical_assets} overloaded/aged assets. Coordinate {planned_outages}
+    planned outages with grid. Maintenance target: {maintenance_period}. Report to
+    {chief_engineer_email}.
+  parameters_schema:
+    properties:
+      asset_count: {type: integer}
+      asset_type: {type: string, enum: [transformer, feeder, substation, line]}
+      circle_name: {type: string}
+      critical_assets: {type: integer}
+      planned_outages: {type: integer}
+      maintenance_period: {type: string}
+      chief_engineer_email: {type: string, format: email}
+    required: [asset_count, asset_type, circle_name, chief_engineer_email]
+  required_connectors: [database_query, google_sheets, email]
+  optional_connectors: [upkeep]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Schedule PM for 200 transformers in Nashik circle. 30 overloaded assets prioritised. Q3 2026 target."
+      expected_output_contains: ["maintenance", "schedule", "transformer"]
+  tags: [energy, maintenance, assets]
+  revenue_model: "₹20,000/circle/mo"
+  roi_note: "Equipment failures reduced 40%; outage duration reduced 30%"
+  version: "1.0.0"
+
+- template_id: tpl-energy-audit-report
+  slug: energy-audit-report-generator
+  name: Energy Audit Report Generator
+  domain: energy-utilities
+  description: Generates comprehensive energy audit reports for industrial and commercial facilities, identifying energy-saving opportunities with ROI.
+  source_use_cases:
+    - "30-energy-utilities/UC-5"
+  system_prompt: >-
+    You are an energy auditor. Analyse facility energy consumption patterns. Identify
+    top energy consumers and inefficiencies. Calculate savings potential with investment
+    and payback period for each measure. Prioritise recommendations by ROI. Generate
+    BEE audit report format.
+  goal_template: >-
+    Generate energy audit report for {facility_name} ({facility_type}).
+    Annual consumption: {annual_kwh} kWh. Analyse {energy_systems} systems.
+    Identify top {recommendation_count} savings measures with ROI.
+    Target {savings_target_pct}% consumption reduction. Report to {facility_manager_email}.
+  parameters_schema:
+    properties:
+      facility_name: {type: string}
+      facility_type: {type: string, enum: [industrial, commercial, hotel, hospital]}
+      annual_kwh: {type: number}
+      energy_systems: {type: array, items: {type: string}}
+      recommendation_count: {type: integer, default: 10}
+      savings_target_pct: {type: integer, default: 15}
+      facility_manager_email: {type: string, format: email}
+    required: [facility_name, facility_type, annual_kwh, facility_manager_email]
+  required_connectors: [document_reader, google_sheets, pdf_generator, email]
+  optional_connectors: [web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Energy audit for Infosys Campus Pune. 50M kWh/year. HVAC, lighting, DG. Top 10 measures. 15% target."
+      expected_output_contains: ["energy saving", "ROI", "payback"]
+  tags: [energy, audit, sustainability]
+  revenue_model: "₹25,000/audit report"
+  roi_note: "Identifies 15-25% energy savings; audit-grade accuracy"
+  version: "1.0.0"
+
+- template_id: tpl-energy-renewable
+  slug: energy-renewable-monitoring
+  name: Renewable Energy Monitoring Agent
+  domain: energy-utilities
+  description: Monitors solar and wind generation assets, tracks CUF and PR metrics, and alerts on under-performance against contractual obligations.
+  source_use_cases:
+    - "30-energy-utilities/UC-6"
+  system_prompt: >-
+    You are a renewable energy operations specialist. Track generation against P90
+    forecast and contractual CUF. Alert on under-performance events (generation
+    below threshold for consecutive hours). Identify curtailment events and
+    calculate revenue impact. Report to O&M contractor and developer.
+  goal_template: >-
+    Monitor {asset_type} generation at {plant_name} ({capacity_mw} MW). Track CUF
+    target {target_cuf_pct}% and PR target {target_pr_pct}%. Alert {om_email} if
+    generation below {underperformance_threshold_pct}% for {consecutive_hours}+ hours.
+    Daily generation report to {developer_email}.
+  parameters_schema:
+    properties:
+      asset_type: {type: string, enum: [solar, wind, hybrid]}
+      plant_name: {type: string}
+      capacity_mw: {type: number}
+      target_cuf_pct: {type: number}
+      target_pr_pct: {type: number, default: 75}
+      om_email: {type: string, format: email}
+      underperformance_threshold_pct: {type: integer, default: 70}
+      consecutive_hours: {type: integer, default: 2}
+      developer_email: {type: string, format: email}
+    required: [asset_type, plant_name, capacity_mw, target_cuf_pct, om_email, developer_email]
+  required_connectors: [database_query, email, google_sheets, aws_iot]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Monitor 100MW solar plant in Rajasthan. CUF target 22%, PR 78%. Alert O&M for <70% generation 2h+ run."
+      expected_output_contains: ["CUF", "PR", "generation"]
+  tags: [energy, renewable, solar-wind]
+  revenue_model: "₹50,000/plant/mo"
+  roi_note: "Underperformance detected 6h earlier; generation improved 3%"
+  version: "1.0.0"

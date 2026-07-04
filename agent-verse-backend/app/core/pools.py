@@ -23,21 +23,31 @@ async def _default_pg_factory(settings: Settings) -> Any:
     import asyncpg
 
     dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    return await asyncpg.create_pool(dsn, min_size=5, max_size=20)
+    return await asyncpg.create_pool(
+        dsn,
+        min_size=settings.db_pool_min,
+        max_size=settings.db_pool_max,
+    )
 
 
 async def _default_redis_factory(settings: Settings) -> Any:
     import redis.asyncio as aioredis
 
     return aioredis.from_url(
-        settings.redis_url, max_connections=50, retry_on_timeout=True, decode_responses=True
+        settings.redis_url,
+        max_connections=settings.redis_max_connections,
+        retry_on_timeout=True,
+        decode_responses=True,
     )
 
 
-async def _default_http_factory() -> Any:
+async def _default_http_factory(settings: Settings) -> Any:
     import httpx
 
-    limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+    limits = httpx.Limits(
+        max_connections=settings.http_max_connections,
+        max_keepalive_connections=settings.http_keepalive_connections,
+    )
     return httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(30.0))
 
 
@@ -64,7 +74,7 @@ class ConnectionPools:
         self._settings = settings or get_settings()
         self._pg_factory = pg_factory or (lambda: _default_pg_factory(self._settings))
         self._redis_factory = redis_factory or (lambda: _default_redis_factory(self._settings))
-        self._http_factory = http_factory or _default_http_factory
+        self._http_factory = http_factory or (lambda: _default_http_factory(self._settings))
         self._pg_ping = pg_ping
         self._redis_ping = redis_ping
         self.postgres: Any = None

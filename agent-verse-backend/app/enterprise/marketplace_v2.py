@@ -95,6 +95,9 @@ class TemplateSecurityReviewer:
         scope_result = self._check_scopes(template)
         findings.extend(scope_result.get("findings", []))
 
+        connector_result = self._check_connectors(template)
+        findings.extend(connector_result.get("findings", []))
+
         injection_result = self._check_injection(template)
         findings.extend(injection_result.get("findings", []))
 
@@ -117,27 +120,37 @@ class TemplateSecurityReviewer:
                 risk_level = "low"
 
         approved = risk_level in ("safe", "low")
+        # review_status mirrors publish_template's review_status field for consistency
+        review_status = "approved" if approved else risk_level
 
         return {
             "findings": findings,
             "risk_level": risk_level,
             "approved": approved,
+            "review_status": review_status,
             "scope_check": scope_result,
+            "connector_check": connector_result,
             "injection_check": injection_result,
             "schema_check": schema_result,
             "autonomy_check": autonomy_result,
         }
 
     def _check_scopes(self, template: dict[str, Any]) -> dict[str, Any]:
-        """Amendment 7.1: use AND logic, not OR."""
-        requested = set(template.get("required_connectors", []))
-        over_requested = requested - PREAPPROVED_SCOPES
-        high_risk = requested & HIGH_RISK_SCOPES
-        critical = requested & CRITICAL_SCOPES
+        """D.3 fix: check OAuth scopes only — NOT connector names.
 
-        findings = []
-        # FIXED: AND logic — must satisfy BOTH conditions to pass
-        passed = len(over_requested) == 0 and len(high_risk) == 0
+        required_connectors holds connector names (e.g. "gmail", "jira") which are
+        validated by _check_connectors. OAuth scopes (if present) live in a separate
+        "oauth_scopes" field. Mixing them caused all normal templates to show
+        over_requested = {every connector name} which was incorrect.
+        """
+        # OAuth scopes are in a separate field, not required_connectors
+        requested_scopes = set(template.get("oauth_scopes", []))
+        high_risk = requested_scopes & HIGH_RISK_SCOPES
+        critical = requested_scopes & CRITICAL_SCOPES
+
+        findings: list[dict[str, Any]] = []
+        # Only scope-level checks: high-risk / critical OAuth scopes
+        passed = len(high_risk) == 0
 
         if critical:
             findings.append(
@@ -153,9 +166,53 @@ class TemplateSecurityReviewer:
         return {
             "passed": passed,
             "findings": findings,
-            "over_requested": list(over_requested),
+            "over_requested": [],  # connector names are no longer mis-flagged here
             "high_risk_scopes": list(high_risk),
             "requires_justification": bool(high_risk),
+        }
+
+    def _check_connectors(self, template: dict[str, Any]) -> dict[str, Any]:
+        """D.3 fix: validate required_connectors against the known connector catalog.
+
+        Connector names that are catalog-known (or pseudo-connectors) are approved.
+        Unknown connector names produce a low-severity finding (flagged, not rejected).
+        """
+        try:
+            from app.mcp.catalog import CONNECTOR_CATALOG
+
+            known_connectors: set[str] = {spec.name for spec in CONNECTOR_CATALOG}
+        except Exception:
+            known_connectors = set()
+
+        # Pseudo-connectors that are valid but not yet in the catalog
+        known_connectors |= {
+            "document_reader",
+            "web_search",
+            "pdf_generator",
+            "database_query",
+            "audio_transcriber",
+            "knowledge",
+        }
+
+        required: list[str] = template.get("required_connectors", [])
+        unknown = [c for c in required if c not in known_connectors]
+
+        findings: list[dict[str, Any]] = []
+        if unknown:
+            findings.append(
+                {
+                    "type": "unknown_connectors",
+                    "severity": "low",
+                    "connectors": unknown,
+                    "message": f"Connectors not yet in catalog: {unknown}. "
+                    "Add them in Track 1 before agents can run.",
+                }
+            )
+
+        return {
+            "passed": len(unknown) == 0,
+            "findings": findings,
+            "unknown_connectors": unknown,
         }
 
     def _check_injection(self, template: dict[str, Any]) -> dict[str, Any]:
@@ -1516,12 +1573,18 @@ class MarketplaceV2:
                         _t("SET LOCAL app.tenant_id = :tid"),
                         {"tid": tenant_ctx.tenant_id},
                     )
-                    # ATOMIC: create agent row
+                    # ATOMIC: create agent row (B.2: include connector_ids + system_prompt)
+                    connector_ids = template.get("required_connectors", [])
+                    system_prompt = config.get("system_prompt") or template.get(
+                        "system_prompt", ""
+                    )
                     await session.execute(
                         _t("""
                             INSERT INTO agents
-                                (id, tenant_id, name, goal_template, autonomy_mode)
-                            VALUES (:id, :tenant, :name, :goal, :mode)
+                                (id, tenant_id, name, goal_template, autonomy_mode,
+                                 connector_ids, system_prompt)
+                            VALUES (:id, :tenant, :name, :goal, :mode,
+                                    :connector_ids::jsonb, :system_prompt)
                         """),
                         {
                             "id": agent_id,
@@ -1534,6 +1597,8 @@ class MarketplaceV2:
                             "mode": config.get(
                                 "autonomy_mode", "bounded-autonomous"
                             ),
+                            "connector_ids": json.dumps(connector_ids),
+                            "system_prompt": system_prompt,
                         },
                     )
                     # ATOMIC: create install record
@@ -1578,7 +1643,9 @@ class MarketplaceV2:
                     "template_id": template_id,
                 }
         else:
-            # In-memory path for tests
+            # In-memory path for tests (B.2: include connector_ids + system_prompt)
+            _connector_ids = template.get("required_connectors", [])
+            _system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
             self._installs.append(
                 {
                     "install_id": install_id,
@@ -1586,6 +1653,8 @@ class MarketplaceV2:
                     "tenant_id": tenant_ctx.tenant_id,
                     "agent_id": agent_id,
                     "params": params,
+                    "connector_ids": _connector_ids,
+                    "system_prompt": _system_prompt,
                 }
             )
             if template_id in self._cache:

@@ -1,0 +1,171 @@
+- template_id: tpl-agri-mandi-price
+  slug: agri-mandi-price-tracker
+  name: Mandi Price Tracker (eNAM)
+  domain: agriculture
+  description: Tracks daily mandi prices for specified crops across APMC mandis, compares to MSP, and sends alerts when prices fall below threshold.
+  source_use_cases:
+    - "21-agriculture/UC-1"
+  system_prompt: >-
+    You are an agricultural market analyst. Track mandi prices from eNAM and APMC portals.
+    Compare daily prices to MSP. Alert farmers when prices are significantly below MSP or
+    falling trend detected. Recommend nearest higher-price mandis.
+  goal_template: >-
+    Track daily mandi prices for {crop_name} in {state_name} mandis. Alert {farmer_contact}
+    when price falls below {alert_price_pct}% of MSP (₹{current_msp}/quintal). Compare
+    prices across {mandi_count} nearest mandis and recommend best market.
+  parameters_schema:
+    properties:
+      crop_name: {type: string}
+      state_name: {type: string}
+      farmer_contact: {type: string}
+      alert_price_pct: {type: integer, default: 95}
+      current_msp: {type: number}
+      mandi_count: {type: integer, default: 5}
+    required: [crop_name, state_name, farmer_contact, current_msp]
+  required_connectors: [web_search, twilio, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track wheat prices in Punjab mandis. Alert farmer at 95% of MSP ₹2275/quintal. Compare 5 mandis."
+      expected_output_contains: ["mandi price", "MSP", "best market"]
+  tags: [agriculture, mandi, pricing, india]
+  revenue_model: "₹200/farmer/mo; ₹50,000/FPO/mo"
+  roi_note: "Farmers average 8% better realisation with market intelligence"
+  version: "1.0.0"
+
+- template_id: tpl-agri-crop-disease
+  slug: agri-crop-disease-diagnosis
+  name: Crop Disease Diagnosis Agent
+  domain: agriculture
+  description: Diagnoses crop diseases from symptom descriptions and images, recommends treatments, and identifies nearest input dealers.
+  source_use_cases:
+    - "21-agriculture/UC-2"
+  system_prompt: >-
+    You are an agricultural extension expert. Diagnose diseases based on symptoms,
+    crop type, and growing stage. Recommend both chemical and organic treatment options.
+    Note waiting periods before harvest for chemical treatments. Always recommend
+    consulting a local agronomist for severe infestations.
+  goal_template: >-
+    Diagnose crop issue for {crop_name} at growth stage {growth_stage} in {location}.
+    Symptoms: {symptom_description}. Recommend treatment options within budget
+    ₹{budget_per_acre}/acre. Identify nearest input dealers in {district}.
+  parameters_schema:
+    properties:
+      crop_name: {type: string}
+      growth_stage: {type: string}
+      location: {type: string}
+      symptom_description: {type: string}
+      budget_per_acre: {type: number, default: 500}
+      district: {type: string}
+    required: [crop_name, growth_stage, location, symptom_description]
+  required_connectors: [web_search, twilio, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Diagnose paddy issue (tillering stage) in Thanjavur. Symptoms: yellowing leaves, stunted growth."
+      expected_output_contains: ["diagnosis", "treatment", "agronomist"]
+  tags: [agriculture, crop-disease, advisory]
+  revenue_model: "₹100/diagnosis; free for BPL farmers with CSR subsidy"
+  roi_note: "Early diagnosis saves 15-40% crop loss"
+  version: "1.0.0"
+
+- template_id: tpl-agri-weather-advisory
+  slug: agri-weather-advisory
+  name: Weather-Based Crop Advisory
+  domain: agriculture
+  description: Delivers personalised crop advisories based on 7-day weather forecasts, including sowing/harvesting windows and pest risk alerts.
+  source_use_cases:
+    - "21-agriculture/UC-3"
+  system_prompt: >-
+    You are an agro-meteorology advisor. Generate actionable advisories based on weather
+    forecast data. Identify optimal sowing, irrigation, and harvest windows. Warn about
+    frost, heat stress, or excess rainfall risks with specific protective measures.
+  goal_template: >-
+    Generate 7-day weather advisory for farmers growing {crop_name} in {district},
+    {state}. Base on weather forecast for {forecast_period}. Include irrigation schedule,
+    pest risk assessment, and any extreme weather alerts. Send to {farmer_group}.
+  parameters_schema:
+    properties:
+      crop_name: {type: string}
+      district: {type: string}
+      state: {type: string}
+      forecast_period: {type: string}
+      farmer_group: {type: string}
+    required: [crop_name, district, state, forecast_period]
+  required_connectors: [web_search, twilio, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Generate weekly advisory for sugarcane farmers in Kolhapur, Maharashtra. Forecast period July 2026."
+      expected_output_contains: ["weather", "irrigation", "advisory"]
+  tags: [agriculture, weather, advisory]
+  revenue_model: "₹150/farmer/season; ₹30,000/block/season"
+  roi_note: "Timely advisories reduce input waste by 20%"
+  version: "1.0.0"
+
+- template_id: tpl-agri-pmkisan
+  slug: agri-pmkisan-status-checker
+  name: PM-KISAN Status Checker
+  domain: agriculture
+  description: Checks PM-KISAN instalment status for farmer groups, identifies rejection reasons, and guides re-application for rejected beneficiaries.
+  source_use_cases:
+    - "21-agriculture/UC-4"
+  system_prompt: >-
+    You are a PM-KISAN support specialist. Check instalment status accurately.
+    For rejected farmers, identify the specific rejection reason from the portal.
+    Guide farmers through the correction process step-by-step. Never guarantee payment
+    timelines — only report official portal status.
+  goal_template: >-
+    Check PM-KISAN status for {farmer_count} farmers in {village}, {district}.
+    Identify those with pending or rejected instalments. For each rejection, extract
+    reason and generate correction checklist. Send status report to {panchayat_officer}.
+  parameters_schema:
+    properties:
+      farmer_count: {type: integer}
+      village: {type: string}
+      district: {type: string}
+      panchayat_officer: {type: string}
+    required: [farmer_count, village, district, panchayat_officer]
+  required_connectors: [web_search, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Check PM-KISAN status for 50 farmers in Ralegaon village, Nashik. Corrections for rejected. Report to officer."
+      expected_output_contains: ["PM-KISAN", "instalment", "rejection"]
+  tags: [agriculture, government-scheme, india]
+  revenue_model: "₹50/farmer; CSR/government funded"
+  roi_note: "95% success rate in instalment recovery for re-applications"
+  version: "1.0.0"
+
+- template_id: tpl-agri-kcc-application
+  slug: agri-kcc-application-assistant
+  name: KCC Loan Application Assistant
+  domain: agriculture
+  description: Guides farmers through Kisan Credit Card application, prepares required documents, and tracks bank approval status.
+  source_use_cases:
+    - "21-agriculture/UC-5"
+  system_prompt: >-
+    You are a KCC application specialist. Calculate eligible credit limit based on
+    crop type, landholding, and scale of finance. Prepare complete documentation
+    checklist. Guide farmers through the bank application process. Track application
+    status and escalate delays beyond 30 days.
+  goal_template: >-
+    Assist farmer {farmer_name} (Aadhaar: {aadhaar_last4}) with KCC application at
+    {bank_name}. Landholding: {land_acres} acres, Crop: {crop_name}. Calculate
+    credit limit at scale of finance ₹{scale_of_finance}/acre. Prepare documents
+    and track application {application_number}.
+  parameters_schema:
+    properties:
+      farmer_name: {type: string}
+      aadhaar_last4: {type: string}
+      bank_name: {type: string}
+      land_acres: {type: number}
+      crop_name: {type: string}
+      scale_of_finance: {type: number}
+      application_number: {type: string}
+    required: [farmer_name, bank_name, land_acres, crop_name]
+  required_connectors: [web_search, document_reader, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "KCC for Suresh Patil at SBI, 3 acres wheat, scale of finance ₹45,000/acre. Track application."
+      expected_output_contains: ["KCC", "credit limit", "documents"]
+  tags: [agriculture, kcc, loan, india]
+  revenue_model: "₹300/application; government subsidised"
+  roi_note: "Application success rate 85% vs 50% manual"
+  version: "1.0.0"

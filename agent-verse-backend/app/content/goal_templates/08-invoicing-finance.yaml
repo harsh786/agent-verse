@@ -1,0 +1,47 @@
+- name: Perform 3-Way Invoice Match
+  domain: invoicing-finance
+  description: Match invoices against POs and GRNs to validate payables before approval.
+  goal_text: >-
+    Perform 3-way match for {{invoice_count}} pending invoices for vendor {{vendor_name}}.
+    Match each invoice against the corresponding PO and GRN. Apply tolerance: quantity
+    ±{{qty_tolerance}}%, price ±{{price_tolerance}}%. List all matched invoices ready for
+    payment (total: ₹{{matched_total}}) and all mismatched invoices with discrepancy
+    details for procurement follow-up.
+  source_use_cases:
+    - "08-invoicing/UC-1"
+
+- name: Detect AP Invoice Fraud
+  domain: invoicing-finance
+  description: Analyze AP invoices for common fraud indicators and flag high-risk items.
+  goal_text: >-
+    Analyze {{invoice_count}} invoices processed in the last {{days}} days for
+    {{entity_name}}. Check for: duplicate invoice numbers (exact and fuzzy match),
+    round-dollar amounts ({{round_dollar_threshold}}% of invoice value), vendor bank
+    account changes in last {{change_window_days}} days, invoices without approved PO,
+    and new vendor invoices > ₹{{new_vendor_threshold}}. Provide risk-scored report.
+  source_use_cases:
+    - "08-invoicing/UC-2"
+
+- name: Process Invoice with OCR
+  domain: invoicing-finance
+  description: Extract structured data from scanned invoices and post to accounting.
+  goal_text: >-
+    Process {{count}} scanned invoices from {{source_folder}} for {{entity_name}}.
+    Extract: vendor name, invoice number, date, line items with quantities and rates,
+    GST (CGST/SGST/IGST), and total. Post validated invoices to {{system}} as
+    {{voucher_type}} vouchers. Flag invoices where OCR confidence is below
+    {{confidence_pct}}% for manual review. Report: processed / failed / flagged counts.
+  source_use_cases:
+    - "08-invoicing/UC-3"
+
+- name: Escalate Overdue Payment Reminders
+  domain: invoicing-finance
+  description: Send escalating payment reminders for overdue customer invoices.
+  goal_text: >-
+    Send payment reminders for all overdue invoices for {{entity_name}} as of {{as_of_date}}.
+    Segment by DPD: 1-30 days (polite), 31-60 days (firm), 61-90 days (final notice),
+    90+ days (collections referral). Total outstanding: ₹{{total_outstanding}} across
+    {{customer_count}} customers. Include invoice breakdown and payment link in each
+    communication. Escalate 90+ DPD to {{collections_team}}.
+  source_use_cases:
+    - "08-invoicing/UC-4"

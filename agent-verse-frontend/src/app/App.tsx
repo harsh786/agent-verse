@@ -6,6 +6,7 @@ import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 // ── Lazy-loaded existing pages ───────────────────────────────────────────────
+const DomainsPage = lazy(() => import('@/features/domains/DomainsPage'));
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 const GoalDNAPage = lazy(() => import("@/features/goals/GoalDNAPage").then(m => ({ default: m.GoalDNAPage })));
 const AgentRadarPage = lazy(() => import("@/features/agents/AgentRadarPage").then(m => ({ default: m.AgentRadarPage })));
@@ -157,6 +158,8 @@ export default function App() {
         <Route path="observability/cost" element={<CostDashboardPage />} />
         <Route path="eval" element={<EvalPage />} />
         <Route path="marketplace" element={<MarketplacePage />} />
+        <Route path="domains" element={<Suspense fallback={spinner}><DomainsPage /></Suspense>} />
+        <Route path="domains/:domain" element={<Suspense fallback={spinner}><DomainsPage /></Suspense>} />
         <Route path="enterprise" element={<EnterprisePage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="settings/scopes" element={<Suspense fallback={spinner}><ScopeExplorerPage /></Suspense>} />

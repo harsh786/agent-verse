@@ -1,0 +1,39 @@
+- name: Monitor Equipment for Predictive Failure
+  domain: manufacturing
+  description: Analyse sensor data from a machine to predict upcoming failures.
+  goal_text: >-
+    Monitor sensor data for {{equipment_name}} (Asset: {{asset_id}}) at {{plant_name}}.
+    Compare to baseline from {{baseline_period}}. Alert {{maintenance_email}} when
+    failure probability exceeds {{threshold}}%. Schedule PM in next {{maintenance_window}}.
+  source_use_cases:
+    - "19-manufacturing/UC-1"
+
+- name: Calculate Production Quality Metrics
+  domain: manufacturing
+  description: Calculate Cpk and SPC metrics for a production line and flag violations.
+  goal_text: >-
+    Analyse quality data for {{product_name}} on line {{line_name}} for {{shift}} shift.
+    Calculate Cpk for {{critical_dimension}}. Generate SPC chart and flag Western
+    Electric rule violations. Issue NCR if Cpk below {{min_cpk}}.
+  source_use_cases:
+    - "19-manufacturing/UC-2"
+
+- name: Explode Bill of Materials
+  domain: manufacturing
+  description: Explode a BOM to raw material level and calculate total material cost.
+  goal_text: >-
+    Explode BOM {{bom_code}} for {{product_name}} to level {{levels}}. Calculate
+    total material cost at {{quantity}} units. Identify top {{top_items}} items by
+    cost. Flag substitution opportunities for high-cost items.
+  source_use_cases:
+    - "19-manufacturing/UC-3"
+
+- name: Generate Weekly Production Schedule
+  domain: manufacturing
+  description: Create an optimised production schedule for a week.
+  goal_text: >-
+    Generate production schedule for {{order_count}} orders for week starting
+    {{week_start}} at {{plant_name}}. {{machine_count}} machines available. Priority:
+    {{priority_rule}}. Flag capacity shortfalls. Send shop-floor release to {{foreman_email}}.
+  source_use_cases:
+    - "19-manufacturing/UC-5"

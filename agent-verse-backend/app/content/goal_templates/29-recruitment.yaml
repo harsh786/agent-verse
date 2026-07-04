@@ -1,0 +1,39 @@
+- name: Screen Resumes for Job Role
+  domain: recruitment
+  description: Screen job applications and produce a ranked shortlist.
+  goal_text: >-
+    Screen {{count}} applications from {{source}} for {{job_title}} (JD: {{jd_ref}}).
+    Score each on must-have and nice-to-have criteria. Shortlist top {{shortlist_count}}.
+    Flag must-have gaps. Email shortlist to {{recruiter_email}} within {{hours}} hours.
+  source_use_cases:
+    - "29-recruitment/UC-1"
+
+- name: Schedule Interview Panel
+  domain: recruitment
+  description: Coordinate interview slots for a candidate with the panel team.
+  goal_text: >-
+    Schedule {{round}} interviews for {{candidate_count}} candidates for {{job_title}}.
+    Panel: {{interviewers}}. Available window: {{window}}. Send calendar invites and
+    preparation notes to candidates. Notify {{hiring_manager_email}} of full schedule.
+  source_use_cases:
+    - "29-recruitment/UC-2"
+
+- name: Coordinate Background Verification
+  domain: recruitment
+  description: Initiate and track pre-employment background checks for a candidate.
+  goal_text: >-
+    Initiate background check for {{candidate_name}} (Offer: {{offer_id}}).
+    Verify: {{verification_types}}. Vendor: {{bgv_vendor}}. Complete by {{days_before}}
+    days before joining {{joining_date}}. Alert {{hr_email}} on adverse findings.
+  source_use_cases:
+    - "29-recruitment/UC-4"
+
+- name: Track Hiring Pipeline Metrics
+  domain: recruitment
+  description: Monitor candidate pipeline and calculate hiring velocity by requisition.
+  goal_text: >-
+    Track {{open_positions}} open positions for {{department}}. Monitor {{candidate_count}}
+    candidates. Calculate stage conversion rates. Flag requisitions open beyond {{age_days}}
+    days. Generate weekly hiring velocity report to {{ta_lead_email}}.
+  source_use_cases:
+    - "29-recruitment/UC-5"

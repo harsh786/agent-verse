@@ -1,0 +1,39 @@
+- name: Send Rent Collection Reminders
+  domain: real-estate
+  description: Send rent collection reminders to tenants and track payment status.
+  goal_text: >-
+    Send rent reminders to all tenants at {{property_name}} for month {{rent_month}}.
+    3 days before due: soft reminder. On due date: payment link. After {{grace_days}}
+    days: formal notice. Generate collection status report to {{owner_email}}.
+  source_use_cases:
+    - "13-real-estate/UC-1"
+
+- name: Screen Rental Application
+  domain: real-estate
+  description: Screen a prospective tenant application with CIBIL and employment verification.
+  goal_text: >-
+    Screen tenant application from {{tenant_name}} (PAN: {{pan_number}}) for property
+    {{property_id}}. Check CIBIL score (min {{min_cibil}}), verify employment at
+    {{employer_name}}, and contact {{reference_count}} references. Generate risk report.
+  source_use_cases:
+    - "13-real-estate/UC-3"
+
+- name: Calculate Rental Investment Yield
+  domain: real-estate
+  description: Calculate gross and net rental yield for an investment property.
+  goal_text: >-
+    Calculate rental yield for {{property_type}} at {{location}} purchased for ₹{{purchase_price_lakh}}L.
+    Expected rent: ₹{{monthly_rent}}/month. Include stamp duty {{stamp_duty_pct}}%,
+    maintenance ₹{{maintenance_pm}}/month, vacancy {{vacancy_pct}}%. Generate investment summary.
+  source_use_cases:
+    - "13-real-estate/UC-6"
+
+- name: Process Lease Renewal
+  domain: real-estate
+  description: Prepare lease renewal notices and coordinate signatures.
+  goal_text: >-
+    Identify leases at {{property_name}} expiring within {{expiry_days}} days. Apply
+    {{escalation_pct}}% rent escalation per lease terms. Prepare renewal notice for
+    each tenant. Send {{days_notice}} days before expiry. Track e-sign confirmations.
+  source_use_cases:
+    - "13-real-estate/UC-4"

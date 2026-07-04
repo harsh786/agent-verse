@@ -6,7 +6,7 @@ import {
   Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
   GitBranch, FlaskConical, BarChart2, Globe,
   Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
-  Bell, KeyRound, FileLock, X, Package, Ghost, TrendingUp,
+  Bell, KeyRound, FileLock, X, Package, Ghost, TrendingUp, LayoutGrid,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -74,6 +74,7 @@ export function Sidebar() {
       heading: "Enterprise",
       items: [
         { to: "/marketplace",         icon: ShoppingBag,  label: "Marketplace"      },
+        { to: "/domains",             icon: LayoutGrid,   label: "Domains"          },
         { to: "/observability",       icon: Activity,     label: "Observability"    },
         { to: "/observability/cost",  icon: DollarSign,   label: "Cost Dashboard"   },
         { to: "/eval",                icon: BarChart3,    label: "Eval"             },

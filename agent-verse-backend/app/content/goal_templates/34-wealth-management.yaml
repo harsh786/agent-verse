@@ -1,0 +1,29 @@
+- name: Generate Portfolio Rebalancing Plan
+  domain: wealth-management
+  description: Analyse portfolio drift and generate a SEBI-compliant rebalancing recommendation.
+  goal_text: >-
+    Rebalance portfolio for {{client_name}} (AUM: ₹{{aum_lakh}}L). Target allocation:
+    {{target_allocation}}. Flag drift above {{threshold_pct}}%. Calculate tax impact of
+    switches. Generate rebalancing plan for {{ria_email}} approval.
+  source_use_cases:
+    - "34-wealth-management/UC-1"
+
+- name: Identify Tax-Loss Harvesting Opportunities
+  domain: wealth-management
+  description: Find tax-loss harvesting opportunities to offset capital gains.
+  goal_text: >-
+    Identify tax-loss harvesting opportunities for {{client_name}} before {{year_end}}.
+    Realised STCG: ₹{{stcg_lakh}}L. Find positions with STCL/LTCL to offset. Calculate
+    net tax saving at {{tax_rate}}% rate. Send recommendations to {{advisor_email}}.
+  source_use_cases:
+    - "34-wealth-management/UC-2"
+
+- name: Generate Client Portfolio Report
+  domain: wealth-management
+  description: Create a personalised performance report for wealth management clients.
+  goal_text: >-
+    Generate {{report_type}} report for {{client_count}} clients for {{period}}.
+    Include XIRR, benchmark comparison ({{benchmark}}), asset allocation, and top/bottom
+    holdings. Commentary on {{themes}}. PDF to clients and {{rm_email}} by {{deadline}}.
+  source_use_cases:
+    - "34-wealth-management/UC-3"

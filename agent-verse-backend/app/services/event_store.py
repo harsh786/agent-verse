@@ -15,7 +15,7 @@ from app.tenancy.context import TenantContext
 class EventStore:
     """Append and replay goal events under tenant-scoped DB context."""
 
-    def __init__(self, db_session_factory: Any) -> None:
+    def __init__(self, db_session_factory: Any = None) -> None:
         self._db = db_session_factory
 
     async def append_event(
@@ -99,3 +99,42 @@ class EventStore:
                 .order_by(GoalEvent.sequence)
             )
             return [dict(event.payload) for event in result.scalars().all()]
+
+    async def list_events_since(
+        self,
+        goal_id: str,
+        after_sequence: int,
+        limit: int = 100,
+        *,
+        tenant_ctx: TenantContext | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return events with sequence > after_sequence for a goal.
+
+        Each returned dict includes a ``_seq`` key with the event's sequence number
+        so callers can emit SSE ``id:`` lines for resume support.
+
+        Returns an empty list when no DB session factory is configured (in-memory /
+        unit-test path) or when *tenant_ctx* is not provided.
+        """
+        if self._db is None or tenant_ctx is None:
+            return []
+        try:
+            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
+                session, tenant_ctx.tenant_id
+            ):
+                result = await session.execute(
+                    select(GoalEvent)
+                    .where(
+                        GoalEvent.tenant_id == tenant_ctx.tenant_id,
+                        GoalEvent.goal_id == goal_id,
+                        GoalEvent.sequence > after_sequence,
+                    )
+                    .order_by(GoalEvent.sequence)
+                    .limit(limit)
+                )
+                rows = result.scalars().all()
+                return [{**dict(row.payload), "_seq": row.sequence} for row in rows]
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("list_events_since_failed", error=str(exc))
+            return []

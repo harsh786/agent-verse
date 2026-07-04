@@ -1,0 +1,39 @@
+- name: Generate RFQ for Purchase Requisition
+  domain: operations
+  description: Create and send a Request for Quotation to vendors for a given purchase requisition.
+  goal_text: >-
+    Generate RFQ for {{item_description}} (PR: {{pr_number}}) and email to {{vendor_count}}
+    approved vendors. Set quote submission deadline {{rfq_deadline}}. Collect responses
+    and produce bid-comparison matrix.
+  source_use_cases:
+    - "05-operations/UC-1"
+
+- name: Generate Vendor Performance Scorecard
+  domain: operations
+  description: Produce a vendor performance scorecard for a given period.
+  goal_text: >-
+    Generate quarterly performance scorecard for vendor {{vendor_name}} for period
+    {{evaluation_period}}. Score on delivery compliance ({{delivery_target}}% target),
+    quality rejection rate (max {{max_rejection_pct}}%), and payment term adherence.
+  source_use_cases:
+    - "05-operations/UC-2"
+
+- name: Monitor SLA Breaches and Escalate
+  domain: operations
+  description: Scan open tickets for SLA breach risk and send escalation alerts.
+  goal_text: >-
+    Scan all open {{ticket_type}} tickets in {{system}}. Identify tickets consuming more
+    than {{warning_threshold_pct}}% of their SLA window. Send escalation alerts to
+    ticket owners and summary to {{manager_email}}.
+  source_use_cases:
+    - "05-operations/UC-3"
+
+- name: Track Contract Renewals
+  domain: operations
+  description: Identify contracts expiring within a time window and send renewal reminders.
+  goal_text: >-
+    Review contract register and list all contracts expiring within {{days_ahead}} days.
+    For each contract, send renewal reminder to {{contract_owner_email}}, attach
+    performance summary, and recommend whether to renew, renegotiate, or cancel.
+  source_use_cases:
+    - "05-operations/UC-5"

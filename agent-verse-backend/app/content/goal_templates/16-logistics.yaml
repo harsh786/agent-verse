@@ -1,0 +1,40 @@
+- name: Audit Freight Invoices for Overcharges
+  domain: logistics
+  description: Audit a batch of freight invoices against contracted rates to identify discrepancies.
+  goal_text: >-
+    Audit {{invoice_count}} freight invoices from {{carrier_name}} for period {{period}}.
+    Compare each invoice to contract {{contract_ref}}. Flag discrepancies above
+    ₹{{min_dispute}}. Generate dispute letter and summary report to {{finance_email}}.
+  source_use_cases:
+    - "16-logistics/UC-1"
+
+- name: Track Shipment Status and Alert Delays
+  domain: logistics
+  description: Monitor active shipments and send alerts for delays.
+  goal_text: >-
+    Track {{shipment_count}} active shipments via {{carrier_list}}. Update customers
+    every {{update_hrs}} hours. Escalate to {{ops_email}} for shipments delayed by
+    more than {{delay_hrs}} hours. Log all status changes.
+  source_use_cases:
+    - "16-logistics/UC-2"
+
+- name: Prepare Customs Clearance Documents
+  domain: logistics
+  description: Prepare EXIM documentation for customs clearance.
+  goal_text: >-
+    Prepare {{doc_type}} for {{shipment_description}} (HS Code: {{hs_code}}) from
+    {{origin_country}}. Invoice value: {{value_usd}} USD. Calculate customs duties,
+    check FTA eligibility, and flag compliance requirements. Present for {{approver}}
+    review before ICEGATE filing.
+  source_use_cases:
+    - "16-logistics/UC-3"
+
+- name: Alert on Low Warehouse Stock
+  domain: logistics
+  description: Monitor warehouse inventory and alert when items fall below safety stock.
+  goal_text: >-
+    Check inventory at {{warehouse_name}} for {{sku_count}} SKUs. Alert {{manager_email}}
+    on items below safety stock level. Flag items expiring within {{expiry_days}} days
+    and dead stock older than {{dead_stock_days}} days.
+  source_use_cases:
+    - "16-logistics/UC-5"

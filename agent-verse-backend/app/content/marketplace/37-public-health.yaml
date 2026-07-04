@@ -1,0 +1,146 @@
+- template_id: tpl-ph-pmjay-claim
+  slug: ph-pmjay-claim-qc
+  name: PM-JAY Claim Quality Check
+  domain: public-health
+  description: Quality-checks PM-JAY health scheme claims for completeness and eligibility before hospital submission to reduce rejections.
+  source_use_cases:
+    - "37-public-health/UC-1"
+  system_prompt: >-
+    You are a PM-JAY claims specialist. Validate beneficiary eligibility, hospital
+    empanelment status, and procedure eligibility under the scheme. Flag incomplete
+    or ineligible claims before submission — rejection affects hospital payments
+    and patient care. Ensure all required documents are attached.
+  goal_template: >-
+    Quality-check {claim_count} PM-JAY claims submitted by {hospital_name}
+    (Empanelment: {empanelment_id}). Validate eligibility, package code, and documents.
+    Flag rejectable claims before submission to {pmjay_portal}.
+    Report to {hospital_admin_email}.
+  parameters_schema:
+    properties:
+      claim_count: {type: integer}
+      hospital_name: {type: string}
+      empanelment_id: {type: string}
+      pmjay_portal: {type: string, default: "NHA Portal"}
+      hospital_admin_email: {type: string, format: email}
+    required: [claim_count, hospital_name, empanelment_id, hospital_admin_email]
+  required_connectors: [pmjay, database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "QC 50 PM-JAY claims for City Hospital (EMP-MH-0234). Flag rejectable claims before NHA submission."
+      expected_output_contains: ["PM-JAY", "claim", "eligibility"]
+  tags: [public-health, pmjay, claims, india]
+  revenue_model: "₹200/claim; ₹15,000/mo unlimited"
+  roi_note: "Claim rejection rate reduced 60%; hospital cash flow improved"
+  version: "1.0.0"
+
+- template_id: tpl-ph-disease-surveillance
+  slug: ph-disease-surveillance-alert
+  name: Disease Surveillance Alert Agent
+  domain: public-health
+  description: Monitors IHIP/IDSP disease surveillance data for outbreak signals, triggers early warnings, and generates cluster investigation reports.
+  source_use_cases:
+    - "37-public-health/UC-2"
+  system_prompt: >-
+    You are a public health surveillance specialist. Monitor disease surveillance
+    data using event-based and indicator-based approaches. Flag case clusters above
+    outbreak threshold for the disease and geography. Generate field investigation
+    reports with line-listing templates. Alert district health officers immediately
+    on any priority disease signal.
+  goal_template: >-
+    Monitor disease surveillance data for {district_name}, {state_name} for
+    {surveillance_period}. Track {priority_diseases}. Alert {district_health_officer}
+    when cases exceed {outbreak_threshold}x baseline. Generate outbreak investigation
+    report for {disease_event}.
+  parameters_schema:
+    properties:
+      district_name: {type: string}
+      state_name: {type: string}
+      surveillance_period: {type: string}
+      priority_diseases: {type: array, items: {type: string}}
+      district_health_officer: {type: string}
+      outbreak_threshold: {type: number, default: 2.0}
+      disease_event: {type: string}
+    required: [district_name, state_name, surveillance_period, district_health_officer]
+  required_connectors: [web_search, database_query, email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Monitor disease surveillance in Pune district July 2026. Track dengue, chikungunya, cholera. Alert DHO on 2x baseline."
+      expected_output_contains: ["surveillance", "outbreak", "alert"]
+  tags: [public-health, surveillance, epidemiology]
+  revenue_model: "₹50,000/district/year; Government funded"
+  roi_note: "Outbreak detected 7-14 days earlier; response time improved"
+  version: "1.0.0"
+
+- template_id: tpl-ph-vaccination
+  slug: ph-vaccination-coverage-tracker
+  name: Vaccination Coverage Tracker
+  domain: public-health
+  description: Tracks immunisation coverage by vaccine, age group, and geography, identifies under-served areas, and generates AEFI reports.
+  source_use_cases:
+    - "37-public-health/UC-3"
+  system_prompt: >-
+    You are a public health immunisation specialist. Track coverage against national
+    targets (90%+ for all antigens). Flag blocks/villages below 80% coverage. Identify
+    drop-out children between doses. Report AEFI cases to NPAEFI portal. Generate
+    microplans for catch-up campaigns in low-coverage areas.
+  goal_template: >-
+    Track vaccination coverage for {block_name}, {district_name} for FY {financial_year}.
+    Antigens: {antigen_list}. Flag areas below {min_coverage_pct}% coverage.
+    Identify {dropout_count} dropout children for catch-up. Generate AEFI report
+    for {aefi_email}.
+  parameters_schema:
+    properties:
+      block_name: {type: string}
+      district_name: {type: string}
+      financial_year: {type: string}
+      antigen_list: {type: array, items: {type: string}}
+      min_coverage_pct: {type: integer, default: 80}
+      dropout_count: {type: integer}
+      aefi_email: {type: string, format: email}
+    required: [block_name, district_name, financial_year, antigen_list, aefi_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Vaccination coverage for Mulshi Block, Pune FY 2025-26. BCG, OPV, DPT, MMR. Flag <80% areas."
+      expected_output_contains: ["coverage", "vaccination", "dropout"]
+  tags: [public-health, immunisation, surveillance]
+  revenue_model: "Government funded; ₹30,000/district/year"
+  roi_note: "Coverage gaps identified 2 months earlier; catch-up rate improved 25%"
+  version: "1.0.0"
+
+- template_id: tpl-ph-hmis-quality
+  slug: ph-hmis-data-quality-checker
+  name: HMIS Data Quality Checker
+  domain: public-health
+  description: Validates Health Management Information System data for completeness, consistency, and outliers before monthly state submission.
+  source_use_cases:
+    - "37-public-health/UC-4"
+  system_prompt: >-
+    You are a health information systems specialist. Validate HMIS data against
+    completeness, internal consistency, and outlier rules. Flag facilities with
+    incomplete reporting. Check for impossible values (e.g., deliveries > ANC 4th visit).
+    Generate data quality index score for each facility. Report to district data manager.
+  goal_template: >-
+    Validate HMIS monthly data for {district_name} for period {report_month}.
+    {facility_count} reporting facilities. Check completeness ({completeness_threshold}%
+    target), consistency across {indicator_count} indicators, and outliers.
+    Generate DQI scores. Report to {data_manager_email} before {submission_deadline}.
+  parameters_schema:
+    properties:
+      district_name: {type: string}
+      report_month: {type: string}
+      facility_count: {type: integer}
+      completeness_threshold: {type: integer, default: 95}
+      indicator_count: {type: integer, default: 50}
+      data_manager_email: {type: string, format: email}
+      submission_deadline: {type: string, format: date}
+    required: [district_name, report_month, facility_count, data_manager_email, submission_deadline]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Validate HMIS for Nashik district June 2026. 120 facilities. 95% completeness target. DQI scores."
+      expected_output_contains: ["HMIS", "data quality", "completeness"]
+  tags: [public-health, hmis, data-quality]
+  revenue_model: "Government funded; ₹25,000/district/year"
+  roi_note: "Data quality improved from 75% to 95%; state submission rejections eliminated"
+  version: "1.0.0"

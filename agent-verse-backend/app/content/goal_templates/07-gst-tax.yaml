@@ -1,0 +1,61 @@
+- name: File GSTR-3B for Client
+  domain: gst-tax
+  source_use_cases:
+    - "07-gst-tax/UC-1"
+  description: >-
+    Prepare and file the monthly GSTR-3B summary return for one client from
+    their ERP sales/purchase data, with an HITL check before submission.
+  goal_text: >-
+    Prepare GSTR-3B for {{client_name}} (GSTIN {{gstin}}) for the tax period
+    {{period}}. Pull outward supplies and ITC from {{source_system}}, reconcile
+    against GSTR-2B from the GST portal, compute net tax payable, generate the
+    return summary for review, and after human approval file it on the GST portal
+    and store the ARN and filed challan in the client folder.
+
+- name: Generate GSTR-1 from Sales Data
+  domain: gst-tax
+  description: Prepare GSTR-1 outward supply return from sales invoices in ERP or accounting software.
+  goal_text: >-
+    Prepare GSTR-1 for {{client_name}} (GSTIN {{gstin}}) for period {{period}}.
+    Extract all B2B and B2C invoices from {{source_system}}, validate HSN codes and
+    tax rates, reconcile with e-invoice data, generate GSTR-1 JSON, and after human
+    approval upload it to the GST portal. Store the filed return and ARN in the
+    client folder {{client_folder}}.
+  source_use_cases:
+    - "07-gst-tax/UC-2"
+
+- name: Reconcile ITC for Month
+  domain: gst-tax
+  description: Reconcile Input Tax Credit between books and GSTR-2B to identify mismatches before filing.
+  goal_text: >-
+    Reconcile ITC for {{client_name}} (GSTIN {{gstin}}) for period {{period}}.
+    Download GSTR-2B from the GST portal, compare with purchase register in
+    {{source_system}}, identify mismatches and missing invoices, compute the
+    maximum eligible ITC, and generate a reconciliation report with vendor-wise
+    discrepancy list for CA review.
+  source_use_cases:
+    - "07-gst-tax/UC-3"
+
+- name: Generate E-Way Bill for Consignment
+  domain: gst-tax
+  description: Generate e-way bills for goods movement from invoice data.
+  goal_text: >-
+    Generate an e-way bill for consignment from {{consignor_gstin}} to
+    {{consignee_gstin}} for invoice {{invoice_number}} dated {{invoice_date}}.
+    Goods: {{goods_description}}, HSN {{hsn_code}}, value ₹{{invoice_value}},
+    transport mode {{transport_mode}}, vehicle number {{vehicle_number}}.
+    After generation, attach the EWB number to the invoice in {{source_system}}.
+  source_use_cases:
+    - "07-gst-tax/UC-4"
+
+- name: Prepare TDS Computation Statement
+  domain: gst-tax
+  description: Compute TDS liability for the quarter and prepare Form 26Q/27Q data for filing.
+  goal_text: >-
+    Compute TDS for {{deductor_name}} (TAN {{tan}}) for quarter {{quarter}}
+    (FY {{financial_year}}). Extract all payments subject to TDS from
+    {{source_system}}, apply correct section rates (194C/194J/194H etc.),
+    compute gross/net amounts and TDS, identify shortfall or excess deductions,
+    and prepare Form 26Q data ready for upload to TRACES.
+  source_use_cases:
+    - "07-gst-tax/UC-5"

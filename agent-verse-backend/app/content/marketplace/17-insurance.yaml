@@ -1,0 +1,204 @@
+- template_id: tpl-ins-fnol-claims
+  slug: ins-fnol-claims-processor
+  name: FNOL Claims Processor
+  domain: insurance
+  description: Handles First Notice of Loss, validates policy coverage, triggers investigation workflow, and sends acknowledgement to claimant.
+  source_use_cases:
+    - "17-insurance/UC-1"
+  system_prompt: >-
+    You are an insurance claims handler. Validate policy currency and coverage before
+    accepting FNOL. Assign claim number, triage by severity, and trigger correct
+    investigation workflow. Always acknowledge claimant within 2 hours. Never confirm
+    liability — only confirm receipt and next steps.
+  goal_template: >-
+    Process FNOL for policy {policy_number} (holder: {policy_holder}). Incident:
+    {incident_description} on {incident_date}. Validate coverage, assign claim number,
+    triage as {severity_level}, and send acknowledgement to {claimant_email}.
+  parameters_schema:
+    properties:
+      policy_number: {type: string}
+      policy_holder: {type: string}
+      incident_description: {type: string}
+      incident_date: {type: string, format: date}
+      severity_level: {type: string, enum: [minor, moderate, major, catastrophic]}
+      claimant_email: {type: string, format: email}
+    required: [policy_number, policy_holder, incident_description, incident_date, claimant_email]
+  required_connectors: [database_query, email, pdf_generator]
+  optional_connectors: [twilio, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "FNOL for policy POL-2025-8821 (Ramesh Kumar). Car accident on 2026-07-10. Moderate severity. Email claimant."
+      expected_output_contains: ["claim number", "coverage", "acknowledgement"]
+  tags: [insurance, claims, fnol]
+  revenue_model: "₹500/FNOL processed; ₹20,000/mo unlimited"
+  roi_note: "2-hour acknowledgement SLA vs 24-hour manual; 70% faster triage"
+  version: "1.0.0"
+
+- template_id: tpl-ins-policy-renewal
+  slug: ins-policy-renewal-reminder
+  name: Policy Renewal Reminder Agent
+  domain: insurance
+  description: Sends personalised renewal reminders across channels, calculates premium changes, and generates renewal quotes for customers.
+  source_use_cases:
+    - "17-insurance/UC-2"
+  system_prompt: >-
+    You are a policy renewal specialist. Send reminders at 60, 30, 15, and 7 days before
+    expiry. Include premium change explanation in renewal quote. Personalise by policy type
+    and customer history. Escalate non-responders to human agent 7 days before expiry.
+  goal_template: >-
+    Process renewals for {policy_count} {policy_type} policies expiring in the next
+    {expiry_window_days} days. Calculate premium with {rate_change_pct}% adjustment.
+    Send reminders to customers. Escalate non-responders to {agent_email} at 7-day mark.
+  parameters_schema:
+    properties:
+      policy_count: {type: integer}
+      policy_type: {type: string, enum: [health, motor, life, property, fire, marine]}
+      expiry_window_days: {type: integer, default: 60}
+      rate_change_pct: {type: number, default: 0}
+      agent_email: {type: string, format: email}
+    required: [policy_type, agent_email]
+  required_connectors: [database_query, email, twilio, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Send renewal reminders for 150 motor policies expiring in 60 days. 5% rate hike. Escalate to renewals@insco.in."
+      expected_output_contains: ["renewal", "premium", "reminder"]
+  tags: [insurance, renewal, automation]
+  revenue_model: "₹100/policy renewed; ₹15,000/mo unlimited"
+  roi_note: "Renewal rate 78% → 91% with automated follow-up"
+  version: "1.0.0"
+
+- template_id: tpl-ins-fraud-detection
+  slug: ins-fraud-detection
+  name: Insurance Fraud Detection
+  domain: insurance
+  description: Analyses claim patterns, claimant history, and network connections to flag high-risk claims for investigation.
+  source_use_cases:
+    - "17-insurance/UC-3"
+  system_prompt: >-
+    You are an insurance fraud analyst. Apply statistical and pattern-based analysis.
+    Flag claims with multiple risk signals — repeated claims, inflated values, network
+    connections to known fraudsters. Never reject a claim based on flags alone — only
+    route for investigation. Protect claimant privacy.
+  goal_template: >-
+    Analyse {claim_count} new claims in {policy_type} portfolio for fraud signals.
+    Apply rules: {fraud_rules}. Flag claims scoring above {risk_threshold} for
+    investigation. Generate fraud risk report for {siu_email}.
+  parameters_schema:
+    properties:
+      claim_count: {type: integer}
+      policy_type: {type: string}
+      fraud_rules: {type: array, items: {type: string}}
+      risk_threshold: {type: number, default: 0.7}
+      siu_email: {type: string, format: email}
+    required: [claim_count, policy_type, siu_email]
+  required_connectors: [database_query, google_sheets, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Analyse 500 health claims for fraud. Flag score >0.7 for SIU. Report to siu@insco.in."
+      expected_output_contains: ["fraud", "risk score", "investigation"]
+  tags: [insurance, fraud, analytics]
+  revenue_model: "₹50/claim screened; ₹25,000/mo unlimited"
+  roi_note: "1-2% fraudulent claims caught saves ₹50-100L/yr per insurer"
+  version: "1.0.0"
+
+- template_id: tpl-ins-preauth
+  slug: ins-preauth-checker
+  name: Pre-Authorisation Checker
+  domain: insurance
+  description: Validates hospital pre-authorisation requests against policy terms, network hospital eligibility, and treatment protocol guidelines.
+  source_use_cases:
+    - "17-insurance/UC-4"
+  system_prompt: >-
+    You are a health insurance pre-auth specialist. Validate policy active status, sum
+    insured availability, network hospital accreditation, and treatment eligibility per
+    policy terms. Respond within 2 hours. Flag cashless rejection for human review.
+  goal_template: >-
+    Process pre-auth request from {hospital_name} for patient {patient_name}
+    (Policy: {policy_number}). Treatment: {treatment_description}. Estimated cost:
+    ₹{estimated_cost}. Verify coverage and respond within {response_sla_hrs} hours.
+  parameters_schema:
+    properties:
+      hospital_name: {type: string}
+      patient_name: {type: string}
+      policy_number: {type: string}
+      treatment_description: {type: string}
+      estimated_cost: {type: number}
+      response_sla_hrs: {type: integer, default: 2}
+    required: [hospital_name, patient_name, policy_number, treatment_description, estimated_cost]
+  required_connectors: [database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Pre-auth for Apollo Delhi patient Priya Mehta (POL-8821). Knee surgery ₹3.5L. Respond in 2 hours."
+      expected_output_contains: ["pre-auth", "coverage", "network hospital"]
+  tags: [insurance, pre-auth, health]
+  revenue_model: "₹200/pre-auth; ₹30,000/mo unlimited"
+  roi_note: "4h TAT → 1h; 100% audit trail"
+  version: "1.0.0"
+
+- template_id: tpl-ins-claims-settlement
+  slug: ins-claims-settlement-tracker
+  name: Claims Settlement Tracker
+  domain: insurance
+  description: Tracks claim lifecycle from FNOL to settlement, escalates stale claims, and generates TAT analytics for operations team.
+  source_use_cases:
+    - "17-insurance/UC-5"
+  system_prompt: >-
+    You are a claims operations coordinator. Track every claim against SLA milestones.
+    Escalate claims stalled at any stage beyond SLA. Generate daily TAT dashboard.
+    Identify systemic bottlenecks causing delays.
+  goal_template: >-
+    Track {active_claims} active claims in {portfolio} portfolio. Flag claims stalled
+    beyond {sla_days} days at any stage. Send daily TAT report to {ops_email} and
+    weekly bottleneck analysis to {mgmt_email}.
+  parameters_schema:
+    properties:
+      active_claims: {type: integer}
+      portfolio: {type: string}
+      sla_days: {type: integer, default: 30}
+      ops_email: {type: string, format: email}
+      mgmt_email: {type: string, format: email}
+    required: [portfolio, ops_email, mgmt_email]
+  required_connectors: [database_query, email, google_sheets, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track 300 health claims. Flag stalled >30 days. Daily report to ops@insco.in, weekly to gm@insco.in."
+      expected_output_contains: ["TAT", "settlement", "bottleneck"]
+  tags: [insurance, claims, tracking]
+  revenue_model: "₹10,000/mo per portfolio"
+  roi_note: "Claims TAT reduced 25%; zero stale claims beyond SLA"
+  version: "1.0.0"
+
+- template_id: tpl-ins-underwriting
+  slug: ins-underwriting-assistant
+  name: Underwriting Assistant
+  domain: insurance
+  description: Analyses new policy applications against underwriting guidelines, calculates risk score, and suggests premium loading or exclusions.
+  source_use_cases:
+    - "17-insurance/UC-6"
+  system_prompt: >-
+    You are an insurance underwriter. Apply product-specific underwriting guidelines
+    strictly. Calculate risk loading based on declared risk factors. Suggest policy
+    exclusions for non-standard risks. Flag applications needing actuarial review.
+    Never approve a policy outside underwriting authority without escalation.
+  goal_template: >-
+    Underwrite {policy_type} application for {applicant_name} (DOB: {date_of_birth},
+    sum assured: ₹{sum_assured_lakh}L). Risk factors: {risk_factors}. Apply
+    {product_name} underwriting guidelines. Recommend: accept/load/exclude/refer.
+  parameters_schema:
+    properties:
+      policy_type: {type: string}
+      applicant_name: {type: string}
+      date_of_birth: {type: string, format: date}
+      sum_assured_lakh: {type: number}
+      risk_factors: {type: array, items: {type: string}}
+      product_name: {type: string}
+    required: [policy_type, applicant_name, date_of_birth, sum_assured_lakh]
+  required_connectors: [database_query, document_reader, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Underwrite term life for Arjun Kapoor (1985-03-15), ₹1Cr sum assured. Risk: smoker, diabetes."
+      expected_output_contains: ["risk score", "loading", "underwriting"]
+  tags: [insurance, underwriting, risk]
+  revenue_model: "₹300/application; ₹25,000/mo unlimited"
+  roi_note: "Underwriting TAT 2 days → 2 hours; consistent guideline application"
+  version: "1.0.0"

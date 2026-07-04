@@ -1,0 +1,340 @@
+- template_id: tpl-legal-contract-review-v2
+  slug: legal-contract-review-pro
+  name: Contract Review & Risk Red-Lining Agent
+  domain: legal
+  subdomain: contracts
+  source_use_cases:
+    - "06-legal/UC-1"
+  description: >-
+    Reviews any commercial contract in minutes — flags risk clauses against
+    your clause library and returns a redlined DOCX with a risk summary.
+  long_description: >-
+    Reviewing a 40-page contract takes a paralegal 2-4 hours; firms process
+    100-500/month at ~Rs 400/contract in legal time. This agent parses the
+    contract, classifies its type, loads the firm's standard clause library
+    from the knowledge base, reviews clause-by-clause (liability, IP,
+    termination, indemnity, data-processing), flags deviations with severity,
+    checks for missing protective clauses, and produces a tracked-changes DOCX
+    plus a Critical/High/Medium/Low risk report. A lawyer approves via HITL
+    before anything leaves the firm.
+  system_prompt: >-
+    You are a senior legal analyst reviewing contracts for an in-house team.
+    Ground every finding in the provided contract text and the firm's clause
+    library from the knowledge base. NEVER invent clause numbers, party names,
+    dates, or monetary figures — quote the exact contract text you rely on. If
+    a standard clause is missing, say so explicitly. Classify each risk as
+    Critical/High/Medium/Low with the business impact. You may draft alternative
+    language, but you MUST route the redlined document through human approval
+    before it is sent to any counterparty. If the contract text is unreadable
+    or a required input is missing, emit "INSUFFICIENT DATA" rather than guess.
+  goal_template: >-
+    Review the contract at {document_url} under {jurisdiction} law. Classify the
+    contract type, extract all parties, obligations, deadlines, and liability
+    clauses, compare each clause against the firm clause library, flag
+    deviations and missing protections with severity, and produce a redlined
+    DOCX plus a risk summary. Route the redline for human approval before finalizing.
+  parameters_schema:
+    properties:
+      document_url:
+        type: string
+        format: uri
+      jurisdiction:
+        type: string
+        enum: [in, us, uk, eu, sg, ae]
+      contract_type:
+        type: string
+        enum: [nda, msa, sow, employment, lease, vendor, other]
+    required:
+      - document_url
+      - jurisdiction
+  required_connectors:
+    - document_reader
+    - gmail
+  optional_connectors:
+    - dropbox
+    - box
+  autonomy_mode: bounded-autonomous
+  default_trigger: {}
+  knowledge_collections:
+    - legal-clause-library
+    - legal-standards-in
+  eval_fixtures:
+    - goal: >-
+        Review the MSA at https://example.com/msa.pdf under in law; flag any
+        liability cap below 2x fees and any missing data-processing addendum.
+      required_tools:
+        - document_reader
+      forbidden_tools: []
+      expected_output_contains:
+        - liability
+        - risk
+        - redline
+  tags:
+    - legal
+    - contracts
+    - compliance
+    - red-lining
+  revenue_model: "Rs 5,000/contract; Rs 50,000/mo unlimited for legal teams"
+  roi_note: "Contract review 4-6h -> 15min; ~60% outside-counsel savings"
+  version: "1.0.0"
+  is_verified: false
+  author_name: AgentVerse
+
+- template_id: tpl-legal-nda-drafting
+  slug: legal-nda-drafting
+  name: NDA Drafting Agent
+  domain: legal
+  description: Drafts customized Non-Disclosure Agreements — mutual or unilateral — tailored to the relationship type, jurisdiction, and specific confidentiality requirements.
+  source_use_cases:
+    - "06-legal/UC-2"
+  system_prompt: >-
+    You draft NDAs that are enforceable and balanced. Always specify the governing
+    law, dispute resolution mechanism, and definition of confidential information
+    precisely. Flag any overly broad confidentiality scope. Route the final draft
+    for legal review before sharing with the counterparty.
+  goal_template: >-
+    Draft an NDA for {party_one} and {party_two} for purpose: {purpose}. Type:
+    {nda_type} (mutual/unilateral). Governing law: {jurisdiction}. Duration:
+    {duration_years} years. Include specific carve-outs for {carve_outs}.
+    Generate a clean DOCX and route for review to {reviewer_email}.
+  parameters_schema:
+    properties:
+      party_one: {type: string}
+      party_two: {type: string}
+      purpose: {type: string}
+      nda_type: {type: string, enum: [mutual, unilateral]}
+      jurisdiction: {type: string}
+      duration_years: {type: integer, default: 3}
+      carve_outs: {type: string, default: "public domain, prior knowledge"}
+      reviewer_email: {type: string, format: email}
+    required: [party_one, party_two, purpose, nda_type, jurisdiction, reviewer_email]
+  required_connectors: [document_reader, pdf_generator, gmail]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Draft mutual NDA between Acme Corp and Beta Ltd for software development project under Indian law."
+      required_tools: [document_reader, pdf_generator]
+      expected_output_contains: ["NDA", "confidential", "governing law"]
+  tags: [legal, nda, contracts, drafting]
+  revenue_model: "₹2,000/NDA; ₹10,000/mo unlimited"
+  roi_note: "NDA drafting 3h → 10min; consistent quality every time"
+  version: "1.0.0"
+
+- template_id: tpl-legal-employment-review
+  slug: legal-employment-contract-review
+  name: Employment Contract Review Agent
+  domain: legal
+  description: Reviews employment agreements against statutory requirements and best practices — flags non-compliant clauses, unusual restrictions, and missing mandatory provisions.
+  source_use_cases:
+    - "06-legal/UC-3"
+  system_prompt: >-
+    You review employment contracts for legal compliance and fairness. Check against
+    applicable employment law (Shops and Establishments Act, ID Act, POSH). Flag
+    non-compete clauses that are overly broad. Identify missing mandatory provisions
+    (gratuity, PF, ESIC). Never approve contracts with illegal clauses.
+  goal_template: >-
+    Review employment contract at {document_url} for {employee_designation} role in
+    {jurisdiction}. Check compliance with applicable labor laws, flag non-standard
+    non-compete/IP assignment clauses, identify missing statutory provisions, and
+    generate a redline with risk-rated comments. Route to {reviewer_email} for approval.
+  parameters_schema:
+    properties:
+      document_url: {type: string, format: uri}
+      employee_designation: {type: string}
+      jurisdiction: {type: string}
+      reviewer_email: {type: string, format: email}
+    required: [document_url, employee_designation, jurisdiction, reviewer_email]
+  required_connectors: [document_reader, gmail, pdf_generator]
+  optional_connectors: [web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Review employment contract for Senior Engineer role under Maharashtra law. Reviewer: hr@acme.com."
+      required_tools: [document_reader, pdf_generator]
+      expected_output_contains: ["compliance", "non-compete", "redline"]
+  tags: [legal, employment, contracts, compliance]
+  revenue_model: "₹3,000/contract; ₹15,000/mo unlimited"
+  roi_note: "Employment contract review 2h → 15min"
+  version: "1.0.0"
+
+- template_id: tpl-legal-compliance-checklist
+  slug: legal-compliance-checklist
+  name: Regulatory Compliance Checklist Generator
+  domain: legal
+  description: Generates a comprehensive compliance checklist for a business activity or entity type, mapped to applicable statutes and regulations.
+  source_use_cases:
+    - "06-legal/UC-4"
+  system_prompt: >-
+    You generate accurate compliance checklists. Map each item to the specific statute,
+    rule, and applicable authority. Flag annual vs one-time vs ongoing obligations.
+    Prioritize by penalty risk. Never include inapplicable regulations — always check
+    the entity type and sector first.
+  goal_template: >-
+    Generate a compliance checklist for {entity_type} operating in {industry} sector
+    in {jurisdiction}. Annual turnover: ₹{turnover_cr} Cr. Employee count: {employees}.
+    Include company law, tax, labor, environmental, and sector-specific requirements.
+    Map each item to the relevant statute and due dates for FY {fy}.
+  parameters_schema:
+    properties:
+      entity_type: {type: string, enum: [pvt-ltd, llp, partnership, proprietorship, public-ltd]}
+      industry: {type: string}
+      jurisdiction: {type: string}
+      turnover_cr: {type: number}
+      employees: {type: integer}
+      fy: {type: string}
+    required: [entity_type, industry, jurisdiction]
+  required_connectors: [document_reader, web_search, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate compliance checklist for Pvt Ltd in IT sector in Karnataka. Turnover ₹10Cr, 50 employees."
+      required_tools: [web_search, pdf_generator]
+      expected_output_contains: ["compliance", "statute", "checklist"]
+  tags: [legal, compliance, regulatory, india]
+  revenue_model: "₹5,000/checklist; ₹20,000/mo unlimited"
+  roi_note: "Compliance gaps discovered: avg 7 per entity; penalty prevention ₹2L+"
+  version: "1.0.0"
+
+- template_id: tpl-legal-regulatory-filing
+  slug: legal-regulatory-filing-tracker
+  name: Regulatory Filing Deadline Tracker
+  domain: legal
+  description: Tracks all regulatory filing deadlines for an entity across MCA, RBI, SEBI, GST, Income Tax, and labor departments — sends reminders and status updates.
+  source_use_cases:
+    - "06-legal/UC-5"
+  system_prompt: >-
+    You track regulatory filings diligently. Never miss a deadline — late filings
+    attract compounding penalties. Send reminders 30 days, 7 days, and 1 day before
+    each deadline. Flag overdue filings immediately. Track filing status after
+    submission until acknowledgment received.
+  goal_template: >-
+    Track all regulatory filing deadlines for {entity_name} (CIN: {cin}) for FY {fy}.
+    Monitor MCA, GST, Income Tax, EPFO/ESIC, and labor law filings. Send reminders to
+    {contact_email} at {reminder_days} days before each deadline. Flag overdue filings
+    and generate a monthly compliance dashboard.
+  parameters_schema:
+    properties:
+      entity_name: {type: string}
+      cin: {type: string}
+      fy: {type: string}
+      contact_email: {type: string, format: email}
+      reminder_days: {type: array, items: {type: integer}, default: [30, 7, 1]}
+    required: [entity_name, cin, fy, contact_email]
+  required_connectors: [web_search, email, pdf_generator]
+  optional_connectors: [google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Track filing deadlines for Acme Pvt Ltd (CIN: U12345MH2020PTC001) for FY 2025-26."
+      required_tools: [web_search, email]
+      expected_output_contains: ["deadline", "filing", "reminder"]
+  tags: [legal, compliance, filings, mca]
+  revenue_model: "₹5,000/mo per entity; ₹25,000/mo unlimited"
+  roi_note: "Zero missed regulatory filings; penalty savings ₹5L+ per entity/year"
+  version: "1.0.0"
+
+- template_id: tpl-legal-ip-due-diligence
+  slug: legal-ip-due-diligence
+  name: IP Due Diligence Agent
+  domain: legal
+  description: Conducts IP due diligence for M&A or investment transactions — inventories IP assets, checks ownership chain, license encumbrances, and expiry dates.
+  source_use_cases:
+    - "06-legal/UC-6"
+  system_prompt: >-
+    You conduct thorough IP due diligence. Verify ownership chain for every IP asset.
+    Flag any IP with encumbrances, disputed ownership, or approaching expiry.
+    Check for open-source license compliance issues. Never approve IP-clean status
+    without checking assignment deeds and employment agreements.
+  goal_template: >-
+    Conduct IP due diligence for {target_company} as part of {transaction_type}.
+    Inventory all patents, trademarks, copyrights, and trade secrets. Verify ownership
+    chain, check for encumbrances and licensing restrictions, identify expiring
+    registrations within {horizon_years} years, and assess open-source license compliance.
+    Generate a risk-rated IP due diligence report.
+  parameters_schema:
+    properties:
+      target_company: {type: string}
+      transaction_type: {type: string, enum: [acquisition, investment, merger, licensing]}
+      horizon_years: {type: integer, default: 3}
+    required: [target_company, transaction_type]
+  required_connectors: [document_reader, web_search, pdf_generator]
+  optional_connectors: [gmail]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Conduct IP due diligence for TechCo Ltd as part of acquisition. Check 3-year expiry horizon."
+      required_tools: [document_reader, web_search, pdf_generator]
+      expected_output_contains: ["IP", "ownership", "encumbrance"]
+  tags: [legal, ip, due-diligence, m-and-a]
+  revenue_model: "₹25,000/report; ₹75,000/mo unlimited"
+  roi_note: "IP DD 2 weeks → 2 days; 40% lower outside-counsel cost"
+  version: "1.0.0"
+
+- template_id: tpl-legal-trademark-search
+  slug: legal-ip-trademark-search
+  name: IP Trademark Search Agent
+  domain: legal
+  description: Searches trademark databases for conflicting marks before filing, assessing registrability risk and providing a clearance opinion.
+  source_use_cases:
+    - "06-legal/UC-7"
+  system_prompt: >-
+    You conduct trademark clearance searches professionally. Check phonetic, visual, and
+    conceptual similarity — not just identical matches. Check Indian IP office, WIPO, and
+    USPTO as applicable. Assess likelihood of confusion based on goods/services and
+    market overlap. Always recommend class-wise filing strategy.
+  goal_template: >-
+    Search trademark availability for proposed mark "{proposed_mark}" in class {nice_class}
+    for goods/services: {goods_services} in {jurisdictions}. Check conflicting marks by
+    identical, phonetic, and visual similarity. Assess registrability risk (Low/Medium/High)
+    and provide a clearance opinion with recommended next steps.
+  parameters_schema:
+    properties:
+      proposed_mark: {type: string}
+      nice_class: {type: array, items: {type: integer}}
+      goods_services: {type: string}
+      jurisdictions: {type: array, items: {type: string}, default: [in]}
+    required: [proposed_mark, nice_class, goods_services]
+  required_connectors: [web_search, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Search trademark availability for 'SWIFTPAY' in Class 36 (financial services) in India."
+      required_tools: [web_search, pdf_generator]
+      expected_output_contains: ["trademark", "conflict", "registrability"]
+  tags: [legal, trademark, ip, clearance]
+  revenue_model: "₹5,000/search; ₹20,000/mo unlimited"
+  roi_note: "Trademark search 8h → 30min; prevents costly re-branding"
+  version: "1.0.0"
+
+- template_id: tpl-legal-research-assistant
+  slug: legal-research-assistant
+  name: Legal Research Assistant
+  domain: legal
+  description: Conducts comprehensive legal research on any topic — retrieves relevant case law, statutes, notifications, and circulars with proper citations.
+  source_use_cases:
+    - "06-legal/UC-8"
+  system_prompt: >-
+    You are a meticulous legal researcher. Cite every source with full citation
+    (case name, year, court, reporter). Never paraphrase case holdings inaccurately.
+    Distinguish between binding and persuasive precedent. Flag conflicting decisions
+    and identify the current prevailing position. Always check for subsequent
+    overruling or amendment of cited sources.
+  goal_template: >-
+    Research the legal question: "{research_question}" under {jurisdiction} law.
+    Relevant area: {law_area}. Find applicable statutes, leading case law (last
+    {years} years preferred), regulatory notifications, and conflicting authority.
+    Summarize in a {format} with proper citations and a conclusion on the current
+    legal position.
+  parameters_schema:
+    properties:
+      research_question: {type: string}
+      jurisdiction: {type: string}
+      law_area: {type: string}
+      years: {type: integer, default: 10}
+      format: {type: string, enum: [memo, brief, summary, note], default: memo}
+    required: [research_question, jurisdiction, law_area]
+  required_connectors: [web_search, document_reader, pdf_generator]
+  optional_connectors: [gmail]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Research legal position on enforceability of non-compete clauses in employment contracts under Indian law."
+      required_tools: [web_search, pdf_generator]
+      expected_output_contains: ["case law", "statute", "non-compete"]
+  tags: [legal, research, case-law, compliance]
+  revenue_model: "₹3,000/research; ₹15,000/mo unlimited"
+  roi_note: "Legal research 8h → 45min; junior associate productivity 10x"
+  version: "1.0.0"

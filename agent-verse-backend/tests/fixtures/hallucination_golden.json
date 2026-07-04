@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "description": "Golden hallucination test cases for Phase 3 regression gate",
+  "cases": [
+    {
+      "id": "hg-001",
+      "name": "JIRA search grounding",
+      "step_output": "Found 3 issues: JIRA-123 (High priority bug), JIRA-456 (Feature request), JIRA-789 (Documentation)",
+      "tool_outputs": ["JIRA-123: Bug in auth, priority=HIGH; JIRA-456: Add dark mode, priority=MEDIUM; JIRA-789: Update README"],
+      "expected_grounded": true,
+      "description": "All JIRA IDs present in tool output"
+    },
+    {
+      "id": "hg-002",
+      "name": "Hallucinated JIRA ID",
+      "step_output": "Found issue JIRA-999 which has critical status",
+      "tool_outputs": ["JIRA-123: Bug in auth; JIRA-456: Feature request"],
+      "expected_grounded": false,
+      "description": "JIRA-999 not in tool output"
+    },
+    {
+      "id": "hg-003",
+      "name": "Date grounding",
+      "step_output": "The sprint ends on 2026-07-31",
+      "tool_outputs": ["Sprint 15: start=2026-07-01, end=2026-07-31, team=Atlas"],
+      "expected_grounded": true,
+      "description": "Date 2026-07-31 present in tool output"
+    },
+    {
+      "id": "hg-004",
+      "name": "Hallucinated count",
+      "step_output": "The project has 50 open issues",
+      "tool_outputs": ["Total open issues: 12"],
+      "expected_grounded": false,
+      "description": "Count 50 not in tool output"
+    },
+    {
+      "id": "hg-005",
+      "name": "URL grounding",
+      "step_output": "Documentation is at https://docs.example.com/api",
+      "tool_outputs": ["API docs: https://docs.example.com/api - last updated 2026-06-15"],
+      "expected_grounded": true,
+      "description": "URL present in tool output"
+    }
+  ]
+}

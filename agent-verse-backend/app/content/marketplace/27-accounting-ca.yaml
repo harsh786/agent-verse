@@ -1,0 +1,242 @@
+- template_id: tpl-accounting-itr-filing
+  slug: accounting-itr-filing-automation
+  name: ITR Filing Automation Agent
+  domain: accounting-ca
+  description: Automates Individual and Business ITR preparation from accounting records — computes taxable income, deductions, and tax liability, with HITL review before filing.
+  long_description: >-
+    Manual ITR preparation for a CA firm with 500+ clients takes weeks. This agent
+    pulls financial data from Tally/books, computes income from all heads (salary,
+    business, capital gains, other sources), applies eligible deductions (80C, 80D,
+    etc.), computes tax liability and advance tax paid, cross-checks with Form 26AS,
+    and prepares the return for CA review before filing on the income tax portal.
+  source_use_cases:
+    - "27-accounting/UC-1"
+  system_prompt: >-
+    You prepare ITRs accurately under Indian income tax law. Always verify Form 26AS
+    and AIS before computing tax liability. Apply all eligible deductions — under-claiming
+    is as much an error as over-claiming. Never file without explicit CA approval.
+    Flag any undisclosed income or foreign assets. Compute interest under 234A/B/C.
+  goal_template: >-
+    Prepare ITR for client {client_name} (PAN: {pan}) for AY {assessment_year}.
+    Source data from {source_system}. Compute income from all heads, apply deductions
+    under chapter VI-A, cross-check with Form 26AS/AIS, compute tax liability and
+    interest under 234A/B/C, and generate the return summary. Route to CA {ca_email}
+    for review before filing on the income tax portal.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      pan: {type: string, pattern: "^[A-Z]{5}[0-9]{4}[A-Z]$"}
+      assessment_year: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+      ca_email: {type: string, format: email}
+    required: [client_name, pan, assessment_year, source_system, ca_email]
+  required_connectors: [income_tax_portal, tally, google_sheets, pdf_generator, email]
+  optional_connectors: [zoho_books]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare ITR for Raj Kumar (PAN: ABCDE1234F) for AY 2026-27 from Tally. Route to ca@firm.com."
+      required_tools: [income_tax_portal, tally, pdf_generator]
+      expected_output_contains: ["ITR", "tax liability", "deductions"]
+  tags: [accounting, itr, tax, india, ca]
+  revenue_model: "₹500/ITR; ₹25,000/mo unlimited"
+  roi_note: "ITR prep 4h → 30min per client; CA capacity 8x per season"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-tds-return
+  slug: accounting-tds-return-preparation
+  name: TDS Return Preparation Agent
+  domain: accounting-ca
+  description: Prepares quarterly TDS returns (Form 24Q/26Q/27Q) from payment data, validates PAN/challan linkages, and generates files for TRACES upload after CA review.
+  source_use_cases:
+    - "27-accounting/UC-2"
+  system_prompt: >-
+    You prepare TDS returns meticulously. Validate PAN for every deductee — missing
+    PAN attracts higher TDS and penalties. Link challan deposits to deductee entries
+    correctly. Compute late filing fees under 234E. Identify short deductions for
+    correction. Route for CA review before TRACES upload.
+  goal_template: >-
+    Prepare TDS return (Form {form_type}) for {deductor_name} (TAN: {tan}) for
+    quarter {quarter} FY {fy}. Source payments from {source_system}. Validate deductee
+    PANs, link TDS challans, compute fees under 234E if late, and generate the return
+    file for TRACES upload. Flag missing PANs and short deductions. Route to CA
+    {ca_email} for approval.
+  parameters_schema:
+    properties:
+      form_type: {type: string, enum: [24Q, 26Q, 27Q, 27EQ]}
+      deductor_name: {type: string}
+      tan: {type: string}
+      quarter: {type: string, enum: [Q1, Q2, Q3, Q4]}
+      fy: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+      ca_email: {type: string, format: email}
+    required: [form_type, deductor_name, tan, quarter, fy, source_system, ca_email]
+  required_connectors: [income_tax_portal, tally, google_sheets, email]
+  optional_connectors: [pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare Form 26Q for ABC Ltd (TAN: PUNE12345A) for Q1 FY 2026-27 from Tally."
+      required_tools: [income_tax_portal, tally]
+      expected_output_contains: ["TDS", "26Q", "TRACES"]
+  tags: [accounting, tds, tax, india, ca]
+  revenue_model: "₹1,000/return; ₹8,000/mo per entity"
+  roi_note: "TDS return prep 6h → 1h; zero PAN mismatch errors"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-bank-recon
+  slug: accounting-bank-reconciliation
+  name: Bank Reconciliation Agent
+  domain: accounting-ca
+  description: Reconciles bank statements with accounting books — identifies unmatched entries, outstanding cheques, and timing differences — generating a complete reconciliation statement.
+  source_use_cases:
+    - "27-accounting/UC-3"
+  system_prompt: >-
+    You reconcile bank accounts with precision. Match every book entry to a bank
+    statement line. Categorize unmatched items as: outstanding cheques, deposits in
+    transit, bank charges not in books, or ECS/NEFT not recorded. Never mark items
+    as reconciled without a clear match. Flag items outstanding > 90 days for
+    investigation.
+  goal_template: >-
+    Reconcile bank account {bank_account} ({bank_name}) with {source_system} books for
+    {entity_name} for the period {period}. Import bank statement ({statement_format}),
+    match against book entries, identify all unmatched items, compute the reconciling
+    balance, and generate a reconciliation statement. Flag items outstanding >
+    {flag_days} days for CA review.
+  parameters_schema:
+    properties:
+      bank_account: {type: string}
+      bank_name: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+      entity_name: {type: string}
+      period: {type: string}
+      statement_format: {type: string, enum: [csv, xlsx, pdf]}
+      flag_days: {type: integer, default: 90}
+    required: [bank_account, bank_name, source_system, entity_name, period]
+  required_connectors: [tally, google_sheets, database_query, pdf_generator]
+  optional_connectors: [email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Reconcile HDFC Current Account 12345678 with Tally books for Acme Ltd for June 2026."
+      required_tools: [tally, google_sheets]
+      expected_output_contains: ["reconciliation", "unmatched", "balance"]
+  tags: [accounting, bank-reconciliation, ca, india]
+  revenue_model: "₹500/account/month; ₹5,000/mo unlimited"
+  roi_note: "Bank recon 4h → 20min per account; 100% item-level matching"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-audit-trail
+  slug: accounting-audit-trail-generator
+  name: Audit Trail Generator
+  domain: accounting-ca
+  description: Generates a comprehensive audit trail for statutory audit — extraction of vouchers, ledger scrutiny, exception reports, and sampling suggestions for the auditor.
+  source_use_cases:
+    - "27-accounting/UC-4"
+  system_prompt: >-
+    You prepare audit trails systematically. Extract all vouchers with journal entries.
+    Flag unusual entries: backdated entries, round-figure cash payments, entries posted
+    by super-users, and reversals. Generate ledger scrutiny for high-risk accounts
+    (cash, directors' loans, related-party transactions). All reports are for auditor
+    review — do not conclude on fraud without auditor determination.
+  goal_template: >-
+    Generate audit trail for {entity_name} for FY {fy} audit from {source_system}.
+    Extract all vouchers and journal entries, flag unusual entries (backdated,
+    round-figure cash > ₹{cash_threshold}, super-user entries), perform ledger
+    scrutiny for {high_risk_accounts}, suggest sampling of {sample_percentage}%
+    for high-risk transactions, and generate audit evidence package for auditor
+    {auditor_email}.
+  parameters_schema:
+    properties:
+      entity_name: {type: string}
+      fy: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+      cash_threshold: {type: number, default: 20000}
+      high_risk_accounts: {type: string}
+      sample_percentage: {type: integer, default: 10}
+      auditor_email: {type: string, format: email}
+    required: [entity_name, fy, source_system, auditor_email]
+  required_connectors: [tally, database_query, pdf_generator, email]
+  optional_connectors: [google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Generate audit trail for Acme Pvt Ltd for FY 2025-26 from Tally. Flag cash > ₹20000."
+      required_tools: [tally, database_query, pdf_generator]
+      expected_output_contains: ["audit trail", "voucher", "exception"]
+  tags: [accounting, audit, ca, india]
+  revenue_model: "₹3,000/audit pack; ₹20,000/mo unlimited"
+  roi_note: "Audit prep 2 weeks → 2 days; 100% coverage vs 10% manual sampling"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-balance-sheet
+  slug: accounting-balance-sheet-analysis
+  name: Balance Sheet Analysis Agent
+  domain: accounting-ca
+  description: Analyzes the balance sheet for financial health indicators — liquidity ratios, leverage, working capital trends, and red flags — generating a CA-quality analysis note.
+  source_use_cases:
+    - "27-accounting/UC-5"
+  system_prompt: >-
+    You analyze balance sheets with the thoroughness of a chartered accountant.
+    Compute all standard ratios (current ratio, quick ratio, debt-equity, ROE, ROCE).
+    Identify deteriorating trends across years. Flag related-party balances for
+    disclosure. Check for evergreening of receivables. Compare against industry
+    benchmarks where available. Conclusions must be supported by data.
+  goal_template: >-
+    Analyze balance sheet for {entity_name} for FY {fy} (and previous {prior_years}
+    years for trend analysis) from {source_system}. Compute liquidity, leverage,
+    profitability, and efficiency ratios. Identify working capital trends, red flags
+    (large unsecured loans, contingent liabilities), and related-party exposures.
+    Generate a CA analysis note with observations and recommendations.
+  parameters_schema:
+    properties:
+      entity_name: {type: string}
+      fy: {type: string}
+      prior_years: {type: integer, default: 3}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+    required: [entity_name, fy, source_system]
+  required_connectors: [tally, google_sheets, pdf_generator]
+  optional_connectors: [email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Analyze balance sheet for Acme Pvt Ltd for FY 2025-26 with 3-year trend from Tally."
+      required_tools: [tally, pdf_generator]
+      expected_output_contains: ["ratio", "liquidity", "analysis"]
+  tags: [accounting, financial-analysis, ca, india]
+  revenue_model: "₹2,000/analysis; ₹10,000/mo unlimited"
+  roi_note: "Financial analysis 4h → 30min; structured insights every report"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-gst-recon-ca
+  slug: accounting-gst-reconciliation-ca
+  name: GST Reconciliation for CA Firm
+  domain: accounting-ca
+  description: Reconciles GST across multiple clients — compares GSTR-2B vs purchase register, GSTR-1 vs sales register, and identifies mismatches to maximize ITC and ensure accurate filings.
+  source_use_cases:
+    - "27-accounting/UC-6"
+  system_prompt: >-
+    You reconcile GST data for CA firm clients at scale. For each client, compare
+    GSTR-2B vs purchase register and GSTR-1 vs sales register. Categorize mismatches
+    precisely. Compute total ITC at risk and potential late fees. Generate client-wise
+    summary for the CA to review. Prioritize clients with highest discrepancy value.
+  goal_template: >-
+    Reconcile GST for {client_count} clients managed by CA firm for period {period}.
+    For each client: compare GSTR-2B vs purchase register in {source_system},
+    compare GSTR-1 vs sales register, compute ITC at risk, and flag mismatches > ₹
+    {threshold}. Generate a consolidated reconciliation report and client-wise action
+    list for CA {ca_email}.
+  parameters_schema:
+    properties:
+      client_count: {type: integer}
+      period: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+      threshold: {type: number, default: 10000}
+      ca_email: {type: string, format: email}
+    required: [client_count, period, source_system, ca_email]
+  required_connectors: [gst_portal, tally, google_sheets, email]
+  optional_connectors: [pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Reconcile GST for 20 CA firm clients for June 2026 period from Tally. Threshold ₹10000."
+      required_tools: [gst_portal, tally, google_sheets]
+      expected_output_contains: ["reconciliation", "ITC", "mismatch"]
+  tags: [accounting, gst, ca, reconciliation, india]
+  revenue_model: "₹500/client/month; ₹20,000/mo unlimited"
+  roi_note: "GST recon per client 2h → 15min; avg ITC recovered ₹1.5L/client/year"
+  version: "1.0.0"

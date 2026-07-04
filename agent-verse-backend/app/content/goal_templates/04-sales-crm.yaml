@@ -1,0 +1,54 @@
+- name: Enrich and Score New Leads
+  domain: sales-crm
+  description: Enrich new CRM leads with company data and score them on ICP fit.
+  goal_text: >-
+    Enrich and score {{lead_count}} new {{crm}} leads created in the last {{days}} days.
+    For each lead, find company size, industry, funding stage, and tech stack. Score on
+    ICP fit criteria: {{icp_criteria}}. Segment as Hot (score > {{hot_threshold}}),
+    Warm (> {{warm_threshold}}), or Cold. Update CRM and assign Hot leads to {{rep_name}}.
+  source_use_cases:
+    - "04-sales/UC-1"
+
+- name: Review Pipeline Health
+  domain: sales-crm
+  description: Analyze pipeline health and identify at-risk deals for a sales team.
+  goal_text: >-
+    Analyze the {{team_name}} {{crm}} pipeline as of today. Calculate pipeline coverage
+    ratio against Q{{quarter}} quota of {{quota_amount}}. Identify deals stalled for
+    more than {{stall_days}} days, deals with close dates in the past, and missing
+    next steps. Rank top {{count}} at-risk deals and suggest recovery actions.
+  source_use_cases:
+    - "04-sales/UC-2"
+
+- name: Generate Sales Proposal
+  domain: sales-crm
+  description: Generate a customized sales proposal for a prospect.
+  goal_text: >-
+    Generate a sales proposal for {{prospect_name}} at {{company_name}}. Product:
+    {{product_name}}, deal value: ₹{{deal_value}}, contract term: {{term_months}} months.
+    Tailor the value proposition to their industry {{industry}} and stated pain points
+    {{pain_points}}. Include ROI calculation, implementation timeline, and support terms.
+  source_use_cases:
+    - "04-sales/UC-3"
+
+- name: Prepare Meeting Brief
+  domain: sales-crm
+  description: Create a pre-meeting research brief for a sales call.
+  goal_text: >-
+    Create a 1-page pre-meeting brief for {{contact_name}} ({{contact_title}}) at
+    {{company_name}} scheduled for {{meeting_datetime}}. Include: company overview,
+    recent news, {{contact_name}}'s background, deal history from {{crm}}, 3 tailored
+    talk tracks, 3 likely objections with counters, and a recommended next step.
+  source_use_cases:
+    - "04-sales/UC-4"
+
+- name: Analyze Deal Win Loss Patterns
+  domain: sales-crm
+  description: Analyze closed deals to identify win and loss patterns for a sales team.
+  goal_text: >-
+    Analyze {{count}} closed-won and closed-lost deals from {{crm}} in period
+    {{start_date}} to {{end_date}} for {{team_name}} team. Identify top 5 win factors
+    and top 5 loss reasons. Break down win rate by industry, deal size, and competitor.
+    Recommend 3 process changes to improve win rate for {{segment}} segment.
+  source_use_cases:
+    - "04-sales/UC-5"

@@ -1,0 +1,39 @@
+- name: Optimise Hotel Room Rates
+  domain: hospitality-travel
+  description: Adjust room rates based on occupancy, demand, and competitor pricing.
+  goal_text: >-
+    Optimise room rates for {{hotel_name}} ({{room_count}} rooms) for {{date_range}}.
+    Current occupancy: {{occupancy_pct}}%. Comp set: {{competitors}}. Floor: ₹{{floor_rate}},
+    ceiling: ₹{{ceiling_rate}}. Update OTA rates. Report RevPAR impact to {{rm_email}}.
+  source_use_cases:
+    - "22-hospitality-travel/UC-1"
+
+- name: Respond to OTA Guest Reviews
+  domain: hospitality-travel
+  description: Monitor and respond to guest reviews on OTA platforms.
+  goal_text: >-
+    Monitor and respond to new reviews for {{hotel_name}} on {{platforms}}. Auto-respond
+    to ≥{{min_rating}} star reviews. Flag negative (≤{{escalate_rating}} stars) for
+    human response within {{sla_hrs}} hours. Analyse complaint themes.
+  source_use_cases:
+    - "22-hospitality-travel/UC-2"
+
+- name: Optimise Housekeeping Schedule
+  domain: hospitality-travel
+  description: Assign housekeeping rooms optimally to minimise turnaround time.
+  goal_text: >-
+    Create housekeeping schedule for {{hotel_name}} on {{date}}. {{checkouts}} checkouts,
+    {{stayovers}} stayovers. {{staff}} staff from {{shift_start}}. Priority:
+    {{priority_room_type}}. Alert {{front_desk}} on rooms ready ahead of schedule.
+  source_use_cases:
+    - "22-hospitality-travel/UC-3"
+
+- name: Generate Daily Revenue Alert
+  domain: hospitality-travel
+  description: Compare daily hotel revenue performance against budget and prior year.
+  goal_text: >-
+    Generate revenue alert for {{hotel_name}} for {{date}}. Compare Rooms Revenue,
+    Occupancy, ADR, RevPAR vs {{comparison_base}}. Flag variances above {{threshold_pct}}%.
+    Include {{forward_days}}-day booking pace. Send to {{revenue_email}}.
+  source_use_cases:
+    - "22-hospitality-travel/UC-4"

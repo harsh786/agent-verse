@@ -1,0 +1,58 @@
+- name: Enrich Product Catalog
+  domain: e-commerce
+  description: Enrich product catalog with SEO-optimized descriptions and structured attributes.
+  goal_text: >-
+    Enrich {{sku_count}} product SKUs in category {{category}} with thin or missing
+    catalog data. Generate SEO-optimized titles (max {{title_length}} chars),
+    detailed descriptions (min {{min_words}} words), structured attributes, and
+    3-5 primary search keywords per SKU. Source: {{source_system}}. Flag SKUs
+    missing images or with unverifiable specs.
+  source_use_cases:
+    - "10-ecommerce/UC-1"
+
+- name: Handle Order Exception
+  domain: e-commerce
+  description: Investigate and resolve a stuck or exceptional order.
+  goal_text: >-
+    Handle order exception for order {{order_id}} (status: {{order_status}}, stuck for
+    {{stuck_hours}} hours). Customer: {{customer_email}}. Diagnose the root cause
+    (payment failure / fulfillment hold / carrier issue), attempt auto-resolution,
+    notify the customer with updated ETA, and escalate to {{ops_team}} if manual
+    intervention is needed.
+  source_use_cases:
+    - "10-ecommerce/UC-2"
+
+- name: Generate Review Response
+  domain: e-commerce
+  description: Generate on-brand responses to customer product reviews.
+  goal_text: >-
+    Generate responses to {{count}} customer reviews for {{brand_name}} on {{platform}}.
+    For {{negative_star}}-star or lower reviews, acknowledge the issue and provide a
+    resolution path with support contact {{support_contact}}. For positive reviews,
+    personalize the thank-you with a specific reference to their feedback. Match brand
+    tone: {{tone}}.
+  source_use_cases:
+    - "10-ecommerce/UC-3"
+
+- name: Check Inventory Reorder Levels
+  domain: e-commerce
+  description: Check which SKUs have hit their reorder point and need replenishment.
+  goal_text: >-
+    Check inventory reorder levels for {{category}} SKUs in {{warehouse}}. Calculate
+    reorder point for each SKU based on {{lead_time_days}}-day supplier lead time and
+    {{safety_stock_days}}-day safety stock. List all SKUs at or below reorder point with
+    current stock, reorder quantity, and preferred supplier {{supplier_name}}. Include
+    SKUs with stock-out risk within {{horizon_days}} days.
+  source_use_cases:
+    - "10-ecommerce/UC-4"
+
+- name: Process Customer Return
+  domain: e-commerce
+  description: Process a customer return request end-to-end.
+  goal_text: >-
+    Process return request {{return_id}} for order {{order_id}}. Customer: {{customer_name}}.
+    Items: {{items}}. Return reason: {{return_reason}}. Validate eligibility ({{policy_days}}-day
+    policy), generate {{carrier}} return label, approve/reject with reasoning, trigger
+    refund of ₹{{refund_amount}} to {{payment_method}}, and confirm to {{customer_email}}.
+  source_use_cases:
+    - "10-ecommerce/UC-5"

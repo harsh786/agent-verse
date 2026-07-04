@@ -1,0 +1,139 @@
+- template_id: tpl-wealth-portfolio-rebal
+  slug: wealth-portfolio-rebalancing
+  name: Portfolio Rebalancing Agent
+  domain: wealth-management
+  description: Analyses client portfolio drift from target allocation and generates rebalancing recommendations compliant with SEBI guidelines.
+  source_use_cases:
+    - "34-wealth-management/UC-1"
+  system_prompt: >-
+    You are a SEBI-registered investment adviser. Analyse portfolio against target
+    allocation. Flag asset class drift above threshold. Generate rebalancing plan
+    with tax-efficient sequencing. Account for exit loads and short-term capital
+    gains. Never place trades — only generate recommendations for RIA approval.
+  goal_template: >-
+    Rebalance portfolio for client {client_name} (PAN: {pan_number}). Current AUM:
+    ₹{aum_lakh}L. Target allocation: {target_allocation}. Drift threshold: {drift_threshold_pct}%.
+    Generate rebalancing plan with tax impact. Submit to {ria_email} for approval.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      pan_number: {type: string}
+      aum_lakh: {type: number}
+      target_allocation: {type: object}
+      drift_threshold_pct: {type: number, default: 5}
+      ria_email: {type: string, format: email}
+    required: [client_name, pan_number, aum_lakh, ria_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  optional_connectors: [sebi_portal]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Rebalance portfolio for Rajesh Verma, ₹50L AUM. Target 60/30/10 equity/debt/gold. Drift >5%. SEBI compliant."
+      expected_output_contains: ["rebalancing", "allocation", "drift"]
+  tags: [wealth-management, portfolio, sebi]
+  revenue_model: "₹2,000/rebalancing; ₹15,000/mo unlimited"
+  roi_note: "Portfolio stays within target allocation; tax-efficient execution"
+  version: "1.0.0"
+
+- template_id: tpl-wealth-tax-harvesting
+  slug: wealth-tax-harvesting-agent
+  name: Tax Harvesting Alert Agent
+  domain: wealth-management
+  description: Identifies tax-loss harvesting opportunities in client portfolios, calculates tax savings, and generates switch recommendations before year-end.
+  source_use_cases:
+    - "34-wealth-management/UC-2"
+  system_prompt: >-
+    You are a tax-efficient investment specialist. Identify positions with unrealised
+    losses for tax harvesting. Calculate STCL and LTCL separately. Match against
+    realised gains for optimal netting. Recommend switches that maintain portfolio
+    exposure while booking losses. Account for wash-sale considerations.
+  goal_template: >-
+    Identify tax-loss harvesting opportunities for client {client_name} before
+    {financial_year_end}. Total unrealised STCG: ₹{stcg_lakh}L. Identify positions
+    with STCL/LTCL to offset. Calculate net tax saving at {tax_rate}% rate.
+    Send recommendations to {advisor_email}.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      financial_year_end: {type: string, format: date}
+      stcg_lakh: {type: number}
+      tax_rate: {type: number, default: 15}
+      advisor_email: {type: string, format: email}
+    required: [client_name, financial_year_end, advisor_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Tax harvesting for Anita Shah before March 31 2027. STCG ₹3L. 15% tax rate. Identify offsets."
+      expected_output_contains: ["tax harvesting", "STCL", "savings"]
+  tags: [wealth-management, tax, harvesting]
+  revenue_model: "₹3,000/analysis; ₹20,000/mo unlimited"
+  roi_note: "Average ₹50,000-2,00,000 tax savings per client per year"
+  version: "1.0.0"
+
+- template_id: tpl-wealth-client-report
+  slug: wealth-client-report-generator
+  name: Wealth Client Report Generator
+  domain: wealth-management
+  description: Generates personalised client performance reports with portfolio returns, benchmark comparison, asset allocation, and commentary.
+  source_use_cases:
+    - "34-wealth-management/UC-3"
+  system_prompt: >-
+    You are a wealth management reporting specialist. Generate accurate, readable reports.
+    Always include XIRR/TWRR alongside absolute returns. Compare to appropriate benchmark.
+    Use plain language — clients are not investment professionals. Never overstate
+    performance — include all costs and taxes.
+  goal_template: >-
+    Generate {report_type} report for {client_count} clients for period {report_period}.
+    Include: XIRR, benchmark comparison, asset allocation, and top/bottom holdings.
+    Commentary: {commentary_themes}. PDF to clients and {rm_email} by {delivery_date}.
+  parameters_schema:
+    properties:
+      report_type: {type: string, enum: [monthly, quarterly, annual]}
+      client_count: {type: integer}
+      report_period: {type: string}
+      commentary_themes: {type: array, items: {type: string}}
+      rm_email: {type: string, format: email}
+      delivery_date: {type: string, format: date}
+    required: [report_type, client_count, report_period, rm_email, delivery_date]
+  required_connectors: [database_query, google_sheets, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Quarterly reports for 50 clients for Q1 FY27. XIRR, Nifty50 benchmark. Commentary on rate cycle."
+      expected_output_contains: ["XIRR", "benchmark", "report"]
+  tags: [wealth-management, reporting, client]
+  revenue_model: "₹500/report; ₹20,000/mo unlimited"
+  roi_note: "Report preparation 1h/client → 5min; consistent quality"
+  version: "1.0.0"
+
+- template_id: tpl-wealth-reg-filing
+  slug: wealth-regulatory-filing-tracker
+  name: Regulatory Filing Tracker (SEBI)
+  domain: wealth-management
+  description: Tracks SEBI filing obligations for registered investment advisers and portfolio managers, prepares submissions, and maintains compliance calendar.
+  source_use_cases:
+    - "34-wealth-management/UC-4"
+  system_prompt: >-
+    You are a SEBI compliance officer. Track all RIA/PMS regulatory obligations —
+    annual compliance reports, client data submissions, complaint data, and AUM reports.
+    Alert 30/15/7 days before due dates. Prepare draft filings for review.
+    Never miss a SEBI deadline — consequences include suspension and penalty.
+  goal_template: >-
+    Maintain SEBI filing calendar for {entity_name} ({sebi_registration}). Track
+    {filing_types} filings for FY {financial_year}. Alert {compliance_officer_email}
+    at 30/15/7-day intervals. Prepare draft submissions and maintain audit trail.
+  parameters_schema:
+    properties:
+      entity_name: {type: string}
+      sebi_registration: {type: string}
+      filing_types: {type: array, items: {type: string}}
+      financial_year: {type: string}
+      compliance_officer_email: {type: string, format: email}
+    required: [entity_name, sebi_registration, compliance_officer_email]
+  required_connectors: [sebi_portal, web_search, email, google_sheets, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "SEBI filing calendar for WealthPro RIA (INA100012345) FY 2026-27. Alert CO 30/15/7 days ahead."
+      expected_output_contains: ["SEBI", "filing", "compliance"]
+  tags: [wealth-management, regulatory, sebi]
+  revenue_model: "₹10,000/year; ₹3,000/mo"
+  roi_note: "Zero missed SEBI filings; compliance cost reduced 50%"
+  version: "1.0.0"

@@ -1,0 +1,244 @@
+- template_id: tpl-ecom-catalog-enrichment
+  slug: ecom-catalog-enrichment
+  name: Product Catalog Enrichment Agent
+  domain: e-commerce
+  description: Enriches product catalog with detailed descriptions, attributes, SEO keywords, and missing images by researching competitor listings and product specifications.
+  long_description: >-
+    Thin product listings reduce conversion rates by 30-40%. This agent takes SKUs
+    with incomplete data, searches for product specifications and competitor descriptions,
+    generates optimized product titles and descriptions, adds structured attributes
+    (size, color, material, etc.), suggests primary keywords for SEO, and flags SKUs
+    still needing images.
+  source_use_cases:
+    - "10-ecommerce/UC-1"
+  system_prompt: >-
+    You enrich product catalogs for e-commerce. Generate accurate, compelling
+    descriptions — never fabricate specifications. Use the manufacturer's spec sheet
+    as the primary source. Optimize titles for search intent, not keyword stuffing.
+    Flag any product where you cannot verify a specification.
+  goal_template: >-
+    Enrich {sku_count} product SKUs from {source} with thin catalog data. Generate
+    SEO-optimized titles (max {title_length} chars), detailed descriptions (min {desc_words}
+    words), structured attributes for {category}, and primary/secondary keywords.
+    Update the catalog in {target_system} and flag SKUs missing images.
+  parameters_schema:
+    properties:
+      sku_count: {type: integer}
+      source: {type: string}
+      title_length: {type: integer, default: 80}
+      desc_words: {type: integer, default: 150}
+      category: {type: string}
+      target_system: {type: string}
+    required: [sku_count, source, category]
+  required_connectors: [database_query, web_search, google_sheets]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Enrich 100 electronics SKUs from catalog DB. Generate optimized titles and descriptions."
+      required_tools: [database_query, web_search, google_sheets]
+      expected_output_contains: ["title", "description", "keywords"]
+  tags: [ecommerce, catalog, seo, product]
+  revenue_model: "₹20/SKU enrichment; ₹10,000/mo unlimited"
+  roi_note: "Conversion rate +18% for enriched listings; time 5h/100 SKUs → 30min"
+  version: "1.0.0"
+
+- template_id: tpl-ecom-order-exception
+  slug: ecom-order-exception-handler
+  name: Order Exception Handler
+  domain: e-commerce
+  description: Monitors order management system for exceptions — stuck orders, payment failures, fulfillment delays — and auto-resolves or escalates with full context.
+  source_use_cases:
+    - "10-ecommerce/UC-2"
+  system_prompt: >-
+    You handle order exceptions quickly and accurately. Classify each exception by type
+    (payment, fulfillment, inventory, carrier). For resolvable exceptions, attempt
+    auto-resolution. Always notify the customer proactively before they contact support.
+    Escalate when the exception requires carrier or vendor action.
+  goal_template: >-
+    Monitor order exceptions in {system} for orders created in the last {hours} hours.
+    Identify stuck orders ({stuck_threshold} hours in same status), payment failures,
+    and fulfillment delays exceeding {delay_hours} hours. Auto-resolve where possible,
+    notify affected customers via {notification_channel}, and escalate to {ops_team}
+    for exceptions requiring manual intervention.
+  parameters_schema:
+    properties:
+      system: {type: string}
+      hours: {type: integer, default: 24}
+      stuck_threshold: {type: integer, default: 4}
+      delay_hours: {type: integer, default: 48}
+      notification_channel: {type: string, enum: [email, sms, both]}
+      ops_team: {type: string}
+    required: [system, ops_team]
+  required_connectors: [database_query, email, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Handle order exceptions in OMS for last 24 hours. Notify customers and escalate to ops team."
+      required_tools: [database_query, email]
+      expected_output_contains: ["exception", "resolved", "escalated"]
+  tags: [ecommerce, orders, operations, automation]
+  revenue_model: "₹10,000/mo per platform"
+  roi_note: "Exception resolution time 2h → 15min; CSAT +12 points"
+  version: "1.0.0"
+
+- template_id: tpl-ecom-review-response
+  slug: ecom-review-response-generator
+  name: Review Response Generator
+  domain: e-commerce
+  description: Generates personalized, brand-voice-appropriate responses to customer reviews — thanking positive reviewers and addressing negative feedback constructively.
+  source_use_cases:
+    - "10-ecommerce/UC-3"
+  system_prompt: >-
+    You write authentic, on-brand review responses. Never be defensive about negative
+    reviews — acknowledge the issue and offer a resolution path. Keep responses under
+    100 words. Never promise refunds or replacements in public responses — redirect
+    to private channels. Match the brand tone: {brand_tone}.
+  goal_template: >-
+    Generate responses to {review_count} new customer reviews on {platform} for brand
+    {brand_name}. Brand tone: {brand_tone}. For reviews with rating <= {negative_threshold}
+    stars, acknowledge the issue, apologize, and provide the support contact {support_email}.
+    For positive reviews, personalize the thank-you with a reference to their specific
+    feedback. Post responses via the platform API.
+  parameters_schema:
+    properties:
+      review_count: {type: integer}
+      platform: {type: string}
+      brand_name: {type: string}
+      brand_tone: {type: string, default: "friendly and professional"}
+      negative_threshold: {type: integer, default: 3}
+      support_email: {type: string, format: email}
+    required: [review_count, platform, brand_name, support_email]
+  required_connectors: [database_query, email]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate responses to 50 Amazon reviews for BrandX. Flag 1-2 star reviews for escalation."
+      required_tools: [database_query]
+      expected_output_contains: ["response", "review", "brand"]
+  tags: [ecommerce, reviews, customer-service, brand]
+  revenue_model: "₹10/response; ₹5,000/mo unlimited"
+  roi_note: "Review response rate 15% → 90%; rating improvement avg +0.4 stars"
+  version: "1.0.0"
+
+- template_id: tpl-ecom-inventory-reorder
+  slug: ecom-inventory-reorder-alert
+  name: Inventory Reorder Alert Agent
+  domain: e-commerce
+  description: Monitors inventory levels, predicts stockout dates based on sales velocity, and automatically triggers purchase orders or alerts procurement when reorder points are hit.
+  source_use_cases:
+    - "10-ecommerce/UC-4"
+  system_prompt: >-
+    You manage inventory reorder decisions based on data. Always calculate reorder
+    point = (average daily demand × lead time) + safety stock. Account for seasonality
+    in demand forecasts. Never place purchase orders without human approval for orders
+    above the auto-PO threshold. Flag SKUs with >30 days of excess stock for markdown.
+  goal_template: >-
+    Monitor inventory levels for {sku_count} SKUs in {warehouse} for brand {brand}.
+    Calculate reorder points based on {lead_time_days}-day lead time and {safety_days}
+    days safety stock. Alert procurement via {alert_channel} for SKUs hitting reorder
+    point. Auto-trigger PO for SKUs below {auto_po_threshold} units with supplier
+    {default_supplier}. Flag excess stock (>{overstock_days} days supply).
+  parameters_schema:
+    properties:
+      sku_count: {type: integer}
+      warehouse: {type: string}
+      brand: {type: string}
+      lead_time_days: {type: integer, default: 14}
+      safety_days: {type: integer, default: 7}
+      alert_channel: {type: string}
+      auto_po_threshold: {type: integer, default: 0}
+      default_supplier: {type: string}
+      overstock_days: {type: integer, default: 90}
+    required: [warehouse, brand, alert_channel]
+  required_connectors: [database_query, email, slack]
+  optional_connectors: [google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Monitor 500 SKUs in Mumbai warehouse. Alert procurement for reorder points. 14-day lead time."
+      required_tools: [database_query, email]
+      expected_output_contains: ["reorder", "stock", "alert"]
+  tags: [ecommerce, inventory, supply-chain, procurement]
+  revenue_model: "₹8,000/mo per warehouse"
+  roi_note: "Stockout incidents -70%; overstock holding cost -25%"
+  version: "1.0.0"
+
+- template_id: tpl-ecom-return-processing
+  slug: ecom-return-processing
+  name: Return Processing Automation Agent
+  domain: e-commerce
+  description: Automates end-to-end return processing — validates return eligibility, generates return labels, triggers refund/exchange, and updates inventory.
+  source_use_cases:
+    - "10-ecommerce/UC-5"
+  system_prompt: >-
+    You process returns accurately and empathetically. Validate eligibility before
+    processing — check return window, product condition, and return reason. For
+    borderline cases, apply the benefit of the doubt to build customer loyalty.
+    Always confirm refund amount before initiating. Update inventory only after
+    physical receipt confirmation.
+  goal_template: >-
+    Process {return_count} pending return requests in {system} for {brand}. Validate
+    eligibility against {return_policy_days}-day return policy. Generate return labels
+    via {carrier}. For approved returns: trigger refund to original payment method within
+    {refund_days} days, send confirmation to customer {notification_email}, and flag
+    returns with value > ₹{high_value_threshold} for manual quality inspection.
+  parameters_schema:
+    properties:
+      return_count: {type: integer}
+      system: {type: string}
+      brand: {type: string}
+      return_policy_days: {type: integer, default: 30}
+      carrier: {type: string}
+      refund_days: {type: integer, default: 5}
+      notification_email: {type: string}
+      high_value_threshold: {type: number, default: 5000}
+    required: [system, brand, carrier]
+  required_connectors: [database_query, email]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Process 30 return requests for ShopBrand. 30-day policy, FedEx labels, 5-day refund."
+      required_tools: [database_query, email]
+      expected_output_contains: ["return", "refund", "processed"]
+  tags: [ecommerce, returns, refunds, customer-service]
+  revenue_model: "₹50/return processed; ₹5,000/mo unlimited"
+  roi_note: "Return processing time 15min → 2min; refund SLA 100% compliance"
+  version: "1.0.0"
+
+- template_id: tpl-ecom-price-monitor
+  slug: ecom-price-competitiveness-monitor
+  name: Price Competitiveness Monitor
+  domain: e-commerce
+  description: Monitors competitor prices for your catalog, identifies pricing gaps, and recommends repricing actions to maximize competitiveness and margin.
+  source_use_cases:
+    - "10-ecommerce/UC-6"
+  system_prompt: >-
+    You monitor prices objectively. Compare like-for-like products — same model,
+    condition, and seller type. Never recommend pricing below the minimum advertised
+    price (MAP). Flag products where you are > 10% above market price as urgent.
+    Balance competitiveness with margin protection.
+  goal_template: >-
+    Monitor competitor prices for {sku_count} SKUs in category {category} across
+    {platforms}. Compare our prices vs top {competitor_count} competitors. Flag SKUs
+    where our price is > {overpriced_threshold}% above cheapest comparable offer.
+    Recommend repricing for {repricing_strategy} strategy and estimated margin impact.
+    Export to Google Sheets and alert {pricing_manager} for SKUs needing urgent action.
+  parameters_schema:
+    properties:
+      sku_count: {type: integer}
+      category: {type: string}
+      platforms: {type: array, items: {type: string}}
+      competitor_count: {type: integer, default: 5}
+      overpriced_threshold: {type: integer, default: 10}
+      repricing_strategy: {type: string, enum: [match-lowest, beat-by-1pct, maintain-margin]}
+      pricing_manager: {type: string}
+    required: [sku_count, category, platforms, pricing_manager]
+  required_connectors: [web_search, database_query, google_sheets]
+  optional_connectors: [slack, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Monitor prices for 200 electronics SKUs on Amazon and Flipkart vs top 5 competitors."
+      required_tools: [web_search, google_sheets]
+      expected_output_contains: ["price", "competitor", "repricing"]
+  tags: [ecommerce, pricing, competitive-intelligence, margin]
+  revenue_model: "₹10,000/mo per category"
+  roi_note: "Revenue uplift avg 4-8% from dynamic repricing; margin maintained"
+  version: "1.0.0"

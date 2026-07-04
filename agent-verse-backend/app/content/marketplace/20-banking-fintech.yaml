@@ -1,0 +1,230 @@
+- template_id: tpl-banking-kyc-aml
+  slug: banking-kyc-aml-investigation
+  name: KYC/AML Investigation Agent
+  domain: banking-fintech
+  description: Investigates customer KYC completeness and runs AML screening against sanction lists, PEP databases, and adverse media — generating a risk-rated report.
+  long_description: >-
+    Manual KYC/AML checks take 2-4 hours per customer and involve multiple databases.
+    This agent verifies ID documents via DigiLocker, screens against OFAC/UN sanctions,
+    PEP lists, and adverse media, calculates a risk score (Low/Medium/High/Critical),
+    and generates a compliance report for the relationship manager with recommended
+    enhanced due diligence actions.
+  source_use_cases:
+    - "20-banking/UC-1"
+  system_prompt: >-
+    You are an AML compliance analyst. Apply conservative risk-rating — it is better
+    to flag a false positive than miss a true positive. Always cite the specific
+    sanction list or adverse media source for any match. Never clear a High/Critical
+    risk customer without compliance officer approval. Document every check performed.
+  goal_template: >-
+    Investigate KYC/AML for customer {customer_id} ({customer_name}). Verify documents
+    from DigiLocker, screen against OFAC/UN/RBI sanction lists and PEP databases,
+    check adverse media for last {lookback_days} days, compute risk score, and generate
+    a compliance report. Flag for enhanced due diligence if risk is High or Critical.
+  parameters_schema:
+    properties:
+      customer_id: {type: string}
+      customer_name: {type: string}
+      lookback_days: {type: integer, default: 365}
+      document_types:
+        type: array
+        items: {type: string}
+        default: [pan, aadhaar, passport]
+    required: [customer_id, customer_name]
+  required_connectors: [database_query, document_reader, digilocker, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Investigate KYC/AML for customer C-12345 (Raj Kumar). Check last 365 days adverse media."
+      required_tools: [database_query, document_reader, digilocker]
+      expected_output_contains: ["risk score", "sanctions", "KYC"]
+  tags: [banking, kyc, aml, compliance]
+  revenue_model: "₹500/investigation; ₹25,000/mo unlimited"
+  roi_note: "KYC 4h → 20min; 3x more sources checked than manual"
+  version: "1.0.0"
+
+- template_id: tpl-banking-loan-processing
+  slug: banking-loan-application-processing
+  name: Loan Application Processing Agent
+  domain: banking-fintech
+  description: Processes loan applications end-to-end — document collection, income verification, credit check, and preliminary eligibility assessment with scorecard.
+  source_use_cases:
+    - "20-banking/UC-2"
+  system_prompt: >-
+    You process loan applications objectively. Verify all submitted documents against
+    DigiLocker. Apply the credit policy rules exactly. Never approve beyond the
+    sanctioned limit. Flag income verification discrepancies > 10% for manual review.
+    All decisions require credit officer approval.
+  goal_template: >-
+    Process loan application {application_id} for {applicant_name}. Loan type:
+    {loan_type}, amount ₹{loan_amount}. Verify income documents via DigiLocker,
+    check CIBIL score, apply credit policy for {loan_type}, compute EMI and DTI ratio,
+    generate eligibility scorecard, and route to credit officer {officer_email} for
+    final decision.
+  parameters_schema:
+    properties:
+      application_id: {type: string}
+      applicant_name: {type: string}
+      loan_type: {type: string, enum: [home, personal, auto, business, education]}
+      loan_amount: {type: number}
+      officer_email: {type: string, format: email}
+    required: [application_id, applicant_name, loan_type, loan_amount, officer_email]
+  required_connectors: [database_query, document_reader, digilocker, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Process home loan application APP-2026-001 for Priya Patel of ₹50L."
+      required_tools: [database_query, document_reader, digilocker]
+      expected_output_contains: ["eligibility", "CIBIL", "scorecard"]
+  tags: [banking, loans, credit, fintech]
+  revenue_model: "₹1,000/application; ₹30,000/mo unlimited"
+  roi_note: "Loan processing 3 days → 4 hours; 40% faster disbursement"
+  version: "1.0.0"
+
+- template_id: tpl-banking-fraud-triage
+  slug: banking-fraud-alert-triage
+  name: Fraud Alert Triage Agent
+  domain: banking-fintech
+  description: Triages incoming fraud alerts, scores them for true-positive probability, investigates transaction patterns, and routes high-risk alerts to investigators.
+  source_use_cases:
+    - "20-banking/UC-3"
+  system_prompt: >-
+    You triage fraud alerts rapidly and accurately. False negatives (missed fraud) are
+    more costly than false positives. Investigate transaction velocity, geo-anomalies,
+    and device fingerprint changes before scoring. Always block the transaction if
+    confidence > 80% fraud. Notify customer immediately for any blocked transaction.
+  goal_template: >-
+    Triage fraud alert {alert_id} for account {account_id}. Investigate the flagged
+    transaction(s) in the last {window_hours} hours — check transaction velocity,
+    location anomalies, device changes, and behavioral patterns. Score true-positive
+    probability (0-100). Block transaction if score > {block_threshold}. Notify
+    {customer_email} and escalate to {fraud_team_channel} if High risk.
+  parameters_schema:
+    properties:
+      alert_id: {type: string}
+      account_id: {type: string}
+      window_hours: {type: integer, default: 24}
+      block_threshold: {type: integer, default: 75}
+      customer_email: {type: string, format: email}
+      fraud_team_channel: {type: string}
+    required: [alert_id, account_id, customer_email, fraud_team_channel]
+  required_connectors: [database_query, email, slack]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Triage fraud alert FR-20260705-001 for account ACC-99. Notify customer and fraud team."
+      required_tools: [database_query, email]
+      expected_output_contains: ["fraud score", "transaction", "blocked"]
+  tags: [banking, fraud, risk, fintech]
+  revenue_model: "₹200/alert; ₹20,000/mo unlimited"
+  roi_note: "Alert triage 45min → 3min; 90% accuracy rate"
+  version: "1.0.0"
+
+- template_id: tpl-banking-customer-onboarding
+  slug: banking-customer-onboarding
+  name: Digital Customer Onboarding Agent
+  domain: banking-fintech
+  description: Automates new customer onboarding — KYC document collection via DigiLocker, account opening, product recommendation, and welcome communication.
+  source_use_cases:
+    - "20-banking/UC-4"
+  system_prompt: >-
+    You onboard banking customers with compliance rigor. Never open an account without
+    completed KYC. Verify CKYC registry before collecting documents. Recommend products
+    based on declared income and risk profile — never push high-risk products to
+    conservative profiles. Send all regulatory disclosures before activation.
+  goal_template: >-
+    Onboard new customer {customer_name} (mobile: {mobile_number}). Collect and verify
+    KYC documents via DigiLocker, check CKYC registry, open {account_type} account,
+    recommend suitable products based on income ₹{annual_income} and risk profile
+    {risk_profile}, and send welcome kit to {email_address}.
+  parameters_schema:
+    properties:
+      customer_name: {type: string}
+      mobile_number: {type: string}
+      account_type: {type: string, enum: [savings, current, salary, NRI]}
+      annual_income: {type: number}
+      risk_profile: {type: string, enum: [conservative, moderate, aggressive]}
+      email_address: {type: string, format: email}
+    required: [customer_name, mobile_number, account_type, email_address]
+  required_connectors: [database_query, document_reader, digilocker, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Onboard Amit Sharma (9876543210) for savings account. Annual income ₹8L. Risk: moderate."
+      required_tools: [digilocker, database_query, email]
+      expected_output_contains: ["KYC", "account", "onboarded"]
+  tags: [banking, onboarding, kyc, fintech]
+  revenue_model: "₹300/onboarding; ₹15,000/mo unlimited"
+  roi_note: "Onboarding 3 days → 4 hours; 95% digital completion rate"
+  version: "1.0.0"
+
+- template_id: tpl-banking-credit-risk
+  slug: banking-credit-risk-assessment
+  name: Credit Risk Assessment Agent
+  domain: banking-fintech
+  description: Performs end-to-end credit risk assessment for a borrower — financial analysis, CIBIL check, industry risk, and credit rating with recommendation.
+  source_use_cases:
+    - "20-banking/UC-5"
+  system_prompt: >-
+    You assess credit risk objectively. Use standardized financial ratios (DSCR, FCCR,
+    LTV, NWC). Apply the credit policy for the product category. Distinguish between
+    temporary cash flow issues and structural risk. Never recommend approval for
+    borrowers with active NPA without credit committee escalation.
+  goal_template: >-
+    Assess credit risk for borrower {borrower_name} (ID: {borrower_id}) for {loan_type}
+    loan of ₹{amount}. Analyze {years} years of financial statements, compute key
+    ratios (DSCR, FCCR, leverage), check CIBIL/bureau score, assess industry risk for
+    {industry}, and generate a credit rating (AAA-D) with approval recommendation and
+    suggested terms.
+  parameters_schema:
+    properties:
+      borrower_name: {type: string}
+      borrower_id: {type: string}
+      loan_type: {type: string}
+      amount: {type: number}
+      years: {type: integer, default: 3}
+      industry: {type: string}
+    required: [borrower_name, borrower_id, loan_type, amount, industry]
+  required_connectors: [database_query, document_reader, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Assess credit risk for TechStart Pvt Ltd (B-5678) for term loan ₹2Cr. IT industry."
+      required_tools: [database_query, document_reader]
+      expected_output_contains: ["credit rating", "DSCR", "recommendation"]
+  tags: [banking, credit, risk, fintech]
+  revenue_model: "₹2,000/assessment; ₹25,000/mo unlimited"
+  roi_note: "Credit assessment 2 days → 3 hours; standardized ratings across analysts"
+  version: "1.0.0"
+
+- template_id: tpl-banking-chargeback
+  slug: banking-chargeback-investigation
+  name: Chargeback Investigation Agent
+  domain: banking-fintech
+  description: Investigates payment chargebacks — retrieves transaction evidence, checks dispute validity, prepares representment documentation, and manages the chargeback lifecycle.
+  source_use_cases:
+    - "20-banking/UC-6"
+  system_prompt: >-
+    You investigate chargebacks thoroughly. Collect all available evidence — authorization
+    data, delivery proof, customer communication history. Determine dispute validity
+    based on chargeback reason code. For valid disputes, accept immediately. For invalid
+    disputes, prepare compelling representment with all evidence. Track all deadlines.
+  goal_template: >-
+    Investigate chargeback {chargeback_id} for transaction {transaction_id} of ₹{amount}
+    on {transaction_date}. Reason code: {reason_code}. Retrieve transaction evidence,
+    check authorization records, review customer history, determine dispute validity, and
+    prepare representment documentation if disputable. Track response deadline {due_date}.
+  parameters_schema:
+    properties:
+      chargeback_id: {type: string}
+      transaction_id: {type: string}
+      amount: {type: number}
+      transaction_date: {type: string, format: date}
+      reason_code: {type: string}
+      due_date: {type: string, format: date}
+    required: [chargeback_id, transaction_id, amount, reason_code, due_date]
+  required_connectors: [database_query, document_reader, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Investigate chargeback CB-2026-001 for transaction TXN-9999 of ₹15000. Reason: 4853."
+      required_tools: [database_query, document_reader]
+      expected_output_contains: ["chargeback", "evidence", "representment"]
+  tags: [banking, chargeback, payments, fintech]
+  revenue_model: "₹500/investigation; ₹15,000/mo unlimited"
+  roi_note: "Chargeback win rate +35%; investigation time 4h → 30min"
+  version: "1.0.0"

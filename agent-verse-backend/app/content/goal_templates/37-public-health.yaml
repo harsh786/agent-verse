@@ -1,0 +1,29 @@
+- name: Quality Check PM-JAY Claims Before Submission
+  domain: public-health
+  description: Validate PM-JAY claims for eligibility and completeness before NHA submission.
+  goal_text: >-
+    QC {{count}} PM-JAY claims for {{hospital}} (Empanelment: {{emp_id}}).
+    Validate beneficiary eligibility, package code, and mandatory documents.
+    Flag rejectable claims before NHA portal submission. Report to {{admin_email}}.
+  source_use_cases:
+    - "37-public-health/UC-1"
+
+- name: Monitor Disease Outbreak Signals
+  domain: public-health
+  description: Scan surveillance data for disease outbreak signals and alert health authorities.
+  goal_text: >-
+    Monitor disease surveillance for {{district}}, {{state}} for {{period}}.
+    Track {{diseases}}. Alert {{dho_contact}} when cases exceed {{threshold_x}}x
+    historical baseline. Generate outbreak investigation checklist for {{event}}.
+  source_use_cases:
+    - "37-public-health/UC-2"
+
+- name: Track Immunisation Coverage
+  domain: public-health
+  description: Monitor vaccination coverage and identify areas needing catch-up campaigns.
+  goal_text: >-
+    Track vaccination coverage for {{block}}, {{district}} for FY {{fy}}.
+    Antigens: {{antigens}}. Flag areas below {{min_coverage_pct}}% coverage.
+    Identify dropout children. Generate catch-up microplan. AEFI report to {{aefi_email}}.
+  source_use_cases:
+    - "37-public-health/UC-3"

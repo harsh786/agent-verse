@@ -1,0 +1,49 @@
+- name: Generate PR Review Checklist
+  domain: software
+  description: Generate a tailored code review checklist for a pull request based on the change type and language.
+  goal_text: >-
+    Generate a code review checklist for PR #{{pr_number}} in {{repo}}. The change type
+    is {{change_type}} (bug fix / feature / refactor). Language: {{language}}. Include
+    checks for correctness, security, performance, test coverage, and documentation.
+  source_use_cases:
+    - "02-software/UC-1"
+
+- name: Triage Backlog Issues
+  domain: software
+  description: Triage all open issues in a repository and assign priority labels.
+  goal_text: >-
+    Triage {{issue_count}} open issues in {{repo}} created before {{cutoff_date}}.
+    Assign priority (P0/P1/P2/P3), detect duplicates, and suggest which issues to
+    include in the next sprint {{sprint_name}}. Output a prioritized backlog CSV.
+  source_use_cases:
+    - "02-software/UC-2"
+
+- name: Draft Release Notes for Version
+  domain: software
+  description: Draft customer-facing release notes for a software version.
+  goal_text: >-
+    Draft release notes for {{product_name}} version {{version}}. Summarize all merged
+    PRs and resolved issues between {{start_tag}} and {{end_tag}}. Organize into
+    New Features, Improvements, Bug Fixes, and Breaking Changes. Tone: {{tone}}.
+  source_use_cases:
+    - "02-software/UC-3"
+
+- name: Generate Test Coverage Report
+  domain: software
+  description: Analyze test coverage gaps and recommend new test cases.
+  goal_text: >-
+    Analyze test coverage for {{repo}} module {{module_path}}. Current coverage is
+    {{current_coverage}}%. Identify the top {{count}} uncovered code paths ranked by
+    risk. Generate unit test skeletons for each using {{test_framework}}.
+  source_use_cases:
+    - "02-software/UC-5"
+
+- name: Scan Dependencies for Vulnerabilities
+  domain: software
+  description: Scan project dependencies for known CVEs and license violations.
+  goal_text: >-
+    Scan all {{package_manager}} dependencies in {{repo}}. Report all CVEs with CVSS
+    score above {{min_cvss}}. Flag packages with {{license_policy}}-incompatible
+    licenses. Generate a remediation plan with upgrade paths and effort estimates.
+  source_use_cases:
+    - "02-software/UC-6"

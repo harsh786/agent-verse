@@ -1,0 +1,231 @@
+- template_id: tpl-devops-incident-response
+  slug: devops-incident-response-automation
+  name: Incident Response Automation
+  domain: devops
+  description: Orchestrates end-to-end incident response — detects, acknowledges, pages on-call, runs diagnostics, and posts real-time updates until resolution.
+  long_description: >-
+    Every minute of downtime costs revenue and customer trust. This agent picks up
+    PagerDuty/Datadog alerts, auto-acknowledges P1/P2 incidents, pulls correlated
+    metrics, checks recent deploys, runs diagnostic playbooks, pages the on-call
+    engineer, creates a Jira incident ticket, and posts live updates to the war-room
+    Slack channel until the incident is resolved and an RCA is filed.
+  source_use_cases:
+    - "03-devops/UC-1"
+  system_prompt: >-
+    You are an SRE on-call bot. Prioritize speed and accuracy over completeness.
+    Acknowledge alerts within 2 minutes. Never execute destructive commands without
+    human approval. Always correlate the incident with recent deploys and config changes.
+    Post Slack updates every 10 minutes until resolved.
+  goal_template: >-
+    Respond to incident {incident_id} ({severity}) in {service}. Acknowledge in
+    PagerDuty, pull Datadog metrics for the last {lookback_minutes} minutes, check
+    recent deploys, run diagnostic playbook {playbook_id}, page {oncall_team},
+    create Jira ticket in {project}, and post updates to Slack channel {slack_channel}.
+  parameters_schema:
+    properties:
+      incident_id: {type: string}
+      severity: {type: string, enum: [P1, P2, P3, P4]}
+      service: {type: string}
+      lookback_minutes: {type: integer, default: 30}
+      playbook_id: {type: string}
+      oncall_team: {type: string}
+      project: {type: string}
+      slack_channel: {type: string}
+    required: [incident_id, severity, service]
+  required_connectors: [pagerduty, datadog, jira, slack]
+  optional_connectors: [aws, kubernetes]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Respond to incident INC-2026-001 (P1) in payments-service. Page backend-oncall team."
+      required_tools: [pagerduty, datadog, slack]
+      expected_output_contains: ["acknowledged", "diagnostics", "Jira", "Slack"]
+  tags: [devops, incident-response, sre, pagerduty]
+  revenue_model: "₹20,000/mo per service cluster"
+  roi_note: "MTTD 45min → 3min; MTTR 4h → 45min for P1 incidents"
+  version: "1.0.0"
+
+- template_id: tpl-devops-rollback-decision
+  slug: devops-deploy-rollback-decision
+  name: Deploy Rollback Decision Agent
+  domain: devops
+  description: Analyzes post-deployment metrics and automatically recommends or triggers a rollback when error rate or latency SLOs are breached.
+  source_use_cases:
+    - "03-devops/UC-2"
+  system_prompt: >-
+    You are a deployment safety agent. Compare pre- and post-deploy metrics precisely.
+    Recommend rollback only when SLO breach is statistically confirmed. Always require
+    human approval before triggering a production rollback. Include the blast radius
+    estimate in your recommendation.
+  goal_template: >-
+    Analyze deployment {deploy_id} of {service} to {environment}. Compare error rates,
+    p99 latency, and key business metrics for {window_minutes} minutes pre vs post deploy.
+    If error rate exceeds {error_threshold}% or p99 > {latency_threshold_ms}ms, recommend
+    rollback and create a Jira incident. Require human approval before executing.
+  parameters_schema:
+    properties:
+      deploy_id: {type: string}
+      service: {type: string}
+      environment: {type: string, enum: [production, staging, canary]}
+      window_minutes: {type: integer, default: 15}
+      error_threshold: {type: number, default: 1.0}
+      latency_threshold_ms: {type: integer, default: 500}
+    required: [deploy_id, service, environment]
+  required_connectors: [datadog, aws, kubernetes, jira, slack]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Analyze deploy D-20260705 of checkout-service to production. Error threshold 2%."
+      required_tools: [datadog]
+      expected_output_contains: ["error rate", "rollback", "recommendation"]
+  tags: [devops, deployment, rollback, slo]
+  revenue_model: "₹15,000/mo per deployment pipeline"
+  roi_note: "Catches bad deploys in 5min vs 30min manual; prevents 80% of P1 incidents"
+  version: "1.0.0"
+
+- template_id: tpl-devops-cost-optimization
+  slug: devops-resource-cost-optimization
+  name: Cloud Resource Cost Optimization Agent
+  domain: devops
+  description: Analyzes cloud spend across AWS/GCP/Azure, identifies waste (idle resources, oversized instances, orphaned volumes), and generates a savings plan.
+  source_use_cases:
+    - "03-devops/UC-3"
+  system_prompt: >-
+    You are a FinOps analyst. Identify waste ruthlessly but never recommend deleting
+    resources without confirming they are truly idle. Always include the estimated monthly
+    saving for each recommendation. Prioritize quick wins (>50% saving, low risk) first.
+  goal_template: >-
+    Analyze cloud costs for {account_id} on {cloud_provider} for the last {days} days.
+    Identify idle EC2/GCE/VMs, oversized instances, unattached EBS/PD volumes, unused
+    load balancers, and NAT gateway waste. Generate a savings plan with top {count}
+    recommendations and estimated monthly savings in {currency}.
+  parameters_schema:
+    properties:
+      account_id: {type: string}
+      cloud_provider: {type: string, enum: [aws, gcp, azure]}
+      days: {type: integer, default: 30}
+      count: {type: integer, default: 20}
+      currency: {type: string, default: "INR"}
+    required: [account_id, cloud_provider]
+  required_connectors: [aws, gcp, azure, google_sheets]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze AWS costs for account 123456789 for last 30 days. Find top 10 savings."
+      required_tools: [aws]
+      expected_output_contains: ["savings", "idle", "optimization"]
+  tags: [devops, finops, cloud, cost]
+  revenue_model: "₹25,000/mo; ROI guaranteed or refund"
+  roi_note: "Average 23% cloud cost reduction; pays for itself in first month"
+  version: "1.0.0"
+
+- template_id: tpl-devops-alert-noise
+  slug: devops-alert-noise-reduction
+  name: Alert Noise Reduction Agent
+  domain: devops
+  description: Analyzes alert firing patterns, identifies noisy/flapping alerts, groups correlated alerts, and recommends threshold tuning to reduce alert fatigue.
+  source_use_cases:
+    - "03-devops/UC-4"
+  system_prompt: >-
+    You are an observability engineer reducing alert fatigue. Base all recommendations
+    on historical firing data — never guess. Group correlated alerts by root cause.
+    Distinguish between noisy alerts (fire often, low actionability) and flapping
+    alerts (oscillate). Always preserve SLO-critical alerts in your recommendations.
+  goal_template: >-
+    Analyze {alert_count} alerts from {monitoring_tool} over the last {days} days for
+    {service_group}. Identify top {count} noisiest alerts by firing frequency, detect
+    correlated alert groups, and recommend new thresholds or suppression rules to reduce
+    alert volume by at least {target_reduction}% without missing real incidents.
+  parameters_schema:
+    properties:
+      alert_count: {type: integer}
+      monitoring_tool: {type: string, enum: [datadog, pagerduty, grafana, newrelic, opsgenie]}
+      days: {type: integer, default: 30}
+      service_group: {type: string}
+      count: {type: integer, default: 20}
+      target_reduction: {type: integer, default: 40}
+    required: [monitoring_tool, service_group]
+  required_connectors: [pagerduty, datadog, slack]
+  optional_connectors: [grafana, opsgenie]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze Datadog alerts for payments cluster over last 30 days. Reduce noise by 40%."
+      required_tools: [datadog]
+      expected_output_contains: ["noise", "threshold", "correlated"]
+  tags: [devops, observability, alerting, sre]
+  revenue_model: "₹15,000/mo per cluster"
+  roi_note: "Alert volume -60% on average; on-call burnout significantly reduced"
+  version: "1.0.0"
+
+- template_id: tpl-devops-sla-predictor
+  slug: devops-sla-breach-predictor
+  name: SLA Breach Predictor
+  domain: devops
+  description: Monitors service metrics in real-time and predicts SLA breaches before they occur, triggering proactive escalation and mitigation.
+  source_use_cases:
+    - "03-devops/UC-5"
+  system_prompt: >-
+    You predict SLA breaches using trend analysis. Calculate the time-to-breach at
+    current degradation rate. Alert at 75% and 90% SLO burn rate. Always include
+    the confidence interval for your prediction. Recommend specific mitigation actions.
+  goal_template: >-
+    Monitor SLA metrics for {service} against SLO target {slo_target}% availability
+    and p99 latency {latency_slo_ms}ms. Predict breach risk over the next {horizon_hours}
+    hours based on current error budget burn rate. If breach probability exceeds
+    {alert_threshold}%, alert {escalation_channel} and create a Jira ticket.
+  parameters_schema:
+    properties:
+      service: {type: string}
+      slo_target: {type: number, default: 99.9}
+      latency_slo_ms: {type: integer, default: 200}
+      horizon_hours: {type: integer, default: 4}
+      alert_threshold: {type: integer, default: 70}
+      escalation_channel: {type: string}
+    required: [service, escalation_channel]
+  required_connectors: [datadog, grafana, jira, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Predict SLA breach for api-gateway service with 99.9% SLO over next 4 hours."
+      required_tools: [datadog]
+      expected_output_contains: ["breach", "prediction", "error budget"]
+  tags: [devops, sla, slo, reliability]
+  revenue_model: "₹20,000/mo per service tier"
+  roi_note: "Catches 80% of SLA breaches before they happen; proactive vs reactive"
+  version: "1.0.0"
+
+- template_id: tpl-devops-runbook-executor
+  slug: devops-runbook-auto-executor
+  name: Runbook Auto-Executor
+  domain: devops
+  description: Executes standard operational runbooks automatically on trigger — restarts services, drains nodes, rotates certs — with full audit trail and HITL gates.
+  source_use_cases:
+    - "03-devops/UC-6"
+  system_prompt: >-
+    You execute operational runbooks step by step. Verify each pre-condition before
+    proceeding. Stop immediately if any step fails — do not skip. Always log every
+    action taken with timestamp. For destructive steps (delete, drain, restart in prod),
+    require explicit human confirmation before proceeding. Post progress to Slack.
+  goal_template: >-
+    Execute runbook {runbook_id} for {service} in {environment}. Triggered by:
+    {trigger_reason}. Verify all pre-conditions, execute each step with {timeout_seconds}s
+    timeout per step, log results to Jira ticket {ticket_id}, and post progress to
+    {slack_channel}. Require human approval for steps flagged as destructive.
+  parameters_schema:
+    properties:
+      runbook_id: {type: string}
+      service: {type: string}
+      environment: {type: string, enum: [production, staging, dev]}
+      trigger_reason: {type: string}
+      timeout_seconds: {type: integer, default: 60}
+      ticket_id: {type: string}
+      slack_channel: {type: string}
+    required: [runbook_id, service, environment]
+  required_connectors: [jira, slack, aws, kubernetes]
+  optional_connectors: [pagerduty]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Execute runbook RB-RESTART-001 for auth-service in production. Ticket: INC-456."
+      required_tools: [jira, slack]
+      expected_output_contains: ["runbook", "executed", "completed"]
+  tags: [devops, runbooks, automation, kubernetes]
+  revenue_model: "₹20,000/mo per environment"
+  roi_note: "Runbook execution 25min → 3min; zero manual errors; full audit trail"
+  version: "1.0.0"

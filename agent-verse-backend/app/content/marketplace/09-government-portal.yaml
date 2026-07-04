@@ -1,0 +1,166 @@
+- template_id: tpl-gov-gem-tender
+  slug: gov-gem-tender-monitor
+  name: GeM Tender Monitoring Agent
+  domain: government-portal
+  description: Monitors Government e-Marketplace for new tenders matching your category, prepares bid documents, and tracks submission deadlines.
+  long_description: >-
+    MSMEs and vendors miss GeM opportunities due to manual monitoring. This agent
+    continuously scans GeM for tenders matching configured product categories and
+    buyer organisations, prepares pre-fill bid templates, and sends 48h/24h/6h deadline
+    alerts with compliance checklists.
+  source_use_cases:
+    - "09-government-portal/UC-1"
+  system_prompt: >-
+    You are a GeM procurement specialist. Monitor only categories explicitly configured.
+    Never submit a bid without human review and approval. Always verify GeM eligibility
+    criteria (MSME status, turnover, certifications) before alerting.
+  goal_template: >-
+    Monitor GeM portal for new tenders in category {product_category} for buyer type
+    {buyer_type}. Alert {notify_email} within 2 hours of new matching tenders. Prepare
+    bid checklist and flag compliance requirements.
+  parameters_schema:
+    properties:
+      product_category: {type: string}
+      buyer_type: {type: string, default: "all"}
+      notify_email: {type: string, format: email}
+    required: [product_category, notify_email]
+  required_connectors: [gem_portal, email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Monitor GeM for IT hardware tenders. Alert bd@company.in within 2h. Prepare bid checklist."
+      required_tools: [gem_portal, email]
+      expected_output_contains: ["tender", "bid", "checklist"]
+  tags: [government, gem, procurement, india]
+  revenue_model: "₹3,000/mo monitoring; ₹500/bid document"
+  roi_note: "Zero missed tenders; 3h bid prep → 20min"
+  version: "1.0.0"
+
+- template_id: tpl-gov-rti-filing
+  slug: gov-rti-filing-assistant
+  name: RTI Filing Assistant
+  domain: government-portal
+  description: Drafts Right to Information applications with correct authority mapping, fee calculations, and tracks response timelines.
+  source_use_cases:
+    - "09-government-portal/UC-2"
+  system_prompt: >-
+    You are an RTI expert. Draft precise RTI applications citing the correct public
+    authority and section. Ensure all information sought is specific and within RTI
+    jurisdiction. Track deadlines (30-day first reply, appeal windows).
+  goal_template: >-
+    Draft RTI application to {public_authority} under {ministry} requesting
+    {information_sought}. Calculate applicable fee (BPL exemption: {is_bpl}). Track
+    response deadline and set alerts for first appeal if no response by {deadline_date}.
+  parameters_schema:
+    properties:
+      public_authority: {type: string}
+      ministry: {type: string}
+      information_sought: {type: string}
+      is_bpl: {type: boolean, default: false}
+      deadline_date: {type: string, format: date}
+    required: [public_authority, ministry, information_sought]
+  required_connectors: [web_search, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Draft RTI to MCA seeking company registration status for ABC Pvt Ltd. Standard fee."
+      expected_output_contains: ["RTI", "public authority", "information"]
+  tags: [government, rti, compliance, india]
+  revenue_model: "₹500/RTI draft; ₹2,000/mo unlimited"
+  roi_note: "2h research → 15min; proper authority mapping"
+  version: "1.0.0"
+
+- template_id: tpl-gov-compliance-calendar
+  slug: gov-compliance-calendar
+  name: Regulatory Compliance Calendar
+  domain: government-portal
+  description: Maintains a consolidated compliance calendar across GST, MCA, Income Tax, PF, ESI, and labour law filings with automated reminders.
+  source_use_cases:
+    - "09-government-portal/UC-3"
+  system_prompt: >-
+    You are a regulatory compliance coordinator. Maintain the compliance calendar for
+    all applicable laws. Send reminders 7 days, 3 days, and 1 day before due dates.
+    Never skip a due date alert. Generate monthly compliance status report.
+  goal_template: >-
+    Build and maintain compliance calendar for {company_name} (GSTIN: {gstin}) covering
+    {applicable_laws}. Send reminders to {compliance_officer_email} at 7-day, 3-day, and
+    1-day intervals. Generate monthly status report.
+  parameters_schema:
+    properties:
+      company_name: {type: string}
+      gstin: {type: string}
+      applicable_laws: {type: array, items: {type: string}}
+      compliance_officer_email: {type: string, format: email}
+    required: [company_name, compliance_officer_email]
+  required_connectors: [google_sheets, email, gst_portal]
+  optional_connectors: [income_tax_portal, mca21]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Compliance calendar for Acme Ltd covering GST, MCA, IT. Alert compliance@acme.in 7/3/1 days prior."
+      expected_output_contains: ["calendar", "due date", "reminder"]
+  tags: [government, compliance, calendar, india]
+  revenue_model: "₹5,000/mo per entity"
+  roi_note: "Zero missed filings; 40% reduction in compliance penalties"
+  version: "1.0.0"
+
+- template_id: tpl-gov-msme-registration
+  slug: gov-msme-registration-assistant
+  name: MSME / Udyam Registration Assistant
+  domain: government-portal
+  description: Guides businesses through Udyam registration, validates eligibility, and completes the online application with document upload.
+  source_use_cases:
+    - "09-government-portal/UC-4"
+  system_prompt: >-
+    You are an MSME registration specialist. Verify Aadhaar linkage, PAN validity, and
+    NIC code selection. Ensure investment and turnover figures are accurate per Udyam
+    classification criteria. Never submit without explicit confirmation.
+  goal_template: >-
+    Assist {business_name} (PAN: {pan_number}) with Udyam Registration. Verify MSME
+    classification (investment ₹{investment_cr} Cr, turnover ₹{turnover_cr} Cr). Complete
+    online application and generate Udyam Registration Certificate.
+  parameters_schema:
+    properties:
+      business_name: {type: string}
+      pan_number: {type: string}
+      investment_cr: {type: number}
+      turnover_cr: {type: number}
+    required: [business_name, pan_number, investment_cr, turnover_cr]
+  required_connectors: [web_search, pdf_generator, digilocker]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Help XYZ Traders (PAN: AAAPX1234K) register on Udyam. Investment ₹1.5Cr, turnover ₹8Cr."
+      expected_output_contains: ["Udyam", "registration", "MSME"]
+  tags: [government, msme, registration, india]
+  revenue_model: "₹1,500/registration"
+  roi_note: "4h manual process → 45min"
+  version: "1.0.0"
+
+- template_id: tpl-gov-eprocurement
+  slug: gov-eprocurement-tracker
+  name: e-Procurement Bid Tracker
+  domain: government-portal
+  description: Tracks government e-procurement portals for bid opportunities, manages document submissions, and monitors EMD refunds.
+  source_use_cases:
+    - "09-government-portal/UC-5"
+  system_prompt: >-
+    You are a government tender specialist. Track only portals and categories configured.
+    Maintain bid submission log with timestamps. Monitor EMD status and flag delayed
+    refunds. Never submit documents without human review.
+  goal_template: >-
+    Track {portal_name} for new tenders in category {category} above ₹{min_value_lakh}L.
+    Alert {bd_email} on new opportunities. Maintain bid log in Google Sheets and monitor
+    EMD refund status for submitted bids.
+  parameters_schema:
+    properties:
+      portal_name: {type: string}
+      category: {type: string}
+      min_value_lakh: {type: number, default: 10}
+      bd_email: {type: string, format: email}
+    required: [portal_name, category, bd_email]
+  required_connectors: [web_search, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Track CPPP for civil works tenders above ₹25L. Alert bd@firm.in. Log in Sheets."
+      expected_output_contains: ["tender", "bid", "EMD"]
+  tags: [government, procurement, tender, india]
+  revenue_model: "₹4,000/mo per portal"
+  roi_note: "Daily monitoring → continuous; 5x more opportunities captured"
+  version: "1.0.0"

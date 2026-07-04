@@ -1,0 +1,250 @@
+- template_id: tpl-health-preauth
+  slug: health-insurance-pre-auth-request
+  name: Insurance Pre-Authorization Request Agent
+  domain: healthcare
+  description: Prepares and submits insurance pre-authorization requests for planned procedures — collects clinical documentation, checks coverage, and tracks approval status.
+  long_description: >-
+    Manual pre-auth requests take 2-3 days and have a 30% initial rejection rate due to
+    incomplete documentation. This agent collects patient demographics, diagnosis codes,
+    and clinical notes, checks the patient's insurance coverage and prior auth requirements,
+    prepares the auth request with all required documentation, submits to the payer, and
+    tracks approval status with automated follow-ups.
+  source_use_cases:
+    - "12-healthcare/UC-1"
+  system_prompt: >-
+    You process insurance pre-authorizations carefully. Verify patient identity and
+    insurance eligibility before submitting. Include all required clinical documentation
+    — incomplete submissions delay patient care. Never modify clinical notes — only
+    compile and submit. Escalate denials to the billing team immediately.
+    All submissions require physician attestation.
+  goal_template: >-
+    Submit insurance pre-authorization for patient {patient_id} ({patient_name}) for
+    procedure {procedure_code} ({procedure_name}). Insurance: {insurance_provider},
+    policy {policy_number}. Diagnosis: {diagnosis_code}. Attending physician:
+    {physician_name}. Collect clinical docs, verify coverage, submit auth request,
+    and track approval status. Alert {billing_contact} on approval or denial.
+  parameters_schema:
+    properties:
+      patient_id: {type: string}
+      patient_name: {type: string}
+      procedure_code: {type: string}
+      procedure_name: {type: string}
+      insurance_provider: {type: string}
+      policy_number: {type: string}
+      diagnosis_code: {type: string}
+      physician_name: {type: string}
+      billing_contact: {type: string, format: email}
+    required: [patient_id, patient_name, procedure_code, insurance_provider, policy_number, diagnosis_code, physician_name, billing_contact]
+  required_connectors: [email, database_query, document_reader, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Submit pre-auth for patient P-12345 for knee arthroscopy. Insurance: Apollo Munich, policy PM-9876."
+      required_tools: [email, database_query, document_reader]
+      expected_output_contains: ["pre-authorization", "submitted", "coverage"]
+  tags: [healthcare, insurance, billing, pre-auth]
+  revenue_model: "₹200/auth request; ₹15,000/mo unlimited"
+  roi_note: "Pre-auth processing 3 days → 4 hours; denial rate -40%"
+  version: "1.0.0"
+
+- template_id: tpl-health-appointment-reminder
+  slug: health-patient-appointment-reminder
+  name: Patient Appointment Reminder Agent
+  domain: healthcare
+  description: Sends automated, personalized appointment reminders via SMS/email at 48h and 24h before appointments — reducing no-shows and managing rescheduling.
+  source_use_cases:
+    - "12-healthcare/UC-2"
+  system_prompt: >-
+    You send appointment reminders that are compassionate and informative. Include
+    appointment details, preparation instructions (fasting, pre-procedure requirements),
+    directions, and a clear rescheduling option. Never share sensitive health information
+    via SMS. For high-risk patients (elderly, complex procedures), confirm receipt
+    by phone.
+  goal_template: >-
+    Send appointment reminders for {appointment_count} appointments at {facility_name}
+    scheduled for {appointment_date}. Send via {channel} at {reminder_hours} hours before.
+    Include appointment time, doctor name, preparation instructions for {procedure_type},
+    and rescheduling link {reschedule_url}. Track delivery status and flag no-responses
+    for {appointment_date} appointments by {follow_up_time}.
+  parameters_schema:
+    properties:
+      appointment_count: {type: integer}
+      facility_name: {type: string}
+      appointment_date: {type: string, format: date}
+      channel: {type: string, enum: [email, sms, both]}
+      reminder_hours: {type: array, items: {type: integer}, default: [48, 24]}
+      procedure_type: {type: string}
+      reschedule_url: {type: string}
+      follow_up_time: {type: string}
+    required: [facility_name, appointment_date, channel]
+  required_connectors: [email, database_query]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Send reminders for 50 appointments at CityHospital on 2026-07-10. Email and SMS at 48h and 24h."
+      required_tools: [email, database_query]
+      expected_output_contains: ["reminder", "appointment", "delivered"]
+  tags: [healthcare, appointments, patient-engagement, no-show]
+  revenue_model: "₹10/reminder; ₹5,000/mo unlimited"
+  roi_note: "No-show rate -35%; appointment utilization +20%"
+  version: "1.0.0"
+
+- template_id: tpl-health-discharge-summary
+  slug: health-discharge-summary-generator
+  name: Discharge Summary Generator
+  domain: healthcare
+  description: Generates structured discharge summaries from clinical notes, lab results, and treatment records — formatted per hospital standards and ready for patient handover.
+  source_use_cases:
+    - "12-healthcare/UC-3"
+  system_prompt: >-
+    You generate accurate, complete discharge summaries. Always include: admission
+    diagnosis, procedures performed, key findings, medications prescribed, discharge
+    instructions, follow-up appointments, and red flag symptoms. Never paraphrase
+    clinical findings — use the exact clinical language from the source records.
+    All summaries require physician sign-off before release.
+  goal_template: >-
+    Generate discharge summary for patient {patient_id} ({patient_name}) admitted
+    {admission_date} and discharged {discharge_date} under Dr. {physician_name}.
+    Include diagnosis {diagnosis}, procedures, lab results, medication list, discharge
+    instructions, follow-up in {followup_days} days with {followup_department}, and
+    red flag symptoms. Format per {hospital_name} standard. Route for physician sign-off.
+  parameters_schema:
+    properties:
+      patient_id: {type: string}
+      patient_name: {type: string}
+      admission_date: {type: string, format: date}
+      discharge_date: {type: string, format: date}
+      physician_name: {type: string}
+      diagnosis: {type: string}
+      followup_days: {type: integer, default: 7}
+      followup_department: {type: string}
+      hospital_name: {type: string}
+    required: [patient_id, patient_name, admission_date, discharge_date, physician_name, diagnosis, hospital_name]
+  required_connectors: [database_query, document_reader, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Generate discharge summary for patient P-56789 admitted 2026-06-28, discharged 2026-07-03."
+      required_tools: [database_query, document_reader, pdf_generator]
+      expected_output_contains: ["discharge", "diagnosis", "medications"]
+  tags: [healthcare, clinical, documentation, discharge]
+  revenue_model: "₹100/summary; ₹5,000/mo unlimited"
+  roi_note: "Summary creation 45min → 8min; 100% completeness compliance"
+  version: "1.0.0"
+
+- template_id: tpl-health-lab-interpretation
+  slug: health-lab-report-interpretation
+  name: Lab Report Interpretation Agent
+  domain: healthcare
+  description: Interprets lab test reports — flags abnormal values, explains clinical significance, identifies trending changes, and generates a patient-friendly summary.
+  source_use_cases:
+    - "12-healthcare/UC-4"
+  system_prompt: >-
+    You interpret lab reports accurately for clinical use. Flag all values outside
+    reference ranges. Assess clinical significance in the context of the patient's
+    age, gender, and known conditions. Never diagnose — only interpret. Always
+    recommend physician review for critical values. Generate both a clinical summary
+    and a patient-friendly explanation separately.
+  goal_template: >-
+    Interpret lab report for patient {patient_id} ({patient_name}, age {age},
+    gender {gender}) with known conditions: {known_conditions}. Report from
+    {lab_name} dated {report_date}. Flag all out-of-range values with clinical
+    significance, identify critical values requiring immediate physician attention,
+    compare with previous results from {comparison_date} if available, and
+    generate a patient-friendly summary.
+  parameters_schema:
+    properties:
+      patient_id: {type: string}
+      patient_name: {type: string}
+      age: {type: integer}
+      gender: {type: string, enum: [M, F, Other]}
+      known_conditions: {type: string}
+      lab_name: {type: string}
+      report_date: {type: string, format: date}
+      comparison_date: {type: string, format: date}
+    required: [patient_id, patient_name, age, gender, lab_name, report_date]
+  required_connectors: [document_reader, email, pdf_generator]
+  optional_connectors: [database_query]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Interpret CBC and LFT report for patient P-34567 (45M, diabetic) from LabCorp dated 2026-07-01."
+      required_tools: [document_reader, pdf_generator]
+      expected_output_contains: ["abnormal", "clinical significance", "recommendation"]
+  tags: [healthcare, lab, diagnostics, clinical]
+  revenue_model: "₹50/report; ₹3,000/mo unlimited"
+  roi_note: "Lab interpretation time 15min → 2min; critical value detection 100%"
+  version: "1.0.0"
+
+- template_id: tpl-health-drug-interaction
+  slug: health-drug-drug-interaction-check
+  name: Drug-Drug Interaction Checker
+  domain: healthcare
+  description: Checks a patient's medication list for drug-drug interactions, contraindications, and dosage appropriateness — alerting the prescribing physician for risky combinations.
+  source_use_cases:
+    - "12-healthcare/UC-5"
+  system_prompt: >-
+    You check drug interactions rigorously using established interaction databases.
+    Classify interactions as Major/Moderate/Minor. For Major interactions, alert the
+    prescribing physician immediately before dispensing. Always check for interactions
+    with the patient's known conditions and allergies. Never recommend alternative drugs
+    without physician approval.
+  goal_template: >-
+    Check drug interactions for patient {patient_id} ({patient_name}, age {age}).
+    Medication list: {medication_list}. Known allergies: {allergies}. Conditions:
+    {conditions}. Check for drug-drug, drug-condition, and drug-allergy interactions.
+    Classify each as Major/Moderate/Minor. Alert prescribing physician {physician_email}
+    for any Major interactions before dispensing.
+  parameters_schema:
+    properties:
+      patient_id: {type: string}
+      patient_name: {type: string}
+      age: {type: integer}
+      medication_list: {type: string}
+      allergies: {type: string}
+      conditions: {type: string}
+      physician_email: {type: string, format: email}
+    required: [patient_id, patient_name, medication_list, physician_email]
+  required_connectors: [web_search, database_query, email]
+  optional_connectors: [pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Check drug interactions for patient P-78901 on Warfarin, Aspirin, and Metformin. Physician: dr@hospital.com."
+      required_tools: [web_search, database_query, email]
+      expected_output_contains: ["interaction", "Major", "physician"]
+  tags: [healthcare, pharmacy, drug-safety, clinical]
+  revenue_model: "₹20/check; ₹2,000/mo unlimited"
+  roi_note: "Drug interaction error reduction 90%; adverse event prevention"
+  version: "1.0.0"
+
+- template_id: tpl-health-billing-qc
+  slug: health-medical-billing-qc
+  name: Medical Billing Quality Control Agent
+  domain: healthcare
+  description: Audits medical bills for coding errors, unbundling violations, duplicate claims, and missing documentation before submission to ensure clean claim rates.
+  source_use_cases:
+    - "12-healthcare/UC-6"
+  system_prompt: >-
+    You audit medical bills for accuracy and compliance. Check for upcoding,
+    unbundling, and duplicate charges. Verify that procedure codes match the
+    diagnosis codes (ICD-10/CPT compatibility). Flag modifier misuse. Never approve
+    a claim that lacks supporting documentation. All corrections require billing
+    manager review.
+  goal_template: >-
+    Audit {claim_count} pending claims for {facility_name} for payer {payer_name}
+    before submission. Check for coding errors (ICD-10/CPT compatibility), unbundling,
+    duplicate charges, and missing documentation. Flag claims with errors and generate
+    a correction worksheet. Compute expected clean claim rate and estimated revenue
+    impact of identified errors.
+  parameters_schema:
+    properties:
+      claim_count: {type: integer}
+      facility_name: {type: string}
+      payer_name: {type: string}
+    required: [claim_count, facility_name, payer_name]
+  required_connectors: [database_query, document_reader, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Audit 200 claims for CityHospital for Star Health before monthly submission."
+      required_tools: [database_query, document_reader]
+      expected_output_contains: ["billing", "error", "clean claim"]
+  tags: [healthcare, billing, coding, compliance]
+  revenue_model: "₹50/claim audit; ₹20,000/mo unlimited"
+  roi_note: "Clean claim rate 72% → 94%; denial revenue recovery ₹15L+/month"
+  version: "1.0.0"

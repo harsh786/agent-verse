@@ -192,12 +192,14 @@ class SemanticCache:
         l1_ttl: float = 300.0,
         compress: bool = True,
         max_response: int = 8000,
+        backend: Any = None,  # CacheBackend — ANN lookup (L2 upgrade)
     ) -> None:
         self._threshold = threshold
         self._ttl = int(ttl_seconds)
         self._redis: Any = redis
         self._compress = compress
         self._max_response = max_response
+        self._backend: Any = backend  # None = use existing Redis scan
         # L1 TTL: use the smaller of l1_ttl and ttl_seconds for backward compat
         # (old API passed ttl_seconds=0.05 for tests; L1 must respect that)
         effective_l1_ttl = min(l1_ttl, ttl_seconds)
@@ -232,6 +234,27 @@ class SemanticCache:
             s["l1_hits"] += 1
             logger.debug("semantic_cache_l1_hit", tenant=tenant_id, latency_ms=round(latency_ms, 2))
             return _CacheHit(response=l1_response, similarity=1.0, source="l1", latency_ms=latency_ms)
+
+        # ── L2 ANN backend lookup (pgvector HNSW — faster for large caches) ──
+        if self._backend is not None:
+            try:
+                ann_hit = await self._backend.get_similar(embedding, tenant_id, self._threshold)
+                if ann_hit is not None:
+                    response = ann_hit["response"]
+                    score = float(ann_hit.get("score", 1.0))
+                    self._l1._put(embedding, response, tenant_id, key=f"ann:{id(response)}")
+                    latency_ms = (time.monotonic() - t0) * 1000
+                    s["hits"] += 1
+                    s["l2_hits"] += 1
+                    logger.debug(
+                        "semantic_cache_ann_hit",
+                        tenant=tenant_id,
+                        similarity=round(score, 4),
+                        latency_ms=round(latency_ms, 2),
+                    )
+                    return _CacheHit(response=response, similarity=score, source="l2_ann", latency_ms=latency_ms)
+            except Exception as _ann_exc:
+                logger.debug("semantic_cache_ann_error", error=str(_ann_exc)[:80])
 
         # ── L2 Redis lookup ──────────────────────────────────────────────────
         if self._redis is not None:

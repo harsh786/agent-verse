@@ -1,0 +1,57 @@
+- name: Draft Non-Disclosure Agreement
+  domain: legal
+  description: Draft a customized NDA for two parties with specified terms and governing law.
+  goal_text: >-
+    Draft a {{nda_type}} NDA between {{party_one}} and {{party_two}} for the purpose of
+    {{purpose}}. Governing law: {{jurisdiction}}. Duration: {{duration_years}} years.
+    Include definitions of confidential information, permitted disclosures, return of
+    information obligations, and dispute resolution via {{dispute_resolution}}.
+  source_use_cases:
+    - "06-legal/UC-2"
+
+- name: Review Employment Agreement
+  domain: legal
+  description: Review an employment contract for legal compliance and unusual clauses.
+  goal_text: >-
+    Review the employment agreement at {{document_url}} for {{employee_role}} under
+    {{jurisdiction}} employment law. Check for compliance with applicable statutes,
+    flag non-standard non-compete (longer than {{max_noncompete_months}} months) and
+    IP assignment clauses, identify missing mandatory provisions, and rate each issue
+    Critical/High/Medium/Low with recommended amendments.
+  source_use_cases:
+    - "06-legal/UC-3"
+
+- name: Generate Compliance Checklist
+  domain: legal
+  description: Generate a full regulatory compliance checklist for a business entity.
+  goal_text: >-
+    Generate a compliance checklist for {{entity_name}} — a {{entity_type}} in
+    {{industry}} sector in {{state}}, India. Annual turnover: ₹{{turnover_cr}} Cr,
+    employees: {{employee_count}}. Include all applicable compliances under Companies
+    Act, GST, Income Tax, labor laws, and sector-specific regulations for FY {{fy}}.
+    Highlight items with penalty > ₹{{penalty_threshold}}.
+  source_use_cases:
+    - "06-legal/UC-4"
+
+- name: Track Regulatory Filing Deadlines
+  domain: legal
+  description: Track and remind about upcoming regulatory filing deadlines for an entity.
+  goal_text: >-
+    Track all regulatory filing deadlines for {{entity_name}} (CIN: {{cin}}) for Q{{quarter}}
+    FY {{fy}}. Include MCA annual filings, GST monthly/quarterly returns, TDS returns,
+    labor law compliances, and FEMA filings if applicable. Send email reminders to
+    {{reminder_email}} at 30, 7, and 1 day before each deadline.
+  source_use_cases:
+    - "06-legal/UC-5"
+
+- name: Conduct IP Due Diligence
+  domain: legal
+  description: Perform IP asset due diligence for a transaction target.
+  goal_text: >-
+    Conduct IP due diligence for {{target_entity}} as part of {{transaction_type}}.
+    Inventory patents, trademarks, and copyrights. Verify ownership and check for
+    encumbrances, disputed ownership, or expiry within {{horizon_years}} years.
+    Assess open-source license compliance risk. Generate a risk-rated IP due
+    diligence report with recommended protective actions.
+  source_use_cases:
+    - "06-legal/UC-6"

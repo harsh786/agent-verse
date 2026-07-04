@@ -136,8 +136,24 @@ class WorkflowExecutor:
             # Prefer tool execution via MCP when a tool name is specified
             if step.tool and self._mcp_client is not None:
                 try:
+                    server_id = ""
+                    # If server_id is empty, resolve it from the registry
+                    if not server_id and self._mcp_client is not None:
+                        try:
+                            all_servers = await self._mcp_client._registry.list_all(
+                                tenant_ctx=tenant_ctx
+                            )
+                            for srv in all_servers:
+                                for tdef in (srv.tool_definitions or []):
+                                    if tdef.get("name") == step.tool:
+                                        server_id = srv.id
+                                        break
+                                if server_id:
+                                    break
+                        except Exception:
+                            pass
                     result = await self._mcp_client.call_tool(
-                        server_id="",
+                        server_id=server_id,
                         tool_name=step.tool,
                         arguments={
                             "description": step.description,

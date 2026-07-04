@@ -1,0 +1,232 @@
+- template_id: tpl-sales-lead-enrichment
+  slug: sales-lead-enrichment-scoring
+  name: Lead Enrichment and Scoring Agent
+  domain: sales-crm
+  description: Enriches new CRM leads with company data, technographics, and intent signals — then scores each lead on ICP fit and purchase intent for prioritized outreach.
+  long_description: >-
+    Sales reps waste 40% of their time on leads that will never convert. This agent
+    pulls new leads from HubSpot/Salesforce, enriches with company size, funding,
+    tech stack, and recent news via web search, computes an ICP fit score (0-100),
+    adds intent signals from engagement data, and updates the CRM with enriched data
+    and a priority segment (Hot/Warm/Cold).
+  source_use_cases:
+    - "04-sales/UC-1"
+  system_prompt: >-
+    You enrich leads objectively. Only use publicly available company data — never
+    fabricate company information. Apply ICP scoring criteria consistently. Flag leads
+    where company data is unavailable rather than guessing. Always update the CRM with
+    source and confidence for every data point added.
+  goal_template: >-
+    Enrich and score {lead_count} new leads from {crm} created since {since_date}.
+    Enrich each with company size, industry, funding stage, and tech stack. Score on
+    ICP fit using criteria: {icp_criteria}. Segment as Hot/Warm/Cold and update
+    CRM records. Assign Hot leads to rep {assigned_rep} in {territory}.
+  parameters_schema:
+    properties:
+      lead_count: {type: integer}
+      crm: {type: string, enum: [hubspot, salesforce, pipedrive]}
+      since_date: {type: string, format: date}
+      icp_criteria: {type: string}
+      assigned_rep: {type: string}
+      territory: {type: string}
+    required: [crm, since_date]
+  required_connectors: [hubspot, web_search, google_sheets]
+  optional_connectors: [salesforce, pipedrive]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Enrich 50 HubSpot leads from last 7 days. ICP: SaaS, 50-500 employees, US. Assign Hot leads to Alice."
+      required_tools: [hubspot, web_search]
+      expected_output_contains: ["enriched", "score", "ICP"]
+  tags: [sales, leads, crm, enrichment]
+  revenue_model: "₹50/lead enrichment; ₹20,000/mo unlimited"
+  roi_note: "Rep time on qualified leads +60%; lead conversion rate +25%"
+  version: "1.0.0"
+
+- template_id: tpl-sales-pipeline-monitor
+  slug: sales-pipeline-health-monitor
+  name: Pipeline Health Monitor
+  domain: sales-crm
+  description: Analyzes the sales pipeline for health indicators — stalled deals, coverage ratio, stage velocity, and forecast accuracy — generating weekly coaching insights.
+  source_use_cases:
+    - "04-sales/UC-2"
+  system_prompt: >-
+    You analyze sales pipelines with the rigor of a revenue operations analyst.
+    Distinguish between active and zombie deals (no activity > 30 days). Calculate
+    pipeline coverage ratio and stage conversion rates. Flag deals likely to slip
+    based on close date changes and activity patterns. Be specific about which deals
+    need manager attention.
+  goal_template: >-
+    Analyze the {team} pipeline in {crm} as of {as_of_date}. Identify stalled deals
+    (no activity > {stall_days} days), compute pipeline coverage ratio, stage velocity,
+    and forecast accuracy vs target {quota}. Generate a pipeline health report with
+    top 5 at-risk deals and coaching recommendations. Post to {slack_channel}.
+  parameters_schema:
+    properties:
+      team: {type: string}
+      crm: {type: string, enum: [salesforce, hubspot, pipedrive]}
+      as_of_date: {type: string, format: date}
+      stall_days: {type: integer, default: 30}
+      quota: {type: number}
+      slack_channel: {type: string}
+    required: [team, crm, as_of_date]
+  required_connectors: [salesforce, google_sheets, slack]
+  optional_connectors: [hubspot, pipedrive]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze APAC pipeline in Salesforce as of 2026-07-05. Target: $2M. Flag stalled deals."
+      required_tools: [salesforce, google_sheets]
+      expected_output_contains: ["pipeline", "stalled", "coverage"]
+  tags: [sales, pipeline, forecasting, crm]
+  revenue_model: "₹15,000/mo per team"
+  roi_note: "Forecast accuracy +30%; stalled deal recovery rate 45%"
+  version: "1.0.0"
+
+- template_id: tpl-sales-proposal-generator
+  slug: sales-proposal-generator
+  name: Sales Proposal Generator
+  domain: sales-crm
+  description: Generates customized, professional sales proposals from CRM opportunity data — tailored to the prospect's industry, pain points, and commercial terms.
+  source_use_cases:
+    - "04-sales/UC-3"
+  system_prompt: >-
+    You write compelling, accurate sales proposals. Ground every claim in the prospect's
+    stated pain points and business context from the CRM. Never invent pricing or
+    capabilities not in the product catalog. Include ROI calculations when data
+    supports it. Route for sales manager approval before sending.
+  goal_template: >-
+    Generate a sales proposal for opportunity {opportunity_id} ({opportunity_name}) in
+    {crm}. Prospect: {prospect_company} in {industry}. Include executive summary,
+    tailored value proposition, solution overview, commercial terms (₹{deal_value}),
+    ROI calculation, and next steps. Format as PDF and email to {prospect_email}.
+  parameters_schema:
+    properties:
+      opportunity_id: {type: string}
+      opportunity_name: {type: string}
+      crm: {type: string, enum: [salesforce, hubspot]}
+      prospect_company: {type: string}
+      industry: {type: string}
+      deal_value: {type: number}
+      prospect_email: {type: string, format: email}
+    required: [opportunity_id, opportunity_name, crm, prospect_company, deal_value, prospect_email]
+  required_connectors: [salesforce, gmail, pdf_generator]
+  optional_connectors: [hubspot]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate proposal for OPP-2026-042 (CloudMigration deal) for TechCorp in IT sector. Value ₹25L."
+      required_tools: [salesforce, pdf_generator]
+      expected_output_contains: ["proposal", "ROI", "value proposition"]
+  tags: [sales, proposals, crm, automation]
+  revenue_model: "₹500/proposal; ₹15,000/mo unlimited"
+  roi_note: "Proposal creation 6h → 30min; win rate +18% with customized proposals"
+  version: "1.0.0"
+
+- template_id: tpl-sales-meeting-brief
+  slug: sales-meeting-brief-creator
+  name: Meeting Brief Creator
+  domain: sales-crm
+  description: Creates a comprehensive pre-meeting brief for a sales call — prospect background, recent news, CRM history, suggested talking points, and likely objections.
+  source_use_cases:
+    - "04-sales/UC-4"
+  system_prompt: >-
+    You create sharp, actionable meeting briefs. Limit to 1 page — a rep should read
+    it in 2 minutes. Focus on what is most relevant to closing: champion dynamics,
+    budget signals, competitive threats, and recent company news. Suggest 3 specific
+    talk tracks and anticipated objections with counters.
+  goal_template: >-
+    Create a pre-call brief for meeting with {contact_name} at {company_name} on
+    {meeting_date}. Pull CRM history from {crm} for opportunity {opportunity_id},
+    research recent company news and {contact_name}'s LinkedIn activity, and generate
+    a 1-page brief with background, CRM context, suggested talk tracks, likely
+    objections, and recommended next step.
+  parameters_schema:
+    properties:
+      contact_name: {type: string}
+      company_name: {type: string}
+      meeting_date: {type: string, format: date}
+      crm: {type: string, enum: [salesforce, hubspot, pipedrive]}
+      opportunity_id: {type: string}
+    required: [contact_name, company_name, meeting_date, crm]
+  required_connectors: [hubspot, web_search, gmail]
+  optional_connectors: [salesforce, pipedrive]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Create pre-call brief for meeting with Priya Shah at FinTechCo on 2026-07-10."
+      required_tools: [hubspot, web_search]
+      expected_output_contains: ["brief", "talk track", "objections"]
+  tags: [sales, meetings, crm, research]
+  revenue_model: "₹200/brief; ₹8,000/mo unlimited"
+  roi_note: "Meeting prep 45min → 5min; first-call discovery quality +40%"
+  version: "1.0.0"
+
+- template_id: tpl-sales-win-loss
+  slug: sales-deal-win-loss-analysis
+  name: Deal Win/Loss Analysis Agent
+  domain: sales-crm
+  description: Analyzes closed deals to identify win/loss patterns by industry, competitor, rep, deal size, and sales cycle length — generating actionable coaching insights.
+  source_use_cases:
+    - "04-sales/UC-5"
+  system_prompt: >-
+    You analyze win/loss patterns with statistical rigor. Require at least 20 deals
+    before drawing pattern conclusions. Distinguish correlation from causation.
+    Focus on actionable insights — what can a rep do differently tomorrow. Segment
+    by deal size (SMB/MM/Enterprise) to avoid Simpson's paradox.
+  goal_template: >-
+    Analyze {count} closed deals from {crm} in period {date_range} for team {team}.
+    Identify win/loss patterns by industry, competitor, deal size, sales cycle length,
+    and rep. Compute win rate by segment. Generate top 5 win factors, top 5 loss
+    reasons, and 3 coaching recommendations. Export to Google Sheets.
+  parameters_schema:
+    properties:
+      count: {type: integer}
+      crm: {type: string, enum: [salesforce, hubspot]}
+      date_range: {type: string}
+      team: {type: string}
+    required: [count, crm, date_range, team]
+  required_connectors: [salesforce, google_sheets]
+  optional_connectors: [hubspot, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze 100 closed deals from Salesforce in Q1 2026 for APAC team."
+      required_tools: [salesforce, google_sheets]
+      expected_output_contains: ["win rate", "loss reasons", "patterns"]
+  tags: [sales, analytics, win-loss, crm]
+  revenue_model: "₹10,000/analysis; ₹20,000/mo unlimited"
+  roi_note: "Win rate improvement 8-15% after applying insights; avg deal size +22%"
+  version: "1.0.0"
+
+- template_id: tpl-sales-churn-predictor
+  slug: sales-customer-churn-predictor
+  name: Customer Churn Predictor
+  domain: sales-crm
+  description: Predicts customer churn risk using engagement signals, product usage, support ticket patterns, and NPS — enabling proactive retention interventions.
+  source_use_cases:
+    - "04-sales/UC-6"
+  system_prompt: >-
+    You predict churn risk objectively. Use all available signals — product usage
+    decline, support ticket escalations, NPS drop, champion attrition, and payment
+    delays. Assign risk scores with confidence levels. For High-risk accounts,
+    suggest specific retention playbooks. Never flag customers as churned —
+    only at-risk with a probability.
+  goal_template: >-
+    Predict churn risk for {account_count} accounts in {crm} with renewal in next
+    {days} days. Analyze usage metrics, support history, NPS scores, and engagement
+    signals. Score each account Low/Medium/High/Critical churn risk. For High/Critical
+    accounts, generate a retention action plan and assign to CSM {csm_name}.
+  parameters_schema:
+    properties:
+      account_count: {type: integer}
+      crm: {type: string, enum: [salesforce, hubspot]}
+      days: {type: integer, default: 90}
+      csm_name: {type: string}
+    required: [crm, days]
+  required_connectors: [salesforce, database_query, google_sheets]
+  optional_connectors: [hubspot, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Predict churn risk for 200 Salesforce accounts renewing in next 90 days. CSM: Sarah."
+      required_tools: [salesforce, database_query]
+      expected_output_contains: ["churn risk", "retention", "action plan"]
+  tags: [sales, churn, retention, crm]
+  revenue_model: "₹15,000/mo per segment"
+  roi_note: "Churn rate -22% on average; NRR improvement 8 points"
+  version: "1.0.0"

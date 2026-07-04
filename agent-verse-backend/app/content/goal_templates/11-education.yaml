@@ -1,0 +1,41 @@
+- name: Grade Student Assignments
+  domain: education
+  description: Grade a batch of student submissions against a rubric and generate feedback.
+  goal_text: >-
+    Grade {{submission_count}} submissions for {{assignment_name}} in course {{course_code}}.
+    Apply rubric: {{rubric_description}}. Score each submission (0-100). Generate
+    2-sentence personalised feedback per student. Flag submissions above {{plagiarism_pct}}%
+    similarity for review.
+  source_use_cases:
+    - "11-education/UC-1"
+
+- name: Create Semester Curriculum Plan
+  domain: education
+  description: Generate a semester curriculum map aligned to board syllabus.
+  goal_text: >-
+    Create {{weeks}}-week curriculum plan for {{subject_name}} ({{class_standard}})
+    aligned to {{board_name}} syllabus. Distribute {{total_periods}} periods across
+    chapters. Mark unit tests at weeks {{assessment_weeks}}. Flag chapters needing lab
+    sessions.
+  source_use_cases:
+    - "11-education/UC-2"
+
+- name: Identify At-Risk Students
+  domain: education
+  description: Analyse student performance data to identify students needing intervention.
+  goal_text: >-
+    Analyse {{student_count}} students in {{class_name}} for {{period}}. Flag students
+    with attendance below {{min_attendance_pct}}% or score below {{min_score_pct}}%.
+    Generate individual intervention recommendations. Send report to {{teacher_email}}.
+  source_use_cases:
+    - "11-education/UC-3"
+
+- name: Send Parent Progress Updates
+  domain: education
+  description: Send personalised progress updates to parents of students in a class.
+  goal_text: >-
+    Send {{update_type}} to parents of all students in {{class_name}}. Personalise
+    each message with student name, attendance ({{attendance_pct}}%), and last test
+    score. Send via {{channel}} at {{send_time}}.
+  source_use_cases:
+    - "11-education/UC-4"

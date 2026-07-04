@@ -1265,6 +1265,7 @@ def _record_schedule_fire_metric(status: str) -> None:
 @beat_task_guard(lock_ttl_seconds=120)
 def record_queue_depths(self: Any) -> dict[str, Any]:
     """Record Celery Redis queue depths for autoscaling and dashboards."""
+    import math
     import os
 
     redis_url = os.getenv("REDIS_URL", "")
@@ -1276,6 +1277,7 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
         import redis as sync_redis
 
         from app.observability.metrics import record_queue_depth
+        from app.scaling.celery_app import PLAN_QUEUE_MAP
 
         redis_from_url = cast(Any, sync_redis.from_url)
         r = redis_from_url(redis_url, decode_responses=True)
@@ -1284,6 +1286,22 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
             depth = int(r.llen(queue))
             depths[queue] = depth
             record_queue_depth(queue, float(depth))
+
+        # Per-plan autoscale signal: compute desired worker count per plan queue
+        tasks_per_worker = int(os.getenv("TASKS_PER_WORKER", "4"))
+        plan_depths: dict[str, int] = {}
+        for plan, queue_name in PLAN_QUEUE_MAP.items():
+            plan_depth = int(r.llen(queue_name))
+            plan_depths[plan] = plan_depth
+            depths[queue_name] = plan_depth
+        for plan, depth in plan_depths.items():
+            desired = max(1, math.ceil(depth / tasks_per_worker))
+            try:
+                from app.observability.metrics import record_desired_workers
+                record_desired_workers(plan=plan, count=desired)
+            except Exception:
+                pass
+
         return {
             "status": "ok",
             "queues_recorded": len(depths),

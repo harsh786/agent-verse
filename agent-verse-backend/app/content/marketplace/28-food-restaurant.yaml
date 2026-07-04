@@ -1,0 +1,178 @@
+- template_id: tpl-food-ota-reconciliation
+  slug: food-ota-reconciliation
+  name: Swiggy/Zomato Reconciliation Agent
+  domain: food-restaurant
+  description: Reconciles OTA (Swiggy, Zomato) orders with POS data, flags missing orders and incorrect payouts, and generates weekly settlement dispute letters.
+  source_use_cases:
+    - "28-food-restaurant/UC-1"
+  system_prompt: >-
+    You are a restaurant finance specialist. Reconcile OTA settlement reports against
+    POS order data. Flag orders in OTA but missing in POS (or vice versa). Identify
+    incorrect commission deductions. Generate dispute letters for confirmed discrepancies.
+    Track outstanding disputes.
+  goal_template: >-
+    Reconcile {ota_name} settlement for {restaurant_name} for period {period}.
+    Compare {ota_orders} OTA orders vs POS data. Flag discrepancies above ₹{min_dispute}.
+    Generate settlement dispute letter and weekly report to {owner_email}.
+  parameters_schema:
+    properties:
+      ota_name: {type: string, enum: [swiggy, zomato, both]}
+      restaurant_name: {type: string}
+      period: {type: string}
+      ota_orders: {type: integer}
+      min_dispute: {type: number, default: 100}
+      owner_email: {type: string, format: email}
+    required: [ota_name, restaurant_name, period, owner_email]
+  required_connectors: [document_reader, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Reconcile Swiggy+Zomato settlements for Biryani Hub for June 2026. Flag >₹100 discrepancies."
+      expected_output_contains: ["reconciliation", "settlement", "dispute"]
+  tags: [food-restaurant, ota, reconciliation]
+  revenue_model: "₹2,000/mo per outlet"
+  roi_note: "Average 2-3% revenue leakage recovered; 4h/month saved"
+  version: "1.0.0"
+
+- template_id: tpl-food-menu-price
+  slug: food-menu-price-optimizer
+  name: Menu Price Optimizer
+  domain: food-restaurant
+  description: Analyses dish-level contribution margins, competitive pricing, and demand elasticity to recommend optimal menu prices.
+  source_use_cases:
+    - "28-food-restaurant/UC-2"
+  system_prompt: >-
+    You are a restaurant revenue manager. Analyse food cost, preparation time, and
+    sales velocity for each menu item. Identify stars (high margin, high volume),
+    plowhorses (low margin, high volume), puzzles, and dogs. Recommend price adjustments
+    to shift mix toward higher-margin items.
+  goal_template: >-
+    Optimise menu pricing for {restaurant_name} ({menu_items} items). Analyse food cost %
+    (target: {target_food_cost}%), sales velocity, and competitor prices. Identify
+    {stars} stars, {plowhorses} plowhorses. Recommend price changes for {adjust_items}
+    items. Report to {owner_email}.
+  parameters_schema:
+    properties:
+      restaurant_name: {type: string}
+      menu_items: {type: integer}
+      target_food_cost: {type: number, default: 30}
+      stars: {type: integer}
+      plowhorses: {type: integer}
+      adjust_items: {type: integer, default: 10}
+      owner_email: {type: string, format: email}
+    required: [restaurant_name, menu_items, owner_email]
+  required_connectors: [database_query, google_sheets, email, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Optimise menu for Pizza Palace (80 items). Target 32% food cost. Identify stars and plowhorses."
+      expected_output_contains: ["food cost", "menu engineering", "pricing"]
+  tags: [food-restaurant, menu, pricing]
+  revenue_model: "₹3,000/menu analysis"
+  roi_note: "Gross margin improved 3-5 percentage points average"
+  version: "1.0.0"
+
+- template_id: tpl-food-safety-compliance
+  slug: food-safety-compliance-checker
+  name: Food Safety Compliance Checker
+  domain: food-restaurant
+  description: Monitors FSSAI compliance requirements, tracks license renewals, audit readiness, and generates HACCP documentation.
+  source_use_cases:
+    - "28-food-restaurant/UC-3"
+  system_prompt: >-
+    You are an FSSAI compliance specialist. Track all FSSAI requirements for the
+    restaurant category. Alert on license expiry 60/30/7 days before. Generate HACCP
+    checklists for critical control points. Document temperature logs and cleaning records
+    per FSSAI norms.
+  goal_template: >-
+    Check FSSAI compliance for {restaurant_name} (License: {fssai_license}). License
+    expiry: {license_expiry}. Check {compliance_areas} compliance areas. Generate HACCP
+    documentation for {kitchen_operations} kitchen operations. Alert {manager_email}.
+  parameters_schema:
+    properties:
+      restaurant_name: {type: string}
+      fssai_license: {type: string}
+      license_expiry: {type: string, format: date}
+      compliance_areas: {type: array, items: {type: string}}
+      kitchen_operations: {type: integer, default: 5}
+      manager_email: {type: string, format: email}
+    required: [restaurant_name, fssai_license, license_expiry, manager_email]
+  required_connectors: [web_search, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "FSSAI compliance for Spice Garden (LIC-2021-00045). Expiry Jan 2027. HACCP for 6 operations."
+      expected_output_contains: ["FSSAI", "HACCP", "compliance"]
+  tags: [food-restaurant, food-safety, compliance]
+  revenue_model: "₹2,000/mo per outlet"
+  roi_note: "Zero compliance violations; license renewal never missed"
+  version: "1.0.0"
+
+- template_id: tpl-food-inventory-waste
+  slug: food-inventory-waste-tracker
+  name: Food Inventory Waste Tracker
+  domain: food-restaurant
+  description: Tracks daily food waste by category, calculates waste percentage, identifies waste drivers, and recommends portion and prep adjustments.
+  source_use_cases:
+    - "28-food-restaurant/UC-4"
+  system_prompt: >-
+    You are a restaurant operations specialist. Track food waste at each stage —
+    preparation waste, plate waste, and spoilage. Identify items with waste above
+    industry benchmark. Recommend prep quantity adjustments and portion size changes.
+    Never recommend food safety shortcuts to reduce waste.
+  goal_template: >-
+    Track daily food waste for {restaurant_name} for {tracking_period}. Monitor
+    {waste_categories} waste categories. Flag items above {waste_threshold_pct}% waste
+    ratio. Identify top {top_waste_items} waste items. Recommend actions to {chef_email}.
+  parameters_schema:
+    properties:
+      restaurant_name: {type: string}
+      tracking_period: {type: string}
+      waste_categories: {type: array, items: {type: string}}
+      waste_threshold_pct: {type: number, default: 5}
+      top_waste_items: {type: integer, default: 10}
+      chef_email: {type: string, format: email}
+    required: [restaurant_name, tracking_period, chef_email]
+  required_connectors: [google_sheets, email, database_query]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track food waste for Dosa House for July 2026. Flag >5% waste items. Top 10 waste. Alert chef."
+      expected_output_contains: ["waste", "spoilage", "recommendation"]
+  tags: [food-restaurant, waste, sustainability]
+  revenue_model: "₹1,500/mo per outlet"
+  roi_note: "Food waste reduced 20-30%; saving ₹30,000-50,000/month"
+  version: "1.0.0"
+
+- template_id: tpl-food-complaint-handler
+  slug: food-complaint-handler
+  name: Customer Complaint Handler
+  domain: food-restaurant
+  description: Handles food delivery complaints on OTA platforms and direct channels, generates compensations, and tracks repeat complaint patterns.
+  source_use_cases:
+    - "28-food-restaurant/UC-5"
+  system_prompt: >-
+    You are a restaurant customer experience agent. Respond empathetically to all complaints
+    within 2 hours. Offer appropriate compensation (refund/discount) per complaint severity.
+    Never argue with customers. Identify repeat complaints from same customer to flag fraud
+    risk. Track complaint categories for operational improvement.
+  goal_template: >-
+    Handle {complaint_count} new complaints for {restaurant_name} from {channels}.
+    Resolve within {sla_hours} hours. Auto-approve compensation up to ₹{max_auto_compensation}.
+    Escalate orders worth above ₹{escalation_amount} for human review. Report patterns to
+    {manager_email} weekly.
+  parameters_schema:
+    properties:
+      complaint_count: {type: integer}
+      restaurant_name: {type: string}
+      channels: {type: array, items: {type: string}}
+      sla_hours: {type: integer, default: 2}
+      max_auto_compensation: {type: number, default: 300}
+      escalation_amount: {type: number, default: 1000}
+      manager_email: {type: string, format: email}
+    required: [restaurant_name, channels, manager_email]
+  required_connectors: [email, twilio, database_query, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Handle complaints for Burger Barn from Swiggy+direct. 2h SLA. Auto-compensate up to ₹300. Report to GM."
+      expected_output_contains: ["complaint", "compensation", "resolution"]
+  tags: [food-restaurant, customer-service, complaints]
+  revenue_model: "₹1,000/mo per outlet"
+  roi_note: "Complaint resolution 2h vs 24h; customer retention improved 15%"
+  version: "1.0.0"

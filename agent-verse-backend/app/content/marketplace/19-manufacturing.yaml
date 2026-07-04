@@ -1,0 +1,209 @@
+- template_id: tpl-mfg-predictive-maint
+  slug: mfg-predictive-maintenance
+  name: Predictive Maintenance Alerting
+  domain: manufacturing
+  description: Monitors equipment sensor data to predict failures before they occur, schedules preventive maintenance, and reduces unplanned downtime.
+  source_use_cases:
+    - "19-manufacturing/UC-1"
+  system_prompt: >-
+    You are a predictive maintenance specialist. Analyse sensor time-series data for
+    anomaly patterns correlating with historical failure events. Alert at 80% failure
+    probability threshold. Schedule maintenance during planned downtime windows only.
+    Never trigger emergency stop without human confirmation.
+  goal_template: >-
+    Monitor sensor data for {equipment_name} (Asset ID: {asset_id}) at {plant_name}.
+    Detect anomalies against baseline from {baseline_period}. Alert {maintenance_email}
+    when failure probability exceeds {alert_threshold}%. Schedule PM during window
+    {maintenance_window}.
+  parameters_schema:
+    properties:
+      equipment_name: {type: string}
+      asset_id: {type: string}
+      plant_name: {type: string}
+      baseline_period: {type: string}
+      maintenance_email: {type: string, format: email}
+      alert_threshold: {type: integer, default: 80}
+      maintenance_window: {type: string}
+    required: [equipment_name, asset_id, plant_name, maintenance_email]
+  required_connectors: [database_query, email, slack, google_sheets]
+  optional_connectors: [aws_iot, upkeep]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Monitor CNC Machine M-301 at Pune Plant. Alert maint@plant.in when failure probability >80%. Window: Sunday nights."
+      expected_output_contains: ["anomaly", "failure probability", "maintenance"]
+  tags: [manufacturing, predictive-maintenance, iot]
+  revenue_model: "₹15,000/machine/mo; ₹50,000/mo up to 10 machines"
+  roi_note: "Unplanned downtime reduced 60%; maintenance cost reduced 25%"
+  version: "1.0.0"
+
+- template_id: tpl-mfg-quality-control
+  slug: mfg-quality-control-automation
+  name: Quality Control Automation
+  domain: manufacturing
+  description: Analyses production inspection data to identify defect patterns, calculates Cpk, and generates SPC charts with corrective action recommendations.
+  source_use_cases:
+    - "19-manufacturing/UC-2"
+  system_prompt: >-
+    You are a quality engineer. Apply SPC principles rigorously. Flag assignable causes
+    when control chart rules are violated. Calculate Cpk for critical dimensions. Recommend
+    specific corrective actions for identified defect patterns. Log all NCRs per ISO 9001.
+  goal_template: >-
+    Analyse quality data for {product_name} on line {production_line} for {shift} shift.
+    Check {inspection_count} inspection records. Calculate Cpk for {critical_dimensions}.
+    Generate SPC charts and flag violations. Issue NCR if Cpk below {min_cpk}.
+  parameters_schema:
+    properties:
+      product_name: {type: string}
+      production_line: {type: string}
+      shift: {type: string, enum: [A, B, C, all]}
+      inspection_count: {type: integer}
+      critical_dimensions: {type: array, items: {type: string}}
+      min_cpk: {type: number, default: 1.33}
+    required: [product_name, production_line]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse quality data for Valve-X on Line 2, all shifts. Cpk for bore diameter. Flag Cpk <1.33."
+      expected_output_contains: ["Cpk", "SPC", "defect"]
+  tags: [manufacturing, quality, spc]
+  revenue_model: "₹20,000/production line/mo"
+  roi_note: "Defect rate reduced 35%; scrap cost savings 20%"
+  version: "1.0.0"
+
+- template_id: tpl-mfg-bom-analysis
+  slug: mfg-bom-analysis
+  name: BOM Analysis Agent
+  domain: manufacturing
+  description: Analyses Bills of Materials for cost reduction opportunities, substitute materials, and indented BOM explosion with pricing.
+  source_use_cases:
+    - "19-manufacturing/UC-3"
+  system_prompt: >-
+    You are a manufacturing cost analyst. Explode BOM to raw material level. Compare
+    material costs to market benchmarks. Identify substitution opportunities without
+    compromising specifications. Flag high-cost items (top 20% by spend).
+  goal_template: >-
+    Analyse BOM for {product_name} (BOM code: {bom_code}). Explode to level {bom_level}.
+    Calculate total material cost at {quantity_units} units. Benchmark top {top_items}
+    components by cost and identify substitution opportunities.
+  parameters_schema:
+    properties:
+      product_name: {type: string}
+      bom_code: {type: string}
+      bom_level: {type: integer, default: 5}
+      quantity_units: {type: integer, default: 1000}
+      top_items: {type: integer, default: 10}
+    required: [product_name, bom_code]
+  required_connectors: [database_query, google_sheets, pdf_generator]
+  optional_connectors: [sap, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse BOM for Motor Pump P-200. Explode to level 4. Cost at 1000 units. Find substitutions for top 10."
+      expected_output_contains: ["BOM", "material cost", "substitution"]
+  tags: [manufacturing, bom, cost-reduction]
+  revenue_model: "₹5,000/BOM analysis"
+  roi_note: "Average 8-12% material cost savings identified"
+  version: "1.0.0"
+
+- template_id: tpl-mfg-supplier-audit
+  slug: mfg-supplier-quality-audit
+  name: Supplier Quality Audit Agent
+  domain: manufacturing
+  description: Prepares supplier audit checklists, analyses non-conformances, and generates SCAR (Supplier Corrective Action Request) reports.
+  source_use_cases:
+    - "19-manufacturing/UC-4"
+  system_prompt: >-
+    You are a supplier quality manager. Generate audit checklists based on supplier
+    category and risk rating. Analyse audit findings for systemic issues. Issue SCARs
+    with root cause analysis requirement. Track SCAR closure within 30 days.
+  goal_template: >-
+    Conduct quality audit for supplier {supplier_name} (Code: {supplier_code}) in category
+    {supplier_category}. Risk rating: {risk_rating}. Evaluate {audit_criteria} criteria.
+    Generate SCAR for critical findings. Report to {sqe_email}.
+  parameters_schema:
+    properties:
+      supplier_name: {type: string}
+      supplier_code: {type: string}
+      supplier_category: {type: string}
+      risk_rating: {type: string, enum: [critical, major, minor]}
+      audit_criteria: {type: array, items: {type: string}}
+      sqe_email: {type: string, format: email}
+    required: [supplier_name, supplier_code, supplier_category, sqe_email]
+  required_connectors: [google_sheets, email, pdf_generator, document_reader]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Audit supplier Steel Corp (S-0045), castings category, critical risk. SCAR for major findings to sqe@plant.in."
+      expected_output_contains: ["SCAR", "audit", "non-conformance"]
+  tags: [manufacturing, supplier, quality-audit]
+  revenue_model: "₹3,000/supplier audit"
+  roi_note: "Supplier quality score improved 20%; SCAR closure 30 → 15 days"
+  version: "1.0.0"
+
+- template_id: tpl-mfg-production-schedule
+  slug: mfg-production-schedule-optimizer
+  name: Production Schedule Optimizer
+  domain: manufacturing
+  description: Generates optimised production schedules balancing machine capacity, material availability, and order priorities.
+  source_use_cases:
+    - "19-manufacturing/UC-5"
+  system_prompt: >-
+    You are a production planner. Create schedules that maximise throughput while respecting
+    machine capacity, setup times, and material availability. Prioritise urgent orders.
+    Flag capacity bottlenecks. Never schedule beyond confirmed raw material availability.
+  goal_template: >-
+    Generate production schedule for {order_count} orders for week commencing {week_start}.
+    Plant: {plant_name}, {machine_count} machines. Prioritise orders by {priority_rule}.
+    Flag capacity shortfalls and material gaps. Generate shop floor release to {foreman_email}.
+  parameters_schema:
+    properties:
+      order_count: {type: integer}
+      week_start: {type: string, format: date}
+      plant_name: {type: string}
+      machine_count: {type: integer}
+      priority_rule: {type: string, enum: [delivery_date, customer_priority, value]}
+      foreman_email: {type: string, format: email}
+    required: [order_count, week_start, plant_name, foreman_email]
+  required_connectors: [database_query, google_sheets, email]
+  optional_connectors: [sap]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Schedule 40 orders for week 2026-07-14 at Chennai Plant, 8 machines. Priority by delivery date."
+      expected_output_contains: ["schedule", "capacity", "priority"]
+  tags: [manufacturing, production-planning, scheduling]
+  revenue_model: "₹10,000/plant/mo"
+  roi_note: "On-time delivery improved 15%; machine utilisation +12%"
+  version: "1.0.0"
+
+- template_id: tpl-mfg-oee-monitor
+  slug: mfg-oee-monitor
+  name: OEE Monitoring Agent
+  domain: manufacturing
+  description: Calculates Overall Equipment Effectiveness, tracks Availability/Performance/Quality components, and identifies improvement opportunities.
+  source_use_cases:
+    - "19-manufacturing/UC-6"
+  system_prompt: >-
+    You are an OEE analyst. Calculate OEE components accurately — Availability, Performance,
+    and Quality. Identify top losses using Six Big Losses framework. Recommend Kaizen events
+    for losses above 5%. Generate shift and daily OEE reports.
+  goal_template: >-
+    Calculate OEE for {machine_name} at {plant_name} for {period}. Collect shift data
+    for {shift_count} shifts. Identify top {top_losses} losses. Target OEE: {target_oee}%.
+    Send daily report to {plant_mgr_email}.
+  parameters_schema:
+    properties:
+      machine_name: {type: string}
+      plant_name: {type: string}
+      period: {type: string}
+      shift_count: {type: integer, default: 3}
+      top_losses: {type: integer, default: 5}
+      target_oee: {type: integer, default: 85}
+      plant_mgr_email: {type: string, format: email}
+    required: [machine_name, plant_name, period, plant_mgr_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Calculate OEE for Press P-12 at Gurgaon Plant for July 2026. Target 85%. Daily report to pm@plant.in."
+      expected_output_contains: ["OEE", "availability", "losses"]
+  tags: [manufacturing, oee, efficiency]
+  revenue_model: "₹8,000/machine/mo"
+  roi_note: "OEE improved 8-12 points; waste reduction quantified"
+  version: "1.0.0"

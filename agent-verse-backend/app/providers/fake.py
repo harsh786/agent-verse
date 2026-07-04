@@ -50,12 +50,34 @@ class FakeProvider:
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         self.call_history.append(request)
-        text = self._next_response()
+        content = self._next_response()
+        # Structured output: generate minimal valid JSON when schema is set and
+        # the scripted response is not already a JSON object.
+        if request.response_schema is not None and not content.startswith("{"):
+            try:
+                import json
+                props = request.response_schema.get("properties", {})
+                fake_obj: dict[str, object] = {}
+                for k, v in props.items():
+                    t = v.get("type", "string")
+                    if t == "string":
+                        fake_obj[k] = "mock_value"
+                    elif t == "boolean":
+                        fake_obj[k] = True
+                    elif t in ("integer", "number"):
+                        fake_obj[k] = 0
+                    elif t == "array":
+                        fake_obj[k] = []
+                    else:
+                        fake_obj[k] = {}
+                content = json.dumps(fake_obj)
+            except Exception:
+                pass
         return CompletionResponse(
-            content=text,
+            content=content,
             model=request.model,
             input_tokens=10,
-            output_tokens=len(text.split()),
+            output_tokens=len(content.split()),
         )
 
     async def stream_complete(self, request: CompletionRequest) -> AsyncGenerator[str, None]:
@@ -111,6 +133,9 @@ class FakeProvider:
 
     def supports_tool_use(self) -> bool:
         return self._tool_use
+
+    def supports_structured_output(self) -> bool:
+        return True
 
     def supports_streaming(self) -> bool:
         return True

@@ -1,0 +1,247 @@
+- template_id: tpl-invoice-3way-match
+  slug: invoice-3way-match-po-grn
+  name: 3-Way Match Automation Agent
+  domain: invoicing-finance
+  description: Automates 3-way matching of Purchase Orders, Goods Receipt Notes, and vendor invoices — flags discrepancies and routes matched invoices for payment approval.
+  long_description: >-
+    Manual 3-way matching for AP teams processing 1000+ invoices/month takes 40+ hours.
+    This agent retrieves the PO, GRN, and invoice for each payable, matches quantities
+    and unit prices within tolerance thresholds, flags discrepancies, routes matched
+    invoices for payment, and holds mismatched invoices for procurement resolution —
+    with full audit trail.
+  source_use_cases:
+    - "08-invoicing/UC-1"
+  system_prompt: >-
+    You perform 3-way matching with precision. Apply the configured tolerance thresholds
+    for quantity (±2%) and price (±1%) differences. Match by PO line item, not just
+    total invoice value. For partial GRNs, match only received quantities. Flag any
+    invoice without a PO as unauthorized spend. Never approve payment for mismatched
+    invoices without procurement confirmation.
+  goal_template: >-
+    Perform 3-way match for {invoice_count} pending invoices from {vendor_name} in
+    {system}. Match each invoice against PO and GRN within tolerance: quantity
+    {qty_tolerance}%, price {price_tolerance}%. Route matched invoices for payment
+    approval to {approver_email}. Hold mismatched invoices and notify procurement
+    {procurement_email} with discrepancy details. Generate an AP aging summary.
+  parameters_schema:
+    properties:
+      invoice_count: {type: integer}
+      vendor_name: {type: string}
+      system: {type: string}
+      qty_tolerance: {type: number, default: 2.0}
+      price_tolerance: {type: number, default: 1.0}
+      approver_email: {type: string, format: email}
+      procurement_email: {type: string, format: email}
+    required: [invoice_count, system, approver_email, procurement_email]
+  required_connectors: [database_query, document_reader, email, pdf_generator]
+  optional_connectors: [tally]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Perform 3-way match for 200 pending invoices in ERP. Qty tolerance 2%, price 1%. Route for approval."
+      required_tools: [database_query, document_reader, email]
+      expected_output_contains: ["match", "discrepancy", "approval"]
+  tags: [finance, accounts-payable, invoicing, procurement]
+  revenue_model: "₹20/invoice; ₹15,000/mo unlimited"
+  roi_note: "AP processing time -70%; duplicate payment prevention ₹5L+/year"
+  version: "1.0.0"
+
+- template_id: tpl-invoice-ap-fraud
+  slug: invoice-ap-fraud-detection
+  name: AP Invoice Fraud Detection Agent
+  domain: invoicing-finance
+  description: Analyzes invoices for fraud indicators — duplicate submissions, round-dollar fraud, shell vendor patterns, and payment diversion — generating a risk-scored report.
+  source_use_cases:
+    - "08-invoicing/UC-2"
+  system_prompt: >-
+    You detect AP fraud patterns systematically. Check for: duplicate invoice numbers,
+    same amount from multiple vendors (round-dollar fraud), vendor bank account changes
+    shortly before large payments, invoices without POs from new vendors, and vendors
+    with addresses matching employee addresses. Never accuse vendors without evidence —
+    generate risk scores and refer high-risk to the finance controller.
+  goal_template: >-
+    Analyze {invoice_count} invoices processed in the last {days} days for {entity_name}
+    for fraud indicators. Check for duplicates, round-dollar patterns, new vendor anomalies,
+    bank account changes, and PO bypass. Score each invoice for fraud risk (0-100).
+    Flag invoices with score > {flag_threshold} for controller review {controller_email}.
+    Compute estimated exposure for high-risk invoices.
+  parameters_schema:
+    properties:
+      invoice_count: {type: integer}
+      days: {type: integer, default: 30}
+      entity_name: {type: string}
+      flag_threshold: {type: integer, default: 70}
+      controller_email: {type: string, format: email}
+    required: [invoice_count, entity_name, controller_email]
+  required_connectors: [database_query, email, pdf_generator]
+  optional_connectors: [slack]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Analyze 500 invoices processed in last 30 days for Acme Ltd. Flag fraud risk > 70."
+      required_tools: [database_query, email]
+      expected_output_contains: ["fraud", "risk score", "anomaly"]
+  tags: [finance, fraud-detection, accounts-payable, compliance]
+  revenue_model: "₹10/invoice; ₹15,000/mo unlimited"
+  roi_note: "AP fraud detection rate 3x vs manual; avg fraud prevented ₹15L/year"
+  version: "1.0.0"
+
+- template_id: tpl-invoice-ocr-processing
+  slug: invoice-ocr-processing
+  name: Invoice OCR Processing Agent
+  domain: invoicing-finance
+  description: Extracts structured data from PDF/scanned invoices using OCR — vendor details, line items, taxes, and totals — and posts to the accounting system with validation.
+  source_use_cases:
+    - "08-invoicing/UC-3"
+  system_prompt: >-
+    You extract invoice data accurately using OCR. Validate extracted data: total =
+    sum of line items + tax. Check GSTIN format for Indian invoices. Flag low-confidence
+    extractions for human review (confidence < 90%). Never post to accounting without
+    validation. Always preserve the original PDF as the source document.
+  goal_template: >-
+    Process {invoice_count} scanned/PDF invoices from {source_folder} for {entity_name}.
+    Extract vendor name, GSTIN, invoice number, date, line items, tax breakup, and
+    total amount. Validate totals and GSTIN format. Post validated invoices to {accounting_system}
+    (voucher type: {voucher_type}). Flag invoices with confidence < {confidence_threshold}%
+    for manual review. Generate a processing summary report.
+  parameters_schema:
+    properties:
+      invoice_count: {type: integer}
+      source_folder: {type: string}
+      entity_name: {type: string}
+      accounting_system: {type: string, enum: [tally, zoho_books, quickbooks]}
+      voucher_type: {type: string, default: "Purchase"}
+      confidence_threshold: {type: integer, default: 90}
+    required: [invoice_count, source_folder, entity_name, accounting_system]
+  required_connectors: [document_reader, database_query, tally, email]
+  optional_connectors: [pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Process 100 scanned invoices from /invoices/july folder for TechCo. Post to Tally."
+      required_tools: [document_reader, tally]
+      expected_output_contains: ["extracted", "posted", "validated"]
+  tags: [finance, invoicing, ocr, accounts-payable]
+  revenue_model: "₹15/invoice; ₹10,000/mo unlimited"
+  roi_note: "Invoice data entry 3min → 15sec; 99%+ extraction accuracy"
+  version: "1.0.0"
+
+- template_id: tpl-invoice-payment-reminder
+  slug: invoice-payment-reminder-escalation
+  name: Payment Reminder Escalation Agent
+  domain: invoicing-finance
+  description: Monitors AR aging, sends multi-stage payment reminders (gentle → firm → final notice), and escalates overdue accounts to the collections team with a dunning strategy.
+  source_use_cases:
+    - "08-invoicing/UC-4"
+  system_prompt: >-
+    You manage payment reminders professionally, protecting customer relationships while
+    recovering dues. Tone progression: polite (0-30 DPD) → firm (31-60 DPD) →
+    final notice (61-90 DPD) → collections referral (90+ DPD). Never threaten legal
+    action without approval. Always include payment link and outstanding amount with
+    invoice breakdown.
+  goal_template: >-
+    Send payment reminders for {invoice_count} overdue invoices in {system} for {entity_name}.
+    Invoices with DPD 1-30: send polite reminder. DPD 31-60: send firm reminder.
+    DPD 61-90: send final notice. DPD > 90: escalate to collections {collections_email}
+    with full aging report. Include payment link in all reminders. Log all communications
+    and update AR aging in {accounting_system}.
+  parameters_schema:
+    properties:
+      invoice_count: {type: integer}
+      system: {type: string}
+      entity_name: {type: string}
+      collections_email: {type: string, format: email}
+      accounting_system: {type: string}
+    required: [invoice_count, system, entity_name, collections_email]
+  required_connectors: [database_query, email, pdf_generator]
+  optional_connectors: [tally, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Send payment reminders for 80 overdue invoices for Acme Ltd. Escalate 90+ DPD to collections."
+      required_tools: [database_query, email]
+      expected_output_contains: ["reminder", "overdue", "escalated"]
+  tags: [finance, accounts-receivable, collections, invoicing]
+  revenue_model: "₹20/invoice; ₹10,000/mo unlimited"
+  roi_note: "DSO reduced avg 12 days; collections escalation 90% automated"
+  version: "1.0.0"
+
+- template_id: tpl-invoice-cashflow-forecast
+  slug: invoice-cash-flow-forecaster
+  name: Cash Flow Forecaster
+  domain: invoicing-finance
+  description: Forecasts 30/60/90-day cash flow by analyzing AR aging, AP due dates, recurring payments, and historical collection patterns — generating a weekly treasury report.
+  source_use_cases:
+    - "08-invoicing/UC-5"
+  system_prompt: >-
+    You forecast cash flows with data-driven accuracy. Apply historical collection
+    rates by customer segment to AR. Use committed PO data for AP. Factor in
+    recurring payments (salaries, EMIs, subscriptions). Show the base case,
+    optimistic, and pessimistic scenarios. Flag weeks with projected negative cash
+    balance for treasury action.
+  goal_template: >-
+    Forecast cash flow for {entity_name} for the next {horizon_days} days from
+    {start_date}. Include AR collections (based on {ar_days} average collection
+    period), AP payments due, {payroll_date} payroll ₹{payroll_amount}, and recurring
+    commitments. Generate weekly cash flow projections with base/optimistic/pessimistic
+    scenarios. Flag cash deficit weeks and recommend action. Export to Google Sheets.
+  parameters_schema:
+    properties:
+      entity_name: {type: string}
+      horizon_days: {type: integer, default: 90}
+      start_date: {type: string, format: date}
+      ar_days: {type: integer, default: 45}
+      payroll_date: {type: string}
+      payroll_amount: {type: number}
+    required: [entity_name, start_date]
+  required_connectors: [database_query, google_sheets, pdf_generator]
+  optional_connectors: [email, tally]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Forecast 90-day cash flow for Acme Ltd from 2026-07-01. Monthly payroll ₹50L."
+      required_tools: [database_query, google_sheets]
+      expected_output_contains: ["cash flow", "forecast", "deficit"]
+  tags: [finance, treasury, cash-flow, forecasting]
+  revenue_model: "₹10,000/mo per entity"
+  roi_note: "Cash flow visibility +3 months ahead; liquidity crises prevented"
+  version: "1.0.0"
+
+- template_id: tpl-invoice-vendor-recon
+  slug: invoice-vendor-statement-reconciliation
+  name: Vendor Statement Reconciliation Agent
+  domain: invoicing-finance
+  description: Reconciles vendor account statements with the AP ledger — identifies unbooked invoices, disputed credits, and timing differences for monthly close and vendor negotiations.
+  source_use_cases:
+    - "08-invoicing/UC-6"
+  system_prompt: >-
+    You reconcile vendor statements methodically. Match every vendor invoice to a book
+    entry. Categorize differences: invoices in vendor statement but not in books
+    (liabilities at risk), payments in books but not acknowledged by vendor (payment
+    disputes), and timing differences. Never write off differences without controller
+    approval. Flag high-value discrepancies first.
+  goal_template: >-
+    Reconcile vendor statement for {vendor_name} (Vendor ID: {vendor_id}) for
+    {entity_name} for period {period}. Vendor statement balance: ₹{vendor_balance}.
+    Book balance: ₹{book_balance}. Match line by line, classify all differences, compute
+    unbooked liabilities and disputed credits, and generate a reconciliation letter to
+    {vendor_email} for differences > ₹{dispute_threshold}. Route to controller
+    {controller_email} for approval.
+  parameters_schema:
+    properties:
+      vendor_name: {type: string}
+      vendor_id: {type: string}
+      entity_name: {type: string}
+      period: {type: string}
+      vendor_balance: {type: number}
+      book_balance: {type: number}
+      vendor_email: {type: string, format: email}
+      dispute_threshold: {type: number, default: 10000}
+      controller_email: {type: string, format: email}
+    required: [vendor_name, vendor_id, entity_name, period, vendor_email, controller_email]
+  required_connectors: [database_query, tally, email, pdf_generator]
+  optional_connectors: [google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Reconcile vendor statement for Supplier ABC (V-001) for June 2026. Vendor bal ₹5L, book bal ₹4.8L."
+      required_tools: [database_query, tally, email]
+      expected_output_contains: ["reconciliation", "discrepancy", "vendor"]
+  tags: [finance, accounts-payable, vendor-management, reconciliation]
+  revenue_model: "₹500/vendor/month; ₹8,000/mo unlimited"
+  roi_note: "Vendor recon 3h → 20min; unbooked liabilities caught before audit"
+  version: "1.0.0"

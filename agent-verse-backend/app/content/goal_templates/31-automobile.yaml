@@ -1,0 +1,39 @@
+- name: Process Vehicle RC Transfer
+  domain: automobile
+  description: Guide vehicle RC transfer through Vahan portal with document preparation.
+  goal_text: >-
+    Process RC transfer for {{registration_number}} from {{seller}} to {{buyer}} at
+    RTO {{rto_code}}. Prepare Form 29/30, calculate fees, check NOC requirements.
+    Track status on Vahan and alert {{buyer_email}} on completion.
+  source_use_cases:
+    - "31-automobile/UC-1"
+
+- name: Track Fleet Insurance Renewals
+  domain: automobile
+  description: Monitor insurance expiry for fleet vehicles and get renewal quotes.
+  goal_text: >-
+    Track insurance for {{count}} vehicles in {{fleet_name}}. Alert {{manager_email}} at
+    30-day and 7-day marks. Get {{insurer_count}} competitive quotes. Calculate NCB for
+    eligible vehicles. Report auto-renewal recommendations.
+  source_use_cases:
+    - "31-automobile/UC-2"
+
+- name: Send Vehicle Service Reminders
+  domain: automobile
+  description: Send personalised service reminders based on km or date intervals.
+  goal_text: >-
+    Send {{service_type}} service reminders for {{count}} customers approaching
+    {{km_threshold}} km or {{months}} month interval. Channel: {{channel}}. Book
+    confirmed appointments at {{service_center}}. Report to {{service_manager_email}}.
+  source_use_cases:
+    - "31-automobile/UC-3"
+
+- name: Check Fleet RTO Compliance
+  domain: automobile
+  description: Verify RTO document validity for all vehicles in a fleet.
+  goal_text: >-
+    Check RTO compliance for {{count}} vehicles in {{fleet_name}}. Track fitness,
+    permit, PUC, insurance, and driver licences. Alert {{manager_email}} on documents
+    expiring within {{alert_days}} days. Generate compliance certificate.
+  source_use_cases:
+    - "31-automobile/UC-5"

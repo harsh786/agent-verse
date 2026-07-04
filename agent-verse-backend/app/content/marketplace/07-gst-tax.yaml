@@ -1,0 +1,301 @@
+- template_id: tpl-gst-gstr1-filing
+  slug: gst-gstr1-filing-assistant
+  name: GSTR-1 Filing Assistant
+  domain: gst-tax
+  description: Prepares GSTR-1 outward supply return from invoices in ERP/accounting software, validates HSN codes, and files on the GST portal after human approval.
+  long_description: >-
+    Manual GSTR-1 preparation involves exporting sales data, mapping HSN codes, handling
+    amendments, and uploading JSON — taking 3-5 hours per client per month. This agent
+    pulls invoices from Tally/Zoho, validates HSN/SAC codes and tax rates, reconciles
+    with e-invoice records, generates the GSTR-1 JSON, flags anomalies for review, and
+    after human approval files directly on the GST portal.
+  source_use_cases:
+    - "07-gst-tax/UC-2"
+  system_prompt: >-
+    You are a GST compliance specialist. Always validate GSTIN format before processing.
+    Check HSN code validity against the HSN master. Never file without explicit human
+    approval. Flag any invoice with invoice value discrepancy > 5% vs last month.
+    Archive the filed return and ARN in the client folder.
+  goal_template: >-
+    Prepare GSTR-1 for {client_name} (GSTIN: {gstin}) for period {period}. Pull invoices
+    from {source_system}, validate HSN codes, reconcile with e-invoice data, generate
+    GSTR-1 JSON, present summary for approval, and after human sign-off file on GST portal.
+    Store the ARN in the client folder.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      gstin: {type: string, pattern: "^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"}
+      period: {type: string, description: "e.g. 06-2026"}
+      source_system: {type: string, enum: [tally, zoho_books, quickbooks, google_sheets]}
+    required: [client_name, gstin, period, source_system]
+  required_connectors: [gst_portal, tally, pdf_generator]
+  optional_connectors: [zoho_books, google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare GSTR-1 for Acme Pvt Ltd (29AAACR5055K1Z5) for period 06-2026 from Tally."
+      required_tools: [gst_portal, tally]
+      expected_output_contains: ["GSTR-1", "HSN", "ARN"]
+  tags: [gst, filing, compliance, india]
+  revenue_model: "₹500/filing; ₹3,000/mo per client"
+  roi_note: "3h manual → 20min; zero data entry errors"
+  version: "1.0.0"
+
+- template_id: tpl-gst-gstr3b-filing
+  slug: gst-gstr3b-filing-assistant
+  name: GSTR-3B Filing Assistant
+  domain: gst-tax
+  description: Prepares the monthly GSTR-3B summary return, reconciles ITC vs GSTR-2B, computes net tax payable, and files after human approval.
+  source_use_cases:
+    - "07-gst-tax/UC-1"
+  system_prompt: >-
+    You are a GST filing assistant. Compute GSTR-3B figures accurately — any error leads
+    to penalties. Always reconcile ITC claimed vs GSTR-2B before filing. Compute interest
+    on late payment if due. Never file without explicit human approval. Generate the
+    payment challan if tax is payable.
+  goal_template: >-
+    Prepare GSTR-3B for {client_name} (GSTIN: {gstin}) for period {period}. Pull outward
+    supplies and ITC from {source_system}, reconcile ITC against GSTR-2B, compute net tax
+    payable, generate payment challan if required, present for human approval, and file on
+    GST portal. Store ARN and challan in client folder.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      gstin: {type: string}
+      period: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, quickbooks, google_sheets]}
+    required: [client_name, gstin, period, source_system]
+  required_connectors: [gst_portal, tally, google_sheets, pdf_generator]
+  optional_connectors: [zoho_books]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare GSTR-3B for Acme Pvt Ltd (29AAACR5055K1Z5) for period 06-2026 from Tally."
+      required_tools: [gst_portal, tally]
+      expected_output_contains: ["GSTR-3B", "ITC", "ARN"]
+  tags: [gst, filing, compliance, india]
+  revenue_model: "₹400/filing; ₹2,500/mo per client"
+  roi_note: "4h manual → 25min; catches ITC mismatches automatically"
+  version: "1.0.0"
+
+- template_id: tpl-gst-itc-reconciliation
+  slug: gst-itc-reconciliation
+  name: ITC Reconciliation Agent
+  domain: gst-tax
+  description: Reconciles Input Tax Credit between books, GSTR-2B, and purchase register to identify mismatches and maximize eligible ITC before filing.
+  source_use_cases:
+    - "07-gst-tax/UC-3"
+  system_prompt: >-
+    You reconcile ITC data precisely. Compare book ITC, GSTR-2B, and purchase register
+    line by line. Categorize mismatches as: supplier not filed, GSTIN mismatch, invoice
+    amount difference, or period mismatch. Compute maximum eligible ITC. Recommend
+    follow-up actions for each discrepancy.
+  goal_template: >-
+    Reconcile ITC for {client_name} (GSTIN: {gstin}) for period {period}. Download
+    GSTR-2B from GST portal, compare with purchase register from {source_system},
+    identify mismatches, compute net eligible ITC, and generate a vendor-wise discrepancy
+    report with recommended actions. Flag ITC at risk of reversal.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      gstin: {type: string}
+      period: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+    required: [client_name, gstin, period, source_system]
+  required_connectors: [gst_portal, tally, google_sheets, pdf_generator]
+  optional_connectors: [zoho_books]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Reconcile ITC for Acme Pvt Ltd (29AAACR5055K1Z5) for 06-2026 from Tally."
+      required_tools: [gst_portal, tally]
+      expected_output_contains: ["ITC", "mismatch", "reconciliation"]
+  tags: [gst, itc, reconciliation, india]
+  revenue_model: "₹600/reconciliation; ₹4,000/mo per client"
+  roi_note: "Unrecovered ITC average ₹2.3L/year per SMB recovered"
+  version: "1.0.0"
+
+- template_id: tpl-gst-eway-bill
+  slug: gst-eway-bill-generator
+  name: E-Way Bill Generator
+  domain: gst-tax
+  description: Generates e-way bills for goods movement from invoice data, validates consignee GSTIN, and attaches EWB numbers to invoices in the source system.
+  source_use_cases:
+    - "07-gst-tax/UC-4"
+  system_prompt: >-
+    You generate e-way bills accurately. Validate GSTIN of all parties before generation.
+    Compute distance based on PIN codes when not provided. Check for e-way bill threshold
+    (goods value > ₹50,000). Never generate for exempt goods without flagging.
+    Attach EWB number to the originating invoice.
+  goal_template: >-
+    Generate e-way bill for consignment from {consignor_gstin} to {consignee_gstin} for
+    invoice {invoice_number} dated {invoice_date}. Goods: {goods_description},
+    HSN {hsn_code}, value ₹{invoice_value}, transport mode {transport_mode},
+    vehicle number {vehicle_number}. Attach EWB to invoice in {source_system}.
+  parameters_schema:
+    properties:
+      consignor_gstin: {type: string}
+      consignee_gstin: {type: string}
+      invoice_number: {type: string}
+      invoice_date: {type: string, format: date}
+      goods_description: {type: string}
+      hsn_code: {type: string}
+      invoice_value: {type: number}
+      transport_mode: {type: string, enum: [road, rail, air, ship]}
+      vehicle_number: {type: string}
+      source_system: {type: string}
+    required: [consignor_gstin, consignee_gstin, invoice_number, invoice_value]
+  required_connectors: [gst_portal, tally]
+  optional_connectors: [zoho_books, google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Generate e-way bill for invoice INV-2026-001 value ₹75000 via road transport."
+      required_tools: [gst_portal]
+      expected_output_contains: ["e-way bill", "EWB", "generated"]
+  tags: [gst, eway-bill, logistics, india]
+  revenue_model: "₹50/EWB; ₹3,000/mo unlimited"
+  roi_note: "2min per EWB vs 10min manual; handles bulk generation"
+  version: "1.0.0"
+
+- template_id: tpl-gst-tds-computation
+  slug: gst-tds-computation
+  name: TDS Computation and Form 26Q Preparation
+  domain: gst-tax
+  description: Computes quarterly TDS liability, maps correct section rates, identifies short-deduction risks, and prepares Form 26Q/27Q data for TRACES upload.
+  source_use_cases:
+    - "07-gst-tax/UC-5"
+  system_prompt: >-
+    You compute TDS accurately using the correct sections. Validate PAN of all deductees
+    before processing. Identify payments where TDS is applicable but not deducted.
+    Calculate interest on delayed TDS deposits. Flag PANs not linked to Aadhaar.
+    Never file without human review of the final computation.
+  goal_template: >-
+    Compute TDS for {deductor_name} (TAN: {tan}) for quarter {quarter} FY {fy}.
+    Extract all payments from {source_system}, apply section rates (194C, 194J, 194H etc.),
+    compute TDS liability and interest on late deposits, identify shortfalls, and prepare
+    Form 26Q data for TRACES upload. Flag PAN-Aadhaar mismatches.
+  parameters_schema:
+    properties:
+      deductor_name: {type: string}
+      tan: {type: string}
+      quarter: {type: string, enum: [Q1, Q2, Q3, Q4]}
+      fy: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+    required: [deductor_name, tan, quarter, fy, source_system]
+  required_connectors: [income_tax_portal, tally, google_sheets, pdf_generator]
+  optional_connectors: [zoho_books]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Compute TDS for ABC Ltd (ABCDE1234F) for Q1 FY 2026-27 from Tally."
+      required_tools: [income_tax_portal, tally]
+      expected_output_contains: ["TDS", "Form 26Q", "deductee"]
+  tags: [tds, compliance, india, direct-tax]
+  revenue_model: "₹1,500/quarter; ₹8,000/mo per entity"
+  roi_note: "TDS computation 4h → 30min; zero short-deduction penalties"
+  version: "1.0.0"
+
+- template_id: tpl-gst-notice-handler
+  slug: gst-notice-handler
+  name: GST Notice Handler
+  domain: gst-tax
+  description: Analyzes GST notices from the portal, identifies the grounds, prepares a reply with supporting documents, and tracks the response deadline.
+  source_use_cases:
+    - "07-gst-tax/UC-6"
+  system_prompt: >-
+    You are a GST compliance expert handling notices. Read the notice carefully and
+    identify the exact section/rule cited. Prepare factual, document-backed replies.
+    Never admit liability without CA/legal review. Always track the reply deadline.
+    Flag notices with < 7 days deadline as urgent.
+  goal_template: >-
+    Handle GST notice {notice_id} for {client_name} (GSTIN: {gstin}) downloaded from
+    the portal on {notice_date}. Analyze the notice type and grounds, identify relevant
+    invoices/returns, prepare a point-by-point reply with supporting documents, and
+    create a reminder for the deadline {due_date}. Route to {reviewer_email} for approval.
+  parameters_schema:
+    properties:
+      notice_id: {type: string}
+      client_name: {type: string}
+      gstin: {type: string}
+      notice_date: {type: string, format: date}
+      due_date: {type: string, format: date}
+      reviewer_email: {type: string, format: email}
+    required: [notice_id, client_name, gstin, due_date, reviewer_email]
+  required_connectors: [gst_portal, email, pdf_generator]
+  optional_connectors: [google_sheets, document_reader]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Handle GST notice SCN-2026-001 for Acme Ltd. Due date 2026-07-20. Review by ca@acme.com."
+      required_tools: [gst_portal, email]
+      expected_output_contains: ["notice", "reply", "deadline"]
+  tags: [gst, notice, compliance, india]
+  revenue_model: "₹2,000/notice; ₹10,000/mo unlimited"
+  roi_note: "Notice response 8h → 1h; zero missed deadlines"
+  version: "1.0.0"
+
+- template_id: tpl-gst-gstr9-annual
+  slug: gst-gstr9-annual-return
+  name: GSTR-9 Annual Return Preparation
+  domain: gst-tax
+  description: Prepares the GSTR-9 annual return by reconciling all monthly returns, identifying amendments, and generating the final consolidated statement.
+  source_use_cases:
+    - "07-gst-tax/UC-7"
+  system_prompt: >-
+    You prepare GSTR-9 by reconciling 12 months of GSTR-1, GSTR-3B, and books.
+    Identify discrepancies across returns and recommend corrections. Calculate net
+    tax liability/refund for the year. Never skip the auto-populated vs declared
+    comparison. Flag any turnover above ₹5Cr for mandatory audit in GSTR-9C.
+  goal_template: >-
+    Prepare GSTR-9 annual return for {client_name} (GSTIN: {gstin}) for FY {fy}.
+    Consolidate all GSTR-1 and GSTR-3B filings, reconcile against books in {source_system},
+    compute annual ITC and tax liability, identify amendments needed, and generate the
+    GSTR-9 summary for CA review. Flag GSTR-9C audit requirement if turnover > ₹5Cr.
+  parameters_schema:
+    properties:
+      client_name: {type: string}
+      gstin: {type: string}
+      fy: {type: string}
+      source_system: {type: string, enum: [tally, zoho_books, google_sheets]}
+    required: [client_name, gstin, fy, source_system]
+  required_connectors: [gst_portal, tally, pdf_generator, google_sheets]
+  optional_connectors: [zoho_books]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare GSTR-9 for Acme Pvt Ltd (29AAACR5055K1Z5) for FY 2025-26 from Tally."
+      required_tools: [gst_portal, tally]
+      expected_output_contains: ["GSTR-9", "annual", "reconciliation"]
+  tags: [gst, annual-return, compliance, india]
+  revenue_model: "₹5,000/annual return; ₹30,000/mo unlimited"
+  roi_note: "Annual return prep 3 days → 4 hours; 100% accuracy vs manual"
+  version: "1.0.0"
+
+- template_id: tpl-gst-hsn-classification
+  slug: gst-hsn-classification
+  name: HSN Code Classification Agent
+  domain: gst-tax
+  description: Classifies products/services to the correct 8-digit HSN/SAC code and applicable GST rate, with confidence score and statutory reference.
+  source_use_cases:
+    - "07-gst-tax/UC-8"
+  system_prompt: >-
+    You classify goods and services to HSN/SAC codes accurately. Always cite the
+    relevant GST notification for the rate applied. For ambiguous items, provide the
+    2-3 most likely codes with confidence scores and the distinguishing factors.
+    Never guess — flag uncertain classifications for expert review.
+  goal_template: >-
+    Classify {item_count} products/services from {source} to correct 8-digit HSN/SAC codes
+    and GST rates. For each item: product description {product_description}, provide the
+    recommended HSN/SAC code, applicable GST rate, confidence score, and statutory reference.
+    Flag items with multiple possible classifications for review.
+  parameters_schema:
+    properties:
+      item_count: {type: integer}
+      source: {type: string}
+      product_description: {type: string}
+    required: [product_description]
+  required_connectors: [web_search, google_sheets]
+  optional_connectors: [gst_portal]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Classify 50 products from product catalog to HSN codes and GST rates."
+      required_tools: [web_search, google_sheets]
+      expected_output_contains: ["HSN", "GST rate", "classification"]
+  tags: [gst, hsn, classification, india]
+  revenue_model: "₹10/item; ₹5,000/mo unlimited"
+  roi_note: "HSN classification 5min/item → 10sec; 95%+ accuracy"
+  version: "1.0.0"

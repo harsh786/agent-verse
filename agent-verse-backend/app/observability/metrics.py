@@ -14,6 +14,10 @@ from contextlib import asynccontextmanager
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client import generate_latest as _generate_latest
 
+from app.observability.logging import get_logger as _get_logger
+
+_logger = _get_logger(__name__)
+
 # A dedicated registry keeps test isolation clean and avoids clobbering the global default.
 REGISTRY = CollectorRegistry()
 _LABEL_CATEGORIES = frozenset(
@@ -175,6 +179,19 @@ SCHEDULE_FIRE_TOTAL = Counter(
     "agentverse_schedule_fire_total",
     "Total schedule fire attempts by bounded status label.",
     labelnames=("status",),
+    registry=REGISTRY,
+)
+
+DESIRED_WORKERS = Gauge(
+    "agentverse_desired_workers",
+    "Desired worker count per plan for autoscaling (consumed by KEDA/HPA).",
+    labelnames=("plan",),
+    registry=REGISTRY,
+)
+
+PROMPT_TOKENS_SAVED_TOTAL = Counter(
+    "agentverse_prompt_tokens_saved_total",
+    "Total tokens saved by prompt compression (RAG-scoped).",
     registry=REGISTRY,
 )
 
@@ -359,3 +376,23 @@ def record_queue_wait(priority: str, seconds: float) -> None:
     QUEUE_WAIT_DURATION.labels(
         priority=_normalize_priority_label(priority)
     ).observe(max(0.0, seconds))
+
+
+def record_desired_workers(plan: str, count: int) -> None:
+    """Emit desired worker count per plan for autoscaling.
+
+    The *plan* label is passed through as-is (free/starter/professional/enterprise)
+    to align with ``PLAN_QUEUE_MAP`` in ``app.scaling.celery_app``.  Consumed by
+    KEDA ``ScaledObject`` or a Kubernetes HPA driven by the Prometheus adapter.
+    """
+    try:
+        DESIRED_WORKERS.labels(plan=plan).set(count)
+    except Exception:
+        _logger.debug("record_desired_workers_failed", plan=plan, count=count)
+
+
+def record_prompt_tokens_saved(amount: int) -> None:
+    """Record how many tokens were saved by prompt compression."""
+    import contextlib
+    with contextlib.suppress(Exception):
+        PROMPT_TOKENS_SAVED_TOTAL.inc(max(0, amount))

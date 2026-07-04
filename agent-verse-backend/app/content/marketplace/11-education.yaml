@@ -1,0 +1,177 @@
+- template_id: tpl-edu-grading
+  slug: edu-automated-grading
+  name: Automated Assignment Grading
+  domain: education
+  description: Grades student assignments against rubrics, provides detailed feedback, and updates the gradebook with one-line summaries.
+  long_description: >-
+    Manual grading of 50+ assignments takes 4-6 hours per teacher per week. This agent
+    reads submitted assignments, evaluates against configurable rubrics (content accuracy,
+    structure, language, citations), generates personalised feedback per student, flags
+    plagiarism patterns, and pushes grades to the LMS.
+  source_use_cases:
+    - "11-education/UC-1"
+  system_prompt: >-
+    You are a fair academic grader. Apply the rubric consistently. Provide constructive,
+    specific feedback — not generic comments. Flag potential plagiarism for human review.
+    Never finalise grades without teacher sign-off if academic integrity is in question.
+  goal_template: >-
+    Grade {submission_count} submissions for {assignment_name} in course {course_code}.
+    Apply rubric: {rubric_description}. Generate feedback per student and push grades to
+    {lms_name}. Flag any submissions with similarity score above {plagiarism_threshold}%.
+  parameters_schema:
+    properties:
+      submission_count: {type: integer}
+      assignment_name: {type: string}
+      course_code: {type: string}
+      rubric_description: {type: string}
+      lms_name: {type: string, enum: [canvas_lms, moodle, google_sheets]}
+      plagiarism_threshold: {type: integer, default: 30}
+    required: [assignment_name, course_code, rubric_description]
+  required_connectors: [document_reader, canvas_lms, email]
+  optional_connectors: [moodle, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Grade 30 submissions for Python Project in CS101. Flag >30% similarity. Push to Canvas."
+      expected_output_contains: ["grade", "feedback", "plagiarism"]
+  tags: [education, grading, automation]
+  revenue_model: "₹5/submission; ₹3,000/mo unlimited"
+  roi_note: "6h grading → 30min; 90% more detailed feedback"
+  version: "1.0.0"
+
+- template_id: tpl-edu-curriculum
+  slug: edu-curriculum-planner
+  name: Curriculum Planning Agent
+  domain: education
+  description: Generates a semester curriculum map aligned to board/university syllabi, distributes topics across weeks, and identifies resource gaps.
+  source_use_cases:
+    - "11-education/UC-2"
+  system_prompt: >-
+    You are an academic curriculum designer. Align every topic to the official syllabus.
+    Balance workload evenly across weeks. Highlight chapters requiring lab/practical time.
+    Flag any syllabus coverage gaps.
+  goal_template: >-
+    Create {semester_duration}-week curriculum plan for {subject_name} ({class_standard})
+    aligned to {board_name} syllabus {academic_year}. Distribute {total_periods} periods
+    across chapters, mark assessments at weeks {assessment_weeks}, and flag resource gaps.
+  parameters_schema:
+    properties:
+      semester_duration: {type: integer, default: 20}
+      subject_name: {type: string}
+      class_standard: {type: string}
+      board_name: {type: string}
+      academic_year: {type: string}
+      total_periods: {type: integer}
+      assessment_weeks: {type: array, items: {type: integer}}
+    required: [subject_name, class_standard, board_name]
+  required_connectors: [document_reader, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Create 20-week curriculum for Physics Class 12 CBSE 2026-27. 120 periods. Assessments at weeks 8 and 16."
+      expected_output_contains: ["curriculum", "chapter", "period"]
+  tags: [education, curriculum, planning]
+  revenue_model: "₹500/plan; ₹5,000/mo unlimited"
+  roi_note: "3h planning → 20min; 100% syllabus coverage"
+  version: "1.0.0"
+
+- template_id: tpl-edu-student-progress
+  slug: edu-student-progress-tracker
+  name: Student Progress Tracker
+  domain: education
+  description: Aggregates assessment scores, attendance, and submission data to identify at-risk students and trigger early intervention alerts.
+  source_use_cases:
+    - "11-education/UC-3"
+  system_prompt: >-
+    You are a student success analyst. Identify students at risk using multiple signals —
+    attendance below threshold, score drop over consecutive assessments, and missing
+    submissions. Recommend specific interventions per student.
+  goal_template: >-
+    Analyse progress of {student_count} students in {class_name} for period {period}.
+    Flag students with attendance below {min_attendance_pct}% or score below
+    {min_score_pct}%. Generate individual intervention plans and send alerts to
+    {teacher_email}.
+  parameters_schema:
+    properties:
+      student_count: {type: integer}
+      class_name: {type: string}
+      period: {type: string}
+      min_attendance_pct: {type: integer, default: 75}
+      min_score_pct: {type: integer, default: 40}
+      teacher_email: {type: string, format: email}
+    required: [class_name, period, teacher_email]
+  required_connectors: [google_sheets, email, canvas_lms]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track progress in Class 10A for Q1 2026. Flag <75% attendance or <40% score. Alert teacher@school.in."
+      expected_output_contains: ["at-risk", "attendance", "intervention"]
+  tags: [education, student, progress, analytics]
+  revenue_model: "₹2,000/class/month"
+  roi_note: "Early intervention reduces failure rate by 35%"
+  version: "1.0.0"
+
+- template_id: tpl-edu-parent-comm
+  slug: edu-parent-communication
+  name: Parent Communication Automation
+  domain: education
+  description: Sends personalised progress updates, attendance alerts, fee reminders, and event notifications to parents via WhatsApp/email.
+  source_use_cases:
+    - "11-education/UC-4"
+  system_prompt: >-
+    You communicate with parents in a warm, professional tone. Personalise each message
+    with the student's name and specific details. Never share one student's information
+    with another parent. Respect do-not-disturb hours (10 PM – 7 AM).
+  goal_template: >-
+    Send {message_type} to parents of {student_count} students in {class_name}.
+    Personalise with individual {data_source} data. Channel: {channel}. Schedule for
+    {send_time}. Track delivery and log responses.
+  parameters_schema:
+    properties:
+      message_type: {type: string, enum: [progress_update, attendance_alert, fee_reminder, event_notice]}
+      student_count: {type: integer}
+      class_name: {type: string}
+      data_source: {type: string}
+      channel: {type: string, enum: [email, whatsapp, sms]}
+      send_time: {type: string}
+    required: [message_type, class_name, channel]
+  required_connectors: [email, google_sheets, twilio]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Send monthly progress update to parents of Class 8B via email at 5 PM today."
+      expected_output_contains: ["progress", "parent", "sent"]
+  tags: [education, communication, parents]
+  revenue_model: "₹1/message; ₹3,000/mo unlimited"
+  roi_note: "2h manual calls → 10min; 3x parent engagement"
+  version: "1.0.0"
+
+- template_id: tpl-edu-exam-schedule
+  slug: edu-exam-schedule-optimizer
+  name: Exam Schedule Optimizer
+  domain: education
+  description: Generates conflict-free exam timetables respecting hall capacity, invigilator availability, and minimum gap constraints.
+  source_use_cases:
+    - "11-education/UC-5"
+  system_prompt: >-
+    You are an academic timetable planner. Ensure no student has two exams in one slot.
+    Respect hall capacity constraints and invigilator-to-student ratios. Leave minimum
+    1-day gap between exams for same class. Flag any constraint violations clearly.
+  goal_template: >-
+    Generate {exam_type} exam schedule for {class_count} classes over {duration_days} days
+    starting {start_date}. Respect hall capacity {hall_capacity}, minimum gap {min_gap_days}
+    days between papers. Produce printable timetable PDF.
+  parameters_schema:
+    properties:
+      exam_type: {type: string, enum: [unit_test, half_yearly, annual, board_prep]}
+      class_count: {type: integer}
+      duration_days: {type: integer}
+      start_date: {type: string, format: date}
+      hall_capacity: {type: integer, default: 30}
+      min_gap_days: {type: integer, default: 1}
+    required: [exam_type, class_count, duration_days, start_date]
+  required_connectors: [google_sheets, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Schedule half-yearly exams for 20 classes over 10 days from 2026-09-01. Hall capacity 35."
+      expected_output_contains: ["schedule", "timetable", "hall"]
+  tags: [education, exam, timetable]
+  revenue_model: "₹1,000/schedule generation"
+  roi_note: "2h scheduling → 10min; zero timetable conflicts"
+  version: "1.0.0"

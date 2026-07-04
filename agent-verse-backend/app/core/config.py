@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     db_pool_timeout: float = 30.0
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
+    db_pool_max: int = Field(default=20, description="Max asyncpg pool connections")
+    db_pool_min: int = Field(default=5, description="Min asyncpg pool connections")
+    redis_max_connections: int = Field(default=50, description="Max Redis pool connections")
+    http_max_connections: int = Field(default=100, description="Max HTTP connection pool size")
+    http_keepalive_connections: int = Field(default=20, description="HTTP keepalive connections")
 
     # --- observability ---
     service_name: str = "agentverse-backend"
