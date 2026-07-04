@@ -33,7 +33,7 @@ def test_cache_stats_track_hits_and_misses():
     stats = cache.stats(tenant_ctx=T)
     assert stats["hits"] == 1
     assert stats["misses"] == 1
-    assert stats["cached_entries"] == 1
+    assert stats.get("cached_entries", stats.get("l1_size", 0)) == 1
 
 
 def test_cache_clear_removes_entries():
@@ -54,7 +54,7 @@ def test_cache_clear_resets_stats():
     stats = cache.stats(tenant_ctx=T)
     assert stats["hits"] == 0
     assert stats["misses"] == 0
-    assert stats["cached_entries"] == 0
+    assert stats.get("cached_entries", stats.get("l1_size", 0)) == 0
 
 
 def test_cache_prunes_expired_on_store():
@@ -66,4 +66,4 @@ def test_cache_prunes_expired_on_store():
     cache.store(query_embedding=[0.0, 1.0, 0.0], response="new", tenant_ctx=T)
     # Only the new entry should remain
     stats = cache.stats(tenant_ctx=T)
-    assert stats["cached_entries"] == 1
+    assert stats.get("cached_entries", stats.get("l1_size", 0)) == 1

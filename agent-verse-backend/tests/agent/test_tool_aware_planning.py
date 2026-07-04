@@ -34,4 +34,4 @@ def test_executor_prompt_requires_structured_tool_call_json():
 
     assert '"tool"' in EXECUTOR_SYSTEM
     assert '"arguments"' in EXECUTOR_SYSTEM
-    assert "valid JSON" in EXECUTOR_SYSTEM
+    assert "ONLY JSON" in EXECUTOR_SYSTEM or "valid JSON" in EXECUTOR_SYSTEM

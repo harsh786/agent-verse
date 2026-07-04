@@ -138,6 +138,9 @@ class MCPClient:
         # OAuth manager — wired externally
         self._oauth_manager: Any = None
         self._mcp_sessions: dict[str, str] = {}
+        # Per-session tool schema cache: server_id → list[ToolDefinition]
+        # Avoids calling discover_tools() on every call_tool() invocation
+        self._schema_cache: dict[str, list[Any]] = {}
 
     @staticmethod
     def _accepts_tenant_context(resolver: SecretResolver) -> bool:
@@ -770,14 +773,21 @@ class MCPClient:
                     )
                     break
 
-            # Source B: If not found in stored definitions, call discover_tools()
-            # This handles external HTTP/JSONRPC MCP servers whose schemas come
-            # from the live endpoint, not from stored tool_definitions.
-            if not _tool_schema:
+            # Source B: If not found in stored definitions, use per-session schema cache.
+            # Only do live discover_tools() for non-MCP-endpoint servers (e.g. REST APIs)
+            # to avoid extra network round-trips for JSON-RPC MCP endpoints which handle
+            # tool listing separately from tool calling.
+            if not _tool_schema and not _is_mcp_endpoint(getattr(cfg, "url", "") or getattr(cfg, "base_url", "") or ""):
                 try:
-                    _live_tools = await self.discover_tools(
-                        server_id=server_id, tenant_ctx=tenant_ctx
-                    )
+                    # Check per-session schema cache first
+                    _cache_key = f"{server_id}:{tenant_ctx.tenant_id}"
+                    if _cache_key not in self._schema_cache:
+                        _live_tools = await self.discover_tools(
+                            server_id=server_id, tenant_ctx=tenant_ctx
+                        )
+                        self._schema_cache[_cache_key] = _live_tools
+                    else:
+                        _live_tools = self._schema_cache[_cache_key]
                     for _lt in _live_tools:
                         if _lt.name == tool_name:
                             _tool_schema = _lt.input_schema or {}

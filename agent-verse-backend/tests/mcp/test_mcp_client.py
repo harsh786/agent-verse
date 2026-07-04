@@ -555,7 +555,12 @@ async def test_call_tool_uses_jsonrpc_for_mcp_endpoint(
 
     assert result.success is True
     assert result.output == {"content": [{"type": "text", "text": "ISSUE-1"}]}
-    request = route.calls[0].request
+    # Find the tools/call request (may not be first since schema discovery adds tools/list)
+    tools_call_request = next(
+        (r.request for r in route.calls if b"tools/call" in r.request.content), None
+    )
+    assert tools_call_request is not None, f"No tools/call found; calls: {[json.loads(r.request.content).get('method') for r in route.calls]}"
+    request = tools_call_request
     assert request.headers["Authorization"] == "Bearer atl_test"
     assert request.headers["Accept"] == "application/json, text/event-stream"
     assert request.headers["Content-Type"] == "application/json"
