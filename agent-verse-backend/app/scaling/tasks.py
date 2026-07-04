@@ -788,6 +788,18 @@ def run_goal(
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
+            # Wire SelfOptimizer and PromptOptimizer so A/B testing and
+            # failure suggestions run during real goal execution.
+            try:
+                from app.intelligence.self_optimization import SelfOptimizer
+                from app.intelligence.prompt_optimizer import _default_optimizer as _prompt_opt
+                _self_opt = SelfOptimizer()
+                if db_factory is not None:
+                    _self_opt._db = db_factory
+                _agent_runner._self_optimizer = _self_opt
+                _agent_runner._prompt_optimizer = _prompt_opt
+            except Exception as _opt_exc:
+                logger.warning("optimizer_wire_failed: %s", _opt_exc)
             _agent_runner = _WorkerMCPAgentRunner(
                 _agent_runner, _build_worker_mcp_context
             )
