@@ -654,6 +654,17 @@ def run_goal(
             resolve_connector_secret_ref_for_tenant,
         )
 
+        # Ensure all builtin tool handlers are registered in this worker process.
+        # The web process registers them at startup; the Celery worker process
+        # starts fresh and needs to re-register so that `cfg.builtin_handler`
+        # is not None when `discover_tools` checks it.
+        try:
+            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+            for _bcfg in get_builtin_server_configs():
+                MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
+        except Exception as _bh_exc:
+            logger.warning("worker_builtin_handler_restore_failed: %s", _bh_exc)
+
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
         secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
 
@@ -663,8 +674,24 @@ def run_goal(
             )
 
         registry = MCPRegistry(redis_client)
-        mcp_client = MCPClient(registry, secret_resolver=_resolve_secret, redis=redis_client)
+        # Wire the LLM provider so SelfHealingToolCaller can fix argument errors
+        # real_provider is captured from the outer run_goal() scope via closure
+        mcp_client = MCPClient(
+            registry,
+            secret_resolver=_resolve_secret,
+            redis=redis_client,
+            llm_provider=real_provider,  # type: ignore[name-defined]
+        )
         worker_connector_ids = [str(item) for item in (connector_ids or [])]
+
+        # When no connector_ids are specified (e.g. goal submitted without an agent),
+        # discover ALL tools registered for the tenant so the planner has full context.
+        if not worker_connector_ids:
+            try:
+                all_server_records = await registry.list_server_records(tenant_ctx=tenant_ctx)
+                worker_connector_ids = [sid for sid, _ in all_server_records]
+            except Exception as _discover_exc:
+                logger.warning("worker_all_connector_discovery_failed: %s", _discover_exc)
 
         tools: list[ToolRef] = []
         connectors: list[dict[str, Any]] = []
@@ -697,6 +724,7 @@ def run_goal(
             from app.governance.policies import PolicyEngine
             from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
+            from app.memory.execution import ExecutionMemory
             from app.memory.long_term import LongTermMemoryStore
             from app.reliability.dedup import DeduplicationCache
             from app.reliability.rollback import RollbackEngine
@@ -707,6 +735,7 @@ def run_goal(
             _policy = PolicyEngine()
             _ltm = LongTermMemoryStore()
             _eval = EvalRunner()
+            _exec_mem = ExecutionMemory()
 
             # Wire Redis into CostController for distributed rate-limiting
             import os as _os_cw
@@ -752,10 +781,13 @@ def run_goal(
                 hitl_gateway=_hitl,
                 cost_controller=_cost,
                 policy_engine=_policy,
+                exec_memory=_exec_mem,
                 long_term_memory=_ltm,
                 eval_runner=_eval,
                 cost_tracker=None,
             )
+            if db_factory is not None:
+                _agent_runner._db_session_factory = db_factory
             _agent_runner = _WorkerMCPAgentRunner(
                 _agent_runner, _build_worker_mcp_context
             )
