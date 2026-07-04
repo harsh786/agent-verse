@@ -1,11 +1,16 @@
 """Eval runner — scores completed goals on 7 dimensions."""
 from __future__ import annotations
 
+import json
 import time
+import uuid
 from typing import Any
+
+from sqlalchemy import text
 
 from app.agent.state import AgentState, GoalStatus
 from app.intelligence.eval import EvalScorecard
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 
@@ -256,66 +261,36 @@ class EvalRunner:
     ) -> EvalScorecard:
         """Score AND persist results to the evaluations table.
 
-        Calls ``score_async`` (which includes LLM-based coherence + accuracy scoring) and
-        then writes the result to the ``evaluations`` DB table so scores survive
-        restarts and are queryable for dashboards / self-optimisation.
-
-        The INSERT tries to include score_tool_relevance; if that column does not yet
-        exist (older schema), it falls back to an INSERT without that column.
+        Writes to the actual DB schema:
+          - scores (JSON)  — full dimension breakdown
+          - average_score (float)
+          - passed (bool)
+          - created_at (timestamp)
         """
-        # Score with LLM-based coherence + accuracy (replaces heuristics)
         scorecard = await self.score_async(state=state, tenant_ctx=tenant_ctx, provider=provider)
-        # Persist to DB
+
         if db is not None:
-            import uuid
-
-            from sqlalchemy import text
-
             eval_id = uuid.uuid4().hex
-            params: dict = {
-                "id": eval_id,
-                "gid": state.goal_id,
-                "tid": tenant_ctx.tenant_id,
-                "tc": scorecard.scores.get("task_completion", 0.0),
-                "eff": scorecard.scores.get("efficiency", 0.0),
-                "acc": scorecard.scores.get("accuracy", 0.0),
-                "saf": scorecard.scores.get("safety", 0.0),
-                "coh": scorecard.scores.get("coherence", 0.0),
-                "sla": scorecard.scores.get("sla", 1.0),
-                "tr": scorecard.scores.get("tool_relevance", 0.5),
-                "passed": scorecard.passed(),
-            }
             try:
                 async with db() as session, session.begin():
                     await session.execute(
-                        text("""INSERT INTO evaluations
-                            (id, goal_id, tenant_id,
-                             score_task_completion, score_efficiency,
-                             score_accuracy, score_safety, score_coherence,
-                             score_sla, score_tool_relevance, passed, run_at)
+                        text("""
+                            INSERT INTO evaluations
+                                (id, goal_id, tenant_id, scores, average_score, passed, created_at)
                             VALUES
-                            (:id, :gid, :tid, :tc, :eff, :acc, :saf,
-                             :coh, :sla, :tr, :passed, NOW())
-                            ON CONFLICT DO NOTHING"""),
-                        params,
+                                (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed, NOW())
+                            ON CONFLICT (id) DO NOTHING
+                        """),
+                        {
+                            "id": eval_id,
+                            "gid": state.goal_id,
+                            "tid": tenant_ctx.tenant_id,
+                            "scores": json.dumps(scorecard.scores),
+                            "avg": round(scorecard.average_score(), 6),
+                            "passed": scorecard.passed(),
+                        },
                     )
-            except Exception:
-                # score_tool_relevance column may not exist in older schemas — retry without it
-                try:
-                    async with db() as session, session.begin():
-                        await session.execute(
-                            text("""INSERT INTO evaluations
-                                (id, goal_id, tenant_id,
-                                 score_task_completion, score_efficiency,
-                                 score_accuracy, score_safety, score_coherence,
-                                 score_sla, passed, run_at)
-                                VALUES
-                                (:id, :gid, :tid, :tc, :eff, :acc, :saf,
-                                 :coh, :sla, :passed, NOW())
-                                ON CONFLICT DO NOTHING"""),
-                            params,
-                        )
-                except Exception as exc2:
-                    from app.observability.logging import get_logger
-                    get_logger(__name__).warning("eval_persist_failed", error=str(exc2))
+            except Exception as exc:
+                get_logger(__name__).warning("eval_persist_failed", error=str(exc))
+
         return scorecard
