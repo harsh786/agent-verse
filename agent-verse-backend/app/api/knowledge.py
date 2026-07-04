@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid as _uuid
 from typing import Any
@@ -375,21 +376,51 @@ async def search_knowledge(
 
 @router.get("/cache/stats")
 async def get_cache_stats(request: Request) -> dict[str, Any]:
+    """Return rich cache stats including hit rate, L1/L2 breakdown, and bytes saved."""
     tenant_ctx: TenantContext = _require_tenant(request)
     cache = _semantic_cache(request)
     stats = cache.stats(tenant_ctx=tenant_ctx)
+    # Also report current cache size
+    size = 0
+    if hasattr(cache, "size"):
+        try:
+            size = await cache.size(tenant_ctx.tenant_id)
+        except Exception:
+            pass
     return {
-        "tenant_id": tenant_ctx.tenant_id,
-        "hits": stats["hits"],
-        "misses": stats["misses"],
+        **stats,
+        "redis_entries": size,
+        "threshold": getattr(cache, "_threshold", 0.92),
+        "ttl_seconds": getattr(cache, "_ttl", 3600),
     }
 
 
-@router.delete("/cache", status_code=status.HTTP_204_NO_CONTENT)
-async def clear_cache(request: Request) -> None:
+@router.delete("/cache", status_code=status.HTTP_200_OK)
+async def clear_cache(request: Request) -> dict[str, Any]:
+    """Clear ALL cache entries for this tenant (both in-process LRU and Redis)."""
     tenant_ctx: TenantContext = _require_tenant(request)
     cache = _semantic_cache(request)
-    cache.clear(tenant_ctx=tenant_ctx)
+    deleted = 0
+    if hasattr(cache, "clear_async"):
+        deleted = await cache.clear_async(tenant_ctx=tenant_ctx)
+    else:
+        cache.clear(tenant_ctx=tenant_ctx)  # sync fallback
+    return {"cleared": True, "redis_keys_deleted": deleted}
+
+
+@router.post("/cache/warm")
+async def warm_cache(request: Request) -> dict[str, Any]:
+    """Pre-populate the cache with common step patterns for this tenant."""
+    import json as _json
+    tenant_ctx: TenantContext = _require_tenant(request)
+    cache = _semantic_cache(request)
+    body = await request.json()
+    patterns = body.get("patterns", [])  # [{"query": "...", "response": "..."}]
+    embedder = getattr(request.app.state, "embedder", None)
+    if not hasattr(cache, "warm"):
+        return {"warmed": 0, "error": "Cache warming not supported"}
+    count = await cache.warm(patterns=patterns, embedder=embedder, tenant_id=tenant_ctx.tenant_id)
+    return {"warmed": count, "total_patterns": len(patterns)}
 
 
 # ---------------------------------------------------------------------------

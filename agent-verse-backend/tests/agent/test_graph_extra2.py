@@ -144,7 +144,7 @@ async def test_semantic_cache_hit_emits_event() -> None:
     # Pre-seed: FakeProvider returns same embedding for all texts
     embed_resp = await embedder.embed(EmbedRequest(texts=["search data"]))
     embedding = embed_resp.embeddings[0]
-    await cache.set(
+    await cache.set_async(
         query="search data",
         embedding=embedding,
         response="Cache hit! Found 42 results.",
