@@ -94,3 +94,27 @@ def test_sanitize_tool_raw_output_uses_1000_default():
     long_text = "x" * 2000
     result = sanitize_tool_raw_output(long_text)
     assert len(result) <= 1000 + len("...[truncated]")
+
+
+# ── Vector 2: Full failed-step visibility for verifier ───────────────────────
+
+def test_verifier_summary_includes_all_failed_steps():
+    """When >5 steps with early failures, verifier must see ALL failed steps."""
+    from unittest.mock import MagicMock
+
+    # Create 8 steps: step 2 fails early, steps 6-8 are the last 3 fine ones
+    steps = []
+    for i in range(1, 9):
+        s = MagicMock()
+        s.description = f"Step {i}"
+        s.output = f"output {i}"
+        s.error = f"Error in step {i}" if i == 2 else None
+        s.tool_calls = []
+        steps.append(s)
+
+    from app.agent.graph import _build_verifier_summary
+    summary = _build_verifier_summary(steps)
+
+    assert "Step 2" in summary, "Failed step 2 must appear even though not in last 5"
+    assert "Error in step 2" in summary, "Error message must be in summary"
+    assert "FAILED STEPS" in summary.upper() or "[STEP ERROR]" in summary
