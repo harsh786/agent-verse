@@ -179,3 +179,31 @@ def test_validate_tool_arguments_handles_missing_schema():
 
     assert validate_tool_arguments({"any": "thing"}, None) == []
     assert validate_tool_arguments({"any": "thing"}, {}) == []
+
+
+# ── Vector 6: Separate verifier provider ─────────────────────────────────────
+
+def test_agentgraph_accepts_separate_verifier():
+    """AgentGraph must store planner, executor, verifier as distinct attributes."""
+    from unittest.mock import MagicMock
+    from app.agent.graph import AgentGraph
+
+    planner = MagicMock()
+    executor = MagicMock()
+    verifier = MagicMock()
+
+    graph = AgentGraph(
+        planner=planner,
+        executor=executor,
+        verifier=verifier,
+    )
+
+    assert graph._planner is planner
+    assert graph._executor is executor
+    assert graph._verifier is verifier
+
+
+def test_build_verifier_provider_is_callable_in_main():
+    """_build_verifier_provider must be importable from app.main."""
+    from app.main import _build_verifier_provider
+    assert callable(_build_verifier_provider)

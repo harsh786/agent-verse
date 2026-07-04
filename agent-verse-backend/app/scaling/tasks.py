@@ -771,10 +771,21 @@ def run_goal(
             except Exception:
                 pass
 
+            # Build separate verifier for cross-model verification (reduces self-confirmation bias)
+            _verifier_for_graph = provider  # default: same as executor
+            try:
+                from app.main import _build_verifier_provider as _bvp
+                _vp = _bvp()
+                if _vp is not None:
+                    _verifier_for_graph = _vp
+                    logger.info("Goal %s: cross-model verifier active", goal_id)
+            except Exception as _vp_exc:
+                logger.warning("verifier_provider_build_failed: %s", _vp_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
-                verifier=provider,
+                verifier=_verifier_for_graph,
                 model_router=_model_router,
                 autonomy_mode=_agent_autonomy_mode,
                 result_processor=ResultProcessor(),
