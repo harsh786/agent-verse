@@ -102,6 +102,53 @@ class GraphState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 
+def _build_verifier_summary(steps: list) -> str:
+    """Build a rich step summary for the verifier LLM.
+
+    Always includes ALL steps that had failures (TOOL FAILED or STEP ERROR)
+    regardless of position. Appends the last 5 steps for recency context.
+    Deduplication prevents failed steps in the last 5 from appearing twice.
+    """
+
+    def _step_line(s: Any) -> str:
+        parts = [f"- {getattr(s, 'description', '?')}: {getattr(s, 'output', '')}"]
+        for tc in getattr(s, "tool_calls", []) or []:
+            if not (tc.get("success", True)):
+                parts.append(
+                    f"  [TOOL FAILED] {tc.get('tool_name', '?')}: "
+                    f"{tc.get('error', 'unknown error')}"
+                )
+        if getattr(s, "error", None):
+            parts.append(f"  [STEP ERROR] {s.error}")
+        return "\n".join(parts)
+
+    # All failed steps anywhere in the run
+    failed = [
+        s for s in steps
+        if getattr(s, "error", None)
+        or any(
+            not tc.get("success", True)
+            for tc in (getattr(s, "tool_calls", []) or [])
+        )
+    ]
+
+    last_five = steps[-5:]
+    last_five_ids = {id(s) for s in last_five}
+    early_failures = [s for s in failed if id(s) not in last_five_ids]
+
+    parts: list[str] = []
+    if early_failures:
+        parts.append("FAILED STEPS (occurred before final 5 steps):")
+        parts.extend(_step_line(s) for s in early_failures)
+        parts.append("")
+
+    if last_five:
+        parts.append("MOST RECENT STEPS:")
+        parts.extend(_step_line(s) for s in last_five)
+
+    return "\n".join(parts) if parts else "(no steps executed)"
+
+
 class AgentGraph:
     """LangGraph-based agent loop with RAG retrieval, 12-step pipeline, and checkpointing."""
 
@@ -1955,19 +2002,8 @@ class AgentGraph:
 
         # Build a rich step summary that explicitly flags failed tool calls so
         # the verifier LLM doesn't hallucinate success when tools errored out.
-        def _step_summary(s: Any) -> str:
-            parts = [f"- {s.description}: {s.output}"]
-            # Include any tool call failures explicitly
-            for tc in getattr(s, "tool_calls", []) or []:
-                if not tc.get("success", True):
-                    parts.append(
-                        f"  [TOOL FAILED] {tc.get('tool_name','?')}: {tc.get('error','unknown error')}"
-                    )
-            if getattr(s, "error", None):
-                parts.append(f"  [STEP ERROR] {s.error}")
-            return "\n".join(parts)
-
-        summary = "\n".join(_step_summary(s) for s in agent_state.steps[-5:])
+        # Uses module-level _build_verifier_summary to include ALL failed steps.
+        summary = _build_verifier_summary(agent_state.steps)
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
