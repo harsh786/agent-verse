@@ -119,6 +119,130 @@ class SelfOptimizer:
 
         return suggestions
 
+    def analyze_rpa_failure(
+        self,
+        *,
+        tool_name: str,
+        error: str,
+        url: str,
+        tenant_ctx: TenantContext,
+    ) -> list[OptimizationSuggestion]:
+        """Generate RPA-specific suggestions based on tool failure pattern.
+
+        Covers four patterns: fragile CSS selectors, CAPTCHA blocks,
+        network timeouts, and authentication failures.
+        Deduplicates: same url+error pattern adds at most once per session.
+        """
+        error_lower = error.lower()
+        url_lower = url.lower()
+        suggestions: list[OptimizationSuggestion] = []
+
+        # Dedup key: avoid generating identical suggestions for the same url+error
+        dedup_key = f"rpa:{url_lower[:60]}:{error_lower[:60]}"
+        existing = self._suggestions.get(tenant_ctx.tenant_id, [])
+        if any(dedup_key in (s.before + s.description) for s in existing):
+            return []
+
+        # Pattern 1: Fragile CSS selector (timeout on #id or .class)
+        if (
+            "timeout" in error_lower
+            and ("element" in error_lower or "selector" in error_lower)
+            and tool_name in ("rpa_click", "rpa_type", "rpa_extract_text")
+        ):
+            suggestions.append(OptimizationSuggestion(
+                category="rpa_selector",
+                change_type="improve_executor_prompt",
+                description=(
+                    f"CSS selector timeout on {url} — prefer visible-text selectors "
+                    "over CSS IDs/classes which break on page changes"
+                ),
+                before=dedup_key,
+                after=(
+                    f"For rpa_click on {url}: use text='Button Label' instead of "
+                    "selector='#id'. Attribute selectors (input[name=field]) are more "
+                    "stable than IDs for rpa_type."
+                ),
+                confidence=0.80,
+            ))
+
+        # Pattern 2: CAPTCHA detected
+        if "captcha" in error_lower:
+            suggestions.append(OptimizationSuggestion(
+                category="rpa_captcha",
+                change_type="add_domain_context",
+                description=(
+                    f"CAPTCHA detected on {url} — add rpa_detect_captcha check "
+                    "before login and call rpa_request_human_help when triggered"
+                ),
+                before=dedup_key,
+                after=(
+                    "Add rpa_detect_captcha() before any login step on this URL. "
+                    "If captcha_detected=true, call "
+                    "rpa_request_human_help(reason='CAPTCHA on login')."
+                ),
+                confidence=0.90,
+            ))
+
+        # Pattern 3: Network timeout / page not loaded
+        if (
+            "timeout" in error_lower
+            and ("network" in error_lower or "idle" in error_lower
+                 or "load" in error_lower)
+        ):
+            suggestions.append(OptimizationSuggestion(
+                category="rpa_timing",
+                change_type="improve_executor_prompt",
+                description=(
+                    f"Page load timeout on {url} — add rpa_wait_for_network_idle "
+                    "after navigation and form submissions"
+                ),
+                before=dedup_key,
+                after=(
+                    f"After rpa_open_url(url='{url[:60]}') and after rpa_submit_form(), "
+                    "always call rpa_wait_for_network_idle(timeout_ms=15000)."
+                ),
+                confidence=0.75,
+            ))
+
+        # Pattern 4: Authentication failure
+        if (
+            "auth" in error_lower
+            or "credential" in error_lower
+            or ("invalid" in error_lower and "password" in error_lower)
+        ):
+            suggestions.append(OptimizationSuggestion(
+                category="rpa_credentials",
+                change_type="improve_executor_prompt",
+                description=(
+                    f"Authentication failed on {url} — use vault:// credential "
+                    "references instead of hardcoded values"
+                ),
+                before=dedup_key,
+                after=(
+                    "For rpa_type password fields: use text='vault://<server>/<key>' "
+                    "so credentials are resolved from the secure vault at runtime."
+                ),
+                confidence=0.85,
+            ))
+
+        # Store in memory
+        self._suggestions.setdefault(tenant_ctx.tenant_id, []).extend(suggestions)
+
+        # Async-persist when DB is wired
+        if self._db is not None:
+            import asyncio as _asyncio
+            for _s in suggestions:
+                _s.tenant_id = tenant_ctx.tenant_id
+                try:
+                    loop = _asyncio.get_running_loop()
+                    loop.create_task(
+                        self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
+                    )
+                except RuntimeError:
+                    pass
+
+        return suggestions
+
     def list_suggestions(
         self, *, tenant_ctx: TenantContext, applied: bool | None = None
     ) -> list[OptimizationSuggestion]:
