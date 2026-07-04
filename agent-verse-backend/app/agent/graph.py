@@ -747,6 +747,36 @@ class AgentGraph:
         # P1.1: Track completed StructuredStep objects for condition evaluation
         _completed_steps: dict[str, Any] = {}
 
+        # ── Batch cache prefetch ────────────────────────────────────────────
+        # Embed ALL plan step descriptions at once (single embedding API call)
+        # then batch-check the cache. This way, before the first wave executes,
+        # we already know which steps have cache hits — saving per-step embedding
+        # latency during the hot path.
+        _batch_cache_results: dict[str, str] = {}  # step_desc → cached_response
+        if self._semantic_cache is not None and self._embedder is not None:
+            try:
+                from app.providers.base import EmbedRequest as _EmbedReq
+                _all_descs = [s.description for w in waves for s in w]
+                if _all_descs:
+                    _batch_resp = await self._embedder.embed(_EmbedReq(texts=_all_descs))
+                    _batch_embs = _batch_resp.embeddings or []
+                    if _batch_embs and hasattr(self._semantic_cache, "get_batch"):
+                        _batch_hits = await self._semantic_cache.get_batch(
+                            embeddings=_batch_embs,
+                            tenant_id=tenant_ctx.tenant_id,
+                        )
+                        for desc, hit in zip(_all_descs, _batch_hits):
+                            if hit is not None:
+                                _batch_cache_results[desc] = hit.response
+                        if _batch_cache_results:
+                            self._logger.info(
+                                "batch_cache_prefetch",
+                                total=len(_all_descs),
+                                hits=len(_batch_cache_results),
+                            )
+            except Exception as _bp_exc:
+                self._logger.debug("batch_cache_prefetch_skipped", error=str(_bp_exc)[:80])
+
         for wave_idx, wave in enumerate(waves):
             # P1.1: Filter out steps whose condition evaluates to False
             eligible_steps = [s for s in wave if s.should_execute(_completed_steps)]
@@ -774,6 +804,14 @@ class AgentGraph:
                             output = await self._execute_step_with_loop(
                                 struct_step, agent_state, tenant_ctx
                             )
+                        elif step_desc in _batch_cache_results:
+                            # Batch prefetch hit — serve from pre-fetched cache result
+                            output = _batch_cache_results[step_desc]
+                            await self._emit({
+                                "type": "cache_hit",
+                                "step": step_desc,
+                                "source": "batch_prefetch",
+                            })
                         elif self._semantic_cache is not None:
                             output = await self._execute_step_with_cache(
                                 step_desc, agent_state, tenant_ctx
@@ -1105,6 +1143,15 @@ class AgentGraph:
                     input_schema=getattr(_t, "input_schema", {}),
                 ))
 
+        # Build allowed-tools allowlist for anti-hallucination grounding
+        _allowed_tools_set: set[str] = set()
+        if _tc_ctx is not None:
+            try:
+                _tools_list = getattr(_tc_ctx, "tools", []) or []
+                _allowed_tools_set = {t.name for t in _tools_list if hasattr(t, "name")}
+            except Exception:
+                pass
+
         # Select executor system prompt via PromptOptimizer if wired (Task 7)
         _executor_prompt = EXECUTOR_SYSTEM
         _exec_optimizer = getattr(self, "_prompt_optimizer", None)
@@ -1112,6 +1159,11 @@ class AgentGraph:
             _exec_variant = _exec_optimizer.select_variant("executor")
             if _exec_variant is not None:
                 _executor_prompt = _exec_variant.prompt_text
+
+        # Inject allowed-tools list into executor system prompt
+        if _allowed_tools_set:
+            _tool_lines = "\n".join(f"  - {n}" for n in sorted(_allowed_tools_set)[:30])
+            _executor_prompt = _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
 
         # Resolve executor model via model_router when available (Bug 3 fix)
         _exec_model = ""
@@ -1260,6 +1312,23 @@ class AgentGraph:
             tool_call = extract_tool_call(raw_output)
         if tool_call is not None:
             tool_call = repair_tool_call_arguments(tool_call, step, goal=state.goal)
+        # Validate tool name before dispatching
+        if tool_call is not None and tool_call.tool:
+            from app.agent.tool_calls import validate_tool_name as _validate_tn
+            _tn_rejection = _validate_tn(tool_call.tool, _allowed_tools_set)
+            if _tn_rejection:
+                raw_output = _tn_rejection
+                raw_output_sanitized = True
+                await self._emit({
+                    "type": "tool_call_failed",
+                    "tool": tool_call.tool,
+                    "error": _tn_rejection[:300],
+                })
+                record_tool_call(
+                    tool_call.tool, "unknown", "rejected",
+                    0.0,
+                )
+                tool_call = None  # prevent dispatch
         if tool_call is not None:
             # GuardrailEngine v2: evaluate tool arguments BEFORE the MCP call
             _guardrail_engine_v2 = (
@@ -1817,10 +1886,18 @@ class AgentGraph:
     async def _execute_step_with_cache(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
-        """Execute a step, returning a cached result when the semantic cache hits.
+        """
+        Execute a step using the world-class semantic cache.
 
-        Uses the Redis-backed async get/set API (not the in-process lookup/store API)
-        so cache hits are shared across all workers/replicas for the same tenant.
+        True cosine-similarity matching (threshold 0.92) means paraphrases like
+        "Search GitHub for open issues" and "Find open GitHub issues" both hit
+        the same cache entry — no more exact-match-only limitation.
+
+        Flow:
+          1. Embed the step description (single API call, ~50ms)
+          2. L1 lookup: in-process LRU (sub-millisecond, no network)
+          3. L2 lookup: Redis vector scan (cosine similarity, ~5ms)
+          4. Cache MISS → execute step fully → store result in L1+L2
         """
         _cache_embedding: list[float] | None = None
         if self._semantic_cache is not None and self._embedder is not None:
@@ -1831,30 +1908,37 @@ class AgentGraph:
                     _cache_embed_resp.embeddings[0] if _cache_embed_resp.embeddings else None
                 )
                 if _cache_embedding:
-                    _sem_cache_hit = await self._semantic_cache.get(
-                        query=step,
+                    # Use the new true-similarity API
+                    hit = await self._semantic_cache.get_similar(
                         embedding=_cache_embedding,
                         tenant_id=tenant_ctx.tenant_id,
                     )
-                    if _sem_cache_hit is not None:
-                        await self._emit({"type": "cache_hit", "step": step})
-                        return _sem_cache_hit
-            except Exception:
+                    if hit is not None:
+                        await self._emit({
+                            "type": "cache_hit",
+                            "step": step,
+                            "similarity": round(hit.similarity, 4),
+                            "source": hit.source,
+                            "latency_ms": round(hit.latency_ms, 1),
+                        })
+                        return hit.response
+            except Exception as _ce:
                 _cache_embedding = None
+                self._logger.debug("cache_embed_failed", error=str(_ce)[:80])
 
         raw_output = await self._execute_step(step, state, tenant_ctx)
 
-        # Store result in Redis-backed cache for future cross-replica hits
+        # Store result using true-similarity store
         if self._semantic_cache is not None and _cache_embedding is not None:
             try:
-                await self._semantic_cache.set(
-                    query=step,
+                await self._semantic_cache.store_async(
                     embedding=_cache_embedding,
+                    query=step,
                     response=raw_output,
                     tenant_id=tenant_ctx.tenant_id,
                 )
             except Exception:
-                pass
+                pass  # write failures must never block execution
 
         return raw_output
 

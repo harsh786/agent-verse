@@ -290,3 +290,53 @@ def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> Too
     if match is None:
         return call
     return ToolCall(tool=call.tool, arguments={**call.arguments, "jql": match.group(1)})
+
+
+# ── Built-in tool prefixes that always bypass MCP validation ─────────────────
+_ALWAYS_ALLOWED_PREFIXES: frozenset[str] = frozenset({
+    "rpa_",
+    "civilization_",
+})
+
+
+def validate_tool_name(tool_name: str, allowed_tools: set[str]) -> str | None:
+    """Validate that *tool_name* is in the allowed set.
+
+    Returns:
+        None  — tool is valid, proceed with dispatch.
+        str   — human-readable rejection message (use as raw_output, skip dispatch).
+
+    Built-in prefixes (rpa_*, civilization_*) are always allowed.
+    """
+    if not tool_name:
+        return "Tool name is empty — cannot dispatch."
+
+    # Built-in tools are always allowed
+    for prefix in _ALWAYS_ALLOWED_PREFIXES:
+        if tool_name.startswith(prefix) or tool_name.split(".")[-1].startswith(
+            prefix.rstrip("_")
+        ):
+            return None
+
+    # If no allowed_tools were provided (discovery failed), be permissive
+    if not allowed_tools:
+        return None
+
+    # Exact match
+    if tool_name in allowed_tools:
+        return None
+
+    # Suffix match: allow "jira_search_issues" to match "jira_server.jira_search_issues"
+    bare = tool_name.split(".")[-1]
+    if any(bare == t.split(".")[-1] for t in allowed_tools):
+        return None
+
+    # Rejected
+    available_sample = ", ".join(sorted(allowed_tools)[:8])
+    if len(allowed_tools) > 8:
+        available_sample += f" … (+{len(allowed_tools) - 8} more)"
+    return (
+        f"[TOOL NOT AVAILABLE] '{tool_name}' is not in the discovered tool list. "
+        f"Available tools: {available_sample}. "
+        "Choose one of the available tools or respond with INSUFFICIENT DATA."
+    )
