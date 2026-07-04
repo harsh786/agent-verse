@@ -1,0 +1,217 @@
+- template_id: tpl-software-pr-review
+  slug: software-pr-code-review
+  name: PR Code Review Agent
+  domain: software
+  description: Automatically reviews pull requests for bugs, security vulnerabilities, code style, and test coverage gaps — delivers inline comments within minutes.
+  long_description: >-
+    Waiting for a human code review takes hours or days. This agent reads the PR diff,
+    classifies change types, checks for common bug patterns, security issues (OWASP Top
+    10), missing tests, and style violations, then posts inline comments on the PR and
+    a summary review with approve/request-changes recommendation.
+  source_use_cases:
+    - "02-software/UC-1"
+  system_prompt: >-
+    You are a senior engineer conducting a thorough code review. Always cite line
+    numbers and quote the problematic code. Distinguish between blocking issues
+    (bugs, security) and suggestions (style, readability). Never approve a PR with
+    unaddressed critical issues. Be concise — max 2 sentences per comment.
+  goal_template: >-
+    Review PR #{pr_number} in {repo} on branch {branch}. Check for bugs, security
+    vulnerabilities, missing tests, and style issues. Post inline comments and a
+    summary with approve or request-changes verdict.
+  parameters_schema:
+    properties:
+      pr_number: {type: integer}
+      repo: {type: string}
+      branch: {type: string}
+      focus_areas:
+        type: array
+        items: {type: string}
+        default: [bugs, security, tests, style]
+    required: [pr_number, repo]
+  required_connectors: [github, slack]
+  optional_connectors: [jira]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Review PR #42 in org/backend-api. Flag any SQL injection risks and missing unit tests."
+      required_tools: [github]
+      expected_output_contains: ["review", "comment", "security"]
+  tags: [software, code-review, github, security]
+  revenue_model: "₹200/PR review; ₹15,000/mo unlimited"
+  roi_note: "4h human review → 5min; catches 3x more security issues"
+  version: "1.0.0"
+
+- template_id: tpl-software-issue-triage
+  slug: software-issue-triage
+  name: GitHub Issue Triage Agent
+  domain: software
+  description: Triages incoming GitHub issues — classifies type, assigns priority, labels, routes to the right team, and detects duplicates automatically.
+  long_description: >-
+    Unmanaged issue backlogs slow engineering velocity. This agent reads every new issue,
+    classifies it as bug/feature/question/docs, assigns severity (P0-P3), detects
+    duplicates, applies labels, routes to the appropriate team or milestone, and posts
+    a triage comment with next steps.
+  source_use_cases:
+    - "02-software/UC-2"
+  system_prompt: >-
+    You are an engineering manager triaging issues. Always check for duplicates before
+    creating new tracking tickets. Assign priority based on user impact and reproducibility.
+    Never close a bug report without a fix or a duplicate link. Be brief in comments.
+  goal_template: >-
+    Triage all open untriaged issues in {repo} created since {since_date}. Classify each
+    as bug/feature/question/docs, assign priority P0-P3, detect duplicates, apply labels,
+    and route to the {team} team. Post a triage comment on each issue.
+  parameters_schema:
+    properties:
+      repo: {type: string}
+      since_date: {type: string, format: date}
+      team: {type: string, default: "engineering"}
+    required: [repo]
+  required_connectors: [github, jira, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Triage all open issues in org/api-service created since 2026-07-01."
+      required_tools: [github]
+      expected_output_contains: ["priority", "label", "triage"]
+  tags: [software, issues, triage, github]
+  revenue_model: "₹5,000/mo per repo; ₹20,000/mo unlimited"
+  roi_note: "2h/week triage → 5min; 80% reduction in stale issues"
+  version: "1.0.0"
+
+- template_id: tpl-software-release-notes
+  slug: software-release-notes-generator
+  name: Release Notes Generator
+  domain: software
+  description: Generates customer-facing release notes from merged PRs and closed issues between two Git tags, categorized by feature/fix/breaking change.
+  source_use_cases:
+    - "02-software/UC-3"
+  system_prompt: >-
+    You write clear, user-friendly release notes. Translate technical commit messages
+    into plain language. Categorize as Features, Bug Fixes, Breaking Changes,
+    Deprecations. Skip internal refactors unless they affect public API. Always include
+    the upgrade guide for breaking changes.
+  goal_template: >-
+    Generate release notes for {repo} between tags {from_tag} and {to_tag}. Categorize
+    merged PRs and closed issues as Features, Bug Fixes, Breaking Changes, or
+    Deprecations. Output markdown suitable for GitHub Releases and a Slack announcement.
+  parameters_schema:
+    properties:
+      repo: {type: string}
+      from_tag: {type: string}
+      to_tag: {type: string}
+      include_internal: {type: boolean, default: false}
+    required: [repo, from_tag, to_tag]
+  required_connectors: [github, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate release notes for org/backend-api between v2.3.0 and v2.4.0."
+      required_tools: [github]
+      expected_output_contains: ["features", "fixes", "release"]
+  tags: [software, releases, documentation]
+  revenue_model: "₹1,000/release; ₹10,000/mo unlimited"
+  roi_note: "3h manual drafting → 3min; consistent format every release"
+  version: "1.0.0"
+
+- template_id: tpl-software-pr-merge-check
+  slug: software-pr-auto-merge-check
+  name: PR Auto-Merge Readiness Checker
+  domain: software
+  description: Checks whether a PR meets all auto-merge criteria — CI status, review approvals, branch protection rules, and conflict status — before triggering merge.
+  source_use_cases:
+    - "02-software/UC-4"
+  system_prompt: >-
+    You enforce merge readiness rules strictly. Never approve a merge if CI is failing
+    or required reviews are missing. Check branch protection rules and conflict status
+    before recommending merge. Report every unmet criterion clearly.
+  goal_template: >-
+    Check if PR #{pr_number} in {repo} is ready to auto-merge. Verify CI status, minimum
+    {required_approvals} approvals, no merge conflicts, branch protection compliance, and
+    {custom_checks}. Report pass/fail for each criterion.
+  parameters_schema:
+    properties:
+      pr_number: {type: integer}
+      repo: {type: string}
+      required_approvals: {type: integer, default: 2}
+      custom_checks: {type: array, items: {type: string}, default: []}
+    required: [pr_number, repo]
+  required_connectors: [github, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Check if PR #99 in org/frontend is ready to merge. Require 2 approvals and passing CI."
+      required_tools: [github]
+      expected_output_contains: ["ci", "approvals", "ready"]
+  tags: [software, github, ci-cd, merge]
+  revenue_model: "₹5,000/mo per repo"
+  roi_note: "Eliminates broken main branch incidents; 100% policy compliance"
+  version: "1.0.0"
+
+- template_id: tpl-software-test-coverage
+  slug: software-test-coverage-reporter
+  name: Test Coverage Reporter
+  domain: software
+  description: Analyzes test coverage reports, identifies uncovered modules, and generates a prioritized list of test cases to write for maximum coverage gain.
+  source_use_cases:
+    - "02-software/UC-5"
+  system_prompt: >-
+    You analyze test coverage reports objectively. Prioritize uncovered code by risk:
+    business-critical paths first, then security-sensitive code, then utility functions.
+    Generate specific, actionable test case descriptions — not generic advice.
+  goal_template: >-
+    Analyze the test coverage report for {repo} at {coverage_url}. Identify modules
+    below {threshold}% coverage. Prioritize the top {count} missing test cases by
+    business risk and generate test case descriptions with input/output examples.
+  parameters_schema:
+    properties:
+      repo: {type: string}
+      coverage_url: {type: string}
+      threshold: {type: number, default: 80}
+      count: {type: integer, default: 20}
+    required: [repo, coverage_url]
+  required_connectors: [github, google_sheets]
+  optional_connectors: [jira, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze coverage for org/api-service. Flag modules below 70% and list top 10 test cases."
+      required_tools: [github]
+      expected_output_contains: ["coverage", "uncovered", "test cases"]
+  tags: [software, testing, quality]
+  revenue_model: "₹3,000/mo per repo"
+  roi_note: "From 60% to 85% coverage in 2 sprints on average"
+  version: "1.0.0"
+
+- template_id: tpl-software-dep-scanner
+  slug: software-dependency-vulnerability-scanner
+  name: Dependency Vulnerability Scanner
+  domain: software
+  description: Scans project dependencies for known CVEs, outdated packages, and license risks — generates a prioritized remediation report with upgrade paths.
+  source_use_cases:
+    - "02-software/UC-6"
+  system_prompt: >-
+    You scan dependencies for security and compliance risks. Always include CVE IDs and
+    CVSS scores. Distinguish between direct and transitive dependencies. Suggest the
+    minimum upgrade version that resolves each CVE. Flag any incompatible licenses for
+    commercial use.
+  goal_template: >-
+    Scan all dependencies in {repo} ({package_manager}) for CVEs, outdated packages, and
+    license violations. Generate a CRITICAL/HIGH/MEDIUM/LOW report with CVE IDs, CVSS
+    scores, affected versions, and upgrade paths. File Jira tickets for CRITICAL and HIGH
+    issues assigned to {team}.
+  parameters_schema:
+    properties:
+      repo: {type: string}
+      package_manager:
+        type: string
+        enum: [npm, pip, maven, gradle, go, cargo, ruby]
+      team: {type: string, default: "security"}
+    required: [repo, package_manager]
+  required_connectors: [github, web_search, jira]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Scan npm dependencies in org/frontend for CVEs. File Jira tickets for CRITICAL issues."
+      required_tools: [github, web_search]
+      expected_output_contains: ["CVE", "vulnerability", "upgrade"]
+  tags: [software, security, dependencies, cve]
+  revenue_model: "₹5,000/mo per repo; ₹25,000/mo unlimited"
+  roi_note: "Weekly scan automation vs monthly manual audit; catches 0-day in 24h"
+  version: "1.0.0"

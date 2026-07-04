@@ -1,0 +1,144 @@
+- template_id: tpl-events-vendor-rfq
+  slug: events-vendor-rfq-to-po
+  name: Events Vendor RFQ-to-PO Agent
+  domain: events-mice
+  description: Generates vendor RFQs for event services, collects and compares quotes, and issues approved POs to selected vendors.
+  source_use_cases:
+    - "33-events-mice/UC-1"
+  system_prompt: >-
+    You are an event procurement specialist. Generate detailed RFQs with exact
+    specifications for each service category. Collect quotes, compare objectively,
+    and prepare bid analysis. Issue PO only after client approval. Track vendor
+    confirmations and deposits.
+  goal_template: >-
+    Send RFQs for {event_name} (Date: {event_date}, {attendees} attendees) for
+    {service_categories}. Collect quotes from {vendors_per_category} vendors per
+    category by {rfq_deadline}. Prepare comparison and await client approval.
+    Issue POs to selected vendors. Track by {event_manager_email}.
+  parameters_schema:
+    properties:
+      event_name: {type: string}
+      event_date: {type: string, format: date}
+      attendees: {type: integer}
+      service_categories: {type: array, items: {type: string}}
+      vendors_per_category: {type: integer, default: 3}
+      rfq_deadline: {type: string, format: date}
+      event_manager_email: {type: string, format: email}
+    required: [event_name, event_date, attendees, service_categories, event_manager_email]
+  required_connectors: [email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "RFQs for Annual Conference 2026 (500 attendees, Aug 15). Venue, catering, AV. 3 vendors each."
+      expected_output_contains: ["RFQ", "vendor", "PO"]
+  tags: [events, procurement, rfq]
+  revenue_model: "₹5,000/event; ₹20,000/mo unlimited"
+  roi_note: "Procurement cycle 2 weeks → 3 days; 8% cost savings"
+  version: "1.0.0"
+
+- template_id: tpl-events-venue-booking
+  slug: events-venue-booking-tracker
+  name: Venue Booking Tracker
+  domain: events-mice
+  description: Searches and shortlists venues based on capacity, location, and budget, tracks booking confirmations, and manages T&C review.
+  source_use_cases:
+    - "33-events-mice/UC-2"
+  system_prompt: >-
+    You are an event venue specialist. Shortlist venues matching capacity, location,
+    and budget requirements. Check availability for specified dates. Review standard
+    T&C for common issues (cancellation, force majeure). Never confirm booking without
+    client approval and contract review.
+  goal_template: >-
+    Find venue for {event_name} on {event_date} for {attendee_count} attendees in
+    {preferred_location}. Budget: ₹{venue_budget}. Requirements: {venue_requirements}.
+    Shortlist {shortlist_count} options. Negotiate rates and present to {client_email}.
+  parameters_schema:
+    properties:
+      event_name: {type: string}
+      event_date: {type: string, format: date}
+      attendee_count: {type: integer}
+      preferred_location: {type: string}
+      venue_budget: {type: number}
+      venue_requirements: {type: array, items: {type: string}}
+      shortlist_count: {type: integer, default: 3}
+      client_email: {type: string, format: email}
+    required: [event_name, event_date, attendee_count, preferred_location, client_email]
+  required_connectors: [web_search, email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Venue for Tech Summit Aug 2026 (300 pax) in Bengaluru. Budget ₹5L. Shortlist 3. Share with client."
+      expected_output_contains: ["venue", "shortlist", "capacity"]
+  tags: [events, venue, procurement]
+  revenue_model: "₹3,000/venue search; ₹15,000/mo unlimited"
+  roi_note: "Venue research 2 days → 3 hours; best-value selection"
+  version: "1.0.0"
+
+- template_id: tpl-events-guest-list
+  slug: events-guest-list-manager
+  name: Guest List Management Agent
+  domain: events-mice
+  description: Manages event guest lists, sends personalised invitations, tracks RSVPs, generates seating plans, and sends event-day reminders.
+  source_use_cases:
+    - "33-events-mice/UC-3"
+  system_prompt: >-
+    You are an event guest relations coordinator. Maintain accurate RSVP status.
+    Send personalised invitations with correct event details. Generate seating plans
+    respecting VIP priority and group preferences. Send reminders 3 days and 1 day
+    before the event.
+  goal_template: >-
+    Manage guest list for {event_name} ({event_date}). {total_guests} invited guests.
+    Send personalised invitations via {channel}. Track RSVPs, generate seating plan
+    for {venue_capacity} capacity. Send reminders {reminder_days} days before event.
+    Share final list with {event_manager_email}.
+  parameters_schema:
+    properties:
+      event_name: {type: string}
+      event_date: {type: string, format: date}
+      total_guests: {type: integer}
+      channel: {type: string, enum: [email, whatsapp, sms]}
+      venue_capacity: {type: integer}
+      reminder_days: {type: integer, default: 3}
+      event_manager_email: {type: string, format: email}
+    required: [event_name, event_date, total_guests, venue_capacity, event_manager_email]
+  required_connectors: [email, twilio, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Guest list for Annual Gala (300 guests, Dec 15). Email invites. Seating plan. Reminders 3 days before."
+      expected_output_contains: ["RSVP", "seating", "invitation"]
+  tags: [events, guest-management, rsvp]
+  revenue_model: "₹3,000/event; ₹12,000/mo unlimited"
+  roi_note: "RSVP tracking 100%; seating coordination automated"
+  version: "1.0.0"
+
+- template_id: tpl-events-budget
+  slug: events-budget-tracker
+  name: Events Budget Tracker
+  domain: events-mice
+  description: Tracks event expenses against budget in real-time, flags overruns, projects final cost, and generates client billing reports.
+  source_use_cases:
+    - "33-events-mice/UC-4"
+  system_prompt: >-
+    You are an event financial controller. Track all committed and incurred costs
+    against approved budget. Flag any line items exceeding budget by more than
+    {threshold}% for client approval. Project final cost weekly. Generate itemised
+    client billing with proof of purchase.
+  goal_template: >-
+    Track budget for {event_name} (Total budget: ₹{total_budget}). Monitor
+    {expense_categories} expense categories. Flag overruns above {overrun_threshold_pct}%.
+    Project final cost weekly. Generate billing report for {client_email} on completion.
+  parameters_schema:
+    properties:
+      event_name: {type: string}
+      total_budget: {type: number}
+      expense_categories: {type: array, items: {type: string}}
+      overrun_threshold_pct: {type: integer, default: 10}
+      client_email: {type: string, format: email}
+    required: [event_name, total_budget, client_email]
+  required_connectors: [google_sheets, email, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Budget tracking for Leadership Summit (₹25L budget). 8 categories. Flag >10% overruns. Final billing to client."
+      expected_output_contains: ["budget", "overrun", "billing"]
+  tags: [events, budget, finance]
+  revenue_model: "₹2,000/event; ₹10,000/mo unlimited"
+  roi_note: "Budget overruns identified in real-time; client disputes eliminated"
+  version: "1.0.0"

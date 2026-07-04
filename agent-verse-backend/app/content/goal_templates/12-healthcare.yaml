@@ -1,0 +1,59 @@
+- name: Submit Insurance Pre-Authorization
+  domain: healthcare
+  description: Prepare and submit an insurance pre-authorization request for a planned medical procedure.
+  goal_text: >-
+    Submit insurance pre-authorization for patient {{patient_name}} (ID: {{patient_id}})
+    for procedure {{procedure_name}} (CPT: {{procedure_code}}). Insurance: {{insurer}},
+    policy {{policy_number}}. Diagnosis: {{diagnosis_code}}. Attending: Dr. {{physician}}.
+    Collect required clinical documentation, verify coverage, submit auth request, and
+    notify {{billing_email}} of approval or denial within {{sla_hours}} hours.
+  source_use_cases:
+    - "12-healthcare/UC-1"
+
+- name: Send Patient Appointment Reminders
+  domain: healthcare
+  description: Send appointment reminders to patients scheduled for the next day.
+  goal_text: >-
+    Send appointment reminders for all {{count}} patients scheduled at {{facility}} on
+    {{appointment_date}}. Include doctor name, appointment time, location, parking
+    instructions, and preparation for {{procedure_type}} (fasting/documents required).
+    Send via {{channel}} at {{hours_before}} hours before appointment. Flag undelivered
+    reminders for manual follow-up.
+  source_use_cases:
+    - "12-healthcare/UC-2"
+
+- name: Generate Discharge Summary
+  domain: healthcare
+  description: Generate a complete discharge summary for a hospitalized patient.
+  goal_text: >-
+    Generate a discharge summary for {{patient_name}} ({{patient_id}}), admitted
+    {{admission_date}} and discharged {{discharge_date}} under Dr. {{physician_name}}.
+    Primary diagnosis: {{diagnosis}}. Include procedures performed, investigations,
+    medication on discharge, instructions for {{followup_condition}}, follow-up with
+    {{specialist}} in {{followup_days}} days, and red flag symptoms to watch for.
+  source_use_cases:
+    - "12-healthcare/UC-3"
+
+- name: Interpret Lab Test Report
+  domain: healthcare
+  description: Interpret a patient lab report and flag abnormal values for physician review.
+  goal_text: >-
+    Interpret the {{lab_panel}} report for {{patient_name}} (age {{age}}, {{gender}})
+    with conditions {{conditions}} from {{lab_date}}. Highlight all out-of-range values
+    with reference range and clinical significance. Compare with previous report from
+    {{previous_date}} where available. Generate a clinical summary for Dr. {{physician}}
+    and a patient-friendly explanation.
+  source_use_cases:
+    - "12-healthcare/UC-4"
+
+- name: Check Drug Interaction Risk
+  domain: healthcare
+  description: Check a patient's medication list for drug-drug interactions and contraindications.
+  goal_text: >-
+    Check drug interactions for {{patient_name}} (age {{age}}) on medications:
+    {{medication_list}}. Known allergies: {{allergies}}. Conditions: {{conditions}}.
+    Classify each interaction as Major/Moderate/Minor, identify contraindicated
+    combinations, and check dosage appropriateness for age and renal function
+    {{creatinine_level}}. Alert Dr. {{prescriber_email}} for Major interactions.
+  source_use_cases:
+    - "12-healthcare/UC-5"

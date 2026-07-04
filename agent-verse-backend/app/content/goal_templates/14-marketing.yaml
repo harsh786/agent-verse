@@ -1,0 +1,51 @@
+- name: Write SEO Blog Post
+  domain: marketing
+  description: Write an SEO-optimised blog post targeting a specific keyword.
+  goal_text: >-
+    Write a {{word_count}}-word SEO blog post targeting keyword "{{target_keyword}}".
+    Include keyword in title, first paragraph, and 3 subheadings. Add meta title
+    (60 chars), meta description (155 chars), and 3 social media snippets.
+    Tone: {{tone}}.
+  source_use_cases:
+    - "14-marketing/UC-1"
+
+- name: Build Social Media Content Calendar
+  domain: marketing
+  description: Create a monthly social media content calendar for multiple platforms.
+  goal_text: >-
+    Create {{post_count}}-post calendar for {{brand_name}} for {{month_year}}.
+    Platforms: {{platforms}}. Theme: {{theme}}. Mix: {{promo_pct}}% promotional,
+    {{edu_pct}}% educational, {{engage_pct}}% engagement. Schedule at optimal times.
+  source_use_cases:
+    - "14-marketing/UC-2"
+
+- name: Build Email Nurture Sequence
+  domain: marketing
+  description: Create a multi-touch email nurture sequence for a product or service.
+  goal_text: >-
+    Write {{email_count}}-email {{sequence_type}} sequence for {{product_name}}
+    targeting {{audience}}. Goal: {{goal}}. Include A/B subject line variants for
+    each email. Space sends over {{days}} days. Tone: {{tone}}.
+  source_use_cases:
+    - "14-marketing/UC-4"
+
+- name: Run Competitor Intelligence Research
+  domain: marketing
+  description: Research and summarise competitor pricing, messaging, and product updates.
+  goal_text: >-
+    Research competitors {{competitor_list}} in {{industry}}. Analyse: pricing,
+    latest product updates, SEO keywords, and social messaging tone. Produce weekly
+    competitive brief with top 3 action items for {{stakeholder_email}}.
+  source_use_cases:
+    - "14-marketing/UC-5"
+
+- name: Analyse A/B Test Results
+  domain: marketing
+  description: Calculate statistical significance of an A/B test and declare a winner.
+  goal_text: >-
+    Analyse A/B test "{{test_name}}": Variant A ({{variant_a}}) vs Variant B ({{variant_b}}).
+    A: {{visitors_a}} visitors, {{conversions_a}} conversions.
+    B: {{visitors_b}} visitors, {{conversions_b}} conversions.
+    Confidence threshold: {{confidence_pct}}%. Declare winner or call no-result.
+  source_use_cases:
+    - "14-marketing/UC-6"

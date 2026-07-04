@@ -1,0 +1,44 @@
+- name: Create Incident Response Runbook
+  domain: devops
+  description: Create a step-by-step incident response runbook for a service.
+  goal_text: >-
+    Create an incident response runbook for {{service_name}} covering {{incident_types}}.
+    Include detection steps, escalation path for P{{severity_level}}+ incidents,
+    diagnostic commands, rollback procedure, and post-incident checklist.
+    Format for {{runbook_format}} (Confluence / Notion / Markdown).
+  source_use_cases:
+    - "03-devops/UC-6"
+
+- name: Analyze Alert Fatigue
+  domain: devops
+  description: Analyze monitoring alerts to identify noise and recommend threshold tuning.
+  goal_text: >-
+    Analyze all {{monitoring_tool}} alerts for {{service_group}} over the last
+    {{days}} days. Calculate alert firing frequency, false-positive rate, and
+    actionability score for each alert. Identify the top {{count}} noisiest alerts
+    and recommend new thresholds or suppression windows to reduce volume by
+    {{target_reduction}}% without impacting SLO coverage.
+  source_use_cases:
+    - "03-devops/UC-4"
+
+- name: Generate Deployment Rollback Plan
+  domain: devops
+  description: Generate a rollback plan for a failed or risky deployment.
+  goal_text: >-
+    Generate a rollback plan for deployment {{deploy_id}} of {{service}} to
+    {{environment}}. The deployment introduced {{changes_summary}}. Current error
+    rate: {{error_rate}}%. Identify rollback steps, estimated downtime, database
+    migration rollback risk, and recommended rollback window. Assign to {{owner}}.
+  source_use_cases:
+    - "03-devops/UC-2"
+
+- name: Forecast SLA Breach Risk
+  domain: devops
+  description: Forecast whether a service will breach its SLA within the next N hours.
+  goal_text: >-
+    Forecast SLA breach risk for {{service}} with SLO target {{slo_target}}% over the
+    next {{horizon_hours}} hours. Current error budget remaining: {{budget_remaining}}%.
+    Error budget burn rate: {{burn_rate}}x. Calculate time-to-breach, recommend
+    immediate mitigations, and draft the customer communication if breach is likely.
+  source_use_cases:
+    - "03-devops/UC-5"

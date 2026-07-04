@@ -1,0 +1,39 @@
+- name: Detect Smart Meter Anomalies
+  domain: energy-utilities
+  description: Analyse smart meter data to detect energy theft and consumption anomalies.
+  goal_text: >-
+    Analyse meter data for {{count}} meters in {{feeder}}. Flag anomalies: consumption
+    drop >{{drop_pct}}%, missing reads >{{missing_days}} days, spikes >{{spike_x}}x
+    baseline. Rank by revenue impact. Alert {{revenue_email}}.
+  source_use_cases:
+    - "30-energy-utilities/UC-1"
+
+- name: Generate Day-Ahead Load Forecast
+  domain: energy-utilities
+  description: Forecast power demand for the next day for grid scheduling.
+  goal_text: >-
+    Generate day-ahead load forecast for {{utility}} ({{area}}) for {{date}}.
+    Baseline demand: {{baseline_mw}} MW. Include weather data and holiday calendar.
+    Provide 95% confidence intervals. Submit to {{despatch_email}} by {{submission_time}}.
+  source_use_cases:
+    - "30-energy-utilities/UC-2"
+
+- name: Schedule Equipment Preventive Maintenance
+  domain: energy-utilities
+  description: Schedule preventive maintenance for power distribution assets.
+  goal_text: >-
+    Schedule PM for {{count}} {{asset_type}} assets in {{circle}}. Prioritise {{critical_count}}
+    overloaded or aged assets. Coordinate {{outages}} planned outages with grid.
+    Target period: {{period}}. Report to {{ce_email}}.
+  source_use_cases:
+    - "30-energy-utilities/UC-4"
+
+- name: Generate Energy Audit Report
+  domain: energy-utilities
+  description: Analyse energy consumption and generate an audit report with savings opportunities.
+  goal_text: >-
+    Generate energy audit report for {{facility}} ({{type}}, {{kwh}} kWh/year).
+    Analyse {{systems}} systems. Identify top {{recommendations}} savings measures
+    with ROI and payback. Target {{savings_pct}}% reduction. Report to {{manager_email}}.
+  source_use_cases:
+    - "30-energy-utilities/UC-5"

@@ -1,0 +1,208 @@
+- template_id: tpl-mkt-seo-content
+  slug: mkt-seo-content-factory
+  name: SEO Content Factory
+  domain: marketing
+  description: Generates SEO-optimised blog posts, landing pages, and product descriptions targeting high-value keywords with brand voice.
+  source_use_cases:
+    - "14-marketing/UC-1"
+  system_prompt: >-
+    You are an SEO content strategist and writer. Research keyword competition before
+    writing. Follow E-E-A-T principles. Maintain consistent brand voice. Include
+    target keyword in title, first paragraph, and at least 3 subheadings. Always
+    provide meta title and description.
+  goal_template: >-
+    Create {content_type} targeting keyword "{target_keyword}" (search volume ~{search_volume}).
+    Length: {word_count} words. Brand voice: {brand_voice}. Include {internal_links}
+    internal links. Optimise for featured snippet. Output: draft + meta tags + social snippets.
+  parameters_schema:
+    properties:
+      content_type: {type: string, enum: [blog_post, landing_page, product_description, pillar_page]}
+      target_keyword: {type: string}
+      search_volume: {type: integer}
+      word_count: {type: integer, default: 1200}
+      brand_voice: {type: string, default: "professional"}
+      internal_links: {type: integer, default: 3}
+    required: [content_type, target_keyword]
+  required_connectors: [web_search, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Write 1200-word blog targeting 'invoice automation software India'. Professional tone."
+      expected_output_contains: ["keyword", "meta", "SEO"]
+  tags: [marketing, seo, content]
+  revenue_model: "₹1,500/article; ₹20,000/mo unlimited"
+  roi_note: "Agency cost ₹8,000/article → ₹1,500; 10x content output"
+  version: "1.0.0"
+
+- template_id: tpl-mkt-social-scheduler
+  slug: mkt-social-media-scheduler
+  name: Social Media Scheduler
+  domain: marketing
+  description: Creates and schedules a month of social media content across platforms, adapts formats per channel, and tracks engagement.
+  source_use_cases:
+    - "14-marketing/UC-2"
+  system_prompt: >-
+    You are a social media content creator and planner. Create platform-native content —
+    LinkedIn is professional, Instagram is visual, Twitter is punchy. Never repeat
+    the same copy across platforms. Track best-performing post times per platform.
+  goal_template: >-
+    Create {post_count}-post content calendar for {brand_name} for {month_year}.
+    Platforms: {platforms}. Theme: {content_theme}. Include {promotional_pct}% promotional
+    and {educational_pct}% educational posts. Schedule optimal posting times.
+  parameters_schema:
+    properties:
+      post_count: {type: integer, default: 20}
+      brand_name: {type: string}
+      month_year: {type: string}
+      platforms: {type: array, items: {type: string}}
+      content_theme: {type: string}
+      promotional_pct: {type: integer, default: 20}
+      educational_pct: {type: integer, default: 60}
+    required: [brand_name, month_year, platforms]
+  required_connectors: [buffer, google_sheets, web_search]
+  optional_connectors: [hootsuite, sprout_social]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Plan 20 posts for TechStartup for August 2026. LinkedIn + Instagram. 20% promo, 60% educational."
+      expected_output_contains: ["calendar", "posts", "scheduled"]
+  tags: [marketing, social-media, scheduling]
+  revenue_model: "₹5,000/mo per brand"
+  roi_note: "8h monthly planning → 30min; consistent posting"
+  version: "1.0.0"
+
+- template_id: tpl-mkt-lead-magnet
+  slug: mkt-lead-magnet-creator
+  name: Lead Magnet Creator
+  domain: marketing
+  description: Designs and creates lead magnets (e-books, checklists, calculators) aligned to buyer journey stage and target persona.
+  source_use_cases:
+    - "14-marketing/UC-3"
+  system_prompt: >-
+    You are a conversion-focused content marketer. Design lead magnets that solve a
+    specific, high-value problem for the target persona. Make them immediately actionable.
+    Include a clear value proposition on the cover. Suggest distribution channels.
+  goal_template: >-
+    Create {lead_magnet_type} for target persona "{persona_description}" addressing
+    pain point "{pain_point}". Format for {file_format}. Include branded cover,
+    {page_count} pages, and CTA for {next_step}. Generate distribution checklist.
+  parameters_schema:
+    properties:
+      lead_magnet_type: {type: string, enum: [ebook, checklist, template, calculator, mini_course]}
+      persona_description: {type: string}
+      pain_point: {type: string}
+      file_format: {type: string, enum: [pdf, google_doc, excel]}
+      page_count: {type: integer, default: 10}
+      next_step: {type: string}
+    required: [lead_magnet_type, persona_description, pain_point]
+  required_connectors: [web_search, pdf_generator, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Create 10-page checklist for CFOs addressing GST audit preparation pain points. PDF format."
+      expected_output_contains: ["checklist", "persona", "CTA"]
+  tags: [marketing, lead-magnet, content]
+  revenue_model: "₹3,000/lead magnet; ₹15,000/mo unlimited"
+  roi_note: "Agency cost ₹15,000 → ₹3,000; 2-day turnaround → 2 hours"
+  version: "1.0.0"
+
+- template_id: tpl-mkt-email-campaign
+  slug: mkt-email-campaign-builder
+  name: Email Campaign Builder
+  domain: marketing
+  description: Designs multi-touch email sequences, writes subject lines and body copy, sets up A/B variants, and schedules delivery.
+  source_use_cases:
+    - "14-marketing/UC-4"
+  system_prompt: >-
+    You are an email marketing specialist. Write subject lines that improve open rates.
+    Personalise body copy with merge tags. Design 5-email nurture sequences with clear
+    progression. Always include plain-text fallback and unsubscribe link.
+  goal_template: >-
+    Build {sequence_length}-email {campaign_type} sequence for {product_name} targeting
+    {audience_segment}. Goal: {campaign_goal}. Tone: {tone}. Include A/B subject line
+    variants. Schedule sends over {send_days} days.
+  parameters_schema:
+    properties:
+      sequence_length: {type: integer, default: 5}
+      campaign_type: {type: string, enum: [welcome, nurture, re-engagement, upsell, event]}
+      product_name: {type: string}
+      audience_segment: {type: string}
+      campaign_goal: {type: string}
+      tone: {type: string, default: "conversational"}
+      send_days: {type: integer, default: 14}
+    required: [campaign_type, product_name, audience_segment, campaign_goal]
+  required_connectors: [activecampaign, google_sheets, web_search]
+  optional_connectors: [mailgun, hubspot_marketing]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Build 5-email welcome sequence for AgentVerse SaaS targeting SME CTOs. Goal: trial activation."
+      expected_output_contains: ["subject line", "email", "sequence"]
+  tags: [marketing, email, campaign]
+  revenue_model: "₹2,000/sequence; ₹15,000/mo unlimited"
+  roi_note: "Email sequence creation 6h → 45min"
+  version: "1.0.0"
+
+- template_id: tpl-mkt-competitor
+  slug: mkt-competitor-analysis
+  name: Competitor Analysis Agent
+  domain: marketing
+  description: Tracks competitor pricing, messaging, product updates, and social activity to generate weekly competitive intelligence briefs.
+  source_use_cases:
+    - "14-marketing/UC-5"
+  system_prompt: >-
+    You are a competitive intelligence analyst. Track publicly available information only.
+    Summarise pricing changes, new features, messaging shifts, and marketing moves.
+    Present insights as actionable recommendations, not just observations.
+  goal_template: >-
+    Analyse competitors {competitor_list} in {industry} category. Track: pricing,
+    product updates, SEO keywords, social messaging, and review sentiment. Deliver
+    weekly brief to {stakeholder_email} with top 3 action items.
+  parameters_schema:
+    properties:
+      competitor_list: {type: array, items: {type: string}}
+      industry: {type: string}
+      stakeholder_email: {type: string, format: email}
+    required: [competitor_list, industry, stakeholder_email]
+  required_connectors: [web_search, google_sheets, email]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Analyse Zoho, Freshworks, HubSpot in CRM India. Weekly brief to product@co.in with action items."
+      expected_output_contains: ["competitor", "pricing", "recommendation"]
+  tags: [marketing, competitive-intelligence, strategy]
+  revenue_model: "₹8,000/mo per industry segment"
+  roi_note: "Competitor monitoring 10h/week → automated; always-current intel"
+  version: "1.0.0"
+
+- template_id: tpl-mkt-ab-test
+  slug: mkt-ab-test-analyzer
+  name: A/B Test Analyzer
+  domain: marketing
+  description: Analyses A/B test results for statistical significance, identifies winning variants, and generates optimisation recommendations.
+  source_use_cases:
+    - "14-marketing/UC-6"
+  system_prompt: >-
+    You are a conversion rate optimisation analyst. Only declare a winner when
+    statistical significance ≥95%. Explain confidence levels clearly. Identify
+    secondary metrics impacted. Always recommend next test hypothesis.
+  goal_template: >-
+    Analyse A/B test results for {test_name}: Variant A ({variant_a_description}) vs
+    Variant B ({variant_b_description}). Visitors A: {visitors_a}, Conversions A:
+    {conversions_a}. Visitors B: {visitors_b}, Conversions B: {conversions_b}.
+    Confidence threshold: {confidence_pct}%.
+  parameters_schema:
+    properties:
+      test_name: {type: string}
+      variant_a_description: {type: string}
+      variant_b_description: {type: string}
+      visitors_a: {type: integer}
+      conversions_a: {type: integer}
+      visitors_b: {type: integer}
+      conversions_b: {type: integer}
+      confidence_pct: {type: integer, default: 95}
+    required: [test_name, visitors_a, conversions_a, visitors_b, conversions_b]
+  required_connectors: [google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse test: CTA Button colour. A: 1200 visitors/48 conv. B: 1180 visitors/67 conv. 95% confidence."
+      expected_output_contains: ["statistical significance", "winner", "confidence"]
+  tags: [marketing, ab-test, analytics]
+  revenue_model: "₹1,000/test analysis; ₹5,000/mo unlimited"
+  roi_note: "Manual stats 2h → 5min; fewer wrong winner calls"
+  version: "1.0.0"

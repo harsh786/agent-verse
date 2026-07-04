@@ -1,0 +1,39 @@
+- name: Reconcile OTA Settlement
+  domain: food-restaurant
+  description: Reconcile Swiggy/Zomato settlement against POS data to identify discrepancies.
+  goal_text: >-
+    Reconcile {{ota_name}} settlement for {{restaurant_name}} for period {{period}}.
+    Compare {{ota_orders}} OTA orders against POS records. Flag discrepancies above
+    ₹{{min_dispute}}. Generate dispute letter and weekly summary to {{owner_email}}.
+  source_use_cases:
+    - "28-food-restaurant/UC-1"
+
+- name: Optimise Menu Pricing
+  domain: food-restaurant
+  description: Analyse dish-level margins and recommend menu price adjustments.
+  goal_text: >-
+    Optimise menu pricing for {{restaurant_name}} ({{items}} items). Analyse food cost %,
+    sales velocity, and competitor prices. Target food cost: {{target_fc}}%. Identify
+    stars and plowhorses. Recommend price changes for {{adjust_count}} items.
+  source_use_cases:
+    - "28-food-restaurant/UC-2"
+
+- name: Track and Reduce Food Waste
+  domain: food-restaurant
+  description: Monitor daily food waste and identify the largest waste contributors.
+  goal_text: >-
+    Track daily food waste for {{restaurant_name}} for {{period}}. Monitor preparation,
+    plate, and spoilage waste. Flag items above {{threshold_pct}}% waste ratio. Identify
+    top {{top_items}} waste items and recommend corrective actions to {{chef_email}}.
+  source_use_cases:
+    - "28-food-restaurant/UC-4"
+
+- name: Handle Customer Food Delivery Complaints
+  domain: food-restaurant
+  description: Resolve food delivery complaints from OTA and direct channels.
+  goal_text: >-
+    Handle {{count}} new complaints for {{restaurant_name}} from {{channels}}. Resolve
+    within {{sla_hrs}} hours. Auto-compensate up to ₹{{max_compensation}}. Escalate
+    orders above ₹{{escalation_limit}} for human review. Weekly pattern report to {{manager_email}}.
+  source_use_cases:
+    - "28-food-restaurant/UC-5"

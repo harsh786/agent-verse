@@ -1,0 +1,205 @@
+- template_id: tpl-re-rent-collection
+  slug: re-rent-collection-escalation
+  name: Rent Collection & Escalation Agent
+  domain: real-estate
+  description: Sends automated rent reminders, tracks payment status, escalates defaulters, and generates monthly collection reports.
+  source_use_cases:
+    - "13-real-estate/UC-1"
+  system_prompt: >-
+    You are a property management collections agent. Send polite payment reminders
+    before due date, firm notices post-due-date, and legal notices after 30 days overdue.
+    Never disclose one tenant's status to another. Log every communication.
+  goal_template: >-
+    Process rent collection for {property_name} ({unit_count} units) for month {rent_month}.
+    Send reminders 3 days before due. Escalate defaulters after {grace_days} days.
+    Generate collection report to {owner_email}.
+  parameters_schema:
+    properties:
+      property_name: {type: string}
+      unit_count: {type: integer}
+      rent_month: {type: string}
+      grace_days: {type: integer, default: 5}
+      owner_email: {type: string, format: email}
+    required: [property_name, unit_count, rent_month, owner_email]
+  required_connectors: [email, google_sheets, twilio]
+  optional_connectors: [buildium, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Collect July 2026 rent for Sunrise Apartments (24 units). Grace 5 days. Report to owner@prop.in."
+      expected_output_contains: ["collection", "reminder", "defaulter"]
+  tags: [real-estate, rent, collection]
+  revenue_model: "₹100/unit/month; ₹5,000/mo up to 100 units"
+  roi_note: "90% on-time collection vs 70% manual; 5h/month saved"
+  version: "1.0.0"
+
+- template_id: tpl-re-listing-optimizer
+  slug: re-property-listing-optimizer
+  name: Property Listing Optimizer
+  domain: real-estate
+  description: Rewrites property listings for maximum appeal, generates SEO titles, selects optimal photos, and cross-posts to portals.
+  source_use_cases:
+    - "13-real-estate/UC-2"
+  system_prompt: >-
+    You are a real estate copywriter and listing strategist. Write compelling, accurate
+    descriptions. Never fabricate amenities or distances. Optimise titles for portal
+    search rankings. Flag listings with missing mandatory fields.
+  goal_template: >-
+    Optimise listing for {property_type} at {property_address} ({bedrooms} BHK,
+    ₹{price_lakh}L). Rewrite description for SEO, generate WhatsApp-friendly short
+    description, and post to {portals} portals.
+  parameters_schema:
+    properties:
+      property_type: {type: string, enum: [apartment, villa, plot, commercial, office]}
+      property_address: {type: string}
+      bedrooms: {type: integer}
+      price_lakh: {type: number}
+      portals: {type: array, items: {type: string}}
+    required: [property_type, property_address, price_lakh]
+  required_connectors: [web_search, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Optimise listing for 3BHK apartment at Koramangala, Bangalore ₹1.2Cr. Post to MagicBricks and 99acres."
+      expected_output_contains: ["listing", "description", "posted"]
+  tags: [real-estate, listing, seo]
+  revenue_model: "₹500/listing; ₹5,000/mo unlimited"
+  roi_note: "40% more inquiries per listing"
+  version: "1.0.0"
+
+- template_id: tpl-re-tenant-screening
+  slug: re-tenant-screening
+  name: Tenant Screening Agent
+  domain: real-estate
+  description: Screens prospective tenants by verifying employment, CIBIL score, references, and criminal records, producing a risk-scored report.
+  source_use_cases:
+    - "13-real-estate/UC-3"
+  system_prompt: >-
+    You are a tenant screening specialist. Verify every claim made on the rental
+    application. Check CIBIL, employment, and references. Score risk objectively.
+    Comply with fair housing principles — flag only verified facts.
+  goal_template: >-
+    Screen tenant {tenant_name} (PAN: {pan_number}) for property {property_id}.
+    Check CIBIL score (min threshold: {min_cibil}), verify employment at {employer_name},
+    and contact {reference_count} references. Generate risk report.
+  parameters_schema:
+    properties:
+      tenant_name: {type: string}
+      pan_number: {type: string}
+      property_id: {type: string}
+      min_cibil: {type: integer, default: 700}
+      employer_name: {type: string}
+      reference_count: {type: integer, default: 2}
+    required: [tenant_name, pan_number, property_id]
+  required_connectors: [cibil, email, pdf_generator]
+  optional_connectors: [web_search, digilocker]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Screen tenant Rahul Sharma (PAN: ABCPS1234E) for flat RE-201. Min CIBIL 700."
+      expected_output_contains: ["CIBIL", "employment", "risk"]
+  tags: [real-estate, tenant, screening]
+  revenue_model: "₹800/screening"
+  roi_note: "3h manual checks → 30min; 80% reduction in defaulters"
+  version: "1.0.0"
+
+- template_id: tpl-re-lease-renewal
+  slug: re-lease-renewal-automation
+  name: Lease Renewal Automation
+  domain: real-estate
+  description: Tracks lease expiry dates, prepares renewal notices with revised rent calculations, and coordinates e-signing with tenant.
+  source_use_cases:
+    - "13-real-estate/UC-4"
+  system_prompt: >-
+    You are a lease management specialist. Calculate rent escalation per lease terms
+    (annual % or market benchmark). Prepare renewal drafts exactly matching original
+    lease terms except updated figures. Never execute renewal without both-party signatures.
+  goal_template: >-
+    Process lease renewals for {property_name} expiring in {expiry_window_days} days.
+    Apply {escalation_pct}% rent escalation. Send renewal notice to tenants {days_notice}
+    days before expiry. Coordinate e-signing via {esign_platform}.
+  parameters_schema:
+    properties:
+      property_name: {type: string}
+      expiry_window_days: {type: integer, default: 90}
+      escalation_pct: {type: number, default: 10}
+      days_notice: {type: integer, default: 60}
+      esign_platform: {type: string, default: "email"}
+    required: [property_name]
+  required_connectors: [google_sheets, email, pdf_generator]
+  optional_connectors: [buildium, signnow]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Renew leases at Green Valley Towers expiring in 90 days. 10% escalation. 60 days notice."
+      expected_output_contains: ["renewal", "escalation", "lease"]
+  tags: [real-estate, lease, renewal]
+  revenue_model: "₹500/renewal; ₹3,000/mo unlimited"
+  roi_note: "Zero missed renewals; 2h paperwork → 15min"
+  version: "1.0.0"
+
+- template_id: tpl-re-title-verification
+  slug: re-title-verification
+  name: Title Verification Checker
+  domain: real-estate
+  description: Analyses property title documents for encumbrances, ownership chain breaks, missing NOCs, and generates a due diligence report.
+  source_use_cases:
+    - "13-real-estate/UC-5"
+  system_prompt: >-
+    You are a real estate due diligence specialist. Review title chain for minimum
+    30 years. Flag any gaps in ownership chain, unresolved mortgages, court attachments,
+    or missing NOCs. Always recommend independent legal verification for anomalies.
+  goal_template: >-
+    Perform title verification for property {property_description} (Survey No: {survey_no})
+    at {location}. Review {document_count} title documents. Check for encumbrances,
+    ownership chain (min {title_chain_years} years), and missing NOCs. Generate
+    due-diligence report.
+  parameters_schema:
+    properties:
+      property_description: {type: string}
+      survey_no: {type: string}
+      location: {type: string}
+      document_count: {type: integer}
+      title_chain_years: {type: integer, default: 30}
+    required: [property_description, survey_no, location]
+  required_connectors: [document_reader, web_search, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Verify title for Plot Survey 45/B, Pune. 8 documents. Check 30-year chain. Due diligence report."
+      expected_output_contains: ["encumbrance", "ownership", "NOC"]
+  tags: [real-estate, title, due-diligence]
+  revenue_model: "₹3,000/verification"
+  roi_note: "3-day manual research → 4 hours; comprehensive risk flagging"
+  version: "1.0.0"
+
+- template_id: tpl-re-rental-yield
+  slug: re-rental-yield-calculator
+  name: Rental Yield & ROI Calculator
+  domain: real-estate
+  description: Calculates gross and net rental yields, cash-on-cash returns, and payback periods for investment property analysis.
+  source_use_cases:
+    - "13-real-estate/UC-6"
+  system_prompt: >-
+    You are a real estate investment analyst. Calculate yields accurately including
+    all costs (registration, maintenance, vacancy, taxes). Present both optimistic
+    and conservative scenarios. Never omit material costs.
+  goal_template: >-
+    Calculate rental yield for {property_type} at {location} with purchase price
+    ₹{purchase_price_lakh}L, expected rent ₹{monthly_rent}/month. Include stamp duty
+    {stamp_duty_pct}%, maintenance ₹{maintenance_pm}/month, vacancy {vacancy_pct}%.
+    Generate investment report.
+  parameters_schema:
+    properties:
+      property_type: {type: string}
+      location: {type: string}
+      purchase_price_lakh: {type: number}
+      monthly_rent: {type: number}
+      stamp_duty_pct: {type: number, default: 6}
+      maintenance_pm: {type: number, default: 2000}
+      vacancy_pct: {type: number, default: 8}
+    required: [property_type, location, purchase_price_lakh, monthly_rent]
+  required_connectors: [google_sheets, pdf_generator, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Calculate yield for 2BHK Bangalore ₹80L purchase, ₹25,000/month rent. Stamp duty 5%, maint ₹2000."
+      expected_output_contains: ["yield", "ROI", "payback"]
+  tags: [real-estate, investment, analytics]
+  revenue_model: "₹500/analysis"
+  roi_note: "Comprehensive investment analysis in 5min vs 1h spreadsheet"
+  version: "1.0.0"

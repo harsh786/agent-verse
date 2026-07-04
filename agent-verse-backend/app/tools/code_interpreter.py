@@ -233,6 +233,12 @@ class CodeInterpreter:
         """
         import time
 
+        if os.getenv("ENVIRONMENT", "development") == "production":
+            raise RuntimeError(
+                "Unsandboxed subprocess execution is disabled in production. "
+                "Start the Docker sandbox (colima start + docker pull python:3.12-slim)."
+            )
+
         if os.getenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "false").lower() != "true":
             return CodeResult(
                 stdout="",

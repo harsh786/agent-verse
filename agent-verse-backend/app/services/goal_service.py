@@ -877,7 +877,7 @@ class GoalService:
             raise NotFoundError(f"Agent not found: {agent_id}")
 
     async def _build_tool_context(
-        self, agent_id: str | None, tenant_ctx: TenantContext
+        self, agent_id: str | None, tenant_ctx: TenantContext, goal: str = ""
     ) -> ToolContext:
         # Always include built-in RPA tools so agents can use browser automation
         from app.rpa.tools import RPA_TOOLS
@@ -940,7 +940,31 @@ class GoalService:
         connector_metadata = dict(agent)
         if connector_errors:
             connector_metadata["connector_errors"] = connector_errors
-        return ToolContext(connectors=[connector_metadata], tools=tools)
+
+        all_tools = tools  # full list (RPA + discovered connectors)
+
+        # NEW: if we have a goal, ToolSelector, and enough tools, use tiered selection
+        tool_selector = getattr(self._app_state, "tool_selector", None)
+        if tool_selector is not None and goal and len(all_tools) > 0:
+            try:
+                selection = await tool_selector.select(
+                    goal=goal,
+                    tools=all_tools,
+                    tenant_ctx=tenant_ctx,
+                )
+                from app.agent.tool_context import to_tiered_prompt
+                tool_prompt = to_tiered_prompt(selection)
+                return ToolContext(
+                    connectors=[connector_metadata],
+                    tools=selection.selected,
+                    tool_prompt_override=tool_prompt,
+                )
+            except Exception as exc:
+                _svc_logger.debug(
+                    "tool_selector_failed_fallback_to_full", error=str(exc)[:60]
+                )
+
+        return ToolContext(connectors=[connector_metadata], tools=all_tools)
 
     def _tenant_ctx_for_event_store(
         self, record: GoalRecord, tenant_ctx: TenantContext | None
@@ -981,6 +1005,20 @@ class GoalService:
             return cast("list[dict[str, Any]]", events)
         except Exception as exc:
             _svc_logger.warning("DB list goal events failed: %s", exc)
+            return []
+
+    async def _list_events_since_persisted(
+        self, goal_id: str, after_sequence: int, tenant_ctx: TenantContext
+    ) -> list[dict[str, Any]]:
+        """Return persisted events after *after_sequence* (with ``_seq`` keys)."""
+        if self._event_store is None:
+            return []
+        try:
+            return await self._event_store.list_events_since(
+                goal_id, after_sequence=after_sequence, tenant_ctx=tenant_ctx
+            )
+        except Exception as exc:
+            _svc_logger.warning("DB list events since failed: %s", exc)
             return []
 
     @staticmethod
@@ -1373,7 +1411,7 @@ class GoalService:
             if tool_context is None:
                 try:
                     tool_context = await self._build_tool_context(
-                        agent_id=None, tenant_ctx=tenant_ctx
+                        agent_id=None, tenant_ctx=tenant_ctx, goal=goal_text
                     )
                 except Exception as _tc_exc:
                     _svc_logger.warning("tool_context_build_failed", error=str(_tc_exc))
@@ -1663,7 +1701,7 @@ class GoalService:
                     )
                 else:
                     tool_context = await self._build_tool_context(
-                        agent_id=agent_id, tenant_ctx=tenant_ctx
+                        agent_id=agent_id, tenant_ctx=tenant_ctx, goal=goal
                     )
                     if workflow_mode == "multi_agent":
                         workflow_task = asyncio.create_task(
@@ -2138,8 +2176,15 @@ class GoalService:
         self,
         goal_id: str,
         tenant_ctx: TenantContext,
+        since_sequence: int = 0,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Async generator that yields SSE events for *goal_id* in real time."""
+        """Async generator that yields SSE events for *goal_id* in real time.
+
+        When *since_sequence* > 0 the initial replay is limited to events with
+        sequence > since_sequence (SSE resume-from-cursor).  Each event yielded
+        from the persisted replay path carries a ``_seq`` key for the SSE
+        endpoint to emit as an ``id:`` line.
+        """
         record = self._get_record(goal_id, tenant_ctx)
         queue: asyncio.Queue[dict[str, Any] | None] | None = None
         if record.status not in _TERMINAL_STATUSES:
@@ -2150,7 +2195,12 @@ class GoalService:
             # Replay persisted events and in-memory events without duplicating events
             # already recovered from the durable stream. The live queue is registered
             # first so events emitted during replay are not missed by the SSE stream.
-            replay_events = await self._events_for_replay(goal_id, record, tenant_ctx)
+            if since_sequence > 0:
+                replay_events = await self._list_events_since_persisted(
+                    goal_id, after_sequence=since_sequence, tenant_ctx=tenant_ctx
+                )
+            else:
+                replay_events = await self._events_for_replay(goal_id, record, tenant_ctx)
             seen = {self._event_key(event) for event in replay_events}
             for event in replay_events:
                 yield event

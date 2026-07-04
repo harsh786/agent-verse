@@ -1,0 +1,145 @@
+- template_id: tpl-ngo-fcra-compliance
+  slug: ngo-fcra-compliance-checker
+  name: FCRA Compliance Checker
+  domain: nonprofit-ngo
+  description: Monitors FCRA compliance for NGOs, tracks foreign contribution receipts, and prepares Annual Returns for MHA submission.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-1"
+  system_prompt: >-
+    You are an FCRA compliance specialist. Track all foreign contributions against
+    registered donors. Ensure utilisation is within FCRA-approved purposes only.
+    Prepare FC-4 Annual Return accurately. Alert on any utilisation deviating from
+    FCRA norms — penalties include cancellation of registration.
+  goal_template: >-
+    Check FCRA compliance for {org_name} (FCRA Reg: {fcra_number}) for FY {financial_year}.
+    Track foreign contributions received: ₹{total_received}. Verify utilisation within
+    approved purposes. Prepare FC-4 Annual Return draft. Alert {compliance_email} on
+    deviations.
+  parameters_schema:
+    properties:
+      org_name: {type: string}
+      fcra_number: {type: string}
+      financial_year: {type: string}
+      total_received: {type: number}
+      compliance_email: {type: string, format: email}
+    required: [org_name, fcra_number, financial_year, compliance_email]
+  required_connectors: [web_search, google_sheets, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "FCRA compliance for CareFoundation (Reg: 083781284) FY 2025-26. ₹2Cr received. FC-4 draft. Alert CEO."
+      expected_output_contains: ["FCRA", "FC-4", "utilisation"]
+  tags: [nonprofit, fcra, compliance, india]
+  revenue_model: "₹10,000/annual compliance"
+  roi_note: "FCRA registration risk eliminated; 3h prep → 30min"
+  version: "1.0.0"
+
+- template_id: tpl-ngo-csr-grant
+  slug: ngo-csr-grant-application
+  name: CSR Grant Application Agent
+  domain: nonprofit-ngo
+  description: Identifies matching CSR funding opportunities, drafts grant proposals, and tracks application status for NGOs.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-2"
+  system_prompt: >-
+    You are a development sector fundraising specialist. Research CSR mandates of target
+    companies and align proposal to their stated priorities. Write compelling, evidence-based
+    proposals. Include clear impact metrics, budget justification, and implementation
+    timeline. Never overstate organisational capacity.
+  goal_template: >-
+    Find and apply for CSR grants for {org_name} in {focus_area} sector.
+    Target: {target_companies} companies with CSR budget above ₹{min_csr_budget}L.
+    Draft {grant_count} grant proposals. Track applications in {tracking_sheet}.
+    Notify {fundraising_email} on new opportunities.
+  parameters_schema:
+    properties:
+      org_name: {type: string}
+      focus_area: {type: string}
+      target_companies: {type: array, items: {type: string}}
+      min_csr_budget: {type: number, default: 50}
+      grant_count: {type: integer, default: 5}
+      tracking_sheet: {type: string}
+      fundraising_email: {type: string, format: email}
+    required: [org_name, focus_area, fundraising_email]
+  required_connectors: [web_search, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Find CSR grants for SaveKids Foundation in child education sector. Target TCS, Infosys, Wipro. Draft 5 proposals."
+      expected_output_contains: ["CSR", "grant", "proposal"]
+  tags: [nonprofit, fundraising, csr]
+  revenue_model: "₹5,000/grant proposal; ₹20,000/mo unlimited"
+  roi_note: "Proposal preparation 3 days → 4 hours; success rate improved 20%"
+  version: "1.0.0"
+
+- template_id: tpl-ngo-donor-mgmt
+  slug: ngo-donor-management
+  name: Donor Management Agent
+  domain: nonprofit-ngo
+  description: Maintains donor database, sends personalised impact updates, manages 80G certificates, and identifies lapsed donors for re-engagement.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-3"
+  system_prompt: >-
+    You are a donor relations specialist. Communicate impact, not just needs. Send
+    personalised updates showing donor-specific contribution impact. Maintain 80G
+    certificate records. Flag donors who haven't donated in 12 months for re-engagement.
+    Respect donor communication preferences.
+  goal_template: >-
+    Manage {donor_count} donors for {org_name}. Send quarterly impact updates to
+    all donors. Issue 80G certificates for {donation_period} within {issue_days} days.
+    Identify {lapsed_days}-day lapsed donors for re-engagement campaign.
+    Report to {executive_director_email}.
+  parameters_schema:
+    properties:
+      donor_count: {type: integer}
+      org_name: {type: string}
+      donation_period: {type: string}
+      issue_days: {type: integer, default: 30}
+      lapsed_days: {type: integer, default: 365}
+      executive_director_email: {type: string, format: email}
+    required: [donor_count, org_name, executive_director_email]
+  required_connectors: [email, google_sheets, pdf_generator]
+  optional_connectors: [twilio]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Manage 500 donors for EduHope. Quarterly updates. 80G certs within 30 days. Identify 1-year lapsed donors."
+      expected_output_contains: ["donor", "80G", "impact"]
+  tags: [nonprofit, fundraising, donor-management]
+  revenue_model: "₹5,000/mo up to 500 donors"
+  roi_note: "Donor retention improved 15%; 80G compliance 100%"
+  version: "1.0.0"
+
+- template_id: tpl-ngo-impact-report
+  slug: ngo-impact-report-generator
+  name: NGO Impact Report Generator
+  domain: nonprofit-ngo
+  description: Generates annual impact reports with data visualisation, beneficiary stories, and financial summaries for donors and regulators.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-4"
+  system_prompt: >-
+    You are an impact measurement specialist. Present outcomes, not just activities.
+    Use clear visualisations and beneficiary-centric narratives. Validate all numbers
+    against programme data. Include financial summary in plain language.
+    Generate regulator-ready and donor-friendly versions.
+  goal_template: >-
+    Generate annual impact report for {org_name} for FY {financial_year}.
+    Programmes: {programmes}. Beneficiaries reached: {beneficiaries}. Budget: ₹{budget_cr}Cr.
+    Include {visualisation_count} data visualisations and {story_count} beneficiary stories.
+    Formats: donor PDF and MCA annual return annexure.
+  parameters_schema:
+    properties:
+      org_name: {type: string}
+      financial_year: {type: string}
+      programmes: {type: array, items: {type: string}}
+      beneficiaries: {type: integer}
+      budget_cr: {type: number}
+      visualisation_count: {type: integer, default: 8}
+      story_count: {type: integer, default: 3}
+    required: [org_name, financial_year, programmes, beneficiaries]
+  required_connectors: [google_sheets, pdf_generator, email, document_reader]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Annual report for GreenEarth NGO FY 2025-26. 3 programmes, 10,000 beneficiaries, ₹5Cr budget. 8 charts."
+      expected_output_contains: ["impact", "beneficiaries", "report"]
+  tags: [nonprofit, impact, reporting]
+  revenue_model: "₹8,000/annual report"
+  roi_note: "Report preparation 2 weeks → 2 days; donor engagement improved"
+  version: "1.0.0"

@@ -1,0 +1,40 @@
+- name: Prepare Drug License Application
+  domain: pharmaceutical
+  description: Compile and file a CDSCO drug license application.
+  goal_text: >-
+    Prepare {{license_type}} drug license application for {{company_name}} for
+    {{drug_product}} (Schedule {{schedule}}). Compile dossier checklist, validate
+    completeness, and file on CDSCO portal. Alert {{ra_email}} within 24h on any
+    deficiency query.
+  source_use_cases:
+    - "24-pharmaceutical/UC-1"
+
+- name: Report Adverse Drug Event
+  domain: pharmaceutical
+  description: Classify an adverse event and file an ICSR within regulatory timelines.
+  goal_text: >-
+    Process adverse event report for {{product_name}} (MAH: {{company}}). Classify
+    as serious/non-serious and expected/unexpected. File ICSR to {{authority}} within
+    regulatory timeline (7/15/30 days). Alert {{pv_email}} for expedited reports.
+  source_use_cases:
+    - "24-pharmaceutical/UC-2"
+
+- name: Optimise Drug Inventory with FEFO
+  domain: pharmaceutical
+  description: Manage pharmaceutical inventory using First Expiry First Out logic.
+  goal_text: >-
+    Optimise drug inventory at {{facility}} for {{sku_count}} SKUs. Apply FEFO logic.
+    Alert {{manager_email}} on items expiring within {{expiry_days}} days. Calculate
+    reorder for items below safety stock. Flag {{cold_chain_skus}} cold-chain SKUs.
+  source_use_cases:
+    - "24-pharmaceutical/UC-4"
+
+- name: Execute Batch Drug Recall
+  domain: pharmaceutical
+  description: Manage a drug batch recall including customer notification and regulatory reporting.
+  goal_text: >-
+    Execute {{recall_class}} recall for batch {{batch_number}} of {{product_name}}.
+    Trace distribution to all {{customer_count}} customers. Notify within {{notification_hrs}}
+    hours. File recall report to {{regulatory_authority}}. Track return confirmations.
+  source_use_cases:
+    - "24-pharmaceutical/UC-6"

@@ -1,0 +1,237 @@
+- template_id: tpl-cyber-siem-triage
+  slug: cyber-siem-alert-triage
+  name: SIEM Alert Triage Agent
+  domain: cybersecurity
+  description: Triages incoming SIEM alerts — enriches with threat intelligence, correlates with asset criticality, scores true-positive probability, and routes high-fidelity alerts to analysts.
+  long_description: >-
+    SOC analysts spend 70% of their time on false positives. This agent ingests SIEM
+    alerts, enriches IOCs with threat intelligence feeds, correlates alerts with asset
+    inventory and user context, scores true-positive probability using behavioral baselines,
+    groups correlated alerts into incidents, and routes only high-confidence alerts to
+    analysts — with full context pre-loaded.
+  source_use_cases:
+    - "15-cybersecurity/UC-1"
+  system_prompt: >-
+    You triage security alerts with analyst rigor. Enrich every IOC before scoring.
+    Correlate alerts across the kill chain. False negatives (missed attacks) are
+    unacceptable — bias toward escalation for ambiguous cases. Include MITRE ATT&CK
+    tactic mapping for every triaged alert. Never close a P1 alert without analyst
+    confirmation.
+  goal_template: >-
+    Triage {alert_count} SIEM alerts from {siem_tool} in the last {hours} hours for
+    {environment}. Enrich IOCs with threat intel, correlate with asset criticality,
+    score true-positive probability, map to MITRE ATT&CK tactics, and group into
+    incidents. Escalate P1/P2 alerts to {security_channel} with full context. Create
+    Jira tickets for incidents requiring investigation.
+  parameters_schema:
+    properties:
+      alert_count: {type: integer}
+      siem_tool: {type: string}
+      hours: {type: integer, default: 4}
+      environment: {type: string}
+      security_channel: {type: string}
+    required: [siem_tool, environment, security_channel]
+  required_connectors: [jira, email, database_query, slack, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Triage 200 SIEM alerts from last 4 hours in prod environment. Escalate P1/P2 to #security-ops."
+      required_tools: [jira, database_query, web_search]
+      expected_output_contains: ["triage", "MITRE", "escalated"]
+  tags: [cybersecurity, siem, soc, alerts]
+  revenue_model: "₹30,000/mo per environment"
+  roi_note: "Analyst false-positive work -65%; MTTD -50%"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-vuln-analyzer
+  slug: cyber-vulnerability-scan-analyzer
+  name: Vulnerability Scan Analyzer
+  domain: cybersecurity
+  description: Analyzes vulnerability scan results, deduplicates findings, prioritizes by exploitability and asset criticality, and generates a remediation roadmap with ownership assignments.
+  source_use_cases:
+    - "15-cybersecurity/UC-2"
+  system_prompt: >-
+    You analyze vulnerability scans with a risk-based mindset. Prioritize by CVSS score
+    AND exploitability (is there a known exploit?). Deduplicate findings across scan
+    sources. Group vulnerabilities by asset criticality. Never recommend patching
+    everything at once — build a phased remediation roadmap. Assign ownership based on
+    the asset team.
+  goal_template: >-
+    Analyze vulnerability scan results for {scope} from {scan_tool} run on {scan_date}.
+    Deduplicate findings, prioritize by CVSS score and exploitability, group by asset
+    team, and generate a phased remediation roadmap with {phases} phases. Assign each
+    finding to the responsible team in Jira. Flag Critical/High findings with active
+    exploits as emergency remediation.
+  parameters_schema:
+    properties:
+      scope: {type: string}
+      scan_tool: {type: string}
+      scan_date: {type: string, format: date}
+      phases: {type: integer, default: 3}
+    required: [scope, scan_tool, scan_date]
+  required_connectors: [jira, email, database_query]
+  optional_connectors: [slack, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze Nessus scan results for production VPC from 2026-07-01. Prioritize and assign in Jira."
+      required_tools: [jira, database_query]
+      expected_output_contains: ["vulnerability", "CVSS", "remediation"]
+  tags: [cybersecurity, vulnerability, scanning, remediation]
+  revenue_model: "₹20,000/mo per environment"
+  roi_note: "Vulnerability analysis 8h → 45min; critical backlog reduced 70% in 90 days"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-phishing-detector
+  slug: cyber-phishing-email-detector
+  name: Phishing Email Detector
+  domain: cybersecurity
+  description: Analyzes reported suspicious emails for phishing indicators — header anomalies, URL analysis, sender spoofing, and content patterns — and auto-quarantines confirmed threats.
+  source_use_cases:
+    - "15-cybersecurity/UC-3"
+  system_prompt: >-
+    You analyze emails for phishing indicators methodically. Check sender authentication
+    (SPF/DKIM/DMARC), URL reputation, attachment hashes, and social engineering patterns.
+    Classify as Phishing/Suspicious/Clean with confidence score. For confirmed phishing,
+    recommend quarantine and user notification. Never click or resolve URLs — use passive
+    analysis only.
+  goal_template: >-
+    Analyze {email_count} reported suspicious emails from {reporting_period} in
+    {email_system}. Check SPF/DKIM/DMARC failures, analyze embedded URLs against
+    threat intel, scan attachment hashes, and classify as Phishing/Suspicious/Clean.
+    Quarantine confirmed phishing emails, notify affected users {user_notification},
+    and post an IoC summary to {security_channel}.
+  parameters_schema:
+    properties:
+      email_count: {type: integer}
+      reporting_period: {type: string}
+      email_system: {type: string}
+      user_notification: {type: boolean, default: true}
+      security_channel: {type: string}
+    required: [email_count, email_system, security_channel]
+  required_connectors: [email, web_search, slack]
+  optional_connectors: [database_query]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze 30 reported phishing emails from last week. Quarantine confirmed threats and notify users."
+      required_tools: [email, web_search]
+      expected_output_contains: ["phishing", "quarantine", "IoC"]
+  tags: [cybersecurity, phishing, email-security, soc]
+  revenue_model: "₹10/email analyzed; ₹10,000/mo unlimited"
+  roi_note: "Phishing response time 4h → 10min; user exposure window minimized"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-access-review
+  slug: cyber-access-review-automation
+  name: Access Review Automation Agent
+  domain: cybersecurity
+  description: Automates periodic access reviews — identifies stale accounts, excessive privileges, and orphaned access — and routes certifications to managers for approval.
+  source_use_cases:
+    - "15-cybersecurity/UC-4"
+  system_prompt: >-
+    You conduct access reviews thoroughly. Flag accounts not used in >90 days as stale.
+    Identify privilege escalation risks (users with more access than their role requires).
+    Check for orphaned accounts (departed employees still active). Route all certifications
+    to the correct manager. Never revoke access without manager confirmation.
+  goal_template: >-
+    Conduct access review for {system} covering {user_count} users in {departments}.
+    Identify accounts inactive for > {inactive_days} days, users with excessive privileges
+    for their role, and orphaned accounts from departed employees in the last {months}
+    months. Generate certification requests for managers and route for approval via
+    {approval_channel}. Create Jira tickets for revocations.
+  parameters_schema:
+    properties:
+      system: {type: string}
+      user_count: {type: integer}
+      departments: {type: string}
+      inactive_days: {type: integer, default: 90}
+      months: {type: integer, default: 3}
+      approval_channel: {type: string, enum: [email, jira, slack]}
+    required: [system, departments, approval_channel]
+  required_connectors: [database_query, email, jira]
+  optional_connectors: [slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Conduct access review for AWS IAM for 500 users in Engineering and Finance departments."
+      required_tools: [database_query, jira, email]
+      expected_output_contains: ["stale", "excessive", "review"]
+  tags: [cybersecurity, iam, access-review, compliance]
+  revenue_model: "₹20,000/mo per system"
+  roi_note: "Access review cycle 2 weeks → 2 days; orphaned account risk eliminated"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-incident-timeline
+  slug: cyber-incident-timeline-builder
+  name: Incident Timeline Builder
+  domain: cybersecurity
+  description: Constructs a detailed attack timeline from logs, SIEM alerts, and endpoint telemetry — mapping attacker activity to MITRE ATT&CK and identifying the blast radius.
+  source_use_cases:
+    - "15-cybersecurity/UC-5"
+  system_prompt: >-
+    You build incident timelines with forensic precision. Correlate events across
+    log sources by timestamp, user, and IP. Map each attacker action to MITRE ATT&CK
+    tactic and technique. Identify the initial access vector and lateral movement path.
+    Determine the blast radius — what data/systems were accessed. All timeline entries
+    must cite the source log.
+  goal_template: >-
+    Build an incident timeline for security incident {incident_id} occurring between
+    {start_time} and {end_time}. Sources: {log_sources}. Map attacker activity to
+    MITRE ATT&CK tactics, identify initial access vector, lateral movement, and
+    data exfiltration indicators. Determine blast radius (affected systems: {scope}).
+    Generate a timeline report and post summary to {security_channel}.
+  parameters_schema:
+    properties:
+      incident_id: {type: string}
+      start_time: {type: string}
+      end_time: {type: string}
+      log_sources: {type: array, items: {type: string}}
+      scope: {type: string}
+      security_channel: {type: string}
+    required: [incident_id, start_time, log_sources, security_channel]
+  required_connectors: [database_query, jira, slack]
+  optional_connectors: [email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Build timeline for incident INC-2026-007 from 2026-07-03 00:00 to 2026-07-04 12:00."
+      required_tools: [database_query, jira]
+      expected_output_contains: ["timeline", "MITRE", "blast radius"]
+  tags: [cybersecurity, incident-response, forensics, mitre]
+  revenue_model: "₹5,000/incident; ₹25,000/mo unlimited"
+  roi_note: "Timeline construction 2 days → 4 hours; complete forensic coverage"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-threat-intel
+  slug: cyber-threat-intelligence-enricher
+  name: Threat Intelligence Enricher
+  domain: cybersecurity
+  description: Enriches indicators of compromise (IPs, domains, hashes, URLs) with threat intelligence from multiple feeds — providing context, attribution, and recommended defensive actions.
+  source_use_cases:
+    - "15-cybersecurity/UC-6"
+  system_prompt: >-
+    You enrich threat intelligence accurately. Query multiple intelligence sources for
+    each IoC. Assess confidence level based on source reputation and recency. Never
+    attribute to a threat actor without high-confidence evidence. Include defensive
+    actions (firewall block, YARA rule, etc.) for confirmed malicious IoCs.
+  goal_template: >-
+    Enrich {ioc_count} indicators of compromise — IPs: {ips}, domains: {domains},
+    file hashes: {hashes}. Query threat intelligence sources for reputation scores,
+    malware associations, threat actor attribution, and geolocation. Classify each
+    as Malicious/Suspicious/Clean with confidence score. Generate a Jira ticket with
+    blocking recommendations for all Malicious IoCs and post summary to {security_channel}.
+  parameters_schema:
+    properties:
+      ioc_count: {type: integer}
+      ips: {type: string}
+      domains: {type: string}
+      hashes: {type: string}
+      security_channel: {type: string}
+    required: [security_channel]
+  required_connectors: [web_search, jira, email]
+  optional_connectors: [slack, database_query]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Enrich 50 IoCs from incident INC-007. Flag malicious for blocking and post to #threat-intel."
+      required_tools: [web_search, jira]
+      expected_output_contains: ["threat intel", "malicious", "blocking"]
+  tags: [cybersecurity, threat-intel, ioc, soc]
+  revenue_model: "₹5/IoC; ₹15,000/mo unlimited"
+  roi_note: "IoC enrichment 20min → 30sec per indicator; analyst coverage 5x"
+  version: "1.0.0"

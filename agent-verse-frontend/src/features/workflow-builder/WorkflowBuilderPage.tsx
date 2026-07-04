@@ -28,12 +28,15 @@ const NODE_COLORS: Record<string, string> = {
   loop:           'bg-cyan-100 border-cyan-400 text-cyan-800',
   human_approval: 'bg-red-100 border-red-400 text-red-800',
   delay:          'bg-slate-100 border-slate-400 text-slate-700',
+  rag:            'bg-teal-100 border-teal-400 text-teal-800',
+  skill:          'bg-indigo-100 border-indigo-400 text-indigo-800',
   end:            'bg-muted/60 border-muted-foreground/50 text-gray-900 dark:text-gray-100',
 };
 
 const NODE_ICONS: Record<string, string> = {
   trigger: '▶', tool_call: '🔧', agent_step: '🤖', decision: '❓',
   parallel: '⫸', loop: '↻', human_approval: '👤', delay: '⏱', end: '⬛',
+  rag: '🔍', skill: '⚡',
 };
 
 interface WorkflowNodeData {
@@ -142,6 +145,8 @@ const PALETTE_NODES = [
   { type: 'loop',           label: 'Loop / Map'         },
   { type: 'human_approval', label: 'Human Approval'     },
   { type: 'delay',          label: 'Delay / Wait'       },
+  { type: 'rag',            label: 'RAG Retrieval'      },
+  { type: 'skill',          label: 'Skill'              },
   { type: 'end',            label: 'End'                },
 ];
 
@@ -445,6 +450,44 @@ function TypeSpecificConfig({
   if (type === 'end') return (
     <div className="space-y-2">
       {field('output-map', 'Output Mapping (JSON)', nodeData.output_mapping, (v) => onChange({ output_mapping: v }), '{"result": "{{last_output}}"}', 'textarea')}
+    </div>
+  );
+
+  if (type === 'rag') return (
+    <div className="space-y-2">
+      {field('collection-id', 'Collection ID', nodeData.collection_id as string | undefined, (v) => onChange({ collection_id: v }), 'col-uuid')}
+      {field('query-tmpl', 'Query Template', nodeData.query_template as string | undefined, (v) => onChange({ query_template: v }), '{{goal}}', 'textarea')}
+      <div>
+        <label htmlFor="rag-strategy" className="text-muted-foreground block mb-1">Strategy</label>
+        <select
+          id="rag-strategy"
+          value={(nodeData.strategy as string | undefined) ?? 'hybrid'}
+          onChange={(e) => onChange({ strategy: e.target.value })}
+          className="w-full border rounded px-2 py-1 bg-background text-xs"
+        >
+          <option value="hybrid">Hybrid</option>
+          <option value="vector">Vector</option>
+          <option value="lexical">Lexical</option>
+        </select>
+      </div>
+      <div>
+        <label htmlFor="rag-topk" className="text-muted-foreground block mb-1">Top K</label>
+        <input
+          id="rag-topk"
+          type="number"
+          min={1} max={20}
+          value={(nodeData.top_k as number | undefined) ?? 5}
+          onChange={(e) => onChange({ top_k: parseInt(e.target.value, 10) })}
+          className="w-full border rounded px-2 py-1 bg-background text-xs"
+        />
+      </div>
+    </div>
+  );
+
+  if (type === 'skill') return (
+    <div className="space-y-2">
+      {field('skill-id', 'Skill ID (optional)', nodeData.skill_id as string | undefined, (v) => onChange({ skill_id: v }), 'skill-code-review')}
+      {field('skill-goal', 'Goal (for auto-select)', nodeData.goal_template as string | undefined, (v) => onChange({ goal_template: v }), 'review PR for security', 'textarea')}
     </div>
   );
 

@@ -1,0 +1,40 @@
+- name: Process First Notice of Loss
+  domain: insurance
+  description: Handle an insurance claim FNOL and trigger investigation workflow.
+  goal_text: >-
+    Process FNOL for policy {{policy_number}} (holder: {{policy_holder}}). Incident:
+    {{incident_description}} on {{incident_date}}. Validate coverage, assign claim number,
+    triage as {{severity}}, and acknowledge {{claimant_email}} within 2 hours.
+  source_use_cases:
+    - "17-insurance/UC-1"
+
+- name: Send Policy Renewal Reminders
+  domain: insurance
+  description: Send renewal reminders for expiring policies with updated premium calculation.
+  goal_text: >-
+    Identify {{policy_type}} policies expiring in {{days}} days. Calculate renewal premium
+    with {{rate_change_pct}}% adjustment. Send reminders to policyholders at 30-day
+    and 7-day marks. Escalate non-responders to {{agent_email}}.
+  source_use_cases:
+    - "17-insurance/UC-2"
+
+- name: Screen Claims for Fraud Signals
+  domain: insurance
+  description: Analyse new claims for fraud risk indicators.
+  goal_text: >-
+    Screen {{claim_count}} new {{policy_type}} claims for fraud indicators. Apply
+    pattern analysis: repeat claims, inflated amounts, network connections. Flag claims
+    with fraud score above {{risk_threshold}}. Route high-risk claims to {{siu_email}}.
+  source_use_cases:
+    - "17-insurance/UC-3"
+
+- name: Process Pre-Authorisation Request
+  domain: insurance
+  description: Validate and respond to a hospital pre-authorisation request for cashless treatment.
+  goal_text: >-
+    Process pre-auth for patient {{patient_name}} (policy: {{policy_number}}) at
+    {{hospital_name}}. Treatment: {{treatment}}. Estimated cost: ₹{{cost}}. Verify
+    network empanelment, coverage availability, and treatment eligibility. Respond
+    within {{sla_hrs}} hours.
+  source_use_cases:
+    - "17-insurance/UC-4"

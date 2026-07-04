@@ -1,0 +1,210 @@
+- template_id: tpl-hr-onboarding-automation
+  slug: hr-onboarding-day0-30
+  name: Employee Onboarding Automation (Day 0-30)
+  domain: hr-talent
+  description: Automates the complete 30-day onboarding journey — account setup, orientation scheduling, equipment provisioning, and manager check-ins.
+  long_description: >-
+    Manual onboarding takes 15-20 hours per hire across HR, IT, and managers.
+    This agent orchestrates the full Day 0-30 journey — creates accounts in all systems,
+    schedules orientation sessions, triggers equipment requests, sends personalized welcome
+    messages, assigns mandatory training, schedules manager 1:1s at Day 7/30, and sends
+    reminders until every task is complete.
+  source_use_cases:
+    - "01-hr-talent/UC-4"
+  system_prompt: >-
+    You are an HR automation specialist managing employee onboarding.
+    Coordinate across HR systems, IT ticketing, and calendar tools.
+    Never access employee personal data beyond what is provided.
+    Always verify account creation succeeded before proceeding.
+    For any irreversible action (account creation, data entry), confirm the employee name
+    and ID match before executing.
+  goal_template: >-
+    Onboard new employee {employee_name} (ID: {employee_id}) starting {start_date} in
+    {department} department reporting to {manager_name}. Set up all accounts, schedule
+    orientation for {orientation_date}, and create the 30-day check-in calendar.
+  parameters_schema:
+    properties:
+      employee_name: {type: string}
+      employee_id: {type: string}
+      start_date: {type: string, format: date}
+      department: {type: string}
+      manager_name: {type: string}
+      orientation_date: {type: string, format: date}
+    required: [employee_name, employee_id, start_date, department, manager_name]
+  required_connectors: [jira, email, google_sheets, slack]
+  optional_connectors: [notion, confluence]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Onboard John Doe (ID: EMP-2025-001) starting 2026-07-15 in Engineering reporting to Alice Smith."
+      required_tools: [jira, email]
+      expected_output_contains: ["onboarding", "created", "scheduled"]
+  tags: [hr, onboarding, automation]
+  revenue_model: "₹8,000/onboarding; ₹50,000/mo unlimited"
+  roi_note: "20h manual → 30min; 95% reduction in missed onboarding tasks"
+  version: "1.0.0"
+
+- template_id: tpl-hr-resume-screening
+  slug: hr-bulk-resume-screening
+  name: Bulk Resume Screening Agent
+  domain: hr-talent
+  description: Screens hundreds of resumes against a job description, scoring each on fit and generating a ranked shortlist with reasoning.
+  long_description: >-
+    Screening 200+ resumes per role takes 8-12 hours. This agent parses each resume,
+    extracts skills/experience/education, scores against the JD requirements, flags
+    must-haves vs nice-to-haves, detects red flags, and produces a ranked shortlist with
+    one-paragraph reasoning per candidate.
+  source_use_cases:
+    - "01-hr-talent/UC-1"
+  system_prompt: >-
+    You are a fair and objective talent screener. Score candidates purely on JD fit.
+    Do not make assumptions about candidates beyond what is in the resume.
+    Flag any potential bias triggers in the JD itself.
+    Always cite specific resume evidence for every score.
+  goal_template: >-
+    Screen all resumes in {resume_folder} for the {job_title} role (JD: {jd_url}).
+    Score each on fit (0-100), extract top 5 skills match, flag red flags, and produce a
+    ranked shortlist of the top {shortlist_count} candidates.
+  parameters_schema:
+    properties:
+      resume_folder: {type: string}
+      job_title: {type: string}
+      jd_url: {type: string, format: uri}
+      shortlist_count: {type: integer, default: 10}
+    required: [resume_folder, job_title, jd_url]
+  required_connectors: [document_reader, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Screen resumes in /resumes/sde folder for Senior Engineer role. Shortlist top 10."
+      required_tools: [document_reader, google_sheets]
+      expected_output_contains: ["shortlist", "score", "skills"]
+  tags: [hr, recruitment, screening]
+  revenue_model: "₹2,000/screening batch; ₹20,000/mo unlimited"
+  roi_note: "8h → 20min per role; 12x faster time-to-shortlist"
+  version: "1.0.0"
+
+- template_id: tpl-hr-performance-review
+  slug: hr-performance-review-360
+  name: 360° Performance Review Aggregation
+  domain: hr-talent
+  description: Collects peer/manager/self reviews, aggregates feedback themes, and generates balanced performance summaries for each employee.
+  source_use_cases:
+    - "01-hr-talent/UC-7"
+  system_prompt: >-
+    You aggregate 360 feedback professionally and fairly. Never attribute negative
+    feedback to specific reviewers. Summarize themes, not individual opinions.
+  goal_template: >-
+    Aggregate 360 reviews for {employee_name} from {review_period}. Collect responses
+    from manager {manager_email} and peers in {peer_list}. Generate a balanced 200-word
+    summary with top 3 strengths and 2 development areas.
+  parameters_schema:
+    properties:
+      employee_name: {type: string}
+      review_period: {type: string}
+      manager_email: {type: string, format: email}
+      peer_list: {type: array, items: {type: string}}
+    required: [employee_name, review_period, manager_email]
+  required_connectors: [email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Aggregate Q2 2026 reviews for Jane Smith."
+      required_tools: [email, google_sheets]
+      expected_output_contains: ["strengths", "development"]
+  tags: [hr, performance, reviews]
+  revenue_model: "₹500/review cycle; ₹15,000/mo unlimited"
+  roi_note: "3h manual aggregation → 5min"
+  version: "1.0.0"
+
+- template_id: tpl-hr-leave-management
+  slug: hr-leave-request-automation
+  name: Leave Request Automation
+  domain: hr-talent
+  description: Validates leave requests against policy, checks team calendar coverage, routes for approval, and updates attendance records.
+  source_use_cases:
+    - "01-hr-talent/UC-5"
+  system_prompt: >-
+    You enforce leave policy fairly. Check policy rules, team coverage, and approval
+    chain. Never approve leaves that violate policy without explicit override.
+  goal_template: >-
+    Process leave request for {employee_name} from {leave_start} to {leave_end}
+    (type: {leave_type}). Validate against policy, check team coverage in {department},
+    route to {approver_email} for approval, and update records.
+  parameters_schema:
+    properties:
+      employee_name: {type: string}
+      leave_start: {type: string, format: date}
+      leave_end: {type: string, format: date}
+      leave_type:
+        type: string
+        enum: [casual, sick, earned, maternity, paternity, unpaid]
+      department: {type: string}
+      approver_email: {type: string, format: email}
+    required: [employee_name, leave_start, leave_end, leave_type, department, approver_email]
+  required_connectors: [email, google_sheets, jira]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Process sick leave for Ram Sharma from 2026-07-10 to 2026-07-11."
+      expected_output_contains: ["approved", "policy", "coverage"]
+  tags: [hr, leave, automation]
+  revenue_model: "₹200/request; ₹10,000/mo unlimited"
+  roi_note: "30min manual → 2min; 100% policy compliance"
+  version: "1.0.0"
+
+- template_id: tpl-hr-payroll-discrepancy
+  slug: hr-payroll-discrepancy-investigation
+  name: Payroll Discrepancy Investigation
+  domain: hr-talent
+  description: Investigates payroll discrepancies by cross-checking attendance, approved OT, leaves, deductions, and payslip data.
+  source_use_cases:
+    - "01-hr-talent/UC-9"
+  system_prompt: >-
+    You investigate payroll discrepancies methodically. Always cite the specific data
+    source for every finding. Never modify payroll data — only report findings.
+  goal_template: >-
+    Investigate payroll discrepancy for {employee_name} (ID: {employee_id}) for month
+    {payroll_month}. Compare attendance records, approved OT, leave deductions, and
+    PF/TDS to the payslip. Identify the root cause and generate a correction memo.
+  parameters_schema:
+    properties:
+      employee_name: {type: string}
+      employee_id: {type: string}
+      payroll_month: {type: string}
+    required: [employee_name, employee_id, payroll_month]
+  required_connectors: [google_sheets, database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Investigate payroll discrepancy for EMP-001 for June 2026."
+      expected_output_contains: ["discrepancy", "root cause", "correction"]
+  tags: [hr, payroll, compliance]
+  revenue_model: "₹1,000/investigation; ₹8,000/mo unlimited"
+  roi_note: "2h investigation → 15min"
+  version: "1.0.0"
+
+- template_id: tpl-hr-exit-interview
+  slug: hr-exit-interview-analysis
+  name: Exit Interview Analysis and Attrition Insights
+  domain: hr-talent
+  description: Analyzes exit interview responses to identify attrition patterns, root causes, and actionable retention recommendations.
+  source_use_cases:
+    - "01-hr-talent/UC-11"
+  system_prompt: >-
+    You analyze exit interviews to find systemic patterns. Anonymize individual
+    responses in your report. Focus on actionable insights HR can act on.
+  goal_template: >-
+    Analyze {count} exit interviews from {date_range} in department {department}.
+    Identify top 3 departure reasons, manager-specific patterns, and recommend
+    5 retention actions.
+  parameters_schema:
+    properties:
+      count: {type: integer}
+      date_range: {type: string}
+      department: {type: string, default: "all"}
+    required: [count, date_range]
+  required_connectors: [google_sheets, document_reader, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze 25 exit interviews from Q1 2026 in Engineering."
+      expected_output_contains: ["patterns", "retention", "reasons"]
+  tags: [hr, attrition, analytics]
+  revenue_model: "₹5,000/analysis; ₹15,000/mo unlimited"
+  roi_note: "Manual analysis 4h → 20min; 3x more patterns detected"
+  version: "1.0.0"

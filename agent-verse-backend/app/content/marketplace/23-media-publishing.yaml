@@ -1,0 +1,174 @@
+- template_id: tpl-media-content-mod
+  slug: media-content-moderation
+  name: Content Moderation Agent
+  domain: media-publishing
+  description: Screens user-generated content for policy violations, hate speech, and misinformation, routing borderline cases to human reviewers.
+  source_use_cases:
+    - "23-media-publishing/UC-1"
+  system_prompt: >-
+    You are a content moderation specialist. Apply platform policies consistently.
+    Flag clear violations for automatic action. Route borderline cases to human reviewers
+    with reasoning. Never auto-remove borderline content without human review. Log
+    all moderation decisions with reasoning for audit trail.
+  goal_template: >-
+    Moderate {content_count} new {content_type} submissions on {platform_name}.
+    Apply policies: {policy_categories}. Auto-remove clear violations, route borderline
+    to {review_queue}. Confidence threshold for auto-action: {confidence_threshold}%.
+    Report to {trust_safety_email}.
+  parameters_schema:
+    properties:
+      content_count: {type: integer}
+      content_type: {type: string, enum: [comments, posts, images, videos, articles]}
+      platform_name: {type: string}
+      policy_categories: {type: array, items: {type: string}}
+      review_queue: {type: string}
+      confidence_threshold: {type: integer, default: 95}
+      trust_safety_email: {type: string, format: email}
+    required: [content_type, platform_name, policy_categories, trust_safety_email]
+  required_connectors: [database_query, email, google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Moderate 500 new comments on NewsPortal. Flag hate speech/spam. 95% confidence for auto-action."
+      expected_output_contains: ["violation", "moderation", "review"]
+  tags: [media, moderation, trust-safety]
+  revenue_model: "₹2/item moderated; ₹30,000/mo unlimited"
+  roi_note: "95% policy coverage vs 30% manual; 10x faster moderation"
+  version: "1.0.0"
+
+- template_id: tpl-media-copyright
+  slug: media-copyright-detector
+  name: Copyright Infringement Detector
+  domain: media-publishing
+  description: Scans published content for potential copyright violations, identifies original sources, and generates DMCA notice drafts.
+  source_use_cases:
+    - "23-media-publishing/UC-2"
+  system_prompt: >-
+    You are a digital rights management specialist. Scan content for substantial
+    similarity to copyrighted works. Flag similarities above threshold for legal review.
+    Draft DMCA takedown notices accurately citing original work and registered rights.
+    Never take action on false positives — human legal review required.
+  goal_template: >-
+    Scan {content_count} {content_type} items for copyright violations. Check similarity
+    against {database_name} rights database. Flag items above {similarity_threshold}%
+    similarity. Draft DMCA notices for confirmed infringements. Report to {legal_email}.
+  parameters_schema:
+    properties:
+      content_count: {type: integer}
+      content_type: {type: string, enum: [articles, images, videos, audio]}
+      database_name: {type: string}
+      similarity_threshold: {type: integer, default: 80}
+      legal_email: {type: string, format: email}
+    required: [content_count, content_type, legal_email]
+  required_connectors: [web_search, database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Scan 200 articles for copyright violations. Flag >80% similarity. DMCA drafts to legal@media.co."
+      expected_output_contains: ["copyright", "DMCA", "similarity"]
+  tags: [media, copyright, legal]
+  revenue_model: "₹5/item scanned; ₹20,000/mo unlimited"
+  roi_note: "Rights protection automated; legal risk reduced significantly"
+  version: "1.0.0"
+
+- template_id: tpl-media-audience
+  slug: media-audience-engagement-analyzer
+  name: Audience Engagement Analyzer
+  domain: media-publishing
+  description: Analyses content performance data to identify high-engagement topics, optimal publish times, and audience segment preferences.
+  source_use_cases:
+    - "23-media-publishing/UC-3"
+  system_prompt: >-
+    You are a digital media analyst. Identify patterns in content performance — what
+    topics, formats, and times drive maximum engagement. Segment audience by behaviour.
+    Recommend content strategy adjustments with specific evidence.
+  goal_template: >-
+    Analyse {content_count} pieces of content performance for {publication_name}
+    over {analysis_period}. Identify top {top_topics} performing topics, optimal publish
+    windows, and audience segments. Recommend content calendar adjustments.
+    Report to {editor_email}.
+  parameters_schema:
+    properties:
+      content_count: {type: integer}
+      publication_name: {type: string}
+      analysis_period: {type: string}
+      top_topics: {type: integer, default: 10}
+      editor_email: {type: string, format: email}
+    required: [publication_name, analysis_period, editor_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse 500 articles for TechToday over Q1 2026. Top 10 topics, best publish times. Report to editor."
+      expected_output_contains: ["engagement", "topic", "audience"]
+  tags: [media, analytics, content-strategy]
+  revenue_model: "₹10,000/mo per publication"
+  roi_note: "Content engagement improved 25% with data-driven publishing"
+  version: "1.0.0"
+
+- template_id: tpl-media-pub-schedule
+  slug: media-publishing-schedule-optimizer
+  name: Publishing Schedule Optimizer
+  domain: media-publishing
+  description: Plans optimal content publishing schedule across channels to maximise reach and minimise audience cannibalism.
+  source_use_cases:
+    - "23-media-publishing/UC-4"
+  system_prompt: >-
+    You are a content operations manager. Plan publishing schedules that maximise
+    unique audience reach. Avoid content overlap on same topic within 48 hours.
+    Balance evergreen and trending content. Coordinate across web, social, email, and push.
+  goal_template: >-
+    Create {week_count}-week publishing schedule for {publication_name}. Plan {articles_per_week}
+    articles/week across {channels}. Avoid topic overlap within {overlap_days} days.
+    Include {trending_pct}% trending and {evergreen_pct}% evergreen content. Send to
+    {content_team_email}.
+  parameters_schema:
+    properties:
+      week_count: {type: integer, default: 4}
+      publication_name: {type: string}
+      articles_per_week: {type: integer, default: 10}
+      channels: {type: array, items: {type: string}}
+      overlap_days: {type: integer, default: 2}
+      trending_pct: {type: integer, default: 40}
+      evergreen_pct: {type: integer, default: 60}
+      content_team_email: {type: string, format: email}
+    required: [publication_name, content_team_email]
+  required_connectors: [google_sheets, email, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "4-week schedule for BusinessInsider-IN. 10 articles/week. Web+Social+Email. 40% trending."
+      expected_output_contains: ["schedule", "publish", "channel"]
+  tags: [media, publishing, scheduling]
+  revenue_model: "₹5,000/mo per publication"
+  roi_note: "Content planning time 8h → 1h; 20% reach improvement"
+  version: "1.0.0"
+
+- template_id: tpl-media-seo-audit
+  slug: media-seo-audit
+  name: Media SEO Audit Agent
+  domain: media-publishing
+  description: Audits publication website for SEO health, identifies technical issues, and generates prioritised fix recommendations.
+  source_use_cases:
+    - "23-media-publishing/UC-5"
+  system_prompt: >-
+    You are a technical SEO specialist for news and media sites. Check Core Web Vitals,
+    structured data (NewsArticle schema), canonical issues, duplicate titles, and
+    crawlability. Prioritise findings by traffic impact. Provide specific, actionable
+    fixes for each issue.
+  goal_template: >-
+    Audit SEO health of {website_url} for {page_count} pages. Check: Core Web Vitals,
+    structured data, duplicate content, mobile usability, and crawl errors. Prioritise
+    top {priority_issues} issues by impact. Generate fix roadmap for {webmaster_email}.
+  parameters_schema:
+    properties:
+      website_url: {type: string, format: uri}
+      page_count: {type: integer}
+      priority_issues: {type: integer, default: 20}
+      webmaster_email: {type: string, format: email}
+    required: [website_url, webmaster_email]
+  required_connectors: [web_search, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "SEO audit of https://news.example.com (5000 pages). Top 20 issues. Fix roadmap to webmaster@news.co."
+      expected_output_contains: ["SEO", "Core Web Vitals", "fix"]
+  tags: [media, seo, technical-audit]
+  revenue_model: "₹8,000/audit; ₹20,000/mo unlimited audits"
+  roi_note: "Organic traffic improved 15-30% post-fix implementation"
+  version: "1.0.0"

@@ -29,6 +29,7 @@ class StepStatus(enum.StrEnum):
     COMPLETE = "complete"
     FAILED = "failed"
     SKIPPED = "skipped"
+    UNGROUNDED = "ungrounded"
 
 
 @dataclass
@@ -87,3 +88,8 @@ class AgentState:
 
     # SSE event stream (not checkpointed — ephemeral)
     events: list[dict[str, Any]] = field(default_factory=list)
+
+    # Grounding / provenance fields (Phase 3 Track B/C)
+    ungrounded_claims: list[str] = field(default_factory=list)
+    cited_answer: str = ""
+    provenance: list[dict[str, Any]] = field(default_factory=list)

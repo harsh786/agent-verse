@@ -1,0 +1,185 @@
+- template_id: tpl-rec-resume-screening
+  slug: rec-bulk-resume-screening
+  name: Bulk Resume Screening (Naukri)
+  domain: recruitment
+  description: Screens resumes from Naukri and other job boards against JD requirements, scores each candidate, and produces a ranked shortlist.
+  source_use_cases:
+    - "29-recruitment/UC-1"
+  system_prompt: >-
+    You are a recruitment specialist. Screen resumes objectively against JD requirements.
+    Score on must-have and nice-to-have criteria separately. Flag potential duplicate
+    profiles. Provide one-paragraph screening rationale per shortlisted candidate.
+    Ensure fair screening — no bias for college names or non-JD factors.
+  goal_template: >-
+    Screen {application_count} applications from {source_platform} for {job_title}
+    role (JD: {jd_reference}). Shortlist top {shortlist_count} candidates ranked by
+    fit score. Flag must-have gaps. Email shortlist to {recruiter_email} within
+    {turnaround_hrs} hours.
+  parameters_schema:
+    properties:
+      application_count: {type: integer}
+      source_platform: {type: string, enum: [naukri, linkedin, internal, all]}
+      job_title: {type: string}
+      jd_reference: {type: string}
+      shortlist_count: {type: integer, default: 15}
+      recruiter_email: {type: string, format: email}
+      turnaround_hrs: {type: integer, default: 4}
+    required: [application_count, job_title, jd_reference, recruiter_email]
+  required_connectors: [naukri, document_reader, google_sheets, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Screen 300 Naukri applications for Senior Java Developer. Shortlist top 15. Report to recruiter in 4h."
+      expected_output_contains: ["shortlist", "score", "screening"]
+  tags: [recruitment, screening, resume]
+  revenue_model: "₹2,000/screening batch; ₹20,000/mo unlimited"
+  roi_note: "8h screening → 30min; 10x more consistent evaluation"
+  version: "1.0.0"
+
+- template_id: tpl-rec-interview-scheduler
+  slug: rec-interview-scheduler
+  name: Interview Scheduler Agent
+  domain: recruitment
+  description: Coordinates interview slots across candidate and interviewer calendars, sends invitations, and sends reminders to all parties.
+  source_use_cases:
+    - "29-recruitment/UC-2"
+  system_prompt: >-
+    You are a recruitment coordinator. Find mutually available slots respecting
+    interviewer preferences (no back-to-back interviews, lunch break). Confirm
+    candidate availability before sending calendar invites. Send preparation
+    instructions to candidates. Send reminders 24h and 1h before.
+  goal_template: >-
+    Schedule {interview_round} interviews for {candidate_count} candidates for
+    {job_title} role. Interviewer panel: {interviewer_list}. Available window:
+    {available_window}. Send calendar invites and preparation notes to candidates.
+    Notify {hiring_manager_email} of schedule.
+  parameters_schema:
+    properties:
+      interview_round: {type: string, enum: [screening, technical, HR, final]}
+      candidate_count: {type: integer}
+      job_title: {type: string}
+      interviewer_list: {type: array, items: {type: string}}
+      available_window: {type: string}
+      hiring_manager_email: {type: string, format: email}
+    required: [interview_round, candidate_count, job_title, interviewer_list, hiring_manager_email]
+  required_connectors: [email, google_sheets, google_tasks]
+  optional_connectors: [teams, slack]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Schedule technical interviews for 8 candidates for Data Scientist role. Panel: 3 interviewers. This week."
+      expected_output_contains: ["interview", "scheduled", "calendar"]
+  tags: [recruitment, scheduling, coordination]
+  revenue_model: "₹200/interview scheduled; ₹8,000/mo unlimited"
+  roi_note: "Coordination time 1h/candidate → 5min; zero scheduling conflicts"
+  version: "1.0.0"
+
+- template_id: tpl-rec-offer-negotiation
+  slug: rec-offer-negotiation-assistant
+  name: Offer Negotiation Assistant
+  domain: recruitment
+  description: Prepares data-driven offer letters, benchmarks compensation against market data, and assists in negotiation while staying within band.
+  source_use_cases:
+    - "29-recruitment/UC-3"
+  system_prompt: >-
+    You are a compensation specialist. Benchmark salaries against current market data
+    for the role and location. Prepare offer within approved band. Suggest negotiation
+    strategy for high-value candidates. Flag offers outside band for CHRO approval.
+    Never disclose internal band to candidate.
+  goal_template: >-
+    Prepare offer for {candidate_name} for {job_title} at {location}. Market benchmark
+    for {experience_years} years: ₹{market_p50}L p50. Internal band: ₹{band_min}L -
+    ₹{band_max}L. Proposed CTC: ₹{proposed_ctc}L. Negotiation ceiling: ₹{ceiling_ctc}L.
+    Prepare offer letter for {hr_manager_email} review.
+  parameters_schema:
+    properties:
+      candidate_name: {type: string}
+      job_title: {type: string}
+      location: {type: string}
+      experience_years: {type: integer}
+      market_p50: {type: number}
+      band_min: {type: number}
+      band_max: {type: number}
+      proposed_ctc: {type: number}
+      ceiling_ctc: {type: number}
+      hr_manager_email: {type: string, format: email}
+    required: [candidate_name, job_title, location, proposed_ctc, hr_manager_email]
+  required_connectors: [web_search, pdf_generator, email, google_sheets]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare offer for Ananya Kapoor (Product Manager, Bangalore). CTC ₹28L, ceiling ₹32L. For HR review."
+      expected_output_contains: ["offer", "CTC", "benchmark"]
+  tags: [recruitment, offer, compensation]
+  revenue_model: "₹1,000/offer; ₹10,000/mo unlimited"
+  roi_note: "Offer acceptance rate improved 10%; negotiation within band 100%"
+  version: "1.0.0"
+
+- template_id: tpl-rec-background-check
+  slug: rec-background-check-coordinator
+  name: Background Check Coordinator
+  domain: recruitment
+  description: Coordinates pre-employment background verification including employment history, education, and criminal record checks with BGV vendors.
+  source_use_cases:
+    - "29-recruitment/UC-4"
+  system_prompt: >-
+    You are a background verification coordinator. Initiate BGV as soon as offer
+    is accepted. Track completion status across employment, education, and criminal
+    verification components. Escalate failed verifications to HR immediately.
+    Maintain DPDP Act compliance — retain data only for employment duration.
+  goal_template: >-
+    Initiate background verification for {candidate_name} (Offer ID: {offer_id}).
+    Verify: {verification_types}. BGV vendor: {bgv_vendor}. Expected completion
+    by {joining_date_minus_days} days before joining {joining_date}. Alert
+    {hr_email} on any adverse findings.
+  parameters_schema:
+    properties:
+      candidate_name: {type: string}
+      offer_id: {type: string}
+      verification_types: {type: array, items: {type: string}}
+      bgv_vendor: {type: string}
+      joining_date: {type: string, format: date}
+      joining_date_minus_days: {type: integer, default: 7}
+      hr_email: {type: string, format: email}
+    required: [candidate_name, offer_id, verification_types, joining_date, hr_email]
+  required_connectors: [email, google_sheets, document_reader]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "BGV for Rohit Sharma (OFFER-2026-089). Employment, education, criminal check. Joining Aug 1. Alert HR."
+      expected_output_contains: ["background check", "verification", "adverse"]
+  tags: [recruitment, background-verification, compliance]
+  revenue_model: "₹500/candidate; ₹15,000/mo unlimited"
+  roi_note: "BGV coordination automated; adverse findings flagged in real-time"
+  version: "1.0.0"
+
+- template_id: tpl-rec-candidate-pipeline
+  slug: rec-candidate-pipeline-tracker
+  name: Candidate Pipeline Tracker
+  domain: recruitment
+  description: Tracks candidates across hiring funnel stages, calculates stage conversion rates, and generates hiring velocity reports.
+  source_use_cases:
+    - "29-recruitment/UC-5"
+  system_prompt: >-
+    You are a recruitment operations analyst. Track every candidate through the funnel.
+    Calculate conversion rates at each stage. Identify drop-off patterns. Compare
+    hiring velocity to plan. Recommend pipeline health improvements.
+  goal_template: >-
+    Track {active_positions} active hiring requisitions for {department}. Monitor
+    {candidate_count} candidates in pipeline. Calculate stage conversions. Flag
+    requisitions open beyond {req_age_days} days. Generate weekly hiring velocity
+    report to {ta_lead_email}.
+  parameters_schema:
+    properties:
+      active_positions: {type: integer}
+      department: {type: string}
+      candidate_count: {type: integer}
+      req_age_days: {type: integer, default: 60}
+      ta_lead_email: {type: string, format: email}
+    required: [active_positions, department, ta_lead_email]
+  required_connectors: [google_sheets, email, database_query]
+  optional_connectors: [greenhouse, recruitee]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track 15 open positions in Engineering. 120 candidates in pipeline. Flag reqs >60 days. Weekly report."
+      expected_output_contains: ["pipeline", "conversion", "velocity"]
+  tags: [recruitment, pipeline, analytics]
+  revenue_model: "₹5,000/mo per department"
+  roi_note: "Hiring velocity improved 20%; time-to-fill reduced 15 days"
+  version: "1.0.0"

@@ -1,0 +1,144 @@
+- template_id: tpl-fashion-markdown
+  slug: fashion-markdown-optimizer
+  name: Markdown Optimization Agent
+  domain: fashion-apparel
+  description: Optimises markdown timing and depth for slow-moving inventory to maximise sell-through and margin recovery.
+  source_use_cases:
+    - "35-fashion-apparel/UC-1"
+  system_prompt: >-
+    You are a retail merchandise planner. Analyse sell-through velocity and inventory
+    age for each SKU. Calculate optimal markdown depth and timing to achieve target
+    sell-through by end of season. Balance margin recovery against working capital
+    recovery speed. Never recommend markdown below variable cost.
+  goal_template: >-
+    Optimise markdowns for {sku_count} slow-moving SKUs in {category} category for
+    {season_name} season. Target {sellthrough_target_pct}% sell-through by {season_end_date}.
+    Minimum margin: {min_margin_pct}%. Generate markdown plan for {merchandise_email}.
+  parameters_schema:
+    properties:
+      sku_count: {type: integer}
+      category: {type: string}
+      season_name: {type: string}
+      sellthrough_target_pct: {type: integer, default: 85}
+      season_end_date: {type: string, format: date}
+      min_margin_pct: {type: integer, default: 20}
+      merchandise_email: {type: string, format: email}
+    required: [sku_count, category, season_name, season_end_date, merchandise_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Markdown plan for 200 slow-moving Winter 2026 SKUs. Target 85% sell-through by Feb 28. Min 20% margin."
+      expected_output_contains: ["markdown", "sell-through", "margin"]
+  tags: [fashion, retail, markdown]
+  revenue_model: "₹5,000/season per category; ₹20,000/mo unlimited"
+  roi_note: "Sell-through improved 15%; margin recovery improved 8%"
+  version: "1.0.0"
+
+- template_id: tpl-fashion-trend
+  slug: fashion-trend-analysis
+  name: Fashion Trend Analysis Agent
+  domain: fashion-apparel
+  description: Tracks emerging fashion trends from runway shows, social media, and competitor launches to inform buying and design decisions.
+  source_use_cases:
+    - "35-fashion-apparel/UC-2"
+  system_prompt: >-
+    You are a fashion trend analyst. Research trends from credible sources — runway
+    shows, Vogue/WGSN/Pinterest, and social media. Translate global trends to India-specific
+    commercial viability. Assess trend adoption curve — early, peak, or declining.
+    Recommend buy quantities based on trend lifecycle stage.
+  goal_template: >-
+    Analyse trends for {season_name} {year} for {target_category}. Research {source_count}
+    sources. Identify top {trend_count} trends by commercial potential for Indian market.
+    Recommend {buy_recommendation} for each trend. Report to {buying_head_email}.
+  parameters_schema:
+    properties:
+      season_name: {type: string, enum: [SS, AW, festive, resort]}
+      year: {type: integer}
+      target_category: {type: string}
+      source_count: {type: integer, default: 10}
+      trend_count: {type: integer, default: 8}
+      buy_recommendation: {type: string, default: "depth and width"}
+      buying_head_email: {type: string, format: email}
+    required: [season_name, year, target_category, buying_head_email]
+  required_connectors: [web_search, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Trend analysis for AW 2026 women's ethnic wear. Top 8 trends for India market. Buy recommendations."
+      expected_output_contains: ["trend", "commercial", "buy recommendation"]
+  tags: [fashion, trend, buying]
+  revenue_model: "₹8,000/trend report; ₹25,000/season"
+  roi_note: "Hit rate in buying improved 20%; markdown risk reduced"
+  version: "1.0.0"
+
+- template_id: tpl-fashion-return-rate
+  slug: fashion-return-rate-analyzer
+  name: Return Rate Analyzer
+  domain: fashion-apparel
+  description: Analyses return patterns by SKU, size, channel, and return reason to identify quality, fit, and description issues for immediate correction.
+  source_use_cases:
+    - "35-fashion-apparel/UC-3"
+  system_prompt: >-
+    You are a retail operations analyst. Analyse returns data to find root causes —
+    size chart inaccuracy, quality defects, misleading product photography, or description
+    mismatch. Recommend specific corrective actions. Flag SKUs with returns above
+    benchmark for potential de-listing.
+  goal_template: >-
+    Analyse returns for {sku_count} SKUs in {category} for period {analysis_period}.
+    Return rate benchmark: {benchmark_pct}%. Flag SKUs above {flag_threshold_pct}%.
+    Identify top {top_return_reasons} return reasons. Generate action plan for
+    {category_manager_email}.
+  parameters_schema:
+    properties:
+      sku_count: {type: integer}
+      category: {type: string}
+      analysis_period: {type: string}
+      benchmark_pct: {type: number, default: 15}
+      flag_threshold_pct: {type: number, default: 25}
+      top_return_reasons: {type: integer, default: 5}
+      category_manager_email: {type: string, format: email}
+    required: [sku_count, category, analysis_period, category_manager_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse returns for 500 ethnic wear SKUs for Q1 2026. Flag >25% return rate. Top 5 reasons. Action plan."
+      expected_output_contains: ["return rate", "root cause", "corrective action"]
+  tags: [fashion, returns, analytics]
+  revenue_model: "₹5,000/analysis; ₹15,000/mo unlimited"
+  roi_note: "Return rate reduced 5-8 percentage points; customer satisfaction up"
+  version: "1.0.0"
+
+- template_id: tpl-fashion-inventory-aging
+  slug: fashion-inventory-aging-alert
+  name: Inventory Aging Alert Agent
+  domain: fashion-apparel
+  description: Tracks fashion inventory by age, flags fast-approaching season-end dead stock, and recommends liquidation actions.
+  source_use_cases:
+    - "35-fashion-apparel/UC-4"
+  system_prompt: >-
+    You are a fashion inventory manager. Track inventory by age bucket (0-30, 31-60,
+    61-90, 90+ days). Flag SKUs entering high-risk age buckets before end-of-season.
+    Recommend liquidation options in order of margin preference: markdown, B2B clearance,
+    charity donation. Never hold stock past season for next year (fashion perishability).
+  goal_template: >-
+    Monitor inventory aging for {warehouse_name} for {category}. Flag {sku_count} SKUs
+    older than {age_threshold_days} days. Current season end: {season_end}.
+    Recommend liquidation for items at risk. Alert {inventory_manager_email} weekly.
+  parameters_schema:
+    properties:
+      warehouse_name: {type: string}
+      category: {type: string}
+      sku_count: {type: integer}
+      age_threshold_days: {type: integer, default: 60}
+      season_end: {type: string, format: date}
+      inventory_manager_email: {type: string, format: email}
+    required: [warehouse_name, category, season_end, inventory_manager_email]
+  required_connectors: [database_query, email, google_sheets]
+  optional_connectors: [slack]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Monitor Summer 2026 inventory at Central Warehouse. Flag >60 day items. Season end Aug 31. Alert weekly."
+      expected_output_contains: ["aging", "inventory", "liquidation"]
+  tags: [fashion, inventory, aging]
+  revenue_model: "₹3,000/mo per warehouse"
+  roi_note: "Dead stock reduced 30%; working capital freed ₹10-50L per season"
+  version: "1.0.0"

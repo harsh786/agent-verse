@@ -338,9 +338,19 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
     _require_tenant(request)
     svc = _goal_service(request)
 
+    last_event_id = request.headers.get("Last-Event-ID", "0")
+    since_sequence = int(last_event_id) if last_event_id.isdigit() else 0
+
     async def event_generator() -> AsyncGenerator[str, None]:
-        async for event in svc.subscribe_events(goal_id=goal_id, tenant_ctx=request.state.tenant):
-            yield f"data: {json.dumps(event)}\n\n"
+        seq = 0
+        async for event in svc.subscribe_events(
+            goal_id=goal_id,
+            tenant_ctx=request.state.tenant,
+            since_sequence=since_sequence,
+        ):
+            seq += 1
+            event_seq = event.get("_seq", seq)
+            yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         event_generator(),

@@ -1,0 +1,178 @@
+- template_id: tpl-auto-rc-transfer
+  slug: auto-rc-transfer-assistant
+  name: RC Transfer Assistant (Vahan)
+  domain: automobile
+  description: Guides buyers and sellers through vehicle RC transfer process on Vahan portal, prepares documents, and tracks transfer status.
+  source_use_cases:
+    - "31-automobile/UC-1"
+  system_prompt: >-
+    You are a vehicle registration specialist. Guide RC transfer step-by-step per
+    MV Act requirements. Prepare Form 29/30 with correct details. Calculate and track
+    applicable transfer fees. Alert on pending NOC, hypothecation discharge, or
+    insurance transfer requirements. Track transfer status on Vahan portal.
+  goal_template: >-
+    Process RC transfer for vehicle {registration_number} from seller {seller_name}
+    to buyer {buyer_name} at RTO {rto_code}. Prepare Form 29/30, calculate fees,
+    check NOC requirements. Track status on Vahan and alert {buyer_email} on completion.
+  parameters_schema:
+    properties:
+      registration_number: {type: string}
+      seller_name: {type: string}
+      buyer_name: {type: string}
+      rto_code: {type: string}
+      buyer_email: {type: string, format: email}
+    required: [registration_number, seller_name, buyer_name, rto_code, buyer_email]
+  required_connectors: [vahan, web_search, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "RC transfer for MH12AB1234 from Ravi Kumar to Priya Sharma at RTO Pune (MH12). Track status."
+      expected_output_contains: ["RC transfer", "Form 29", "RTO"]
+  tags: [automobile, rc-transfer, vahan, india]
+  revenue_model: "₹500/transfer; ₹5,000/mo unlimited"
+  roi_note: "Transfer process guided 100% correctly; zero document rejections"
+  version: "1.0.0"
+
+- template_id: tpl-auto-insurance-renewal
+  slug: auto-insurance-renewal-tracker
+  name: Vehicle Insurance Renewal Tracker
+  domain: automobile
+  description: Tracks vehicle insurance expiry dates for fleet or individual vehicles, gets competitive renewal quotes, and processes renewals before lapse.
+  source_use_cases:
+    - "31-automobile/UC-2"
+  system_prompt: >-
+    You are a vehicle insurance specialist. Track expiry dates precisely — driving
+    without insurance is illegal. Alert at 60, 30, 15, and 7 days before expiry.
+    Get competitive quotes from multiple insurers. Recommend renewal with NCB
+    calculation. Never let insurance lapse.
+  goal_template: >-
+    Track insurance renewals for {vehicle_count} vehicles in fleet {fleet_name}.
+    Alert {fleet_manager_email} at 30-day and 7-day marks. Get quotes from
+    {insurer_count} insurers. Calculate NCB for eligible vehicles. Auto-renew
+    policies below ₹{auto_renew_threshold} with prior approval.
+  parameters_schema:
+    properties:
+      vehicle_count: {type: integer}
+      fleet_name: {type: string}
+      fleet_manager_email: {type: string, format: email}
+      insurer_count: {type: integer, default: 3}
+      auto_renew_threshold: {type: number, default: 15000}
+    required: [vehicle_count, fleet_name, fleet_manager_email]
+  required_connectors: [web_search, email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Track insurance for 50-vehicle fleet. Alert fleet manager at 30+7 days. Get 3 quotes. NCB for eligible."
+      expected_output_contains: ["insurance", "NCB", "renewal"]
+  tags: [automobile, insurance, fleet]
+  revenue_model: "₹100/vehicle/year; ₹10,000/mo unlimited"
+  roi_note: "Zero insurance lapses; 5-8% premium savings through comparison"
+  version: "1.0.0"
+
+- template_id: tpl-auto-service-reminder
+  slug: auto-service-reminder-automation
+  name: Vehicle Service Reminder Automation
+  domain: automobile
+  description: Sends personalised service reminders based on km reading and date, tracks service history, and books service appointments.
+  source_use_cases:
+    - "31-automobile/UC-3"
+  system_prompt: >-
+    You are a vehicle service coordinator. Track service intervals by both km and date.
+    Reach out proactively before service becomes overdue. Personalise messages with
+    vehicle details and last service summary. Follow up non-responders once. Never
+    spam customers with more than 2 reminders per interval.
+  goal_template: >-
+    Send service reminders for {customer_count} vehicles approaching {service_type}
+    service ({km_threshold} km or {months_threshold} months interval). Channel:
+    {channel}. Book appointments at {service_center} for confirmed customers.
+    Report bookings to {service_manager_email}.
+  parameters_schema:
+    properties:
+      customer_count: {type: integer}
+      service_type: {type: string, enum: [periodic, free_service, annual_maintenance]}
+      km_threshold: {type: integer, default: 5000}
+      months_threshold: {type: integer, default: 6}
+      channel: {type: string, enum: [sms, email, whatsapp]}
+      service_center: {type: string}
+      service_manager_email: {type: string, format: email}
+    required: [customer_count, service_type, service_center, service_manager_email]
+  required_connectors: [database_query, twilio, email, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Service reminders for 500 customers at 5000km/6-month interval. WhatsApp. Book at Rohan Motors."
+      expected_output_contains: ["service reminder", "appointment", "booking"]
+  tags: [automobile, service, customer-retention]
+  revenue_model: "₹20/reminder; ₹10,000/mo unlimited"
+  roi_note: "Service booking rate improved 35%; customer retention +20%"
+  version: "1.0.0"
+
+- template_id: tpl-auto-ev-charging
+  slug: auto-ev-charging-status
+  name: EV Charging Status Monitor
+  domain: automobile
+  description: Monitors EV charging infrastructure health, tracks station utilisation, and identifies faulty chargers for maintenance dispatch.
+  source_use_cases:
+    - "31-automobile/UC-4"
+  system_prompt: >-
+    You are an EV infrastructure operations specialist. Monitor all charging stations
+    continuously. Alert on charger faults, offline stations, and high utilisation
+    (>85% occupied for 2+ hours). Dispatch maintenance for faults within SLA.
+    Generate daily utilisation dashboard.
+  goal_template: >-
+    Monitor {station_count} EV charging stations in {network_name} network.
+    Alert {ops_email} on faults, offline status, and high utilisation (>{utilisation_pct}%
+    for {duration_hrs}+ hours). Dispatch maintenance within {maintenance_sla_hrs} hours.
+    Daily utilisation report to {operations_email}.
+  parameters_schema:
+    properties:
+      station_count: {type: integer}
+      network_name: {type: string}
+      ops_email: {type: string, format: email}
+      utilisation_pct: {type: integer, default: 85}
+      duration_hrs: {type: integer, default: 2}
+      maintenance_sla_hrs: {type: integer, default: 4}
+      operations_email: {type: string, format: email}
+    required: [station_count, network_name, ops_email, operations_email]
+  required_connectors: [database_query, email, slack, google_sheets]
+  optional_connectors: [aws_iot]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Monitor 100 ChargeZone stations. Alert for faults and >85% utilisation 2h+. Maintenance SLA 4h."
+      expected_output_contains: ["charging", "fault", "utilisation"]
+  tags: [automobile, ev, charging-infrastructure]
+  revenue_model: "₹500/station/mo"
+  roi_note: "Station uptime improved to 98%; fault response 2x faster"
+  version: "1.0.0"
+
+- template_id: tpl-auto-rto-compliance
+  slug: auto-rto-compliance-checker
+  name: RTO Compliance Checker
+  domain: automobile
+  description: Monitors fleet vehicle compliance with RTO requirements including fitness certificate, permits, PUC, and driver licence validity.
+  source_use_cases:
+    - "31-automobile/UC-5"
+  system_prompt: >-
+    You are a fleet compliance manager. Track all RTO compliance documents for each
+    vehicle — RC, fitness, permit, insurance, PUC, and driver licence. Alert 30 days
+    before expiry. Dispatch renewal process automatically. Never allow a non-compliant
+    vehicle on the road.
+  goal_template: >-
+    Check RTO compliance for {vehicle_count} vehicles in {fleet_name} fleet.
+    Track: fitness, permit, PUC, insurance, and driver licences. Alert
+    {fleet_manager_email} on documents expiring within {alert_days} days.
+    Generate compliance certificate for {authority_name} submission.
+  parameters_schema:
+    properties:
+      vehicle_count: {type: integer}
+      fleet_name: {type: string}
+      fleet_manager_email: {type: string, format: email}
+      alert_days: {type: integer, default: 30}
+      authority_name: {type: string, default: "RTO"}
+    required: [vehicle_count, fleet_name, fleet_manager_email]
+  required_connectors: [vahan, web_search, email, google_sheets, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "RTO compliance check for 30-vehicle logistics fleet. Alert 30 days before expiry. Compliance cert for RTO."
+      expected_output_contains: ["fitness", "permit", "compliance"]
+  tags: [automobile, rto, fleet-compliance, india]
+  revenue_model: "₹200/vehicle/year; ₹8,000/mo unlimited"
+  roi_note: "Zero compliance violations; challans and fines eliminated"
+  version: "1.0.0"

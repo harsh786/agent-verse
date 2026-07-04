@@ -146,3 +146,172 @@ def annotate_ungrounded(step_output: str, result: GroundingResult) -> str:
             1,
         )
     return annotated
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Track B — new structured grounding interface
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Claim:
+    """A concrete claim extracted from step output."""
+
+    value: str   # e.g. "JIRA-123", "2026-07-15", "5 issues"
+    kind: str    # "jira_id" | "date" | "number" | "url" | "quoted" | "email"
+
+
+def extract_claims_structured(text: str) -> list[Claim]:
+    """Extract concrete claims as Claim dataclasses.
+
+    Wraps the existing :func:`extract_claims` dict-returning function and
+    converts each (kind, value) pair into a :class:`Claim`.
+    """
+    claims_dict = extract_claims(text)
+    result: list[Claim] = []
+    for kind, values in claims_dict.items():
+        for v in values:
+            result.append(Claim(value=v, kind=kind))
+    return result
+
+
+def deterministic_ground(
+    claims: list[Claim],
+    tool_output: str,
+) -> tuple[list[Claim], list[Claim]]:
+    """Check which claims appear in *tool_output* by case-insensitive substring.
+
+    Returns ``(grounded_claims, ungrounded_claims)``.
+    """
+    evidence_lower = tool_output.lower()
+    grounded: list[Claim] = []
+    ungrounded: list[Claim] = []
+    for claim in claims:
+        if claim.value.lower() in evidence_lower:
+            grounded.append(claim)
+        else:
+            ungrounded.append(claim)
+    return grounded, ungrounded
+
+
+class GroundingChecker:
+    """Checks whether step output claims are grounded in tool outputs.
+
+    Two-pass: deterministic first, optional LLM second for high-risk steps.
+    Fail-closed: on LLM error, residual claims remain UNGROUNDED.
+    """
+
+    def __init__(
+        self,
+        llm_provider: Any | None = None,
+        strict: bool = False,
+        *,
+        provider: Any | None = None,
+        model: str = "",
+        enabled: bool = True,
+    ) -> None:
+        # Accept both ``llm_provider`` (positional/keyword) and ``provider`` (keyword)
+        self._llm = llm_provider if llm_provider is not None else provider
+        self._strict = strict
+        self._model = model
+        self._enabled = enabled
+
+    def _sync_check(
+        self,
+        step_output: str,
+        tool_outputs: list[str],
+        *,
+        high_risk: bool = False,
+    ) -> GroundingResult:
+        """Deterministic synchronous check. Delegates to :func:`check_grounding`."""
+        return check_grounding(
+            step_output,
+            tool_outputs,
+            strict=self._strict or high_risk,
+        )
+
+    async def check(
+        self,
+        step_output: str = "",
+        tool_outputs: list[str] | None = None,
+        *,
+        high_risk: bool = False,
+        # Alternate keyword spellings (plan Task 6 calling convention)
+        answer: str | None = None,
+        tool_output: str | None = None,
+        tenant_id: str = "",
+    ) -> GroundingResult:
+        """Unified async grounding check.
+
+        Supports both positional (``step_output``, ``tool_outputs``) and
+        keyword (``answer``, ``tool_output``) calling conventions.
+
+        Pass 1: deterministic substring check (always runs).
+        Pass 2: optional LLM check when provider is set and residuals remain
+        (fail-closed — errors leave claims UNGROUNDED).
+        """
+        # Normalise arguments
+        _output = answer if answer is not None else step_output
+        _outputs: list[str]
+        if tool_output is not None:
+            _outputs = [tool_output]
+        elif tool_outputs is not None:
+            _outputs = tool_outputs
+        else:
+            _outputs = []
+
+        result = self._sync_check(_output, _outputs, high_risk=high_risk)
+
+        # Fast path: everything grounded or no claims to check
+        if result.grounded or result.checked_claims == 0:
+            return result
+
+        # LLM pass for residual ungrounded claims (fail-closed)
+        if self._llm is not None:
+            try:
+                import json as _json
+
+                from app.agent.prompts import GROUNDING_SYSTEM
+                from app.providers.base import CompletionRequest, Message
+                evidence = " ".join(str(t) for t in _outputs[:3])[:2000]
+                req = CompletionRequest(
+                    messages=[
+                        Message(role="system", content=GROUNDING_SYSTEM),
+                        Message(
+                            role="user",
+                            content=(
+                                f"Output to check:\n{_output[:500]}\n\n"
+                                f"Tool evidence:\n{evidence}\n\n"
+                                f"Residual ungrounded claims: {result.ungrounded_claims[:5]}\n\n"
+                                "For each claim, state if it is grounded or ungrounded. "
+                                'Return ONLY JSON: '
+                                '{"grounded": ["claim1"], "ungrounded": ["claim2"]}'
+                            ),
+                        ),
+                    ],
+                    model=self._model,
+                )
+                resp = await self._llm.complete(req)
+                data = _json.loads(resp.content)
+                still_ungrounded: list[str] = data.get("ungrounded", result.ungrounded_claims)
+                return GroundingResult(
+                    grounded=len(still_ungrounded) == 0,
+                    ungrounded_claims=still_ungrounded,
+                    checked_claims=result.checked_claims,
+                    evidence_length=result.evidence_length,
+                )
+            except Exception as exc:
+                logger.debug("grounding_llm_check_failed", error=str(exc)[:60])
+            # Fail-closed: residual claims stay ungrounded
+
+        return result
+
+    async def check_async(
+        self,
+        step_output: str,
+        tool_outputs: list[str],
+        *,
+        high_risk: bool = False,
+    ) -> GroundingResult:
+        """Alias for :meth:`check` using the positional-argument calling convention."""
+        return await self.check(step_output, tool_outputs, high_risk=high_risk)

@@ -1,0 +1,211 @@
+- template_id: tpl-telecom-churn
+  slug: telecom-churn-predictor
+  name: Telecom Churn Predictor
+  domain: telecom
+  description: Analyses customer usage patterns, billing data, and complaint history to predict churn risk and trigger retention interventions.
+  source_use_cases:
+    - "25-telecom/UC-1"
+  system_prompt: >-
+    You are a telecom retention analyst. Identify high-churn-risk customers using
+    usage drop, complaint frequency, and competitor offer sensitivity signals.
+    Recommend personalised retention offers with ROI calculation. Never send retention
+    offers to already-churned customers.
+  goal_template: >-
+    Predict churn risk for {customer_segment} ({customer_count} customers) for {period}.
+    Flag customers with churn score above {churn_threshold}. Generate personalised
+    retention offers. Send priority alerts to {retention_team_email}.
+    Expected churn reduction: {target_reduction_pct}%.
+  parameters_schema:
+    properties:
+      customer_segment: {type: string}
+      customer_count: {type: integer}
+      period: {type: string}
+      churn_threshold: {type: number, default: 0.7}
+      retention_team_email: {type: string, format: email}
+      target_reduction_pct: {type: integer, default: 20}
+    required: [customer_segment, customer_count, retention_team_email]
+  required_connectors: [database_query, email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Predict churn for postpaid segment (50,000 customers). Flag >0.7 score. Retention offers. Alert team."
+      expected_output_contains: ["churn", "retention", "offer"]
+  tags: [telecom, churn, analytics]
+  revenue_model: "₹50,000/mo per operator circle"
+  roi_note: "Churn reduced 15-25%; ARPU preserved"
+  version: "1.0.0"
+
+- template_id: tpl-telecom-fault
+  slug: telecom-network-fault-classifier
+  name: Network Fault Classifier
+  domain: telecom
+  description: Classifies network alarms by fault type and severity, correlates related alarms, and routes to the correct NOC team for faster resolution.
+  source_use_cases:
+    - "25-telecom/UC-2"
+  system_prompt: >-
+    You are a network operations specialist. Classify alarms by domain (transport,
+    access, core, power) and severity (critical, major, minor). Correlate parent-child
+    alarms to suppress duplicate tickets. Route to the correct team with context.
+    Escalate critical alarms unacknowledged after 15 minutes.
+  goal_template: >-
+    Classify {alarm_count} network alarms in {network_domain}. Correlate duplicates,
+    suppress child alarms. Assign severity and route to {noc_teams}. Escalate critical
+    alarms unacknowledged after {escalation_mins} minutes. Report MTTR to {noc_manager_email}.
+  parameters_schema:
+    properties:
+      alarm_count: {type: integer}
+      network_domain: {type: string, enum: [transport, access, core, power, all]}
+      noc_teams: {type: array, items: {type: string}}
+      escalation_mins: {type: integer, default: 15}
+      noc_manager_email: {type: string, format: email}
+    required: [network_domain, noc_manager_email]
+  required_connectors: [database_query, email, slack, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Classify 500 alarms in access network. Correlate and suppress. Escalate critical at 15min. Report to NOC."
+      expected_output_contains: ["alarm", "severity", "escalate"]
+  tags: [telecom, network, operations]
+  revenue_model: "₹1,00,000/mo per NOC"
+  roi_note: "MTTR improved 35%; alarm floods suppressed 70%"
+  version: "1.0.0"
+
+- template_id: tpl-telecom-billing-dispute
+  slug: telecom-billing-dispute-resolver
+  name: Billing Dispute Resolver
+  domain: telecom
+  description: Analyses customer billing disputes, validates against usage records, calculates correction amounts, and processes approved adjustments.
+  source_use_cases:
+    - "25-telecom/UC-3"
+  system_prompt: >-
+    You are a telecom billing specialist. Validate dispute claims against CDR and
+    recharge records. Calculate correction amount accurately. Approve standard
+    adjustments automatically. Escalate high-value disputes (above ₹2,000) for
+    human review. Document every resolution with evidence.
+  goal_template: >-
+    Resolve billing dispute for customer {msisdn} ({customer_name}). Dispute amount:
+    ₹{dispute_amount}. Disputed period: {dispute_period}. Validate against CDR.
+    Process correction if valid. Escalate if above ₹{auto_approve_limit}.
+    Respond to customer via {channel}.
+  parameters_schema:
+    properties:
+      msisdn: {type: string}
+      customer_name: {type: string}
+      dispute_amount: {type: number}
+      dispute_period: {type: string}
+      auto_approve_limit: {type: number, default: 2000}
+      channel: {type: string, enum: [email, sms, app]}
+    required: [msisdn, customer_name, dispute_amount, dispute_period]
+  required_connectors: [database_query, email, twilio]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Resolve ₹850 billing dispute for 9876543210 (Ravi Kumar) for June 2026. Validate CDR. SMS resolution."
+      expected_output_contains: ["dispute", "CDR", "adjustment"]
+  tags: [telecom, billing, customer-service]
+  revenue_model: "₹50/dispute resolved; ₹30,000/mo unlimited"
+  roi_note: "Resolution time 5 days → 24 hours; 85% first-contact resolution"
+  version: "1.0.0"
+
+- template_id: tpl-telecom-segmentation
+  slug: telecom-customer-segmentation
+  name: Customer Segmentation Agent
+  domain: telecom
+  description: Segments telecom subscribers by ARPU, data usage, tenure, and service mix for targeted marketing and product offers.
+  source_use_cases:
+    - "25-telecom/UC-4"
+  system_prompt: >-
+    You are a telecom market analyst. Create actionable customer segments using
+    behavioural and demographic data. Define clear segment profiles with size and ARPU.
+    Recommend specific product and pricing strategies per segment. Refresh segments monthly.
+  goal_template: >-
+    Segment {customer_count} {subscriber_type} subscribers for {operator_circle}.
+    Analyse: ARPU, data usage, voice usage, tenure, and service mix. Create {segment_count}
+    segments. Generate product-offer matrix per segment. Report to {marketing_email}.
+  parameters_schema:
+    properties:
+      customer_count: {type: integer}
+      subscriber_type: {type: string, enum: [prepaid, postpaid, enterprise]}
+      operator_circle: {type: string}
+      segment_count: {type: integer, default: 6}
+      marketing_email: {type: string, format: email}
+    required: [customer_count, subscriber_type, operator_circle, marketing_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Segment 2M postpaid subscribers for Maharashtra circle. 6 segments. Product matrix to marketing team."
+      expected_output_contains: ["segment", "ARPU", "product"]
+  tags: [telecom, segmentation, marketing]
+  revenue_model: "₹75,000/mo per circle"
+  roi_note: "Targeted campaigns 3x better ROI vs mass marketing"
+  version: "1.0.0"
+
+- template_id: tpl-telecom-spectrum
+  slug: telecom-spectrum-compliance-checker
+  name: Spectrum Compliance Checker
+  domain: telecom
+  description: Monitors spectrum usage parameters, identifies violations against TRAI/DOT licence conditions, and generates compliance reports.
+  source_use_cases:
+    - "25-telecom/UC-5"
+  system_prompt: >-
+    You are a spectrum regulatory compliance specialist. Monitor EIRP levels, frequency
+    usage, and interference parameters against licence conditions. Flag any out-of-limits
+    parameters for immediate corrective action. Generate monthly compliance reports
+    for regulatory submission.
+  goal_template: >-
+    Check spectrum compliance for {operator_name} in {frequency_band} MHz band for
+    {circle_name} circle. Monitor {parameter_list} parameters against TRAI limits.
+    Flag violations and generate compliance report for submission by {due_date}.
+    Alert {rf_team_email}.
+  parameters_schema:
+    properties:
+      operator_name: {type: string}
+      frequency_band: {type: string}
+      circle_name: {type: string}
+      parameter_list: {type: array, items: {type: string}}
+      due_date: {type: string, format: date}
+      rf_team_email: {type: string, format: email}
+    required: [operator_name, frequency_band, circle_name, rf_team_email]
+  required_connectors: [database_query, email, pdf_generator]
+  optional_connectors: [web_search]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Spectrum compliance for Operator-X in 2100 MHz (Karnataka). Check EIRP and interference. Report by July 31."
+      expected_output_contains: ["spectrum", "compliance", "TRAI"]
+  tags: [telecom, spectrum, regulatory]
+  revenue_model: "₹50,000/mo per circle"
+  roi_note: "Zero compliance violations; regulatory penalty avoidance"
+  version: "1.0.0"
+
+- template_id: tpl-telecom-tower-maint
+  slug: telecom-tower-maintenance-scheduler
+  name: Tower Maintenance Scheduler
+  domain: telecom
+  description: Schedules preventive maintenance for tower sites, tracks field engineer visits, and monitors power and battery health.
+  source_use_cases:
+    - "25-telecom/UC-6"
+  system_prompt: >-
+    You are a telecom infrastructure operations specialist. Schedule PM visits based on
+    site priority, battery age, and grid availability. Ensure critical sites get monthly
+    visits. Track open O&M tickets and escalate unresolved issues beyond SLA. Monitor
+    DG run hours and fuel levels.
+  goal_template: >-
+    Schedule monthly PM for {site_count} tower sites in {cluster_name} cluster.
+    Prioritise {critical_sites} critical sites with weekly visits. Assign {engineer_count}
+    field engineers. Track open tickets and escalate issues beyond {sla_days} days SLA.
+    Report to {infra_manager_email}.
+  parameters_schema:
+    properties:
+      site_count: {type: integer}
+      cluster_name: {type: string}
+      critical_sites: {type: integer}
+      engineer_count: {type: integer}
+      sla_days: {type: integer, default: 3}
+      infra_manager_email: {type: string, format: email}
+    required: [site_count, cluster_name, infra_manager_email]
+  required_connectors: [google_sheets, email, database_query]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Schedule PM for 150 sites in Mumbai North cluster. 20 critical sites weekly. 5 engineers. SLA 3 days."
+      expected_output_contains: ["PM schedule", "tower", "SLA"]
+  tags: [telecom, infrastructure, maintenance]
+  revenue_model: "₹30,000/cluster/mo"
+  roi_note: "Site downtime reduced 40%; battery failures prevented 70%"
+  version: "1.0.0"

@@ -1,0 +1,29 @@
+- name: Generate Event Vendor RFQs
+  domain: events-mice
+  description: Create and send RFQs to vendors for event service categories.
+  goal_text: >-
+    Send RFQs for {{event_name}} ({{date}}, {{attendees}} pax) for services:
+    {{service_categories}}. Get {{vendors_per_cat}} quotes per category by {{deadline}}.
+    Prepare comparison matrix and await approval before issuing POs.
+  source_use_cases:
+    - "33-events-mice/UC-1"
+
+- name: Research and Shortlist Event Venues
+  domain: events-mice
+  description: Find venues matching event requirements and prepare a comparison shortlist.
+  goal_text: >-
+    Find venue for {{event_name}} on {{date}} for {{pax}} attendees in {{location}}.
+    Budget: ₹{{budget}}. Requirements: {{requirements}}. Shortlist {{count}} options
+    with comparison table. Present to {{client_email}}.
+  source_use_cases:
+    - "33-events-mice/UC-2"
+
+- name: Manage Event Guest List and Invitations
+  domain: events-mice
+  description: Send invitations, track RSVPs, and generate seating plan for an event.
+  goal_text: >-
+    Manage guest list for {{event_name}} ({{date}}). Send personalised invitations to
+    {{guests}} guests via {{channel}}. Track RSVPs. Generate seating plan for
+    {{capacity}} capacity. Send reminders {{reminder_days}} days before event.
+  source_use_cases:
+    - "33-events-mice/UC-3"

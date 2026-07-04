@@ -1,0 +1,39 @@
+- name: Prepare RA Bill for Contractor
+  domain: construction
+  description: Generate a running account bill from measurement book entries.
+  goal_text: >-
+    Prepare RA Bill #{{bill_number}} for {{contractor_name}} at {{project_name}} for
+    period {{from_date}} to {{to_date}}. Extract MB entries, validate against BOQ
+    {{boq_ref}}, apply contract rates, calculate deductions. Submit to {{engineer_email}}.
+  source_use_cases:
+    - "26-construction/UC-1"
+
+- name: Track Drawing Approvals
+  domain: construction
+  description: Monitor drawing submission and approval status across all disciplines.
+  goal_text: >-
+    Track drawing approvals for {{project_name}} across {{disciplines}} disciplines.
+    Flag approvals pending beyond {{sla_days}} days. Send weekly status to
+    {{pm_email}} and alerts to consultants for held drawings.
+  source_use_cases:
+    - "26-construction/UC-2"
+
+- name: Monitor Daily Site Safety Compliance
+  domain: construction
+  description: Collect daily safety checklists and generate weekly HSE report.
+  goal_text: >-
+    Monitor safety compliance for {{project_name}} ({{workers}} workers). Collect
+    checklists for {{work_fronts}} work fronts daily. Flag unclosed observations
+    beyond {{sla_hrs}} hours. Generate weekly HSE report for {{client_email}}.
+  source_use_cases:
+    - "26-construction/UC-3"
+
+- name: Generate Project Progress Report
+  domain: construction
+  description: Create a client-ready progress report comparing actuals to baseline.
+  goal_text: >-
+    Generate progress report for {{project_name}} (Client: {{client}}) for {{period}}.
+    Compare actual progress to baseline. Calculate SPI and schedule variance. Identify
+    critical delays and revised completion date. Submit to {{client_email}} by {{deadline}}.
+  source_use_cases:
+    - "26-construction/UC-6"

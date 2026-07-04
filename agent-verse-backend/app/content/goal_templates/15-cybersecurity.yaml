@@ -1,0 +1,49 @@
+- name: Triage SIEM Security Alerts
+  domain: cybersecurity
+  description: Triage incoming SIEM alerts and escalate high-confidence threats to the SOC team.
+  goal_text: >-
+    Triage {{count}} SIEM alerts from {{siem_tool}} in the last {{hours}} hours for
+    {{environment}}. For each alert, enrich IOCs with threat intel, check asset
+    criticality, score true-positive probability (0-100), and map to MITRE ATT&CK
+    tactic. Escalate all alerts with score > {{threshold}} to {{security_team}} with
+    full context. Group correlated alerts into incidents.
+  source_use_cases:
+    - "15-cybersecurity/UC-1"
+
+- name: Analyze Vulnerability Scan Report
+  domain: cybersecurity
+  description: Analyze and prioritize vulnerability scan findings for remediation.
+  goal_text: >-
+    Analyze the {{scan_tool}} vulnerability scan for {{target_scope}} run on {{scan_date}}.
+    Total findings: {{finding_count}}. Deduplicate, prioritize by CVSS score and active
+    exploitability, group by owning team, and produce a remediation roadmap with
+    {{sprint_count}} sprint-sized phases. Assign Critical and High findings to owners
+    in {{tracking_tool}} with due dates based on SLA: Critical={{critical_sla_days}}d,
+    High={{high_sla_days}}d.
+  source_use_cases:
+    - "15-cybersecurity/UC-2"
+
+- name: Investigate Phishing Email
+  domain: cybersecurity
+  description: Investigate a reported phishing email and determine its threat level.
+  goal_text: >-
+    Investigate reported phishing email with subject "{{email_subject}}" received by
+    {{recipient}} on {{received_date}}. Check sender authentication (SPF/DKIM/DMARC),
+    analyze {{url_count}} embedded URLs against threat intel, scan attachments for
+    malware indicators, and classify as Phishing/Suspicious/Clean. If Phishing:
+    recommend quarantine scope, IoCs to block, and user notification message.
+  source_use_cases:
+    - "15-cybersecurity/UC-3"
+
+- name: Conduct Access Rights Review
+  domain: cybersecurity
+  description: Review user access rights for a system and identify violations for remediation.
+  goal_text: >-
+    Conduct access rights review for {{system_name}} covering {{user_count}} users.
+    Identify: accounts inactive > {{inactive_days}} days, users with privileges beyond
+    their role {{role_definition}}, shared/service accounts with excessive permissions,
+    and accounts of employees who left in the last {{departure_months}} months.
+    Generate manager certification requests for {{manager_list}} and Jira tickets for
+    immediate revocations.
+  source_use_cases:
+    - "15-cybersecurity/UC-4"

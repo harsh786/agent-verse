@@ -1,0 +1,146 @@
+- template_id: tpl-arch-drawing-approval
+  slug: arch-drawing-approval-tracker
+  name: Drawing Approval Tracker (Architecture)
+  domain: architecture-interior
+  description: Tracks architectural drawing submissions to municipal authorities, monitors approval status, and manages resubmission of objections.
+  source_use_cases:
+    - "36-architecture-interior/UC-1"
+  system_prompt: >-
+    You are an architectural project coordinator. Track all drawing submissions to
+    municipal bodies (BMC, BBMP, DTCP, etc.). Log acknowledgement numbers and expected
+    approval timelines. Alert on objections within 24 hours. Prepare resubmission
+    checklist for common objection types.
+  goal_template: >-
+    Track drawing approvals for {project_name} submitted to {authority_name}.
+    Application number: {application_number}. Monitor {drawing_set_count} drawing sets.
+    Alert {architect_email} within 24h of any status change or objection.
+    Expected approval by {approval_due_date}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      authority_name: {type: string}
+      application_number: {type: string}
+      drawing_set_count: {type: integer}
+      architect_email: {type: string, format: email}
+      approval_due_date: {type: string, format: date}
+    required: [project_name, authority_name, application_number, architect_email]
+  required_connectors: [web_search, email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Track building plan approval for Skyline Tower at BMC. App# BMC/2026/0445. Alert architect daily."
+      expected_output_contains: ["approval", "objection", "drawing"]
+  tags: [architecture, approval, compliance]
+  revenue_model: "₹5,000/project; ₹15,000/mo unlimited"
+  roi_note: "Objection response time 5 days → 1 day; zero missed queries"
+  version: "1.0.0"
+
+- template_id: tpl-arch-boq-analyzer
+  slug: arch-boq-analyzer
+  name: BOQ Analyzer
+  domain: architecture-interior
+  description: Analyses Bills of Quantities for completeness, benchmarks rates against market, and identifies cost engineering opportunities.
+  source_use_cases:
+    - "36-architecture-interior/UC-2"
+  system_prompt: >-
+    You are a quantity surveyor and cost consultant. Analyse BOQ for completeness
+    and specification compliance. Benchmark item rates against current market data.
+    Flag items above market rate by more than 10%. Calculate scope gaps. Generate
+    cost estimate with contingency.
+  goal_template: >-
+    Analyse BOQ for {project_name} (Project area: {project_area} sqft).
+    BOQ document: {boq_document}. Benchmark {item_count} items against {market_reference}.
+    Flag items above market by {overrate_threshold_pct}%. Calculate total project cost
+    with {contingency_pct}% contingency. Report to {client_email}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      project_area: {type: integer}
+      boq_document: {type: string}
+      item_count: {type: integer}
+      market_reference: {type: string}
+      overrate_threshold_pct: {type: integer, default: 10}
+      contingency_pct: {type: integer, default: 5}
+      client_email: {type: string, format: email}
+    required: [project_name, project_area, client_email]
+  required_connectors: [document_reader, web_search, google_sheets, pdf_generator, email]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse BOQ for Luxury Villa 5000sqft. Benchmark 200 items. Flag >10% above market. 5% contingency."
+      expected_output_contains: ["BOQ", "rate", "cost"]
+  tags: [architecture, boq, cost-management]
+  revenue_model: "₹5,000/BOQ analysis"
+  roi_note: "8-12% project cost savings identified; scope gaps eliminated"
+  version: "1.0.0"
+
+- template_id: tpl-arch-client-comm
+  slug: arch-client-communication-log
+  name: Client Communication Log Agent
+  domain: architecture-interior
+  description: Maintains structured project communication logs, generates minutes of meetings, tracks design decisions, and creates action item follow-up.
+  source_use_cases:
+    - "36-architecture-interior/UC-3"
+  system_prompt: >-
+    You are an architectural project manager. Document all client meetings and decisions
+    accurately. Maintain decision log with change implications. Track action items with
+    owners and deadlines. Never assume approval — document explicit client approvals for
+    design changes affecting cost or timeline.
+  goal_template: >-
+    Maintain communication log for {project_name} (Client: {client_name}).
+    Process {meeting_count} meeting notes. Extract action items, decisions, and open
+    issues. Send MOM to {client_email} within {mom_sla_hrs} hours of meeting.
+    Weekly open-items summary to {project_director_email}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      client_name: {type: string}
+      meeting_count: {type: integer}
+      client_email: {type: string, format: email}
+      mom_sla_hrs: {type: integer, default: 24}
+      project_director_email: {type: string, format: email}
+    required: [project_name, client_name, client_email, project_director_email]
+  required_connectors: [audio_transcriber, email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Communication log for Olive Heights project. MOM to client within 24h. Weekly open items to PD."
+      expected_output_contains: ["MOM", "action items", "decision"]
+  tags: [architecture, client-management, documentation]
+  revenue_model: "₹3,000/project/mo"
+  roi_note: "MOM preparation 2h → 20min; 100% decision trail"
+  version: "1.0.0"
+
+- template_id: tpl-arch-project-milestone
+  slug: arch-project-milestone-tracker
+  name: Project Milestone Tracker (Architecture)
+  domain: architecture-interior
+  description: Tracks design and construction milestones, monitors design deliverable deadlines, and generates client-facing project status reports.
+  source_use_cases:
+    - "36-architecture-interior/UC-4"
+  system_prompt: >-
+    You are an architectural project planner. Track design deliverables against schedule
+    — concept, SD, DD, CD, and tender documentation stages. Flag delays immediately.
+    Calculate impact on construction start and completion. Generate professional
+    status reports for client presentation.
+  goal_template: >-
+    Track milestones for {project_name} across {design_stages} stages.
+    Client: {client_name}. Current stage: {current_stage}. Flag deliverables delayed
+    beyond {delay_threshold_days} days. Generate monthly status report for {client_email}
+    by {report_date}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      design_stages: {type: array, items: {type: string}}
+      client_name: {type: string}
+      current_stage: {type: string}
+      delay_threshold_days: {type: integer, default: 7}
+      client_email: {type: string, format: email}
+      report_date: {type: string, format: date}
+    required: [project_name, client_name, current_stage, client_email]
+  required_connectors: [google_sheets, email, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track milestones for ITC Corporate Campus. Current SD stage. Flag >7 day delays. Monthly report to client."
+      expected_output_contains: ["milestone", "stage", "delay"]
+  tags: [architecture, project-management, milestones]
+  revenue_model: "₹5,000/project/mo"
+  roi_note: "Design delays reduced 30%; client communication professionalised"
+  version: "1.0.0"

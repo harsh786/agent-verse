@@ -1,0 +1,39 @@
+- name: Track Mandi Prices for Crop
+  domain: agriculture
+  description: Track daily mandi prices for a crop and alert when below MSP threshold.
+  goal_text: >-
+    Track daily mandi prices for {{crop_name}} across {{state_name}} mandis. Alert
+    {{farmer_contact}} when prices fall below {{alert_pct}}% of MSP ₹{{msp}}/quintal.
+    Compare prices across {{mandi_count}} nearest mandis and recommend best market.
+  source_use_cases:
+    - "21-agriculture/UC-1"
+
+- name: Diagnose Crop Disease
+  domain: agriculture
+  description: Diagnose crop disease from symptom description and recommend treatment.
+  goal_text: >-
+    Diagnose issue for {{crop_name}} (stage: {{growth_stage}}) in {{location}}.
+    Symptoms: {{symptoms}}. Recommend treatment options within ₹{{budget}}/acre budget.
+    Identify nearest input dealers in {{district}}.
+  source_use_cases:
+    - "21-agriculture/UC-2"
+
+- name: Generate Weather-Based Crop Advisory
+  domain: agriculture
+  description: Generate 7-day weather-based advisory for farmers.
+  goal_text: >-
+    Generate 7-day weather advisory for {{crop_name}} farmers in {{district}}, {{state}}.
+    Include irrigation schedule for forecast period {{dates}}. Assess pest risk.
+    Warn of extreme weather events. Distribute to {{farmer_group}}.
+  source_use_cases:
+    - "21-agriculture/UC-3"
+
+- name: Check PM-KISAN Instalment Status
+  domain: agriculture
+  description: Check PM-KISAN instalment status for a group of farmers.
+  goal_text: >-
+    Check PM-KISAN status for {{farmer_count}} farmers in {{village}}, {{district}}.
+    Identify pending or rejected instalments. For each rejection, extract reason and
+    generate correction checklist. Report to {{officer_contact}}.
+  source_use_cases:
+    - "21-agriculture/UC-4"

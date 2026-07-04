@@ -1,0 +1,172 @@
+- template_id: tpl-ops-procurement-rfq
+  slug: ops-procurement-rfq-automation
+  name: Procurement RFQ Automation
+  domain: operations
+  description: Generates RFQs from purchase requisitions, emails shortlisted vendors, collects quotes, and produces a comparative bid analysis.
+  long_description: >-
+    Manual RFQ cycles take 3-5 days per category. This agent reads approved PRs from the
+    ERP, identifies pre-qualified vendors from the vendor master, drafts personalised RFQ
+    emails with specifications, tracks responses, and generates a bid-comparison matrix
+    with L1/L2/L3 ranking and recommendation memo.
+  source_use_cases:
+    - "05-operations/UC-1"
+  system_prompt: >-
+    You are a procurement specialist. Generate professional RFQ documents with complete
+    specifications. Track all vendor responses and flag non-respondents. Never share
+    vendor quotes with competing vendors. Always recommend L1 unless technical
+    disqualification exists.
+  goal_template: >-
+    Generate and send RFQ for {item_description} (PR: {pr_number}) to {vendor_count}
+    vendors from the approved list. Set deadline {rfq_deadline}. Collect responses and
+    produce a bid-comparison matrix with L1 recommendation.
+  parameters_schema:
+    properties:
+      item_description: {type: string}
+      pr_number: {type: string}
+      vendor_count: {type: integer, default: 3}
+      rfq_deadline: {type: string, format: date}
+    required: [item_description, pr_number, rfq_deadline]
+  required_connectors: [email, google_sheets, pdf_generator]
+  optional_connectors: [sap, database_query]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate RFQ for 500 units office chairs (PR-2026-045) to 3 vendors. Deadline 2026-07-20."
+      required_tools: [email, google_sheets]
+      expected_output_contains: ["RFQ", "vendors", "bid comparison"]
+  tags: [operations, procurement, rfq]
+  revenue_model: "₹500/RFQ cycle; ₹15,000/mo unlimited"
+  roi_note: "3-day cycle → 4 hours; 100% vendor tracking"
+  version: "1.0.0"
+
+- template_id: tpl-ops-vendor-performance
+  slug: ops-vendor-performance-monitor
+  name: Vendor Performance Monitoring
+  domain: operations
+  description: Tracks delivery compliance, quality rejections, and payment terms adherence for each vendor and generates scorecards.
+  source_use_cases:
+    - "05-operations/UC-2"
+  system_prompt: >-
+    You are a vendor management analyst. Score vendors objectively on delivery, quality,
+    and commercial compliance. Flag vendors with sustained below-threshold performance for
+    review committee escalation.
+  goal_template: >-
+    Generate vendor performance scorecard for {vendor_name} (Code: {vendor_code}) for
+    period {period}. Evaluate delivery compliance, quality rejection rate, and payment
+    term adherence. Flag if any KPI is below {threshold_pct}% and recommend action.
+  parameters_schema:
+    properties:
+      vendor_name: {type: string}
+      vendor_code: {type: string}
+      period: {type: string}
+      threshold_pct: {type: integer, default: 90}
+    required: [vendor_name, vendor_code, period]
+  required_connectors: [google_sheets, database_query, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Scorecard for Vendor ABC (V-001) for Q1 2026. Flag anything below 85%."
+      expected_output_contains: ["score", "delivery", "quality"]
+  tags: [operations, vendor, scorecard]
+  revenue_model: "₹2,000/vendor/quarter; ₹12,000/mo unlimited"
+  roi_note: "4h manual scorecard → 15min; 100% data coverage"
+  version: "1.0.0"
+
+- template_id: tpl-ops-sla-breach-alert
+  slug: ops-sla-breach-alerting
+  name: SLA Breach Alerting Agent
+  domain: operations
+  description: Continuously monitors open service requests and purchase orders against agreed SLAs, triggers escalation alerts before breach windows close.
+  source_use_cases:
+    - "05-operations/UC-3"
+  system_prompt: >-
+    You are an SLA monitoring agent. Identify items at risk of breach (>80% SLA window
+    consumed) and those already in breach. Route escalations to the correct owner.
+    Never suppress a breach alert.
+  goal_template: >-
+    Scan all open {ticket_type} tickets in {system} for SLA compliance. Identify items
+    breaching in the next {warning_hours} hours. Send escalation alerts to respective
+    owners and summary report to {manager_email}.
+  parameters_schema:
+    properties:
+      ticket_type: {type: string, enum: [service_request, incident, purchase_order, complaint]}
+      system: {type: string}
+      warning_hours: {type: integer, default: 4}
+      manager_email: {type: string, format: email}
+    required: [ticket_type, system, manager_email]
+  required_connectors: [jira, email, slack]
+  optional_connectors: [zendesk, database_query]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Scan all incident tickets in Jira for SLA risk. Warn 4h before breach. Email ops-mgr@co.in."
+      required_tools: [jira, email]
+      expected_output_contains: ["breach", "escalation", "SLA"]
+  tags: [operations, sla, alerting]
+  revenue_model: "₹5,000/mo per system"
+  roi_note: "Zero missed SLA breaches; 90% reduction in manual monitoring"
+  version: "1.0.0"
+
+- template_id: tpl-ops-freight-rate
+  slug: ops-freight-rate-optimizer
+  name: Freight Rate Optimization Agent
+  domain: operations
+  description: Compares real-time freight rates across carriers, selects optimal carrier per lane, and triggers booking with cost savings report.
+  source_use_cases:
+    - "05-operations/UC-4"
+  system_prompt: >-
+    You are a logistics cost optimizer. Compare rates across all available carriers for
+    the given lane. Factor in transit time, reliability score, and packaging constraints.
+    Always present top 3 options with trade-offs before booking.
+  goal_template: >-
+    Find optimal freight rate for shipment of {cargo_description} ({weight_kg} kg) from
+    {origin_city} to {destination_city} required by {delivery_date}. Compare at least
+    {carrier_count} carriers. Present top 3 options and await approval before booking.
+  parameters_schema:
+    properties:
+      cargo_description: {type: string}
+      weight_kg: {type: number}
+      origin_city: {type: string}
+      destination_city: {type: string}
+      delivery_date: {type: string, format: date}
+      carrier_count: {type: integer, default: 3}
+    required: [cargo_description, weight_kg, origin_city, destination_city, delivery_date]
+  required_connectors: [web_search, email, google_sheets]
+  optional_connectors: [flexport, database_query]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Find freight rate for 500kg electronics from Mumbai to Delhi by 2026-07-25. Compare 3 carriers."
+      expected_output_contains: ["rate", "carrier", "transit"]
+  tags: [operations, logistics, freight]
+  revenue_model: "₹500/booking; ₹10,000/mo unlimited"
+  roi_note: "10-15% freight cost savings on average"
+  version: "1.0.0"
+
+- template_id: tpl-ops-contract-renewal
+  slug: ops-contract-renewal-tracker
+  name: Contract Renewal Tracking Agent
+  domain: operations
+  description: Monitors upcoming contract renewals, sends negotiation alerts 90/30/7 days before expiry, and prepares renewal summary with cost benchmarks.
+  source_use_cases:
+    - "05-operations/UC-5"
+  system_prompt: >-
+    You are a contract lifecycle manager. Track all contracts in the register. Send
+    timely renewal alerts at 90/30/7-day thresholds. Summarise contract terms and
+    performance history to support negotiation. Never auto-renew without human approval.
+  goal_template: >-
+    Review contract register and identify all contracts expiring within {days_ahead} days.
+    For each, send renewal alert to {contract_owner_email}, attach last-period performance
+    summary, and flag if rates are above market benchmark by more than {benchmark_pct}%.
+  parameters_schema:
+    properties:
+      days_ahead: {type: integer, default: 90}
+      contract_owner_email: {type: string, format: email}
+      benchmark_pct: {type: integer, default: 10}
+    required: [contract_owner_email]
+  required_connectors: [google_sheets, email, pdf_generator]
+  optional_connectors: [database_query, document_reader]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Find all contracts expiring in 90 days. Alert procurement@co.in. Flag if rates >10% above benchmark."
+      expected_output_contains: ["expiry", "renewal", "contract"]
+  tags: [operations, contracts, procurement]
+  revenue_model: "₹8,000/mo unlimited contracts"
+  roi_note: "Zero missed renewals; 8% cost savings via advance negotiation"
+  version: "1.0.0"

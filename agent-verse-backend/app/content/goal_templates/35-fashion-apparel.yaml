@@ -1,0 +1,30 @@
+- name: Optimise End-of-Season Markdowns
+  domain: fashion-apparel
+  description: Calculate optimal markdown depth and timing to maximise sell-through.
+  goal_text: >-
+    Optimise markdowns for {{count}} slow-moving {{category}} SKUs for {{season}} season.
+    Target {{sellthrough_pct}}% sell-through by {{season_end}}. Minimum margin:
+    {{min_margin_pct}}%. Generate markdown schedule for {{merchandise_email}}.
+  source_use_cases:
+    - "35-fashion-apparel/UC-1"
+
+- name: Research Fashion Trends for Buying Season
+  domain: fashion-apparel
+  description: Analyse fashion trends and provide buying recommendations for a season.
+  goal_text: >-
+    Analyse trends for {{season}} {{year}} in {{category}}. Research {{source_count}}
+    sources. Identify top {{trend_count}} trends by commercial potential for Indian market.
+    Rate each on adoption stage. Buying recommendations to {{buying_head_email}}.
+  source_use_cases:
+    - "35-fashion-apparel/UC-2"
+
+- name: Analyse Product Return Rates
+  domain: fashion-apparel
+  description: Identify high-return SKUs and root causes for corrective action.
+  goal_text: >-
+    Analyse returns for {{count}} {{category}} SKUs for {{period}}. Flag items above
+    {{threshold_pct}}% return rate. Identify top {{reason_count}} return reasons.
+    Generate action plan (size chart fix, description update, quality check) for
+    {{manager_email}}.
+  source_use_cases:
+    - "35-fashion-apparel/UC-3"

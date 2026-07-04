@@ -1,0 +1,59 @@
+- name: Prepare ITR for Individual Client
+  domain: accounting-ca
+  description: Prepare an individual income tax return for a CA firm client.
+  goal_text: >-
+    Prepare ITR-{{itr_form}} for client {{client_name}} (PAN: {{pan}}) for AY {{ay}}.
+    Compute income from salary (Form 16 from {{employer}}), other sources, and capital
+    gains if any. Apply deductions under 80C (₹{{deduction_80c}}), 80D, and other
+    eligible sections. Cross-check with Form 26AS. Compute tax payable/refund and
+    interest under 234A/B/C. Route to CA for review before filing.
+  source_use_cases:
+    - "27-accounting/UC-1"
+
+- name: Prepare TDS Quarterly Return
+  domain: accounting-ca
+  description: Prepare a TDS quarterly return for a deductor client.
+  goal_text: >-
+    Prepare TDS return Form {{form_type}} for {{deductor_name}} (TAN: {{tan}}) for
+    {{quarter}} FY {{fy}}. Total deductees: {{deductee_count}}, total TDS: ₹{{total_tds}}.
+    Validate all deductee PANs, link to TDS challans (BSR {{bsr_code}}), compute late
+    fees under 234E if applicable, and generate FVU-ready file for TRACES upload.
+    Flag missing or invalid PANs.
+  source_use_cases:
+    - "27-accounting/UC-2"
+
+- name: Perform Bank Account Reconciliation
+  domain: accounting-ca
+  description: Reconcile a bank account with the client's books for a given period.
+  goal_text: >-
+    Reconcile {{bank_name}} account ending {{account_last4}} for {{entity_name}} for
+    the period {{start_date}} to {{end_date}}. Book balance: ₹{{book_balance}},
+    bank statement balance: ₹{{bank_balance}}. Identify all unmatched entries,
+    classify as (outstanding cheques / deposits in transit / bank charges / errors),
+    and generate a reconciliation statement with the adjusted balance.
+  source_use_cases:
+    - "27-accounting/UC-3"
+
+- name: Generate Audit Trail Report
+  domain: accounting-ca
+  description: Generate an audit trail and exception report for a statutory audit.
+  goal_text: >-
+    Generate an audit trail for {{entity_name}} ({{entity_type}}) for FY {{fy}}
+    statutory audit. Extract all journal vouchers from {{source_system}}, flag
+    backdated entries after {{cutoff_date}}, round-figure cash payments > ₹{{threshold}},
+    entries by {{superuser_list}}, and inter-company transactions. Suggest a
+    {{sample_pct}}% sample selection from high-risk categories for the auditor.
+  source_use_cases:
+    - "27-accounting/UC-4"
+
+- name: Analyze Financial Statements
+  domain: accounting-ca
+  description: Analyze financial statements to compute key ratios and identify financial health trends.
+  goal_text: >-
+    Analyze financial statements of {{entity_name}} for FY {{fy}} ({{years}}-year trend).
+    Compute current ratio, quick ratio, debt-equity ratio, EBITDA margin, ROE, ROCE,
+    and working capital cycle. Compare against {{industry}} industry benchmarks.
+    Identify top 3 financial strengths and top 3 concerns. Generate a 2-page
+    CA analysis note with data tables and management recommendations.
+  source_use_cases:
+    - "27-accounting/UC-5"

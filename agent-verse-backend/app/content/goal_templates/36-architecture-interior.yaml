@@ -1,0 +1,30 @@
+- name: Track Architectural Drawing Approvals
+  domain: architecture-interior
+  description: Monitor drawing submission status at municipal authority and alert on objections.
+  goal_text: >-
+    Track approvals for {{project_name}} submitted to {{authority}} (App#: {{app_number}}).
+    Monitor {{drawing_count}} drawing sets. Alert {{architect_email}} within 24h on
+    status changes or objections. Expected approval by {{approval_date}}.
+  source_use_cases:
+    - "36-architecture-interior/UC-1"
+
+- name: Analyse and Benchmark BOQ
+  domain: architecture-interior
+  description: Review a Bill of Quantities for completeness and benchmark rates against market.
+  goal_text: >-
+    Analyse BOQ for {{project_name}} ({{area}} sqft). Benchmark {{item_count}} items
+    against {{market_reference}}. Flag items above market by {{threshold_pct}}%.
+    Calculate total cost with {{contingency_pct}}% contingency. Report to {{client_email}}.
+  source_use_cases:
+    - "36-architecture-interior/UC-2"
+
+- name: Generate Meeting Minutes and Action Items
+  domain: architecture-interior
+  description: Process meeting transcript and generate structured MOM with action items.
+  goal_text: >-
+    Process notes from {{meeting_count}} client meetings for {{project_name}}
+    (Client: {{client_name}}). Extract decisions, action items, and open issues.
+    Send MOM to {{client_email}} within {{sla_hrs}} hours. Weekly open-items summary
+    to {{pd_email}}.
+  source_use_cases:
+    - "36-architecture-interior/UC-3"

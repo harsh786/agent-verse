@@ -1,0 +1,40 @@
+- name: Auto-Resolve L1 Support Tickets
+  domain: customer-support
+  description: Process incoming tickets and auto-resolve L1 issues from knowledge base.
+  goal_text: >-
+    Process {{ticket_count}} new tickets in {{helpdesk}} queue {{queue_name}}. Resolve
+    issues matching knowledge base at {{confidence_threshold}}% confidence. Route
+    unresolved tickets to {{escalation_team}} within {{sla_minutes}} minutes. Log all
+    resolutions.
+  source_use_cases:
+    - "18-customer-support/UC-1"
+
+- name: Predict and Prevent Ticket Escalations
+  domain: customer-support
+  description: Identify tickets at high escalation risk and trigger proactive manager intervention.
+  goal_text: >-
+    Analyse {{ticket_count}} open tickets in {{system}} for escalation risk. Flag tickets
+    with negative sentiment or {{repeat_contacts}}+ contacts. Trigger proactive manager
+    outreach for high-risk cases before customer escalates. Report to {{cx_email}}.
+  source_use_cases:
+    - "18-customer-support/UC-2"
+
+- name: Analyse CSAT Responses
+  domain: customer-support
+  description: Aggregate CSAT survey data and generate agent and queue performance insights.
+  goal_text: >-
+    Analyse {{response_count}} CSAT responses for {{period}}. Break down by agent, queue,
+    and issue type. Flag agents below {{min_csat}} CSAT. Identify top 3 dissatisfaction
+    drivers. Generate dashboard for {{cx_manager_email}}.
+  source_use_cases:
+    - "18-customer-support/UC-4"
+
+- name: Update Knowledge Base from Resolved Tickets
+  domain: customer-support
+  description: Mine resolved tickets for knowledge gaps and draft new KB articles.
+  goal_text: >-
+    Analyse {{ticket_count}} resolved tickets from {{date_range}} in {{system}}.
+    Identify top {{gap_count}} topics not covered in knowledge base. Draft KB articles.
+    Flag {{outdated_count}} potentially outdated articles. Submit to {{kb_owner_email}}.
+  source_use_cases:
+    - "18-customer-support/UC-3"

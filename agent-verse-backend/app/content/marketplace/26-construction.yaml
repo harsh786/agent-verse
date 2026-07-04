@@ -1,0 +1,211 @@
+- template_id: tpl-const-ra-bill
+  slug: const-ra-bill-automation
+  name: RA Bill Automation
+  domain: construction
+  description: Generates Running Account bills from site measurement records, validates quantities against BOQ, and prepares bill for engineer certification.
+  source_use_cases:
+    - "26-construction/UC-1"
+  system_prompt: >-
+    You are a quantity surveyor. Extract measurement book entries accurately. Cross-check
+    quantities against approved BOQ items. Apply correct item rates per contract. Calculate
+    gross and net bill amount after deductions (SD, IT, GST). Never certify quantities
+    beyond physical measurement.
+  goal_template: >-
+    Prepare RA Bill No. {bill_number} for contractor {contractor_name} at project
+    {project_name}. Extract MB entries from {period_from} to {period_to}. Validate
+    against BOQ ref {boq_ref}. Apply contract rates and calculate deductions.
+    Present to {site_engineer_email} for certification.
+  parameters_schema:
+    properties:
+      bill_number: {type: string}
+      contractor_name: {type: string}
+      project_name: {type: string}
+      period_from: {type: string, format: date}
+      period_to: {type: string, format: date}
+      boq_ref: {type: string}
+      site_engineer_email: {type: string, format: email}
+    required: [bill_number, contractor_name, project_name, period_from, period_to, site_engineer_email]
+  required_connectors: [google_sheets, document_reader, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "RA Bill #4 for ABC Construction at Highway Project. MB entries June 2026. BOQ-HW-001. For engineer cert."
+      expected_output_contains: ["RA bill", "quantities", "deductions"]
+  tags: [construction, billing, quantity-survey]
+  revenue_model: "₹2,000/bill; ₹15,000/mo unlimited"
+  roi_note: "Bill preparation 2 days → 4 hours; zero arithmetic errors"
+  version: "1.0.0"
+
+- template_id: tpl-const-drawing-approval
+  slug: const-drawing-approval-tracker
+  name: Drawing Approval Tracker
+  domain: construction
+  description: Tracks drawing submission and approval status across consultants, flags delayed approvals, and maintains drawing revision register.
+  source_use_cases:
+    - "26-construction/UC-2"
+  system_prompt: >-
+    You are a construction document control specialist. Track all drawing submissions
+    by consultant, discipline, and revision. Alert on drawings pending approval beyond
+    SLA. Maintain revision history accurately. Escalate held drawings to project manager.
+  goal_template: >-
+    Track drawing approvals for {project_name}. Monitor {drawing_count} drawings across
+    {disciplines}. Flag approvals pending beyond {approval_sla_days} days. Send weekly
+    status to {project_manager_email} and consultant alerts for held drawings.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      drawing_count: {type: integer}
+      disciplines: {type: array, items: {type: string}}
+      approval_sla_days: {type: integer, default: 7}
+      project_manager_email: {type: string, format: email}
+    required: [project_name, disciplines, project_manager_email]
+  required_connectors: [google_sheets, email, pdf_generator]
+  optional_connectors: [procore]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Track 300 drawings for Metro Station Project. Civil, Structural, MEP disciplines. SLA 7 days. Alert PM."
+      expected_output_contains: ["drawing", "approval", "SLA"]
+  tags: [construction, drawings, document-control]
+  revenue_model: "₹10,000/project/mo"
+  roi_note: "Drawing approval delays reduced 50%; design rework reduced 25%"
+  version: "1.0.0"
+
+- template_id: tpl-const-site-safety
+  slug: const-site-safety-compliance
+  name: Site Safety Compliance Agent
+  domain: construction
+  description: Monitors daily safety checklist compliance, tracks near-miss reports, and generates weekly HSE reports for client submission.
+  source_use_cases:
+    - "26-construction/UC-3"
+  system_prompt: >-
+    You are a construction HSE officer. Zero compromise on safety compliance.
+    Flag any unclosed safety observations immediately to site in-charge. Track
+    toolbox talks, PPE compliance, and work permits. Incidents must be reported
+    within 1 hour. Generate weekly HSE statistics for client review.
+  goal_template: >-
+    Monitor daily safety compliance for {project_name} ({worker_count} workers).
+    Collect safety checklist for {work_fronts} work fronts. Flag unclosed observations
+    beyond {observation_closure_hrs} hours. Generate weekly HSE report for {client_email}.
+    Man-hours logged: {manhours}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      worker_count: {type: integer}
+      work_fronts: {type: integer}
+      observation_closure_hrs: {type: integer, default: 24}
+      client_email: {type: string, format: email}
+      manhours: {type: integer}
+    required: [project_name, worker_count, client_email]
+  required_connectors: [google_sheets, email, pdf_generator, twilio]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Safety compliance for Airport Project (500 workers). Daily checklists. Weekly HSE report to client."
+      expected_output_contains: ["HSE", "safety", "compliance"]
+  tags: [construction, safety, hse]
+  revenue_model: "₹15,000/project/mo"
+  roi_note: "Incident reporting 100% on-time; observation closure improved 60%"
+  version: "1.0.0"
+
+- template_id: tpl-const-labour-billing
+  slug: const-labour-billing-audit
+  name: Labour Billing Audit
+  domain: construction
+  description: Audits subcontractor labour bills by cross-checking attendance biometric records, skill categories, and applicable wage rates.
+  source_use_cases:
+    - "26-construction/UC-4"
+  system_prompt: >-
+    You are a construction labour compliance auditor. Validate headcount against
+    biometric records. Apply correct skill-category rates (skilled/semi-skilled/unskilled).
+    Check minimum wage compliance. Calculate correct PF, ESI, and LWF deductions.
+    Flag discrepancies above ₹1,000 for rejection.
+  goal_template: >-
+    Audit labour bill for contractor {contractor_name} for month {bill_month}.
+    Claimed workers: {claimed_workers}. Validate against biometric attendance.
+    Apply {state} minimum wage rates. Calculate PF/ESI deductions. Flag discrepancies
+    to {contracts_manager_email}.
+  parameters_schema:
+    properties:
+      contractor_name: {type: string}
+      bill_month: {type: string}
+      claimed_workers: {type: integer}
+      state: {type: string}
+      contracts_manager_email: {type: string, format: email}
+    required: [contractor_name, bill_month, claimed_workers, state, contracts_manager_email]
+  required_connectors: [google_sheets, database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Audit labour bill for XYZ Labour Contractor June 2026. 120 workers claimed. Maharashtra wages. Flag gaps."
+      expected_output_contains: ["labour", "attendance", "discrepancy"]
+  tags: [construction, labour, compliance]
+  revenue_model: "₹1,000/bill audited; ₹10,000/mo unlimited"
+  roi_note: "Average 5-8% overbilling caught; wage compliance 100%"
+  version: "1.0.0"
+
+- template_id: tpl-const-material-proc
+  slug: const-material-procurement-optimizer
+  name: Material Procurement Optimizer
+  domain: construction
+  description: Generates material procurement schedules from construction programmes, raises POs ahead of need, and tracks delivery status.
+  source_use_cases:
+    - "26-construction/UC-5"
+  system_prompt: >-
+    You are a construction materials manager. Calculate material requirements from
+    the construction programme. Apply lead times for each material category. Raise
+    POs {lead_days} days before site need. Track delivery and flag shortfalls.
+    Never let material shortage hold up critical path activities.
+  goal_template: >-
+    Generate material procurement schedule for {project_name} for {programme_period}.
+    Extract requirements from construction programme. Apply supplier lead times.
+    Raise POs for items needed within {lookahead_weeks} weeks. Alert {site_manager_email}
+    on delivery shortfalls.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      programme_period: {type: string}
+      lookahead_weeks: {type: integer, default: 6}
+      site_manager_email: {type: string, format: email}
+    required: [project_name, programme_period, site_manager_email]
+  required_connectors: [google_sheets, email, document_reader, pdf_generator]
+  optional_connectors: [procore, sap]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Material procurement schedule for Highway Project for August 2026. 6-week lookahead. Alert site manager."
+      expected_output_contains: ["material", "PO", "lead time"]
+  tags: [construction, procurement, materials]
+  revenue_model: "₹10,000/project/mo"
+  roi_note: "Material shortfalls on site reduced 70%; procurement costs down 8%"
+  version: "1.0.0"
+
+- template_id: tpl-const-project-milestone
+  slug: const-project-milestone-tracker
+  name: Project Milestone Tracker
+  domain: construction
+  description: Tracks construction project milestones against baseline programme, calculates delay impacts, and generates client-ready progress reports.
+  source_use_cases:
+    - "26-construction/UC-6"
+  system_prompt: >-
+    You are a construction project planner. Track actual progress against baseline.
+    Calculate schedule variance and SPI. Identify critical path delays. Forecast
+    revised completion date. Generate professional progress reports for client submission.
+  goal_template: >-
+    Generate progress report for {project_name} (Client: {client_name}) for period
+    {report_period}. Compare to baseline programme. Calculate SPI and schedule
+    variance. Identify critical delays and revised completion. Submit to {client_email}
+    by {submission_deadline}.
+  parameters_schema:
+    properties:
+      project_name: {type: string}
+      client_name: {type: string}
+      report_period: {type: string}
+      submission_deadline: {type: string, format: date}
+      client_email: {type: string, format: email}
+    required: [project_name, client_name, report_period, client_email]
+  required_connectors: [google_sheets, pdf_generator, email]
+  optional_connectors: [procore]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Progress report for Metro Station Project (Client: MMRDA) for June 2026. Submit by July 10."
+      expected_output_contains: ["progress", "SPI", "milestone"]
+  tags: [construction, project-management, reporting]
+  revenue_model: "₹5,000/report; ₹20,000/mo unlimited"
+  roi_note: "Report preparation 2 days → 4 hours; professional quality assured"
+  version: "1.0.0"

@@ -1,0 +1,50 @@
+- name: Screen Resumes for Job Posting
+  domain: hr-talent
+  description: Screen a batch of resumes against a job description and shortlist candidates.
+  goal_text: >-
+    Screen all resumes submitted for {{job_title}} ({{job_id}}). Score each candidate on
+    technical fit, experience, and education match against the JD. Return a ranked
+    shortlist of top {{shortlist_size}} candidates with 2-sentence reasoning for each.
+  source_use_cases:
+    - "01-hr-talent/UC-1"
+
+- name: Generate Offer Letter
+  domain: hr-talent
+  description: Generate a customized offer letter for a selected candidate.
+  goal_text: >-
+    Generate an offer letter for {{candidate_name}} for the role of {{job_title}} at
+    {{ctc_lpa}} LPA, joining on {{joining_date}}, reporting to {{manager_name}}. Use the
+    standard template and include probation period of {{probation_months}} months.
+  source_use_cases:
+    - "01-hr-talent/UC-2"
+
+- name: Create PIP Performance Improvement Plan
+  domain: hr-talent
+  description: Draft a structured Performance Improvement Plan for an underperforming employee.
+  goal_text: >-
+    Create a 90-day PIP for {{employee_name}} in {{department}}. Performance gaps:
+    {{performance_gaps}}. Include SMART goals, weekly check-in schedule, support
+    resources, and consequences of non-improvement.
+  source_use_cases:
+    - "01-hr-talent/UC-8"
+
+- name: Calculate Full and Final Settlement
+  domain: hr-talent
+  description: Compute F&F settlement for a departing employee including notice pay, earned leaves, and deductions.
+  goal_text: >-
+    Calculate full-and-final settlement for {{employee_name}} (ID: {{employee_id}}) with
+    last working day {{last_working_day}}. Include notice period recovery/payment, earned
+    leave encashment ({{earned_leaves}} days), gratuity eligibility, and pending
+    reimbursements.
+  source_use_cases:
+    - "01-hr-talent/UC-10"
+
+- name: Draft Job Description
+  domain: hr-talent
+  description: Draft a comprehensive JD for a new position.
+  goal_text: >-
+    Draft a job description for a {{seniority_level}} {{job_title}} in {{department}}.
+    Include: role overview, 8-10 key responsibilities, must-have qualifications,
+    nice-to-have skills, and compensation band {{ctc_range}}. Tone: {{tone}}.
+  source_use_cases:
+    - "01-hr-talent/UC-3"

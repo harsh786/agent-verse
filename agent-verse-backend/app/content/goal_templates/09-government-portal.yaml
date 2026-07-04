@@ -1,0 +1,39 @@
+- name: Monitor GeM Tenders for Category
+  domain: government-portal
+  description: Monitor GeM portal for new tenders matching a product category and alert on opportunities.
+  goal_text: >-
+    Monitor GeM portal for new tenders in category {{product_category}} for buyer type
+    {{buyer_type}}. Send alerts to {{notify_email}} within 2 hours of new tenders.
+    Prepare bid eligibility checklist for each opportunity.
+  source_use_cases:
+    - "09-government-portal/UC-1"
+
+- name: Draft RTI Application
+  domain: government-portal
+  description: Draft a Right to Information application for a specific public authority.
+  goal_text: >-
+    Draft RTI application to {{public_authority}} under {{ministry}} requesting
+    {{information_sought}}. Calculate fee (BPL: {{is_bpl}}). Include postal and
+    online filing instructions. Set 30-day response tracking reminder.
+  source_use_cases:
+    - "09-government-portal/UC-2"
+
+- name: Build Regulatory Compliance Calendar
+  domain: government-portal
+  description: Create a consolidated compliance calendar for all applicable regulations.
+  goal_text: >-
+    Build compliance calendar for {{company_name}} covering {{applicable_laws}}.
+    List all due dates for the next {{months_ahead}} months. Set reminder alerts
+    at 7, 3, and 1 day before each deadline. Email to {{compliance_officer_email}}.
+  source_use_cases:
+    - "09-government-portal/UC-3"
+
+- name: Check e-Procurement Portal for Bids
+  domain: government-portal
+  description: Search an e-procurement portal for open tenders in a specific category.
+  goal_text: >-
+    Search {{portal_name}} for open tenders in {{category}} above ₹{{min_value_lakh}}L.
+    Filter by submission deadline within {{deadline_days}} days. List all matching
+    tenders with key details and eligibility criteria. Alert {{bd_email}}.
+  source_use_cases:
+    - "09-government-portal/UC-5"

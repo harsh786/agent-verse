@@ -1,0 +1,180 @@
+- template_id: tpl-hosp-dynamic-pricing
+  slug: hosp-dynamic-pricing-engine
+  name: Dynamic Pricing Engine
+  domain: hospitality-travel
+  description: Adjusts room rates in real-time based on occupancy, competitor pricing, and demand signals to maximise RevPAR.
+  source_use_cases:
+    - "22-hospitality-travel/UC-1"
+  system_prompt: >-
+    You are a revenue management specialist. Analyse occupancy trends, booking pace,
+    competitor rates, and local demand events. Recommend rate adjustments to maximise
+    RevPAR. Never recommend rates below {floor_rate} or above {ceiling_rate}. Always
+    explain the demand signal driving each recommendation.
+  goal_template: >-
+    Optimise room rates for {hotel_name} ({room_count} rooms) for {date_range}.
+    Current occupancy: {current_occupancy_pct}%. Competitor set: {competitor_hotels}.
+    Maintain rate floor ₹{floor_rate} and ceiling ₹{ceiling_rate}. Update OTA rates
+    and report RevPAR impact to {rm_email}.
+  parameters_schema:
+    properties:
+      hotel_name: {type: string}
+      room_count: {type: integer}
+      date_range: {type: string}
+      current_occupancy_pct: {type: number}
+      competitor_hotels: {type: array, items: {type: string}}
+      floor_rate: {type: number}
+      ceiling_rate: {type: number}
+      rm_email: {type: string, format: email}
+    required: [hotel_name, room_count, date_range, floor_rate, ceiling_rate, rm_email]
+  required_connectors: [web_search, google_sheets, email]
+  optional_connectors: [database_query]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Optimise rates for Sunrise Resort (80 rooms) for Aug 2026. Floor ₹3000, ceiling ₹12000. Report to rm@hotel.in."
+      expected_output_contains: ["RevPAR", "rate", "occupancy"]
+  tags: [hospitality, revenue-management, pricing]
+  revenue_model: "₹15,000/property/mo"
+  roi_note: "RevPAR improvement 12-18% on average"
+  version: "1.0.0"
+
+- template_id: tpl-hosp-ota-review
+  slug: hosp-ota-review-responder
+  name: OTA Review Responder
+  domain: hospitality-travel
+  description: Monitors reviews on OTAs (MakeMyTrip, Booking.com, Google), generates personalised responses, and tracks sentiment trends.
+  source_use_cases:
+    - "22-hospitality-travel/UC-2"
+  system_prompt: >-
+    You are a hotel guest relations specialist. Respond to all reviews within 24 hours.
+    Acknowledge positive reviews warmly. Address negative reviews with empathy, specific
+    resolution, and offline contact. Never be defensive. Flag fake/spam reviews for
+    human review. Track recurring complaint themes.
+  goal_template: >-
+    Monitor and respond to new reviews for {hotel_name} on {platforms}. Auto-respond to
+    reviews with rating ≥ {auto_respond_min_rating}. Flag negative reviews below
+    {escalate_rating} for human response within {human_sla_hrs} hours. Weekly sentiment
+    report to {gm_email}.
+  parameters_schema:
+    properties:
+      hotel_name: {type: string}
+      platforms: {type: array, items: {type: string}}
+      auto_respond_min_rating: {type: integer, default: 4}
+      escalate_rating: {type: integer, default: 3}
+      human_sla_hrs: {type: integer, default: 4}
+      gm_email: {type: string, format: email}
+    required: [hotel_name, platforms, gm_email]
+  required_connectors: [web_search, email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Respond to reviews for Grand Palace Hotel on MMT, Booking.com, Google. Escalate <3 stars to GM in 4h."
+      expected_output_contains: ["review", "response", "sentiment"]
+  tags: [hospitality, reviews, reputation]
+  revenue_model: "₹8,000/property/mo"
+  roi_note: "Review response rate 100% vs 40%; rating improved 0.3 stars avg"
+  version: "1.0.0"
+
+- template_id: tpl-hosp-housekeeping
+  slug: hosp-housekeeping-optimizer
+  name: Housekeeping Optimizer
+  domain: hospitality-travel
+  description: Optimises housekeeping room assignment based on checkout order, room type priority, and staff availability to minimise turnaround time.
+  source_use_cases:
+    - "22-hospitality-travel/UC-3"
+  system_prompt: >-
+    You are a housekeeping operations specialist. Assign rooms to staff optimally based
+    on checkout priority (priority room types first), room location proximity, and staff
+    skill level. Track cleaning status in real-time. Alert front desk when rooms are
+    ready ahead of schedule.
+  goal_template: >-
+    Optimise housekeeping schedule for {hotel_name} for {date}. {checkout_rooms} checkouts,
+    {stayover_rooms} stayovers. {staff_count} housekeepers available from {shift_start}.
+    Priority: {priority_room_type}. Alert {front_desk_contact} on early readiness.
+  parameters_schema:
+    properties:
+      hotel_name: {type: string}
+      date: {type: string, format: date}
+      checkout_rooms: {type: integer}
+      stayover_rooms: {type: integer}
+      staff_count: {type: integer}
+      shift_start: {type: string, default: "08:00"}
+      priority_room_type: {type: string, default: "suite"}
+      front_desk_contact: {type: string}
+    required: [hotel_name, date, checkout_rooms, staff_count, front_desk_contact]
+  required_connectors: [google_sheets, twilio, email]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Housekeeping schedule for City Hotel 2026-07-15. 45 checkouts, 80 stayovers, 12 staff. Alert reception."
+      expected_output_contains: ["assignment", "priority", "turnaround"]
+  tags: [hospitality, housekeeping, operations]
+  revenue_model: "₹5,000/property/mo"
+  roi_note: "Room turnaround time reduced 25%; early check-in revenue +15%"
+  version: "1.0.0"
+
+- template_id: tpl-hosp-revenue-mgmt
+  slug: hosp-revenue-management-alert
+  name: Revenue Management Alert
+  domain: hospitality-travel
+  description: Sends daily revenue performance alerts comparing actuals to budget and prior year, highlighting booking pace and channel mix issues.
+  source_use_cases:
+    - "22-hospitality-travel/UC-4"
+  system_prompt: >-
+    You are a hotel revenue analyst. Compare actuals to budget, prior year, and forecast.
+    Flag variances above threshold. Analyse booking pace — if pace is behind, recommend
+    rate or package adjustments. Send concise daily brief to management.
+  goal_template: >-
+    Generate daily revenue alert for {hotel_name} for {report_date}. Compare Rooms Revenue,
+    Occupancy, ADR, RevPAR vs {comparison_base}. Flag variances above {variance_threshold_pct}%.
+    Include booking pace for next {forward_days} days. Send to {revenue_team_email}.
+  parameters_schema:
+    properties:
+      hotel_name: {type: string}
+      report_date: {type: string, format: date}
+      comparison_base: {type: string, enum: [budget, prior_year, forecast]}
+      variance_threshold_pct: {type: integer, default: 10}
+      forward_days: {type: integer, default: 30}
+      revenue_team_email: {type: string, format: email}
+    required: [hotel_name, report_date, revenue_team_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Daily revenue alert for Taj Lands End for 2026-07-15. Vs budget, flag >10% variance. 30-day forward pace."
+      expected_output_contains: ["RevPAR", "variance", "booking pace"]
+  tags: [hospitality, revenue, analytics]
+  revenue_model: "₹10,000/property/mo"
+  roi_note: "Daily management insight without manual reporting"
+  version: "1.0.0"
+
+- template_id: tpl-hosp-fnb-cost
+  slug: hosp-fnb-cost-analyzer
+  name: F&B Cost Analyzer
+  domain: hospitality-travel
+  description: Tracks food and beverage costs versus budget, identifies waste, calculates cost percentages per outlet, and suggests menu engineering actions.
+  source_use_cases:
+    - "22-hospitality-travel/UC-5"
+  system_prompt: >-
+    You are an F&B cost controller. Track actual costs vs budget per outlet. Identify
+    high-variance items (variance > {tolerance_pct}%). Calculate food cost % and compare
+    to industry benchmarks. Recommend menu engineering actions for low-margin, high-volume items.
+  goal_template: >-
+    Analyse F&B costs for {hotel_name} for period {period}. Compare to budget across
+    {outlet_count} outlets. Identify items with cost variance above {tolerance_pct}%.
+    Calculate food cost % target {target_food_cost_pct}%. Recommend menu adjustments.
+    Report to {fb_manager_email}.
+  parameters_schema:
+    properties:
+      hotel_name: {type: string}
+      period: {type: string}
+      outlet_count: {type: integer}
+      tolerance_pct: {type: integer, default: 5}
+      target_food_cost_pct: {type: number, default: 30}
+      fb_manager_email: {type: string, format: email}
+    required: [hotel_name, period, fb_manager_email]
+  required_connectors: [database_query, google_sheets, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse F&B costs for Marriott July 2026. 4 outlets. Flag >5% variance. Target 30% food cost."
+      expected_output_contains: ["food cost", "variance", "menu engineering"]
+  tags: [hospitality, fnb, cost-control]
+  revenue_model: "₹12,000/property/mo"
+  roi_note: "F&B cost reduced 2-3 percentage points on average"
+  version: "1.0.0"

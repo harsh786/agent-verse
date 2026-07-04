@@ -108,10 +108,16 @@ def _build_verifier_summary(steps: list) -> str:
     Always includes ALL steps that had failures (TOOL FAILED or STEP ERROR)
     regardless of position. Appends the last 5 steps for recency context.
     Deduplication prevents failed steps in the last 5 from appearing twice.
+    Steps marked UNGROUNDED are highlighted so the verifier treats them as failures.
     """
 
     def _step_line(s: Any) -> str:
         parts = [f"- {getattr(s, 'description', '?')}: {getattr(s, 'output', '')}"]
+        # Ungrounded step marker — must appear before tool/error markers
+        if getattr(s, "status", None) is not None:
+            from app.agent.state import StepStatus as _SS
+            if s.status == _SS.UNGROUNDED:
+                parts.append("  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs")
         for tc in getattr(s, "tool_calls", []) or []:
             if not (tc.get("success", True)):
                 parts.append(
@@ -122,13 +128,17 @@ def _build_verifier_summary(steps: list) -> str:
             parts.append(f"  [STEP ERROR] {s.error}")
         return "\n".join(parts)
 
-    # All failed steps anywhere in the run
+    # All failed/ungrounded steps anywhere in the run
     failed = [
         s for s in steps
         if getattr(s, "error", None)
         or any(
             not tc.get("success", True)
             for tc in (getattr(s, "tool_calls", []) or [])
+        )
+        or (
+            getattr(s, "status", None) is not None
+            and _is_ungrounded_status(s.status)
         )
     ]
 
@@ -147,6 +157,11 @@ def _build_verifier_summary(steps: list) -> str:
         parts.extend(_step_line(s) for s in last_five)
 
     return "\n".join(parts) if parts else "(no steps executed)"
+
+
+def _is_ungrounded_status(status: Any) -> bool:
+    """Return True when *status* equals ``StepStatus.UNGROUNDED`` without a hard import."""
+    return str(status) == "ungrounded"
 
 
 class AgentGraph:
@@ -200,6 +215,8 @@ class AgentGraph:
         cost_tracker: Any | None = None,
         # Step callback for streaming simulation (called after each step)
         step_callback: Any | None = None,
+        # Phase 3 Track C — citation-carrying synthesis
+        answer_synthesizer: Any | None = None,
         **kwargs: Any,
     ) -> None:
         self._planner = planner
@@ -235,6 +252,7 @@ class AgentGraph:
         self._bulkhead_registry = bulkhead_registry
         self._cost_tracker = cost_tracker
         self._step_callback = step_callback
+        self._answer_synthesizer = answer_synthesizer
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -651,72 +669,10 @@ class AgentGraph:
                 f"Do NOT repeat the rejected action. Replan with a different approach."
             )
 
-        # Phase 5 / 2.1: inject live tool schemas from MCP registry into system prompt.
-        # When embedder is available, CapabilitySearch selects only the top-K goal-relevant
-        # tools (largest token-cost win). Falls back to full-list injection otherwise.
-        tool_context_text = ""
-        if self._mcp_client is not None and tenant_ctx is not None:
-            try:
-                all_tools = await self._mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
-                if all_tools:
-                    _tool_injected = False
-                    # 2.1: CapabilitySearch — select top-K goal-relevant tools only
-                    if self._embedder is not None:
-                        try:
-                            from app.mcp.capability_search import CapabilitySearch
-                            cap_search = CapabilitySearch(
-                                tools=all_tools,
-                                embedder=self._embedder,
-                            )
-                            relevant_matches = await cap_search.search(
-                                query=agent_state.goal,
-                                tenant_ctx=tenant_ctx,
-                                top_k=12,
-                            )
-                            if relevant_matches:
-                                # Build input_schema lookup from original tools
-                                _tool_schema_map = {
-                                    getattr(t, "name", ""): getattr(t, "input_schema", {})
-                                    for t in all_tools
-                                }
-                                tool_lines = []
-                                for m in relevant_matches[:12]:
-                                    schema_str = ""
-                                    input_schema = _tool_schema_map.get(m.tool_name)
-                                    if input_schema:
-                                        schema_str = (
-                                            f" | schema: "
-                                            f"{json.dumps(input_schema, separators=(',', ':'))[:300]}"
-                                        )
-                                    tool_lines.append(
-                                        f"  - {m.tool_name}: {m.description[:100]}{schema_str}"
-                                    )
-                                tool_context_text = (
-                                    "\n\n[Relevant tools for this goal]\n"
-                                    + "\n".join(tool_lines)
-                                )
-                                _tool_injected = True
-                        except Exception as _cap_exc:
-                            self._logger.debug(
-                                "capability_search_fallback", error=str(_cap_exc)[:60]
-                            )
-                    # Fallback: full-list injection (no embedder, or capability search failed)
-                    if not _tool_injected:
-                        tool_lines = []
-                        for t in all_tools[:20]:  # cap at 20 tools to stay within context
-                            schema_str = ""
-                            if hasattr(t, "input_schema") and t.input_schema:
-                                schema_str = (
-                                    f" | schema: "
-                                    f"{json.dumps(t.input_schema, separators=(',', ':'))[:200]}"
-                                )
-                            tool_lines.append(
-                                f"  - {t.name}: {t.description[:100]}{schema_str}"
-                            )
-                        tool_context_text = "\n\n[Available tools]\n" + "\n".join(tool_lines)
-            except Exception as _tc_exc:
-                self._logger.warning("tool_schema_injection_failed", error=str(_tc_exc))
-        system_content = system_content + tool_context_text
+        # Tool context is pre-built by ToolSelector in _build_tool_context and
+        # injected via agent_state.context["tool_prompt"] (see lines above at
+        # extra_parts.append). The duplicate discover_all_tools block has been
+        # removed — single source of truth is now the tiered ToolSelector output.
 
         # Determine planning model via model_router if wired
         planning_model = "claude-opus-4-8"
@@ -791,12 +747,25 @@ class AgentGraph:
             _llm_plan_cached = False
 
         if not _llm_plan_cached:
+            # Use structured output when available (Phase 3 Track A)
+            _response_schema = None
+            try:
+                from app.agent.schemas import planner_schema
+                if (
+                    hasattr(self._planner, "supports_structured_output")
+                    and self._planner.supports_structured_output()
+                ):
+                    _response_schema = planner_schema()
+            except Exception:
+                pass
+
             req = CompletionRequest(
                 messages=[
                     Message(role="system", content=system_content),
                     Message(role="user", content=user_content),
                 ],
                 model=planning_model,
+                response_schema=_response_schema,
             )
             with self._tracer.start_as_current_span("agentverse.plan") as span:
                 span.set_attribute("plan.iteration", agent_state.iterations)
@@ -2218,14 +2187,21 @@ class AgentGraph:
                     tool_outputs=_tool_outputs_for_grounding,
                 )
                 if not _ground_result.grounded:
+                    self._logger.info(
+                        "grounding_failed",
+                        ungrounded=_ground_result.ungrounded_claims[:3],
+                        step=step[:100],
+                    )
                     raw_output = annotate_ungrounded(raw_output, _ground_result)
+                    state.ungrounded_claims.extend(_ground_result.ungrounded_claims[:5])
                     await self._emit({
                         "type": "grounding_warning",
                         "ungrounded_claims": _ground_result.ungrounded_claims[:5],
                         "step": step,
                     })
-        except Exception:
-            pass  # grounding check must never block execution
+        except Exception as exc:
+            # Log but don't block execution — fail-open only on grounding check errors
+            self._logger.warning("grounding_check_error", error=str(exc)[:80])
 
         return raw_output
 
@@ -2332,6 +2308,18 @@ class AgentGraph:
             except Exception:
                 pass
         if not _verify_cached:
+            # Use structured output when available (Phase 3 Track A)
+            _verify_response_schema = None
+            try:
+                from app.agent.schemas import verifier_schema
+                if (
+                    hasattr(self._verifier, "supports_structured_output")
+                    and self._verifier.supports_structured_output()
+                ):
+                    _verify_response_schema = verifier_schema()
+            except Exception:
+                pass
+
             req = CompletionRequest(
                 messages=[
                     Message(role="system", content=VERIFIER_SYSTEM),
@@ -2341,6 +2329,7 @@ class AgentGraph:
                     ),
                 ],
                 model=_verify_model,
+                response_schema=_verify_response_schema,
             )
             with self._tracer.start_as_current_span("agentverse.verify") as span:
                 span.set_attribute("verify.iteration", agent_state.iterations)
@@ -2373,8 +2362,9 @@ class AgentGraph:
                     )
                 except Exception:
                     pass
-        # Bug 1 fix: use _parse_verifier_response which handles JSON and text formats
-        parsed = _parse_verifier_response(resp.content)
+        # Phase 3 Track A: use parse_verifier_verdict (handles JSON and text fallback)
+        from app.agent.schemas import parse_verifier_verdict
+        parsed = parse_verifier_verdict(resp.content)
         success: bool = bool(parsed.get("success", False))
         reason: str = self._sanitize_tool_raw_output(parsed.get("reason", ""))
         # Store retry flag for routing: True = can replan, False = permanently blocked
@@ -2385,18 +2375,25 @@ class AgentGraph:
         agent_state.verification_feedback = reason
         await self._emit({"type": "verification_done", "success": success, "reason": reason})
 
-        # Record verifier verdict for calibration
+        # Record verifier verdict for calibration (Phase 3 Track E)
         try:
-            self._logger.info(
-                "verifier_verdict",
-                goal_id=agent_state.goal_id,
-                success=success,
-                model=_verify_model,
-                iteration=agent_state.iterations,
-                tenant_id=tenant_ctx.tenant_id,
-            )
-        except Exception:
-            pass
+            from app.intelligence.verifier_calibration import _default_calibration_store
+            _cal_store = getattr(self, "_calibration_store", _default_calibration_store)
+            if _cal_store is not None:
+                _cal_task = asyncio.create_task(
+                    _cal_store.record_verdict(
+                        goal_id=agent_state.goal_id,
+                        tenant_id=tenant_ctx.tenant_id,
+                        verifier_verdict=success,
+                        verifier_model=_verify_model,
+                        iteration=agent_state.iterations,
+                        goal_text=agent_state.goal,
+                    )
+                )
+                self._background_tasks.add(_cal_task)
+                _cal_task.add_done_callback(self._background_tasks.discard)
+        except Exception as exc:
+            self._logger.debug("calibration_record_failed", error=str(exc)[:60])
 
         if success:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
@@ -2464,6 +2461,27 @@ class AgentGraph:
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
+
+            # Phase 3 Track C: synthesize cited answer on success
+            if self._answer_synthesizer is not None:
+                try:
+                    cited = await self._answer_synthesizer.synthesize(
+                        goal=agent_state.goal,
+                        steps=agent_state.steps,
+                        tenant_id=tenant_ctx.tenant_id,
+                    )
+                    agent_state.cited_answer = cited.answer
+                    agent_state.provenance = [
+                        {"text": c.text, "source": c.source, "step": c.step_index}
+                        for c in cited.citations
+                    ]
+                    await self._emit({
+                        "type": "synthesis_complete",
+                        "cited_answer": cited.answer[:2000],
+                        "citations": [{"text": c.text, "source": c.source} for c in cited.citations],
+                    })
+                except Exception as exc:
+                    self._logger.debug("synthesis_failed", error=str(exc)[:60])
 
             # H-2: SelfOptimizerV2 result recording — feeds A/B experiment outcomes
             _self_opt_v2 = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None

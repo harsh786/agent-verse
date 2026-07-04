@@ -1,0 +1,29 @@
+- name: Check FCRA Compliance
+  domain: nonprofit-ngo
+  description: Validate FCRA compliance for an NGO and prepare Annual Return.
+  goal_text: >-
+    Check FCRA compliance for {{org_name}} (FCRA: {{fcra_number}}) for FY {{fy}}.
+    Validate utilisation of ₹{{received}} received against approved purposes.
+    Prepare FC-4 Annual Return draft. Alert {{compliance_email}} on deviations.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-1"
+
+- name: Research and Apply for CSR Grants
+  domain: nonprofit-ngo
+  description: Find matching CSR funding opportunities and draft grant proposals.
+  goal_text: >-
+    Find CSR grant opportunities for {{org_name}} working in {{focus_area}}.
+    Target {{companies}} with CSR mandate above ₹{{min_budget}}L. Draft {{count}}
+    grant proposals aligned to company CSR priorities. Track in {{sheet}}.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-2"
+
+- name: Generate Annual Impact Report
+  domain: nonprofit-ngo
+  description: Create a comprehensive annual impact report for donors and regulators.
+  goal_text: >-
+    Generate annual impact report for {{org_name}} for FY {{fy}}. Programmes:
+    {{programmes}}. Beneficiaries: {{count}}. Budget: ₹{{budget}}Cr. Include {{charts}}
+    data visualisations and {{stories}} beneficiary stories. Two formats: donor and MCA.
+  source_use_cases:
+    - "32-nonprofit-ngo/UC-4"

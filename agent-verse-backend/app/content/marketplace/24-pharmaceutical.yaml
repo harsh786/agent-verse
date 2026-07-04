@@ -1,0 +1,214 @@
+- template_id: tpl-pharma-cdsco-license
+  slug: pharma-cdsco-license-assistant
+  name: CDSCO Drug License Assistant
+  domain: pharmaceutical
+  description: Prepares CDSCO drug license applications, tracks approval status, and manages renewal timelines for manufacturing and import licenses.
+  source_use_cases:
+    - "24-pharmaceutical/UC-1"
+  system_prompt: >-
+    You are a pharmaceutical regulatory affairs specialist. Prepare license applications
+    per CDSCO Schedule guidelines. Validate all dossier documents before submission.
+    Track approval milestones and alert on deficiency queries within 24 hours.
+    Never submit an incomplete application — regulatory rejections delay approvals by months.
+  goal_template: >-
+    Prepare {license_type} drug license application for {company_name} for {drug_product}
+    (Schedule: {schedule_category}). Manufacturing site: {site_address}. Compile dossier,
+    validate completeness, and file on CDSCO portal. Alert {ra_email} on all queries
+    within {query_response_hrs} hours.
+  parameters_schema:
+    properties:
+      license_type: {type: string, enum: [manufacturing, import, loan_license, test_license]}
+      company_name: {type: string}
+      drug_product: {type: string}
+      schedule_category: {type: string, enum: [H, H1, X, G, OTC]}
+      site_address: {type: string}
+      ra_email: {type: string, format: email}
+      query_response_hrs: {type: integer, default: 24}
+    required: [license_type, company_name, drug_product, schedule_category, ra_email]
+  required_connectors: [web_search, document_reader, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare manufacturing license for PharmaX for Paracetamol 500mg Tablets (Schedule H). Alert ra@pharma.in."
+      expected_output_contains: ["CDSCO", "license", "dossier"]
+  tags: [pharmaceutical, regulatory, cdsco, india]
+  revenue_model: "₹15,000/application; ₹50,000/mo unlimited"
+  roi_note: "Dossier preparation 2 weeks → 3 days; zero missed queries"
+  version: "1.0.0"
+
+- template_id: tpl-pharma-adverse-event
+  slug: pharma-adverse-event-reporter
+  name: Adverse Event Reporting Agent
+  domain: pharmaceutical
+  description: Processes pharmacovigilance reports, classifies adverse events by seriousness/expectedness, and files ICSRs to PVPI/CDSCO within regulatory timelines.
+  source_use_cases:
+    - "24-pharmaceutical/UC-2"
+  system_prompt: >-
+    You are a pharmacovigilance specialist. Classify every adverse event by seriousness
+    (serious/non-serious) and expectedness (expected/unexpected). Fatal/life-threatening
+    events must be reported within 7 days. All serious unexpected events within 15 days.
+    Non-serious within 30 days. Never miss a reporting deadline — regulatory consequences
+    are severe.
+  goal_template: >-
+    Process {report_count} adverse event reports for {product_name} (MAH: {company_name}).
+    Classify by seriousness and expectedness. File ICSRs to {regulatory_authority} within
+    regulatory timelines. Send 7-day expedited reports to {pv_email} immediately.
+  parameters_schema:
+    properties:
+      report_count: {type: integer}
+      product_name: {type: string}
+      company_name: {type: string}
+      regulatory_authority: {type: string, enum: [PVPI, CDSCO, EMA, FDA]}
+      pv_email: {type: string, format: email}
+    required: [product_name, company_name, regulatory_authority, pv_email]
+  required_connectors: [document_reader, database_query, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Process 15 AE reports for DRUGx (MAH: ABC Pharma). Classify and file to PVPI. 7-day cases to pv@pharma.in."
+      expected_output_contains: ["adverse event", "ICSR", "serious"]
+  tags: [pharmaceutical, pharmacovigilance, regulatory]
+  revenue_model: "₹500/ICSR; ₹25,000/mo unlimited"
+  roi_note: "100% on-time reporting vs 70% manual; zero missed deadlines"
+  version: "1.0.0"
+
+- template_id: tpl-pharma-clinical-trial
+  slug: pharma-clinical-trial-tracker
+  name: Clinical Trial Status Tracker
+  domain: pharmaceutical
+  description: Tracks clinical trial milestones, patient enrolment progress, protocol deviations, and regulatory submission timelines.
+  source_use_cases:
+    - "24-pharmaceutical/UC-3"
+  system_prompt: >-
+    You are a clinical operations specialist. Monitor trial progress against enrolment
+    targets and timeline milestones. Flag protocol deviations immediately. Alert when
+    enrolment is below target pace. Track regulatory submission deadlines per protocol.
+  goal_template: >-
+    Track clinical trial {trial_id} ({trial_phase}) for {drug_product}. Monitor
+    enrolment: target {target_patients} patients at {site_count} sites. Flag deviations
+    and milestones due in {alert_days} days. Send weekly status to {cro_email} and
+    monthly report to {sponsor_email}.
+  parameters_schema:
+    properties:
+      trial_id: {type: string}
+      trial_phase: {type: string, enum: [Phase I, Phase II, Phase III, Phase IV]}
+      drug_product: {type: string}
+      target_patients: {type: integer}
+      site_count: {type: integer}
+      alert_days: {type: integer, default: 14}
+      cro_email: {type: string, format: email}
+      sponsor_email: {type: string, format: email}
+    required: [trial_id, trial_phase, drug_product, target_patients, cro_email, sponsor_email]
+  required_connectors: [database_query, email, google_sheets, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Track trial CT-2025-007 (Phase III) for AntibioticX. Target 300 patients, 15 sites. Weekly to CRO."
+      expected_output_contains: ["enrolment", "milestone", "deviation"]
+  tags: [pharmaceutical, clinical-trial, operations]
+  revenue_model: "₹20,000/trial/mo"
+  roi_note: "Trial delays reduced 30%; enrolment shortfalls identified 4 weeks early"
+  version: "1.0.0"
+
+- template_id: tpl-pharma-inventory
+  slug: pharma-inventory-optimizer
+  name: Drug Inventory Optimizer
+  domain: pharmaceutical
+  description: Optimises pharmaceutical inventory by tracking expiry dates, reorder points, and cold-chain compliance across distribution centers.
+  source_use_cases:
+    - "24-pharmaceutical/UC-4"
+  system_prompt: >-
+    You are a pharmaceutical supply chain specialist. Track inventory with FEFO (First
+    Expiry First Out) logic. Alert on near-expiry stock. Calculate reorder points
+    using average daily demand and lead time. Never allow stockout of critical drugs.
+    Flag cold-chain temperature excursions immediately.
+  goal_template: >-
+    Optimise drug inventory at {facility_name} for {sku_count} SKUs. Apply FEFO logic.
+    Alert {store_manager_email} on items expiring within {expiry_alert_days} days.
+    Calculate reorder for items below safety stock. Flag {cold_chain_items} cold-chain SKUs.
+  parameters_schema:
+    properties:
+      facility_name: {type: string}
+      sku_count: {type: integer}
+      store_manager_email: {type: string, format: email}
+      expiry_alert_days: {type: integer, default: 90}
+      cold_chain_items: {type: integer, default: 0}
+    required: [facility_name, store_manager_email]
+  required_connectors: [database_query, email, google_sheets]
+  autonomy_mode: fully-autonomous
+  eval_fixtures:
+    - goal: "Optimise inventory at Hyderabad DC, 800 SKUs. Alert on 90-day expiry. FEFO. 50 cold-chain items."
+      expected_output_contains: ["FEFO", "reorder", "expiry"]
+  tags: [pharmaceutical, inventory, supply-chain]
+  revenue_model: "₹10,000/facility/mo"
+  roi_note: "Expiry waste reduced 40%; stockouts reduced 80%"
+  version: "1.0.0"
+
+- template_id: tpl-pharma-reg-submission
+  slug: pharma-regulatory-submission-checker
+  name: Regulatory Submission Checker
+  domain: pharmaceutical
+  description: Validates regulatory submission dossiers against authority checklists, identifies gaps, and tracks submission timelines.
+  source_use_cases:
+    - "24-pharmaceutical/UC-5"
+  system_prompt: >-
+    You are a regulatory submissions specialist. Validate CTD/NDA/ANDA dossier
+    completeness against checklist. Identify missing sections, incorrect formatting,
+    or data inconsistencies. Never declare a dossier complete without thorough review.
+    Track all pending submissions with due dates.
+  goal_template: >-
+    Validate {submission_type} dossier for {drug_product} to {regulatory_authority}.
+    Check against {checklist_version} checklist. Identify gaps and formatting issues.
+    Estimate submission readiness as {readiness_target_date}. Report to {ra_head_email}.
+  parameters_schema:
+    properties:
+      submission_type: {type: string, enum: [NDA, ANDA, NDA_amendment, CTD, dossier]}
+      drug_product: {type: string}
+      regulatory_authority: {type: string}
+      checklist_version: {type: string}
+      readiness_target_date: {type: string, format: date}
+      ra_head_email: {type: string, format: email}
+    required: [submission_type, drug_product, regulatory_authority, ra_head_email]
+  required_connectors: [document_reader, google_sheets, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Validate CTD for Atorvastatin 20mg to CDSCO. Check M3.2 section completeness. Report to RA head."
+      expected_output_contains: ["CTD", "dossier", "gap"]
+  tags: [pharmaceutical, regulatory, submission]
+  revenue_model: "₹10,000/dossier validation"
+  roi_note: "Deficiency queries reduced 50%; submission readiness improved"
+  version: "1.0.0"
+
+- template_id: tpl-pharma-batch-recall
+  slug: pharma-batch-recall-manager
+  name: Batch Recall Manager
+  domain: pharmaceutical
+  description: Manages drug batch recall processes including affected batch identification, distribution tracing, customer notification, and regulatory reporting.
+  source_use_cases:
+    - "24-pharmaceutical/UC-6"
+  system_prompt: >-
+    You are a pharmaceutical quality recall specialist. Act urgently on Class I recalls.
+    Trace all affected batch distribution within 24 hours. Notify all customers and
+    collect return confirmations. File recall reports to CDSCO within prescribed timelines.
+    Document every step for regulatory audit.
+  goal_template: >-
+    Execute {recall_class} recall for batch {batch_number} of {product_name}.
+    Trace distribution to {customer_count} customers. Notify all customers within
+    {notification_hrs} hours. File recall report to {regulatory_authority}. Track
+    return confirmations via {ra_email}.
+  parameters_schema:
+    properties:
+      recall_class: {type: string, enum: [Class I, Class II, Class III]}
+      batch_number: {type: string}
+      product_name: {type: string}
+      customer_count: {type: integer}
+      notification_hrs: {type: integer, default: 24}
+      regulatory_authority: {type: string, default: "CDSCO"}
+      ra_email: {type: string, format: email}
+    required: [recall_class, batch_number, product_name, ra_email]
+  required_connectors: [database_query, email, twilio, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Execute Class II recall for batch B-2025-0445 of Paracetamol 500mg. Notify 200 customers in 24h."
+      expected_output_contains: ["recall", "batch", "notification"]
+  tags: [pharmaceutical, recall, quality]
+  revenue_model: "₹25,000/recall event"
+  roi_note: "Recall completion 2 weeks → 3 days; 100% customer coverage"
+  version: "1.0.0"

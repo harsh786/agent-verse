@@ -1,0 +1,173 @@
+- template_id: tpl-cs-ticket-resolution
+  slug: cs-ticket-auto-resolution
+  name: Ticket Auto-Resolution Agent
+  domain: customer-support
+  description: Classifies incoming support tickets, resolves L1 issues automatically from the knowledge base, and routes complex issues to the right team.
+  source_use_cases:
+    - "18-customer-support/UC-1"
+  system_prompt: >-
+    You are a customer support resolution agent. Resolve only issues you have high
+    confidence in (>90%) using the knowledge base. Never fabricate solutions. Route
+    ambiguous or complex issues to human agents. Always confirm resolution with the
+    customer before closing the ticket.
+  goal_template: >-
+    Process incoming tickets in {helpdesk_system} queue "{queue_name}". Auto-resolve
+    issues matching knowledge base with {confidence_threshold}% confidence.
+    Route unresolved tickets to {escalation_team} within {sla_minutes} minutes.
+    Send resolution summary to {team_lead_email}.
+  parameters_schema:
+    properties:
+      helpdesk_system: {type: string, enum: [zendesk, freshdesk, jira, intercom]}
+      queue_name: {type: string}
+      confidence_threshold: {type: integer, default: 90}
+      escalation_team: {type: string}
+      sla_minutes: {type: integer, default: 30}
+      team_lead_email: {type: string, format: email}
+    required: [helpdesk_system, queue_name, escalation_team, team_lead_email]
+  required_connectors: [zendesk, email, database_query]
+  optional_connectors: [freshdesk, slack, confluence]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Process Zendesk queue 'L1 General'. Auto-resolve at 90% confidence. Route to tech-support within 30min."
+      expected_output_contains: ["resolved", "routed", "ticket"]
+  tags: [customer-support, automation, helpdesk]
+  revenue_model: "₹5/ticket resolved; ₹20,000/mo unlimited"
+  roi_note: "40-60% L1 auto-resolution; 5x faster response times"
+  version: "1.0.0"
+
+- template_id: tpl-cs-escalation-predictor
+  slug: cs-escalation-predictor
+  name: Escalation Predictor
+  domain: customer-support
+  description: Analyses ticket sentiment, customer tier, and conversation history to predict escalation risk and trigger proactive intervention.
+  source_use_cases:
+    - "18-customer-support/UC-2"
+  system_prompt: >-
+    You are a customer experience risk analyst. Identify tickets at high escalation risk
+    using sentiment, repeat contact, and customer tier signals. Trigger proactive
+    outreach for high-risk tickets before the customer escalates. Never wait for the
+    customer to ask for a manager.
+  goal_template: >-
+    Analyse {ticket_count} open tickets in {system} for escalation risk. Flag tickets
+    with sentiment score below {sentiment_threshold} or {repeat_contact_count}+ repeat
+    contacts. Trigger proactive manager outreach for high-risk cases. Report to {cx_email}.
+  parameters_schema:
+    properties:
+      ticket_count: {type: integer}
+      system: {type: string}
+      sentiment_threshold: {type: number, default: -0.3}
+      repeat_contact_count: {type: integer, default: 3}
+      cx_email: {type: string, format: email}
+    required: [system, cx_email]
+  required_connectors: [zendesk, database_query, email, slack]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse 200 Zendesk tickets for escalation risk. Flag sentiment <-0.3 or 3+ contacts. Alert cx@co.in."
+      expected_output_contains: ["escalation risk", "sentiment", "intervention"]
+  tags: [customer-support, escalation, analytics]
+  revenue_model: "₹8,000/mo per support team"
+  roi_note: "Escalation rate reduced 30%; NPS improved 8 points"
+  version: "1.0.0"
+
+- template_id: tpl-cs-kb-updater
+  slug: cs-knowledge-base-updater
+  name: Knowledge Base Updater
+  domain: customer-support
+  description: Analyses resolved tickets to identify knowledge gaps, drafts new KB articles, and updates existing ones with new resolution patterns.
+  source_use_cases:
+    - "18-customer-support/UC-3"
+  system_prompt: >-
+    You are a knowledge management specialist. Analyse resolved tickets for new issue
+    patterns not covered in the KB. Draft clear, step-by-step KB articles in plain
+    language. Flag outdated articles for review. Never publish without agent review.
+  goal_template: >-
+    Analyse {ticket_count} resolved tickets from {date_range} in {system}. Identify
+    top {gap_count} knowledge gaps. Draft KB articles for each gap. Flag {outdated_count}
+    potentially outdated articles. Submit for review to {kb_owner_email}.
+  parameters_schema:
+    properties:
+      ticket_count: {type: integer}
+      date_range: {type: string}
+      system: {type: string}
+      gap_count: {type: integer, default: 10}
+      outdated_count: {type: integer, default: 5}
+      kb_owner_email: {type: string, format: email}
+    required: [date_range, system, kb_owner_email]
+  required_connectors: [zendesk, confluence, email]
+  optional_connectors: [notion, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse 500 Zendesk tickets from Q2 2026. Draft top 10 KB gaps. Flag 5 outdated articles. To kb@co.in."
+      expected_output_contains: ["KB article", "knowledge gap", "outdated"]
+  tags: [customer-support, knowledge-base, automation]
+  revenue_model: "₹10,000/mo per team"
+  roi_note: "KB coverage improved 40%; repeat tickets reduced 25%"
+  version: "1.0.0"
+
+- template_id: tpl-cs-csat-analyzer
+  slug: cs-csat-analyzer
+  name: CSAT Analyzer
+  domain: customer-support
+  description: Aggregates CSAT survey responses, identifies low-score drivers, and generates agent-level and queue-level performance dashboards.
+  source_use_cases:
+    - "18-customer-support/UC-4"
+  system_prompt: >-
+    You are a customer satisfaction analyst. Aggregate CSAT data across dimensions —
+    agent, queue, product, and issue type. Identify root causes of low scores. Recommend
+    coaching interventions for low-performing agents. Anonymise data in shared reports.
+  goal_template: >-
+    Analyse CSAT responses for {period} across {response_count} survey responses.
+    Break down by agent, queue, and issue type. Flag agents below {min_csat} CSAT.
+    Identify top 3 dissatisfaction drivers. Send dashboard to {cx_manager_email}.
+  parameters_schema:
+    properties:
+      period: {type: string}
+      response_count: {type: integer}
+      min_csat: {type: number, default: 4.0}
+      cx_manager_email: {type: string, format: email}
+    required: [period, cx_manager_email]
+  required_connectors: [google_sheets, database_query, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyse Q2 2026 CSAT (2,000 responses). Flag agents below 4.0. Top 3 drivers. To cx-mgr@co.in."
+      expected_output_contains: ["CSAT", "driver", "agent"]
+  tags: [customer-support, csat, analytics]
+  revenue_model: "₹5,000/month per support org"
+  roi_note: "CSAT improvement 3-5 points with data-driven coaching"
+  version: "1.0.0"
+
+- template_id: tpl-cs-response-quality
+  slug: cs-response-quality-checker
+  name: Response Quality Checker
+  domain: customer-support
+  description: Audits agent responses for accuracy, tone, grammar, and policy compliance, providing coaching feedback and quality scores.
+  source_use_cases:
+    - "18-customer-support/UC-5"
+  system_prompt: >-
+    You are a quality assurance specialist. Score responses on: accuracy (facts correct),
+    tone (empathetic, professional), grammar, policy compliance, and completeness.
+    Provide specific, actionable coaching feedback. Never share one agent's scores with
+    their peers.
+  goal_template: >-
+    Quality-check {response_count} agent responses from {agent_team} for period {period}.
+    Score on accuracy, tone, and policy compliance. Flag responses scoring below
+    {min_quality_score}. Generate individual coaching reports and team summary to
+    {qa_email}.
+  parameters_schema:
+    properties:
+      response_count: {type: integer}
+      agent_team: {type: string}
+      period: {type: string}
+      min_quality_score: {type: integer, default: 70}
+      qa_email: {type: string, format: email}
+    required: [agent_team, period, qa_email]
+  required_connectors: [zendesk, google_sheets, email]
+  optional_connectors: [database_query]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "QA 100 responses from Team Alpha for July 2026. Flag <70 score. Coaching reports to qa@co.in."
+      expected_output_contains: ["quality score", "coaching", "compliance"]
+  tags: [customer-support, quality, coaching]
+  revenue_model: "₹20/response audited; ₹12,000/mo unlimited"
+  roi_note: "QA coverage 5% → 100%; agent quality improved 15%"
+  version: "1.0.0"

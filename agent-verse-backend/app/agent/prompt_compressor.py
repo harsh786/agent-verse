@@ -14,9 +14,11 @@ This is a heuristic compressor — it does NOT use an LLM (zero latency, zero co
 """
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
+from app.agent.tokenizer import Tokenizer
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,7 +36,8 @@ _REDUNDANT_PHRASES = [
 ]
 _COMPILED = [(re.compile(p, re.IGNORECASE), r) for p, r in _REDUNDANT_PHRASES]
 
-_MAX_RAG_CHARS = 2000   # max characters for any single [context] block
+_MAX_RAG_CHARS = 2000   # max characters for any single [context] block (legacy)
+_MAX_RAG_TOKENS = 500   # max tokens for any single [context] block
 _MAX_TOOL_LIST_ITEMS = 30  # cap injected tool list
 
 
@@ -47,15 +50,22 @@ class PromptCompressor:
         shorter = compressor.compress(long_system_prompt)
     """
 
-    def __init__(self, max_rag_chars: int = _MAX_RAG_CHARS) -> None:
+    def __init__(
+        self,
+        max_rag_chars: int = _MAX_RAG_CHARS,
+        max_rag_tokens: int = _MAX_RAG_TOKENS,
+    ) -> None:
         self._max_rag_chars = max_rag_chars
-        self._stats: dict[str, int] = {"calls": 0, "chars_saved": 0}
+        self._max_rag_tokens = max_rag_tokens
+        self._tokenizer = Tokenizer()
+        self._stats: dict[str, int] = {"calls": 0, "chars_saved": 0, "tokens_saved": 0}
 
     def compress(self, text: str) -> str:
         """Return a compressed version of text with ~15-30% fewer tokens."""
         if not text:
             return text
         original_len = len(text)
+        original_tokens = self._tokenizer.count(text)
         result = text
 
         # 1. Collapse 3+ blank lines → 1 blank line
@@ -68,25 +78,48 @@ class PromptCompressor:
         for pattern, replacement in _COMPILED:
             result = pattern.sub(replacement, result)
 
-        # 4. Truncate oversized [context] blocks
+        # 4. Truncate oversized [context] blocks (token-accurate)
         result = self._truncate_context_blocks(result)
 
         # 5. Cap tool list injections
         result = self._cap_tool_list(result)
 
-        saved = original_len - len(result)
+        saved_chars = original_len - len(result)
+        saved_tokens = original_tokens - self._tokenizer.count(result)
         self._stats["calls"] += 1
-        self._stats["chars_saved"] += max(0, saved)
-        if saved > 200:
-            logger.debug("prompt_compressed", saved_chars=saved, pct=round(saved / original_len * 100))
+        self._stats["chars_saved"] += max(0, saved_chars)
+        self._stats["tokens_saved"] += max(0, saved_tokens)
+        if saved_chars > 200:
+            pct = round(saved_chars / original_len * 100)
+            logger.debug("prompt_compressed", saved_chars=saved_chars, pct=pct)
+        if saved_tokens > 0:
+            self._emit_tokens_saved(max(0, saved_tokens))
         return result
 
     def compress_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Compress a list of {role, content} message dicts."""
         return [
-            {**m, "content": self.compress(m["content"])} if isinstance(m.get("content"), str) else m
+            {**m, "content": self.compress(m["content"])}
+            if isinstance(m.get("content"), str)
+            else m
             for m in messages
         ]
+
+    def compress_rag_context(self, text: str) -> str:
+        """
+        Truncate only [Relevant context] / [Knowledge base context] / [Visual context]
+        blocks by token count. Leaves all other content (tool schemas, JSON, etc.) intact.
+        This is the safe path for compressing agent prompts — it never touches JSON schemas.
+        """
+        if not text:
+            return text
+        before_tokens = self._tokenizer.count(text)
+        result = self._truncate_context_blocks(text)
+        saved = before_tokens - self._tokenizer.count(result)
+        if saved > 0:
+            self._stats["tokens_saved"] += saved
+            self._emit_tokens_saved(saved)
+        return result
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -98,12 +131,18 @@ class PromptCompressor:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def _emit_tokens_saved(self, amount: int) -> None:
+        with contextlib.suppress(Exception):
+            from app.observability.metrics import record_prompt_tokens_saved
+            record_prompt_tokens_saved(amount)
+
     def _truncate_context_blocks(self, text: str) -> str:
-        """Truncate [context] / [Relevant context] blocks that exceed max size."""
+        """Truncate [context] / [Relevant context] blocks that exceed max token size."""
         def _truncate_block(m: re.Match) -> str:
             block = m.group(0)
-            if len(block) > self._max_rag_chars:
-                return block[:self._max_rag_chars] + "\n...[truncated]"
+            if self._tokenizer.count(block) > self._max_rag_tokens:
+                truncated = self._tokenizer.truncate_to_tokens(block, self._max_rag_tokens)
+                return truncated + "\n...[truncated]"
             return block
         # Match blocks starting with [Something context] or [Knowledge ...] up to next [
         return re.sub(
@@ -122,7 +161,7 @@ class PromptCompressor:
         before = text[:idx + len(marker)]
         after = text[idx + len(marker):]
         lines = after.splitlines()
-        tool_lines = [l for l in lines if l.strip().startswith("- ")]
+        tool_lines = [ln for ln in lines if ln.strip().startswith("- ")]
         if len(tool_lines) <= _MAX_TOOL_LIST_ITEMS:
             return text
         # Keep first N tool lines
@@ -134,7 +173,8 @@ class PromptCompressor:
                     continue
                 kept += 1
             new_lines.append(line)
-        return before + "\n".join(new_lines) + f"\n...[{len(tool_lines) - _MAX_TOOL_LIST_ITEMS} more tools omitted]"
+        omitted = len(tool_lines) - _MAX_TOOL_LIST_ITEMS
+        return before + "\n".join(new_lines) + f"\n...[{omitted} more tools omitted]"
 
 
 # Module-level singleton
