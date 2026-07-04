@@ -1413,6 +1413,47 @@ class AgentGraph:
                                     time.monotonic() - tool_call_started,
                                 )
                                 raw_output_sanitized = True
+                                # ── RPA failure → ExecutionMemory + SelfOptimizer ──
+                                if not rpa_result.success:
+                                    _rpa_url_fail = (
+                                        (tool_call.arguments or {}).get("url", "")
+                                        or (
+                                            agent_state.context.get(
+                                                "_current_rpa_url", ""
+                                            )
+                                            if isinstance(agent_state.context, dict)
+                                            else ""
+                                        )
+                                    )
+                                    # Record failure in ExecutionMemory for recall
+                                    if (
+                                        self._exec_memory is not None
+                                        and self._db_session_factory is not None
+                                    ):
+                                        _fail_task = asyncio.create_task(
+                                            self._exec_memory.record_failure_async(
+                                                goal=agent_state.goal,
+                                                error=(
+                                                    f"RPA {rpa_tool_name} failed on "
+                                                    f"{_rpa_url_fail}: "
+                                                    f"{rpa_result.error or 'unknown'}"
+                                                ),
+                                                tenant_id=tenant_ctx.tenant_id,
+                                                db=self._db_session_factory,
+                                            )
+                                        )
+                                        self._background_tasks.add(_fail_task)
+                                        _fail_task.add_done_callback(
+                                            self._background_tasks.discard
+                                        )
+                                    # Generate RPA-specific suggestions
+                                    if self._self_optimizer is not None:
+                                        self._self_optimizer.analyze_rpa_failure(
+                                            tool_name=rpa_tool_name,
+                                            error=rpa_result.error or "",
+                                            url=str(_rpa_url_fail),
+                                            tenant_ctx=tenant_ctx,
+                                        )
                                 # ── RPA → LTM persistence ──────────────────
                                 # Store extracted text and vision analysis so
                                 # future goals can recall what was found on
