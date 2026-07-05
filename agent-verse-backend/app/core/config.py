@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     # --- scope enforcement ---
     scope_enforcement_legacy_allow: bool = False
 
+    # --- billing ---
+    stripe_api_key: str = ""
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:
