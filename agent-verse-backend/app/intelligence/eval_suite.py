@@ -70,6 +70,7 @@ class GoldenTaskResult:
     failure_reasons: list[str] = field(default_factory=list)
     tools_called: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
+    actual_output: str = ""  # actual agent output for LLM judge evaluation
 
 
 @dataclass
@@ -335,6 +336,7 @@ class EvalSuiteRunner:
             failure_reasons=failure_reasons,
             tools_called=tools_called,
             duration_seconds=time.monotonic() - t0,
+            actual_output=all_output,
         )
 
     async def run_with_llm_judge(
@@ -354,8 +356,8 @@ class EvalSuiteRunner:
         for task, task_result in zip(tasks, suite_result.task_results):
             scores: dict[str, Any] = {}
             if self._llm_judge is not None:
-                # Reconstruct a best-effort actual_output from failure_reasons + goal
-                all_output = task_result.goal
+                # Use the actual agent output for evaluation, not the goal prompt
+                all_output = task_result.actual_output or task_result.goal  # fallback for backward compat
                 scores = await self._llm_judge.score(
                     goal=task.goal,
                     expected_output=task.expected_output,
