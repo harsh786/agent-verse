@@ -81,7 +81,7 @@ async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, A
         )
         await session.commit()
     return {"request_id": req_id, "status": "accepted",
-            "message": "Erasure request accepted. Data deleted within 30 days per DPDP Act.",
+            "message": "Erasure request recorded. Personal data will be deleted within 30 days via our automated erasure pipeline.",
             "grievance_officer": "dpo@agentverse.ai"}
 
 
