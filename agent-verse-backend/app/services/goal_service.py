@@ -414,7 +414,7 @@ class GoalService:
                                             "bridge_stub_creation_failed", error=str(exc)
                                         )
 
-                                 if record is not None:
+                                if record is not None:
                                     # Feed into SSE subscriber queues
                                     event = {
                                         "type": event_type,
