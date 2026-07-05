@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     siem_token: str = ""
     siem_api_key: str = ""
 
+    # --- scope enforcement ---
+    scope_enforcement_legacy_allow: bool = False
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:
