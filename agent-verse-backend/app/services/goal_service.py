@@ -414,7 +414,7 @@ class GoalService:
                                             "bridge_stub_creation_failed", error=str(exc)
                                         )
 
-                                if record is not None:
+                                 if record is not None:
                                     # Feed into SSE subscriber queues
                                     event = {
                                         "type": event_type,
@@ -426,6 +426,9 @@ class GoalService:
                                     for q in list(record.subscribers):
                                         try:
                                             q.put_nowait(event)
+                                        except asyncio.QueueFull:
+                                            if event_type not in {"token_chunk", "heartbeat"}:
+                                                dead.append(q)
                                         except Exception:
                                             dead.append(q)
                                     for q in dead:
@@ -433,6 +436,25 @@ class GoalService:
                                             record.subscribers.remove(q)
                                         except Exception:
                                             pass
+                                    # Send end-of-stream sentinel on terminal events
+                                    _TERMINAL_BRIDGE = {
+                                        "goal_complete", "worker_complete",
+                                        "goal_failed", "worker_failed", "goal_cancelled",
+                                    }
+                                    if event_type in _TERMINAL_BRIDGE:
+                                        for q in list(record.subscribers):
+                                            try:
+                                                q.put_nowait(_SENTINEL)
+                                            except Exception:
+                                                pass
+                                        # Update record status
+                                        from app.agent.state import GoalStatus as _GS
+                                        if event_type in {"goal_complete", "worker_complete"}:
+                                            record.status = _GS.COMPLETE
+                                        elif event_type in {"goal_failed", "worker_failed"}:
+                                            record.status = _GS.FAILED
+                                        elif event_type == "goal_cancelled":
+                                            record.status = _GS.CANCELLED
                         except Exception as exc:
                             self._logger.warning(
                                 "celery_event_bridge_parse_failed", error=str(exc)
@@ -2200,7 +2222,7 @@ class GoalService:
         record = self._get_record(goal_id, tenant_ctx)
         queue: asyncio.Queue[dict[str, Any] | None] | None = None
         if record.status not in _TERMINAL_STATUSES:
-            queue = asyncio.Queue()
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=512)
             record.subscribers.append(queue)
 
         try:
