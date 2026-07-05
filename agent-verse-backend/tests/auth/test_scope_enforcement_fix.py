@@ -41,3 +41,10 @@ def test_scope_enforcement_grants_scopes_in_error():
     assert "granted_scopes" in src, (
         "Error response must include 'granted_scopes' field for client debugging"
     )
+
+
+def test_status_in_exempt_paths():
+    from app.auth.scope_enforcement import EXEMPT_PATH_PREFIXES
+    assert any("status" in p for p in EXEMPT_PATH_PREFIXES), (
+        "/status must be in EXEMPT_PATH_PREFIXES so the public status page works without auth"
+    )

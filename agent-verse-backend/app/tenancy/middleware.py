@@ -71,6 +71,7 @@ async def _check_rate_limit_with_fallback(
 _BYPASS_PREFIXES = (
     "/health",
     "/metrics",
+    "/status",
     "/docs",
     "/redoc",
     "/openapi.json",
