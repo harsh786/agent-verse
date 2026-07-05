@@ -1,0 +1,5 @@
+{
+  "nav": { "goals": "Goals", "agents": "Agents", "knowledge": "Knowledge", "marketplace": "Marketplace", "settings": "Settings" },
+  "goals": { "submit": "Submit Goal", "placeholder": "Describe what you want the agent to do…", "status": { "complete": "Complete", "failed": "Failed", "executing": "Executing", "planning": "Planning" } },
+  "common": { "loading": "Loading…", "error": "Something went wrong", "retry": "Retry", "cancel": "Cancel", "save": "Save", "delete": "Delete" }
+}

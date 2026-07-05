@@ -66,6 +66,7 @@ import { RbacPage } from "@/features/rbac/RbacPage";
 import { CompliancePage } from "@/features/compliance/CompliancePage";
 import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
+import { StatusPage } from "@/features/status/StatusPage";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -124,6 +125,7 @@ export default function App() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
       <Route path="/auth/callback" element={<SSOCallbackPage />} />
+      <Route path="/status" element={<StatusPage />} />
 
       {/* ── Authenticated app routes — pathless layout route ────────────
           A pathless <Route> has no path prop; it acts as a layout wrapper.

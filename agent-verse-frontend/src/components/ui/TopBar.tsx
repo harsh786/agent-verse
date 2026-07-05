@@ -4,6 +4,7 @@ import { useUiStore } from "@/stores/ui";
 import { useAuthStore } from "@/stores/auth";
 import { useNavigate } from "react-router-dom";
 import { PendingApprovalsBadge } from "@/components/ui/PendingApprovalsBadge";
+import { LanguageSwitcher } from "@/components/ui/LanguageSwitcher";
 
 interface SearchResult {
   type: "goal" | "agent" | "connector";
@@ -161,6 +162,9 @@ export function TopBar() {
 
         {/* Live pending-approvals counter */}
         <PendingApprovalsBadge />
+
+        {/* Language switcher */}
+        <LanguageSwitcher />
 
         {/* Theme toggle */}
         <button

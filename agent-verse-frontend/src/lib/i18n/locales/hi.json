@@ -1,0 +1,5 @@
+{
+  "nav": { "goals": "लक्ष्य", "agents": "एजेंट", "knowledge": "ज्ञान", "marketplace": "मार्केटप्लेस", "settings": "सेटिंग्स" },
+  "goals": { "submit": "लक्ष्य सबमिट करें", "placeholder": "बताएं कि आप एजेंट से क्या करवाना चाहते हैं…", "status": { "complete": "पूर्ण", "failed": "विफल", "executing": "क्रियान्वित", "planning": "योजना बना रहा है" } },
+  "common": { "loading": "लोड हो रहा है…", "error": "कुछ गलत हो गया", "retry": "पुनः प्रयास", "cancel": "रद्द करें", "save": "सहेजें", "delete": "हटाएं" }
+}
