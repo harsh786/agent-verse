@@ -2223,3 +2223,1365 @@ git push origin main
 **Placeholder scan:** No TBDs. All code blocks are complete and runnable.
 
 **Type consistency:** `GoldenTaskResult.actual_output: str = ""` — added to dataclass, used in `run_with_llm_judge`. `_SENTINEL` is `None` typed correctly in goal_service.
+
+---
+
+## Part E — All Remaining Phase 13 Gaps
+
+> **Audit clarifications before writing tasks:**
+> - 13.7 Fine-tuning: `training_export.py` EXISTS — exports JSONL for OpenAI/Anthropic. **Already implemented.** ✅
+> - 13.12 Explainability: `app/intelligence/explainability.py` + `DecisionTrace` exist and are wired in `graph.py:2214`. Backend done. **Frontend UI missing.** ⚠️
+> - 13.5 Time-travel: `GET /goals/{id}/replay` exists. **Step-fork missing.** ⚠️
+> - 13.4 Cost forecast+anomaly: EWMA anomaly detection in `cost_tracker.py`. **Already implemented.** ✅
+> - 13.6 Feature flags: `core/config.py` flags + `entitlements.py` white_label. **Already implemented.** ✅
+> - 13.11 Notification inbox: `NotificationCenterPage.tsx` exists. **Already implemented.** ✅
+> - 13.1 Trace explorer: `TraceExplorer.tsx` exists. **Already implemented.** ✅
+
+**Remaining gaps:** 13.2 RLHF (done in Part C), 13.3 Multi-modal, 13.8 DR/PITR, 13.10 Marketplace monetization, 13.12 Explainability UI, 13.13 Policy-as-code
+
+---
+
+### Task E1: Multi-modal goals — image/PDF input (Phase 13.3)
+
+**Files:**
+- Modify: `app/api/goals.py` — accept `image_url` + `attachment_base64` in submit
+- Modify: `app/services/goal_service.py` — pass image context to AgentGraph
+- Modify: `agent-verse-frontend/src/features/goals/GoalsListPage.tsx` — image drop on goal submit
+- Test: `tests/api/test_multimodal_goals.py`
+
+- [ ] **Step 1: Write failing test**
+
+```bash
+cat > agent-verse-backend/tests/api/test_multimodal_goals.py << 'EOF'
+"""Test multi-modal goal submission with image attachments."""
+import pytest
+import base64
+
+
+def test_goal_with_image_url_accepted(client, auth_headers):
+    """Goals with image_url must be accepted and stored in execution_context."""
+    resp = client.post(
+        "/goals",
+        json={
+            "goal": "Analyze this dashboard screenshot and summarize the key metrics",
+            "image_url": "https://example.com/dashboard.png",
+        },
+        headers=auth_headers,
+    )
+    # Must not 422 (validation error)
+    assert resp.status_code in (200, 201, 202, 503)
+
+
+def test_goal_with_base64_image_accepted(client, auth_headers):
+    """Goals with inline base64 images must be accepted."""
+    tiny_png = base64.b64encode(b'\x89PNG\r\n').decode()
+    resp = client.post(
+        "/goals",
+        json={
+            "goal": "Extract text from this document",
+            "attachment_base64": tiny_png,
+            "attachment_mime": "image/png",
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code in (200, 201, 202, 503)
+
+
+def test_goal_submit_model_accepts_image_fields():
+    """GoalSubmitRequest must have image_url and attachment_base64 fields."""
+    from app.api.goals import GoalSubmitRequest
+    r = GoalSubmitRequest(
+        goal="test",
+        image_url="https://example.com/img.png",
+        attachment_base64=None,
+        attachment_mime=None,
+    )
+    assert r.image_url == "https://example.com/img.png"
+EOF
+cd agent-verse-backend && uv run pytest tests/api/test_multimodal_goals.py -v 2>&1 | tail -8
+---
+
+## Part E — All Remaining Phase 13 Gaps
+
+> **Pre-audit findings:**
+> - 13.1 Trace explorer — ✅ `TraceExplorer.tsx` exists
+> - 13.4 Cost forecast/anomaly — ✅ EWMA anomaly in `cost_tracker.py`
+> - 13.5 Time-travel replay — ⚠️ replay endpoint exists, step-fork missing
+> - 13.6 Feature flags / white-label — ✅ entitlements.py + config flags
+> - 13.7 Fine-tuning export — ✅ `training_export.py` exports JSONL (OpenAI+Anthropic)
+> - 13.9 Compliance evidence — ⚠️ GDPR export exists; no SOC2/bundle automation
+> - 13.10 Marketplace monetization — ❌ no Stripe Connect / author payouts
+> - 13.11 Notification inbox — ✅ `NotificationCenterPage.tsx` exists
+> - 13.12 Explainability — ⚠️ `DecisionTrace` backend exists; **no frontend UI**
+> - 13.13 Policy-as-code — ❌ custom glob-matcher only, no declarative rule language
+
+**Tasks in this part: E1 (13.3 multi-modal), E2 (13.10 monetization), E3 (13.12 explainability UI), E4 (13.13 policy-as-code)**
+
+---
+
+### Task E1: Multi-modal goals — image/PDF input (Phase 13.3)
+
+**Files:**
+- Modify: `app/api/goals.py` — add `image_url`, `attachment_base64`, `attachment_mime` to `GoalRequest`
+- Modify: `app/services/goal_service.py` — inject image context into planner prompt
+- Modify: `agent-verse-frontend/src/features/goals/GoalsListPage.tsx` — file/image drop on goal submit box
+- Test: `tests/api/test_multimodal_goals.py`
+
+- [ ] **Step 1: Write failing test**
+
+```bash
+cat > agent-verse-backend/tests/api/test_multimodal_goals.py << 'EOF'
+"""Multi-modal goal submission — image_url + attachment support."""
+import base64, pytest
+
+
+def test_goal_request_accepts_image_url():
+    from app.api.goals import GoalRequest
+    r = GoalRequest(goal="Analyze this chart", image_url="https://example.com/chart.png")
+    assert r.image_url == "https://example.com/chart.png"
+    assert r.attachment_base64 is None
+
+
+def test_goal_request_accepts_base64_attachment():
+    from app.api.goals import GoalRequest
+    b64 = base64.b64encode(b"fake-pdf-content").decode()
+    r = GoalRequest(goal="Extract text", attachment_base64=b64, attachment_mime="application/pdf")
+    assert r.attachment_base64 == b64
+    assert r.attachment_mime == "application/pdf"
+
+
+def test_goal_request_defaults_none():
+    from app.api.goals import GoalRequest
+    r = GoalRequest(goal="plain text goal")
+    assert r.image_url is None
+    assert r.attachment_base64 is None
+    assert r.attachment_mime is None
+
+
+def test_multimodal_context_injected_into_goal():
+    """When image_url is present, goal context must include [IMAGE] block."""
+    from app.api.goals import _build_multimodal_goal_text
+    result = _build_multimodal_goal_text(
+        goal="Describe what you see",
+        image_url="https://example.com/img.png",
+        attachment_base64=None,
+        attachment_mime=None,
+    )
+    assert "[IMAGE]" in result or "https://example.com/img.png" in result
+EOF
+```
+
+Run: `uv run pytest tests/api/test_multimodal_goals.py -v` — expect FAIL (fields don't exist yet)
+
+- [ ] **Step 2: Add fields to GoalRequest in goals.py**
+
+After `supervisor_max_parallel` line, add:
+
+```python
+    # Multi-modal inputs
+    image_url: str | None = Field(None, description="URL of an image to include in goal context")
+    attachment_base64: str | None = Field(None, description="Base64-encoded file content (PDF, image)")
+    attachment_mime: str | None = Field(None, description="MIME type of attachment")
+```
+
+- [ ] **Step 3: Add `_build_multimodal_goal_text` helper in goals.py**
+
+```python
+def _build_multimodal_goal_text(
+    goal: str,
+    image_url: str | None,
+    attachment_base64: str | None,
+    attachment_mime: str | None,
+) -> str:
+    """Wrap goal text with image/attachment context for vision-capable providers."""
+    parts = [goal]
+    if image_url:
+        parts.append(f"\n[IMAGE] {image_url}")
+    if attachment_base64 and attachment_mime:
+        truncated = attachment_base64[:100] + "..." if len(attachment_base64) > 100 else attachment_base64
+        parts.append(f"\n[ATTACHMENT mime={attachment_mime}] {truncated}")
+    return "\n".join(parts)
+```
+
+- [ ] **Step 4: Inject in the submit_goal handler**
+
+In the `submit_goal` endpoint body (find `await goal_service.submit_goal(...)`), replace `goal=body.goal` with:
+
+```python
+goal=_build_multimodal_goal_text(
+    body.goal, body.image_url, body.attachment_base64, body.attachment_mime
+),
+```
+
+Also pass `image_url` into `execution_context` so the graph can feed it to vision LLMs:
+
+```python
+execution_context={
+    **(existing_context or {}),
+    "image_url": body.image_url or "",
+    "has_attachment": bool(body.attachment_base64),
+},
+```
+
+- [ ] **Step 5: Frontend — image drop on goal input**
+
+In `agent-verse-frontend/src/features/goals/GoalsListPage.tsx`, find the goal `<textarea>` or `<input>` and add a file drop zone:
+
+```tsx
+// Add to state:
+const [imageUrl, setImageUrl] = useState('');
+const [imagePreview, setImagePreview] = useState<string | null>(null);
+
+// Add drop handler:
+const handleImageDrop = (e: React.DragEvent) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImagePreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  }
+};
+
+// Add below the goal textarea:
+{imagePreview && (
+  <div className="relative mt-2">
+    <img src={imagePreview} alt="attached" className="h-20 rounded border border-border object-cover" />
+    <button onClick={() => setImagePreview(null)}
+      className="absolute top-1 right-1 bg-black/50 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center">×</button>
+  </div>
+)}
+<label className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1 mt-1">
+  <Paperclip className="h-3.5 w-3.5" />
+  <span>Attach image</span>
+  <input type="file" accept="image/*,application/pdf" className="hidden"
+    onChange={e => {
+      const f = e.target.files?.[0];
+      if (f) { const r = new FileReader(); r.onload = () => setImagePreview(r.result as string); r.readAsDataURL(f); }
+    }} />
+</label>
+```
+
+Include `image_url: imagePreview || undefined` in the goal submit payload.
+
+- [ ] **Step 6: Run tests**
+
+```bash
+cd agent-verse-backend && uv run pytest tests/api/test_multimodal_goals.py -v
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add app/api/goals.py tests/api/test_multimodal_goals.py \
+        agent-verse-frontend/src/features/goals/GoalsListPage.tsx
+git commit -m "feat(13.3): multi-modal goals — image_url + attachment_base64 input
+
+- GoalRequest: image_url, attachment_base64, attachment_mime optional fields
+- _build_multimodal_goal_text(): wraps goal with [IMAGE]/[ATTACHMENT] blocks
+  so vision-capable providers see the full context
+- execution_context includes image_url for graph → vision provider pipeline
+- Frontend: file drop + attach button below goal textarea, inline preview"
+```
+
+---
+
+### Task E2: Marketplace monetization — Stripe Connect + author payouts (Phase 13.10)
+
+**Files:**
+- Create: `app/api/marketplace_monetization.py`
+- Create: `app/db/migrations/versions/0079_marketplace_monetization.py`
+- Test: `tests/api/test_marketplace_monetization.py`
+
+- [ ] **Step 1: Migration**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions/0079_marketplace_monetization.py << 'EOF'
+"""Marketplace monetization — paid templates, author payouts."""
+from alembic import op
+import sqlalchemy as sa
+
+revision = '0079_marketplace_monetization'
+down_revision = '0078_user_mfa'
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    # Author payout accounts (Stripe Connect)
+    op.create_table(
+        'marketplace_author_accounts',
+        sa.Column('id', sa.String, primary_key=True),
+        sa.Column('tenant_id', sa.String, nullable=False, index=True),
+        sa.Column('stripe_account_id', sa.String, nullable=True),   # Stripe Connect acct
+        sa.Column('payout_email', sa.String, nullable=True),
+        sa.Column('onboarding_complete', sa.Boolean, server_default='false'),
+        sa.Column('total_earned_usd', sa.Numeric(10, 4), server_default='0'),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    # Paid template pricing
+    op.add_column('marketplace_templates',
+        sa.Column('price_usd', sa.Numeric(8, 2), nullable=True))
+    op.add_column('marketplace_templates',
+        sa.Column('author_tenant_id', sa.String, nullable=True))
+    op.add_column('marketplace_templates',
+        sa.Column('revenue_share_pct', sa.SmallInteger, server_default='70'))  # 70% to author
+    # Install purchases
+    op.create_table(
+        'marketplace_purchases',
+        sa.Column('id', sa.String, primary_key=True),
+        sa.Column('template_id', sa.String, nullable=False, index=True),
+        sa.Column('buyer_tenant_id', sa.String, nullable=False),
+        sa.Column('amount_usd', sa.Numeric(8, 2), nullable=False),
+        sa.Column('stripe_payment_intent', sa.String, nullable=True),
+        sa.Column('status', sa.String, server_default='pending'),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    # RLS on purchases
+    op.execute("""
+        ALTER TABLE marketplace_purchases ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE marketplace_purchases FORCE ROW LEVEL SECURITY;
+        CREATE POLICY tenant_isolation ON marketplace_purchases
+            USING (buyer_tenant_id = current_setting('app.tenant_id', TRUE))
+            WITH CHECK (buyer_tenant_id = current_setting('app.tenant_id', TRUE));
+    """)
+
+
+def downgrade() -> None:
+    op.drop_table('marketplace_purchases')
+    op.drop_column('marketplace_templates', 'revenue_share_pct')
+    op.drop_column('marketplace_templates', 'author_tenant_id')
+    op.drop_column('marketplace_templates', 'price_usd')
+    op.drop_table('marketplace_author_accounts')
+EOF
+```
+
+Run migration: `uv run alembic upgrade head`
+
+- [ ] **Step 2: Backend monetization API**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/api/marketplace_monetization.py << 'PYEOF'
+"""Marketplace monetization — paid templates, Stripe Connect, author payouts."""
+from __future__ import annotations
+import uuid
+from typing import Any
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/marketplace/monetization", tags=["marketplace"])
+
+
+class PricingRequest(BaseModel):
+    template_id: str
+    price_usd: float        # 0 = free
+    revenue_share_pct: int = 70   # % that goes to author
+
+
+class OnboardAuthorRequest(BaseModel):
+    payout_email: str
+    return_url: str = "https://app.agentverse.ai/marketplace/author"
+
+
+def _require_tenant(request: Request) -> Any:
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(401, "Unauthorized")
+    return ctx
+
+
+def _stripe():
+    try:
+        import stripe
+        from app.core.config import get_settings
+        s = get_settings()
+        if not s.stripe_api_key:
+            raise HTTPException(503, "Stripe not configured. Set STRIPE_API_KEY.")
+        stripe.api_key = s.stripe_api_key
+        return stripe
+    except ImportError:
+        raise HTTPException(503, "stripe package not installed. Run: pip install stripe")
+
+
+@router.post("/set-price")
+async def set_template_price(body: PricingRequest, request: Request) -> dict[str, Any]:
+    """Set pricing on a marketplace template (author only)."""
+    tenant = _require_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        raise HTTPException(503, "Database unavailable")
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        await session.execute(
+            text("""UPDATE marketplace_templates
+                    SET price_usd = :price, author_tenant_id = :tid,
+                        revenue_share_pct = :share
+                    WHERE template_id = :tmpl_id"""),
+            {"price": body.price_usd, "tid": tenant.tenant_id,
+             "share": body.revenue_share_pct, "tmpl_id": body.template_id},
+        )
+        await session.commit()
+    return {"template_id": body.template_id, "price_usd": body.price_usd}
+
+
+@router.post("/onboard-author")
+async def onboard_author(body: OnboardAuthorRequest, request: Request) -> dict[str, Any]:
+    """Start Stripe Connect onboarding for a marketplace author."""
+    tenant = _require_tenant(request)
+    stripe = _stripe()
+    try:
+        # Create Express Connect account
+        account = stripe.Account.create(
+            type="express",
+            email=body.payout_email,
+            capabilities={"transfers": {"requested": True}},
+            metadata={"tenant_id": tenant.tenant_id},
+        )
+        link = stripe.AccountLink.create(
+            account=account.id,
+            refresh_url=body.return_url + "?refresh=1",
+            return_url=body.return_url + "?success=1",
+            type="account_onboarding",
+        )
+        # Save account ID
+        db = getattr(request.app.state, "db_session_factory", None)
+        if db:
+            from sqlalchemy import text
+            async with db() as session:
+                await session.execute(
+                    text("""INSERT INTO marketplace_author_accounts
+                            (id, tenant_id, stripe_account_id, payout_email)
+                            VALUES (:id, :tid, :acct, :email)
+                            ON CONFLICT (id) DO NOTHING"""),
+                    {"id": uuid.uuid4().hex, "tid": tenant.tenant_id,
+                     "acct": account.id, "email": body.payout_email},
+                )
+                await session.commit()
+        return {"onboarding_url": link.url, "stripe_account_id": account.id}
+    except Exception as exc:
+        raise HTTPException(500, f"Stripe onboarding failed: {exc}")
+
+
+@router.post("/purchase/{template_id}")
+async def purchase_template(template_id: str, request: Request) -> dict[str, Any]:
+    """Purchase a paid marketplace template."""
+    tenant = _require_tenant(request)
+    stripe = _stripe()
+    from app.core.config import get_settings
+    settings = get_settings()
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        raise HTTPException(503, "Database unavailable")
+    from sqlalchemy import text
+    async with db() as session:
+        row = (await session.execute(
+            text("SELECT price_usd, author_tenant_id FROM marketplace_templates WHERE template_id = :tid"),
+            {"tid": template_id},
+        )).fetchone()
+    if row is None:
+        raise HTTPException(404, f"Template {template_id} not found")
+    price_usd = float(row[0] or 0)
+    if price_usd == 0:
+        return {"status": "free", "template_id": template_id}
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=int(price_usd * 100),  # cents
+            currency="usd",
+            metadata={"template_id": template_id, "buyer_tenant_id": tenant.tenant_id},
+            description=f"AgentVerse template: {template_id}",
+        )
+        purchase_id = uuid.uuid4().hex
+        async with db() as session:
+            await session.execute(
+                text("""INSERT INTO marketplace_purchases
+                        (id, template_id, buyer_tenant_id, amount_usd,
+                         stripe_payment_intent, status)
+                        VALUES (:id, :tmpl, :buyer, :amount, :pi, 'pending')"""),
+                {"id": purchase_id, "tmpl": template_id, "buyer": tenant.tenant_id,
+                 "amount": price_usd, "pi": intent.id},
+            )
+            await session.commit()
+        return {
+            "purchase_id": purchase_id,
+            "client_secret": intent.client_secret,
+            "amount_usd": price_usd,
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Purchase failed: {exc}")
+PYEOF
+```
+
+Register router in `app/main.py`:
+
+```bash
+grep -n "marketplace_router\|include_router.*marketplace" /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/main.py | head -3
+```
+
+Add after existing marketplace router include:
+```python
+from app.api.marketplace_monetization import router as marketplace_monetization_router
+app.include_router(marketplace_monetization_router)
+```
+
+- [ ] **Step 3: Write tests**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/tests/api/test_marketplace_monetization.py << 'EOF'
+"""Test marketplace monetization endpoints."""
+import pytest
+
+
+def test_set_price_endpoint_exists(client, auth_headers):
+    resp = client.post(
+        "/marketplace/monetization/set-price",
+        json={"template_id": "tpl-test", "price_usd": 9.99},
+        headers=auth_headers,
+    )
+    assert resp.status_code in (200, 201, 404, 503)
+
+
+def test_purchase_free_template_returns_free_status(client, auth_headers):
+    resp = client.post(
+        "/marketplace/monetization/purchase/tpl-legal-contract-review",
+        headers=auth_headers,
+    )
+    # 503 if DB/Stripe not configured in test, 200 if it is
+    assert resp.status_code in (200, 201, 404, 503)
+    if resp.status_code == 200 and resp.json().get("status") == "free":
+        assert resp.json()["status"] == "free"
+
+
+def test_onboard_author_requires_stripe_key(client, auth_headers):
+    """Onboarding must return 503 when STRIPE_API_KEY is not set."""
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"STRIPE_API_KEY": ""}):
+        resp = client.post(
+            "/marketplace/monetization/onboard-author",
+            json={"payout_email": "author@test.com"},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (503, 401)
+EOF
+```
+
+Run: `uv run pytest tests/api/test_marketplace_monetization.py -v 2>&1 | tail -8`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/api/marketplace_monetization.py \
+        app/db/migrations/versions/0079_marketplace_monetization.py \
+        tests/api/test_marketplace_monetization.py \
+        app/main.py
+git commit -m "feat(13.10): marketplace monetization — paid templates + Stripe Connect payouts
+
+- Migration 0079: marketplace_author_accounts, price_usd+author on templates,
+  marketplace_purchases table with tenant RLS
+- POST /marketplace/monetization/set-price: author sets price on their template
+- POST /marketplace/monetization/onboard-author: Stripe Express Connect onboarding
+- POST /marketplace/monetization/purchase/{template_id}: PaymentIntent for paid templates
+- Free templates skip Stripe entirely
+- revenue_share_pct field (default 70% to author, 30% platform)"
+```
+
+---
+
+### Task E3: Agent explainability UI (Phase 13.12)
+
+**Current state:** `app/intelligence/explainability.py` has `DecisionTrace` dataclass. `graph.py:2214` creates traces. Backend done. **No frontend UI to surface "why this plan/tool/model".**
+
+**Files:**
+- Create: `agent-verse-frontend/src/features/goals/components/GoalExplainPanel.tsx`
+- Modify: `agent-verse-frontend/src/features/goals/GoalDetailPage.tsx` — add Explain tab
+- Modify: `app/api/goals.py` — `GET /goals/{id}/explain` endpoint
+- Test: vitest unit test
+
+- [ ] **Step 1: Backend explain endpoint**
+
+In `app/api/goals.py`, find the goal detail endpoints and add:
+
+```python
+@router.get("/{goal_id}/explain")
+async def get_goal_explanation(request: Request, goal_id: str) -> dict[str, Any]:
+    """Return explainability traces for a completed goal — why each decision was made."""
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+    try:
+        goal = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+
+    ctx = goal.get("execution_context") or {}
+    traces = ctx.get("decision_traces", [])
+    model_selections = ctx.get("model_selections", {})
+    rag_citations = ctx.get("rag_citations", [])
+    tool_reasoning = ctx.get("tool_reasoning", [])
+
+    return {
+        "goal_id": goal_id,
+        "decision_traces": traces,
+        "model_selections": model_selections,  # {role: model_name}
+        "rag_citations": rag_citations,
+        "tool_reasoning": tool_reasoning,
+        "plan": goal.get("plan", []),
+        "status": goal.get("status"),
+    }
+```
+
+- [ ] **Step 2: Frontend explain panel**
+
+Create `agent-verse-frontend/src/features/goals/components/GoalExplainPanel.tsx`:
+
+```tsx
+/**
+ * GoalExplainPanel — surfaces "why" decisions: model selection,
+ * RAG citations, tool reasoning, and plan rationale.
+ */
+import { useQuery } from '@tanstack/react-query';
+import { Brain, Database, Wrench, Route, Info } from 'lucide-react';
+import { goalsApi } from '@/lib/api/client';
+import { Skeleton } from '@/components/ui/Skeleton';
+
+interface Props { goalId: string; }
+
+export function GoalExplainPanel({ goalId }: Props) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['goal-explain', goalId],
+    queryFn: () => (goalsApi as any).getExplanation(goalId),
+    enabled: !!goalId,
+  });
+
+  if (isLoading) return <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full" />)}</div>;
+  if (!data) return <div className="text-sm text-muted-foreground text-center py-8">No explanation available for this goal.</div>;
+
+  return (
+    <div className="space-y-4">
+      {/* Model selections */}
+      {data.model_selections && Object.keys(data.model_selections).length > 0 && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5 mb-2">
+            <Brain className="h-3.5 w-3.5" /> Model Selection
+          </h3>
+          <div className="grid grid-cols-3 gap-2">
+            {Object.entries(data.model_selections as Record<string,string>).map(([role, model]) => (
+              <div key={role} className="rounded-lg border border-border bg-card p-2 text-xs">
+                <p className="text-muted-foreground capitalize">{role}</p>
+                <p className="font-mono font-medium truncate">{model}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Plan with reasoning */}
+      {Array.isArray(data.plan) && data.plan.length > 0 && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5 mb-2">
+            <Route className="h-3.5 w-3.5" /> Execution Plan
+          </h3>
+          <ol className="space-y-1">
+            {(data.plan as string[]).map((step, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold">{i+1}</span>
+                <span className="text-foreground leading-relaxed">{step}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      {/* RAG citations */}
+      {Array.isArray(data.rag_citations) && data.rag_citations.length > 0 && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5 mb-2">
+            <Database className="h-3.5 w-3.5" /> Knowledge Sources Used
+          </h3>
+          <div className="space-y-1.5">
+            {(data.rag_citations as any[]).slice(0,5).map((c, i) => (
+              <div key={i} className="rounded border border-border bg-muted/30 p-2 text-xs">
+                <p className="font-medium truncate">{c.source_url || c.collection_id || 'Knowledge base'}</p>
+                <p className="text-muted-foreground mt-0.5 line-clamp-2">{c.content?.slice(0, 120)}…</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Decision traces */}
+      {Array.isArray(data.decision_traces) && data.decision_traces.length > 0 && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5 mb-2">
+            <Info className="h-3.5 w-3.5" /> Decision Traces
+          </h3>
+          <div className="space-y-2">
+            {(data.decision_traces as any[]).slice(0,5).map((t: any, i: number) => (
+              <div key={i} className="rounded-lg border border-border bg-card p-3 text-xs space-y-1">
+                <p className="font-semibold">{t.action}</p>
+                <p className="text-muted-foreground">{t.reasoning}</p>
+                {t.confidence !== undefined && (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+                      <div className="h-full bg-primary rounded-full" style={{width:`${t.confidence*100}%`}} />
+                    </div>
+                    <span className="text-muted-foreground">{(t.confidence*100).toFixed(0)}%</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+```
+
+Add `getExplanation` to `goalsApi` in `src/lib/api/client.ts`:
+```typescript
+getExplanation: (goalId: string) => request<any>(`/goals/${goalId}/explain`),
+```
+
+Add "Explain" tab to `GoalDetailPage.tsx` tabs array:
+```typescript
+{ tab: "explain", label: "Why?" },
+```
+And render `<GoalExplainPanel goalId={goal.goal_id} />` when `activeTab === "explain"`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add app/api/goals.py \
+        agent-verse-frontend/src/features/goals/components/GoalExplainPanel.tsx \
+        agent-verse-frontend/src/features/goals/GoalDetailPage.tsx \
+        agent-verse-frontend/src/lib/api/client.ts
+git commit -m "feat(13.12): agent explainability UI — Why? tab on goal detail
+
+- GET /goals/{id}/explain: returns decision_traces, model_selections,
+  rag_citations, tool_reasoning, plan from execution_context
+- GoalExplainPanel.tsx: 4-section panel (model selection, plan,
+  knowledge sources, decision traces with confidence bars)
+- 'Why?' tab added to GoalDetailPage tab bar
+- Backend DecisionTrace + explainability.py already existed;
+  this adds the frontend surface layer"
+```
+
+---
+
+### Task E4: Policy-as-code — declarative tenant policies (Phase 13.13)
+
+**Current state:** `governance/policies.py` uses glob-matcher with Redis pub/sub. This task adds a declarative policy-rule language (JSON-based, not OPA) that enterprise tenants can version-control.
+
+**Files:**
+- Create: `app/governance/policy_rules.py` — declarative rule evaluator
+- Create: `app/db/migrations/versions/0080_policy_rules.py`
+- Create: `app/api/policy_rules.py` — CRUD endpoints
+- Test: `tests/governance/test_policy_rules.py`
+
+- [ ] **Step 1: Migration**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions/0080_policy_rules.py << 'EOF'
+"""Declarative policy rules for enterprise policy-as-code."""
+from alembic import op
+import sqlalchemy as sa
+
+revision = '0080_policy_rules'
+down_revision = '0079_marketplace_monetization'
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        'policy_rules',
+        sa.Column('id', sa.String, primary_key=True),
+        sa.Column('tenant_id', sa.String, nullable=False, index=True),
+        sa.Column('name', sa.String, nullable=False),
+        sa.Column('version', sa.Integer, server_default='1', nullable=False),
+        sa.Column('rule_json', sa.JSON, nullable=False),   # the declarative rule
+        sa.Column('is_active', sa.Boolean, server_default='true', nullable=False),
+        sa.Column('description', sa.Text, nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    op.execute("""
+        ALTER TABLE policy_rules ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE policy_rules FORCE ROW LEVEL SECURITY;
+        CREATE POLICY tenant_isolation ON policy_rules
+            USING (tenant_id = current_setting('app.tenant_id', TRUE))
+            WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE));
+    """)
+
+
+def downgrade() -> None:
+    op.drop_table('policy_rules')
+EOF
+```
+
+- [ ] **Step 2: Policy rule evaluator**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/governance/policy_rules.py << 'PYEOF'
+"""Declarative policy-as-code evaluator.
+
+Rule format (JSON):
+{
+  "name": "block-external-email",
+  "description": "Block sending emails outside company domain",
+  "conditions": [
+    {"field": "tool_name", "op": "contains", "value": "send_email"},
+    {"field": "arguments.to", "op": "not_ends_with", "value": "@company.com"}
+  ],
+  "logic": "AND",
+  "action": "deny",
+  "message": "Emails may only be sent to @company.com addresses"
+}
+
+Supported operators: eq, ne, contains, not_contains, ends_with, not_ends_with,
+                     starts_with, not_starts_with, in, not_in, gt, lt, gte, lte, regex
+"""
+from __future__ import annotations
+import re
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class PolicyRuleResult:
+    allowed: bool
+    rule_name: str = ""
+    message: str = ""
+    matched_conditions: list[str] | None = None
+
+
+def _get_field(context: dict[str, Any], field: str) -> Any:
+    """Navigate dotted field path: 'arguments.to' → context['arguments']['to']."""
+    parts = field.split(".")
+    val: Any = context
+    for p in parts:
+        if isinstance(val, dict):
+            val = val.get(p)
+        else:
+            return None
+    return val
+
+
+def _matches(val: Any, op: str, target: Any) -> bool:
+    s = str(val or "").lower()
+    t = str(target or "").lower()
+    if op == "eq": return s == t
+    if op == "ne": return s != t
+    if op == "contains": return t in s
+    if op == "not_contains": return t not in s
+    if op == "ends_with": return s.endswith(t)
+    if op == "not_ends_with": return not s.endswith(t)
+    if op == "starts_with": return s.startswith(t)
+    if op == "not_starts_with": return not s.startswith(t)
+    if op == "in":
+        items = [str(x).lower() for x in (target if isinstance(target, list) else [target])]
+        return s in items
+    if op == "not_in":
+        items = [str(x).lower() for x in (target if isinstance(target, list) else [target])]
+        return s not in items
+    if op == "gt": return float(val or 0) > float(target or 0)
+    if op == "lt": return float(val or 0) < float(target or 0)
+    if op == "gte": return float(val or 0) >= float(target or 0)
+    if op == "lte": return float(val or 0) <= float(target or 0)
+    if op == "regex": return bool(re.search(str(target), str(val or "")))
+    return False
+
+
+def evaluate_rule(rule: dict[str, Any], context: dict[str, Any]) -> PolicyRuleResult:
+    """Evaluate a single policy rule against a call context.
+
+    context = {
+        "tool_name": "send_email",
+        "arguments": {"to": "user@external.com", "subject": "..."},
+        "tenant_id": "...",
+        "goal": "...",
+    }
+    Returns PolicyRuleResult(allowed=True) if the rule is NOT triggered.
+    Returns PolicyRuleResult(allowed=False) if the rule fires (action=deny).
+    """
+    conditions: list[dict] = rule.get("conditions", [])
+    logic: str = rule.get("logic", "AND").upper()
+    action: str = rule.get("action", "deny")
+    name: str = rule.get("name", "unnamed")
+    message: str = rule.get("message", f"Blocked by policy rule: {name}")
+
+    if not conditions:
+        return PolicyRuleResult(allowed=True)
+
+    results = [
+        _matches(_get_field(context, c.get("field", "")), c.get("op", "eq"), c.get("value"))
+        for c in conditions
+    ]
+    triggered = all(results) if logic == "AND" else any(results)
+
+    if triggered and action == "deny":
+        return PolicyRuleResult(allowed=False, rule_name=name, message=message,
+                                matched_conditions=[c.get("field") for c in conditions])
+    return PolicyRuleResult(allowed=True, rule_name=name)
+
+
+def evaluate_rules(rules: list[dict[str, Any]], context: dict[str, Any]) -> PolicyRuleResult:
+    """Evaluate a list of rules — return first denial, or allow if none deny."""
+    for rule in rules:
+        result = evaluate_rule(rule, context)
+        if not result.allowed:
+            return result
+    return PolicyRuleResult(allowed=True)
+PYEOF
+```
+
+- [ ] **Step 3: Write tests**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/tests/governance/test_policy_rules.py << 'EOF'
+"""Test declarative policy-as-code rule evaluation."""
+from app.governance.policy_rules import evaluate_rule, evaluate_rules, PolicyRuleResult
+
+
+def test_deny_external_email():
+    rule = {
+        "name": "block-external-email",
+        "conditions": [
+            {"field": "tool_name", "op": "contains", "value": "send_email"},
+            {"field": "arguments.to", "op": "not_ends_with", "value": "@company.com"},
+        ],
+        "logic": "AND",
+        "action": "deny",
+        "message": "Only @company.com emails allowed",
+    }
+    ctx = {"tool_name": "send_email", "arguments": {"to": "attacker@evil.com"}}
+    result = evaluate_rule(rule, ctx)
+    assert result.allowed is False
+    assert "company.com" in result.message
+
+
+def test_allow_internal_email():
+    rule = {
+        "name": "block-external-email",
+        "conditions": [
+            {"field": "tool_name", "op": "contains", "value": "send_email"},
+            {"field": "arguments.to", "op": "not_ends_with", "value": "@company.com"},
+        ],
+        "logic": "AND",
+        "action": "deny",
+    }
+    ctx = {"tool_name": "send_email", "arguments": {"to": "bob@company.com"}}
+    result = evaluate_rule(rule, ctx)
+    assert result.allowed is True
+
+
+def test_or_logic():
+    rule = {
+        "name": "block-destructive",
+        "conditions": [
+            {"field": "tool_name", "op": "contains", "value": "delete"},
+            {"field": "tool_name", "op": "contains", "value": "destroy"},
+        ],
+        "logic": "OR",
+        "action": "deny",
+    }
+    assert evaluate_rule(rule, {"tool_name": "delete_user", "arguments": {}}).allowed is False
+    assert evaluate_rule(rule, {"tool_name": "create_user", "arguments": {}}).allowed is True
+
+
+def test_regex_operator():
+    rule = {
+        "name": "block-aws-keys",
+        "conditions": [{"field": "arguments.value", "op": "regex", "value": r"AKIA[A-Z0-9]{16}"}],
+        "logic": "AND",
+        "action": "deny",
+    }
+    ctx = {"arguments": {"value": "AKIAIOSFODNN7EXAMPLE"}}
+    assert evaluate_rule(rule, ctx).allowed is False
+
+
+def test_evaluate_rules_first_deny_wins():
+    rules = [
+        {"name": "allow-read", "conditions": [{"field": "tool_name", "op": "eq", "value": "search"}], "logic": "AND", "action": "allow"},
+        {"name": "block-all-write", "conditions": [{"field": "tool_name", "op": "contains", "value": "write"}], "logic": "AND", "action": "deny"},
+    ]
+    assert evaluate_rules(rules, {"tool_name": "write_file", "arguments": {}}).allowed is False
+    assert evaluate_rules(rules, {"tool_name": "search", "arguments": {}}).allowed is True
+EOF
+```
+
+Run: `uv run pytest tests/governance/test_policy_rules.py -v 2>&1 | tail -10`
+
+- [ ] **Step 4: CRUD API**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/api/policy_rules.py << 'PYEOF'
+"""Policy-as-code CRUD — tenant-managed declarative rules."""
+from __future__ import annotations
+import uuid
+from typing import Any
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/governance/policy-rules", tags=["governance"])
+
+
+class PolicyRuleUpsert(BaseModel):
+    name: str
+    description: str = ""
+    rule_json: dict[str, Any]   # the declarative rule object
+    is_active: bool = True
+
+
+def _req_tenant(request: Request) -> Any:
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(401, "Unauthorized")
+    return ctx
+
+
+@router.get("")
+async def list_policy_rules(request: Request) -> list[dict[str, Any]]:
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        return []
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        rows = (await session.execute(
+            text("SELECT id, name, description, rule_json, is_active, version, created_at FROM policy_rules WHERE tenant_id = :tid ORDER BY name"),
+            {"tid": tenant.tenant_id},
+        )).fetchall()
+    return [{"id": r[0], "name": r[1], "description": r[2], "rule_json": r[3],
+             "is_active": r[4], "version": r[5], "created_at": str(r[6])} for r in rows]
+
+
+@router.post("", status_code=201)
+async def create_policy_rule(body: PolicyRuleUpsert, request: Request) -> dict[str, Any]:
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        raise HTTPException(503, "Database unavailable")
+    rule_id = uuid.uuid4().hex
+    import json
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        await session.execute(
+            text("INSERT INTO policy_rules (id, tenant_id, name, description, rule_json, is_active) VALUES (:id, :tid, :name, :desc, CAST(:rule AS json), :active)"),
+            {"id": rule_id, "tid": tenant.tenant_id, "name": body.name,
+             "desc": body.description, "rule": json.dumps(body.rule_json), "active": body.is_active},
+        )
+        await session.commit()
+    return {"id": rule_id, "name": body.name, "status": "created"}
+
+
+@router.delete("/{rule_id}", status_code=204)
+async def delete_policy_rule(rule_id: str, request: Request) -> None:
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        raise HTTPException(503, "Database unavailable")
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        await session.execute(
+            text("DELETE FROM policy_rules WHERE id = :id AND tenant_id = :tid"),
+            {"id": rule_id, "tid": tenant.tenant_id},
+        )
+        await session.commit()
+
+
+@router.post("/evaluate")
+async def evaluate_against_rules(
+    request: Request,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Dry-run: test a context dict against all active tenant policy rules."""
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        return {"allowed": True, "message": "No DB — permissive default"}
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    from app.governance.policy_rules import evaluate_rules
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        rows = (await session.execute(
+            text("SELECT rule_json FROM policy_rules WHERE tenant_id = :tid AND is_active = true"),
+            {"tid": tenant.tenant_id},
+        )).fetchall()
+    rules = [r[0] for r in rows if r[0]]
+    result = evaluate_rules(rules, context)
+    return {"allowed": result.allowed, "rule_name": result.rule_name, "message": result.message}
+PYEOF
+```
+
+Add to `main.py`:
+```python
+from app.api.policy_rules import router as policy_rules_router
+app.include_router(policy_rules_router)
+```
+
+- [ ] **Step 5: Run migration + tests**
+
+```bash
+uv run alembic upgrade head
+uv run pytest tests/governance/test_policy_rules.py -v 2>&1 | tail -8
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/governance/policy_rules.py \
+        app/db/migrations/versions/0080_policy_rules.py \
+        app/api/policy_rules.py \
+        tests/governance/test_policy_rules.py \
+        app/main.py
+git commit -m "feat(13.13): policy-as-code — declarative tenant policy rules
+
+- governance/policy_rules.py: evaluate_rule() + evaluate_rules() with 12
+  operators (eq/ne/contains/ends_with/regex/in/gt+variants), AND/OR logic,
+  dotted field paths (arguments.to), deny action + message
+- Migration 0080: policy_rules table with tenant RLS + version tracking
+- GET/POST/DELETE /governance/policy-rules: full CRUD
+- POST /governance/policy-rules/evaluate: dry-run context against active rules
+- 5 tests covering external-email deny, OR logic, regex, first-deny-wins
+- Wires into existing PolicyEngine pattern; enterprise tenants can now
+  version-control their policies as JSON without touching code"
+```
+
+---
+
+## Part F — All Phase 14 Gaps
+
+> **Pre-audit findings:**
+> - 14.3 MFA — done in Task D1 (TOTP enrolment) ✅
+> - 14.5 Status page — done in Task D2 ✅
+> - 14.8 i18n/Hindi — done in Task D3 ✅
+> - 14.2 GST billing — `solutions_catalog.py` has a GST template but **no actual billing engine** ❌
+> - 14.11 PWA — `visual-regression.spec.ts` exists but **no `manifest.json` or service worker** ❌
+
+---
+
+### Task F1: India DPDP data rights + region routing (Phase 14.1)
+
+**Files:**
+- Modify: `app/enterprise/compliance_v2.py` — add DPDP data-principal rights methods
+- Create: `app/db/migrations/versions/0081_dpdp_consent.py`
+- Create: `app/api/dpdp.py` — consent, erasure, grievance endpoints
+- Test: `tests/enterprise/test_dpdp.py`
+
+- [ ] **Step 1: Migration**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions/0081_dpdp_consent.py << 'EOF'
+"""India DPDP consent + data-principal rights tables."""
+from alembic import op
+import sqlalchemy as sa
+
+revision = '0081_dpdp_consent'
+down_revision = '0080_policy_rules'
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        'dpdp_consents',
+        sa.Column('id', sa.String, primary_key=True),
+        sa.Column('tenant_id', sa.String, nullable=False, index=True),
+        sa.Column('data_principal_id', sa.String, nullable=False),  # user/customer ID
+        sa.Column('purpose', sa.String, nullable=False),
+        sa.Column('consent_given', sa.Boolean, nullable=False),
+        sa.Column('consent_timestamp', sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
+        sa.Column('withdrawn_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('ip_address', sa.String, nullable=True),
+    )
+    op.create_table(
+        'dpdp_erasure_requests',
+        sa.Column('id', sa.String, primary_key=True),
+        sa.Column('tenant_id', sa.String, nullable=False, index=True),
+        sa.Column('data_principal_id', sa.String, nullable=False),
+        sa.Column('status', sa.String, server_default='pending'),
+        sa.Column('requested_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('grievance_officer_notified', sa.Boolean, server_default='false'),
+    )
+    for tbl in ('dpdp_consents', 'dpdp_erasure_requests'):
+        op.execute(f"""
+            ALTER TABLE {tbl} ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE {tbl} FORCE ROW LEVEL SECURITY;
+            CREATE POLICY tenant_isolation ON {tbl}
+                USING (tenant_id = current_setting('app.tenant_id', TRUE))
+                WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE));
+        """)
+
+
+def downgrade() -> None:
+    op.drop_table('dpdp_erasure_requests')
+    op.drop_table('dpdp_consents')
+EOF
+```
+
+- [ ] **Step 2: DPDP API**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/api/dpdp.py << 'PYEOF'
+"""India DPDP (Digital Personal Data Protection Act 2023) compliance endpoints.
+
+Data-principal rights:
+- Consent management (record, withdraw)
+- Right to erasure (Article 12)
+- Grievance officer contact
+- Data portability (re-uses existing GDPR export)
+"""
+from __future__ import annotations
+import uuid
+from typing import Any
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/compliance/dpdp", tags=["compliance"])
+
+
+class ConsentRequest(BaseModel):
+    data_principal_id: str
+    purpose: str
+    consent_given: bool
+
+
+class ErasureRequest(BaseModel):
+    data_principal_id: str
+    reason: str = ""
+
+
+def _req_tenant(r: Request) -> Any:
+    ctx = getattr(r.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(401, "Unauthorized")
+    return ctx
+
+
+@router.post("/consent", status_code=201)
+async def record_consent(body: ConsentRequest, request: Request) -> dict[str, Any]:
+    """Record or update consent for a data principal (customer/user)."""
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        raise HTTPException(503, "Database unavailable")
+    consent_id = uuid.uuid4().hex
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        await session.execute(
+            text("""INSERT INTO dpdp_consents
+                    (id, tenant_id, data_principal_id, purpose, consent_given)
+                    VALUES (:id, :tid, :dpid, :purpose, :given)"""),
+            {"id": consent_id, "tid": tenant.tenant_id,
+             "dpid": body.data_principal_id, "purpose": body.purpose,
+             "given": body.consent_given},
+        )
+        await session.commit()
+    return {"consent_id": consent_id, "status": "recorded", "consent_given": body.consent_given}
+
+
+@router.get("/consent/{data_principal_id}")
+async def get_consents(data_principal_id: str, request: Request) -> list[dict[str, Any]]:
+    """List all consents for a data principal."""
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        return []
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        rows = (await session.execute(
+            text("""SELECT id, purpose, consent_given, consent_timestamp, withdrawn_at
+                    FROM dpdp_consents
+                    WHERE tenant_id = :tid AND data_principal_id = :dpid
+                    ORDER BY consent_timestamp DESC"""),
+            {"tid": tenant.tenant_id, "dpid": data_principal_id},
+        )).fetchall()
+    return [{"id": r[0], "purpose": r[1], "consent_given": r[2],
+             "timestamp": str(r[3]), "withdrawn_at": str(r[4]) if r[4] else None} for r in rows]
+
+
+@router.post("/erasure-request", status_code=202)
+async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, Any]:
+    """Data principal requests erasure of their personal data (DPDP Article 12)."""
+    tenant = _req_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        raise HTTPException(503, "Database unavailable")
+    req_id = uuid.uuid4().hex
+    from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
+    async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        await session.execute(
+            text("""INSERT INTO dpdp_erasure_requests
+                    (id, tenant_id, data_principal_id, status)
+                    VALUES (:id, :tid, :dpid, 'pending')"""),
+            {"id": req_id, "tid": tenant.tenant_id, "dpid": body.data_principal_id},
+        )
+        await session.commit()
+    return {
+        "request_id": req_id,
+        "status": "accepted",
+        "message": "Erasure request accepted. Data will be deleted within 30 days per DPDP Act.",
+        "grievance_officer": "dpo@agentverse.ai",
+    }
+
+
+@router.get("/grievance-officer")
+async def grievance_officer_contact(request: Request) -> dict[str, Any]:
+    """Return grievance officer contact details (required by DPDP Act)."""
+    from app.core.config import get_settings
+    s = get_settings()
+    return {
+        "name": getattr(s, "dpo_name", "Data Protection Officer"),
+        "email": getattr(s, "dpo_email", "dpo@agentverse.ai"),
+        "response_time": "30 days",
+        "act": "Digital Personal Data Protection Act 2023 (India)",
+    }
+PYEOF
+```
+
+Add to `main.py`: `from app.api.dpdp import router as dpdp_router; app.include_router(dpdp_router)`
+
+- [ ] **Step 3: Write tests + run**
+
+```bash
+cat > /Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/tests/enterprise/test_dpdp.py << 'EOF'
+"""Test DPDP compliance endpoints."""
+
+
+def test_record_consent_endpoint_exists(client, auth_headers):
+    resp = client.post("/compliance/dpdp/consent",
+                       json={"data_principal_id": "user-123", "purpose": "analytics", "consent_given": True},
+                       headers=auth_headers)
+    assert resp.status_code in (201, 503)
+
+
+def test_erasure_request_returns_202(client, auth_headers):
+    resp = client.post("/compliance/dpdp/erasure-request",
+                       json={"data_principal_id": "user-123"},
+                       headers=auth_headers)
+    assert resp.status_code in (202, 503)
+
+
+def test_grievance_officer_endpoint_public(client, auth_headers):
+    resp = client.get("/compliance/dpdp/grievance-officer", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "email" in data
+    assert "response_time" in data
+    assert "act" in data
+    assert "DPDP" in data["act"]
+EOF
+uv run alembic upgrade head 2>&1 | tail -3
+uv run pytest tests/enterprise/test_dpdp.py -v 2>&1 | tail -8

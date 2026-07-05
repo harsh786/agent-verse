@@ -2114,6 +2114,25 @@ class AgentGraph:
                             raw_result_output = self._sanitize_tool_raw_output(result.output)
                             raw_result_error = self._sanitize_tool_raw_output(result.error)
 
+                            # ── Indirect injection scan on tool output ──────────────
+                            # External tool results (Confluence, web, email) may contain
+                            # adversarial text designed to hijack the agent (tool poisoning).
+                            if result.success and raw_result_output:
+                                try:
+                                    from app.agent.exfil_guard import check_tool_output_for_injection
+                                    _injection_warning = check_tool_output_for_injection(
+                                        tool_ref.name, raw_result_output
+                                    )
+                                    if _injection_warning:
+                                        self._logger.warning(
+                                            "indirect_injection_detected",
+                                            tool=tool_ref.name,
+                                            warning=_injection_warning[:120],
+                                        )
+                                        raw_result_output = _injection_warning + "\n\n" + raw_result_output
+                                except Exception:
+                                    pass  # injection scan must never block execution
+
                             # ── C4 Fix: Populate StepResult.tool_calls ─────────────
                             # This allows the verifier's [TOOL FAILED] markers to fire.
                             if state.steps:

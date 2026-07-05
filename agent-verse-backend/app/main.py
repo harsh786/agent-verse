@@ -1405,6 +1405,48 @@ def create_app(
     app.include_router(golden_datasets_router)
     logger.info("golden_datasets_router_registered")
 
+    # Phase 13/14 — new capability routers
+    try:
+        from app.api.marketplace_monetization import router as _mktplace_mon
+        app.include_router(_mktplace_mon)
+    except Exception as _e:
+        logger.warning("marketplace_monetization_router_failed", error=str(_e))
+    try:
+        from app.api.dpdp import router as _dpdp_router
+        app.include_router(_dpdp_router)
+    except Exception as _e:
+        logger.warning("dpdp_router_failed", error=str(_e))
+    try:
+        from app.api.gst_billing import router as _gst_router
+        app.include_router(_gst_router)
+    except Exception as _e:
+        logger.warning("gst_billing_router_failed", error=str(_e))
+    try:
+        from app.api.sla import router as _sla_router
+        app.include_router(_sla_router)
+    except Exception as _e:
+        logger.warning("sla_router_failed", error=str(_e))
+    try:
+        from app.api.sessions import router as _sessions_router
+        app.include_router(_sessions_router)
+    except Exception as _e:
+        logger.warning("sessions_router_failed", error=str(_e))
+    try:
+        from app.api.sandbox import router as _sandbox_router
+        app.include_router(_sandbox_router)
+    except Exception as _e:
+        logger.warning("sandbox_router_failed", error=str(_e))
+    try:
+        from app.api.policy_rules import router as _policy_rules_router
+        app.include_router(_policy_rules_router)
+    except Exception as _e:
+        logger.warning("policy_rules_router_failed", error=str(_e))
+    try:
+        from app.api.v1.router import v1_router
+        app.include_router(v1_router)
+    except Exception as _e:
+        logger.warning("v1_router_failed", error=str(_e))
+
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 
     return app

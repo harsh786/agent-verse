@@ -1,0 +1,19 @@
+{
+  "name": "AgentVerse",
+  "short_name": "AgentVerse",
+  "description": "Autonomous AI Agent Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["productivity", "business"],
+  "shortcuts": [
+    { "name": "New Goal", "url": "/goals?new=1", "description": "Submit a new agent goal" },
+    { "name": "My Agents", "url": "/agents", "description": "View and manage agents" }
+  ]
+}
