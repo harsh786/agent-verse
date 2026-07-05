@@ -1922,10 +1922,18 @@ class AgentGraph:
                         )
                 else:
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
-                    # In fully-autonomous mode, treat write_high as write_low
-                    # (skip HITL gate, proceed directly to execution).
-                    if tool_risk == "write_high" and self._autonomy_mode == "fully-autonomous":
+                    # Gate write_high bypass behind an explicit env flag (default-secure).
+                    import os as _os
+                    _allow_fa_write_high = (
+                        _os.getenv("ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH", "false").lower() == "true"
+                    )
+                    if (
+                        tool_risk == "write_high"
+                        and self._autonomy_mode == "fully-autonomous"
+                        and _allow_fa_write_high
+                    ):
                         tool_risk = "write_low"
+                    # else: falls through to write_high HITL gate below (default-secure)
                     if tool_risk == "destructive":
                         error = self._sanitize_tool_raw_output(
                             f"Jira tool '{tool_ref.name}' denied as destructive."
