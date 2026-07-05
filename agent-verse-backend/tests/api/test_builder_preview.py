@@ -78,3 +78,19 @@ def test_builder_project_preview_url_format():
         data = resp.json()
         assert "preview_url" in data
         assert "/builder/preview/" in data["preview_url"]
+
+
+def test_builder_preview_handles_missing_list_artifacts():
+    """Preview must not crash if artifact_store.list_artifacts raises AttributeError."""
+    from app.api.builder import router
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    app.include_router(router)
+    # Store without list_artifacts method
+    app.state.artifact_store = object()  # plain object, no list_artifacts
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/builder/preview/test-ws")
+    # Must return HTML status page, not 500
+    assert resp.status_code in (200, 202)
+    assert "text/html" in resp.headers.get("content-type", "")
