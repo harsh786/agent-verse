@@ -13,6 +13,7 @@ import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
 import { governanceApi } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
+import { useTranslation } from "react-i18next";
 
 interface NavItem {
   to: string;
@@ -29,6 +30,7 @@ interface NavSection {
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUiStore();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const { t } = useTranslation();
 
   // Poll pending approvals every 10s for badge count
   const { data: approvals = [] } = useQuery({
@@ -44,15 +46,15 @@ export function Sidebar() {
       heading: "Core",
       items: [
         { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-        { to: "/goals",     icon: Target,          label: "Goals"     },
-        { to: "/agents",    icon: Bot,             label: "Agents"    },
+        { to: "/goals",     icon: Target,          label: t('nav.goals')  },
+        { to: "/agents",    icon: Bot,             label: t('nav.agents') },
       ],
     },
     {
       heading: "Platform",
       items: [
         { to: "/connectors",    icon: Plug,         label: "Connectors"    },
-        { to: "/knowledge",     icon: BookOpen,     label: "Knowledge"     },
+        { to: "/knowledge",     icon: BookOpen,     label: t('nav.knowledge')  },
         { to: "/schedules",     icon: Calendar,     label: "Schedules"     },
         { to: "/skills",        icon: Sparkles,     label: "Skills"        },
         { to: "/collaboration", icon: Users,        label: "Collaboration" },
@@ -76,7 +78,7 @@ export function Sidebar() {
       heading: "Enterprise",
       items: [
         { to: "/builder",             icon: Hammer,       label: "AI Builder"       },
-        { to: "/marketplace",         icon: ShoppingBag,  label: "Marketplace"      },
+        { to: "/marketplace",         icon: ShoppingBag,  label: t('nav.marketplace') },
         { to: "/domains",             icon: LayoutGrid,   label: "Domains"          },
         { to: "/observability",       icon: Activity,     label: "Observability"    },
         { to: "/observability/cost",  icon: DollarSign,   label: "Cost Dashboard"   },

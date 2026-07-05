@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Plus, Search, XCircle, BookOpen, Ghost } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { agentsApi, goalsApi } from "@/lib/api/client";
 import { CostEstimateWidget } from "@/features/goals/components/CostEstimateWidget";
 import { TemplatePickerModal } from "@/features/templates/components/TemplatePickerModal";
@@ -30,6 +31,7 @@ function StatusBadge({ status }: { status: string }) {
 export function GoalsListPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
   const apiKey = useAuthStore((s) => s.apiKey);
+  const { t } = useTranslation();
   const [goalText, setGoalText] = useState("");
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -140,7 +142,7 @@ export function GoalsListPage() {
             <textarea
               value={goalText}
               onChange={(e) => setGoalText(e.target.value)}
-              placeholder="Describe the goal in natural language, e.g. 'Fix all JIRA bugs labelled prod-down and open a PR'"
+              placeholder={t('goals.placeholder')}
               rows={3}
               className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none pr-10"
               aria-label="Goal text"
@@ -172,7 +174,7 @@ export function GoalsListPage() {
               className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
-              {submit.isPending ? "Submitting…" : dryRun ? "Dry run" : "Submit"}
+              {submit.isPending ? "Submitting…" : dryRun ? "Dry run" : t('goals.submit')}
             </button>
           </div>
           {submit.isError && (
