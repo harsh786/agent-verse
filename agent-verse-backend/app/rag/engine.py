@@ -265,3 +265,197 @@ class RetrievalPlanner:
             return "hyde"
 
         return "direct"
+
+
+async def rerank_results(
+    results: list[RetrievalResult],
+    query: str,
+    *,
+    provider: Any = None,
+    top_k: int | None = None,
+) -> list[RetrievalResult]:
+    """Cross-encoder reranking of top retrieval results.
+
+    Uses an LLM to score each (query, passage) pair for relevance.
+    Falls back to the original RRF order when provider is None.
+    Scores top_k results (default: min(20, len(results))).
+    """
+    if not results or provider is None:
+        return results[:top_k] if top_k else results
+
+    candidates = results[:min(20, len(results))]
+    if not candidates:
+        return results[:top_k] if top_k else results
+
+    try:
+        from app.providers.base import CompletionRequest, Message
+        import json as _json
+
+        # Build a batch relevance scoring prompt
+        passages_text = "\n".join(
+            f"[{i}] {r.content[:300]}" for i, r in enumerate(candidates)
+        )
+        prompt = (
+            f"Query: {query}\n\n"
+            f"Rate each passage for relevance to the query (0=irrelevant, 10=highly relevant).\n"
+            f"Return ONLY a JSON array of integers, one score per passage, e.g. [8, 3, 7, ...]:\n\n"
+            f"{passages_text}"
+        )
+        req = CompletionRequest(
+            messages=[Message(role="user", content=prompt)],
+            max_tokens=100,
+        )
+        resp = await provider.complete(req)
+        scores = _json.loads(resp.content.strip())
+        if isinstance(scores, list) and len(scores) == len(candidates):
+            for i, r in enumerate(candidates):
+                try:
+                    r.score = float(scores[i]) / 10.0
+                except (TypeError, ValueError, IndexError):
+                    pass
+            candidates.sort(key=lambda r: r.score, reverse=True)
+    except Exception as exc:
+        logger.debug("rerank_failed_falling_back", error=str(exc)[:80])
+
+    final = candidates + [r for r in results if r not in candidates]
+    return final[:top_k] if top_k else final
+
+
+async def retrieve_hyde(
+    session: AsyncSession,
+    *,
+    query: str,
+    query_embedding: list[float] | None,
+    collection_id: str,
+    provider: Any = None,
+    top_k: int = 10,
+    embedding_dim: int | None = None,
+) -> list[RetrievalResult]:
+    """HyDE: generate a hypothetical answer, search with it. Falls back to hybrid."""
+    if provider is None:
+        return await hybrid_search(
+            session, query=query, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+        )
+    try:
+        from app.providers.base import CompletionRequest, Message
+        req = CompletionRequest(
+            messages=[
+                Message(role="system", content=(
+                    "Write a 2-3 sentence hypothetical document that would perfectly "
+                    "answer the following question. Write only the document text."
+                )),
+                Message(role="user", content=f"Question: {query}"),
+            ],
+            max_tokens=200,
+        )
+        resp = await provider.complete(req)
+        hyp_doc = resp.content.strip()
+        return await hybrid_search(
+            session, query=hyp_doc, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+        )
+    except Exception as exc:
+        logger.warning("hyde_failed_falling_back", error=str(exc)[:80])
+        return await hybrid_search(
+            session, query=query, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+        )
+
+
+async def retrieve_multi_hop(
+    session: AsyncSession,
+    *,
+    query: str,
+    query_embedding: list[float] | None,
+    collection_id: str,
+    provider: Any = None,
+    top_k: int = 10,
+    embedding_dim: int | None = None,
+) -> list[RetrievalResult]:
+    """Multi-hop: decompose query, search each sub-query, merge results."""
+    if provider is None:
+        return await hybrid_search(
+            session, query=query, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+        )
+    try:
+        import json as _json
+        from app.providers.base import CompletionRequest, Message
+        req = CompletionRequest(
+            messages=[
+                Message(role="system", content=(
+                    "Decompose this query into 2-3 specific sub-queries. "
+                    'Return ONLY a JSON array: ["sub-query 1", "sub-query 2"]'
+                )),
+                Message(role="user", content=f"Query: {query}"),
+            ],
+            max_tokens=150,
+        )
+        resp = await provider.complete(req)
+        sub_queries: list[str] = _json.loads(resp.content.strip())
+        if not isinstance(sub_queries, list):
+            sub_queries = [query]
+        sub_queries = [str(q) for q in sub_queries[:3]]
+    except Exception:
+        sub_queries = [query]
+
+    seen: set[str] = set()
+    all_results: list[RetrievalResult] = []
+    per_hop = max(top_k // max(len(sub_queries), 1), 3)
+    for sub_q in sub_queries:
+        try:
+            hop = await hybrid_search(
+                session, query=sub_q, query_embedding=query_embedding,
+                collection_id=collection_id, top_k=per_hop, embedding_dim=embedding_dim,
+            )
+            for r in hop:
+                if r.chunk_id not in seen:
+                    seen.add(r.chunk_id)
+                    all_results.append(r)
+        except Exception:
+            pass
+    all_results.sort(key=lambda r: r.score, reverse=True)
+    return all_results[:top_k]
+
+
+async def retrieve(
+    session: AsyncSession,
+    *,
+    query: str,
+    query_embedding: list[float] | None,
+    collection_id: str,
+    top_k: int = 10,
+    strategy: str | None = None,
+    provider: Any = None,
+    embedding_dim: int | None = None,
+    retrieval_mode: str = "hybrid",
+) -> list[RetrievalResult]:
+    """Strategy-dispatching entry point. Selects strategy via RetrievalPlanner if not given."""
+    if strategy is None:
+        strategy = RetrievalPlanner().select_strategy(query)
+    try:
+        if strategy == "hyde":
+            return await retrieve_hyde(
+                session, query=query, query_embedding=query_embedding,
+                collection_id=collection_id, provider=provider,
+                top_k=top_k, embedding_dim=embedding_dim,
+            )
+        if strategy == "multi_hop":
+            return await retrieve_multi_hop(
+                session, query=query, query_embedding=query_embedding,
+                collection_id=collection_id, provider=provider,
+                top_k=top_k, embedding_dim=embedding_dim,
+            )
+        mode = "lexical" if strategy == "lexical" else retrieval_mode
+        return await hybrid_search(
+            session, query=query, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k,
+            retrieval_mode=mode, embedding_dim=embedding_dim,
+        )
+    except Exception as exc:
+        logger.warning("retrieve_dispatch_failed", strategy=strategy, error=str(exc)[:80])
+        return await hybrid_search(
+            session, query=query, query_embedding=query_embedding,
+            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+        )

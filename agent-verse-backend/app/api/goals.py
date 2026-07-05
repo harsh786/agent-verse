@@ -61,6 +61,25 @@ class GoalRequest(BaseModel):
     # Multi-agent modes
     agent_ids: list[str] = Field(default_factory=list)
     supervisor_max_parallel: int = Field(default=5, ge=1, le=20)
+    # Multi-modal inputs (Phase 13.3)
+    image_url: str | None = Field(None, description="URL of an image to include in goal context")
+    attachment_base64: str | None = Field(None, description="Base64-encoded file (PDF/image)")
+    attachment_mime: str | None = Field(None, description="MIME type of attachment")
+
+
+def _build_multimodal_goal_text(
+    goal: str,
+    image_url: str | None,
+    attachment_base64: str | None,
+    attachment_mime: str | None,
+) -> str:
+    """Wrap goal with image/attachment context for vision providers."""
+    parts = [goal]
+    if image_url:
+        parts.append(f"\n[IMAGE] {image_url}")
+    if attachment_base64 and attachment_mime:
+        parts.append(f"\n[ATTACHMENT mime={attachment_mime}] (base64 content provided)")
+    return "\n".join(parts)
 
 
 class ApproveRequest(BaseModel):
@@ -829,3 +848,24 @@ async def inject_persistence_guidance(
         body.guidance[:5000],
     )
     return {"goal_id": goal_id, "status": "guidance_injected", "guidance_length": len(body.guidance)}
+
+
+@router.get("/{goal_id}/explain")
+async def get_goal_explanation(request: Request, goal_id: str) -> dict[str, Any]:
+    """Return explainability traces — why each decision was made."""
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+    try:
+        goal = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+    ctx = goal.get("execution_context") or {}
+    return {
+        "goal_id": goal_id,
+        "decision_traces": ctx.get("decision_traces", []),
+        "model_selections": ctx.get("model_selections", {}),
+        "rag_citations": ctx.get("rag_citations", []),
+        "tool_reasoning": ctx.get("tool_reasoning", []),
+        "plan": goal.get("plan", []),
+        "status": goal.get("status"),
+    }
