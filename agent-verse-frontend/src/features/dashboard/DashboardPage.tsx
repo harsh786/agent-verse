@@ -28,12 +28,14 @@ import {
   Shield,
   Plus,
   ArrowUpRight,
+  Cpu,
 } from "lucide-react";
 import { goalsApi, governanceApi, agentsApi, analyticsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { LiveActivityStream } from "./components/LiveActivityStream";
 import { AgentOrbitView } from "./components/AgentOrbitView";
 import { toast } from "@/stores/toast";
+import { AIOpsDashboard } from "./AIOpsDashboard";
 
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
@@ -156,6 +158,7 @@ function QuickGoalSubmit() {
 export function DashboardPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = useState<"mission" | "ai-ops">("mission");
 
   // ── Data fetching ──────────────────────────────────────────────────────
   const { data: goals = [], isLoading: goalsLoading } = useQuery({
@@ -247,7 +250,31 @@ export function DashboardPage() {
               : "All systems nominal"}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Tab switcher */}
+          <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+            <button
+              onClick={() => setActiveTab("mission")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                activeTab === "mission"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Mission Control
+            </button>
+            <button
+              onClick={() => setActiveTab("ai-ops")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1 ${
+                activeTab === "ai-ops"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Cpu className="h-3 w-3" />
+              AI Ops
+            </button>
+          </div>
           <div
             className={`h-2 w-2 rounded-full ${
               activeGoals.length > 0 ? "bg-green-500 animate-pulse" : "bg-muted-foreground/40"
@@ -259,6 +286,13 @@ export function DashboardPage() {
           </span>
         </div>
       </div>
+
+      {/* ── AI Ops tab ────────────────────────────────────────────────── */}
+      {activeTab === "ai-ops" && <AIOpsDashboard />}
+
+      {/* ── Mission Control tab ───────────────────────────────────────── */}
+      {activeTab === "mission" && (
+        <>
 
       {/* ── Pending approvals banner ──────────────────────────────────── */}
       {pendingApprovals.length > 0 && (
@@ -423,6 +457,8 @@ export function DashboardPage() {
           </button>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

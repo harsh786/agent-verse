@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Zap,
   Loader2,
+  Paperclip,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { agentsApi, goalsApi } from "@/lib/api/client";
@@ -65,6 +66,8 @@ export function GoalsListPage() {
   const [selectedAgentId, setSelectedAgentId] = useState("auto");
   const [pageSize, setPageSize] = useState(25);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  // Gap 2: Multimodal attachments
+  const [attachments, setAttachments] = useState<Array<{ type: string; url?: string; data?: string; name?: string }>>([]);
 
   // Fix 1: bulk selection state
   const [selectedGoals, setSelectedGoals] = useState<Set<string>>(new Set());
@@ -126,9 +129,11 @@ export function GoalsListPage() {
         dry_run: dryRun,
         agent_id: selectedAgentId === "auto" ? undefined : selectedAgentId,
         workflow_mode: "single_agent",
+        attachments: attachments.length > 0 ? attachments : undefined,
       }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["goals", tenantId] });
+      setAttachments([]);
       navigate(`/goals/${res.goal_id ?? res.id}`);
     },
   });
@@ -291,6 +296,54 @@ export function GoalsListPage() {
             </div>
           </div>
           <CostEstimateWidget goal={goalText} enabled={goalText.length >= 10} />
+          {/* Gap 2: Multimodal attachment input */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+              <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
+              Attach file
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string;
+                    const base64 = result.split(",")[1] ?? result;
+                    setAttachments((prev) => [
+                      ...prev,
+                      {
+                        type: file.type.startsWith("image/") ? "image_base64" : "pdf_base64",
+                        data: base64,
+                        name: file.name,
+                      },
+                    ]);
+                  };
+                  reader.readAsDataURL(file);
+                  // Reset input so the same file can be re-selected
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            {attachments.map((a, i) => (
+              <span
+                key={i}
+                className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1"
+              >
+                {a.name ?? a.type}
+                <button
+                  type="button"
+                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                  className="hover:text-destructive transition-colors"
+                  aria-label={`Remove attachment ${a.name ?? a.type}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
           <div className="flex items-center justify-between gap-3">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input

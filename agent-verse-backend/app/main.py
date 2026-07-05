@@ -1481,6 +1481,91 @@ def create_app(
         app.include_router(v1_router)
     except Exception as _e:
         logger.warning("v1_router_failed", error=str(_e))
+    try:
+        from app.api.model_registry import router as model_registry_router
+        app.include_router(model_registry_router)
+    except Exception as _e:
+        logger.warning("model_registry_router_failed", error=str(_e))
+
+    # Phase 3: Embedding Platform
+    try:
+        from app.api.embeddings import router as embeddings_router
+        app.include_router(embeddings_router)
+        logger.info("embeddings_router_registered")
+    except Exception as _e:
+        logger.warning("embeddings_router_failed", error=str(_e))
+
+    # Phase 4: Multimodal Intelligence
+    try:
+        from app.api.multimodal import router as multimodal_router
+        app.include_router(multimodal_router)
+        logger.info("multimodal_router_registered")
+    except Exception as _e:
+        logger.warning("multimodal_router_failed", error=str(_e))
+
+    # Phase 5: Tenant Knowledge Graph
+    try:
+        from app.api.knowledge_graph import router as knowledge_graph_router
+        app.include_router(knowledge_graph_router)
+        logger.info("knowledge_graph_router_registered")
+    except Exception as _e:
+        logger.warning("knowledge_graph_router_failed", error=str(_e))
+
+    # Phase 6: GraphRAG / RAG Platform
+    try:
+        from app.api.rag_platform import router as rag_platform_router
+        app.include_router(rag_platform_router)
+        logger.info("rag_platform_router_registered")
+    except Exception as _e:
+        logger.warning("rag_platform_router_failed", error=str(_e))
+
+    # Phase 7: Agent Runtime 2.0
+    try:
+        from app.api.agent_runtime import router as agent_runtime_router
+        app.include_router(agent_runtime_router)
+        logger.info("agent_runtime_router_registered")
+    except Exception as _e:
+        logger.warning("agent_runtime_router_failed", error=str(_e))
+
+    # Phase 8: Guardrails 2.0
+    try:
+        from app.api.guardrails_v2 import router as guardrails_v2_router
+        app.include_router(guardrails_v2_router)
+        logger.info("guardrails_v2_router_registered")
+    except Exception as _e:
+        logger.warning("guardrails_v2_router_failed", error=str(_e))
+
+    # Phase 9: Trust and Governance 2.0
+    try:
+        from app.api.trust_governance import router as trust_governance_router
+        app.include_router(trust_governance_router)
+        logger.info("trust_governance_router_registered")
+    except Exception as _e:
+        logger.warning("trust_governance_router_failed", error=str(_e))
+
+    # Phase 12: Skills Runtime (composable skill execution engine)
+    try:
+        from app.api.skills_runtime import router as skills_runtime_router
+        app.include_router(skills_runtime_router)
+        logger.info("skills_runtime_router_registered")
+    except Exception as _e:
+        logger.warning("skills_runtime_router_failed", error=str(_e))
+
+    # Phase 10: AI Ops (Evals, Drift, Regression)
+    try:
+        from app.api.ai_ops import router as ai_ops_router
+        app.include_router(ai_ops_router)
+        logger.info("ai_ops_router_registered")
+    except Exception as _e:
+        logger.warning("ai_ops_router_failed", error=str(_e))
+
+    # Phase 11: Agent Memory 2.0
+    try:
+        from app.api.memory_v2 import router as memory_v2_router
+        app.include_router(memory_v2_router)
+        logger.info("memory_v2_router_registered")
+    except Exception as _e:
+        logger.warning("memory_v2_router_failed", error=str(_e))
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

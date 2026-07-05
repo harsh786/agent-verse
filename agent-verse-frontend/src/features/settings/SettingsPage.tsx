@@ -10,7 +10,7 @@ import {
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
 import { toast } from '@/stores/toast';
-import { apiFetch as apiClient } from '@/lib/api/client';
+import { apiFetch as apiClient, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -25,7 +25,8 @@ interface Tenant {
 
 interface LLMConfig {
   provider: string;
-  model: string;
+  /** Canonical field name matching the backend (was `model` — Gap 1 fix) */
+  default_model: string;
   api_key?: string;
   base_url?: string;
 }
@@ -157,32 +158,72 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [showKey, setShowKey] = useState(false);
-  const [form, setForm] = useState<LLMConfig>({ provider: 'openai', model: 'gpt-4o', api_key: '', base_url: '' });
+  const [form, setForm] = useState<LLMConfig>({ provider: 'openai', default_model: 'gpt-4o', api_key: '', base_url: '' });
 
-  const { data: llmConfig, isLoading, error } = useQuery({
+  // Gap 1 fix: use tenantsApi.getLLMConfig (/tenants/me/llm-config) which is the
+  // canonical lightweight config endpoint; falls back to the encrypted /me/llm endpoint
+  // for reading the displayed provider/model (merged below).
+  const { data: llmConfig, isLoading: llmConfigLoading } = useQuery({
+    queryKey: ['llm-config-simple'],
+    queryFn: () => tenantsApi.getLLMConfig(),
+    enabled: !!apiKey,
+  });
+
+  const { data: llmFull, isLoading: llmFullLoading } = useQuery({
     queryKey: ['llm-config'],
     queryFn: () => apiClient<LLMConfig>('/tenants/me/llm'),
     enabled: !!apiKey,
   });
 
+  const isLoading = llmConfigLoading || llmFullLoading;
+
   useEffect(() => {
-    if (llmConfig) setForm({ ...llmConfig, api_key: llmConfig.api_key ?? '', base_url: llmConfig.base_url ?? '' });
-  }, [llmConfig]);
+    // Prefer the full encrypted endpoint for display (has provider/default_model/masked_key)
+    if (llmFull) {
+      setForm({
+        provider: (llmFull as any).provider ?? 'openai',
+        default_model: (llmFull as any).default_model ?? (llmConfig as any)?.default_model ?? (llmConfig as any)?.model ?? 'gpt-4o',
+        api_key: '',
+        base_url: (llmFull as any).base_url ?? '',
+      });
+    } else if (llmConfig) {
+      setForm({
+        provider: (llmConfig as any).provider ?? 'openai',
+        default_model: (llmConfig as any).default_model ?? (llmConfig as any).model ?? 'gpt-4o',
+        api_key: '',
+        base_url: (llmConfig as any).base_url ?? '',
+      });
+    }
+  }, [llmFull, llmConfig]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      apiClient<LLMConfig>('/tenants/me/llm', {
-        method: 'PUT',
-        body: JSON.stringify(form),
-      }),
+      // Gap 1 fix: send `default_model` to the full encrypted endpoint, and also
+      // persist to the lightweight /me/llm-config endpoint for cross-service reads.
+      Promise.all([
+        apiClient<LLMConfig>('/tenants/me/llm', {
+          method: 'PUT',
+          body: JSON.stringify({
+            provider: form.provider,
+            api_key: form.api_key || undefined,
+            base_url: form.base_url || undefined,
+            default_model: form.default_model,
+          }),
+        }),
+        tenantsApi.saveLLMConfig({
+          provider: form.provider,
+          default_model: form.default_model,
+          base_url: form.base_url || undefined,
+        }),
+      ]),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['llm-config'] });
+      qc.invalidateQueries({ queryKey: ['llm-config-simple'] });
       setEditing(false);
     },
   });
 
   if (isLoading) return <SectionShell title="LLM Provider"><p className="text-sm text-muted-foreground">Loading…</p></SectionShell>;
-  if (error) return <SectionShell title="LLM Provider"><p className="text-sm text-red-500">Failed to load LLM config.</p></SectionShell>;
 
   return (
     <SectionShell
@@ -204,7 +245,7 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
                 setForm((f) => ({
                   ...f,
                   provider: p,
-                  model: MODEL_SUGGESTIONS[p]?.[0] ?? '',
+                  default_model: MODEL_SUGGESTIONS[p]?.[0] ?? '',
                 }));
               }}
               className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
@@ -217,8 +258,8 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
           <div>
             <label className="block text-xs font-medium mb-1">Model</label>
             <input
-              value={form.model}
-              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+              value={form.default_model}
+              onChange={(e) => setForm((f) => ({ ...f, default_model: e.target.value }))}
               list="model-suggestions"
               className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
             />
@@ -266,7 +307,7 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
           <div className="flex justify-end">
             <button
               onClick={() => saveMutation.mutate()}
-              disabled={!form.provider || !form.model || saveMutation.isPending}
+              disabled={!form.provider || !form.default_model || saveMutation.isPending}
               className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm disabled:opacity-50"
             >
               {saveMutation.isPending ? 'Saving…' : t('common.save')}
@@ -276,9 +317,9 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
       ) : (
         <dl className="space-y-3">
           {[
-            { label: 'Provider', value: llmConfig?.provider ?? '—' },
-            { label: 'Model', value: llmConfig?.model ?? '—', mono: true },
-            { label: 'API Key', value: llmConfig?.api_key ? '••••••••' : 'Not set' },
+            { label: 'Provider', value: (llmFull as any)?.provider ?? (llmConfig as any)?.provider ?? '—' },
+            { label: 'Model', value: (llmFull as any)?.default_model ?? (llmConfig as any)?.default_model ?? (llmConfig as any)?.model ?? '—', mono: true },
+            { label: 'API Key', value: (llmFull as any)?.masked_key ? '••••••••' : 'Not set' },
           ].map(({ label, value, mono }) => (
             <div key={label} className="flex justify-between text-sm">
               <dt className="text-muted-foreground">{label}</dt>
