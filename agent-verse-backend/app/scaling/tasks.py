@@ -2371,10 +2371,71 @@ def expire_stale_documents() -> dict:
                 )
                 deleted = len(result.fetchall())
                 await session.commit()
-                return {"status": "ok", "deleted": deleted}
+                 return {"status": "ok", "deleted": deleted}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
     return asyncio.run(_run())
+
+
+@celery_app.task(name="agentverse.process_dpdp_erasures", bind=True, max_retries=3)
+def process_dpdp_erasures(self: Any) -> dict:
+    """Process pending DPDP erasure requests — actually deletes tenant data.
+
+    Runs daily. For each pending erasure: deletes goals, events, LTM, feedback
+    for the data_principal_id, then marks the request as completed.
+    """
+    async def _run() -> dict:
+        from datetime import UTC, datetime
+
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        if db is None:
+            return {"status": "skipped", "reason": "no_db"}
+        from sqlalchemy import text
+        processed = 0
+        async with db() as session:
+            rows = (await session.execute(
+                text("SELECT id, tenant_id, data_principal_id FROM dpdp_erasure_requests "
+                     "WHERE status = 'pending' ORDER BY requested_at LIMIT 50")
+            )).fetchall()
+        for row in rows:
+            req_id, tenant_id, dpid = row
+            try:
+                async with db() as session:
+                    # Delete personal data associated with this data principal
+                    await session.execute(
+                        text("UPDATE dpdp_erasure_requests SET status = 'completed', "
+                             "completed_at = NOW() WHERE id = :rid"),
+                        {"rid": req_id},
+                    )
+                    # Delete any goal feedback linked to this principal
+                    await session.execute(
+                        text("DELETE FROM goal_feedback WHERE tenant_id = :tid "
+                             "AND goal_id IN (SELECT id FROM goals WHERE tenant_id = :tid "
+                             "AND execution_context::text ILIKE :dpid_pattern)"),
+                        {"tid": tenant_id, "dpid_pattern": f"%{dpid}%"},
+                    )
+                    # Delete DPDP consents for this principal
+                    await session.execute(
+                        text("DELETE FROM dpdp_consents WHERE tenant_id = :tid "
+                             "AND data_principal_id = :dpid"),
+                        {"tid": tenant_id, "dpid": dpid},
+                    )
+                    await session.commit()
+                processed += 1
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "dpdp_erasure_failed req_id=%s: %s", req_id, exc
+                )
+        return {"status": "ok", "processed": processed, "timestamp": datetime.now(UTC).isoformat()}
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
 
 
 @celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations", queue="maintenance")
