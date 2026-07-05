@@ -2692,13 +2692,12 @@ class AgentGraph:
                     pass
 
         # Trigger self-optimization when a goal scores below the excellence threshold.
-        # Using < 1.0 ensures we collect improvement insights for all non-perfect goals
-        # (practically every real goal), enabling continuous learning.  The suggestions
-        # themselves are internally gated by fine-grained conditions inside analyze_and_suggest.
+        # Using < 0.5 ensures we only collect improvement insights for genuinely failing
+        # goals (below 50% score), avoiding unnecessary optimization churn on good runs.
         if (
             self._self_optimizer is not None
             and scorecard is not None
-            and scorecard.average_score() < 1.0
+            and scorecard.average_score() < 0.5
         ):
             _so_task = asyncio.create_task(
                 self._trigger_self_optimization(agent_state, scorecard, tenant_ctx)

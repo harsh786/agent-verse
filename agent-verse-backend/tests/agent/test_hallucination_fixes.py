@@ -207,3 +207,19 @@ def test_build_verifier_provider_is_callable_in_main():
     """_build_verifier_provider must be importable from app.main."""
     from app.main import _build_verifier_provider
     assert callable(_build_verifier_provider)
+
+
+def test_self_optimizer_threshold_is_half():
+    """Self-optimizer must only fire on failing goals (< 0.5), not all goals."""
+    import pathlib
+    src = pathlib.Path("app/agent/graph.py").read_text()
+    # Find lines with average_score() threshold comparisons
+    lines = [l.strip() for l in src.splitlines() if "average_score()" in l and "< " in l]
+    threshold_lines = [l for l in lines if "0." in l]
+    assert any("0.5" in l or "0.50" in l for l in threshold_lines), (
+        f"Self-optimizer threshold must be 0.5 (not 1.0). Found: {threshold_lines}"
+    )
+    # Confirm 1.0 is NOT the threshold
+    assert not any(l.strip() == "and scorecard.average_score() < 1.0" for l in src.splitlines()), (
+        "Threshold of 1.0 would fire on every non-perfect goal — must be 0.5"
+    )
