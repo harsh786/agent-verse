@@ -18,6 +18,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   ShoppingBag, Search, Star, Download, Plug, ShieldCheck,
   ChevronRight, X, Loader2, Plus, ExternalLink, Zap,
@@ -115,6 +116,7 @@ function MarketplaceCard({
   onDeploy: () => void;
   deploying: boolean;
 }) {
+  const { t } = useTranslation();
   const domainColor = DOMAIN_COLORS[template.domain] ?? "bg-muted text-muted-foreground";
   const hasParams = Object.keys(template.parameters_schema?.properties ?? {}).length > 0;
 
@@ -207,7 +209,7 @@ function MarketplaceCard({
             className="w-full py-1.5 px-3 text-xs font-medium bg-primary text-primary-foreground rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center justify-center gap-1.5"
           >
             {deploying ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Zap className="h-3.5 w-3.5" aria-hidden="true" />}
-            {deploying ? "Deploying…" : "Deploy"}
+            {deploying ? "Deploying…" : t('marketplace.install')}
           </button>
         )}
       </div>
@@ -668,6 +670,7 @@ function PublishModal({ onClose }: { onClose: () => void }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function MarketplacePage() {
+  const { t } = useTranslation();
   const [domain, setDomain] = useState("all");
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -744,7 +747,7 @@ export function MarketplacePage() {
         <input
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search templates, connectors, workflows…"
+          placeholder={t('marketplace.search')}
           className="w-full pl-10 pr-10 py-2.5 text-sm border border-input rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-primary"
           aria-label="Search marketplace"
         />

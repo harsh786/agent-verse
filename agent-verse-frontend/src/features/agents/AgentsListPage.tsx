@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
 import { agentsApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -25,6 +26,7 @@ const AUTONOMY_COLORS: Record<string, string> = {
 const AUTONOMY_MODES = ['all', 'supervised', 'bounded-autonomous', 'fully-autonomous'];
 
 export function AgentsListPage() {
+  const { t } = useTranslation();
   const apiKey = useAuthStore((s) => s.apiKey);
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -82,7 +84,7 @@ export function AgentsListPage() {
           onClick={() => setShowCreate(true)}
           className="bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:opacity-90 text-sm font-medium"
         >
-          + Create Agent
+          + {t('agents.new')}
         </button>
       </div>
 
@@ -150,7 +152,7 @@ export function AgentsListPage() {
         open={confirmDeleteId !== null}
         title={`Delete agent "${agentToDelete?.name ?? ''}"`}
         description="This action cannot be undone. All associated data will be removed."
-        confirmLabel="Delete"
+        confirmLabel={t('common.delete')}
         variant="danger"
         isLoading={deleteMutation.isPending}
         onConfirm={() => confirmDeleteId && deleteMutation.mutate(confirmDeleteId)}
@@ -189,7 +191,7 @@ export function AgentsListPage() {
         ) : filtered.length === 0 ? (
           <div className="px-5 py-10 text-center text-sm text-muted-foreground">
             <p className="font-medium">
-              {filterMode === 'all' ? 'No agents yet' : `No ${filterMode} agents`}
+              {filterMode === 'all' ? t('agents.noAgents') : `No ${filterMode} agents`}
             </p>
             {filterMode === 'all' && (
               <p className="mt-1">Create your first agent using natural language above</p>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   ArrowLeft, Loader2, Download, Camera, RotateCcw,
   Edit3, Save, X, Clock, Target, ChevronDown, ChevronRight,
@@ -195,6 +196,7 @@ export function AgentDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const apiKey = useAuthStore((s) => s.apiKey);
+  const { t } = useTranslation();
   const [tab, setTab] = useState<AgentTab>('overview');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
@@ -391,7 +393,7 @@ export function AgentDetailPage() {
               aria-label="Clone agent"
               className="px-3 py-1 border rounded text-sm hover:bg-muted disabled:opacity-50"
             >
-              {cloneMutation.isPending ? 'Cloning…' : 'Clone'}
+              {cloneMutation.isPending ? 'Cloning…' : t('agents.actions.clone')}
             </button>
             <button
               onClick={() => {
@@ -405,7 +407,7 @@ export function AgentDetailPage() {
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
               {editing ? <X className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
-              {editing ? "Cancel" : "Edit"}
+              {editing ? t('common.cancel') : t('common.edit')}
             </button>
             <button
               onClick={() => navigate(`/agents/${agentId}/radar`)}
@@ -487,7 +489,7 @@ export function AgentDetailPage() {
                 ) : (
                   <Save className="h-4 w-4" />
                 )}
-                Save
+                {t('common.save')}
               </button>
             </div>
           </div>

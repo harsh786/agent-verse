@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { Eye, EyeOff, RefreshCw, Trash2, Copy, Check } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 
@@ -98,6 +99,7 @@ const MODEL_SUGGESTIONS: Record<string, string[]> = {
 
 function LLMProviderSection({ apiKey }: { apiKey: string }) {
   const qc = useQueryClient();
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [form, setForm] = useState<LLMConfig>({ provider: 'openai', model: 'gpt-4o', api_key: '', base_url: '' });
@@ -132,7 +134,7 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
       title="LLM Provider"
       action={
         <button onClick={() => setEditing((v) => !v)} className="text-sm text-primary hover:opacity-70">
-          {editing ? 'Cancel' : 'Edit'}
+          {editing ? t('common.cancel') : t('common.edit')}
         </button>
       }
     >
@@ -212,7 +214,7 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
               disabled={!form.provider || !form.model || saveMutation.isPending}
               className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm disabled:opacity-50"
             >
-              {saveMutation.isPending ? 'Saving…' : 'Save'}
+              {saveMutation.isPending ? 'Saving…' : t('common.save')}
             </button>
           </div>
         </div>
@@ -427,11 +429,12 @@ function SectionShell({
 
 export function SettingsPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
+  const { t } = useTranslation();
 
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
+        <h1 className="text-2xl font-bold">{t('settings.title')}</h1>
         <p className="text-muted-foreground text-sm mt-1">
           Profile, LLM provider, and API key management
         </p>
