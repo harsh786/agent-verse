@@ -12,7 +12,9 @@
     "test": "vitest run --dir src",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:update-snapshots": "playwright test e2e/visual-regression.spec.ts --update-snapshots",
+    "test:e2e:snapshots": "CI=true playwright test e2e/visual-regression.spec.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "5.80.7",
