@@ -24,7 +24,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.postgresql.secretName | default "agentverse-secrets" }}
-                  key: postgresql-password
+                  key: DATABASE_PASSWORD
             command:
             - /bin/sh
             - -c

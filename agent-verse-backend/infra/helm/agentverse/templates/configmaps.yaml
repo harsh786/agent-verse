@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-config
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  MINIO_ENDPOINT: http://{{ include "agentverse.fullname" . }}-minio:{{ .Values.minio.service.apiPort }}
+  SMTP_HOST: {{ include "agentverse.fullname" . }}-mailpit
+  SMTP_PORT: "1025"
+  SMTP_TLS: "false"
+  {{- range $k, $v := .Values.backend.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-kong
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    _transform: true
+    services:
+    - name: agentverse-backend
+      url: http://{{ include "agentverse.fullname" . }}-backend:{{ .Values.backend.service.port }}
+      routes:
+      - name: api
+        paths: ["/api"]
+        strip_path: true
+      - name: health
+        paths: ["/health", "/metrics"]
+        strip_path: false
+    - name: agentverse-frontend
+      url: http://{{ include "agentverse.fullname" . }}-frontend:{{ .Values.frontend.service.port }}
+      routes:
+      - name: frontend
+        paths: ["/"]
+        strip_path: false
+    - name: grafana
+      url: http://{{ include "agentverse.fullname" . }}-grafana:{{ .Values.grafana.service.port }}
+      routes:
+      - name: grafana
+        paths: ["/grafana"]
+        strip_path: true
+    plugins:
+    {{- if .Values.kong.plugins.cors }}
+    - name: cors
+      config:
+        origins: ["*"]
+        methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        headers: [Accept, Authorization, Content-Type, X-API-Key, Last-Event-ID]
+        exposed_headers: [X-Request-ID]
+        credentials: false
+    {{- end }}
+    {{- if .Values.kong.plugins.requestSizeLimit }}
+    - name: request-size-limiting
+      config:
+        allowed_payload_size: 100
+        size_unit: megabytes
+    {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-loki
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  loki.yml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+      - from: 2024-01-01
+        store: boltdb-shipper
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+    ruler:
+      alertmanager_url: http://localhost:9093
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-promtail
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  promtail.yml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+    positions:
+      filename: /run/promtail/positions.yaml
+    clients:
+    - url: http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}/loki/api/v1/push
+    scrape_configs:
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container
+      - replacement: /var/log/pods/*$1/*.log
+        separator: /
+        source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+        target_label: __path__
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-grafana-datasources
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: http://{{ include "agentverse.fullname" . }}-prometheus:{{ .Values.prometheus.service.port }}
+      isDefault: true
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}
+      jsonData:
+        maxLines: 1000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-prometheus
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+    - job_name: backend
+      metrics_path: /metrics
+      static_configs:
+      - targets: ["{{ include "agentverse.fullname" . }}-backend:{{ .Values.backend.service.port }}"]
+    - job_name: otel
+      static_configs:
+      - targets: ["{{ include "agentverse.fullname" . }}-otel:8889"]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentverse.fullname" . }}-otel
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+data:
+  otel.yml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+      memory_limiter:
+        limit_mib: 256
+        spike_limit_mib: 64
+        check_interval: 5s
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889
+      logging:
+        verbosity: basic
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus, logging]

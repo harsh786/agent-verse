@@ -1,176 +1,203 @@
-# AgentVerse Helm Chart Values
-# Override any value with: helm install agentverse ./agentverse --set key=value
+# AgentVerse one-click Kubernetes deployment values.
+# Minikube quick start:
+#   eval $(minikube docker-env)
+#   docker build -t agentverse/backend:local ../../
+#   docker build -t agentverse/frontend:local ../../../agent-verse-frontend
+#   helm upgrade --install agentverse ./agentverse -n agentverse --create-namespace -f values.yaml
 
-# ── Global ──────────────────────────────────────────────────────────────────
 global:
-  imageRegistry: ""
   imagePullSecrets: []
+  storageClassName: ""
 
-# ── Backend ──────────────────────────────────────────────────────────────────
+imagePullPolicy: IfNotPresent
+
+secrets:
+  create: true
+  databasePassword: agentverse
+  redisPassword: agentverse-redis
+  minioRootUser: minioadmin
+  minioRootPassword: minioadmin
+  jwtSecret: change-me-jwt
+  vaultMasterKey: change-me-vault-master-key-min-32-chars
+  goalTokenSecret: change-me-goal-token
+  manifestSigningSecret: change-me-manifest
+  platformAdminKey: change-me-admin-key
+
 backend:
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: agentverse/backend
-    tag: latest
-    pullPolicy: IfNotPresent
+    tag: local
   service:
-    type: ClusterIP
     port: 8000
   resources:
     requests:
       cpu: 250m
       memory: 512Mi
     limits:
-      cpu: 1000m
+      cpu: "1"
       memory: 1Gi
   env:
-    environment: production
-    logLevel: INFO
-    corsOrigins: "https://app.yourdomain.com"
-    dataRetentionDays: "90"
-  llm:
-    anthropicApiKey: ""
-    openaiApiKey: ""
-    voyageApiKey: ""
-    googleApiKey: ""
-  autoscaling:
-    enabled: true
-    minReplicas: 2
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 70
+    ENVIRONMENT: production
+    MANAGE_POOLS: "true"
+    CORS_ORIGINS: http://agentverse.local,http://localhost:8080
+    FRONTEND_URL: http://agentverse.local
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://agentverse-otel:4317
+    OTEL_SERVICE_NAME: agentverse-backend
+    MINIO_BUCKET: agentverse-artifacts
 
-# ── Worker (Celery) ───────────────────────────────────────────────────────────
+frontend:
+  replicaCount: 1
+  image:
+    repository: agentverse/frontend
+    tag: local
+  service:
+    port: 80
+  env:
+    VITE_API_URL: /api
+    VITE_GRAFANA_URL: /grafana
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
 worker:
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: agentverse/backend
-    tag: latest
-    pullPolicy: IfNotPresent
+    tag: local
+  concurrency: 4
+  queues: goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq
   resources:
     requests:
       cpu: 500m
-      memory: 1Gi
+      memory: 768Mi
     limits:
-      cpu: 2000m
+      cpu: "2"
       memory: 2Gi
-  concurrency: 4
-  queues: "goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq"
-  keda:
-    enabled: true
-    minReplicas: 1
-    maxReplicas: 20
-    queueThreshold: 5
 
-# ── Beat scheduler ────────────────────────────────────────────────────────────
 beat:
+  enabled: true
   image:
     repository: agentverse/backend
-    tag: latest
-    pullPolicy: IfNotPresent
+    tag: local
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
-# ── Frontend ──────────────────────────────────────────────────────────────────
-frontend:
-  replicaCount: 2
-  image:
-    repository: agentverse/frontend
-    tag: latest
-    pullPolicy: IfNotPresent
-  service:
-    type: ClusterIP
-    port: 80
-  env:
-    apiUrl: "https://api.yourdomain.com"
-    grafanaUrl: "https://grafana.yourdomain.com"
-
-# ── PostgreSQL ────────────────────────────────────────────────────────────────
 postgresql:
   enabled: true
-  auth:
-    username: agentverse
-    password: ""  # REQUIRED: set via --set postgresql.auth.password=...
-    database: agentverse
-  primary:
-    persistence:
-      enabled: true
-      size: 20Gi
+  image: pgvector/pgvector:pg16
+  username: agentverse
+  database: agentverse
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
-# ── PgBouncer ────────────────────────────────────────────────────────────────
-pgbouncer:
-  enabled: true
-  poolMode: transaction
-  maxClientConn: 1000
-  defaultPoolSize: 50
-
-# ── Redis ────────────────────────────────────────────────────────────────────
 redis:
   enabled: true
-  auth:
+  image: redis:7-alpine
+  service:
+    port: 6379
+  persistence:
     enabled: true
-    password: ""  # REQUIRED: set via --set redis.auth.password=...
-  master:
-    persistence:
-      enabled: true
-      size: 5Gi
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
-# ── MinIO ────────────────────────────────────────────────────────────────────
 minio:
   enabled: true
-  auth:
-    rootUser: minioadmin
-    rootPassword: ""  # REQUIRED
+  image: minio/minio:RELEASE.2024-07-16T23-46-41Z
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  service:
+    apiPort: 9000
+    consolePort: 9001
 
-# ── Ingress ───────────────────────────────────────────────────────────────────
-ingress:
+kong:
   enabled: true
-  className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-  hosts:
-    - host: api.yourdomain.com
-      paths:
-        - path: /
-          pathType: Prefix
-          service: backend
-    - host: app.yourdomain.com
-      paths:
-        - path: /
-          pathType: Prefix
-          service: frontend
-  tls:
-    - secretName: agentverse-tls
-      hosts:
-        - api.yourdomain.com
-        - app.yourdomain.com
+  image: kong:3.7
+  ingressClassName: kong
+  service:
+    type: NodePort
+    proxyPort: 80
+    nodePort: 30080
+    adminPort: 8001
+  plugins:
+    cors: true
+    requestSizeLimit: true
+    rateLimiting: false
 
-# ── Observability ─────────────────────────────────────────────────────────────
-observability:
-  otelEndpoint: ""  # e.g. http://otel-collector:4317
-  grafanaUrl: ""
-  jaegerUrl: ""
+loki:
+  enabled: true
+  image: grafana/loki:2.9.8
+  service:
+    port: 3100
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
 
-# ── SSO / Keycloak ────────────────────────────────────────────────────────────
-keycloak:
-  enabled: false
-  url: ""
-  realm: agentverse
-  clientId: agentverse-backend
-  clientSecret: ""
+promtail:
+  enabled: true
+  image: grafana/promtail:2.9.8
 
-# ── SMTP ─────────────────────────────────────────────────────────────────────
-smtp:
-  host: ""
-  port: "587"
-  user: ""
-  password: ""
-  tls: "true"
+grafana:
+  enabled: true
+  image: grafana/grafana:10.4.0
+  adminUser: admin
+  adminPassword: agentverse
+  service:
+    port: 3000
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: ""
 
-# ── Integrations ──────────────────────────────────────────────────────────────
-slack:
-  tenantId: ""
-  signingSecret: ""
-  botToken: ""
+prometheus:
+  enabled: true
+  image: prom/prometheus:v2.51.0
+  service:
+    port: 9090
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
 
-zapier:
-  tenantId: ""
-  webhookSecret: ""
+otel:
+  enabled: true
+  image: otel/opentelemetry-collector-contrib:0.103.0
+
+mailpit:
+  enabled: true
+  image: axllent/mailpit:latest
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  existingPVC: ""

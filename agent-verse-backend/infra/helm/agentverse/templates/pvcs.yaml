@@ -1,0 +1,24 @@
+{{- $full := include "agentverse.fullname" . -}}
+{{- range $name, $cfg := dict "postgres" .Values.postgresql.persistence "redis" .Values.redis.persistence "minio" .Values.minio.persistence "loki" .Values.loki.persistence "grafana" .Values.grafana.persistence "prometheus" .Values.prometheus.persistence }}
+{{- if $cfg.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $full }}-{{ $name }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if $cfg.storageClassName }}
+  storageClassName: {{ $cfg.storageClassName | quote }}
+  {{- else if $.Values.global.storageClassName }}
+  storageClassName: {{ $.Values.global.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $cfg.size | quote }}
+{{- end }}
+{{- end }}
