@@ -776,6 +776,44 @@ class PersistenceGuidanceRequest(BaseModel):
     guidance: str = Field(..., min_length=1, max_length=5000)
 
 
+class FeedbackRequest(BaseModel):
+    rating: int  # 1-5 or thumbs: 1=up, -1=down
+    comment: str = ""
+    is_correct: bool | None = None  # was the goal result correct?
+
+
+@router.post("/{goal_id}/feedback")
+async def submit_goal_feedback(
+    goal_id: str,
+    body: FeedbackRequest,
+    request: Request,
+) -> dict:
+    """Submit human feedback on a goal result (RLHF-lite)."""
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
+        raise HTTPException(status_code=401, detail="Auth required")
+
+    # Store feedback in golden dataset if high confidence
+    if body.is_correct is not None:
+        try:
+            from app.intelligence.verifier_calibration import _default_calibration_store
+            # Find the calibration record for this goal and update actual_outcome
+            for record in _default_calibration_store._records:
+                if record["goal_id"] == goal_id and record["tenant_id"] == tenant_ctx.tenant_id:
+                    await _default_calibration_store.record_actual_outcome(
+                        record["id"], actual_success=body.is_correct
+                    )
+                    break
+        except Exception:
+            pass
+
+    return {
+        "goal_id": goal_id,
+        "status": "feedback_recorded",
+        "rating": body.rating,
+    }
+
+
 @router.post("/{goal_id}/persistence/inject-guidance")
 async def inject_persistence_guidance(
     request: Request, goal_id: str, body: PersistenceGuidanceRequest

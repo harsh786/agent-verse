@@ -23,6 +23,8 @@ const GuardrailCenterPage = lazy(() => import("@/features/settings/GuardrailCent
 const BudgetManagerPage = lazy(() => import("@/features/settings/BudgetManagerPage").then(m => ({ default: m.BudgetManagerPage })));
 const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({ default: m.SelfImprovementPage })));
 const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
+const BuilderPage = lazy(() => import("@/features/builder/BuilderPage"));
+const SkillsPage = lazy(() => import('@/features/skills/SkillsPage'));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -167,6 +169,7 @@ export default function App() {
         <Route path="settings/budgets" element={<Suspense fallback={spinner}><BudgetManagerPage /></Suspense>} />
         <Route path="self-improvement" element={<Suspense fallback={spinner}><SelfImprovementPage /></Suspense>} />
         <Route path="lab" element={<Suspense fallback={spinner}><AgentLabPage /></Suspense>} />
+        <Route path="skills" element={<Suspense fallback={spinner}><SkillsPage /></Suspense>} />
         <Route path="workflow-builder" element={<Suspense fallback={spinner}><WorkflowBuilderPage /></Suspense>} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="analytics" element={<AnalyticsDashboardPage />} />
@@ -189,6 +192,7 @@ export default function App() {
         <Route path="templates" element={<Suspense fallback={spinner}><TemplateLibraryPage /></Suspense>} />
         <Route path="civilization" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
         <Route path="civilization/:id" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
+        <Route path="builder" element={<Suspense fallback={spinner}><BuilderPage /></Suspense>} />
       </Route>
     </Routes>
   );

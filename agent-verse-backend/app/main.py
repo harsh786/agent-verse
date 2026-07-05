@@ -41,6 +41,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.billing import router as billing_router
+from app.api.builder import router as builder_router
 from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.api.a2a import router as a2a_router
 from app.api.agent_directory import router as agent_directory_router
@@ -88,11 +89,14 @@ from app.api.templates import template_store as _template_store
 from app.api.tenants import router as tenants_router
 from app.api.tools import router as tools_router
 from app.api.training_export import router as training_export_router
+from app.api.golden_datasets import router as golden_datasets_router
 from app.api.lab import router as lab_router
+from app.api.skills import router as skills_router
 from app.api.workflows import _WorkflowStore as WorkflowStore
 from app.api.workflows import router as workflows_router
 from app.auth.agent_identity import AgentIdentityService
 from app.auth.scope_enforcement import ScopeEnforcementMiddleware
+from app.auth.google_oauth import router as google_oauth_router
 from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
@@ -465,7 +469,32 @@ def create_app(
     _cost = CostController()
     _policy_engine = PolicyEngine()
     _agent_store = AgentStore()
-    _app_provider = _resolve_provider_for_app(settings)
+    # C6: Use the declarative provider registry directly; fall back to wrapper on error
+    try:
+        from app.providers.registry import resolve_provider as _resolve_provider_registry
+        _app_provider = _resolve_provider_registry()
+        # Production safety guard: refuse FakeProvider in production
+        if isinstance(_app_provider, FakeProvider):
+            import os as _os
+            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
+                raise RuntimeError(
+                    "FATAL: No LLM provider configured for production. "
+                    "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
+                    "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
+                )
+            logger.warning(
+                "fake_provider_active_dev_only",
+                message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+            )
+            _app_provider = FakeProvider(responses=[
+                '{"steps": ["Complete the requested task"]}',
+                "Task executed successfully",
+                '{"success": true, "reason": "Goal achieved"}',
+            ])
+        logger.info("provider_resolved_via_registry")
+    except Exception as _reg_exc:
+        logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
+        _app_provider = _resolve_provider_for_app(settings)
     _meta_agent = MetaAgentPlanner(provider=_app_provider)
     _schedule_store = ScheduleStore()
     _nl_sched = NLScheduler(provider=_app_provider)
@@ -1294,6 +1323,9 @@ def create_app(
     app.include_router(tools_router)
     # SSO authentication
     app.include_router(auth_router)
+    # Google OIDC / OAuth2 login
+    app.include_router(google_oauth_router)
+    logger.info("google_oauth_router_registered")
     # Agents, governance, knowledge, scheduling
     app.include_router(agents_router)
     app.include_router(governance_router)
@@ -1363,6 +1395,15 @@ def create_app(
     # Platform admin (cross-tenant, X-Admin-Key authenticated)
     app.include_router(admin_router)
     logger.info("admin_router_registered")
+    # Skills (composable instruction packs)
+    app.include_router(skills_router)
+    logger.info("skills_router_registered")
+    # Builder (site/app generation — Phase 9)
+    app.include_router(builder_router)
+    logger.info("builder_router_registered")
+    # Golden Datasets (eval promotion — Phase M11)
+    app.include_router(golden_datasets_router)
+    logger.info("golden_datasets_router_registered")
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

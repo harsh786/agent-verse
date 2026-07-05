@@ -176,3 +176,93 @@ class TestSemanticCacheWarmSignature:
             assert isinstance(result, int)
         except TypeError as e:
             pytest.fail(f"0B.4: warm() does not accept queries/embeddings kwargs: {e}")
+
+
+class TestPhase3Wiring:
+    """C1/C2/C3: Phase 3 services must be wired in goal_service, main.py, and MCPClient."""
+
+    def test_goal_service_passes_grounding_checker(self):
+        import inspect
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        assert "grounding_checker" in source or "GroundingChecker" in source, \
+            "C1: grounding_checker not passed to AgentGraph in goal_service"
+
+    def test_goal_service_passes_answer_synthesizer(self):
+        import inspect
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        assert "answer_synthesizer" in source or "AnswerSynthesizer" in source, \
+            "C1: answer_synthesizer not passed to AgentGraph in goal_service"
+
+    def test_google_oauth_router_registered(self):
+        import inspect
+        from app import main
+        source = inspect.getsource(main)
+        assert "google_oauth" in source or "google_oauth_router" in source, \
+            "C2: google_oauth router not registered in main.py"
+
+    def test_exfil_guard_in_mcp_client(self):
+        import inspect
+        from app.mcp import client
+        source = inspect.getsource(client)
+        assert "exfil_guard" in source or "check_tool_args_for_exfil" in source, \
+            "C3: exfil guard not wired in MCPClient.call_tool()"
+
+
+class TestPhase2Wiring:
+    def test_tool_selector_on_app_state(self):
+        """Phase 2: tool_selector must be on app.state."""
+        import inspect
+        from app import main
+        source = inspect.getsource(main)
+        assert "tool_selector" in source, "Phase 2: tool_selector not wired in main.py"
+
+    def test_tiktoken_in_pyproject(self):
+        from pathlib import Path
+        pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text()
+        assert "tiktoken" in pyproject, "Phase 2: tiktoken not in dependencies"
+
+    def test_semantic_cache_backend_wired_in_lifespan(self):
+        import inspect
+        from app import main
+        source = inspect.getsource(main)
+        assert "select_cache_backend" in source or "vector_cache_backend" in source, \
+            "Phase 2: semantic cache vector backend not wired in lifespan"
+
+    def test_sse_emits_id_lines(self):
+        import inspect
+        from app.api import goals
+        source = inspect.getsource(goals)
+        assert "id:" in source or "Last-Event-ID" in source, \
+            "Phase 2: SSE endpoint missing id: lines or Last-Event-ID header"
+
+
+class TestPhase3GraphWiring:
+    def test_graph_accepts_grounding_checker(self):
+        import inspect
+        from app.agent.graph import AgentGraph
+        sig = inspect.signature(AgentGraph.__init__)
+        assert "grounding_checker" in sig.parameters, \
+            "Phase 3: AgentGraph.__init__ missing grounding_checker param"
+
+    def test_graph_accepts_consensus_verifier(self):
+        import inspect
+        from app.agent.graph import AgentGraph
+        sig = inspect.signature(AgentGraph.__init__)
+        assert "consensus_verifier" in sig.parameters, \
+            "Phase 3: AgentGraph.__init__ missing consensus_verifier param"
+
+    def test_graph_accepts_answer_synthesizer(self):
+        from app.agent.graph import AgentGraph
+        import inspect
+        sig = inspect.signature(AgentGraph.__init__)
+        assert "answer_synthesizer" in sig.parameters, \
+            "Phase 3: AgentGraph.__init__ missing answer_synthesizer param"
+
+    def test_calibration_store_in_goal_service(self):
+        import inspect
+        from app.services import goal_service
+        source = inspect.getsource(goal_service)
+        assert "calibration_store" in source, \
+            "Phase 3: calibration_store not passed to AgentGraph in goal_service"

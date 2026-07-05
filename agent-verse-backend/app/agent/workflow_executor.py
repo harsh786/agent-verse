@@ -9,6 +9,13 @@ from typing import Any
 
 from app.agent.sanitization import sanitize_event
 from app.agent.tool_context import ToolContext, ToolRef
+from app.agent.workflow_nodes import (
+    execute_decision_node,
+    execute_delay_node,
+    execute_loop_node,
+    execute_rag_node,
+    execute_skill_node,
+)
 from app.agent.workflow_planner import (
     WorkflowPlan,
     WorkflowStep,
@@ -35,9 +42,19 @@ class WorkflowExecutor:
     ``goal_service.py``, which drives static connector-targeted workflows.
     """
 
-    def __init__(self, provider: Any = None, mcp_client: Any = None) -> None:
+    def __init__(
+        self,
+        provider: Any = None,
+        mcp_client: Any = None,
+        llm_provider: Any = None,
+        embedder: Any = None,
+    ) -> None:
         self._provider = provider
         self._mcp_client = mcp_client
+        # llm_provider is the dedicated LLM interface used by node types that
+        # need LLM access (decision, etc.).  Falls back to provider if not given.
+        self._llm_provider = llm_provider or provider
+        self._embedder = embedder
 
     # ── new parallel DAG API ──────────────────────────────────────────────────
 
@@ -133,7 +150,84 @@ class WorkflowExecutor:
             prior_context = "\n".join(filter(None, dep_outputs))
 
         try:
-            # Prefer tool execution via MCP when a tool name is specified
+            # ── New node-type dispatch ────────────────────────────────────────
+            # When step.tool holds a logical node-type keyword (decision, loop,
+            # delay, rag, skill) we route to the dedicated node executor rather
+            # than treating it as an MCP tool name.
+            node_type = step.tool
+            node_cfg: dict[str, Any] = {
+                "condition": step.description,
+                "type": node_type,
+                "goal": step.description,
+                "seconds": 0,
+                "query_template": step.description,
+                "top_k": 5,
+                "strategy": "hybrid",
+                "collection_id": "",
+                "items_key": "items",
+                "max_iter": 10,
+            }
+            ctx: dict[str, Any] = {
+                "goal": step.description,
+                **{k: v for k, v in prior_results.items() if isinstance(v, dict)},
+            }
+
+            if node_type == "decision":
+                edge = await execute_decision_node(
+                    node_cfg, ctx, llm_provider=self._llm_provider
+                )
+                step.status = "complete"
+                step.result = str(edge)
+                return {
+                    "status": "complete",
+                    "output": str(edge),
+                    "edge": edge,
+                    "node_type": node_type,
+                }
+            elif node_type == "loop":
+                items = await execute_loop_node(node_cfg, ctx)
+                step.status = "complete"
+                step.result = str(items)
+                return {
+                    "status": "complete",
+                    "output": str(items),
+                    "items": items,
+                    "node_type": node_type,
+                }
+            elif node_type == "delay":
+                delay_result = await execute_delay_node(node_cfg, ctx)
+                step.status = "complete"
+                step.result = str(delay_result)
+                return {
+                    "status": "complete",
+                    "output": str(delay_result),
+                    "node_type": node_type,
+                    **delay_result,
+                }
+            elif node_type == "rag":
+                rag_result = await execute_rag_node(
+                    node_cfg, ctx, db_session=None, embedder=self._embedder
+                )
+                step.status = "complete"
+                step.result = rag_result.get("context_text", "")
+                return {
+                    "status": "complete",
+                    "output": rag_result.get("context_text", ""),
+                    "node_type": node_type,
+                    **rag_result,
+                }
+            elif node_type == "skill":
+                skill_result = await execute_skill_node(node_cfg, ctx)
+                step.status = "complete"
+                step.result = skill_result.get("skill_instructions", "")
+                return {
+                    "status": "complete",
+                    "output": skill_result.get("skill_instructions", ""),
+                    "node_type": node_type,
+                    **skill_result,
+                }
+
+            # ── Prefer tool execution via MCP when a tool name is specified
             if step.tool and self._mcp_client is not None:
                 try:
                     server_id = ""

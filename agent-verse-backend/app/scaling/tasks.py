@@ -841,6 +841,26 @@ def run_goal(
             except Exception as _vp_exc:
                 logger.warning("verifier_provider_build_failed: %s", _vp_exc)
 
+            # Phase 3 services — grounding, consensus, synthesis, calibration
+            _phase3_grounding = None
+            _phase3_synthesizer = None
+            _phase3_calibration = None
+            try:
+                from app.agent.grounding import GroundingChecker
+                _phase3_grounding = GroundingChecker()
+            except Exception as _p3g_exc:
+                logger.debug("phase3_grounding_unavailable: %s", _p3g_exc)
+            try:
+                from app.agent.synthesis import AnswerSynthesizer
+                _phase3_synthesizer = AnswerSynthesizer(llm_provider=provider)
+            except Exception as _p3s_exc:
+                logger.debug("phase3_synthesizer_unavailable: %s", _p3s_exc)
+            try:
+                from app.intelligence.verifier_calibration import _default_calibration_store
+                _phase3_calibration = _default_calibration_store
+            except Exception as _p3c_exc:
+                logger.debug("phase3_calibration_unavailable: %s", _p3c_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
@@ -861,6 +881,10 @@ def run_goal(
                 cost_tracker=None,
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
+                # Phase 3 services — grounding, consensus, synthesis, calibration
+                grounding_checker=_phase3_grounding,
+                answer_synthesizer=_phase3_synthesizer,
+                calibration_store=_phase3_calibration,
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory

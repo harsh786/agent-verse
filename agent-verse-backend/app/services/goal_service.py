@@ -761,6 +761,14 @@ class GoalService:
                 cooldown_seconds=120,
             )
 
+        # Phase 3 services — grounding, consensus, synthesis, calibration
+        from app.agent.grounding import GroundingChecker
+        from app.agent.synthesis import AnswerSynthesizer
+        from app.intelligence.verifier_calibration import _default_calibration_store
+        _grounding_checker = GroundingChecker()
+        _answer_synthesizer = AnswerSynthesizer(llm_provider=provider)
+        _calibration_store = getattr(app_state, "calibration_store", _default_calibration_store)
+
         graph = AgentGraph(
             planner=provider,
             executor=provider,
@@ -798,6 +806,10 @@ class GoalService:
             checkpointer=_resolve_checkpointer(app_state),
             # H-1: real token-cost tracker
             cost_tracker=getattr(app_state, "cost_tracker", None),
+            # Phase 3 services — grounding, consensus, synthesis, calibration
+            grounding_checker=_grounding_checker,
+            answer_synthesizer=_answer_synthesizer,
+            calibration_store=_calibration_store,
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db

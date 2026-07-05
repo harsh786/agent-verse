@@ -35,6 +35,34 @@ import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
 type GoalDetailTab = "results" | "evidence" | "execution" | "events" | "eval";
 
+function FeedbackWidget({ goalId }: { goalId: string }) {
+  const [voted, setVoted] = useState<'up' | 'down' | null>(null);
+  const apiKey = useAuthStore(s => s.apiKey) || '';
+
+  const vote = async (isUp: boolean) => {
+    setVoted(isUp ? 'up' : 'down');
+    try {
+      await fetch(`/api/goals/${goalId}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ rating: isUp ? 5 : 1, is_correct: isUp }),
+      });
+    } catch {}
+  };
+
+  if (voted) return (
+    <p className="text-xs text-muted-foreground mt-2">Thanks for your feedback!</p>
+  );
+
+  return (
+    <div className="flex items-center gap-2 mt-3">
+      <span className="text-xs text-muted-foreground">Was this result helpful?</span>
+      <button onClick={() => vote(true)} className="p-1 rounded hover:bg-muted text-lg">👍</button>
+      <button onClick={() => vote(false)} className="p-1 rounded hover:bg-muted text-lg">👎</button>
+    </div>
+  );
+}
+
 type GoalDetailTabConfig = {
   tab: GoalDetailTab;
   label: string;
@@ -653,6 +681,7 @@ export function GoalDetailPage() {
             artifact={goal.result_artifact}
             onShowExecution={() => selectTab("execution", true)}
           />
+          {goalId && <FeedbackWidget goalId={goalId} />}
         </div>
       )}
 
