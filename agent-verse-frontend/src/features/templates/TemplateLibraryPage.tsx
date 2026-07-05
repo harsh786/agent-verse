@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { TemplateCard } from "./components/TemplateCard";
 import { TemplateInstantiator } from "./components/TemplateInstantiator";
@@ -107,6 +108,7 @@ function TemplateFormModal({
 }
 
 export function TemplateLibraryPage() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [domainFilter, setDomainFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -224,7 +226,7 @@ export function TemplateLibraryPage() {
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
           <BookOpen className="h-10 w-10 opacity-20 mb-2" aria-hidden="true" />
-          <p className="text-sm">No templates found</p>
+          <p className="text-sm">{t('marketplace.noResults')}</p>
           <button onClick={() => setCreateOpen(true)} className="mt-3 text-xs text-primary hover:underline">
             Create your first template
           </button>
@@ -279,7 +281,7 @@ export function TemplateLibraryPage() {
         open={!!deleteId}
         title="Delete template?"
         description="This template will be permanently removed. Goals already submitted from this template are not affected."
-        confirmLabel="Delete"
+        confirmLabel={t('common.delete')}
         variant="danger"
         isLoading={deleteMutation.isPending}
         onConfirm={() => deleteId && deleteMutation.mutate(deleteId)}

@@ -13,6 +13,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   Zap,
   CheckCircle2,
@@ -154,6 +155,7 @@ function QuickGoalSubmit() {
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   // ── Data fetching ──────────────────────────────────────────────────────
   const { data: goals = [], isLoading: goalsLoading } = useQuery({
@@ -329,7 +331,7 @@ export function DashboardPage() {
         />
         <KpiCard
           icon={Bot}
-          label="Agents"
+          label={t('nav.agents')}
           value={Array.isArray(agents) ? agents.length : "—"}
           sub={`${agentOrbitNodes.filter((a) => a.status === "active").length} active`}
           accent="violet"

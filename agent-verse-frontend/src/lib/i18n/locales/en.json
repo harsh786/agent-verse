@@ -1,5 +1,56 @@
 {
-  "nav": { "goals": "Goals", "agents": "Agents", "knowledge": "Knowledge", "marketplace": "Marketplace", "settings": "Settings" },
-  "goals": { "submit": "Submit Goal", "placeholder": "Describe what you want the agent to do…", "status": { "complete": "Complete", "failed": "Failed", "executing": "Executing", "planning": "Planning" } },
-  "common": { "loading": "Loading…", "error": "Something went wrong", "retry": "Retry", "cancel": "Cancel", "save": "Save", "delete": "Delete" }
+  "nav": {
+    "goals": "Goals", "agents": "Agents", "knowledge": "Knowledge",
+    "marketplace": "Marketplace", "settings": "Settings", "dashboard": "Dashboard",
+    "civilization": "Civilization", "workflows": "Workflows", "schedules": "Schedules",
+    "templates": "Templates", "analytics": "Analytics", "lab": "Lab"
+  },
+  "goals": {
+    "submit": "Submit Goal",
+    "submitShort": "Run",
+    "placeholder": "Describe what you want the agent to do…",
+    "new": "New Goal",
+    "noGoals": "No goals yet",
+    "noGoalsDesc": "Submit your first goal to get started",
+    "status": {
+      "complete": "Complete", "failed": "Failed",
+      "executing": "Executing", "planning": "Planning",
+      "waiting_human": "Awaiting Approval", "cancelled": "Cancelled"
+    },
+    "tabs": { "results": "Results", "execution": "Execution", "events": "Developer Log", "eval": "Eval", "explain": "Why?" },
+    "actions": { "cancel": "Cancel", "pause": "Pause", "resume": "Resume", "refresh": "Refresh" }
+  },
+  "agents": {
+    "new": "New Agent", "noAgents": "No agents yet",
+    "noAgentsDesc": "Create your first agent to automate tasks",
+    "tabs": { "overview": "Overview", "versions": "Versions", "permissions": "Permissions", "knowledge": "Knowledge", "rollout": "Rollout Gate", "credentials": "Credentials" },
+    "actions": { "edit": "Edit", "clone": "Clone", "delete": "Delete", "snapshot": "Take Snapshot" },
+    "autonomy": { "supervised": "Supervised", "bounded": "Bounded Autonomous", "fully": "Fully Autonomous" }
+  },
+  "common": {
+    "loading": "Loading…", "error": "Something went wrong", "retry": "Retry",
+    "cancel": "Cancel", "save": "Save", "delete": "Delete", "edit": "Edit",
+    "close": "Close", "back": "Back", "next": "Next", "submit": "Submit",
+    "confirm": "Confirm", "search": "Search", "filter": "Filter",
+    "noData": "No data available", "refresh": "Refresh",
+    "viewAll": "View All", "viewDetails": "View Details", "learnMore": "Learn More",
+    "required": "Required", "optional": "Optional", "yes": "Yes", "no": "No",
+    "enabled": "Enabled", "disabled": "Disabled", "active": "Active",
+    "inactive": "Inactive", "pending": "Pending", "approved": "Approved"
+  },
+  "knowledge": {
+    "new": "New Collection", "ingest": "Ingest Document",
+    "search": "Search knowledge…", "noCollections": "No knowledge collections"
+  },
+  "marketplace": {
+    "install": "Install", "installed": "Installed", "search": "Search marketplace…",
+    "all": "All Templates", "noResults": "No templates found"
+  },
+  "settings": { "title": "Settings", "billing": "Billing", "security": "Security", "mfa": "Two-Factor Auth", "api_keys": "API Keys" },
+  "errors": {
+    "unauthorized": "Please sign in to continue",
+    "notFound": "Page not found",
+    "serverError": "Server error — please try again",
+    "networkError": "Network error — check your connection"
+  }
 }

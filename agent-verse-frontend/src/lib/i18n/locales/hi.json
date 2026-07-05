@@ -1,5 +1,56 @@
 {
-  "nav": { "goals": "लक्ष्य", "agents": "एजेंट", "knowledge": "ज्ञान", "marketplace": "मार्केटप्लेस", "settings": "सेटिंग्स" },
-  "goals": { "submit": "लक्ष्य सबमिट करें", "placeholder": "बताएं कि आप एजेंट से क्या करवाना चाहते हैं…", "status": { "complete": "पूर्ण", "failed": "विफल", "executing": "क्रियान्वित", "planning": "योजना बना रहा है" } },
-  "common": { "loading": "लोड हो रहा है…", "error": "कुछ गलत हो गया", "retry": "पुनः प्रयास", "cancel": "रद्द करें", "save": "सहेजें", "delete": "हटाएं" }
+  "nav": {
+    "goals": "लक्ष्य", "agents": "एजेंट", "knowledge": "ज्ञान",
+    "marketplace": "मार्केटप्लेस", "settings": "सेटिंग्स", "dashboard": "डैशबोर्ड",
+    "civilization": "सभ्यता", "workflows": "वर्कफ़्लो", "schedules": "शेड्यूल",
+    "templates": "टेम्पलेट", "analytics": "विश्लेषण", "lab": "प्रयोगशाला"
+  },
+  "goals": {
+    "submit": "लक्ष्य सबमिट करें",
+    "submitShort": "चलाएं",
+    "placeholder": "बताएं कि आप एजेंट से क्या करवाना चाहते हैं…",
+    "new": "नया लक्ष्य",
+    "noGoals": "अभी तक कोई लक्ष्य नहीं",
+    "noGoalsDesc": "शुरू करने के लिए अपना पहला लक्ष्य सबमिट करें",
+    "status": {
+      "complete": "पूर्ण", "failed": "विफल",
+      "executing": "क्रियान्वित", "planning": "योजना बना रहा है",
+      "waiting_human": "अनुमोदन की प्रतीक्षा", "cancelled": "रद्द"
+    },
+    "tabs": { "results": "परिणाम", "execution": "क्रियान्वयन", "events": "लॉग", "eval": "मूल्यांकन", "explain": "क्यों?" },
+    "actions": { "cancel": "रद्द करें", "pause": "रोकें", "resume": "जारी रखें", "refresh": "ताज़ा करें" }
+  },
+  "agents": {
+    "new": "नया एजेंट", "noAgents": "अभी तक कोई एजेंट नहीं",
+    "noAgentsDesc": "कार्य स्वचालित करने के लिए पहला एजेंट बनाएं",
+    "tabs": { "overview": "अवलोकन", "versions": "संस्करण", "permissions": "अनुमतियाँ", "knowledge": "ज्ञान", "rollout": "रोलआउट", "credentials": "क्रेडेंशियल" },
+    "actions": { "edit": "संपादित करें", "clone": "क्लोन करें", "delete": "हटाएं", "snapshot": "स्नैपशॉट" },
+    "autonomy": { "supervised": "पर्यवेक्षित", "bounded": "सीमित स्वायत्त", "fully": "पूर्ण स्वायत्त" }
+  },
+  "common": {
+    "loading": "लोड हो रहा है…", "error": "कुछ गलत हो गया", "retry": "पुनः प्रयास",
+    "cancel": "रद्द करें", "save": "सहेजें", "delete": "हटाएं", "edit": "संपादित करें",
+    "close": "बंद करें", "back": "वापस", "next": "अगला", "submit": "सबमिट करें",
+    "confirm": "पुष्टि करें", "search": "खोजें", "filter": "फ़िल्टर करें",
+    "noData": "डेटा उपलब्ध नहीं", "refresh": "ताज़ा करें",
+    "viewAll": "सभी देखें", "viewDetails": "विवरण देखें", "learnMore": "और जानें",
+    "required": "आवश्यक", "optional": "वैकल्पिक", "yes": "हाँ", "no": "नहीं",
+    "enabled": "सक्षम", "disabled": "अक्षम", "active": "सक्रिय",
+    "inactive": "निष्क्रिय", "pending": "लंबित", "approved": "अनुमोदित"
+  },
+  "knowledge": {
+    "new": "नया संग्रह", "ingest": "दस्तावेज़ जोड़ें",
+    "search": "ज्ञान खोजें…", "noCollections": "कोई ज्ञान संग्रह नहीं"
+  },
+  "marketplace": {
+    "install": "इंस्टॉल करें", "installed": "इंस्टॉल किया", "search": "मार्केटप्लेस खोजें…",
+    "all": "सभी टेम्पलेट", "noResults": "कोई टेम्पलेट नहीं मिला"
+  },
+  "settings": { "title": "सेटिंग्स", "billing": "बिलिंग", "security": "सुरक्षा", "mfa": "दो-कारक प्रमाणीकरण", "api_keys": "API कुंजियाँ" },
+  "errors": {
+    "unauthorized": "जारी रखने के लिए साइन इन करें",
+    "notFound": "पेज नहीं मिला",
+    "serverError": "सर्वर त्रुटि — कृपया पुनः प्रयास करें",
+    "networkError": "नेटवर्क त्रुटि — अपना कनेक्शन जांचें"
+  }
 }
