@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth';
 
-const API = import.meta.env.VITE_API_URL || '';
+const API = import.meta.env.VITE_API_BASE_URL || '';
 
 interface Span {
   span_id: string;

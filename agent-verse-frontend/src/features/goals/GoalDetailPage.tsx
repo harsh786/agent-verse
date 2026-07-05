@@ -14,8 +14,9 @@ import {
   GitCompare,
   Ghost,
   FlaskConical,
+  RotateCcw,
 } from "lucide-react";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { goalsApi, governanceApi } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
@@ -210,11 +211,15 @@ function StepRow({
   events,
   index,
   goalStatus,
+  onRetry,
+  isRetrying,
 }: {
   event: StreamGoalEvent;
   events: StreamGoalEvent[];
   index: number;
   goalStatus: string;
+  onRetry?: (description: string) => void;
+  isRetrying?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const summary = eventSummary(event, { events, index, goalStatus });
@@ -258,7 +263,60 @@ function StepRow({
           {summary.details.length > 0 ? summary.details.join("\n") : JSON.stringify(event, null, 2)}
         </pre>
       )}
+      {/* Fix 9: retry from this step when it has failed */}
+      {status === "failed" && onRetry && (
+        <div className="px-4 pb-3">
+          <button
+            onClick={() => onRetry(summary.label)}
+            disabled={isRetrying}
+            className="text-xs text-primary hover:underline flex items-center gap-1 disabled:opacity-50"
+          >
+            {isRetrying
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <RotateCcw className="h-3 w-3" />}
+            Retry from here
+          </button>
+        </div>
+      )}
     </li>
+  );
+}
+
+// Fix 7: human-readable event type labels
+const EVENT_LABELS: Record<string, string> = {
+  goal_started:        "🚀 Goal started",
+  plan_ready:          "📋 Plan ready",
+  step_started:        "▶️ Step started",
+  step_complete:       "✅ Step complete",
+  tool_call_complete:  "🔧 Tool call completed",
+  tool_call_failed:    "❌ Tool call failed",
+  goal_complete:       "🎉 Goal completed",
+  goal_failed:         "💥 Goal failed",
+  goal_cancelled:      "⛔ Goal cancelled",
+  approval_required:   "⏳ Awaiting approval",
+  approval_granted:    "✔️ Approval granted",
+  knowledge_retrieved: "📚 Knowledge retrieved",
+  verification_done:   "🔍 Verification done",
+};
+
+// Fix 10: live elapsed-time ticker for executing goals
+function ElapsedTimer({ startedAt }: { startedAt: string }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const start = new Date(startedAt).getTime();
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startedAt]);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  return (
+    <span className="font-mono text-sm text-primary" aria-label="Elapsed time">
+      {mins}:{String(secs).padStart(2, "0")}
+    </span>
   );
 }
 
@@ -284,6 +342,15 @@ export function GoalDetailPage() {
     refetchInterval: 5_000,
     enabled: !!goalId,
   });
+
+  // Update document title to reflect the current goal
+  useEffect(() => {
+    if (goal?.goal) {
+      const truncated = goal.goal.length > 50 ? goal.goal.slice(0, 50) + '…' : goal.goal;
+      document.title = `${truncated} — AgentVerse`;
+      return () => { document.title = 'AgentVerse'; };
+    }
+  }, [goal?.goal]);
 
   const { events, connected, streamingToken } = useGoalStream(goalId ?? "");
 
@@ -337,6 +404,20 @@ export function GoalDetailPage() {
     event.preventDefault();
     selectTab(visibleTabs[nextIndex].tab, true);
   }
+
+  const retryFromStep = useMutation({
+    mutationFn: (stepDescription: string) =>
+      goalsApi.submit({
+        goal: `${goal?.goal ?? ''}\n\nContinue from this step: ${stepDescription}`,
+        dry_run: false,
+      }),
+    onSuccess: (res) => {
+      toast({ kind: 'success', message: 'Goal re-submitted from this step!' });
+      void qc.invalidateQueries({ queryKey: ['goals'] });
+      navigate(`/goals/${res.id ?? res.goal_id}`);
+    },
+    onError: () => toast({ kind: 'error', message: 'Failed to retry from this step' }),
+  });
 
   const cancel = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
@@ -459,6 +540,10 @@ export function GoalDetailPage() {
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={goal.status} />
+            {/* Fix 10: live elapsed timer for in-progress goals */}
+            {["executing", "planning"].includes(goal.status) && goal.created_at && (
+              <ElapsedTimer startedAt={goal.created_at} />
+            )}
             <LiveCostTicker
               currentCost={goal.cost_usd ?? 0}
               isRunning={["planning", "executing", "verifying"].includes(goal.status)}
@@ -472,7 +557,7 @@ export function GoalDetailPage() {
           goal={goal.goal}
           status={goal.status}
           artifact={goal.result_artifact}
-          onRerun={() => window.location.reload()}
+          onRerun={() => navigate('/goals', { state: { prefillGoal: goal?.goal ?? '' } })}
         />
       )}
 
@@ -703,6 +788,8 @@ export function GoalDetailPage() {
                     events={events}
                     index={i}
                     goalStatus={goal.status}
+                    onRetry={(desc) => retryFromStep.mutate(desc)}
+                    isRetrying={retryFromStep.isPending}
                   />
                 ))}
               </ul>
@@ -781,7 +868,7 @@ export function GoalDetailPage() {
                     ? new Date(timestamp).toLocaleTimeString()
                     : `#${i + 1}`}
                 </span>
-                <span className="font-medium">{ev.type}</span>
+                <span className="font-medium">{EVENT_LABELS[ev.type] ?? ev.type}</span>
                 {payload?.message != null && (
                   <span className="text-muted-foreground text-xs">
                     {String(payload.message)}

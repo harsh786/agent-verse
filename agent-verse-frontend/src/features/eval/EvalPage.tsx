@@ -1,17 +1,21 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Play, Shield, FlaskConical, BarChart3, Download,
-  CheckCircle2, XCircle, Plus, X,
+  CheckCircle2, XCircle, Plus, X, TrendingDown, Trash2,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import {
   API_BASE,
+  apiFetch,
   evalSuitesApi,
   goalsApi,
   simulationApi,
+  type EvalSuiteResult,
 } from '@/lib/api/client';
 import { ThemedRadarChart } from '@/components/charts/ThemedRadarChart';
+import { toast } from '@/stores/toast';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -50,6 +54,7 @@ interface EvalScorecard {
   goal_id: string;
   scores: Record<string, number>;
   average_score: number;
+  recorded_at?: string;
 }
 
 type EvalTab = 'scorecard' | 'simulation' | 'redteam' | 'suites';
@@ -100,21 +105,65 @@ function Card({ children, className = '', onClick }: {
   );
 }
 
+// ── ScoreTrend sparkline ──────────────────────────────────────────────────────
+
+function ScoreTrend({ scores }: { scores: number[] }) {
+  if (!scores || scores.length < 2) return null;
+  const max = Math.max(...scores);
+  const min = Math.min(...scores);
+  const range = max - min || 1;
+  const width = 60;
+  const height = 20;
+  const points = scores.map((s, i) => {
+    const x = (i / (scores.length - 1)) * width;
+    const y = height - ((s - min) / range) * height;
+    return `${x},${y}`;
+  }).join(' ');
+  const lastScore = scores[scores.length - 1];
+  const prevScore = scores[scores.length - 2];
+  const strokeColor = lastScore >= prevScore ? '#22c55e' : '#ef4444';
+  return (
+    <svg width={width} height={height} className="inline-block">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 // ── Tab: Scorecard ────────────────────────────────────────────────────────────
 
-async function fetchGoalEval(apiKey: string, goalId: string): Promise<EvalScorecard> {
-  const res = await fetch(`${API_BASE}/goals/${goalId}/eval`, {
-    headers: { 'X-API-Key': apiKey },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+async function fetchGoalEval(goalId: string): Promise<EvalScorecard> {
+  return apiFetch<EvalScorecard>(`/goals/${goalId}/eval`);
 }
 
 function ScorecardTab({ apiKey }: { apiKey: string }) {
   const [selectedGoalId, setSelectedGoalId] = useState('');
   const [scorecard, setScorecard] = useState<EvalScorecard | null>(null);
   const [prevScorecard, setPrevScorecard] = useState<EvalScorecard | null>(null);
-  const [history, setHistory] = useState<EvalScorecard[]>([]);
+  const [history, setHistory] = useState<EvalScorecard[]>(() => {
+    try {
+      const key = `av_eval_history_${useAuthStore.getState().tenantId}`;
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareGoalId, setCompareGoalId] = useState<string | null>(null);
+
+  const saveToHistory = (entry: EvalScorecard) => {
+    const key = `av_eval_history_${useAuthStore.getState().tenantId}`;
+    setHistory(prev => {
+      const next = [entry, ...prev.slice(0, 19)]; // Keep last 20
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
 
   const { data: goalsData } = useQuery({
     queryKey: ['eval-goals'],
@@ -124,13 +173,54 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
   const goals = goalsData?.goals ?? [];
 
   const evalMutation = useMutation({
-    mutationFn: () => fetchGoalEval(apiKey, selectedGoalId),
+    mutationFn: () => fetchGoalEval(selectedGoalId),
     onSuccess: (data) => {
       setPrevScorecard(scorecard);
-      setScorecard(data);
-      setHistory((h) => [...h.slice(-9), data]);
+      const scored: EvalScorecard = { ...data, recorded_at: new Date().toISOString() };
+      setScorecard(scored);
+      saveToHistory(scored);
     },
   });
+
+  // Fix 3: Compare goal scorecard
+  const { data: compareScorecard } = useQuery({
+    queryKey: ['eval-scorecard-compare', compareGoalId],
+    queryFn: () => fetchGoalEval(compareGoalId!),
+    enabled: !!compareGoalId,
+  });
+
+  const compareRadarData = (compareMode && compareScorecard)
+    ? ALL_7_DIMENSIONS.map((dim) => ({
+        metric: DIM_LABEL[dim],
+        value: compareScorecard.scores[dim] ?? 0,
+      }))
+    : undefined;
+
+  // Fix 6: Regression detection
+  const recentScores = history.map(h => h.average_score ?? 0);
+  const latestScore = recentScores[recentScores.length - 1] ?? 0;
+  const prevAvgScores = recentScores.slice(0, -1);
+  const sevenDayAvg = prevAvgScores.length > 0
+    ? prevAvgScores.slice(-7).reduce((a: number, b: number) => a + b, 0) / Math.min(prevAvgScores.length, 7)
+    : latestScore;
+  const isRegression = scorecard != null && prevAvgScores.length > 0 && latestScore < sevenDayAvg - 0.05;
+
+  // Fix 5: Export eval results as CSV
+  const exportEvalResults = () => {
+    if (!history.length) return;
+    const headers = ['goal_id', 'avg_score', ...ALL_7_DIMENSIONS];
+    const rows = history.map((run) => [
+      run.goal_id,
+      (run.average_score * 100).toFixed(1),
+      ...ALL_7_DIMENSIONS.map(d => ((run.scores[d] ?? 0) * 100).toFixed(1)),
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'eval-results.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const radarData = ALL_7_DIMENSIONS.map((dim) => ({
     metric: DIM_LABEL[dim],
@@ -185,7 +275,38 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
               Export JSON
             </button>
           )}
+          {history.length > 0 && (
+            <button
+              onClick={exportEvalResults}
+              className="flex items-center gap-1.5 border border-border text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg text-sm transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </button>
+          )}
+          <button
+            onClick={() => { setCompareMode(m => !m); if (compareMode) setCompareGoalId(null); }}
+            className={`text-xs px-2 py-1 rounded border ${compareMode ? 'bg-primary text-primary-foreground' : 'border-input hover:bg-muted'}`}
+          >
+            Compare
+          </button>
         </div>
+        {compareMode && (
+          <div className="flex items-center gap-2 mt-3">
+            <span className="text-xs text-muted-foreground">Compare with:</span>
+            <select
+              value={compareGoalId ?? ''}
+              onChange={e => setCompareGoalId(e.target.value || null)}
+              className="text-xs border border-input rounded px-2 py-1 bg-background"
+            >
+              <option value="">Select a goal...</option>
+              {goals.map(g => {
+                const id = g.goal_id ?? g.id;
+                return <option key={id} value={id}>{g.goal.slice(0, 50)}…</option>;
+              })}
+            </select>
+          </div>
+        )}
         {evalMutation.isError && (
           <p className="text-sm text-red-400 mt-2">{String(evalMutation.error)}</p>
         )}
@@ -202,7 +323,20 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
               {(scorecard.average_score * 100).toFixed(1)}
             </p>
             <p className="text-xs text-muted-foreground mb-4 text-center">avg score out of 100</p>
-            <ThemedRadarChart data={radarData} height={220} />
+            {isRegression && (
+              <div className="flex justify-center mb-3">
+                <span className="text-xs bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <TrendingDown className="h-3 w-3" />
+                  Regression detected
+                </span>
+              </div>
+            )}
+            <ThemedRadarChart
+              data={radarData}
+              compareData={compareRadarData}
+              compareLabel={compareGoalId ? `Goal ${compareGoalId.slice(0, 8)}…` : 'Compare'}
+              height={220}
+            />
           </Card>
 
           {/* 7-dimension bars */}
@@ -257,17 +391,22 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="text-left py-2 text-muted-foreground font-normal">Run</th>
+                  <th className="text-left py-2 text-muted-foreground font-normal">Date</th>
                   {ALL_7_DIMENSIONS.map((d) => (
                     <th key={d} className="text-right py-2 text-muted-foreground font-normal">{DIM_LABEL[d].slice(0, 6)}</th>
                   ))}
                   <th className="text-right py-2 text-muted-foreground font-normal">Avg</th>
+                  <th className="text-right py-2 text-muted-foreground font-normal">Trend</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
                 {history.map((h, i) => (
                   <tr key={i} className="hover:bg-card">
-                    <td className="py-2 text-muted-foreground">#{i + 1}</td>
+                    <td className="py-2 text-muted-foreground text-xs">
+                      {h.recorded_at
+                        ? new Date(h.recorded_at).toLocaleDateString()
+                        : `#${i + 1}`}
+                    </td>
                     {ALL_7_DIMENSIONS.map((d) => {
                       const v = h.scores[d] ?? 0;
                       return (
@@ -278,6 +417,9 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
                     })}
                     <td className="py-2 text-right font-semibold text-foreground tabular-nums">
                       {(h.average_score * 100).toFixed(1)}
+                    </td>
+                    <td className="py-2 text-right">
+                      <ScoreTrend scores={history.slice(0, i + 1).map(entry => entry.average_score * 100)} />
                     </td>
                   </tr>
                 ))}
@@ -324,7 +466,7 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
     try {
       mockTools = JSON.parse(mockJson || '{}');
     } catch {
-      alert('Mock tools must be valid JSON');
+      toast({ kind: 'error', message: 'Invalid JSON in mock response. Please check the format.' });
       return;
     }
 
@@ -674,8 +816,20 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
   const [suiteDesc, setSuiteDesc] = useState('');
   const [activeSuiteId, setActiveSuiteId] = useState<string | null>(null);
   const [showAddTask, setShowAddTask] = useState(false);
+  const [deleteSuiteId, setDeleteSuiteId] = useState<string | null>(null);
   const [taskForm, setTaskForm] = useState<GoldenTaskForm>({
     goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', min_score: '0.8',
+  });
+
+  const deleteSuiteMutation = useMutation({
+    mutationFn: (suiteId: string) => evalSuitesApi.deleteSuite(suiteId),
+    onSuccess: () => {
+      toast({ kind: 'success', message: 'Suite deleted' });
+      qc.invalidateQueries({ queryKey: ['eval-suites'] });
+      setActiveSuiteId(null);
+      setDeleteSuiteId(null);
+    },
+    onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
   const { data: suites = [], isLoading } = useQuery({
@@ -684,11 +838,21 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
     enabled: !!apiKey,
   });
 
-  const { data: suiteResults } = useQuery({
+  // Fix 4: per-suite results map — prevents cross-contamination when switching suites
+  const [suiteResultsMap, setSuiteResultsMap] = useState<Map<string, EvalSuiteResult[]>>(new Map());
+
+  const { data: fetchedSuiteResults } = useQuery({
     queryKey: ['suite-results', activeSuiteId],
     queryFn: () => evalSuitesApi.getSuiteResults(activeSuiteId!),
     enabled: !!activeSuiteId,
   });
+
+  // Sync fetched results into the per-suite map
+  useEffect(() => {
+    if (activeSuiteId && fetchedSuiteResults) {
+      setSuiteResultsMap(prev => new Map(prev).set(activeSuiteId, fetchedSuiteResults as EvalSuiteResult[]));
+    }
+  }, [activeSuiteId, fetchedSuiteResults]);
 
   const createMutation = useMutation({
     mutationFn: () => evalSuitesApi.createSuite(suiteName, suiteDesc || undefined),
@@ -705,6 +869,8 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
       input: taskForm.goal,
       expected_output: taskForm.expected_output_contains || undefined,
       tags: taskForm.expected_tools ? taskForm.expected_tools.split(',').map((t) => t.trim()) : [],
+      forbidden_tools: taskForm.forbidden_tools ? taskForm.forbidden_tools.split(',').map((t) => t.trim()) : undefined,
+      min_score: taskForm.min_score ? Number(taskForm.min_score) : undefined,
     }),
     onSuccess: () => {
       setShowAddTask(false);
@@ -714,7 +880,9 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
 
   const runMutation = useMutation({
     mutationFn: (id: string) => evalSuitesApi.runSuite(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['suite-results', activeSuiteId] }),
+    onSuccess: (_, suiteId) => {
+      qc.invalidateQueries({ queryKey: ['suite-results', suiteId] });
+    },
   });
 
   const typedSuites = suites as Array<{ suite_id: string; name?: string; task_count?: number; created_at?: string; description?: string }>;
@@ -777,7 +945,7 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
           {typedSuites.map((suite) => (
             <Card
               key={suite.suite_id}
-              className={`overflow-hidden cursor-pointer transition-colors ${activeSuiteId === suite.suite_id ? 'border-indigo-500/40' : ''}`}
+              className={`overflow-hidden cursor-pointer transition-colors group ${activeSuiteId === suite.suite_id ? 'border-indigo-500/40' : ''}`}
             >
               <div
                 className="flex items-center justify-between px-5 py-4"
@@ -805,15 +973,22 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                   >
                     Run
                   </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeleteSuiteId(suite.suite_id); }}
+                    className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label={`Delete suite: ${suite.name ?? suite.suite_id}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
 
               {/* Expanded: suite results */}
-              {activeSuiteId === suite.suite_id && suiteResults && suiteResults.length > 0 && (
+              {activeSuiteId === suite.suite_id && (suiteResultsMap.get(suite.suite_id)?.length ?? 0) > 0 && (
                 <div className="border-t border-border p-4">
                   <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Runs</h4>
                   <div className="space-y-1.5">
-                    {(suiteResults as Array<{ run_id?: string; overall_score?: number; passed?: number; failed?: number; completed_at?: string }>).slice(-5).map((r, i) => (
+                    {(suiteResultsMap.get(suite.suite_id) ?? []).slice(-5).map((r, i) => (
                       <div key={r.run_id ?? i} className="flex items-center gap-3 text-xs">
                         <span className="text-muted-foreground/60">#{i + 1}</span>
                         <div className="flex-1 bg-muted rounded-full h-1.5">
@@ -875,6 +1050,17 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
           </Card>
         </div>
       )}
+      {/* Delete suite confirm */}
+      <ConfirmModal
+        open={!!deleteSuiteId}
+        title="Delete evaluation suite?"
+        description="All tasks and run history for this suite will be permanently deleted."
+        confirmLabel="Delete Suite"
+        variant="danger"
+        isLoading={deleteSuiteMutation.isPending}
+        onConfirm={() => { if (deleteSuiteId) deleteSuiteMutation.mutate(deleteSuiteId); }}
+        onCancel={() => setDeleteSuiteId(null)}
+      />
     </div>
   );
 }

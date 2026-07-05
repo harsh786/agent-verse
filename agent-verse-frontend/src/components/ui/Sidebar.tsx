@@ -1,13 +1,15 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { clsx } from "clsx";
+import { useState } from "react";
 import {
   LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen,
-  Shield, Users, Activity, BarChart3, ShoppingBag, Building,
-  Settings, ChevronLeft, Zap, CheckSquare, DollarSign,
+  Shield, ShieldCheck, Users, Activity, BarChart3, ShoppingBag, Building,
+  Settings, ChevronLeft, ChevronDown, ChevronRight, Zap, CheckSquare, DollarSign,
   GitBranch, FlaskConical, BarChart2, Globe,
   Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
   Bell, KeyRound, FileLock, X, Package, Ghost, TrendingUp, LayoutGrid,
-  Hammer,
+  Hammer, Sparkles, Plus, Search, TestTube2, Microscope, MousePointer2, Hash,
+  Library, ClipboardList, User, LogOut,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -27,10 +29,26 @@ interface NavSection {
   items: NavItem[];
 }
 
+// Enterprise items shown when the section is collapsed
+const ENTERPRISE_PINNED = new Set([
+  "/builder",
+  "/marketplace",
+  "/observability",
+  "/playground",
+  "/workflow-builder",
+]);
+
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUiStore();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const tenantId = useAuthStore((s) => s.tenantId);
+  const plan = useAuthStore((s) => s.plan);
+  const logout = useAuthStore((s) => s.logout);
   const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [enterpriseExpanded, setEnterpriseExpanded] = useState(false);
 
   // Poll pending approvals every 10s for badge count
   const { data: approvals = [] } = useQuery({
@@ -63,15 +81,15 @@ export function Sidebar() {
     {
       heading: "Governance",
       items: [
-        { to: "/governance",         icon: Shield,      label: "Governance"     },
-        { to: "/approvals",          icon: CheckSquare, label: "Approvals",     badge: pendingCount > 0 ? pendingCount : undefined },
-        { to: "/notifications",      icon: Bell,        label: "Notifications"  },
-        { to: "/rbac",               icon: KeyRound,    label: "Access Control" },
-        { to: "/compliance",         icon: FileLock,    label: "Compliance"     },
-        { to: "/audit",              icon: Activity,    label: "Audit Log"      },
-        { to: "/settings/guardrails",icon: Shield,      label: "Guardrails"     },
-        { to: "/settings/scopes",    icon: KeyRound,    label: "Scope Explorer" },
-        { to: "/settings",           icon: Settings,    label: "Settings"       },
+        { to: "/governance",          icon: Shield,      label: "Governance"     },
+        { to: "/approvals",           icon: CheckSquare, label: "Approvals",     badge: pendingCount > 0 ? pendingCount : undefined },
+        { to: "/notifications",       icon: Bell,        label: "Notifications"  },
+        { to: "/rbac",                icon: KeyRound,    label: "Access Control" },
+        { to: "/compliance",          icon: FileLock,    label: "Compliance"     },
+        { to: "/audit",               icon: ClipboardList, label: "Audit Log"    },
+        { to: "/settings/guardrails", icon: ShieldCheck, label: "Guardrails"     },
+        { to: "/settings/scopes",     icon: Hash,        label: "Scope Explorer" },
+        { to: "/settings",            icon: Settings,    label: "Settings"       },
       ],
     },
     {
@@ -88,10 +106,10 @@ export function Sidebar() {
         { to: "/workflow-builder",    icon: GitBranch,    label: "Workflow Builder" },
         { to: "/playground",          icon: FlaskConical, label: "Playground"       },
         { to: "/civilization",        icon: Globe,        label: "Civilization"     },
-        { to: "/templates",           icon: BookOpen,     label: "Templates"        },
+        { to: "/templates",           icon: Library,      label: "Templates"        },
         { to: "/goals/ghost-run",     icon: Ghost,        label: "Ghost Run"        },
         { to: "/self-improvement",    icon: TrendingUp,   label: "Self-Improvement" },
-        { to: "/lab",                 icon: FlaskConical, label: "Agent Lab"        },
+        { to: "/lab",                 icon: TestTube2,    label: "Agent Lab"        },
       ],
     },
     {
@@ -104,24 +122,44 @@ export function Sidebar() {
         { to: "/perception",         icon: Eye,           label: "Perception"        },
         { to: "/training-export",    icon: GraduationCap, label: "Training Export"   },
         { to: "/a2a",                icon: Network,       label: "A2A"               },
-        { to: "/rpa/live",           icon: Activity,      label: "RPA Sessions"      },
+        { to: "/rpa/live",           icon: MousePointer2, label: "RPA Sessions"      },
         { to: "/connectors/catalog", icon: Package,       label: "Connector Catalog" },
-        { to: "/simulation",         icon: FlaskConical,  label: "Simulation"        },
+        { to: "/simulation",         icon: Microscope,    label: "Simulation"        },
         { to: "/settings/budgets",   icon: DollarSign,    label: "Budget Manager"    },
       ],
     },
   ];
 
+  // Apply search filter when sidebar is open and search is non-empty
+  const searchQuery = sidebarSearch.trim().toLowerCase();
+  const filteredSections: NavSection[] = searchQuery
+    ? NAV_SECTIONS.map((section) => ({
+        ...section,
+        items: section.items.filter((item) =>
+          item.label.toLowerCase().includes(searchQuery)
+        ),
+      })).filter((section) => section.items.length > 0)
+    : NAV_SECTIONS;
+
   return (
-    <aside
-      className={clsx(
-        "fixed inset-y-0 left-0 z-30 flex flex-col bg-card border-r border-border",
-        "transition-all duration-200 ease-in-out",
-        sidebarOpen ? "w-64" : "w-16",
-        // On mobile: translate off-screen when closed, full overlay when open
-        sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+    <>
+      {/* Mobile backdrop — click outside to close sidebar */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-[29] md:hidden"
+          onClick={toggleSidebar}
+          aria-hidden="true"
+        />
       )}
-    >
+      <aside
+        className={clsx(
+          "fixed inset-y-0 left-0 z-30 flex flex-col bg-card border-r border-border",
+          "transition-all duration-200 ease-in-out",
+          sidebarOpen ? "w-64" : "w-16",
+          // On mobile: translate off-screen when closed, full overlay when open
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        )}
+      >
       {/* Mobile close button — only visible when open on mobile */}
       <button
         className="md:hidden absolute top-4 right-4 text-muted-foreground hover:text-foreground"
@@ -139,63 +177,195 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* New Goal quick-action button */}
+      <div className="px-3 pt-3 pb-1">
+        <button
+          onClick={() => navigate('/goals')}
+          className={clsx(
+            "flex items-center gap-2 px-3 py-2 bg-primary text-primary-foreground",
+            "text-sm font-medium rounded-lg hover:opacity-90 transition-opacity w-full",
+            !sidebarOpen && "justify-center px-0"
+          )}
+          title="New Goal"
+        >
+          <Plus className="h-4 w-4 flex-shrink-0" />
+          {sidebarOpen && <span>New Goal</span>}
+        </button>
+      </div>
+
+      {/* Sidebar search — visible only when expanded */}
+      {sidebarOpen && (
+        <div className="px-3 pb-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              value={sidebarSearch}
+              onChange={(e) => setSidebarSearch(e.target.value)}
+              placeholder="Search..."
+              className="w-full pl-8 pr-3 py-1.5 text-xs border border-input rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-3" aria-label="Main navigation">
-        {NAV_SECTIONS.map(({ heading, items }) => (
-          <div key={heading} className="mb-1">
-            {sidebarOpen && (
-              <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground select-none">
-                {heading}
-              </p>
-            )}
-            {!sidebarOpen && (
-              <div className="mx-3 my-1 h-px bg-border" aria-hidden="true" />
-            )}
-            {items.map(({ to, icon: Icon, label, badge }) => (
-              <div key={to} className="relative group">
-                <NavLink
-                  to={to}
-                  className={({ isActive }) =>
-                    clsx(
-                      "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
-                      "hover:bg-muted/60 focus-visible:bg-muted/60",
-                      isActive
-                        ? "bg-primary/10 text-primary font-medium border-l-2 border-primary"
-                        : "text-muted-foreground border-l-2 border-transparent"
-                    )
+      <nav className="flex-1 overflow-y-auto py-1" aria-label="Main navigation">
+        {filteredSections.map(({ heading, items }) => {
+          const isEnterprise = heading === "Enterprise";
+
+          // For Enterprise section apply collapse logic (skip when searching)
+          const visibleItems =
+            isEnterprise && !enterpriseExpanded && !searchQuery
+              ? items.filter((item) => ENTERPRISE_PINNED.has(item.to))
+              : items;
+
+          return (
+            <div key={heading} className="mb-1">
+              {/* Section heading — with collapse toggle for Enterprise */}
+              {sidebarOpen ? (
+                <div
+                  className={clsx(
+                    "flex items-center justify-between px-4 pt-3 pb-1",
+                    isEnterprise && "cursor-pointer hover:text-foreground"
+                  )}
+                  onClick={
+                    isEnterprise
+                      ? () => setEnterpriseExpanded((v) => !v)
+                      : undefined
                   }
+                  onKeyDown={
+                    isEnterprise
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setEnterpriseExpanded((v) => !v);
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={isEnterprise ? 0 : undefined}
+                  role={isEnterprise ? "button" : undefined}
+                  aria-expanded={isEnterprise ? enterpriseExpanded : undefined}
                 >
-                  <div className="relative flex-shrink-0">
-                    <Icon className="h-5 w-5" aria-hidden="true" />
-                    {/* Badge on collapsed sidebar */}
-                    {!sidebarOpen && badge != null && badge > 0 && (
-                      <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-orange-500 text-white text-xs font-bold leading-none">
-                        {badge > 9 ? "9+" : badge}
-                      </span>
-                    )}
-                  </div>
-                  {sidebarOpen && (
-                    <>
-                      <span className="truncate flex-1">{label}</span>
-                      {badge != null && badge > 0 && (
-                        <span className="ml-auto flex items-center justify-center px-1.5 min-w-[1.25rem] h-5 rounded-full bg-orange-500 text-white text-xs font-bold">
-                          {badge > 99 ? "99+" : badge}
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground select-none">
+                    {heading}
+                  </p>
+                  {isEnterprise && (
+                    <span className="text-muted-foreground">
+                      {enterpriseExpanded ? (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      )}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="mx-3 my-1 h-px bg-border" aria-hidden="true" />
+              )}
+
+              {visibleItems.map(({ to, icon: Icon, label, badge }) => (
+                <div key={to} className="relative group">
+                  <NavLink
+                    to={to}
+                    className={({ isActive }) =>
+                      clsx(
+                        "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
+                        "hover:bg-muted/60 focus-visible:bg-muted/60",
+                        isActive
+                          ? "bg-primary/10 text-primary font-medium border-l-2 border-primary"
+                          : "text-muted-foreground border-l-2 border-transparent"
+                      )
+                    }
+                  >
+                    <div className="relative flex-shrink-0">
+                      <Icon className="h-5 w-5" aria-hidden="true" />
+                      {/* Badge on collapsed sidebar */}
+                      {!sidebarOpen && badge != null && badge > 0 && (
+                        <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-orange-500 text-white text-xs font-bold leading-none">
+                          {badge > 9 ? "9+" : badge}
                         </span>
                       )}
+                    </div>
+                    {sidebarOpen && (
+                      <>
+                        <span className="truncate flex-1">{label}</span>
+                        {badge != null && badge > 0 && (
+                          <span className="ml-auto flex items-center justify-center px-1.5 min-w-[1.25rem] h-5 rounded-full bg-orange-500 text-white text-xs font-bold">
+                            {badge > 99 ? "99+" : badge}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </NavLink>
+                  {/* Tooltip when collapsed */}
+                  {!sidebarOpen && (
+                    <span className="absolute left-full ml-2 px-2 py-1 bg-popover border border-border text-popover-foreground text-xs rounded shadow-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none top-1/2 -translate-y-1/2">
+                      {label}
+                    </span>
+                  )}
+                </div>
+              ))}
+
+              {/* "More / Less" toggle for Enterprise when not searching */}
+              {isEnterprise && sidebarOpen && !searchQuery && (
+                <button
+                  onClick={() => setEnterpriseExpanded((v) => !v)}
+                  className="w-full flex items-center gap-2 px-4 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {enterpriseExpanded ? (
+                    <>
+                      <ChevronDown className="h-3 w-3" />
+                      <span>Less</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronRight className="h-3 w-3" />
+                      <span>More ({items.filter(i => !ENTERPRISE_PINNED.has(i.to)).length} hidden)</span>
                     </>
                   )}
-                </NavLink>
-                {/* Tooltip when collapsed */}
-                {!sidebarOpen && (
-                  <span className="absolute left-full ml-2 px-2 py-1 bg-popover border border-border text-popover-foreground text-xs rounded shadow-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none top-1/2 -translate-y-1/2">
-                    {label}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
+                </button>
+              )}
+            </div>
+          );
+        })}
       </nav>
+
+      {/* User profile section */}
+      {sidebarOpen ? (
+        <div className="px-3 py-3 border-t border-border">
+          <div className="flex items-center gap-2">
+            <div className="h-7 w-7 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+              <User className="h-4 w-4 text-primary" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium truncate">{tenantId ? `${tenantId.slice(0, 12)}…` : '—'}</p>
+              <p className="text-[10px] text-muted-foreground capitalize">{plan || 'free'} plan</p>
+            </div>
+            <button
+              onClick={logout}
+              className="p-1 text-muted-foreground hover:text-destructive transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="px-2 pb-3 border-t border-border pt-3">
+          <button
+            onClick={logout}
+            className="w-full p-2 flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors group relative"
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogOut className="h-4 w-4" />
+            <span className="absolute left-full ml-2 px-2 py-1 bg-popover border border-border rounded text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+              Sign out
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Collapse toggle */}
       <button
@@ -210,6 +380,7 @@ export function Sidebar() {
           )}
         />
       </button>
-    </aside>
+      </aside>
+    </>
   );
 }

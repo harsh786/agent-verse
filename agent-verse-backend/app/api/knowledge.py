@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
+
 import hashlib
 import uuid as _uuid
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, SecretStr
 
 from app.net.ssrf_guard import SSRFError, assert_public_url
@@ -1491,3 +1491,265 @@ async def ingest_from_rpa_url(
         "playwright_available": _playwright_ok,
         "results": results,
     }
+
+
+# ── Knowledge bulk analytics ──────────────────────────────────────────────────
+
+
+def _require_tenant_ctx(request: Request) -> TenantContext:
+    ctx: TenantContext | None = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    return ctx
+
+
+@router.get("/analytics")
+async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
+    """Return aggregate analytics for all knowledge collections."""
+    tenant = _require_tenant_ctx(request)
+    knowledge_store: KnowledgeStore | None = getattr(
+        request.app.state, "knowledge_store", None
+    )
+
+    if knowledge_store is None:
+        return {"collections": [], "total_documents": 0, "total_collections": 0}
+
+    try:
+        raw = await knowledge_store.list_collections(tenant_ctx=tenant)
+        collections = raw if isinstance(raw, list) else []
+        analytics: list[dict[str, Any]] = []
+        for col in collections:
+            col_id = col.get("collection_id") or col.get("id", "")
+            try:
+                stats = await knowledge_store.get_stats(col_id, tenant_ctx=tenant)
+            except Exception:
+                stats = {}
+            analytics.append(
+                {
+                    "collection_id": col_id,
+                    "name": col.get("name", ""),
+                    "document_count": stats.get(
+                        "document_count", col.get("document_count", 0)
+                    ),
+                    "total_chunks": stats.get("total_chunks", 0),
+                    "last_indexed": stats.get("last_indexed"),
+                    "avg_relevance_score": stats.get("avg_relevance_score", 0.0),
+                    "cache_hit_rate": stats.get("cache_hit_rate", 0.0),
+                    "health_score": min(
+                        100, max(0, int(stats.get("health_score", 75)))
+                    ),
+                }
+            )
+
+        return {
+            "collections": analytics,
+            "total_documents": sum(a["document_count"] for a in analytics),
+            "total_collections": len(analytics),
+        }
+    except Exception as exc:
+        return {
+            "collections": [],
+            "total_documents": 0,
+            "total_collections": 0,
+            "error": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Document browser: list + delete individual documents
+# ---------------------------------------------------------------------------
+
+@router.get("/collections/{collection_id}/documents")
+async def list_documents(
+    collection_id: str,
+    request: Request,
+    limit: int = Query(default=20, le=100),
+    offset: int = Query(default=0),
+    search: str | None = Query(default=None),
+) -> dict:
+    """List documents in a knowledge collection with pagination."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+
+    if knowledge_store is None:
+        return {"documents": [], "total": 0}
+
+    try:
+        # Prefer a native list_documents method if available
+        if hasattr(knowledge_store, "list_documents"):
+            result = await knowledge_store.list_documents(
+                collection_id=collection_id,
+                tenant_ctx=tenant,
+                limit=limit,
+                offset=offset,
+                search=search,
+            )
+            if isinstance(result, dict):
+                return result
+            return {"documents": result or [], "total": len(result or [])}
+
+        # Fallback: query the DB directly
+        db = getattr(knowledge_store, "_db", None) or getattr(
+            knowledge_store, "_session_factory", None
+        )
+        if db:
+            from sqlalchemy import text as _t
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with db() as session:
+                async with sqlalchemy_rls_context(session, tenant.tenant_id):
+                    q = """
+                        SELECT id, title, source, source_type, chunk_count, created_at,
+                               LEFT(content, 200) as preview
+                        FROM knowledge_documents
+                        WHERE collection_id = :cid AND tenant_id = :tid
+                    """
+                    params: dict = {
+                        "cid": collection_id,
+                        "tid": tenant.tenant_id,
+                    }
+                    if search:
+                        q += " AND (title ILIKE :search OR content ILIKE :search)"
+                        params["search"] = f"%{search}%"
+                    q += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+                    params["limit"] = limit
+                    params["offset"] = offset
+
+                    rows = (await session.execute(_t(q), params)).fetchall()
+                    count_q = (
+                        "SELECT COUNT(*) FROM knowledge_documents "
+                        "WHERE collection_id = :cid AND tenant_id = :tid"
+                    )
+                    total = (
+                        await session.execute(
+                            _t(count_q),
+                            {"cid": collection_id, "tid": tenant.tenant_id},
+                        )
+                    ).scalar() or 0
+
+                    documents = [
+                        {
+                            "id": str(r[0]),
+                            "title": r[1],
+                            "source": r[2],
+                            "source_type": r[3],
+                            "chunk_count": r[4] or 0,
+                            "created_at": r[5].isoformat() if r[5] else None,
+                            "preview": r[6],
+                        }
+                        for r in rows
+                    ]
+                    return {"documents": documents, "total": int(total)}
+    except Exception as exc:
+        return {"documents": [], "total": 0, "error": str(exc)}
+
+    return {"documents": [], "total": 0}
+
+
+@router.delete("/collections/{collection_id}/documents/{document_id}")
+async def delete_document(
+    collection_id: str,
+    document_id: str,
+    request: Request,
+) -> dict:
+    """Delete a document from a knowledge collection."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    try:
+        if hasattr(knowledge_store, "delete_document"):
+            await knowledge_store.delete_document(
+                document_id=document_id,
+                collection_id=collection_id,
+                tenant_ctx=tenant,
+            )
+            return {"status": "deleted", "document_id": document_id}
+        raise HTTPException(status_code=501, detail="Document deletion not implemented")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/collections/{collection_id}/documents/{document_id}/reingest")
+async def reingest_document(
+    collection_id: str,
+    document_id: str,
+    request: Request,
+) -> dict:
+    """Re-ingest a document (re-fetch source URL, re-chunk, re-embed)."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    try:
+        if hasattr(knowledge_store, "reingest_document"):
+            await knowledge_store.reingest_document(
+                document_id=document_id,
+                collection_id=collection_id,
+                tenant_ctx=tenant,
+            )
+            return {"status": "reingested", "document_id": document_id}
+
+        # Fallback: mark document for re-indexing in DB
+        db = (
+            getattr(knowledge_store, "_db", None)
+            or getattr(knowledge_store, "_session_factory", None)
+        )
+        if db:
+            from sqlalchemy import text as _t
+
+            from app.db.rls import sqlalchemy_rls_context
+            async with db() as session:
+                async with sqlalchemy_rls_context(session, tenant.tenant_id):
+                    await session.execute(
+                        _t(
+                            "UPDATE knowledge_documents SET status = 'pending_reingest',"
+                            " updated_at = NOW() WHERE id = :id AND collection_id = :cid"
+                            " AND tenant_id = :tid"
+                        ),
+                        {"id": document_id, "cid": collection_id, "tid": tenant.tenant_id},
+                    )
+                    await session.commit()
+            return {"status": "queued", "document_id": document_id, "message": "Re-ingest queued"}
+
+        return {
+            "status": "unsupported",
+            "message": "Re-ingest not implemented for this storage backend",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/collections/{collection_id}/sync")
+async def sync_collection(
+    collection_id: str,
+    request: Request,
+) -> dict:
+    """Sync all documents in a collection from their source URLs."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    try:
+        if hasattr(knowledge_store, "sync_collection"):
+            result = await knowledge_store.sync_collection(
+                collection_id=collection_id,
+                tenant_ctx=tenant,
+            )
+            return {"status": "syncing", "collection_id": collection_id, **(result or {})}
+        return {"status": "unsupported", "message": "Sync not implemented for this storage backend"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

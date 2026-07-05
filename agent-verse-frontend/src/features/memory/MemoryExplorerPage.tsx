@@ -11,13 +11,14 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Trash2, Search, Plus, Brain, Wrench, Cpu, X, Loader2,
-  AlertTriangle, CheckCircle2, ChevronDown,
+  AlertTriangle, CheckCircle2, ChevronDown, Pencil,
 } from 'lucide-react';
 import { memoryApi, type RecallResult, type MemoryEntry } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { Pagination } from '@/components/ui/Pagination';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -170,6 +171,112 @@ function AddMemoryModal({ onClose, onCreated }: { onClose: () => void; onCreated
   );
 }
 
+// ── Edit Memory Modal ─────────────────────────────────────────────────────────
+
+function EditMemoryModal({ memory, onClose, onUpdated }: { memory: MemoryEntry; onClose: () => void; onUpdated: () => void }) {
+  const [content, setContent] = useState(memory.content);
+  const [memType, setMemType] = useState(memory.memory_type);
+  const [confidence, setConfidence] = useState(Math.round(memory.confidence * 100));
+  const [tags, setTags] = useState((memory.tags ?? []).join(', '));
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      memoryApi.update(memory.id, {
+        content,
+        memory_type: memType,
+        confidence: confidence / 100,
+        tags: tags ? tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
+      }),
+    onSuccess: () => {
+      toast({ kind: 'success', message: 'Memory updated.' });
+      onUpdated();
+      onClose();
+    },
+    onError: (e) => toast({ kind: 'error', message: String(e) }),
+  });
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
+      <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <Pencil className="h-4 w-4 text-primary" aria-hidden="true" /> Edit Memory
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="edit-mem-content">Content</label>
+            <textarea
+              id="edit-mem-content"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1" htmlFor="edit-mem-type">Type</label>
+              <select
+                id="edit-mem-type"
+                value={memType}
+                onChange={(e) => setMemType(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                {MEMORY_TYPES.map((t) => (
+                  <option key={t} value={t} className="capitalize">{t.replace('_', ' ')}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" htmlFor="edit-mem-conf">
+                Confidence: {confidence}%
+              </label>
+              <input
+                id="edit-mem-conf"
+                type="range"
+                min={10}
+                max={100}
+                step={5}
+                value={confidence}
+                onChange={(e) => setConfidence(Number(e.target.value))}
+                className="w-full accent-primary"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1" htmlFor="edit-mem-tags">
+              Tags <span className="text-muted-foreground font-normal">(comma-separated)</span>
+            </label>
+            <input
+              id="edit-mem-tags"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={() => mutation.mutate()}
+            disabled={!content.trim() || mutation.isPending}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+          >
+            {mutation.isPending ? 'Saving…' : 'Save Changes'}
+          </button>
+          <button onClick={onClose} className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function MemoryExplorerPage() {
@@ -180,13 +287,25 @@ export function MemoryExplorerPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [execOpen, setExecOpen] = useState(false);
+  const [editingMemory, setEditingMemory] = useState<MemoryEntry | null>(null);
+  const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
+  const PAGE_SIZE = 20;
+  const [page, setPage] = useState(1);
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
-  const { data: memories = [], isLoading } = useQuery({
-    queryKey: ['memories', typeFilter],
-    queryFn: () => memoryApi.list({ limit: 100, memoryType: typeFilter ?? undefined }),
+  const { data: memoryData, isLoading } = useQuery({
+    queryKey: ['memories', typeFilter, page],
+    queryFn: () => memoryApi.list({
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+      memoryType: typeFilter ?? undefined,
+    }),
   });
+  // Support both paginated `{ items, total }` and legacy flat array responses
+  const memories = (memoryData as any)?.items ?? (Array.isArray(memoryData) ? memoryData : []);
+  const total: number = (memoryData as any)?.total ?? (memories as MemoryEntry[]).length;
+  const safeMemories: MemoryEntry[] = Array.isArray(memories) ? (memories as MemoryEntry[]) : [];
 
   const { data: reliability = [] } = useQuery({
     queryKey: ['tool-reliability'],
@@ -212,7 +331,8 @@ export function MemoryExplorerPage() {
     mutationFn: (id: string) => memoryApi.delete(id),
     onSuccess: () => {
       toast({ kind: 'success', message: 'Memory deleted.' });
-      qc.invalidateQueries({ queryKey: ['memories'] });
+      void qc.invalidateQueries({ queryKey: ['memories'] });
+      setDeleteMemoryId(null);
     },
     onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
@@ -322,9 +442,9 @@ export function MemoryExplorerPage() {
               <Brain className="h-4 w-4 text-primary" aria-hidden="true" />
               Long-term Memories
             </h2>
-            {memories.length > 0 && (
+            {safeMemories.length > 0 && (
               <span className="text-[10px] bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
-                {memories.length}
+                {total}
               </span>
             )}
           </div>
@@ -332,7 +452,7 @@ export function MemoryExplorerPage() {
             {/* Type filter pills */}
             <div className="flex gap-1 flex-wrap">
               <button
-                onClick={() => setTypeFilter(null)}
+                onClick={() => { setTypeFilter(null); setPage(1); }}
                 className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors ${!typeFilter ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted/50 text-muted-foreground'}`}
               >
                 All
@@ -340,7 +460,7 @@ export function MemoryExplorerPage() {
               {MEMORY_TYPES.map((t) => (
                 <button
                   key={t}
-                  onClick={() => setTypeFilter(t === typeFilter ? null : t)}
+                  onClick={() => { setTypeFilter(t === typeFilter ? null : t); setPage(1); }}
                   className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors capitalize ${t === typeFilter ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted/50 text-muted-foreground'}`}
                 >
                   {t.replace('_', ' ')}
@@ -355,7 +475,7 @@ export function MemoryExplorerPage() {
               >
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add
               </button>
-              {memories.length > 0 && (
+              {safeMemories.length > 0 && (
                 <button
                   onClick={() => setClearOpen(true)}
                   className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border border-destructive text-destructive hover:bg-destructive/10 transition-colors"
@@ -372,14 +492,15 @@ export function MemoryExplorerPage() {
           <div className="p-5 space-y-3">
             {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14" />)}
           </div>
-        ) : memories.length === 0 ? (
+        ) : safeMemories.length === 0 ? (
           <EmptyState
             title="No memories yet"
             description={typeFilter ? `No ${typeFilter.replace('_', ' ')} memories.` : 'Memories accumulate as agents complete goals.'}
           />
         ) : (
+          <>
           <ul className="divide-y divide-border">
-            {(memories as MemoryEntry[]).map((m) => (
+            {safeMemories.map((m) => (
               <li key={m.id} className="px-5 py-3.5 flex items-start justify-between gap-3 hover:bg-muted/20 transition-colors">
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <p className="text-sm leading-relaxed">{m.content}</p>
@@ -398,17 +519,37 @@ export function MemoryExplorerPage() {
                     )}
                   </div>
                 </div>
-                <button
-                  aria-label="Delete memory"
-                  onClick={() => deleteMutation.mutate(m.id)}
-                  disabled={deleteMutation.isPending}
-                  className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50 shrink-0"
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    aria-label="Edit memory"
+                    onClick={() => setEditingMemory(m)}
+                    className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="Delete memory"
+                    onClick={() => setDeleteMemoryId(m.id)}
+                    disabled={deleteMutation.isPending}
+                    className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
+          {total > PAGE_SIZE && (
+            <div className="px-5 py-3 border-t border-border">
+              <Pagination
+                page={page}
+                pageSize={PAGE_SIZE}
+                total={total}
+                onPageChange={setPage}
+              />
+            </div>
+          )}
+          </>
         )}
       </div>
 
@@ -506,7 +647,7 @@ export function MemoryExplorerPage() {
             ) : (
               <ul className="divide-y divide-border">
                 {execMemories.map((m, i) => (
-                  <li key={i} className="flex items-start gap-3 px-5 py-3">
+                  <li key={`exec-${m.goal_text?.slice(0, 20) ?? ''}-${i}`} className="flex items-start gap-3 px-5 py-3">
                     <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${m.success ? 'bg-green-500' : 'bg-red-400'}`} aria-hidden="true" />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm truncate">{m.goal_text}</p>
@@ -529,9 +670,28 @@ export function MemoryExplorerPage() {
       {addOpen && (
         <AddMemoryModal
           onClose={() => setAddOpen(false)}
-          onCreated={() => qc.invalidateQueries({ queryKey: ['memories'] })}
+          onCreated={() => void qc.invalidateQueries({ queryKey: ['memories'] })}
         />
       )}
+
+      {editingMemory && (
+        <EditMemoryModal
+          memory={editingMemory}
+          onClose={() => setEditingMemory(null)}
+          onUpdated={() => void qc.invalidateQueries({ queryKey: ['memories'] })}
+        />
+      )}
+
+      <ConfirmModal
+        open={!!deleteMemoryId}
+        title="Delete memory?"
+        description="This memory entry will be permanently removed."
+        confirmLabel="Delete"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => { if (deleteMemoryId) deleteMutation.mutate(deleteMemoryId); }}
+        onCancel={() => setDeleteMemoryId(null)}
+      />
 
       <ConfirmModal
         open={clearOpen}

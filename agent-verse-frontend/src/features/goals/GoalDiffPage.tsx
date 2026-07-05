@@ -3,12 +3,12 @@
  * Uses a real LCS-based line diff to highlight changes in steps/tools/outputs.
  */
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { goalsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { GitCompare, Plus, Minus } from "lucide-react";
+import { GitCompare, Plus, Minus, AlertCircle } from "lucide-react";
 
 export interface DiffLine {
   type: "added" | "removed" | "unchanged";
@@ -76,17 +76,35 @@ function goalToText(goal: unknown): string {
 
 export function GoalDiffPage() {
   const { goalId } = useParams<{ goalId?: string }>();
-  const [goalIdA, setGoalIdA] = useState(goalId ?? "");
-  const [goalIdB, setGoalIdB] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const goalIdA = searchParams.get('a') ?? goalId ?? '';
+  const goalIdB = searchParams.get('b') ?? '';
   const [compare, setCompare] = useState(false);
 
-  const { data: goalA, isLoading: loadingA } = useQuery({
+  // Reset compare when IDs change so user has to click Compare again
+  const handleSetA = (val: string) => {
+    setSearchParams(p => { const n = new URLSearchParams(p); n.set('a', val); return n; });
+    setCompare(false);
+  };
+  const handleSetB = (val: string) => {
+    setSearchParams(p => { const n = new URLSearchParams(p); n.set('b', val); return n; });
+    setCompare(false);
+  };
+
+  // Recent goals for datalist
+  const { data: recentGoals = [] } = useQuery({
+    queryKey: ['goals-for-diff'],
+    queryFn: () => goalsApi.list().then(r => (r.goals ?? []).slice(0, 50)),
+    staleTime: 60_000,
+  });
+
+  const { data: goalA, isLoading: loadingA, isError: isErrorA } = useQuery({
     queryKey: ["goal", goalIdA],
     queryFn: () => goalsApi.get(goalIdA),
     enabled: compare && !!goalIdA,
   });
 
-  const { data: goalB, isLoading: loadingB } = useQuery({
+  const { data: goalB, isLoading: loadingB, isError: isErrorB } = useQuery({
     queryKey: ["goal", goalIdB],
     queryFn: () => goalsApi.get(goalIdB),
     enabled: compare && !!goalIdB,
@@ -113,25 +131,39 @@ export function GoalDiffPage() {
 
       {/* Goal selector */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
+        <div className="flex flex-col gap-1.5">
           <label className="block text-sm font-medium mb-1.5" htmlFor="goal-a-id">Goal A (baseline)</label>
           <input
             id="goal-a-id"
+            list="goals-list-a"
             value={goalIdA}
-            onChange={(e) => setGoalIdA(e.target.value)}
-            placeholder="Paste goal ID…"
+            onChange={(e) => handleSetA(e.target.value)}
+            placeholder="Search goals or paste goal ID…"
             className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
           />
+          <datalist id="goals-list-a">
+            {recentGoals.map(g => {
+              const id = g.goal_id ?? g.id;
+              return <option key={id} value={id}>{g.goal?.slice(0, 60)}</option>;
+            })}
+          </datalist>
         </div>
-        <div>
+        <div className="flex flex-col gap-1.5">
           <label className="block text-sm font-medium mb-1.5" htmlFor="goal-b-id">Goal B (comparison)</label>
           <input
             id="goal-b-id"
+            list="goals-list-b"
             value={goalIdB}
-            onChange={(e) => setGoalIdB(e.target.value)}
-            placeholder="Paste goal ID…"
+            onChange={(e) => handleSetB(e.target.value)}
+            placeholder="Search goals or paste goal ID…"
             className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
           />
+          <datalist id="goals-list-b">
+            {recentGoals.map(g => {
+              const id = g.goal_id ?? g.id;
+              return <option key={id} value={id}>{g.goal?.slice(0, 60)}</option>;
+            })}
+          </datalist>
         </div>
       </div>
 
@@ -142,6 +174,20 @@ export function GoalDiffPage() {
       >
         Compare
       </button>
+
+      {/* Per-goal error banners */}
+      {compare && isErrorA && (
+        <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400">
+          <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Goal &quot;{goalIdA}&quot; not found or inaccessible</span>
+        </div>
+      )}
+      {compare && isErrorB && (
+        <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400">
+          <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Goal &quot;{goalIdB}&quot; not found or inaccessible</span>
+        </div>
+      )}
 
       {/* Diff result */}
       {compare && (loadingA || loadingB) && (

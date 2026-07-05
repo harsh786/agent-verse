@@ -52,6 +52,9 @@ dependencies = [
     "boto3>=1.40.61",
     "openai>=2.44.0",
     "tiktoken>=0.7.0",
+    "pyotp>=2.10.0",
+    "qrcode[pil]>=8.2",
+    "razorpay>=2.0.1",
 ]
 
 [project.scripts]
@@ -114,6 +117,12 @@ filterwarnings = [
     # Tests that exercise the legacy function must not fail due to the deprecation warning.
     # Message-based filter: stacklevel=2 means warning is attributed to the caller, not pricing.py.
     "ignore:governance.pricing.estimate_cost.*:DeprecationWarning",
+    # God-file decomposition: v1 modules deprecated in favour of their v2/v3 successors.
+    # These v1 classes are still wired in main.py and some tests while migration is in progress.
+    "ignore:app.governance.audit_v2 is deprecated.*:DeprecationWarning",
+    "ignore:app.enterprise.compliance is deprecated.*:DeprecationWarning",
+    "ignore:app.enterprise.marketplace is deprecated.*:DeprecationWarning",
+    "ignore:app.intelligence.self_optimization is deprecated.*:DeprecationWarning",
 ]
 
 [tool.coverage.report]

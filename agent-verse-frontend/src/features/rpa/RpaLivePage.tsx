@@ -15,7 +15,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Terminal, RefreshCw,
   Loader2, AlertCircle, Zap, ChevronDown, ChevronUp, X, Clock,
-  Mouse,
+  Mouse, Keyboard, Crosshair, Copy,
 } from "lucide-react";
 import { rpaApi, type RpaSession, type RpaTool, type RpaExecuteResult } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -76,7 +76,7 @@ function ToolExecutor({
 }) {
   const [search, setSearch] = useState("");
   const [selectedTool, setSelectedTool] = useState<RpaTool | null>(null);
-  const [params, setParams] = useState<Record<string, string>>({});
+  const [params, setParams] = useState<Record<string, unknown>>({});
   const [lastResult, setLastResult] = useState<RpaExecuteResult | null>(null);
 
   const { data: toolData, isLoading: toolsLoading } = useQuery({
@@ -89,7 +89,9 @@ function ToolExecutor({
   const executeMutation = useMutation({
     mutationFn: () => {
       const args: Record<string, unknown> = {};
-      Object.entries(params).forEach(([k, v]) => { if (v.trim()) args[k] = v; });
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== '' && v !== undefined && v !== null) args[k] = v;
+      });
       return rpaApi.execute(selectedTool!.name, args, sessionId);
     },
     onSuccess: (result) => {
@@ -143,19 +145,45 @@ function ToolExecutor({
         <div className="space-y-2 border border-border rounded-lg p-3">
           <p className="text-xs font-semibold">{selectedTool.name}</p>
           <p className="text-[10px] text-muted-foreground">{selectedTool.description}</p>
-          {/* Simple key-value param builder */}
+          {/* Fix 7: Dynamic param form from tool schema */}
           <div className="space-y-1.5">
-            {["selector", "text", "url", "filename", "timeout"].map((param) => (
-              <div key={param} className="flex items-center gap-2">
-                <label className="text-[10px] text-muted-foreground w-16 shrink-0">{param}</label>
-                <input
-                  value={params[param] ?? ""}
-                  onChange={(e) => setParams((p) => ({ ...p, [param]: e.target.value }))}
-                  placeholder={`Enter ${param}…`}
-                  className="flex-1 px-2 py-1 text-xs border border-input rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                />
-              </div>
-            ))}
+            {(() => {
+              const schema = (selectedTool as unknown as { input_schema?: { properties?: Record<string, Record<string, unknown>> } }).input_schema;
+              const toolParams: Array<[string, Record<string, unknown>]> = schema?.properties
+                ? (Object.entries(schema.properties) as Array<[string, Record<string, unknown>]>)
+                : [['selector', {}], ['text', {}], ['url', {}], ['filename', {}], ['timeout', {}]];
+              return toolParams.map(([paramName, paramSchema]) => (
+                <div key={paramName} className="flex items-center gap-2">
+                  <label className="text-[10px] text-muted-foreground w-16 shrink-0">{paramName}</label>
+                  {paramSchema?.enum ? (
+                    <select
+                      value={(params[paramName] as string) ?? ''}
+                      onChange={e => setParams(p => ({ ...p, [paramName]: e.target.value }))}
+                      className="flex-1 px-2 py-1 text-xs border border-input rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">Select…</option>
+                      {(paramSchema.enum as string[]).map((v: string) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  ) : paramSchema?.type === 'boolean' ? (
+                    <input
+                      type="checkbox"
+                      checked={!!(params[paramName])}
+                      onChange={e => setParams(p => ({ ...p, [paramName]: e.target.checked }))}
+                      className="h-4 w-4"
+                    />
+                  ) : (
+                    <input
+                      value={(params[paramName] as string) ?? ''}
+                      onChange={e => setParams(p => ({ ...p, [paramName]: e.target.value }))}
+                      placeholder={(paramSchema?.description as string) ?? `Enter ${paramName}…`}
+                      className="flex-1 px-2 py-1 text-xs border border-input rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    />
+                  )}
+                </div>
+              ));
+            })()}
           </div>
           <button
             onClick={() => executeMutation.mutate()}
@@ -190,9 +218,13 @@ export function RpaLivePage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [takeoverOpen, setTakeoverOpen] = useState(false);
   const [takeoverReason, setTakeoverReason] = useState("");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [clickFlash, setClickFlash] = useState<{ x: number; y: number } | null>(null);
+  const [keyboardCaptureMode, setKeyboardCaptureMode] = useState(false);
+  const [elementPickerMode, setElementPickerMode] = useState(false);
+  const [pickedSelector, setPickedSelector] = useState<string | null>(null);
+  const [hoverCoords, setHoverCoords] = useState<{ x: number; y: number } | null>(null);
+  const viewportContainerRef = useRef<HTMLDivElement>(null);
 
   const { data: sessions = [], isLoading: sessionsLoading } = useQuery<RpaSession[]>({
     queryKey: ["rpa-sessions"],
@@ -214,13 +246,33 @@ export function RpaLivePage() {
 
   useEffect(() => {
     if (!activeSession) return;
+    const fetchIfVisible = async () => {
+      if (document.hidden) return;
+      await fetchScreenshot();
+    };
     setScreenshotLoading(true);
-    fetchScreenshot().finally(() => setScreenshotLoading(false));
-    intervalRef.current = setInterval(fetchScreenshot, 2000);
+    fetchIfVisible().finally(() => setScreenshotLoading(false));
+    const id = setInterval(fetchIfVisible, 2000);
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        fetchIfVisible();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [activeSession, fetchScreenshot]);
+
+  // Exit keyboard capture mode on Escape
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setKeyboardCaptureMode(false);
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, []);
 
   const createMutation = useMutation({
     mutationFn: () => rpaApi.createSession(),
@@ -253,31 +305,114 @@ export function RpaLivePage() {
     onError: (e) => toast({ kind: "error", message: String(e) }),
   });
 
+  const executeMutation = useMutation({
+    mutationFn: ({ session_id, tool_name, args }: { session_id: string; tool_name: string; args: Record<string, unknown> }) =>
+      rpaApi.execute(tool_name, args, session_id),
+    onError: (e) => toast({ kind: 'error', message: String(e) }),
+  });
+
   // Interactive click on screenshot
   const handleScreenshotClick = useCallback(async (e: React.MouseEvent<HTMLImageElement>) => {
     if (!activeSession || !imgRef.current) return;
     const rect = imgRef.current.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
+    // Fix 6: Use session viewport dimensions if available, fall back to sensible defaults
+    const sessionObj = sessions.find(s => s.session_id === activeSession);
+    const viewportWidth = (sessionObj as unknown as { viewport_width?: number })?.viewport_width ?? 1280;
+    const viewportHeight = (sessionObj as unknown as { viewport_height?: number })?.viewport_height ?? 720;
+    // Fix 5: Pass x/y as separate numeric fields, not a CSS selector
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * viewportWidth);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * viewportHeight);
+
+    // Element picker mode: resolve a selector instead of clicking
+    if (elementPickerMode) {
+      try {
+        const result = await executeMutation.mutateAsync({
+          session_id: activeSession,
+          tool_name: 'rpa_get_selector',
+          args: { x, y },
+        });
+        const selector = (result as unknown as { output?: string; result?: string })?.output
+          ?? (result as unknown as { output?: string; result?: string })?.result
+          ?? `[data-rpa-x="${x}"]`;
+        setPickedSelector(selector);
+        setElementPickerMode(false);
+        toast({ kind: 'success', message: `Selector copied: ${selector}` });
+        await navigator.clipboard?.writeText(selector).catch(() => {});
+      } catch {
+        toast({ kind: 'info', message: `Coordinates: (${x}, ${y})` });
+        setElementPickerMode(false);
+      }
+      return; // Don't do normal click
+    }
+
     const flashX = e.clientX - rect.left;
     const flashY = e.clientY - rect.top;
     setClickFlash({ x: flashX, y: flashY });
     setTimeout(() => setClickFlash(null), 400);
     try {
-      const result = await rpaApi.execute("rpa_click", { selector: `[data-coords="${x},${y}"]`, x, y }, activeSession);
+      const result = await rpaApi.execute("rpa_click", { x, y }, activeSession);
       setActions((prev) => [{
         id: Date.now().toString(), toolName: "rpa_click",
         output: result.output || `Clicked at (${x}, ${y})`,
         success: result.success, risk: "high", timestamp: new Date(),
       }, ...prev].slice(0, 50));
     } catch { /* ignore */ }
-  }, [activeSession]);
+  }, [activeSession, sessions, elementPickerMode, executeMutation]);
 
   const addAction = useCallback((entry: ActionEntry) => {
     setActions((prev) => [entry, ...prev].slice(0, 50));
   }, []);
 
   const activeSessionObj = sessions.find((s) => s.session_id === activeSession);
+
+  // Keyboard capture: send typed keys to the remote browser
+  const handleViewportKeyDown = useCallback(async (e: React.KeyboardEvent) => {
+    if (!keyboardCaptureMode || !activeSession) return;
+    e.preventDefault();
+    const specialKeys: Record<string, string> = {
+      Enter: '\n', Tab: '\t', Backspace: '\x08',
+      Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
+      ArrowLeft: '\x1b[D', ArrowRight: '\x1b[C',
+      Delete: '\x7f', Home: '\x1b[H', End: '\x1b[F',
+      ' ': ' ',
+    };
+    const text = specialKeys[e.key] ?? (e.key.length === 1 ? e.key : null);
+    if (!text) return;
+    try {
+      await executeMutation.mutateAsync({
+        session_id: activeSession,
+        tool_name: 'rpa_type',
+        args: { text },
+      });
+    } catch { /* ignore */ }
+  }, [keyboardCaptureMode, activeSession, executeMutation]);
+
+  // Scroll: forward wheel events to the remote browser
+  const handleViewportWheel = useCallback(async (e: React.WheelEvent) => {
+    if (!activeSession) return;
+    const deltaX = Math.round(e.deltaX);
+    const deltaY = Math.round(e.deltaY);
+    if (deltaX === 0 && deltaY === 0) return;
+    try {
+      await executeMutation.mutateAsync({
+        session_id: activeSession,
+        tool_name: 'rpa_scroll',
+        args: { delta_x: deltaX, delta_y: deltaY, x: 640, y: 360 },
+      });
+    } catch { /* ignore */ }
+  }, [activeSession, executeMutation]);
+
+  // Element picker: track hover coordinates over the viewport
+  const handleViewportMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!elementPickerMode) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const vw = (activeSessionObj as unknown as { viewport_width?: number })?.viewport_width ?? 1280;
+    const vh = (activeSessionObj as unknown as { viewport_height?: number })?.viewport_height ?? 720;
+    setHoverCoords({
+      x: Math.round(((e.clientX - rect.left) / rect.width) * vw),
+      y: Math.round(((e.clientY - rect.top) / rect.height) * vh),
+    });
+  }, [elementPickerMode, activeSessionObj]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)] gap-4 max-w-7xl">
@@ -368,6 +503,34 @@ export function RpaLivePage() {
               )}
               <div className="ml-auto flex items-center gap-2">
                 <button
+                  onClick={() => setKeyboardCaptureMode(v => {
+                    const next = !v;
+                    if (next) setTimeout(() => viewportContainerRef.current?.focus(), 0);
+                    return next;
+                  })}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+                    keyboardCaptureMode
+                      ? 'bg-primary text-primary-foreground border-primary'
+                      : 'border-input hover:bg-muted/50'
+                  }`}
+                  title="Toggle keyboard capture mode"
+                >
+                  <Keyboard className="h-3.5 w-3.5" />
+                  {keyboardCaptureMode ? 'Keyboard: ON' : 'Keyboard'}
+                </button>
+                <button
+                  onClick={() => { setElementPickerMode(v => !v); setHoverCoords(null); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+                    elementPickerMode
+                      ? 'bg-amber-500 text-white border-amber-500'
+                      : 'border-input hover:bg-muted/50'
+                  }`}
+                  title="Toggle element picker mode"
+                >
+                  <Crosshair className="h-3.5 w-3.5" />
+                  {elementPickerMode ? 'Picker: ON' : 'Pick Element'}
+                </button>
+                <button
                   onClick={fetchScreenshot}
                   className="p-1.5 rounded-lg hover:bg-muted/60 text-muted-foreground transition-colors"
                   aria-label="Refresh screenshot"
@@ -388,7 +551,14 @@ export function RpaLivePage() {
             <div className="flex flex-1 gap-4 min-h-0">
               {/* Screenshot */}
               <div className="flex-1 bg-card border border-border rounded-xl overflow-hidden flex flex-col min-w-0">
-                <div className="relative flex-1 bg-black/90 flex items-center justify-center">
+                <div
+                  ref={viewportContainerRef}
+                  tabIndex={0}
+                  className="relative flex-1 bg-black/90 flex items-center justify-center outline-none"
+                  onKeyDown={handleViewportKeyDown}
+                  onWheel={handleViewportWheel}
+                  onMouseMove={handleViewportMouseMove}
+                >
                   {screenshotLoading && !screenshot && (
                     <div className="flex flex-col items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-6 w-6 animate-spin" />
@@ -401,7 +571,7 @@ export function RpaLivePage() {
                         ref={imgRef}
                         src={screenshot}
                         alt="Browser viewport"
-                        className="w-full h-full object-contain cursor-crosshair"
+                        className={`w-full h-full object-contain ${elementPickerMode ? 'cursor-crosshair' : 'cursor-crosshair'}`}
                         onClick={handleScreenshotClick}
                         data-testid="viewport-screenshot"
                       />
@@ -410,6 +580,31 @@ export function RpaLivePage() {
                           className="absolute w-6 h-6 rounded-full border-2 border-primary bg-primary/30 pointer-events-none animate-ping"
                           style={{ left: clickFlash.x - 12, top: clickFlash.y - 12 }}
                         />
+                      )}
+                      {keyboardCaptureMode && (
+                        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+                          <div className="bg-primary text-primary-foreground text-xs px-3 py-1 rounded-full shadow-lg flex items-center gap-2">
+                            <Keyboard className="h-3 w-3 animate-pulse" />
+                            Keyboard capture — Esc to exit
+                          </div>
+                        </div>
+                      )}
+                      {elementPickerMode && hoverCoords && (
+                        <div
+                          className="absolute pointer-events-none z-20"
+                          style={{
+                            left: `${(hoverCoords.x / ((activeSessionObj as unknown as { viewport_width?: number })?.viewport_width ?? 1280)) * 100}%`,
+                            top: `${(hoverCoords.y / ((activeSessionObj as unknown as { viewport_height?: number })?.viewport_height ?? 720)) * 100}%`,
+                            transform: 'translate(-50%, -50%)',
+                          }}
+                        >
+                          <div className="w-8 h-8 rounded-full border-2 border-amber-400" />
+                          <div className="absolute inset-y-0 left-0 w-full border-t border-amber-400" style={{ top: '50%' }} />
+                          <div className="absolute inset-x-0 top-0 h-full border-l border-amber-400" style={{ left: '50%' }} />
+                          <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-amber-500 text-white text-[9px] px-2 py-0.5 rounded whitespace-nowrap shadow">
+                            {hoverCoords.x}, {hoverCoords.y}
+                          </div>
+                        </div>
                       )}
                     </div>
                   ) : !screenshotLoading ? (
@@ -422,6 +617,22 @@ export function RpaLivePage() {
                 {screenshotUrl && (
                   <div className="px-3 py-1.5 border-t border-border bg-muted/20">
                     <p className="text-[10px] font-mono text-muted-foreground truncate">{screenshotUrl}</p>
+                  </div>
+                )}
+                {pickedSelector && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-200 dark:border-amber-800 text-xs">
+                    <Crosshair className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                    <code className="font-mono text-amber-800 dark:text-amber-400 flex-1 truncate">{pickedSelector}</code>
+                    <button
+                      onClick={() => navigator.clipboard?.writeText(pickedSelector)}
+                      title="Copy selector"
+                      className="hover:opacity-70 transition-opacity"
+                    >
+                      <Copy className="h-3.5 w-3.5 text-amber-600" />
+                    </button>
+                    <button onClick={() => setPickedSelector(null)} title="Dismiss" className="hover:opacity-70 transition-opacity">
+                      <X className="h-3.5 w-3.5 text-muted-foreground" />
+                    </button>
                   </div>
                 )}
               </div>

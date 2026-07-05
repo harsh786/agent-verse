@@ -12,8 +12,8 @@ import type { JSX, CSSProperties } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Shield, Plus, Trash2, Play, AlertCircle, AlertTriangle,
-  BarChart2, CheckCircle, XCircle, Edit2, RefreshCw, Zap,
-  ToggleLeft, ToggleRight, Filter, Activity,
+  BarChart2, CheckCircle, XCircle, Edit2, RefreshCw,
+  ToggleLeft, ToggleRight, Activity,
 } from "lucide-react";
 import { guardrailsApi } from "@/lib/api/client";
 import type {
@@ -127,12 +127,12 @@ function RuleModal({
   const [configText, setConfigText] = useState(initial ? JSON.stringify(initial.config, null, 2) : "{}");
   const [configError, setConfigError] = useState("");
 
-  const saveMutation = useMutation({
-    mutationFn: () => {
+  const saveMutation = useMutation<void, Error, void>({
+    mutationFn: async () => {
       let config: Record<string, unknown> = {};
       try { config = JSON.parse(configText); } catch { throw new Error("Config must be valid JSON"); }
       const body: CreateGuardrailRequest = { name, rule_type: ruleType, severity, layers, config };
-      return initial ? guardrailsApi.update(initial.id, body) : guardrailsApi.create(body);
+      await (initial ? guardrailsApi.update(initial.id, body) : guardrailsApi.create(body));
     },
     onSuccess: () => {
       toast({ kind: "success", message: initial ? "Guardrail updated." : "Guardrail created." });
@@ -287,7 +287,7 @@ function RulesTab(): JSX.Element {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState("all");
 
-  const { data: rules = [], isLoading, error } = useQuery<GuardrailConfig[]>({
+  const { data: rules = [], isLoading } = useQuery<GuardrailConfig[]>({
     queryKey: ["guardrails"],
     queryFn: () => guardrailsApi.list(),
     staleTime: 30_000,
@@ -464,7 +464,11 @@ function ViolationsTab(): JSX.Element {
             <tbody className="divide-y divide-border">
               {violations.map((v) => (
                 <tr key={v.id} className="hover:bg-muted/20">
-                  <td className="px-3 py-2.5 text-xs font-mono text-muted-foreground whitespace-nowrap">{v.id.slice(0, 8)}</td>
+                  <td className="px-3 py-2.5 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                    {v.created_at
+                      ? new Date(v.created_at).toLocaleTimeString()
+                      : v.id?.slice(0, 8) ?? '—'}
+                  </td>
                   <td className="px-3 py-2.5 font-medium text-xs">{v.guardrail_name}</td>
                   <td className="px-3 py-2.5 text-xs font-mono">{v.type}</td>
                   <td className="px-3 py-2.5">

@@ -502,9 +502,20 @@ const STATS = [
   { val: 5, suffix: "", label: "Attack vector defences" },
 ];
 
+function StatCard({ stat, on }: { stat: typeof STATS[0]; on: boolean }) {
+  const count = useCounter(stat.val, 2000, on);
+  return (
+    <div className="text-center">
+      <div className="font-display text-4xl md:text-5xl font-bold text-white tabular-nums">
+        {count.toLocaleString()}{stat.suffix}
+      </div>
+      <div className="text-xs text-slate-500 mt-2 leading-tight">{stat.label}</div>
+    </div>
+  );
+}
+
 function StatsSection() {
   const { ref, on } = useReveal(0.2);
-  const counts = STATS.map(s => useCounter(s.val, 2000, on)); // eslint-disable-line react-hooks/rules-of-hooks
   return (
     <div className="py-20">
       <div className="relative rounded-2xl overflow-hidden border border-white/[0.06] bg-gradient-to-br from-violet-900/15 via-[#0c0c18] to-indigo-900/10 p-12 md:p-16">
@@ -517,12 +528,7 @@ function StatsSection() {
         </div>
         <div className="relative grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8">
           {STATS.map((s, i) => (
-            <div key={s.label} className="text-center">
-              <div className="font-display text-4xl md:text-5xl font-bold text-white tabular-nums">
-                {counts[i].toLocaleString()}{s.suffix}
-              </div>
-              <div className="text-xs text-slate-500 mt-2 leading-tight">{s.label}</div>
-            </div>
+            <StatCard key={i} stat={s} on={on} />
           ))}
         </div>
       </div>
@@ -567,6 +573,29 @@ const ARCH_LAYERS = [
   },
 ];
 
+function ArchCard({ item, delay }: { item: typeof ARCH_LAYERS[0]; delay: number }) {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div
+      ref={ref}
+      className={`reveal ${on ? "reveal-on" : ""} rounded-xl border p-5 ${item.color}`}
+      style={{ transitionDelay: `${delay}ms` }}
+    >
+      <div className="flex items-center gap-2 mb-4">
+        <span className={`h-2 w-2 rounded-full ${item.dot}`} />
+        <span className="text-xs font-semibold text-white">{item.title}</span>
+      </div>
+      <ul className="space-y-2">
+        {item.items.map(it => (
+          <li key={it} className="text-xs text-slate-400 flex items-center gap-1.5">
+            <span className="h-px w-3 bg-slate-600 flex-shrink-0" />{it}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ArchSection() {
   const { ref, on } = useReveal(0.1);
   return (
@@ -583,29 +612,9 @@ function ArchSection() {
         </p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {ARCH_LAYERS.map(({ title, items, color, dot }, i) => {
-          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
-          return (
-            <div
-              key={title}
-              ref={r}
-              className={`reveal ${v ? "reveal-on" : ""} rounded-xl border p-5 ${color}`}
-              style={{ transitionDelay: `${i * 100}ms` }}
-            >
-              <div className="flex items-center gap-2 mb-4">
-                <span className={`h-2 w-2 rounded-full ${dot}`} />
-                <span className="text-xs font-semibold text-white">{title}</span>
-              </div>
-              <ul className="space-y-2">
-                {items.map(it => (
-                  <li key={it} className="text-xs text-slate-400 flex items-center gap-1.5">
-                    <span className="h-px w-3 bg-slate-600 flex-shrink-0" />{it}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          );
-        })}
+        {ARCH_LAYERS.map((layer, i) => (
+          <ArchCard key={layer.title} item={layer} delay={i * 100} />
+        ))}
       </div>
     </div>
   );
@@ -657,6 +666,37 @@ const SPOTLIGHTS = [
   },
 ];
 
+function SpotlightCard({ item, delay }: { item: typeof SPOTLIGHTS[0]; delay: number }) {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div
+      ref={ref}
+      className={`reveal ${on ? "reveal-on" : ""} relative rounded-2xl border ${item.border} bg-white/[0.025] p-6 flex flex-col`}
+      style={{ transitionDelay: `${delay}ms` }}
+    >
+      <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${item.accent} text-white mb-4`}>
+        {item.role}
+      </div>
+      <h3 className="font-display font-bold text-white text-base mb-4 leading-snug">{item.headline}</h3>
+      <ul className="space-y-2.5 flex-1">
+        {item.bullets.map((b, j) => (
+          <li key={j} className="flex items-start gap-2 text-sm text-slate-400">
+            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500 flex-shrink-0" />
+            {b}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-5 pt-4 border-t border-white/[0.05] flex flex-wrap gap-1.5">
+        {item.connectors.map(c => (
+          <span key={c} className="text-[10px] font-medium text-slate-500 border border-white/[0.06] rounded px-1.5 py-0.5">
+            {c}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SpotlightSection() {
   const { ref, on } = useReveal(0.1);
   return (
@@ -673,37 +713,9 @@ function SpotlightSection() {
         </p>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {SPOTLIGHTS.map(({ role, headline, bullets, connectors, accent, border }, i) => {
-          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
-          return (
-            <div
-              key={role}
-              ref={r}
-              className={`reveal ${v ? "reveal-on" : ""} relative rounded-2xl border ${border} bg-white/[0.025] p-6 flex flex-col`}
-              style={{ transitionDelay: `${i * 120}ms` }}
-            >
-              <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${accent} text-white mb-4`}>
-                {role}
-              </div>
-              <h3 className="font-display font-bold text-white text-base mb-4 leading-snug">{headline}</h3>
-              <ul className="space-y-2.5 flex-1">
-                {bullets.map((b, j) => (
-                  <li key={j} className="flex items-start gap-2 text-sm text-slate-400">
-                    <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500 flex-shrink-0" />
-                    {b}
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-5 pt-4 border-t border-white/[0.05] flex flex-wrap gap-1.5">
-                {connectors.map(c => (
-                  <span key={c} className="text-[10px] font-medium text-slate-500 border border-white/[0.06] rounded px-1.5 py-0.5">
-                    {c}
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        {SPOTLIGHTS.map((item, i) => (
+          <SpotlightCard key={item.role} item={item} delay={i * 120} />
+        ))}
       </div>
     </div>
   );
@@ -719,6 +731,21 @@ const OBS_ITEMS = [
   { icon: "🧬", title: "Goal DNA Visualisation", desc: "Force-graph exploration of every decision, tool call and verification in a goal run. Diff two runs. Ghost-run a goal with a different strategy." },
   { icon: "📈", title: "Cost & Latency Analytics", desc: "Per-goal, per-agent, per-tenant cost tracking with daily budget enforcement. Real token-based billing — not LLM call counts." },
 ];
+
+function ObsCard({ item, delay }: { item: typeof OBS_ITEMS[0]; delay: number }) {
+  const { ref, on } = useReveal(0.1);
+  return (
+    <div
+      ref={ref}
+      className={`reveal ${on ? "reveal-on" : ""} p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-colors`}
+      style={{ transitionDelay: `${delay}ms` }}
+    >
+      <div className="text-2xl mb-3">{item.icon}</div>
+      <h3 className="font-semibold text-white text-sm mb-2">{item.title}</h3>
+      <p className="text-xs text-slate-400 leading-relaxed">{item.desc}</p>
+    </div>
+  );
+}
 
 function ObsSection() {
   const { ref, on } = useReveal(0.1);
@@ -736,21 +763,9 @@ function ObsSection() {
         </p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {OBS_ITEMS.map(({ icon, title, desc }, i) => {
-          const { ref: r, on: v } = useReveal(0.1); // eslint-disable-line react-hooks/rules-of-hooks
-          return (
-            <div
-              key={title}
-              ref={r}
-              className={`reveal ${v ? "reveal-on" : ""} p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-colors`}
-              style={{ transitionDelay: `${i * 80}ms` }}
-            >
-              <div className="text-2xl mb-3">{icon}</div>
-              <h3 className="font-semibold text-white text-sm mb-2">{title}</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
-            </div>
-          );
-        })}
+        {OBS_ITEMS.map((item, i) => (
+          <ObsCard key={item.title} item={item} delay={i * 80} />
+        ))}
       </div>
     </div>
   );

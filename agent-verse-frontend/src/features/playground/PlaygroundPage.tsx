@@ -27,8 +27,9 @@ import {
   Github,
   MessageSquare,
   Database,
+  FileDown,
 } from "lucide-react";
-import { simulationApi, API_BASE } from "@/lib/api/client";
+import { simulationApi, apiFetch, API_BASE } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -42,7 +43,7 @@ interface MockTool {
 interface ExecStep {
   index: number;
   description: string;
-  type: "plan" | "tool" | "verify" | "complete";
+  type: "plan" | "tool" | "verify" | "complete" | "reasoning";
   tool?: string;
   output?: string;
   cost?: number;
@@ -121,10 +122,26 @@ const QUICK_TEMPLATES = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function classifyStep(description: string, tool?: string): ExecStep["type"] {
-  if (tool) return "tool";
-  const d = description.toLowerCase();
-  if (d.includes("verify") || d.includes("check") || d.includes("complet") || d.includes("confirm")) return "verify";
+/**
+ * Classify a step description into a display/filter type.
+ * Reasoning steps are detected from natural-language keywords.
+ * Note: "complete" is only set externally on the final result node.
+ */
+function classifyStep(description: string): "tool" | "verify" | "plan" | "reasoning" {
+  const lower = description.toLowerCase();
+  if (
+    lower.includes("reasoning") || lower.includes("thinking") ||
+    lower.includes("analyzing") || lower.includes("considering") ||
+    lower.includes("evaluating options")
+  ) return "reasoning";
+  if (
+    lower.includes("tool") || lower.includes("call") || lower.includes("execute") ||
+    lower.includes("fetch") || lower.includes("run")
+  ) return "tool";
+  if (
+    lower.includes("verify") || lower.includes("check") ||
+    lower.includes("complet") || lower.includes("confirm")
+  ) return "verify";
   return "plan";
 }
 
@@ -136,6 +153,7 @@ function stepBorderColor(type: ExecStep["type"], status: ExecStep["status"]): st
     case "tool": return "border-amber-300/70 bg-amber-50/30 dark:bg-amber-900/10";
     case "verify": return "border-emerald-300/70 bg-emerald-50/30 dark:bg-emerald-900/10";
     case "complete": return "border-green-400 bg-green-50/40 dark:bg-green-900/10";
+    case "reasoning": return "border-sky-300/70 bg-sky-50/30 dark:bg-sky-900/10";
   }
 }
 
@@ -147,6 +165,7 @@ function stepDotColor(type: ExecStep["type"], status: ExecStep["status"]): strin
     case "tool": return "bg-amber-500";
     case "verify": return "bg-emerald-500";
     case "complete": return "bg-green-500";
+    case "reasoning": return "bg-sky-500";
   }
 }
 
@@ -194,7 +213,7 @@ function ToolCard({
         >
           <span
             className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
-              isOn ? "left-4.5" : "left-0.5"
+              isOn ? "left-[18px]" : "left-0.5"
             }`}
           />
         </button>
@@ -272,6 +291,7 @@ export function PlaygroundPage(): JSX.Element {
     queryKey: ["available-tools"],
     queryFn: () => simulationApi.getAvailableTools(),
     staleTime: 60_000,
+    enabled: !!apiKey,
   });
   const availableTools = availableToolsData?.tools ?? [];
 
@@ -317,9 +337,10 @@ export function PlaygroundPage(): JSX.Element {
 
   // ── Add custom tool ────────────────────────────────────────────────────────
   const addCustomTool = (): void => {
+    const id = Math.random().toString(36).slice(2, 7);
     setMockTools((prev) => [
       ...prev,
-      { name: "custom:tool", output: '{"result": "custom mock"}', enabled: true },
+      { name: `custom:tool_${id}`, output: '{"result": "custom mock"}', enabled: true },
     ]);
   };
 
@@ -333,7 +354,7 @@ export function PlaygroundPage(): JSX.Element {
   };
 
   // ── Scenario library ───────────────────────────────────────────────────────
-  const saveScenario = (): void => {
+  const saveScenario = async (): Promise<void> => {
     if (!saveName.trim()) return;
     const scenario: Scenario = {
       id: crypto.randomUUID(),
@@ -347,6 +368,16 @@ export function PlaygroundPage(): JSX.Element {
     saveScenarios(updated);
     setSaveDialogOpen(false);
     setSaveName("");
+
+    // Best-effort backend persistence
+    try {
+      await apiFetch<void>('/playground/scenarios', {
+        method: 'POST',
+        body: JSON.stringify(scenario),
+      });
+    } catch {
+      // Silently ignore — localStorage is the source of truth
+    }
   };
 
   const loadScenario = (s: Scenario): void => {
@@ -370,6 +401,30 @@ export function PlaygroundPage(): JSX.Element {
     setFinalResult(null);
     setSelectedStep(null);
     setStats({ totalSteps: 0, toolCalls: 0, totalCost: 0, elapsedSeconds: 0 });
+  };
+
+  // ── Export simulation trace ────────────────────────────────────────────────
+  const exportTrace = (): void => {
+    if (!steps.length) return;
+    const enabledTools = mockTools.filter((t) => t.enabled);
+    const trace = {
+      goal,
+      tools: enabledTools,
+      run_date: new Date().toISOString(),
+      steps,
+      stats: {
+        total_steps: steps.length,
+        tool_calls: steps.filter(s => classifyStep(s.description ?? '') === 'tool').length,
+        duration_ms: stats.elapsedSeconds * 1000,
+      },
+    };
+    const blob = new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `simulation-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // ── Run simulation ─────────────────────────────────────────────────────────
@@ -402,7 +457,7 @@ export function PlaygroundPage(): JSX.Element {
         const fallbackSteps: ExecStep[] = (result.steps ?? []).map((s, i) => ({
           index: i + 1,
           description: String(s.step),
-          type: classifyStep(String(s.step), s.tool),
+          type: s.tool ? "tool" : classifyStep(String(s.step)),
           tool: s.tool || undefined,
           output: s.output || undefined,
           status: "done" as const,
@@ -442,7 +497,7 @@ export function PlaygroundPage(): JSX.Element {
               const newStep: ExecStep = {
                 index: stepIndex,
                 description: desc,
-                type: classifyStep(desc, tool || undefined),
+                type: tool ? "tool" : classifyStep(desc),
                 tool: tool || undefined,
                 status: "running",
               };
@@ -512,6 +567,14 @@ export function PlaygroundPage(): JSX.Element {
   // ── Render ─────────────────────────────────────────────────────────────────
   const enabledTools = mockTools.filter((t) => t.enabled);
 
+  // Apply visibility filters based on show toggles
+  const visibleSteps = steps.filter(step => {
+    const type = classifyStep(step.description ?? '');
+    if (type === 'reasoning' && !showOptions.reasoning) return false;
+    if (type === 'tool' && !showOptions.toolCalls) return false;
+    return true;
+  });
+
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* ── Left Sidebar ──────────────────────────────────────────────────── */}
@@ -575,13 +638,13 @@ export function PlaygroundPage(): JSX.Element {
                   autoFocus
                   value={saveName}
                   onChange={(e) => setSaveName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && saveScenario()}
+                  onKeyDown={(e) => e.key === "Enter" && void saveScenario()}
                   placeholder="Scenario name…"
                   className="w-full border border-input rounded px-2 py-1 text-xs bg-background"
                 />
                 <div className="flex gap-1">
                   <button
-                    onClick={saveScenario}
+                    onClick={() => void saveScenario()}
                     className="flex-1 text-xs bg-violet-600 text-foreground rounded px-2 py-1 hover:bg-violet-700"
                   >
                     Save
@@ -777,6 +840,22 @@ export function PlaygroundPage(): JSX.Element {
 
           {/* Execution Canvas */}
           <div className="space-y-2 pb-6">
+            {/* Canvas header with Export Trace button */}
+            {steps.length > 0 && !running && (
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-muted-foreground">
+                  {visibleSteps.length} of {steps.length} steps shown
+                </span>
+                <button
+                  onClick={exportTrace}
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1 border border-border rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground"
+                  title="Export simulation trace as JSON"
+                >
+                  <FileDown className="h-3.5 w-3.5" /> Export Trace
+                </button>
+              </div>
+            )}
+
             {running && steps.length === 0 && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
                 <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
@@ -784,7 +863,7 @@ export function PlaygroundPage(): JSX.Element {
               </div>
             )}
 
-            {steps.map((step) => (
+            {visibleSteps.map((step) => (
               <button
                 key={step.index}
                 onClick={() => setSelectedStep(step === selectedStep ? null : step)}
@@ -879,6 +958,8 @@ export function PlaygroundPage(): JSX.Element {
                       ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
                       : selectedStep.type === "verify"
                       ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                      : selectedStep.type === "reasoning"
+                      ? "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
                       : "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
                   }`}
                 >

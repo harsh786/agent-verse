@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { marketplaceApi, templatesApi, type MarketplaceV2Template } from '@/lib/api/client';
 
 const DOMAINS = [
   { key: 'hr-talent', name: 'HR & Talent', icon: '👥', tagline: 'Hire, onboard, and retain faster', color: 'bg-blue-100 dark:bg-blue-900/20' },
@@ -43,6 +45,13 @@ const DOMAINS = [
 
 type Domain = (typeof DOMAINS)[number];
 
+/**
+ * Normalise a domain key so that "e-commerce" and "ecommerce" both map to the
+ * same bucket when counting marketplace / template data.
+ */
+const normalizeDomainKey = (key: string): string =>
+  key.toLowerCase().replace(/[-_\s]/g, '');
+
 function DomainCard({
   domain,
   counts,
@@ -52,6 +61,7 @@ function DomainCard({
   counts?: { agents: number; templates: number };
   onClick: () => void;
 }) {
+  const hasData = counts && (counts.agents > 0 || counts.templates > 0);
   return (
     <div
       onClick={onClick}
@@ -67,15 +77,17 @@ function DomainCard({
       <div className="p-4">
         <h3 className="font-semibold text-foreground">{domain.name}</h3>
         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{domain.tagline}</p>
-        {counts && (
+        {hasData ? (
           <div className="flex gap-3 mt-3 text-xs text-muted-foreground">
-            <span>{counts.agents} agents</span>
-            <span>{counts.templates} templates</span>
+            <span>{counts.agents} agent{counts.agents !== 1 ? 's' : ''}</span>
+            <span>•</span>
+            <span>{counts.templates} template{counts.templates !== 1 ? 's' : ''}</span>
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-primary font-medium group-hover:underline">
+            Explore →
           </div>
         )}
-        <div className="mt-3 text-xs text-primary font-medium group-hover:underline">
-          Explore →
-        </div>
       </div>
     </div>
   );
@@ -84,6 +96,46 @@ function DomainCard({
 export default function DomainsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+
+  // Fetch all marketplace templates to aggregate per-domain agent counts
+  const { data: marketplaceData } = useQuery({
+    queryKey: ['marketplace-all'],
+    queryFn: () => marketplaceApi.list({}),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch all goal templates to aggregate per-domain template counts
+  const { data: templateData } = useQuery({
+    queryKey: ['templates-all'],
+    queryFn: () => templatesApi.list(),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  /**
+   * Build a map of normalised-domain-key → { agents, templates }.
+   * Both the marketplace and templates APIs may use slightly different key
+   * spellings (e.g. "ecommerce" vs "e-commerce"), so we normalise before
+   * counting and look up by the normalised form of each card's key.
+   */
+  const domainCounts = useMemo(() => {
+    const counts: Record<string, { agents: number; templates: number }> = {};
+
+    const agentItems: MarketplaceV2Template[] = marketplaceData?.items ?? marketplaceData?.templates ?? [];
+    agentItems.forEach((t) => {
+      const dk = normalizeDomainKey(t.domain ?? 'general');
+      if (!counts[dk]) counts[dk] = { agents: 0, templates: 0 };
+      counts[dk].agents++;
+    });
+
+    const templateItems = templateData ?? [];
+    templateItems.forEach((t) => {
+      const dk = normalizeDomainKey(t.domain ?? 'general');
+      if (!counts[dk]) counts[dk] = { agents: 0, templates: 0 };
+      counts[dk].templates++;
+    });
+
+    return counts;
+  }, [marketplaceData, templateData]);
 
   const filtered = DOMAINS.filter(
     (d) =>
@@ -117,6 +169,7 @@ export default function DomainsPage() {
           <DomainCard
             key={d.key}
             domain={d}
+            counts={domainCounts[normalizeDomainKey(d.key)]}
             onClick={() => navigate(`/domains/${d.key}`)}
           />
         ))}

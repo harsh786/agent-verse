@@ -120,15 +120,31 @@ class Settings(BaseSettings):
     # --- scope enforcement ---
     scope_enforcement_legacy_allow: bool = False
 
-    # --- billing ---
+    # --- billing (Stripe) ---
     stripe_api_key: str = ""
 
-    # --- billing details ---
+    # --- billing details (Stripe) ---
     stripe_price_starter: str = ""
     stripe_price_professional: str = ""
     stripe_price_enterprise: str = ""
     stripe_success_url: str = "https://app.agentverse.ai/settings/billing?success=1"
     stripe_cancel_url: str = "https://app.agentverse.ai/settings/billing?cancelled=1"
+
+    # --- billing (Razorpay) ---
+    razorpay_key_id: str = "rzp_test_placeholder"
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
+    allow_mock_payments: bool = Field(
+        default=False,
+        description=(
+            "Allow payment verification without real Razorpay credentials. "
+            "MUST be False in production. Set True only in development/testing."
+        ),
+    )
+    inr_to_usd_rate: float = Field(
+        default=83.0,
+        description="INR to USD conversion rate. Update when rate changes significantly.",
+    )
 
     # --- India compliance (DPDP/GST) ---
     seller_gstin: str = "27AAAAA0000A1Z5"   # placeholder — override in production

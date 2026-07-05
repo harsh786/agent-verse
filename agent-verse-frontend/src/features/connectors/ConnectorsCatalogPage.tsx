@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Zap, Search, SlidersHorizontal } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { connectorsApi, type CatalogEntry } from '@/lib/api/client';
+import { OAuthPopupButton } from './OAuthPopupButton';
 
 const CATEGORY_LABELS: Record<string, string> = {
   all: 'All',
@@ -60,9 +61,11 @@ const CONNECTOR_EMOJIS: Record<string, string> = {
 function ConnectorCard({
   entry,
   onConfigure,
+  onOAuthSuccess,
 }: {
   entry: CatalogEntry;
   onConfigure: (entry: CatalogEntry) => void;
+  onOAuthSuccess?: () => void;
 }) {
   const emoji = CONNECTOR_EMOJIS[entry.name] ?? '🔌';
   const categoryColor = CATEGORY_COLORS[entry.category] ?? CATEGORY_COLORS.other;
@@ -142,7 +145,15 @@ function ConnectorCard({
         )}
       </div>
 
-      <div className="mt-auto border-t p-3">
+      <div className="mt-auto border-t p-3 flex flex-col gap-2">
+        {/* OAuth connectors get a dedicated popup-flow button */}
+        {(entry.auth_type === 'oauth_ac' || entry.auth_type === 'pkce') && (
+          <OAuthPopupButton
+            connectorName={entry.name}
+            displayName={entry.display_name}
+            onSuccess={onOAuthSuccess}
+          />
+        )}
         <button
           type="button"
           onClick={() => onConfigure(entry)}
@@ -162,6 +173,7 @@ function ConnectorCard({
 export function ConnectorsCatalogPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
 
@@ -286,7 +298,15 @@ export function ConnectorsCatalogPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filtered.map((entry) => (
-            <ConnectorCard key={entry.name} entry={entry} onConfigure={handleConfigure} />
+            <ConnectorCard
+              key={entry.name}
+              entry={entry}
+              onConfigure={handleConfigure}
+              onOAuthSuccess={() => {
+                qc.invalidateQueries({ queryKey: ['connectors-catalog'] });
+                qc.invalidateQueries({ queryKey: ['connectors'] });
+              }}
+            />
           ))}
         </div>
       )}

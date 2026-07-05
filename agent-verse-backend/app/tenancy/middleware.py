@@ -216,18 +216,61 @@ class TenantMiddleware(BaseHTTPMiddleware):
         from app.core.config import get_settings as _get_settings
         _settings = _get_settings()
         if _settings.mfa_enforcement_enabled:
-            mfa_enabled = getattr(tenant_ctx, "mfa_enabled", False)
-            if mfa_enabled:
-                mfa_token = request.headers.get("X-MFA-Token")
-                if not mfa_token:
-                    return JSONResponse(
-                        status_code=401,
-                        content={
-                            "error": "mfa_required",
-                            "detail": "This account requires MFA. Provide X-MFA-Token header.",
-                        },
-                    )
-                # TODO: validate TOTP token (Phase 14 full implementation)
+            import time as _mfa_time
+            try:
+                from app.api.mfa import _mfa_db_store, _mfa_verified_sessions
+                mfa_state = await _mfa_db_store.get(tenant_ctx.tenant_id)
+                if mfa_state.get("enabled"):
+                    mfa_token = request.headers.get("X-MFA-Token", "")
+                    if not mfa_token:
+                        return JSONResponse(
+                            content={
+                                "error": {
+                                    "code": "MFA_REQUIRED",
+                                    "message": (
+                                        "MFA verification required. "
+                                        "Include X-MFA-Token header."
+                                    ),
+                                    "retryable": False,
+                                }
+                            },
+                            status_code=401,
+                        )
+                    session_valid = _mfa_verified_sessions.get(mfa_token)
+                    if (
+                        not session_valid
+                        or session_valid.get("tenant_id") != tenant_ctx.tenant_id
+                    ):
+                        return JSONResponse(
+                            content={
+                                "error": {
+                                    "code": "MFA_REQUIRED",
+                                    "message": (
+                                        "MFA verification required. "
+                                        "Include X-MFA-Token header."
+                                    ),
+                                    "retryable": False,
+                                }
+                            },
+                            status_code=401,
+                        )
+                    if _mfa_time.monotonic() - session_valid.get("created_at", 0) > 3600:
+                        del _mfa_verified_sessions[mfa_token]
+                        return JSONResponse(
+                            content={
+                                "error": {
+                                    "code": "MFA_SESSION_EXPIRED",
+                                    "message": (
+                                        "MFA session expired. "
+                                        "Please re-authenticate."
+                                    ),
+                                    "retryable": False,
+                                }
+                            },
+                            status_code=401,
+                        )
+            except ImportError:
+                pass  # MFA module not available, skip enforcement
 
         # ── Rate limiting (check BEFORE processing; headers added AFTER) ──────
         rl_limit: int | None = None

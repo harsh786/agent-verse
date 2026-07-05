@@ -18,6 +18,15 @@ from typing import Any
 
 from app.tenancy.context import TenantContext
 
+import warnings
+
+warnings.warn(
+    "app.enterprise.compliance is deprecated. Use app.enterprise.compliance_v2 instead. "
+    "This module will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 
 @dataclass
 class DataExportRequest:

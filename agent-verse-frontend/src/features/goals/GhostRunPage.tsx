@@ -271,7 +271,7 @@ export function GhostRunPage() {
     { key: "eval_score", label: "Quality Score", enabled: true },
     { key: "tool_calls", label: "Tool Calls", enabled: false },
   ]);
-  const [stopOnFirst] = useState(false);
+  const [stopOnFirst, setStopOnFirst] = useState(false);
 
   // Runtime state
   const [ghostRunResp, setGhostRunResp] = useState<GhostRunResponse | null>(null);
@@ -338,7 +338,7 @@ export function GhostRunPage() {
       setPhase("results");
       // Save to history
       if (ghostRunResp) {
-        const winner = determineWinner(ghostRunResp, polledStatuses);
+        const winner = determineWinner(ghostRunResp, polledStatuses, enabledMetricsMap);
         const entry: HistoryEntry = {
           id: ghostRunResp.ghost_run_id,
           goal: goal.slice(0, 80),
@@ -356,7 +356,8 @@ export function GhostRunPage() {
   // Determine winner by comparing enabled metrics
   function determineWinner(
     resp: GhostRunResponse,
-    statuses: Record<string, GoalStatus>
+    statuses: Record<string, GoalStatus>,
+    enabledMetrics: Record<string, boolean>
   ): string | null {
     const completed = resp.strategies.filter(
       (s) => s.goal_id && TERMINAL.has(statuses[s.goal_id]?.status ?? "")
@@ -365,29 +366,54 @@ export function GhostRunPage() {
     );
     if (!completed.length) return null;
 
-    // Score each strategy: lower cost + lower duration = better
     const scored = completed.map((s) => {
       const gs = statuses[s.goal_id!] ?? {};
       const startMs = startTimes[s.goal_id!] ?? Date.now();
-      const duration = Date.now() - startMs;
-      return {
-        name: s.name,
-        cost: gs.cost_usd ?? 0,
-        duration,
-        quality: gs.eval_score ?? 0,
-      };
+      let score = 0;
+      let weight = 0;
+
+      if (enabledMetrics['cost_usd'] && gs.cost_usd != null) {
+        const maxCost = Math.max(...completed.map(c => statuses[c.goal_id!]?.cost_usd ?? 0));
+        score += maxCost > 0 ? (1 - gs.cost_usd / maxCost) : 1;
+        weight++;
+      }
+
+      if (enabledMetrics['duration']) {
+        const duration = Date.now() - startMs;
+        const maxDur = Math.max(...completed.map(c => {
+          const cStart = startTimes[c.goal_id!] ?? Date.now();
+          return Date.now() - cStart;
+        }));
+        score += maxDur > 0 ? (1 - duration / maxDur) : 1;
+        weight++;
+      }
+
+      if (enabledMetrics['eval_score'] && gs.eval_score != null) {
+        score += gs.eval_score;
+        weight++;
+      }
+
+      if (enabledMetrics['tool_calls'] && gs.tool_calls != null) {
+        const maxCalls = Math.max(...completed.map(c => statuses[c.goal_id!]?.tool_calls ?? 0));
+        score += maxCalls > 0 ? (1 - gs.tool_calls / maxCalls) : 1;
+        weight++;
+      }
+
+      const finalScore = weight > 0 ? score / weight : (gs.cost_usd != null ? 1 / (1 + gs.cost_usd) : 0);
+      return { name: s.name, score: finalScore };
     });
 
-    // Find best by cost (primary), then quality (secondary)
-    const best = scored.sort((a, b) => {
-      if (a.cost !== b.cost) return a.cost - b.cost;
-      return b.quality - a.quality;
-    })[0];
-    return best?.name ?? null;
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0]?.name ?? null;
   }
 
+  const enabledMetricsMap = metrics.reduce(
+    (acc, m) => ({ ...acc, [m.key]: m.enabled }),
+    {} as Record<string, boolean>
+  );
+
   const winnerName = ghostRunResp && goalStatuses
-    ? determineWinner(ghostRunResp, goalStatuses)
+    ? determineWinner(ghostRunResp, goalStatuses, enabledMetricsMap)
     : null;
 
   const addStrategy = () => {
@@ -496,6 +522,18 @@ export function GhostRunPage() {
                 {m.label}
               </button>
             ))}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              type="checkbox"
+              id="stop-on-first"
+              checked={stopOnFirst}
+              onChange={(e) => setStopOnFirst(e.target.checked)}
+              className="rounded accent-primary"
+            />
+            <label htmlFor="stop-on-first" className="text-xs text-muted-foreground cursor-pointer select-none">
+              Stop on first completion
+            </label>
           </div>
         </div>
 

@@ -220,6 +220,28 @@ export function AgentCreatePage() {
               />
             </div>
 
+            {/* Fix 11: Expose allowed_collection_ids field */}
+            <div>
+              <label className="block text-sm font-medium mb-1">Knowledge Collections</label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Comma-separated collection IDs the agent can search
+              </p>
+              <input
+                value={(manualForm.allowed_collection_ids ?? []).join(', ')}
+                onChange={(e) =>
+                  setManualForm((f) => ({
+                    ...f,
+                    allowed_collection_ids: e.target.value
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="col_abc123, col_def456"
+                className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+
             {error && (
               <p role="alert" className="text-xs text-red-600">
                 {error}

@@ -1,24 +1,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { adminApi } from '@/lib/api/client';
 
 interface Tenant {
   tenant_id: string;
   plan: string;
-}
-
-const ADMIN_KEY = import.meta.env.VITE_PLATFORM_ADMIN_KEY || '';
-
-async function fetchWithAdminKey(path: string, options?: RequestInit) {
-  const res = await fetch(`/api${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Admin-Key': ADMIN_KEY,
-      ...options?.headers,
-    },
-  });
-  if (!res.ok) throw new Error(`Admin API error: ${res.status}`);
-  return res.json();
 }
 
 function PlatformUsageCard({
@@ -53,21 +39,18 @@ export default function AdminPage() {
 
   const { data: usage } = useQuery({
     queryKey: ['admin', 'usage'],
-    queryFn: () => fetchWithAdminKey('/admin/usage'),
+    queryFn: () => adminApi.getPlatformUsage(),
     refetchInterval: 15000,
   });
 
   const { data: tenantsData, isLoading } = useQuery({
     queryKey: ['admin', 'tenants'],
-    queryFn: () => fetchWithAdminKey('/admin/tenants?limit=100'),
+    queryFn: () => adminApi.listTenants(),
   });
 
   const planMutation = useMutation({
     mutationFn: ({ tenantId, plan }: { tenantId: string; plan: string }) =>
-      fetchWithAdminKey(`/admin/tenants/${tenantId}/plan`, {
-        method: 'PUT',
-        body: JSON.stringify({ plan }),
-      }),
+      adminApi.updatePlan(tenantId, plan),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin'] }),
   });
 

@@ -1,6 +1,6 @@
 /**
  * Typed API client for the AgentVerse backend.
- * Base URL is injected from environment — VITE_API_URL defaults to http://localhost:8000.
+ * Base URL is injected from environment — VITE_API_BASE_URL defaults to http://localhost:8000.
  * In development the Vite proxy rewrites /api → localhost:8000, but direct URL
  * works too and is required for production builds.
  */
@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import type { ResultArtifact } from '@/features/goals/resultArtifact';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 /** Exported alias for use in feature pages. */
 export const API_BASE = API_BASE_URL;
@@ -94,6 +94,20 @@ export class ApiError extends Error {
 export const apiFetch = request;
 
 /**
+ * Returns a cancelable version of request.
+ * Call `.cancel()` to abort in-flight requests (e.g. on component unmount).
+ *
+ * @example
+ * const { promise, cancel } = requestWithCancel<User[]>('/users');
+ * useEffect(() => () => cancel(), []);
+ */
+export function requestWithCancel<T>(path: string, options: RequestInit = {}) {
+  const controller = new AbortController();
+  const promise = request<T>(path, { ...options, signal: controller.signal });
+  return { promise, cancel: () => controller.abort() };
+}
+
+/**
  * Upload a file (or any FormData payload) to the given path.
  * Content-Type is intentionally NOT set so the browser supplies the multipart boundary.
  */
@@ -154,6 +168,7 @@ export interface GoalResponse {
   iterations?: number;
   cost_usd?: number;
   created_at?: string;
+  event_count?: number;
   result_artifact?: ResultArtifact;
 }
 
@@ -214,7 +229,15 @@ export interface EvalScorecard {
 }
 
 export const goalsApi = {
-  list: () => request<{ goals: GoalResponse[] }>("/goals"),
+  list: (params?: { status?: string; search?: string; page?: number; page_size?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status && params.status !== 'all') q.set('status', params.status);
+    if (params?.search) q.set('search', params.search);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.page_size) q.set('page_size', String(params.page_size));
+    const qs = q.toString();
+    return request<{ goals: GoalResponse[] }>(`/goals${qs ? '?' + qs : ''}`);
+  },
   submit: (body: GoalRequest) =>
     request<GoalResponse>("/goals", { method: "POST", body: JSON.stringify(body) }),
   get: (id: string) => request<GoalResponse>(`/goals/${id}`),
@@ -314,6 +337,10 @@ export const agentsApi = {
     request<{ gate_status: string; traffic_pct: number; conditions: string[] }>(
       `/agents/${id}/rollout-gate`
     ),
+  checkReadiness: (id: string) =>
+    request<{ ready: boolean; score?: number; issues?: string[]; checks?: Array<{ status: string; message: string }> }>(
+      `/agents/${id}/readiness`
+    ),
 };
 
 // ── Connectors ────────────────────────────────────────────────────────────────
@@ -331,6 +358,10 @@ export interface ConnectorResponse {
   name: string;
   url: string;
   status?: string;
+  auth_type?: string;
+  auth_config?: Record<string, string>;
+  last_tested?: string;
+  test_result?: { success: boolean; latency_ms?: number; error?: string };
 }
 
 export interface CatalogAuthField {
@@ -369,6 +400,8 @@ export interface ConnectorTestResult {
 export const connectorsApi = {
   getCatalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   list: () => request<ConnectorResponse[]>("/connectors"),
+  get: (id: string) => request<ConnectorResponse>(`/connectors/${id}`),
+  tools: (id: string) => request<{ name?: string; description?: string }[]>(`/connectors/${id}/tools`),
   register: (body: ConnectorRequest) =>
     request<ConnectorResponse>("/connectors", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: Partial<ConnectorRequest>) =>
@@ -376,6 +409,22 @@ export const connectorsApi = {
   unregister: (id: string) => request<void>(`/connectors/${id}`, { method: "DELETE" }),
   test: (id: string) =>
     request<ConnectorTestResult>(`/connectors/${id}/test`, { method: "POST" }),
+  /** Start an OAuth popup flow — returns the provider auth URL and a CSRF state token. */
+  startOAuth: (connectorName: string) =>
+    request<{ auth_url: string; state: string }>(`/connectors/oauth/start`, {
+      method: "POST",
+      body: JSON.stringify({ connector_name: connectorName }),
+    }),
+  /** Complete the OAuth flow by exchanging the callback code for a registered connector. */
+  completeOAuth: (code: string, state: string, connectorName: string) =>
+    request<{ server_id: string; name: string; status: string }>(`/connectors/oauth/callback`, {
+      method: "POST",
+      body: JSON.stringify({ code, state, connector_name: connectorName }),
+    }),
+  getUsage: (connectorId: string) =>
+    request<{ goals: any[]; total: number; success_rate: number | null; filtered: boolean }>(
+      `/connectors/${connectorId}/usage`
+    ),
 };
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -631,6 +680,61 @@ export const settingsApi = {
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
 };
 
+// ── Billing (Razorpay) ────────────────────────────────────────────────────────
+
+export interface RazorpayPlan {
+  plan_id: string;
+  name: string;
+  prices: {
+    monthly_inr: number;
+    annual_inr: number;
+    monthly_paise: number;
+    annual_paise: number;
+  };
+  limits: Record<string, number>;
+  razorpay_key_id: string;
+}
+
+export interface RazorpayOrder {
+  order_id: string;
+  amount: number;
+  currency: string;
+  plan: string;
+  cycle: string;
+  razorpay_key_id: string;
+  is_mock: boolean;
+  message?: string;
+}
+
+export interface RazorpayVerifyResult {
+  status: string;
+  plan: string;
+  cycle: string;
+  payment_id: string;
+  message: string;
+  limits: Record<string, number>;
+}
+
+export const billingApi = {
+  getPlans: () => request<RazorpayPlan[]>('/billing/plans'),
+  createOrder: (plan: string, cycle: 'monthly' | 'annual', currency = 'INR') =>
+    request<RazorpayOrder>('/billing/create-order', {
+      method: 'POST',
+      body: JSON.stringify({ plan, cycle, currency }),
+    }),
+  verifyPayment: (data: {
+    razorpay_order_id: string;
+    razorpay_payment_id: string;
+    razorpay_signature: string;
+    plan: string;
+    cycle: string;
+  }) =>
+    request<RazorpayVerifyResult>('/billing/verify-payment', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
 // ── Knowledge ────────────────────────────────────────────────────────────────
 
 export interface KnowledgeCollection {
@@ -880,9 +984,10 @@ export interface ToolReliabilityRow {
 }
 
 export const memoryApi = {
-  list: (opts: { limit?: number; memoryType?: string } = {}) => {
+  list: (opts: { limit?: number; offset?: number; memoryType?: string } = {}) => {
     const params = new URLSearchParams();
     params.set("limit", String(opts.limit ?? 50));
+    if (opts.offset) params.set("offset", String(opts.offset));
     if (opts.memoryType) params.set("memory_type", opts.memoryType);
     return request<MemoryEntry[]>(`/memory?${params.toString()}`);
   },
@@ -894,6 +999,8 @@ export const memoryApi = {
     request<MemoryEntry>("/memory", { method: "POST", body: JSON.stringify(data) }),
   delete: (id: string) =>
     request<{ deleted: string; status: string }>(`/memory/${id}`, { method: "DELETE" }),
+  update: (id: string, data: Partial<MemoryEntry>) =>
+    request<MemoryEntry>(`/memory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
   listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
@@ -912,13 +1019,33 @@ export interface Artifact {
   created_at: string;
 }
 
+/** Response shape for paginated artifact listings. */
+export interface PaginatedArtifacts {
+  items: Artifact[];
+  total: number;
+}
+
+/** Union returned by artifactsApi.list — backend may return either shape. */
+export type ArtifactListResponse = Artifact[] | PaginatedArtifacts;
+
 export const artifactsApi = {
-  list: (opts: { goalId?: string; artifactType?: string; limit?: number } = {}) => {
+  list: (opts: {
+    goalId?: string;
+    artifactType?: string;
+    /** Alias for artifactType — used by paginated callers. */
+    type?: string;
+    limit?: number;
+    offset?: number;
+    search?: string;
+  } = {}) => {
     const params = new URLSearchParams();
     if (opts.goalId) params.set("goal_id", opts.goalId);
-    if (opts.artifactType) params.set("artifact_type", opts.artifactType);
+    const artifactType = opts.type ?? opts.artifactType;
+    if (artifactType) params.set("artifact_type", artifactType);
     params.set("limit", String(opts.limit ?? 50));
-    return request<Artifact[]>(`/artifacts?${params.toString()}`);
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.search) params.set("search", opts.search);
+    return request<ArtifactListResponse>(`/artifacts?${params.toString()}`);
   },
   get: (id: string) => request<Artifact>(`/artifacts/${id}`),
   delete: (id: string) => request<void>(`/artifacts/${id}`, { method: "DELETE" }),
@@ -974,6 +1101,7 @@ export const toolsApi = {
     subject: string;
     body: string;
     from_addr?: string;
+    cc?: string;
   }) =>
     request<Record<string, unknown>>("/tools/email/send", {
       method: "POST",
@@ -1003,11 +1131,15 @@ export const trainingApi = {
     format: "openai" | "anthropic";
     minScore?: number;
     limit?: number;
+    fromDate?: string;
+    toDate?: string;
   }): Promise<{ blob: Blob; filename: string; count: number }> => {
     const params = new URLSearchParams();
     params.set("format", opts.format);
     params.set("min_score", String(opts.minScore ?? 0.8));
     params.set("limit", String(opts.limit ?? 1000));
+    if (opts.fromDate) params.set("from_date", opts.fromDate);
+    if (opts.toDate) params.set("to_date", opts.toDate);
     const apiKey = getApiKey();
     const headers: Record<string, string> = {};
     if (apiKey) headers["X-API-Key"] = apiKey;
@@ -1029,10 +1161,12 @@ export const trainingApi = {
     };
   },
 
-  preview: (opts: { minScore?: number; limit?: number }): Promise<TrainingPreview> => {
+  preview: (opts: { minScore?: number; limit?: number; from_date?: string; to_date?: string }): Promise<TrainingPreview> => {
     const params = new URLSearchParams();
     params.set("min_score", String(opts.minScore ?? 0.8));
     params.set("limit", String(opts.limit ?? 1000));
+    if (opts.from_date) params.set("from_date", opts.from_date);
+    if (opts.to_date) params.set("to_date", opts.to_date);
     return request<TrainingPreview>(
       `/intelligence/export-training-data/preview?${params.toString()}`
     );
@@ -1221,6 +1355,7 @@ export interface AuditEvent {
   step_id?: string;
   approver?: string;
   note?: string;
+  created_at?: string;
 }
 
 export interface AuditQuery {
@@ -1423,7 +1558,7 @@ export const evalSuitesApi = {
       body: JSON.stringify({ name, description }),
     }),
   getSuite: (id: string) => request<EvalSuite>(`/intelligence/eval-suites/${id}`),
-  addTask: (suiteId: string, task: { input: string; expected_output?: string; tags?: string[] }) =>
+  addTask: (suiteId: string, task: { input: string; expected_output?: string; tags?: string[]; forbidden_tools?: string[]; min_score?: number }) =>
     request<void>(`/intelligence/eval-suites/${suiteId}/tasks`, {
       method: "POST",
       body: JSON.stringify(task),
@@ -1432,6 +1567,8 @@ export const evalSuitesApi = {
     request<{ run_id: string }>(`/intelligence/eval-suites/${id}/run`, { method: "POST" }),
   getSuiteResults: (id: string) =>
     request<EvalSuiteResult[]>(`/intelligence/eval-suites/${id}/results`),
+  deleteSuite: (suiteId: string) =>
+    request<void>(`/intelligence/eval-suites/${suiteId}`, { method: 'DELETE' }),
 };
 
 // ── Workflows (Phase-6) ────────────────────────────────────────────────────────
@@ -1728,8 +1865,13 @@ export interface GoalTemplate {
 }
 
 export const templatesApi = {
-  list: (domain?: string) =>
-    request<GoalTemplate[]>(`/templates${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
+  list: (domain?: string, search?: string) => {
+    const params = new URLSearchParams();
+    if (domain) params.set("domain", domain);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return request<GoalTemplate[]>(`/templates${qs ? `?${qs}` : ""}`);
+  },
   get: (id: string) => request<GoalTemplate>(`/templates/${id}`),
   create: (data: { name: string; description?: string; goal_text: string; domain?: string }) =>
     request<GoalTemplate>("/templates", { method: "POST", body: JSON.stringify(data) }),
@@ -1805,15 +1947,16 @@ export interface MarketplaceDeployResult {
 }
 
 export const marketplaceApi = {
-  /** V2 — paginated listing with optional search + domain filter */
-  list: (params: { domain?: string; search?: string; page?: number; page_size?: number } = {}) => {
+  /** V2 — paginated listing with optional search, domain filter, and sort order */
+  list: (params: { domain?: string; search?: string; page?: number; page_size?: number; sort_by?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.domain) q.set("domain", params.domain);
     if (params.search) q.set("search", params.search);
     if (params.page != null) q.set("page", String(params.page));
     if (params.page_size != null) q.set("page_size", String(params.page_size));
+    if (params.sort_by) q.set("sort_by", params.sort_by);
     const qs = q.toString();
-    return request<{ templates: MarketplaceV2Template[]; total: number; page: number; page_size: number }>(
+    return request<{ templates?: MarketplaceV2Template[]; items?: MarketplaceV2Template[]; total: number; page: number; page_size: number }>(
       `/marketplace/templates${qs ? `?${qs}` : ""}`
     );
   },
@@ -1829,10 +1972,10 @@ export const marketplaceApi = {
       method: "POST",
       body: JSON.stringify(review),
     }),
-  search: (query: string, domain?: string, limit = 20) =>
-    request<{ results: MarketplaceV2Template[]; total: number; query: string }>(
+  search: (query: string, domain?: string) =>
+    request<{ items: MarketplaceV2Template[]; total: number }>(
       "/marketplace/search",
-      { method: "POST", body: JSON.stringify({ query, domain, limit }) }
+      { method: "POST", body: JSON.stringify({ query, domain, page_size: 20 }) }
     ),
   /** V1 publish — still used for community submissions */
   publish: (data: {
@@ -2136,7 +2279,7 @@ export const selfImprovementApi = {
     request<{ dimensions: string[]; count: number }>("/intelligence/eval/dimensions"),
 };
 
-// ── Observability (spans / traces) ────────────────────────────────────────────
+// ── Observability (spans / traces / logs) ─────────────────────────────────────
 
 export interface SpanRecord {
   name: string;
@@ -2149,8 +2292,138 @@ export interface SpanRecord {
   parent_span_id?: string;
 }
 
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  level: 'info' | 'warning' | 'error' | 'debug';
+  message: string;
+  source?: string;
+  goal_id?: string;
+  agent_id?: string;
+}
+
 export const observabilityApi = {
   /** Fetch recent in-process trace spans for the waterfall viewer. */
-  getSpans: (limit = 100) =>
-    request<SpanRecord[]>(`/analytics/observability/spans?limit=${limit}`),
+  getSpans: (limit = 100, params?: { since?: string; until?: string }) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (params?.since) qs.set('since', params.since);
+    if (params?.until) qs.set('until', params.until);
+    return request<SpanRecord[]>(`/analytics/observability/spans?${qs.toString()}`);
+  },
+  /** Fetch structured observability metrics (latency percentiles, etc.). */
+  getMetrics: (params?: { since?: string; until?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.since) qs.set('since', params.since);
+    if (params?.until) qs.set('until', params.until);
+    const q = qs.toString();
+    return request<{
+      goal_duration_percentiles?: { p50?: number; p95?: number; p99?: number };
+      latency_percentiles?: { p50?: number; p95?: number; p99?: number };
+      [key: string]: unknown;
+    }>(`/observability/metrics${q ? `?${q}` : ''}`);
+  },
+  /** Fetch time-series data bucketed by hour (or minute/day) for trend charts. */
+  getTimeSeries: (params: { since: string; until: string; bucket?: string }) =>
+    request<{
+      goals_per_hour: Array<{ ts: string; count: number; success: number; failed: number }>;
+      cost_per_hour: Array<{ ts: string; cost_usd: number }>;
+      avg_latency_per_hour: Array<{ ts: string; p50_ms: number; p95_ms: number }>;
+    }>(
+      `/observability/timeseries?since=${encodeURIComponent(params.since)}&until=${encodeURIComponent(params.until)}&bucket=${params.bucket ?? 'hour'}`
+    ),
+};
+
+export const logsApi = {
+  list: (params?: { limit?: number; level?: string; since?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.level) qs.set('level', params.level);
+    if (params?.since) qs.set('since', params.since);
+    const q = qs.toString();
+    return request<{ logs: LogEntry[]; total: number }>(
+      `/observability/logs${q ? `?${q}` : ''}`
+    );
+  },
+};
+
+// ── MFA API ───────────────────────────────────────────────────────────────────
+
+export interface MFAStatus {
+  enabled: boolean;
+  has_pending_enrollment: boolean;
+  recovery_codes_count: number;
+}
+
+export interface MFAEnrollResponse {
+  secret: string;
+  provisioning_uri: string;
+  qr_code: string | null;
+  account_name: string;
+  issuer: string;
+  algorithm: string;
+  digits: number;
+  period: number;
+}
+
+export interface MFAVerifyEnrollResponse {
+  status: 'enabled';
+  recovery_codes: string[];
+  message: string;
+}
+
+export const mfaApi = {
+  status: () => request<MFAStatus>('/auth/mfa/status'),
+  enroll: () => request<MFAEnrollResponse>('/auth/mfa/enroll', { method: 'POST' }),
+  verifyEnrollment: (code: string) =>
+    request<MFAVerifyEnrollResponse>('/auth/mfa/verify-enrollment', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  verify: (code: string) =>
+    request<{ status: string; method: string; remaining_recovery_codes?: number }>(
+      '/auth/mfa/verify',
+      { method: 'POST', body: JSON.stringify({ code }) }
+    ),
+  disable: (code: string) =>
+    request<{ status: string; message: string }>('/auth/mfa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  getRecoveryCodes: () =>
+    request<{ remaining: number; message: string }>('/auth/mfa/recovery-codes'),
+  regenerateCodes: (code: string) =>
+    request<{ recovery_codes: string[]; message: string }>('/auth/mfa/regenerate', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+};
+
+// ── Collaboration (CRDT short-lived tokens) ───────────────────────────────────
+
+export const collabApi = {
+  /**
+   * Generate a short-lived CRDT token for WebSocket authentication.
+   * Preferred over sending the long-lived API key in a query parameter.
+   * Token TTL matches the backend _CRDT_TOKEN_TTL (default 1 hour).
+   */
+  getCrdtToken: () =>
+    request<{ token: string; expires_in: number }>('/collab/crdt-token', { method: 'POST' }),
+};
+
+// ── Admin (platform-level) ────────────────────────────────────────────────────
+// Admin auth is enforced server-side: the backend checks the calling tenant's
+// role for "admin" or "system" — no admin secret is needed in the frontend.
+
+export const adminApi = {
+  listTenants: (params?: { search?: string; limit?: number }) => {
+    const qs = new URLSearchParams({ limit: String(params?.limit ?? 100) });
+    if (params?.search) qs.set('search', params.search);
+    return request<{ tenants: any[]; total: number }>(`/admin/tenants?${qs}`);
+  },
+  updatePlan: (tenantId: string, plan: string) =>
+    request<any>(`/admin/tenants/${tenantId}/plan`, {
+      method: 'PUT',
+      body: JSON.stringify({ plan }),
+    }),
+  getPlatformUsage: () => request<any>('/admin/usage'),
 };

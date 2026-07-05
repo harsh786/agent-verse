@@ -7,15 +7,18 @@
  *   AI Advisor — LLM-powered schedule suggestions from goal description
  *   NL Scheduler — natural language chat schedule creation
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  BarChart2, Bell, Bot, Calendar, CheckCircle, ChevronRight,
-  Clock, Copy, Loader2, Pause, Play, Plus, RefreshCw,
-  Sparkles, Trash2, Zap, XCircle, Activity,
+  BarChart2, Bell, Bot, Calendar,
+  CheckCircle, Clock, Loader2, Pause, Play, Plus,
+  Sparkles, Trash2, X, XCircle, Zap, Activity, AlertCircle,
 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
+import { Link } from 'react-router-dom';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
+import { apiFetch } from '@/lib/api/client';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -54,16 +57,6 @@ interface AISuggestion {
 type Tab = 'schedules' | 'analytics' | 'advisor' | 'nl';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-
-function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const apiKey = useAuthStore.getState().apiKey;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['X-API-Key'] = apiKey;
-  return fetch(`${API_BASE}${path}`, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } })
-    .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json() as Promise<T>; });
-}
 
 function humanCron(cron: string | undefined): string {
   if (!cron) return '';
@@ -136,12 +129,34 @@ function StatusDot({ status }: { status: 'active' | 'paused' }) {
   );
 }
 
-function SchedulesTab() {
+interface SchedulesTabProps {
+  advisorPrefill?: AISuggestion | null;
+  onAdvisorPrefillUsed?: () => void;
+}
+
+function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProps) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showCreate, setShowCreate] = useState(false);
-  const [prefill, setPrefill] = useState<Partial<typeof TEMPLATES[0]>>({});
-  const [form, setForm] = useState({ goal_template: '', trigger_type: 'cron', cron_expr: '0 * * * *', interval_seconds: '3600', agent_id: '' });
+  const [historyScheduleId, setHistoryScheduleId] = useState<string | null>(null);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [form, setForm] = useState({ goal_template: '', trigger_type: 'cron', cron_expr: '0 * * * *', interval_seconds: '3600', agent_id: '', timezone: 'UTC' });
+
+  // Fix 1: Auto-open create form when advisorPrefill arrives
+  useEffect(() => {
+    if (advisorPrefill) {
+      setForm(f => ({
+        ...f,
+        goal_template: advisorPrefill.use_case ?? advisorPrefill.title ?? '',
+        trigger_type: advisorPrefill.trigger_type ?? 'cron',
+        cron_expr: advisorPrefill.cron_expr ?? '0 * * * *',
+        interval_seconds: advisorPrefill.interval_seconds ? String(advisorPrefill.interval_seconds) : '3600',
+      }));
+      setShowCreate(true);
+      onAdvisorPrefillUsed?.();
+    }
+  }, [advisorPrefill, onAdvisorPrefillUsed]);
 
   const { data: schedules = [], isLoading } = useQuery<Schedule[]>({
     queryKey: ['schedules'],
@@ -162,6 +177,7 @@ function SchedulesTab() {
         cron_expr: f.trigger_type === 'cron' ? f.cron_expr : '',
         interval_seconds: f.trigger_type === 'interval' ? Number(f.interval_seconds) : 0,
         agent_id: f.agent_id || '',
+        timezone: f.timezone || 'UTC',
       }),
     }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['schedules'] }); setShowCreate(false); toast({ kind: 'success', message: 'Schedule created.' }); },
@@ -185,23 +201,47 @@ function SchedulesTab() {
     onError: () => toast({ kind: 'error', message: 'Cannot fire this schedule type manually.' }),
   });
 
+  // Fix 2: Parallelize bulk operations with Promise.allSettled
   const bulkPauseMutation = useMutation({
-    mutationFn: async () => { for (const id of selected) await apiFetch(`/schedules/${id}/pause`, { method: 'POST' }); },
+    mutationFn: async () => {
+      const ids = [...selected];
+      const results = await Promise.allSettled(
+        ids.map(id => apiFetch(`/schedules/${id}/pause`, { method: 'POST' }))
+      );
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) toast({ kind: 'warning', message: `${failed} schedule(s) failed to pause` });
+      else toast({ kind: 'success', message: `${ids.length} schedule(s) paused` });
+    },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['schedules'] }); setSelected(new Set()); },
   });
   const bulkResumeMutation = useMutation({
-    mutationFn: async () => { for (const id of selected) await apiFetch(`/schedules/${id}/resume`, { method: 'POST' }); },
+    mutationFn: async () => {
+      const ids = [...selected];
+      const results = await Promise.allSettled(
+        ids.map(id => apiFetch(`/schedules/${id}/resume`, { method: 'POST' }))
+      );
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) toast({ kind: 'warning', message: `${failed} schedule(s) failed to resume` });
+      else toast({ kind: 'success', message: `${ids.length} schedule(s) resumed` });
+    },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['schedules'] }); setSelected(new Set()); },
   });
   const bulkDeleteMutation = useMutation({
-    mutationFn: async () => { for (const id of selected) await apiFetch(`/schedules/${id}`, { method: 'DELETE' }); },
+    mutationFn: async () => {
+      const ids = [...selected];
+      const results = await Promise.allSettled(
+        ids.map(id => apiFetch(`/schedules/${id}`, { method: 'DELETE' }))
+      );
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) toast({ kind: 'warning', message: `${failed} schedule(s) failed to delete` });
+      else toast({ kind: 'success', message: `${ids.length} schedule(s) deleted` });
+    },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['schedules'] }); setSelected(new Set()); },
   });
 
   const openCreate = useCallback((template?: typeof TEMPLATES[0]) => {
     if (template) {
       setForm((f) => ({ ...f, goal_template: template.goal_template, trigger_type: template.trigger_type, cron_expr: template.cron_expr || '0 * * * *' }));
-      setPrefill(template);
     }
     setShowCreate(true);
   }, []);
@@ -215,7 +255,7 @@ function SchedulesTab() {
             <span className="text-xs font-medium text-primary">{selected.size} selected</span>
             <button onClick={() => bulkPauseMutation.mutate()} className="text-xs px-2 py-1 bg-amber-600 text-white rounded">Pause</button>
             <button onClick={() => bulkResumeMutation.mutate()} className="text-xs px-2 py-1 bg-green-600 text-white rounded">Resume</button>
-            <button onClick={() => bulkDeleteMutation.mutate()} className="text-xs px-2 py-1 bg-red-600 text-white rounded">Delete</button>
+            <button onClick={() => setConfirmBulkDelete(true)} className="text-xs px-2 py-1 bg-red-600 text-white rounded">Delete</button>
             <button onClick={() => setSelected(new Set())} className="text-xs text-muted-foreground">Clear</button>
           </div>
         )}
@@ -287,6 +327,21 @@ function SchedulesTab() {
               A webhook URL will be generated after creation. POST to it to trigger this schedule.
             </div>
           )}
+          {/* Fix 3: Timezone selector */}
+          <div>
+            <label className="block text-xs font-medium mb-1">Timezone</label>
+            <select
+              value={form.timezone ?? 'UTC'}
+              onChange={(e) => setForm(f => ({ ...f, timezone: e.target.value }))}
+              className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              {['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+                'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Asia/Tokyo', 'Asia/Shanghai',
+                'Asia/Kolkata', 'Australia/Sydney'].map(tz => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+            </select>
+          </div>
           <div className="flex gap-2">
             <button onClick={() => createMutation.mutate(form)} disabled={!form.goal_template || createMutation.isPending}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50">
@@ -325,8 +380,8 @@ function SchedulesTab() {
                 const cron = scheduleCron(s);
                 const interval = scheduleInterval(s);
                 return (
-                  <tr key={s.schedule_id} data-testid={`schedule-row-${s.schedule_id}`} className="hover:bg-muted/20">
-                    <td className="px-3 py-2.5"><input type="checkbox" checked={selected.has(s.schedule_id)} onChange={() => setSelected((prev) => { const n = new Set(prev); n.has(s.schedule_id) ? n.delete(s.schedule_id) : n.add(s.schedule_id); return n; })} className="rounded" /></td>
+                  <tr key={s.schedule_id} data-testid={`schedule-row-${s.schedule_id}`} className="hover:bg-muted/20 cursor-pointer" onClick={() => setHistoryScheduleId(s.schedule_id)}>
+                    <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(s.schedule_id)} onChange={() => setSelected((prev) => { const n = new Set(prev); n.has(s.schedule_id) ? n.delete(s.schedule_id) : n.add(s.schedule_id); return n; })} className="rounded" /></td>
                     <td className="px-3 py-2.5">
                       <p className="font-medium truncate max-w-[200px]">{scheduleGoal(s)}</p>
                       {s.agent_id && <p className="text-xs text-muted-foreground">Agent: {s.agent_id.slice(0, 12)}…</p>}
@@ -339,7 +394,7 @@ function SchedulesTab() {
                       {ttype === 'webhook' && <span className="text-muted-foreground">On webhook call</span>}
                       {s.next_run_at && <p className="text-muted-foreground mt-0.5">Next: {new Date(s.next_run_at).toLocaleString()}</p>}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         {(ttype === 'rest' || ttype === 'webhook') && (
                           <button data-testid={`run-now-btn-${s.schedule_id}`} onClick={() => fireMutation.mutate(s.schedule_id)}
@@ -358,7 +413,7 @@ function SchedulesTab() {
                             <Play className="h-3.5 w-3.5" />
                           </button>
                         )}
-                        <button data-testid={`delete-btn-${s.schedule_id}`} onClick={() => deleteMutation.mutate(s.schedule_id)}
+                        <button data-testid={`delete-btn-${s.schedule_id}`} onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(s.schedule_id); }}
                           className="p-1.5 text-muted-foreground hover:text-red-500 rounded" title="Delete">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -371,6 +426,35 @@ function SchedulesTab() {
           </table>
         </div>
       )}
+      {historyScheduleId && (
+        <ScheduleHistoryDrawer
+          scheduleId={historyScheduleId}
+          onClose={() => setHistoryScheduleId(null)}
+        />
+      )}
+      <ConfirmModal
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} schedule${selected.size !== 1 ? 's' : ''}?`}
+        description="These schedules will be permanently removed. Any goals that were scheduled will not be affected."
+        confirmLabel="Delete"
+        variant="danger"
+        isLoading={bulkDeleteMutation.isPending}
+        onConfirm={() => { bulkDeleteMutation.mutate(); setConfirmBulkDelete(false); }}
+        onCancel={() => setConfirmBulkDelete(false)}
+      />
+      <ConfirmModal
+        open={!!deleteConfirmId}
+        title="Delete schedule?"
+        description="This schedule will be permanently removed and will no longer run."
+        confirmLabel="Delete"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (deleteConfirmId) deleteMutation.mutate(deleteConfirmId);
+          setDeleteConfirmId(null);
+        }}
+        onCancel={() => setDeleteConfirmId(null)}
+      />
     </div>
   );
 }
@@ -401,7 +485,7 @@ function AnalyticsTab() {
           { label: 'Total', value: analytics.total, icon: <Calendar className="h-4 w-4 text-violet-500" /> },
           { label: 'Active', value: analytics.active, icon: <Activity className="h-4 w-4 text-green-500" /> },
           { label: 'Paused', value: analytics.paused, icon: <Pause className="h-4 w-4 text-amber-500" /> },
-          { label: 'Fired Today', value: dayEntries.at(-1)?.[1] ?? 0, icon: <Zap className="h-4 w-4 text-orange-500" /> },
+          { label: 'Fired Today', value: dayEntries[dayEntries.length - 1]?.[1] ?? 0, icon: <Zap className="h-4 w-4 text-orange-500" /> },
         ].map((s) => (
           <div key={s.label} className="bg-card border border-border rounded-xl p-3">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">{s.icon} {s.label}</div>
@@ -562,10 +646,24 @@ function NLSchedulerTab() {
         body: JSON.stringify({ command }),
       }),
     onSuccess: (res, command) => {
-      const reply = Array.isArray(res) && res.length > 0
-        ? `Created ${res.length} schedule(s). First: ${JSON.stringify(res[0], null, 2).slice(0, 200)}`
-        : 'No schedules created.';
-      setMessages((m) => [...m, { role: 'user', content: command }, { role: 'assistant', content: reply }]);
+      let assistantMessage: string;
+      if (Array.isArray(res) && res.length > 0) {
+        const schedule = res[0] as Record<string, unknown>;
+        const name = schedule.name ?? schedule.schedule_id;
+        const parts: string[] = [
+          name ? `Created schedule: **${String(name)}**` : 'Schedule created',
+        ];
+        if (schedule.trigger_type === 'cron' && schedule.cron_expr)
+          parts.push(`Cron: \`${String(schedule.cron_expr)}\``);
+        if (schedule.trigger_type === 'interval' && typeof schedule.interval_seconds === 'number')
+          parts.push(`Interval: every ${Math.round(schedule.interval_seconds / 60)} minutes`);
+        if (schedule.goal_template)
+          parts.push(`Goal: ${String(schedule.goal_template).slice(0, 80)}`);
+        assistantMessage = parts.join('\n') || 'Schedule created successfully.';
+      } else {
+        assistantMessage = 'No schedules created.';
+      }
+      setMessages((m) => [...m, { role: 'user', content: command }, { role: 'assistant', content: assistantMessage }]);
       setInput('');
       void qc.invalidateQueries({ queryKey: ['schedules'] });
     },
@@ -621,6 +719,141 @@ function NLSchedulerTab() {
   );
 }
 
+// ── Schedule Run History ──────────────────────────────────────────────────────
+
+interface ScheduleRun {
+  run_id: string;
+  started_at: string;
+  status: 'success' | 'failed' | 'running';
+  goal_id?: string;
+  duration_ms?: number;
+  error?: string;
+}
+
+function ScheduleHistoryDrawer({ scheduleId, onClose }: { scheduleId: string; onClose: () => void }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['schedule-history', scheduleId],
+    queryFn: () =>
+      apiFetch<{ runs: ScheduleRun[]; total: number }>(
+        `/schedules/${scheduleId}/history?limit=20`
+      ),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const runs: ScheduleRun[] = data?.runs ?? [];
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-[150] flex">
+      <div className="absolute inset-0 -left-full bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-96 bg-card border-l border-border shadow-2xl flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-semibold">Run History</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Last 20 executions</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {isLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-20 rounded-xl" />
+              ))}
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+              <AlertCircle className="h-6 w-6 text-amber-500 mb-2" />
+              <p className="text-sm">Run history not available</p>
+              <p className="text-xs mt-1">The history endpoint may not be configured</p>
+            </div>
+          ) : runs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
+              <Clock className="h-8 w-8 opacity-20 mb-2" />
+              <p className="text-sm">No runs yet</p>
+              <p className="text-xs mt-1">This schedule has not fired yet</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {runs.map((run) => (
+                <div key={run.run_id} className={`p-4 rounded-xl border ${
+                  run.status === 'success'
+                    ? 'border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-900/10'
+                    : 'border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-900/10'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      {run.status === 'success'
+                        ? <CheckCircle className="h-4 w-4 text-green-600" />
+                        : <XCircle className="h-4 w-4 text-red-600" />}
+                      <span className={`text-xs font-medium ${
+                        run.status === 'success' ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'
+                      }`}>
+                        {run.status === 'success' ? 'Succeeded' : 'Failed'}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : '—'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(run.started_at).toLocaleString()}
+                  </p>
+                  {run.goal_id && (
+                    <Link
+                      to={`/goals/${run.goal_id}`}
+                      onClick={onClose}
+                      className="text-xs text-primary hover:underline mt-1 flex items-center gap-1"
+                    >
+                      View goal →
+                    </Link>
+                  )}
+                  {run.error && (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1 font-mono truncate">
+                      {run.error}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer stats */}
+        {!isError && runs.length > 0 && (
+          <div className="px-5 py-4 border-t border-border">
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <p className="text-lg font-bold text-green-600">
+                  {runs.filter(r => r.status === 'success').length}
+                </p>
+                <p className="text-xs text-muted-foreground">Succeeded</p>
+              </div>
+              <div>
+                <p className="text-lg font-bold text-red-600">
+                  {runs.filter(r => r.status === 'failed').length}
+                </p>
+                <p className="text-xs text-muted-foreground">Failed</p>
+              </div>
+              <div>
+                <p className="text-lg font-bold">
+                  {Math.round((runs.filter(r => r.status === 'success').length / runs.length) * 100)}%
+                </p>
+                <p className="text-xs text-muted-foreground">Success rate</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function SchedulesPage() {
@@ -661,7 +894,7 @@ export function SchedulesPage() {
           ))}
         </div>
         <div className="p-5">
-          {activeTab === 'schedules'  && <SchedulesTab />}
+          {activeTab === 'schedules'  && <SchedulesTab advisorPrefill={advisorPrefill} onAdvisorPrefillUsed={() => setAdvisorPrefill(null)} />}
           {activeTab === 'analytics' && <AnalyticsTab />}
           {activeTab === 'advisor'   && <AIAdvisorTab onUseTemplate={handleUseAdvisorTemplate} />}
           {activeTab === 'nl'        && <NLSchedulerTab />}

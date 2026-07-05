@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../../stores/auth';
 
-const API = import.meta.env.VITE_API_URL || '';
+const API = import.meta.env.VITE_API_BASE_URL || '';
 function apiFetch(path: string, apiKey: string, opts?: RequestInit) {
   return fetch(`${API}${path}`, { ...opts, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
 }

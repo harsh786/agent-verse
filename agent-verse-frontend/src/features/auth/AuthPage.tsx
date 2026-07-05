@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Zap } from "lucide-react";
+import { Eye, EyeOff, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
+import { mfaApi } from "@/lib/api/client";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const REDIRECT_URI = typeof window !== "undefined"
   ? `${window.location.origin}/auth/callback`
   : "http://localhost:5173/auth/callback";
@@ -42,7 +43,8 @@ export function AuthPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [ssoEnabled, setSsoEnabled] = useState(false);
-  const { setCredentials } = useAuthStore();
+  const [showKey, setShowKey] = useState(false);
+  const { setCredentials, setMfaRequired } = useAuthStore();
   const navigate = useNavigate();
 
   // Probe the backend to find out if Keycloak SSO is configured
@@ -70,6 +72,16 @@ export function AuthPage() {
         return;
       }
       setCredentials(trimmedApiKey, tenant.tenant_id, tenant.plan);
+      try {
+        const mfaStatus = await mfaApi.status();
+        if (mfaStatus.enabled) {
+          setMfaRequired(true);
+          navigate('/auth/mfa');
+          return;
+        }
+      } catch {
+        // MFA endpoint not available — proceed without MFA
+      }
       navigate("/dashboard");
     } catch {
       setError("Unable to reach the backend. Please try again.");
@@ -162,16 +174,26 @@ export function AuthPage() {
               <label htmlFor="apiKey" className="block text-sm font-medium mb-1.5">
                 API Key
               </label>
-              <input
-                id="apiKey"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="av_key_..."
-                className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
-                autoComplete="current-password"
-                required
-              />
+              <div className="relative">
+                <input
+                  id="apiKey"
+                  type={showKey ? 'text' : 'password'}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="av_key_..."
+                  className="w-full px-3 py-2 pr-10 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  autoComplete="current-password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                >
+                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
             <button
@@ -185,9 +207,13 @@ export function AuthPage() {
 
           <p className="mt-4 text-xs text-muted-foreground text-center">
             Don&apos;t have a tenant?{" "}
-            <a href="#" className="text-primary underline-offset-2 hover:underline">
+            <button
+              type="button"
+              onClick={() => window.open('mailto:hello@agentverse.ai?subject=Access Request', '_blank')}
+              className="text-primary hover:underline text-sm"
+            >
               Request access
-            </a>
+            </button>
           </p>
         </div>
       </div>

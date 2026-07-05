@@ -1,9 +1,10 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
@@ -598,7 +599,8 @@ export function ConnectorsRegisteredPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
   const qc = useQueryClient();
   const location = useLocation();
-  const prefill = (location.state as any)?.prefill;
+  const locationState = location.state as { prefill?: any; editConnectorId?: string } | null;
+  const prefill = locationState?.prefill;
 
   const [showModal, setShowModal] = useState(!!prefill);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -618,6 +620,8 @@ export function ConnectorsRegisteredPage() {
     Array.isArray(prefill?.auth_fields) ? (prefill.auth_fields as CatalogAuthField[]) : []
   );
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const editHandled = useRef(false);
 
   const { data: connectors = [], isLoading, error } = useQuery({
     queryKey: ['connectors'],
@@ -672,12 +676,28 @@ export function ConnectorsRegisteredPage() {
     setForm({
       name: c.name,
       url: c.url,
-      auth_type: (c as any).auth_type ?? 'bearer',
-      auth_values: parseAuthConfigToValues((c as any).auth_type ?? 'bearer', (c as any).auth_config ?? {}),
+      auth_type: c.auth_type ?? 'bearer',
+      auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
     });
     setFormError('');
     setShowModal(true);
   }, []);
+
+  // Auto-open edit modal when navigated here with editConnectorId in location state
+  useEffect(() => {
+    if (editHandled.current) return;
+    if (locationState?.editConnectorId && connectors && connectors.length > 0) {
+      const conn = connectors.find(
+        (c) =>
+          c.server_id === locationState.editConnectorId ||
+          (c as any).id === locationState.editConnectorId,
+      );
+      if (conn) {
+        editHandled.current = true;
+        openEdit(conn);
+      }
+    }
+  }, [connectors, locationState?.editConnectorId, openEdit]);
 
   const closeModal = useCallback(() => {
     setShowModal(false);
@@ -706,7 +726,7 @@ export function ConnectorsRegisteredPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            to="/connector-catalog"
+            to="/connectors/catalog"
             className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
           >
             Browse Catalog
@@ -762,11 +782,11 @@ export function ConnectorsRegisteredPage() {
                         {c.url}
                       </td>
                       <td className="px-4 py-3">
-                        {(c as any).auth_type && (
+                        {c.auth_type && (
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                            AUTH_TYPE_CONFIGS[(c as any).auth_type]?.color ?? 'bg-muted text-muted-foreground'
+                            AUTH_TYPE_CONFIGS[c.auth_type]?.color ?? 'bg-muted text-muted-foreground'
                           }`}>
-                            {AUTH_TYPE_CONFIGS[(c as any).auth_type]?.label ?? (c as any).auth_type}
+                            {AUTH_TYPE_CONFIGS[c.auth_type]?.label ?? c.auth_type}
                           </span>
                         )}
                       </td>
@@ -804,11 +824,7 @@ export function ConnectorsRegisteredPage() {
                             Edit
                           </button>
                           <button
-                            onClick={() => {
-                              if (confirm(`Remove connector "${c.name}"?`)) {
-                                unregisterMutation.mutate(c.server_id);
-                              }
-                            }}
+                            onClick={() => setConfirmDeleteId(c.server_id)}
                             disabled={unregisterMutation.isPending}
                             className="text-destructive hover:opacity-70 text-xs font-medium disabled:opacity-40 transition-opacity"
                           >
@@ -997,10 +1013,25 @@ export function ConnectorsRegisteredPage() {
                   ? editingId ? 'Saving…' : 'Registering…'
                   : editingId ? 'Save Changes' : 'Register'}
               </button>
-            </div>
-          </div>
-        </div>
-      )}
+             </div>
+           </div>
+         </div>
+       )}
+
+      {/* ── Confirm Delete Modal ── */}
+      <ConfirmModal
+        open={!!confirmDeleteId}
+        title="Remove connector?"
+        description="This will permanently unregister the connector. Running goals that depend on it may fail."
+        confirmLabel="Remove"
+        variant="danger"
+        isLoading={unregisterMutation.isPending}
+        onConfirm={() => {
+          if (confirmDeleteId) unregisterMutation.mutate(confirmDeleteId);
+          setConfirmDeleteId(null);
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }

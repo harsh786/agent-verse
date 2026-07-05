@@ -36,6 +36,7 @@ import {
   Panel,
   ReactFlowProvider,
   useReactFlow,
+  getNodesBounds,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -58,8 +59,9 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
-import { insightsApi } from '@/lib/api/client';
+import { insightsApi, goalsApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { toast } from '@/stores/toast';
 import { layeredLayout, type FlowNodeInput, type FlowEdgeInput } from '@/components/graph/FlowCanvas';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -376,18 +378,18 @@ function InnerGraph({
   nodes,
   edges,
   onNodeClick,
-  onExport,
+  goalId,
   onRefresh,
   isRefreshing,
 }: {
   nodes: Node[];
   edges: Edge[];
   onNodeClick: (node: Node) => void;
-  onExport: () => void;
+  goalId: string | undefined;
   onRefresh: () => void;
   isRefreshing: boolean;
 }) {
-  const { fitView } = useReactFlow();
+  const { fitView, getNodes } = useReactFlow();
 
   // Fit on mount whenever nodes change
   useEffect(() => {
@@ -403,6 +405,41 @@ function InnerGraph({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [fitView]);
+
+  const handleExport = useCallback(async () => {
+    try {
+      const flowElement = document.querySelector('.react-flow__viewport') as HTMLElement | null;
+      if (!flowElement) throw new Error('Flow element not found');
+
+      const htmlToImage = await import('html-to-image').catch(() => null);
+      if (htmlToImage) {
+        const rfNodes = getNodes();
+        const nodesBounds = getNodesBounds(rfNodes);
+        const padding = 40;
+        const imageWidth = Math.max(nodesBounds.width + padding * 2, 800);
+        const imageHeight = Math.max(nodesBounds.height + padding * 2, 600);
+
+        const dataUrl = await htmlToImage.toPng(flowElement, {
+          backgroundColor: '#ffffff',
+          width: imageWidth,
+          height: imageHeight,
+          style: { transform: `translate(${padding}px, ${padding}px)` },
+        });
+
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `goal-dna-${goalId?.slice(0, 8) ?? 'export'}.png`;
+        a.click();
+        toast({ kind: 'success', message: 'Graph exported as PNG' });
+        return;
+      }
+    } catch (err) {
+      console.warn('PNG export failed, falling back to JSON download:', err);
+    }
+
+    // Fallback: inform user
+    toast({ kind: 'info', message: 'PNG export unavailable — install html-to-image or use a screenshot' });
+  }, [goalId, getNodes]);
 
   return (
     <ReactFlow
@@ -437,7 +474,7 @@ function InnerGraph({
         pannable
         zoomable
       />
-      <GraphToolbar onExport={onExport} onRefresh={onRefresh} isRefreshing={isRefreshing} />
+      <GraphToolbar onExport={() => void handleExport()} onRefresh={onRefresh} isRefreshing={isRefreshing} />
       {/* Hide the default Controls (we have our own toolbar) */}
     </ReactFlow>
   );
@@ -451,6 +488,15 @@ export function GoalDNAPage() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [showTimeline, setShowTimeline] = useState(false);
 
+  // Separate lightweight query to track goal status for auto-refresh
+  const { data: goalData } = useQuery({
+    queryKey: ['goal', goalId],
+    queryFn: () => goalsApi.get(goalId!),
+    enabled: !!goalId,
+    refetchInterval: 5_000,
+    staleTime: 5_000,
+  });
+
   const {
     data: graph,
     isLoading,
@@ -461,8 +507,10 @@ export function GoalDNAPage() {
     queryKey: ['goal-dna', goalId],
     queryFn: () => insightsApi.getExecutionGraph(goalId!),
     enabled: !!goalId,
-    staleTime: 60_000,   // 1 min
+    staleTime: 30_000,
     refetchOnWindowFocus: false,
+    // Auto-refresh while goal is executing or planning
+    refetchInterval: goalData && ['executing', 'planning'].includes(goalData.status) ? 5_000 : false,
   });
 
   // Build ReactFlow nodes + edges from the API response
@@ -532,17 +580,6 @@ export function GoalDNAPage() {
   const handleNodeClick = useCallback((node: Node) => {
     setSelectedNode((prev) => (prev?.id === node.id ? null : node));
   }, []);
-
-  const handleExport = useCallback(() => {
-    // Export graph data as JSON
-    if (!graph) return;
-    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `goal-dna-${goalId?.slice(0, 8)}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }, [goalId, graph]);
 
   const stats = graph?.stats;
   const toolNodes = graph?.nodes.filter((n) => n.type === 'tool') ?? [];
@@ -687,18 +724,18 @@ export function GoalDNAPage() {
             )}
 
             {!isLoading && !isError && nodes.length > 0 && (
-              <GraphErrorBoundary>
-                <ReactFlowProvider>
-                  <InnerGraph
-                    nodes={nodes}
-                    edges={edges}
-                    onNodeClick={handleNodeClick}
-                    onExport={handleExport}
-                    onRefresh={() => void refetch()}
-                    isRefreshing={isFetching}
-                  />
-                </ReactFlowProvider>
-              </GraphErrorBoundary>
+                <GraphErrorBoundary>
+                  <ReactFlowProvider>
+                    <InnerGraph
+                      nodes={nodes}
+                      edges={edges}
+                      onNodeClick={handleNodeClick}
+                      goalId={goalId}
+                      onRefresh={() => void refetch()}
+                      isRefreshing={isFetching}
+                    />
+                  </ReactFlowProvider>
+                </GraphErrorBoundary>
             )}
           </div>
 

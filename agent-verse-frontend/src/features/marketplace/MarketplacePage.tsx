@@ -15,9 +15,9 @@
  *  - Detail drawer: long description, parameters form, reviews, deploy button
  *  - Publish modal: name, domain, goal_template, autonomy_mode, connectors
  */
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   ShoppingBag, Search, Star, Download, Plug, ShieldCheck,
@@ -31,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
+import { useAuthStore } from "@/stores/auth";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -64,17 +65,41 @@ const DOMAINS = [
   { key: "recruitment",        label: "Recruitment"     },
 ];
 
+const PAGE_SIZE = 20;
+
 const DOMAIN_COLORS: Record<string, string> = {
-  software:   "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  devops:     "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  testing:    "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  hr:         "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
-  sales:      "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  support:    "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
-  legal:      "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
-  finance:    "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  healthcare: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300",
-  ecommerce:  "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
+  software:          "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
+  devops:            "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  testing:           "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
+  hr:                "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
+  sales:             "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  support:           "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  legal:             "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
+  healthcare:        "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  education:         "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  finance:           "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  ecommerce:         "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  "e-commerce":      "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  marketing:         "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300",
+  data:              "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
+  engineering:       "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+  operations:        "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300",
+  logistics:         "bg-lime-100 text-lime-800 dark:bg-lime-900/30 dark:text-lime-300",
+  cybersecurity:     "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
+  insurance:         "bg-stone-100 text-stone-800 dark:bg-stone-900/30 dark:text-stone-300",
+  manufacturing:     "bg-zinc-100 text-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-300",
+  "real-estate":     "bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200",
+  government:        "bg-neutral-100 text-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-300",
+  recruitment:       "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300",
+  accounting:        "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  "accounting-ca":   "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  banking:           "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  "banking-fintech":  "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  "gst-tax":         "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
+  "hr-talent":       "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
+  "sales-crm":       "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  "government-portal": "bg-neutral-100 text-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-300",
+  general:           "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
 };
 
 const AUTONOMY_LABELS: Record<string, string> = {
@@ -105,13 +130,13 @@ function StarRating({ value, max = 5, size = 12 }: { value: number; max?: number
 
 function MarketplaceCard({
   template,
-  deployed,
+  installed,
   onSelect,
   onDeploy,
   deploying,
 }: {
   template: MarketplaceV2Template;
-  deployed?: { agent_id: string };
+  installed?: boolean;
   onSelect: () => void;
   onDeploy: () => void;
   deploying: boolean;
@@ -190,9 +215,10 @@ function MarketplaceCard({
 
       {/* Deploy / params CTA */}
       <div onClick={(e) => e.stopPropagation()}>
-        {deployed ? (
-          <div className="px-3 py-2 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg text-xs text-green-700 dark:text-green-300">
-            Deployed — <span className="font-mono">{deployed.agent_id.slice(0, 12)}…</span>
+        {installed ? (
+          <div className="px-3 py-2 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg text-xs text-green-700 dark:text-green-300 flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+            Deployed ✓
           </div>
         ) : hasParams ? (
           <button
@@ -222,9 +248,11 @@ function MarketplaceCard({
 function TemplateDetailDrawer({
   template,
   onClose,
+  onDeployed,
 }: {
   template: MarketplaceV2Template;
   onClose: () => void;
+  onDeployed?: (id: string) => void;
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -261,6 +289,7 @@ function TemplateDetailDrawer({
       if (data.agent_id) {
         setDeployResult({ agent_id: data.agent_id, agent_name: data.agent_name });
         toast({ kind: "success", message: `Agent "${data.agent_name ?? data.agent_id}" deployed!` });
+        onDeployed?.(template.template_id);
         qc.invalidateQueries({ queryKey: ["agents"] });
       } else {
         toast({ kind: "error", message: data.error ?? "Deploy failed" });
@@ -270,13 +299,18 @@ function TemplateDetailDrawer({
   });
 
   const saveToLibraryMutation = useMutation({
-    mutationFn: () =>
-      templatesApi.create({
+    mutationFn: async () => {
+      const goalText = template.template_config?.goal_template;
+      if (!goalText) {
+        throw new Error("This template has no goal pattern to save to the library.");
+      }
+      return templatesApi.create({
         name: template.name,
         description: template.description,
-        goal_text: template.template_config?.goal_template ?? template.description,
+        goal_text: goalText,
         domain: template.domain,
-      }),
+      });
+    },
     onSuccess: () => {
       toast({ kind: "success", message: "Saved to your Template Library!" });
       qc.invalidateQueries({ queryKey: ["templates"] });
@@ -677,7 +711,29 @@ export function MarketplacePage() {
   const [selectedTemplate, setSelectedTemplate] = useState<MarketplaceV2Template | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [deployingId, setDeployingId] = useState<string | null>(null);
-  const [deployedMap, setDeployedMap] = useState<Record<string, { agent_id: string }>>({});
+  const [sortBy, setSortBy] = useState<"install_count" | "rating" | "created_at">("install_count");
+
+  const domainFilter = domain !== "all" ? domain : null;
+
+  // Fix 3: localStorage-backed install persistence, scoped per tenant
+  const INSTALLS_KEY = `av_marketplace_installs_${useAuthStore.getState().tenantId}`;
+  const [installedIds, setInstalledIds] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(INSTALLS_KEY);
+      return new Set(stored ? (JSON.parse(stored) as string[]) : []);
+    } catch {
+      return new Set<string>();
+    }
+  });
+
+  const markInstalled = (id: string) => {
+    setInstalledIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      try { localStorage.setItem(INSTALLS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   // Debounce search input (400 ms)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -687,27 +743,64 @@ export function MarketplacePage() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [searchInput]);
 
-  const queryParams = useMemo(() => ({
-    domain: domain !== "all" ? domain : undefined,
-    search: debouncedSearch.length >= 2 ? debouncedSearch : undefined,
-    page_size: 50,
-  }), [domain, debouncedSearch]);
-
-  const { data: listData, isLoading, isError } = useQuery({
-    queryKey: ["marketplace", queryParams],
-    queryFn: () => marketplaceApi.list(queryParams),
+  // Fix 1+2: infinite query that switches to semantic search for 3+ char queries
+  const {
+    data: infiniteData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isError,
+  } = useInfiniteQuery({
+    queryKey: ["marketplace", domainFilter, debouncedSearch, sortBy],
+    queryFn: async ({ pageParam }) => {
+      if (debouncedSearch.length >= 3) {
+        return marketplaceApi.search(debouncedSearch, domainFilter ?? undefined);
+      }
+      return marketplaceApi.list({
+        domain: domainFilter ?? undefined,
+        search: debouncedSearch || undefined,
+        page: pageParam as number,
+        page_size: PAGE_SIZE,
+        sort_by: sortBy,
+      });
+    },
+    getNextPageParam: (lastPage, pages) => {
+      const lp = lastPage as { total?: number };
+      const total = lp?.total ?? 0;
+      const loaded = pages.length * PAGE_SIZE;
+      return loaded < total ? pages.length + 1 : undefined;
+    },
+    initialPageParam: 1,
     staleTime: 60_000,
-    // Fallback to V1 if V2 returns non-ok — handled by request() throwing
   });
 
-  const templates = listData?.templates ?? [];
+  const templates = infiniteData?.pages.flatMap((p) => {
+    const page = p as { items?: MarketplaceV2Template[]; templates?: MarketplaceV2Template[] };
+    return page.items ?? page.templates ?? [];
+  }) ?? [];
+  const total = (infiniteData?.pages[0] as { total?: number } | undefined)?.total ?? 0;
+
+  // Fix 1: IntersectionObserver sentinel for infinite scroll
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && hasNextPage && !isFetchingNextPage) {
+        void fetchNextPage();
+      }
+    }, { threshold: 0.1 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const handleQuickDeploy = async (template: MarketplaceV2Template) => {
     setDeployingId(template.template_id);
     try {
       const result = await marketplaceApi.deploy(template.template_id, {});
       if (result.agent_id) {
-        setDeployedMap((prev) => ({ ...prev, [template.template_id]: { agent_id: result.agent_id! } }));
+        markInstalled(template.template_id);
         toast({ kind: "success", message: `Agent "${result.agent_name ?? result.agent_id}" deployed!` });
       } else {
         toast({ kind: "error", message: result.error ?? "Deploy failed" });
@@ -741,25 +834,51 @@ export function MarketplacePage() {
         </button>
       </div>
 
-      {/* Search bar */}
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" aria-hidden="true" />
-        <input
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder={t('marketplace.search')}
-          className="w-full pl-10 pr-10 py-2.5 text-sm border border-input rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-primary"
-          aria-label="Search marketplace"
-        />
-        {searchInput && (
-          <button
-            onClick={() => setSearchInput("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            aria-label="Clear search"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
+      {/* Search bar + sort controls */}
+      <div className="flex gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" aria-hidden="true" />
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={t('marketplace.search')}
+            className="w-full pl-10 pr-10 py-2.5 text-sm border border-input rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+            aria-label="Search marketplace"
+          />
+          {searchInput && (
+            <button
+              onClick={() => setSearchInput("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        {/* Fix 6: Sort segmented control */}
+        <div className="flex items-center rounded-xl border border-input overflow-hidden text-xs shrink-0" role="group" aria-label="Sort order">
+          {(
+            [
+              { key: "install_count", label: "Popular" },
+              { key: "rating",        label: "Top Rated" },
+              { key: "created_at",    label: "Newest" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => setSortBy(opt.key)}
+              className={`px-3 py-2.5 transition-colors ${
+                sortBy === opt.key
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted/60 text-muted-foreground"
+              }`}
+              aria-pressed={sortBy === opt.key}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Domain filter */}
@@ -797,22 +916,29 @@ export function MarketplacePage() {
       ) : (
         <>
           <p className="text-xs text-muted-foreground">
-            {listData?.total ?? templates.length} template{(listData?.total ?? templates.length) !== 1 ? "s" : ""}
+            {total} template{total !== 1 ? "s" : ""}
             {domain !== "all" && ` in "${domain}"`}
             {debouncedSearch && ` matching "${debouncedSearch}"`}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {templates.map((t) => (
+            {templates.map((tmpl) => (
               <MarketplaceCard
-                key={t.template_id}
-                template={t}
-                deployed={deployedMap[t.template_id]}
-                onSelect={() => setSelectedTemplate(t)}
-                onDeploy={() => handleQuickDeploy(t)}
-                deploying={deployingId === t.template_id}
+                key={tmpl.template_id}
+                template={tmpl}
+                installed={installedIds.has(tmpl.template_id)}
+                onSelect={() => setSelectedTemplate(tmpl)}
+                onDeploy={() => handleQuickDeploy(tmpl)}
+                deploying={deployingId === tmpl.template_id}
               />
             ))}
           </div>
+          {/* Fix 1: Infinite scroll sentinel */}
+          <div ref={sentinelRef} className="h-4" />
+          {isFetchingNextPage && (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="Loading more" />
+            </div>
+          )}
         </>
       )}
 
@@ -821,6 +947,7 @@ export function MarketplacePage() {
         <TemplateDetailDrawer
           template={selectedTemplate}
           onClose={() => setSelectedTemplate(null)}
+          onDeployed={markInstalled}
         />
       )}
 

@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, AlertCircle, Info, AlertTriangle, X } from "lucide-react";
 import { useToastStore } from "@/stores/toast";
+import type { ToastItem } from "@/stores/toast";
 
 const KIND_CONFIG = {
   success: {
@@ -25,30 +26,40 @@ const KIND_CONFIG = {
   },
 } as const;
 
-function ToastItem({ id, kind, message }: { id: string; kind: keyof typeof KIND_CONFIG; message: string }) {
+function ToastItemView({ id, kind, message, duration, action, paused }: ToastItem & { paused?: boolean }) {
   const dismiss = useToastStore((s) => s.dismiss);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const config = KIND_CONFIG[kind] ?? KIND_CONFIG.info;
   const Icon = config.icon;
+  // Use per-toast duration override if provided, otherwise fall back to kind default
+  const effectiveDuration = duration !== undefined ? duration : config.duration;
 
   useEffect(() => {
-    if (config.duration > 0) {
-      timerRef.current = setTimeout(() => dismiss(id), config.duration);
+    if (effectiveDuration > 0 && !paused) {
+      timerRef.current = setTimeout(() => dismiss(id), effectiveDuration);
     }
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [id, config.duration, dismiss]);
+  }, [id, effectiveDuration, dismiss, paused]);
 
   return (
     <div
-      role="status"
-      aria-live="polite"
       className={`flex items-start gap-3 border rounded-lg shadow-lg px-4 py-3 text-sm max-w-sm
         animate-in slide-in-from-bottom-2 duration-300 ${config.className}`}
     >
       <Icon className="h-4 w-4 mt-0.5 shrink-0" aria-hidden="true" />
-      <span className="flex-1 break-words">{message}</span>
+      <span className="flex-1 break-words">
+        {message}
+        {action && (
+          <button
+            onClick={() => { action.onClick(); dismiss(id); }}
+            className="ml-2 text-xs underline font-medium hover:no-underline focus:outline-none"
+          >
+            {action.label}
+          </button>
+        )}
+      </span>
       <button
         aria-label="Dismiss notification"
         onClick={() => dismiss(id)}
@@ -62,15 +73,20 @@ function ToastItem({ id, kind, message }: { id: string; kind: keyof typeof KIND_
 
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
+  const [hovering, setHovering] = useState(false);
   return (
     <div
       className="fixed bottom-4 right-4 z-[100] flex flex-col-reverse gap-2 max-h-screen overflow-hidden pointer-events-none"
       role="region"
       aria-label="Notifications"
+      aria-live="polite"
+      aria-atomic="false"
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
     >
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto">
-          <ToastItem id={t.id} kind={t.kind as keyof typeof KIND_CONFIG} message={t.message} />
+          <ToastItemView {...t} paused={hovering} />
         </div>
       ))}
     </div>

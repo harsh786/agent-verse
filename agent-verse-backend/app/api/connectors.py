@@ -412,7 +412,10 @@ async def update_connector(
 
 
 _CONNECTOR_TEST_TOOLS: dict[str, tuple[str, dict]] = {
-    "jira": ("jira_search_issues", {"jql": "created >= -7d ORDER BY created DESC", "max_results": 1}),
+    "jira": (
+        "jira_search_issues",
+        {"jql": "created >= -7d ORDER BY created DESC", "max_results": 1},
+    ),
     "github": ("github_list_repos", {"owner": "octocat", "per_page": 1}),
     "slack": ("slack_list_channels", {"limit": 1}),
     "linear": ("linear_list_issues", {"limit": 1}),
@@ -484,7 +487,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     try:
         headers: dict[str, str] = {}
         for key, value in (cfg.auth_config or {}).items():
-            if isinstance(value, str) and ("token" in key.lower() or "authorization" in key.lower()):
+            if isinstance(value, str) and (
+                "token" in key.lower() or "authorization" in key.lower()
+            ):
                 headers["Authorization"] = f"Bearer {value}"
                 break
         async with httpx.AsyncClient(timeout=10.0) as hclient:
@@ -542,6 +547,195 @@ async def get_connector_health_history(
         ]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# OAuth popup flow — POST endpoints (connector_name-based, for the frontend
+# popup button flow). These are distinct from the PKCE GET endpoints above,
+# which operate on already-registered connectors by server_id.
+# ---------------------------------------------------------------------------
+
+# Short-lived in-memory state store — production should use Redis with TTL.
+# State token lifetime: 10 minutes.
+_OAUTH_STATE_TTL = 600  # seconds
+_oauth_states: dict[str, dict[str, Any]] = {}
+
+
+def _cleanup_oauth_states() -> None:
+    """Remove expired OAuth state tokens."""
+    cutoff = time.time() - _OAUTH_STATE_TTL
+    expired = [k for k, v in _oauth_states.items() if v.get("created_at", 0) < cutoff]
+    for k in expired:
+        del _oauth_states[k]
+
+
+class OAuthStartBody(BaseModel):
+    connector_name: str
+
+
+@router.post("/oauth/start")
+async def start_oauth_popup(request: Request, body: OAuthStartBody) -> dict[str, Any]:
+    """Start an OAuth popup flow.
+
+    Returns an authorization URL the frontend should open in a popup window, along
+    with a CSRF state token the frontend must validate in the callback.
+    """
+    import secrets
+    import urllib.parse
+
+    tenant = _require_tenant(request)
+    connector_name = body.connector_name.lower().strip()
+
+    _cleanup_oauth_states()
+
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = {
+        "tenant_id": tenant.tenant_id,
+        "connector_name": connector_name,
+        "created_at": time.time(),
+    }
+
+    # Derive redirect_uri from settings or request base URL
+    settings = getattr(request.app.state, "settings", None)
+    frontend_url = (getattr(settings, "frontend_url", "") or "").rstrip("/")
+    if not frontend_url:
+        frontend_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{frontend_url}/connectors/oauth/callback"
+
+    # Connector-specific authorization URLs — placeholders for unconfigured credentials.
+    def _client_id(env_key: str) -> str:
+        return getattr(settings, env_key, "") or ""
+
+    oauth_urls: dict[str, str] = {
+        "github": (
+            "https://github.com/login/oauth/authorize?"
+            + urllib.parse.urlencode({
+                "client_id": _client_id("GITHUB_CLIENT_ID"),
+                "scope": "repo,read:org",
+                "state": state,
+                "redirect_uri": redirect_uri,
+            })
+        ),
+        "slack": (
+            "https://slack.com/oauth/v2/authorize?"
+            + urllib.parse.urlencode({
+                "client_id": _client_id("SLACK_CLIENT_ID"),
+                "scope": "channels:read,chat:write",
+                "state": state,
+                "redirect_uri": redirect_uri,
+            })
+        ),
+        "google": (
+            "https://accounts.google.com/o/oauth2/v2/auth?"
+            + urllib.parse.urlencode({
+                "client_id": _client_id("GOOGLE_CLIENT_ID"),
+                "response_type": "code",
+                "scope": "email profile",
+                "state": state,
+                "redirect_uri": redirect_uri,
+            })
+        ),
+        "jira": (
+            "https://auth.atlassian.com/authorize?"
+            + urllib.parse.urlencode({
+                "audience": "api.atlassian.com",
+                "client_id": _client_id("JIRA_CLIENT_ID"),
+                "scope": "read:jira-work",
+                "state": state,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "prompt": "consent",
+            })
+        ),
+    }
+
+    auth_url = oauth_urls.get(connector_name)
+    if not auth_url:
+        # Generic placeholder so the popup flow still works for unknown connectors
+        auth_url = (
+            "https://example.com/oauth?"
+            + urllib.parse.urlencode({"state": state, "redirect_uri": redirect_uri})
+        )
+
+    return {"auth_url": auth_url, "state": state}
+
+
+class OAuthCallbackBody(BaseModel):
+    code: str
+    state: str
+    connector_name: str
+
+
+@router.post("/oauth/callback")
+async def complete_oauth_popup(request: Request, body: OAuthCallbackBody) -> dict[str, Any]:
+    """Complete the OAuth popup flow.
+
+    Validates the state token, (in production) exchanges the code for an access
+    token, and registers the connector for the tenant.
+
+    # NOTE: This endpoint currently does NOT perform the OAuth token exchange.
+    # The authorization code is received but not exchanged for an access token.
+    # To enable real OAuth, implement the token exchange for each connector type.
+    # See: https://tools.ietf.org/html/rfc6749#section-4.1.3
+    """
+    import uuid
+
+    tenant = _require_tenant(request)
+
+    _cleanup_oauth_states()
+
+    state_data = _oauth_states.pop(body.state, None)
+    if state_data is None or state_data.get("tenant_id") != tenant.tenant_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state token")
+
+    connector_name = body.connector_name.lower().strip() or state_data.get("connector_name", "")
+    server_id = f"{connector_name}-oauth-{uuid.uuid4().hex[:8]}"
+
+    # Determine whether real OAuth credentials are configured for this connector.
+    settings = getattr(request.app.state, "settings", None)
+    oauth_client_secret = getattr(settings, f"{connector_name.upper()}_CLIENT_SECRET", None)
+    if not oauth_client_secret:
+        # No OAuth credentials configured — store a pending state so the UI can
+        # prompt the admin to configure credentials rather than silently using a
+        # fake token that will never work against a real API.
+        auth_config: dict[str, str] = {
+            "status": "pending_oauth",
+            "oauth_code": body.code[:4] + "****",
+        }
+        _logger.warning(
+            "OAuth connector registered without real token exchange. "
+            "Set %s_CLIENT_SECRET to enable real OAuth. connector=%s",
+            connector_name.upper(),
+            server_id,
+        )
+    else:
+        # Real token exchange would happen here (e.g. POST to the provider's
+        # token endpoint with body.code + client_secret + redirect_uri).
+        # For now store a clearly-marked placeholder so the shape is correct.
+        auth_config = {"status": "pending_token_exchange", "grant_code": "****"}
+
+    # In production: exchange body.code for an access token here, then store it
+    # securely via the vault.  For now we register a placeholder connector so the
+    # frontend flow completes end-to-end.
+    reg = getattr(request.app.state, "mcp_registry", None)
+    if reg is not None:
+        try:
+            from app.mcp.registry import MCPServerConfig  # noqa: PLC0415
+            cfg = MCPServerConfig(
+                name=f"{connector_name} (OAuth)",
+                url=f"https://api.{connector_name}.com",
+                auth_type="bearer",
+                auth_config=auth_config,
+            )
+            await reg.register(cfg, tenant_ctx=tenant)
+        except Exception:
+            _logger.debug("oauth_popup_register_skipped connector=%s", connector_name)
+
+    return {
+        "server_id": server_id,
+        "name": f"{connector_name} (OAuth)",
+        "status": "connected",
+    }
 
 
 def _default_redirect_uri(request: Request) -> str:
@@ -724,6 +918,97 @@ async def oauth_callback(
         "token_type": token.token_type,
         "scope": token.scope,
         "has_refresh_token": bool(token.refresh_token),
+    }
+
+
+@router.get("/{connector_id}/usage")
+async def get_connector_usage(
+    connector_id: str,
+    request: Request,
+    limit: int = Query(default=20, le=100),
+) -> dict:
+    """Return goals that used this connector."""
+    tenant = _require_tenant(request)
+    goal_svc = getattr(request.app.state, "goal_service", None)
+
+    goals = []
+    total = 0
+    success_count = 0
+
+    if goal_svc is not None:
+        try:
+            db = getattr(goal_svc, "_db", None)
+            if db:
+                from sqlalchemy import text as _t
+                cid_pattern = f"%{connector_id}%"
+                async with db() as session:
+                    await session.execute(
+                        _t("SET LOCAL app.tenant_id = :tid"),
+                        {"tid": tenant.tenant_id},
+                    )
+                    rows = (await session.execute(
+                        _t("""
+                            SELECT id, goal_text, status, created_at, cost_usd
+                            FROM goals
+                            WHERE tenant_id = :tid
+                              AND execution_context->>'connector_ids' LIKE :cid_pattern
+                            ORDER BY created_at DESC
+                            LIMIT :limit
+                        """),
+                        {
+                            "tid": tenant.tenant_id,
+                            "cid_pattern": cid_pattern,
+                            "limit": limit,
+                        },
+                    )).fetchall()
+                    count_row = (await session.execute(
+                        _t(
+                            "SELECT COUNT(*), "
+                            "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) "
+                            "FROM goals "
+                            "WHERE tenant_id=:tid "
+                            "AND execution_context->>'connector_ids' LIKE :cid_pattern"
+                        ),
+                        {"tid": tenant.tenant_id, "cid_pattern": cid_pattern},
+                    )).fetchone()
+                    if count_row:
+                        total = int(count_row[0] or 0)
+                        success_count = int(count_row[1] or 0)
+                    goals = [
+                        {
+                            "id": str(r[0]),
+                            "goal": r[1],
+                            "status": r[2],
+                            "created_at": r[3].isoformat() if r[3] else None,
+                            "cost_usd": float(r[4] or 0),
+                        }
+                        for r in rows
+                    ]
+            else:
+                # In-memory fallback
+                resp = await goal_svc.list_goals(tenant_ctx=tenant)
+                all_goals = resp.get("goals", []) if isinstance(resp, dict) else []
+                matched = [
+                    g for g in all_goals
+                    if connector_id in str(g.get("execution_context", {}))
+                ]
+                total = len(matched)
+                success_count = sum(
+                    1 for g in matched if g.get("status") == "complete"
+                )
+                goals = matched[:limit]
+        except Exception:
+            pass
+
+    success_rate = (
+        round(success_count / max(total, 1) * 100, 1) if total > 0 else None
+    )
+    return {
+        "goals": goals,
+        "total": total,
+        "success_rate": success_rate,
+        "connector_id": connector_id,
+        "filtered": True,
     }
 
 

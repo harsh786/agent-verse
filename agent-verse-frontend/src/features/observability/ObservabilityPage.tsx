@@ -1,19 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, ExternalLink,
   RefreshCw, Filter, Search, ChevronRight,
   CheckCircle, AlertTriangle, XCircle,
+  DollarSign, Timer, Info, Download,
 } from 'lucide-react';
 import {
   BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  AreaChart, Area,
+  LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useAuthStore } from '@/stores/auth';
-import { observabilityApi } from '@/lib/api/client';
+import { observabilityApi, logsApi, type LogEntry } from '@/lib/api/client';
 import { TraceExplorer } from './TraceExplorer';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -35,44 +38,50 @@ interface HealthResponse {
 
 type ObsTab = 'overview' | 'metrics' | 'traces' | 'logs';
 
-// ── Simulated log entries ─────────────────────────────────────────────────────
+type TimeRange = '1h' | '6h' | '24h' | '7d' | '30d' | 'custom';
 
-interface LogEntry {
-  id: number;
-  ts: string;
-  level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG';
-  message: string;
-  service?: string;
+interface TimeRangeState {
+  range: TimeRange;
+  start: Date;
+  end: Date;
+  label: string;
 }
 
-let _logSeq = 1;
-const LOG_MESSAGES = [
-  { level: 'INFO' as const, message: 'Agent loop iteration started', service: 'agent-loop' },
-  { level: 'INFO' as const, message: 'LLM completion received in 342ms', service: 'planner' },
-  { level: 'INFO' as const, message: 'Tool call dispatched: github:list_issues', service: 'executor' },
-  { level: 'INFO' as const, message: 'MCP tool response received (200 OK)', service: 'mcp-client' },
-  { level: 'WARN' as const, message: 'Rate limit approaching: 87% of quota used', service: 'rate-limiter' },
-  { level: 'INFO' as const, message: 'Goal completed successfully in 4 iterations', service: 'agent-loop' },
-  { level: 'ERROR' as const, message: 'Redis connection timeout after 5000ms', service: 'cache' },
-  { level: 'INFO' as const, message: 'Semantic cache hit for goal (similarity 0.94)', service: 'rag' },
-  { level: 'WARN' as const, message: 'SLA budget exceeded: 320s used of 300s', service: 'governance' },
-  { level: 'INFO' as const, message: 'Eval scorecard persisted to DB', service: 'eval-runner' },
-  { level: 'INFO' as const, message: 'HITL approval request created', service: 'hitl' },
-  { level: 'DEBUG' as const, message: 'Tenant context resolved: tenant_id=t_a1b2c3', service: 'middleware' },
-  { level: 'INFO' as const, message: 'LangGraph checkpoint saved to Redis', service: 'checkpointer' },
-  { level: 'INFO' as const, message: 'Knowledge base RAG hit (3 chunks, similarity 0.91)', service: 'rag' },
-];
+// ── Time-range helpers ────────────────────────────────────────────────────────
 
-function makeLogEntry(): LogEntry {
-  const template = LOG_MESSAGES[_logSeq % LOG_MESSAGES.length];
-  return {
-    id: _logSeq++,
-    ts: new Date().toISOString(),
-    level: template.level,
-    message: template.message,
-    service: template.service,
+function computeTimeRange(range: TimeRange): TimeRangeState {
+  const now = new Date();
+  const rangeMap: Record<Exclude<TimeRange, 'custom'>, { minutes: number; label: string }> = {
+    '1h':  { minutes: 60,    label: 'Last 1 hour' },
+    '6h':  { minutes: 360,   label: 'Last 6 hours' },
+    '24h': { minutes: 1440,  label: 'Last 24 hours' },
+    '7d':  { minutes: 10080, label: 'Last 7 days' },
+    '30d': { minutes: 43200, label: 'Last 30 days' },
   };
+  if (range === 'custom') {
+    return { range, start: new Date(now.getTime() - 86400000), end: now, label: 'Custom range' };
+  }
+  const { minutes, label } = rangeMap[range];
+  return { range, start: new Date(now.getTime() - minutes * 60000), end: now, label };
 }
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
+// ── Auto-refresh intervals ────────────────────────────────────────────────────
+
+const REFRESH_INTERVALS: Record<TimeRange, number> = {
+  '1h':    10_000,  // 10 s
+  '6h':    30_000,  // 30 s
+  '24h':   60_000,  // 1 m
+  '7d':   300_000,  // 5 m
+  '30d':  600_000,  // 10 m
+  'custom':      0, // disabled
+};
 
 // ── Prometheus parser helpers ─────────────────────────────────────────────────
 
@@ -146,6 +155,88 @@ const APP_TOOLTIP = {
   labelStyle: { color: 'hsl(var(--muted-foreground))' },
   cursor: { fill: 'hsl(var(--muted)/0.3)' },
 };
+
+// ── TimeRangePicker ───────────────────────────────────────────────────────────
+
+interface TimeRangePickerProps {
+  value: TimeRange;
+  onChange: (range: TimeRange, customStart?: Date, customEnd?: Date) => void;
+}
+
+function TimeRangePicker({ value, onChange }: TimeRangePickerProps) {
+  const [showCustom, setShowCustom] = useState(false);
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const OPTIONS: { value: TimeRange; label: string }[] = [
+    { value: '1h',  label: '1h' },
+    { value: '6h',  label: '6h' },
+    { value: '24h', label: '24h' },
+    { value: '7d',  label: '7d' },
+    { value: '30d', label: '30d' },
+  ];
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs text-muted-foreground">Time range:</span>
+      <div className="flex items-center bg-muted/50 rounded-lg p-0.5 gap-0.5">
+        {OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => { onChange(opt.value); setShowCustom(false); }}
+            className={`px-2.5 py-1 text-xs rounded-md transition-colors font-medium ${
+              value === opt.value
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <button
+          onClick={() => setShowCustom(v => !v)}
+          className={`px-2.5 py-1 text-xs rounded-md transition-colors font-medium ${
+            value === 'custom'
+              ? 'bg-primary text-primary-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+          }`}
+        >
+          Custom
+        </button>
+      </div>
+
+      {showCustom && (
+        <div className="flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-150">
+          <input
+            type="datetime-local"
+            value={customStart}
+            onChange={e => setCustomStart(e.target.value)}
+            className="text-xs border border-input rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <span className="text-xs text-muted-foreground">→</span>
+          <input
+            type="datetime-local"
+            value={customEnd}
+            onChange={e => setCustomEnd(e.target.value)}
+            className="text-xs border border-input rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <button
+            onClick={() => {
+              if (customStart && customEnd) {
+                onChange('custom', new Date(customStart), new Date(customEnd));
+                setShowCustom(false);
+              }
+            }}
+            disabled={!customStart || !customEnd}
+            className="text-xs px-2 py-1 bg-primary text-primary-foreground rounded-lg disabled:opacity-50"
+          >
+            Apply
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Tab: Overview ─────────────────────────────────────────────────────────────
 
@@ -281,39 +372,99 @@ function OverviewTab({ health, isLoading, isError }: {
 
 // ── Tab: Metrics ──────────────────────────────────────────────────────────────
 
-function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
-  metrics: string | undefined;
-  isLoading: boolean;
-  lastUpdated: Date | null;
-  onRefresh: () => void;
+function MetricsTab({ since, until, rangeLabel }: {
+  since: string;
+  until: string;
+  rangeLabel: string;
 }) {
+  const apiKey = useAuthStore((s) => s.apiKey);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  // Raw Prometheus text metrics
+  const {
+    data: metrics,
+    isLoading,
+    refetch: refetchMetrics,
+  } = useQuery({
+    queryKey: ['observability', 'metrics-raw', since, until],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/metrics`, { headers: { 'X-API-Key': apiKey } });
+      if (!res.ok) throw new Error(`${res.status}`);
+      setLastUpdated(new Date());
+      return res.text();
+    },
+    enabled: !!apiKey,
+    refetchInterval: 15_000,
+  });
+
   const successRate = metrics ? parsePrometheusValue(metrics, 'agentverse_goal_success_total') : null;
   const queueDepth = metrics ? parsePrometheusValue(metrics, 'agentverse_queue_depth') : null;
   const toolData = metrics ? parsePrometheusLabel(metrics, 'agentverse_tool_call_total', 'tool') : [];
   const tokenData = metrics ? parsePrometheusLabel(metrics, 'agentverse_llm_tokens_total', 'provider') : [];
 
-  const latencyData = [
-    { percentile: 'p50', ms: 320 },
-    { percentile: 'p95', ms: 980 },
-    { percentile: 'p99', ms: 2100 },
-  ];
+  // Structured metrics (latency percentiles etc.)
+  const { data: structuredMetrics } = useQuery({
+    queryKey: ['observability', 'metrics-structured', since, until],
+    queryFn: () => observabilityApi.getMetrics({ since, until }),
+    staleTime: 30_000,
+    enabled: !!apiKey,
+    retry: false,
+  });
 
-  const tokenChartData = tokenData.length > 0 ? tokenData : [
-    { label: 'anthropic', value: 142000 },
-    { label: 'openai', value: 87500 },
-  ];
+  const latencyData = useMemo(() => {
+    const raw = structuredMetrics?.goal_duration_percentiles ?? structuredMetrics?.latency_percentiles;
+    if (raw && Array.isArray(raw)) return raw as Array<{ percentile: string; ms: number }>;
+    if (raw && typeof raw === 'object') {
+      const r = raw as Record<string, number>;
+      return [
+        { percentile: 'p50', ms: Math.round((r.p50 ?? 0) * 1000) },
+        { percentile: 'p95', ms: Math.round((r.p95 ?? 0) * 1000) },
+        { percentile: 'p99', ms: Math.round((r.p99 ?? 0) * 1000) },
+      ];
+    }
+    return [];
+  }, [structuredMetrics]);
+
+  const tokenChartData = tokenData;
 
   const AXIS_STYLE = { fill: 'hsl(var(--muted-foreground))', fontSize: 11 };
   const GRID_STROKE = 'hsl(var(--border))';
+
+  // Time-series data
+  const { data: tsData } = useQuery({
+    queryKey: ['observability', 'timeseries', since, until],
+    queryFn: () => observabilityApi.getTimeSeries({ since, until }),
+    staleTime: 30_000,
+    enabled: !!apiKey,
+    retry: false,
+  });
+
+  const tsTooltipStyle = {
+    background: 'hsl(var(--popover))',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: 8,
+    fontSize: 11,
+    color: 'hsl(var(--popover-foreground))',
+  };
+
+  function formatTsBucket(v: string): string {
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return v;
+    return d.getHours() === 0 && d.getMinutes() === 0
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Auto-refreshes every 15s'}
+          {lastUpdated
+            ? `Updated ${lastUpdated.toLocaleTimeString()} · ${rangeLabel}`
+            : `Auto-refreshes every 15s · ${rangeLabel}`}
         </p>
         <button
-          onClick={onRefresh}
+          onClick={() => refetchMetrics()}
           disabled={isLoading}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
         >
@@ -327,8 +478,8 @@ function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
         {[
           { label: 'Success Rate', value: successRate != null ? `${(successRate * 100).toFixed(1)}%` : '—', accent: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
           { label: 'Queue Depth', value: queueDepth != null ? String(Math.round(queueDepth)) : '0', accent: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-50 dark:bg-indigo-950/30' },
-          { label: 'p50 Latency', value: `${latencyData[0].ms}ms`, accent: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-50 dark:bg-sky-950/30' },
-          { label: 'p99 Latency', value: `${latencyData[2].ms}ms`, accent: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
+          { label: 'p50 Latency', value: latencyData[0] ? `${latencyData[0].ms}ms` : '—', accent: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-50 dark:bg-sky-950/30' },
+          { label: 'p99 Latency', value: latencyData[2] ? `${latencyData[2].ms}ms` : '—', accent: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
         ].map(({ label, value, accent, bg }) => (
           <Card key={label} className={`p-4 text-center ${bg}`}>
             <p className={`text-3xl font-bold tabular-nums ${accent}`}>{value}</p>
@@ -337,19 +488,176 @@ function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
         ))}
       </div>
 
-      {/* Latency histogram */}
-      <Card className="p-5">
+      {/* ── Time Series ─────────────────────────────────────── */}
+      <div>
+        <h2 className="text-base font-semibold text-foreground mb-4 flex items-center gap-2">
+          <Activity className="h-4 w-4 text-primary" />
+          Time Series
+          <span className="text-xs font-normal text-muted-foreground ml-1">— {rangeLabel}</span>
+        </h2>
+
+        {/* Goal throughput area chart */}
+        {(tsData?.goals_per_hour ?? []).length > 0 ? (
+          <div className="space-y-4">
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                <Activity className="h-4 w-4 text-primary" />
+                Goal Throughput
+              </h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={tsData!.goals_per_hour} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                  <XAxis
+                    dataKey="ts"
+                    tickFormatter={formatTsBucket}
+                    tick={AXIS_STYLE}
+                    stroke={GRID_STROKE}
+                  />
+                  <YAxis tick={AXIS_STYLE} stroke={GRID_STROKE} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={tsTooltipStyle}
+                    labelFormatter={(v) => new Date(v as string).toLocaleString()}
+                  />
+                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                  <Area
+                    type="monotone"
+                    dataKey="success"
+                    name="Succeeded"
+                    stackId="1"
+                    stroke="#22c55e"
+                    fill="#22c55e"
+                    fillOpacity={0.4}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="failed"
+                    name="Failed"
+                    stackId="1"
+                    stroke="#ef4444"
+                    fill="#ef4444"
+                    fillOpacity={0.4}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Cost over time */}
+            {(tsData?.cost_per_hour ?? []).length > 0 && (
+              <div className="bg-card border border-border rounded-xl p-5">
+                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-amber-500" />
+                  Cost Over Time
+                </h3>
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={tsData!.cost_per_hour} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                    <XAxis
+                      dataKey="ts"
+                      tickFormatter={formatTsBucket}
+                      tick={AXIS_STYLE}
+                      stroke={GRID_STROKE}
+                    />
+                    <YAxis
+                      tickFormatter={(v: number) => `$${v.toFixed(3)}`}
+                      tick={AXIS_STYLE}
+                      stroke={GRID_STROKE}
+                    />
+                    <Tooltip
+                      contentStyle={tsTooltipStyle}
+                      formatter={(v: unknown) => [`$${(v as number).toFixed(4)}`, 'Cost']}
+                      labelFormatter={(v) => new Date(v as string).toLocaleString()}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="cost_usd"
+                      name="Cost (USD)"
+                      stroke="#f59e0b"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* Latency trend */}
+            {(tsData?.avg_latency_per_hour ?? []).length > 0 && (
+              <div className="bg-card border border-border rounded-xl p-5">
+                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                  <Timer className="h-4 w-4 text-blue-500" />
+                  Latency Trend
+                </h3>
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={tsData!.avg_latency_per_hour} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+                    <XAxis
+                      dataKey="ts"
+                      tickFormatter={formatTsBucket}
+                      tick={AXIS_STYLE}
+                      stroke={GRID_STROKE}
+                    />
+                    <YAxis
+                      tickFormatter={(v: number) => `${v}ms`}
+                      tick={AXIS_STYLE}
+                      stroke={GRID_STROKE}
+                    />
+                    <Tooltip
+                      contentStyle={tsTooltipStyle}
+                      formatter={(v: unknown) => [`${v}ms`]}
+                      labelFormatter={(v) => new Date(v as string).toLocaleString()}
+                    />
+                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Line
+                      type="monotone"
+                      dataKey="p50_ms"
+                      name="p50"
+                      stroke="#3b82f6"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="p95_ms"
+                      name="p95"
+                      stroke="#f97316"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="bg-card border border-border rounded-xl p-8 text-center">
+            <Activity className="h-10 w-10 opacity-20 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">No activity in the selected time range</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Try selecting a wider time range or run some goals first
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Latency histogram */}      <Card className="p-5">
         <h3 className="font-semibold text-foreground mb-1">Goal Duration Percentiles</h3>
         <p className="text-sm text-muted-foreground mb-4">Execution latency distribution across all agent runs</p>
-        <ResponsiveContainer width="100%" height={160}>
-          <BarChart data={latencyData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
-            <XAxis dataKey="percentile" tick={AXIS_STYLE} />
-            <YAxis tick={AXIS_STYLE} />
-            <Tooltip {...APP_TOOLTIP} formatter={(v: number) => [`${v}ms`, 'Latency']} />
-            <Bar dataKey="ms" fill="#6366f1" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        {latencyData.length === 0 ? (
+          <div className="flex items-center justify-center h-40 text-sm text-muted-foreground">
+            No latency data yet — run a goal to populate
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={latencyData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+              <XAxis dataKey="percentile" tick={AXIS_STYLE} />
+              <YAxis tick={AXIS_STYLE} />
+              <Tooltip {...APP_TOOLTIP} formatter={(v: number) => [`${v}ms`, 'Latency']} />
+              <Bar dataKey="ms" fill="#6366f1" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </Card>
 
       {/* Tool calls */}
@@ -376,15 +684,21 @@ function MetricsTab({ metrics, isLoading, lastUpdated, onRefresh }: {
       <Card className="p-5">
         <h3 className="font-semibold text-foreground mb-1">LLM Token Spend by Provider</h3>
         <p className="text-sm text-muted-foreground mb-4">Cumulative tokens used per LLM provider</p>
-        <ResponsiveContainer width="100%" height={120}>
-          <BarChart data={tokenChartData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
-            <XAxis dataKey="label" tick={AXIS_STYLE} />
-            <YAxis tick={AXIS_STYLE} />
-            <Tooltip {...APP_TOOLTIP} />
-            <Bar dataKey="value" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        {tokenChartData.length === 0 ? (
+          <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+            No token usage data available yet
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={120}>
+            <BarChart data={tokenChartData} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+              <XAxis dataKey="label" tick={AXIS_STYLE} />
+              <YAxis tick={AXIS_STYLE} />
+              <Tooltip {...APP_TOOLTIP} />
+              <Bar dataKey="value" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </Card>
 
       {/* Raw metrics */}
@@ -458,14 +772,14 @@ function TraceRow({ span, minTime, totalTime, depth, onSelect }: {
   );
 }
 
-function TracesTab({ apiKey }: { apiKey: string }) {
+function TracesTab({ apiKey, since, until }: { apiKey: string; since: string; until: string }) {
   const [selectedSpan, setSelectedSpan] = useState<SpanRecord | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
 
   const { data: spans = [], isLoading } = useQuery({
-    queryKey: ['spans'],
-    queryFn: () => observabilityApi.getSpans(100),
+    queryKey: ['observability', 'spans', since, until],
+    queryFn: () => observabilityApi.getSpans(100, { since, until }),
     enabled: !!apiKey,
     refetchInterval: 15_000,
   });
@@ -605,43 +919,121 @@ function TracesTab({ apiKey }: { apiKey: string }) {
 
 // ── Tab: Logs ─────────────────────────────────────────────────────────────────
 
-function LogsTab() {
-  const [logs, setLogs] = useState<LogEntry[]>(() =>
-    Array.from({ length: 12 }, () => makeLogEntry())
-  );
+function LogsTab({ since, until }: { since: string; until: string }) {
+  const apiKey = useAuthStore((s) => s.apiKey);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [levelFilter, setLevelFilter] = useState<string>('all');
   const [paused, setPaused] = useState(false);
+  const [logSearch, setLogSearch] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Initial logs fetch (seeds the view before SSE connects)
+  const { data: initialLogsData, isLoading: initialLoading } = useQuery({
+    queryKey: ['observability', 'logs', since, until],
+    queryFn: () => logsApi.list({ limit: 50, since }),
+    staleTime: 10_000,
+    enabled: !!apiKey,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (initialLogsData?.logs) {
+      setLogs(initialLogsData.logs);
+    }
+  }, [initialLogsData]);
+
+  // Real-time log stream via SSE (gracefully degrades if endpoint absent)
   useEffect(() => {
     if (paused) return;
-    const id = setInterval(() => {
-      setLogs((prev) => [...prev.slice(-99), makeLogEntry()]);
-    }, 1800);
-    return () => clearInterval(id);
-  }, [paused]);
+    let es: EventSource | null = null;
+    const { apiKey: key } = useAuthStore.getState();
+    const params = new URLSearchParams({ limit: '20' });
+    if (key) params.set('api_key', key);
+    if (since) params.set('since', since);
+    try {
+      es = new EventSource(`${API_BASE}/observability/logs/stream?${params.toString()}`);
+      es.onmessage = (event) => {
+        if (paused) return;
+        try {
+          const log: LogEntry = JSON.parse(event.data as string);
+          setLogs((prev) => [log, ...prev.slice(0, 99)]);
+        } catch { /* ignore malformed events */ }
+      };
+      es.onerror = () => { es?.close(); };
+    } catch { /* SSE not available */ }
+    return () => es?.close();
+  }, [paused, since]);
 
+  // Auto-scroll to latest when not paused
   useEffect(() => {
     if (!paused && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [logs, paused]);
 
+  // Reset logs when time range changes
+  useEffect(() => {
+    setLogs([]);
+  }, [since, until]);
+
   const levelConfig: Record<string, { bg: string; text: string }> = {
-    INFO:  { bg: 'bg-sky-100 dark:bg-sky-900/30',    text: 'text-sky-700 dark:text-sky-400' },
-    WARN:  { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-400' },
-    ERROR: { bg: 'bg-red-100 dark:bg-red-900/30',     text: 'text-red-700 dark:text-red-400' },
-    DEBUG: { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-400' },
+    info:    { bg: 'bg-sky-100 dark:bg-sky-900/30',      text: 'text-sky-700 dark:text-sky-400' },
+    warning: { bg: 'bg-amber-100 dark:bg-amber-900/30',  text: 'text-amber-700 dark:text-amber-400' },
+    error:   { bg: 'bg-red-100 dark:bg-red-900/30',      text: 'text-red-700 dark:text-red-400' },
+    debug:   { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-400' },
   };
 
-  const filtered = logs.filter((l) => levelFilter === 'all' || l.level === levelFilter);
+  const filtered = logs.filter(
+    (l) =>
+      (levelFilter === 'all' || l.level === levelFilter) &&
+      (!logSearch ||
+        l.message.toLowerCase().includes(logSearch.toLowerCase()) ||
+        l.source?.toLowerCase().includes(logSearch.toLowerCase()))
+  );
+  const isLogsEmpty = logs.length === 0 && !initialLoading;
 
   return (
     <div className="space-y-4">
+      {/* Log source info banner */}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Info className="h-3.5 w-3.5 flex-shrink-0" />
+          Showing activity from goal execution events. For full application logs, configure a log
+          shipping integration.{' '}
+          <a href="/integrations" className="text-primary hover:underline">
+            Configure log shipping →
+          </a>
+        </p>
+        <button
+          onClick={() => {
+            const logText = logs
+              .map(
+                (l) =>
+                  `[${new Date(l.timestamp).toISOString()}] [${l.level.toUpperCase()}]${
+                    l.source ? ` [${l.source}]` : ''
+                  } ${l.message}`
+              )
+              .join('\n');
+            const blob = new Blob([logText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `observability-logs-${Date.now()}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+          disabled={logs.length === 0}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-input rounded-lg hover:bg-muted/50 disabled:opacity-50 transition-colors"
+        >
+          <Download className="h-3 w-3" /> Export Logs
+        </button>
+      </div>
+
+      {/* Controls row: level filters + search + live indicator */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-          {(['all', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const).map((lvl) => (
+          {(['all', 'info', 'warning', 'error', 'debug'] as const).map((lvl) => (
             <button
               key={lvl}
               onClick={() => setLevelFilter(lvl)}
@@ -651,15 +1043,41 @@ function LogsTab() {
                   : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
-              {lvl}
+              {lvl === 'all' ? 'ALL' : lvl.toUpperCase()}
             </button>
           ))}
+        </div>
+        {/* Log search */}
+        <div className="flex items-center gap-1.5 bg-muted/40 border border-border rounded-lg px-2.5 py-1 flex-1 min-w-40 max-w-xs">
+          <Search className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          <input
+            type="search"
+            placeholder="Search logs…"
+            value={logSearch}
+            onChange={(e) => setLogSearch(e.target.value)}
+            className="bg-transparent text-xs outline-none flex-1 text-foreground placeholder:text-muted-foreground"
+          />
         </div>
         <div className="ml-auto flex items-center gap-2">
           <div className={`h-2 w-2 rounded-full ${paused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
           <span className="text-xs text-muted-foreground">{paused ? 'Paused (hover out to resume)' : 'Live'}</span>
         </div>
       </div>
+
+      {/* Entry count */}
+      {logs.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Showing {filtered.length} of {logs.length} entries
+          {(levelFilter !== 'all' || logSearch) && (
+            <button
+              onClick={() => { setLevelFilter('all'); setLogSearch(''); }}
+              className="ml-1.5 text-primary hover:underline"
+            >
+              (clear filters)
+            </button>
+          )}
+        </p>
+      )}
 
       <Card className="overflow-hidden">
         <div
@@ -668,32 +1086,42 @@ function LogsTab() {
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
         >
-          {filtered.map((log) => {
-            const cfg = levelConfig[log.level] ?? { bg: '', text: 'text-foreground' };
-            return (
-              <div
-                key={log.id}
-                className="flex items-start gap-3 px-4 py-1.5 hover:bg-muted/40 border-b border-border/50"
-              >
-                <span className="text-muted-foreground flex-shrink-0 tabular-nums text-[11px]">
-                  {new Date(log.ts).toLocaleTimeString()}
-                </span>
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${cfg.bg} ${cfg.text}`}>
-                  {log.level}
-                </span>
-                {log.service && (
-                  <span className="text-muted-foreground flex-shrink-0 text-[11px]">[{log.service}]</span>
-                )}
-                <span className={`${
-                  log.level === 'ERROR' ? 'text-red-700 dark:text-red-400' :
-                  log.level === 'WARN'  ? 'text-amber-700 dark:text-amber-400' :
-                  'text-foreground'
-                }`}>
-                  {log.message}
-                </span>
-              </div>
-            );
-          })}
+          {isLogsEmpty ? (
+            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+              No logs yet — execute a goal to generate log entries
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+              No entries match the current filters
+            </div>
+          ) : (
+            filtered.map((log) => {
+              const cfg = levelConfig[log.level] ?? { bg: '', text: 'text-foreground' };
+              return (
+                <div
+                  key={log.id}
+                  className="flex items-start gap-3 px-4 py-1.5 hover:bg-muted/40 border-b border-border/50"
+                >
+                  <span className="text-muted-foreground flex-shrink-0 tabular-nums text-[11px]">
+                    {new Date(log.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${cfg.bg} ${cfg.text}`}>
+                    {log.level.toUpperCase()}
+                  </span>
+                  {log.source && (
+                    <span className="text-muted-foreground flex-shrink-0 text-[11px]">[{log.source}]</span>
+                  )}
+                  <span className={`${
+                    log.level === 'error'   ? 'text-red-700 dark:text-red-400' :
+                    log.level === 'warning' ? 'text-amber-700 dark:text-amber-400' :
+                    'text-foreground'
+                  }`}>
+                    {log.message}
+                  </span>
+                </div>
+              );
+            })
+          )}
         </div>
       </Card>
     </div>
@@ -704,10 +1132,43 @@ function LogsTab() {
 
 export function ObservabilityPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
+  const qc = useQueryClient();
   const [tab, setTab] = useState<ObsTab>('overview');
   const [grafanaAvailable, setGrafanaAvailable] = useState<boolean | null>(null);
-  const [lastMetricsUpdate, setLastMetricsUpdate] = useState<Date | null>(null);
 
+  // ── Time range state ────────────────────────────────────────────────────────
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h');
+  const [customTimeRange, setCustomTimeRange] = useState<{ start: Date; end: Date } | null>(null);
+  const [lastRefresh, setLastRefresh] = useState(new Date());
+  const [autoRefresh, setAutoRefresh] = useState(false);
+
+  const timeState = useMemo<TimeRangeState>(() => {
+    if (timeRange === 'custom' && customTimeRange) {
+      return { range: timeRange, start: customTimeRange.start, end: customTimeRange.end, label: 'Custom range' };
+    }
+    return computeTimeRange(timeRange);
+  }, [timeRange, customTimeRange]);
+
+  const handleTimeRangeChange = (range: TimeRange, customStart?: Date, customEnd?: Date) => {
+    setTimeRange(range);
+    if (range === 'custom' && customStart && customEnd) {
+      setCustomTimeRange({ start: customStart, end: customEnd });
+    }
+  };
+
+  // ── Auto-refresh ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = REFRESH_INTERVALS[timeRange];
+    if (!interval) return;
+    const id = setInterval(() => {
+      setLastRefresh(new Date());
+      qc.invalidateQueries({ queryKey: ['observability'] });
+    }, interval);
+    return () => clearInterval(id);
+  }, [autoRefresh, timeRange, qc]);
+
+  // ── Health query ────────────────────────────────────────────────────────────
   const {
     data: health,
     isLoading: healthLoading,
@@ -723,22 +1184,7 @@ export function ObservabilityPage() {
     refetchInterval: 30_000,
   });
 
-  const {
-    data: metrics,
-    isLoading: metricsLoading,
-    refetch: refetchMetrics,
-  } = useQuery({
-    queryKey: ['metrics'],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/metrics`, { headers: { 'X-API-Key': apiKey } });
-      if (!res.ok) throw new Error(`${res.status}`);
-      setLastMetricsUpdate(new Date());
-      return res.text();
-    },
-    enabled: !!apiKey,
-    refetchInterval: 15_000,
-  });
-
+  // ── Grafana availability check ──────────────────────────────────────────────
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
@@ -755,50 +1201,87 @@ export function ObservabilityPage() {
     { id: 'logs',     label: 'Logs' },
   ];
 
+  const since = timeState.start.toISOString();
+  const until = timeState.end.toISOString();
+
   return (
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Observability</h1>
           <p className="text-sm text-muted-foreground mt-1">
             System health, live metrics, distributed traces and log stream
           </p>
         </div>
-        <a
-          href={GRAFANA_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
-            grafanaAvailable === false
-              ? 'border-border text-muted-foreground/50 pointer-events-none'
-              : 'border-orange-300 text-orange-600 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30'
-          }`}
-          title={grafanaAvailable === false ? 'Grafana not available at ' + GRAFANA_URL : 'Open Grafana'}
-        >
-          <span className="font-bold text-xs">G</span>
-          Grafana
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Refresh controls */}
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Updated {timeAgo(lastRefresh.toISOString())}</span>
+            <button
+              onClick={() => {
+                setLastRefresh(new Date());
+                qc.invalidateQueries({ queryKey: ['observability'] });
+              }}
+              className="p-1 rounded hover:bg-muted transition-colors"
+              title="Refresh now"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => setAutoRefresh(v => !v)}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                autoRefresh
+                  ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                  : 'bg-muted text-muted-foreground hover:text-foreground'
+              }`}
+              title={autoRefresh ? 'Auto-refresh on — click to disable' : 'Auto-refresh off — click to enable'}
+            >
+              {autoRefresh ? 'Auto' : 'Manual'}
+            </button>
+          </div>
+
+          {/* Grafana link */}
+          <a
+            href={GRAFANA_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
+              grafanaAvailable === false
+                ? 'border-border text-muted-foreground/50 pointer-events-none'
+                : 'border-orange-300 text-orange-600 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30'
+            }`}
+            title={grafanaAvailable === false ? 'Grafana not available at ' + GRAFANA_URL : 'Open Grafana'}
+          >
+            <span className="font-bold text-xs">G</span>
+            Grafana
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
       </div>
 
-      {/* Tab bar */}
-      <div role="tablist" className="flex gap-1 border-b border-border">
-        {TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              tab === id
-                ? 'text-primary border-primary'
-                : 'text-muted-foreground border-transparent hover:text-foreground'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      {/* Tab bar + Time range picker */}
+      <div className="flex items-end justify-between gap-4 border-b border-border flex-wrap">
+        <div role="tablist" className="flex gap-1">
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                tab === id
+                  ? 'text-primary border-primary'
+                  : 'text-muted-foreground border-transparent hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="pb-2">
+          <TimeRangePicker value={timeRange} onChange={handleTimeRangeChange} />
+        </div>
       </div>
 
       {/* Content */}
@@ -807,22 +1290,23 @@ export function ObservabilityPage() {
       )}
       {tab === 'metrics' && (
         <MetricsTab
-          metrics={metrics}
-          isLoading={metricsLoading}
-          lastUpdated={lastMetricsUpdate}
-          onRefresh={() => refetchMetrics()}
+          since={since}
+          until={until}
+          rangeLabel={timeState.label}
         />
       )}
       {tab === 'traces' && (
         <div className="space-y-6">
-          <TracesTab apiKey={apiKey} />
+          <TracesTab apiKey={apiKey} since={since} until={until} />
           <div>
             <h3 className="text-sm font-semibold text-foreground mb-2">Goal Execution Traces</h3>
             <TraceExplorer />
           </div>
         </div>
       )}
-      {tab === 'logs' && <LogsTab />}
+      {tab === 'logs' && (
+        <LogsTab since={since} until={until} />
+      )}
     </div>
   );
 }

@@ -9,45 +9,41 @@
  *
  * Plus: Emergency Stop kill-switch (always visible above tabs)
  */
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   AlertTriangle,
   BadgeCheck,
-  BarChart2,
-  CheckCircle,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  ClipboardCopy,
-  Clock,
-  DollarSign,
-  Download,
-  FileJson,
-  Filter,
-  History,
-  Info,
-  Loader2,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Search,
-  Shield,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldOff,
-  Sparkles,
-  Trash2,
-  XCircle,
-  Zap,
+   BarChart2,
+   CheckCircle,
+   CheckCircle2,
+   ChevronRight,
+   Clock,
+   DollarSign,
+   Download,
+   FileJson,
+   Filter,
+   History,
+   Loader2,
+   Plus,
+   RefreshCw,
+   RotateCcw,
+   Search,
+   Shield,
+   ShieldAlert,
+   ShieldCheck,
+   ShieldOff,
+   Sparkles,
+   Trash2,
+   XCircle,
+   Zap,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   governanceApi,
   auditApi,
   costsApi,
-  type GovernancePolicy,
   type CreateGovernancePolicyRequest,
   type SlaStats,
   type AuditEvent,
@@ -58,6 +54,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useEmergencyStore } from '@/stores/emergency';
 import { toast } from '@/stores/toast';
 import { useEventStream } from '@/lib/sse/useEventStream';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -404,6 +401,7 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
   const [versionPolicyId, setVersionPolicyId] = useState<string | null>(null);
   const [versionPolicyName, setVersionPolicyName] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deletePolicyId, setDeletePolicyId] = useState<string | null>(null);
 
   // Form state
   const [form, setForm] = useState<Omit<CreateGovernancePolicyRequest, 'name'> & { name: string }>({
@@ -455,12 +453,14 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async () => {
-      for (const id of selected) await governanceApi.deletePolicy(id);
+      const count = selected.size;
+      await Promise.allSettled([...selected].map(id => governanceApi.deletePolicy(id)));
+      return count;
     },
-    onSuccess: () => {
+    onSuccess: (count) => {
       void qc.invalidateQueries({ queryKey: ['governance-policies'] });
       setSelected(new Set());
-      toast({ kind: 'success', message: `${selected.size} policies deleted.` });
+      toast({ kind: 'success', message: `${count} policies deleted.` });
     },
   });
 
@@ -777,7 +777,7 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                       </button>
                       <button
                         data-testid={`delete-policy-${p.policy_id}`}
-                        onClick={() => deleteMutation.mutate(p.policy_id)}
+                        onClick={() => setDeletePolicyId(p.policy_id)}
                         disabled={deleteMutation.isPending}
                         className="p-1.5 text-muted-foreground hover:text-red-500 rounded"
                         title="Delete"
@@ -801,6 +801,19 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
           onClose={() => setVersionPolicyId(null)}
         />
       )}
+      <ConfirmModal
+        open={!!deletePolicyId}
+        title="Delete policy?"
+        description="This policy will be permanently removed. Any goals currently being evaluated against it may behave differently."
+        confirmLabel="Delete Policy"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (deletePolicyId) deleteMutation.mutate(deletePolicyId);
+          setDeletePolicyId(null);
+        }}
+        onCancel={() => setDeletePolicyId(null)}
+      />
     </div>
   );
 }
@@ -1078,7 +1091,7 @@ function AuditTab() {
   const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
   const [chainResult, setChainResult] = useState<{ verified: boolean; verified_events: number; chain_tip_hash?: string } | null>(null);
 
-  const { data: events = [], isLoading, isFetching, refetch } = useQuery({
+  const { data: events = [], isLoading, isFetching } = useQuery({
     queryKey: ['governance-audit', query],
     queryFn: () => auditApi.query(query),
     staleTime: 30_000,
@@ -1108,7 +1121,7 @@ function AuditTab() {
   const exportCSV = () => {
     const headers = ['event_id', 'goal_id', 'tool_name', 'action_level', 'outcome', 'approver', 'note'];
     const rows = events.map((e) =>
-      headers.map((h) => JSON.stringify((e as Record<string, unknown>)[h] ?? '')).join(',')
+      headers.map((h) => JSON.stringify(((e as unknown) as Record<string, unknown>)[h] ?? '')).join(',')
     );
     const blob = new Blob([[headers.join(','), ...rows].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -1307,7 +1320,9 @@ function AuditTab() {
                   className="hover:bg-muted/20 cursor-pointer"
                 >
                   <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                    {e.event_id?.slice(0, 8) ?? '—'}
+                    {e.created_at
+                      ? new Date(e.created_at).toLocaleTimeString()
+                      : e.event_id?.slice(0, 8) ?? '—'}
                   </td>
                   <td className="px-3 py-2.5">
                     <code className="text-xs font-mono">{e.tool_name}</code>
@@ -1410,6 +1425,9 @@ function BudgetTab() {
   const isDirty = draft != null && (draft.per_goal_usd !== budget?.per_goal_usd || draft.per_tenant_daily_usd !== budget?.per_tenant_daily_usd);
   const dailySpent = costSummary?.total_cost_usd ?? 0;
   const dailyBudget = budget?.per_tenant_daily_usd ?? 500;
+  // Correct per-goal avg: actual avg cost per goal divided by the per-goal budget limit
+  const goalCount = Math.max((costSummary as unknown as { total_goals?: number })?.total_goals ?? 1, 1);
+  const avgCostPerGoal = dailySpent / goalCount;
 
   return (
     <div className="space-y-5">
@@ -1464,7 +1482,7 @@ function BudgetTab() {
                 label="Daily budget"
               />
               <BudgetGauge
-                used={dailySpent / Math.max(costSummary?.total_cost_usd ?? 1, 1) * (budget?.per_goal_usd ?? 10)}
+                used={avgCostPerGoal}
                 total={budget?.per_goal_usd ?? 10}
                 label="Per-goal avg"
               />
@@ -1559,9 +1577,9 @@ function BudgetTab() {
                   <p className="font-medium">{a.type}</p>
                   <p className="text-xs text-muted-foreground">{a.message}</p>
                 </div>
-                <span className="text-sm font-mono text-red-600">+{fmtUsd(a.cost_delta_usd)}</span>
+                <span className="text-sm font-mono text-red-600">+{fmtUsd(a.cost_delta_usd ?? 0)}</span>
                 <span className="text-xs text-muted-foreground whitespace-nowrap">
-                  {new Date(a.detected_at).toLocaleTimeString()}
+                  {new Date(a.detected_at ?? Date.now()).toLocaleTimeString()}
                 </span>
               </div>
             ))}

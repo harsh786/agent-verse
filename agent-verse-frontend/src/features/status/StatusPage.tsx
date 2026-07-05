@@ -8,7 +8,7 @@ import { CheckCircle, AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react'
 interface Component { status: 'operational' | 'degraded' | 'unknown'; latency_ms?: number; }
 interface StatusData { status: string; components: Record<string, Component>; timestamp: number; }
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 const STATUS_CONFIG = {
   operational: { icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/20', border: 'border-green-200 dark:border-green-800', label: 'All Systems Operational' },

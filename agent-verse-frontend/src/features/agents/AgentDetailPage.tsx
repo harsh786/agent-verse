@@ -5,15 +5,15 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowLeft, Loader2, Download, Camera, RotateCcw,
   Edit3, Save, X, Clock, Target, ChevronDown, ChevronRight,
-  Activity, Sliders,
+  Activity, Sliders, Shield,
 } from "lucide-react";
-import { useAuthStore } from "@/stores/auth";
-import { goalsApi, agentsApi, knowledgeApi, credentialsApi } from "@/lib/api/client";
+import {
+  goalsApi, agentsApi, knowledgeApi, credentialsApi,
+  type CreateAgentRequest,
+} from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
-
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 interface AgentVersion {
   snapshot_id: string;
@@ -21,56 +21,13 @@ interface AgentVersion {
   label?: string;
 }
 
-function hdrs(apiKey: string) {
-  return { "X-API-Key": apiKey, "Content-Type": "application/json" };
-}
-
-async function fetchAgentDetail(apiKey: string, agentId: string) {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`, { headers: hdrs(apiKey) });
-  if (!res.ok) throw new Error(`Agent not found: ${res.statusText}`);
-  return res.json();
-}
-
-async function fetchAgentVersions(apiKey: string, agentId: string): Promise<AgentVersion[]> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}/versions`, { headers: hdrs(apiKey) });
-  if (!res.ok) return [];
-  return res.json();
-}
-
-async function createSnapshot(apiKey: string, agentId: string): Promise<{ snapshot_id: string }> {
-  const res = await fetch(`${API_BASE}/agents/${agentId}/snapshot`, {
-    method: "POST",
-    headers: hdrs(apiKey),
-  });
-  if (!res.ok) throw new Error(`Failed to create snapshot: ${res.statusText}`);
-  return res.json();
-}
-
-async function rollbackAgent(apiKey: string, agentId: string, snapshotId: string) {
-  const res = await fetch(`${API_BASE}/agents/${agentId}/rollback/${snapshotId}`, {
-    method: "POST",
-    headers: { "X-API-Key": apiKey },
-  });
-  if (!res.ok) throw new Error(`Failed to rollback: ${res.statusText}`);
-  return res.json();
-}
-
-async function exportAgentFormat(apiKey: string, agentId: string, format: string) {
-  const res = await fetch(`${API_BASE}/agents/${agentId}/export?format=${format}`, {
-    headers: hdrs(apiKey),
-  });
-  if (!res.ok) throw new Error(`Export failed: ${res.statusText}`);
-  return res.json();
-}
-
-async function updateAgent(apiKey: string, agentId: string, patch: Record<string, unknown>) {
-  const res = await fetch(`${API_BASE}/agents/${agentId}`, {
-    method: "PUT",
-    headers: hdrs(apiKey),
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) throw new Error(`Failed to update agent: ${res.statusText}`);
-  return res.json();
+// Fix 8: Typed interface replacing useState<any> for readiness
+interface ReadinessResult {
+  ready: boolean;
+  score?: number;
+  issues?: string[];
+  connector_statuses?: Record<string, string>;
+  checks?: Array<{ status: string; message: string }>;
 }
 
 // ── CredentialsTab ─────────────────────────────────────────────────────────────
@@ -195,48 +152,53 @@ export function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const apiKey = useAuthStore((s) => s.apiKey);
   const { t } = useTranslation();
   const [tab, setTab] = useState<AgentTab>('overview');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
-  const [exportMsg, setExportMsg] = useState("");
+  // Fix 9: exportMsg replaced with toast — no local state needed
   const [snapshotMsg, setSnapshotMsg] = useState("");
   const [versionOpen, setVersionOpen] = useState(false);
-  const [readiness, setReadiness] = useState<any>(null);
+  // Fix 8: Properly typed state
+  const [readiness, setReadiness] = useState<ReadinessResult | null>(null);
   const [testGoal, setTestGoal] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string>('');
 
+  // Fix 6: Use agentsApi.get instead of raw fetch
   const {
     data: agent,
     isLoading,
     error,
   } = useQuery({
     queryKey: ["agent", agentId],
-    queryFn: () => fetchAgentDetail(apiKey, agentId!),
+    queryFn: () => agentsApi.get(agentId!),
     enabled: !!agentId,
   });
 
+  // Fix 6: Use agentsApi.listVersions instead of raw fetch
   const { data: versions = [] } = useQuery<AgentVersion[]>({
     queryKey: ["agent-versions", agentId],
-    queryFn: () => fetchAgentVersions(apiKey, agentId!),
+    queryFn: () => agentsApi.listVersions(agentId!) as Promise<AgentVersion[]>,
     enabled: !!agentId,
   });
 
+  // Fix 7: staleTime avoids excessive refetches; slice(0,10) limits result without a backend filter
   const { data: recentGoals } = useQuery({
     queryKey: ["goals", "byAgent", agentId],
     queryFn: async () => {
       const all = await goalsApi.list();
-      return (all.goals ?? []).filter(
-        (g) => (g as any).agent_id === agentId
-      );
+      return (all.goals ?? [])
+        .filter((g) => (g as any).agent_id === agentId)
+        .slice(0, 10);
     },
     enabled: !!agentId,
+    staleTime: 60_000,
   });
 
+  // Fix 6: Use agentsApi.snapshot instead of raw fetch
   const snapshotMutation = useMutation({
-    mutationFn: () => createSnapshot(apiKey, agentId!),
+    mutationFn: () => agentsApi.snapshot(agentId!),
     onSuccess: (data) => {
       setSnapshotMsg(`Snapshot created: ${data.snapshot_id}`);
       qc.invalidateQueries({ queryKey: ["agent-versions", agentId] });
@@ -244,24 +206,27 @@ export function AgentDetailPage() {
     },
   });
 
+  // Fix 6: Use agentsApi.rollback instead of raw fetch
   const rollbackMutation = useMutation({
-    mutationFn: (snapshotId: string) => rollbackAgent(apiKey, agentId!, snapshotId),
+    mutationFn: (snapshotId: string) => agentsApi.rollback(agentId!, snapshotId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agent", agentId] });
     },
   });
 
+  // Fix 6: Use agentsApi.update instead of raw fetch
   const saveMutation = useMutation({
-    mutationFn: () => updateAgent(apiKey, agentId!, editForm),
+    mutationFn: () => agentsApi.update(agentId!, editForm as Partial<CreateAgentRequest>),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agent", agentId] });
       setEditing(false);
     },
   });
 
+  // Fix 6+9: Use agentsApi.export; replace setExportMsg with toast
   const handleExport = async (format: string) => {
     try {
-      const data = await exportAgentFormat(apiKey, agentId!, format);
+      const data = await agentsApi.export(agentId!, format as "openai" | "anthropic");
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -269,19 +234,23 @@ export function AgentDetailPage() {
       a.download = `agent-${agentId}-${format}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      setExportMsg(`Exported as ${format} format`);
-      setTimeout(() => setExportMsg(""), 3000);
+      toast({ kind: "success", message: `Exported as ${format} format` });
     } catch (e) {
-      setExportMsg(`Export failed: ${String(e)}`);
+      toast({ kind: "error", message: `Export failed: ${String(e)}` });
     }
   };
 
-  const checkReadiness = async () => {
-    const resp = await fetch(`${API_BASE}/agents/${agentId}/readiness`, {
-      headers: { 'X-API-Key': apiKey },
-    });
-    if (resp.ok) setReadiness(await resp.json());
-  };
+  const checkReadinessMutation = useMutation({
+    mutationFn: () => agentsApi.checkReadiness(agentId!),
+    onSuccess: (data) => {
+      setReadiness(data);
+      toast({
+        kind: data.ready ? 'success' : 'warning',
+        message: data.ready ? 'Agent is ready!' : `${data.issues?.length ?? 0} issues found`,
+      });
+    },
+    onError: (e) => toast({ kind: 'error', message: `Readiness check failed: ${String(e)}` }),
+  });
 
   const handleTestAgent = async () => {
     if (!testGoal.trim()) return;
@@ -382,10 +351,14 @@ export function AgentDetailPage() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={checkReadiness}
-              className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+              onClick={() => checkReadinessMutation.mutate()}
+              disabled={checkReadinessMutation.isPending}
+              className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 flex items-center gap-1.5 disabled:opacity-50"
             >
-              Check Readiness
+              {checkReadinessMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Shield className="h-4 w-4" />}
+              {checkReadinessMutation.isPending ? 'Checking…' : 'Check Readiness'}
             </button>
             <button
               onClick={() => cloneMutation.mutate()}
@@ -609,7 +582,6 @@ export function AgentDetailPage() {
               </button>
             </div>
             {snapshotMsg && <p className="text-xs text-green-600">{snapshotMsg}</p>}
-            {exportMsg && <p className="text-xs text-muted-foreground">{exportMsg}</p>}
           </div>
 
           {/* Recent Goals */}

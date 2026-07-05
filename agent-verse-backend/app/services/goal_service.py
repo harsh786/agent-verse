@@ -44,6 +44,10 @@ from app.services.goal_queue import GoalTaskQueue
 from app.services.result_artifacts import build_result_artifact
 from app.tenancy.context import PlanTier, TenantContext
 
+# Sub-module imports — part of ongoing decomposition to reduce God-class size
+# See: app/services/goal_events.py, goal_metrics.py, goal_lifecycle.py
+from app.services.goal_lifecycle import GoalTransition, is_valid_transition  # noqa: F401
+
 # Module-level OTel tracer — no-ops cleanly when no exporter is configured.
 _tracer = trace.get_tracer(__name__)
 

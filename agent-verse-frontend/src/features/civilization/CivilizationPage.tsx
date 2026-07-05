@@ -15,9 +15,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Globe, Clipboard, BookOpen, GitBranch, Scale, Settings2,
   Radio, BarChart2, ArrowLeft, Plus, Loader2, AlertTriangle,
-  Wifi, WifiOff, Zap, Users,
+  Wifi, WifiOff, Zap, Users, X,
 } from 'lucide-react';
 import { civilizationApi } from '../../lib/api/civilizationApi';
+import { apiFetch } from '@/lib/api/client';
+import { toast } from '@/stores/toast';
 import { useCivilizationStream } from '../../lib/sse/useCivilizationStream';
 import { CivilizationMap } from './CivilizationMap';
 import { CivilizationMetrics } from './CivilizationMetrics';
@@ -46,6 +48,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 function CivilizationList() {
+  const qc = useQueryClient();
   const { data: civilizations, isLoading, error } = useQuery({
     queryKey: ['civilizations'],
     queryFn: () => civilizationApi.list(),
@@ -53,6 +56,9 @@ function CivilizationList() {
   });
 
   const civs = (civilizations as Civilization[] | undefined) ?? [];
+
+  const [showNewCivModal, setShowNewCivModal] = useState(false);
+  const [newCivForm, setNewCivForm] = useState({ name: '', description: '', max_agents: 5, autonomy_level: 'bounded-autonomous' });
 
   return (
     <div
@@ -74,14 +80,15 @@ function CivilizationList() {
               Autonomous multi-agent societies — each solves goals collectively
             </p>
           </div>
-          {/* Future: create civ button */}
-          <div
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs text-slate-400 cursor-not-allowed opacity-40"
-            style={{ borderColor: 'rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)' }}
+          {/* Create civilization button */}
+          <button
+            onClick={() => setShowNewCivModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+            aria-label="Create a new civilization"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-4 w-4" />
             New Civilization
-          </div>
+          </button>
         </div>
       </div>
 
@@ -216,11 +223,100 @@ function CivilizationList() {
           </div>
         )}
       </div>
+
+      {/* ── New Civilization Modal ─────────────────────────────────────── */}
+      {showNewCivModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowNewCivModal(false)} />
+          <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold">New Civilization</h2>
+              <button onClick={() => setShowNewCivModal(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium mb-1">Name *</label>
+                <input
+                  autoFocus
+                  value={newCivForm.name}
+                  onChange={e => setNewCivForm(f => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. Research Cluster Alpha"
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Description</label>
+                <textarea
+                  value={newCivForm.description}
+                  onChange={e => setNewCivForm(f => ({ ...f, description: e.target.value }))}
+                  rows={2}
+                  placeholder="What is this civilization for?"
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1">Max Agents</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={newCivForm.max_agents}
+                    onChange={e => setNewCivForm(f => ({ ...f, max_agents: parseInt(e.target.value) || 5 }))}
+                    className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">Autonomy</label>
+                  <select
+                    value={newCivForm.autonomy_level}
+                    onChange={e => setNewCivForm(f => ({ ...f, autonomy_level: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="manual">Manual</option>
+                    <option value="human-in-loop">Human in Loop</option>
+                    <option value="bounded-autonomous">Bounded Autonomous</option>
+                    <option value="fully-autonomous">Fully Autonomous</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={async () => {
+                  if (!newCivForm.name.trim()) return;
+                  try {
+                    await apiFetch('/civilization/civilizations', {
+                      method: 'POST',
+                      body: JSON.stringify(newCivForm),
+                    });
+                    toast({ kind: 'success', message: `Civilization "${newCivForm.name}" created!` });
+                    setShowNewCivModal(false);
+                    setNewCivForm({ name: '', description: '', max_agents: 5, autonomy_level: 'bounded-autonomous' });
+                    qc.invalidateQueries({ queryKey: ['civilizations'] });
+                  } catch (e) {
+                    toast({ kind: 'error', message: `Failed: ${String(e)}` });
+                  }
+                }}
+                disabled={!newCivForm.name.trim()}
+                className="flex-1 py-2.5 bg-primary text-primary-foreground font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+              >
+                Create Civilization
+              </button>
+              <button onClick={() => setShowNewCivModal(false)} className="px-4 py-2.5 border border-input rounded-lg hover:bg-muted/50">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-// ── Civilization Theater ──────────────────────────────────────────────────────
 
 const PANEL_TABS: {
   key: Panel;

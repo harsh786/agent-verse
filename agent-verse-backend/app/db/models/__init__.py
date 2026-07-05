@@ -45,6 +45,7 @@ from app.db.models.civilization import (  # noqa: E402
 from app.db.models.workflow import Workflow  # noqa: E402
 from app.db.models.template import GoalTemplate  # noqa: E402
 from app.db.models.skill import Skill  # noqa: E402
+from app.db.models.mfa import TenantMFA  # noqa: E402
 
 __all__ = [
     "Base",
@@ -95,4 +96,6 @@ __all__ = [
     "GoalTemplate",
     # skills (Phase 6)
     "Skill",
+    # mfa
+    "TenantMFA",
 ]
