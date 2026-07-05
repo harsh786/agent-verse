@@ -123,6 +123,19 @@ class Settings(BaseSettings):
     # --- billing ---
     stripe_api_key: str = ""
 
+    # --- billing details ---
+    stripe_price_starter: str = ""
+    stripe_price_professional: str = ""
+    stripe_price_enterprise: str = ""
+    stripe_success_url: str = "https://app.agentverse.ai/settings/billing?success=1"
+    stripe_cancel_url: str = "https://app.agentverse.ai/settings/billing?cancelled=1"
+
+    # --- India compliance (DPDP/GST) ---
+    seller_gstin: str = "27AAAAA0000A1Z5"   # placeholder — override in production
+    seller_name: str = "AgentVerse Technologies Pvt Ltd"
+    dpo_name: str = "Data Protection Officer"
+    dpo_email: str = "dpo@agentverse.ai"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, value: object) -> object:
