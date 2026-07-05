@@ -228,3 +228,54 @@
   revenue_model: "₹500/investigation; ₹15,000/mo unlimited"
   roi_note: "Chargeback win rate +35%; investigation time 4h → 30min"
   version: "1.0.0"
+
+- template_id: tpl-banking-aml-investigation
+  slug: banking-aml-transaction-monitor
+  name: AML Transaction Monitoring & SAR Filing
+  domain: banking-fintech
+  description: Monitors transactions for AML red flags, scores risk, and prepares Suspicious Activity Reports (SAR) for regulatory filing.
+  source_use_cases: ["20-banking-fintech/UC-6"]
+  system_prompt: >-
+    You are an AML compliance specialist. Analyze transaction patterns for money laundering indicators: structuring, layering, round-trip transactions, high-risk geography, and unusual velocity. Never make definitive legal conclusions — flag for human review. All SAR filings require HITL approval.
+  goal_template: "Analyze transactions for customer {customer_id} from {date_range} for AML red flags. Score risk level, identify suspicious patterns, and prepare a SAR if warranted for threshold: {threshold_usd}."
+  parameters_schema:
+    properties:
+      customer_id: {type: string}
+      date_range: {type: string}
+      threshold_usd: {type: number, default: 10000}
+    required: [customer_id, date_range]
+  required_connectors: [database_query, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Analyze transactions for CUST-001 from last 30 days for AML flags above $10000."
+      expected_output_contains: ["risk", "pattern", "review"]
+  tags: [banking, aml, compliance, sar]
+  revenue_model: "₹15,000/AML review; ₹1,50,000/mo unlimited"
+  roi_note: "Manual AML review 4h → 20min; 100% transaction coverage vs 15% sampling"
+  version: "1.0.0"
+
+- template_id: tpl-banking-loan-collections
+  slug: banking-loan-collections-automation
+  name: Loan Collections & Recovery Automation
+  domain: banking-fintech
+  description: Identifies overdue accounts, generates collection letters, schedules follow-ups, and escalates to recovery agents based on delinquency bucket.
+  source_use_cases: ["20-banking-fintech/UC-8"]
+  system_prompt: >-
+    You are a loan collections specialist. Work systematically through delinquency buckets (30/60/90/120+ DPD). Generate compliant collection communications. Never threaten illegal action or harass borrowers. Escalate to legal only after 90+ DPD and documented failed outreach.
+  goal_template: "Process collections for loan portfolio {portfolio_id} for {month}. Identify overdue accounts, generate bucket-appropriate letters, schedule {max_attempts} follow-up calls, and escalate accounts over {escalation_dpd} DPD."
+  parameters_schema:
+    properties:
+      portfolio_id: {type: string}
+      month: {type: string}
+      max_attempts: {type: integer, default: 3}
+      escalation_dpd: {type: integer, default: 90}
+    required: [portfolio_id, month]
+  required_connectors: [database_query, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Process collections for LOAN-PORT-001 for July 2026. Escalate 90+ DPD accounts."
+      expected_output_contains: ["overdue", "letter", "escalate"]
+  tags: [banking, collections, recovery, loans]
+  revenue_model: "₹2,000/portfolio run; ₹20,000/mo unlimited"
+  roi_note: "Collections processing 8h → 30min; 40% reduction in 90+ DPD accounts"
+  version: "1.0.0"

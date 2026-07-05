@@ -240,3 +240,56 @@
   revenue_model: "₹500/client/month; ₹20,000/mo unlimited"
   roi_note: "GST recon per client 2h → 15min; avg ITC recovered ₹1.5L/client/year"
   version: "1.0.0"
+
+- template_id: tpl-accounting-roc-filing
+  slug: accounting-roc-annual-filing-automation
+  name: ROC Annual Filing & Compliance Agent
+  domain: accounting-ca
+  description: Automates MCA21 annual return preparation (MGT-7, AOC-4), checks compliance status, and manages due-date calendars for a CA firm's client portfolio.
+  source_use_cases: ["27-accounting-ca/UC-5"]
+  system_prompt: >-
+    You are a company law compliance specialist at a CA firm. Prepare annual returns (MGT-7, AOC-4) from the provided financial statements and company data. Verify all signatures, attachments, and mandatory fields. All MCA21 submissions require human review and digital signature before filing.
+  goal_template: "Prepare ROC annual filing for {company_name} (CIN: {cin}) for FY {financial_year}. Compile MGT-7 and AOC-4 from financials in {data_folder}, check compliance status, and generate filing checklist with {deadline_days} days to deadline."
+  parameters_schema:
+    properties:
+      company_name: {type: string}
+      cin: {type: string}
+      financial_year: {type: string}
+      data_folder: {type: string}
+      deadline_days: {type: integer, default: 30}
+    required: [company_name, cin, financial_year, data_folder]
+  required_connectors: [document_reader, mca21, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare ROC filing for ABC Pvt Ltd (CIN: U72200KA2020PTC123456) for FY 2025-26."
+      expected_output_contains: ["MGT-7", "AOC-4", "compliance"]
+  tags: [accounting, roc, mca21, company-law]
+  revenue_model: "₹3,000/company/year; ₹30,000/mo unlimited"
+  roi_note: "ROC filing preparation 6h → 45min; zero missed deadlines"
+  version: "1.0.0"
+
+- template_id: tpl-accounting-audit-trail-generator
+  slug: accounting-statutory-audit-support
+  name: Statutory Audit Support & Trail Generator
+  domain: accounting-ca
+  description: Generates audit trails, prepares working papers, reconciles ledgers, and creates Management Representation Letters for statutory audits.
+  source_use_cases: ["27-accounting-ca/UC-7"]
+  system_prompt: >-
+    You are a statutory audit support specialist. Generate reconciliation statements, prepare working papers (schedules, lead sheets), and verify trial balance arithmetic. Flag all discrepancies exceeding materiality threshold. Never adjust entries or modify source data — only prepare documentation for auditor review.
+  goal_template: "Prepare statutory audit support package for {company_name} for FY {financial_year}. Generate reconciliation for {account_list}, prepare working papers, and create Management Representation Letter. Materiality threshold: ₹{materiality_inr}."
+  parameters_schema:
+    properties:
+      company_name: {type: string}
+      financial_year: {type: string}
+      account_list: {type: string}
+      materiality_inr: {type: number, default: 50000}
+    required: [company_name, financial_year, account_list]
+  required_connectors: [tally, google_sheets, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Prepare audit support for XYZ Ltd for FY 2025-26. Reconcile bank accounts. Materiality: ₹50,000."
+      expected_output_contains: ["reconciliation", "working papers", "materiality"]
+  tags: [accounting, audit, statutory, compliance]
+  revenue_model: "₹5,000/audit support package; ₹40,000/mo unlimited"
+  roi_note: "Audit preparation 2 weeks → 3 days; 60% reduction in audit queries"
+  version: "1.0.0"

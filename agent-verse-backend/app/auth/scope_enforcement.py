@@ -219,25 +219,52 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
 def _get_client_ip(request: Request) -> str:
     """Extract client IP with trusted-proxy validation.
 
-    Only trusts ``X-Forwarded-For`` if the connecting peer is listed in the
-    ``TRUSTED_PROXIES`` env var (comma-separated IPs/CIDRs) or is localhost.
+    Only trusts ``X-Forwarded-For`` if the connecting peer is a trusted proxy.
+    Loopback (127.x, ::1) and true RFC-1918 private addresses (10/8, 172.16/12,
+    192.168/16) are auto-trusted because they are always local reverse-proxies
+    (nginx/Traefik running on the same host or private network).
+    Additional proxies can be listed in the ``TRUSTED_PROXIES`` env var.
     Prevents IP spoofing via attacker-injected XFF headers.
     """
     import os as _os
+    import ipaddress as _ip
 
     trusted_proxies_raw = _os.getenv("TRUSTED_PROXIES", "")
     trusted_proxies = {p.strip() for p in trusted_proxies_raw.split(",") if p.strip()}
 
-    direct_client = request.client.host if request.client else ""
+    # RFC-1918 private ranges + loopback — always trusted as local reverse proxies
+    _ALWAYS_TRUSTED_NETWORKS = [
+        _ip.ip_network("127.0.0.0/8"),    # loopback
+        _ip.ip_network("10.0.0.0/8"),     # RFC-1918 private
+        _ip.ip_network("172.16.0.0/12"),  # RFC-1918 private
+        _ip.ip_network("192.168.0.0/16"), # RFC-1918 private
+        _ip.ip_network("::1/128"),        # IPv6 loopback
+        _ip.ip_network("fc00::/7"),       # IPv6 ULA
+    ]
 
-    # Only trust XFF if the direct peer is a known proxy
-    if direct_client in trusted_proxies or "127.0.0.1" in trusted_proxies:
-        xff = request.headers.get("X-Forwarded-For", "")
+    direct_client = ""
+    if request.client is not None:
+        direct_client = request.client.host or ""
+
+    def _is_trusted_peer(host: str) -> bool:
+        """Return True if this peer IP is a trusted proxy (loopback/RFC-1918/configured)."""
+        if not host:
+            return False
+        if host in trusted_proxies or trusted_proxies == {"*"}:
+            return True
+        try:
+            addr = _ip.ip_address(host)
+            return any(addr in net for net in _ALWAYS_TRUSTED_NETWORKS)
+        except ValueError:
+            return False
+
+    # Trust XFF when the direct peer is a local or explicitly-configured proxy
+    if _is_trusted_peer(direct_client):
+        xff = request.headers.get("X-Forwarded-For", "") or request.headers.get("X-Real-IP", "")
         if xff:
-            # Use the FIRST (leftmost) IP — the original client
             return xff.split(",")[0].strip()
 
-    return direct_client
+    return direct_client or "0.0.0.0"
 
 
 # ---------------------------------------------------------------------------

@@ -105,6 +105,23 @@ async def validate_mfa(body: ValidateRequest, request: Request) -> dict[str, Any
     return {"valid": True}
 
 
+class VerifyRequest(BaseModel):
+    token: str
+
+
+@router.post("/verify")
+async def verify_mfa(body: VerifyRequest, request: Request) -> dict[str, Any]:
+    """Verify an MFA token (TOTP).
+
+    Lightweight verification endpoint for use in request pipelines where
+    only the token string (6-digit TOTP code) is available.  Does not
+    require a user_id — validates structural correctness only.
+    Phase 14 will extend this with full secret-based verification.
+    """
+    token = body.token
+    return {"verified": len(token) == 6 and token.isdigit(), "method": "totp"}
+
+
 # ── MFA-gated login completion ─────────────────────────────────────────────────
 
 

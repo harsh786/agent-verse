@@ -80,19 +80,28 @@ class AnthropicProvider:
             "max_tokens": request.max_tokens,
         }
         if system_prompt is not anthropic.NOT_GIVEN:
-            # 2.2: Prompt caching — wrap system prompt in a content block with
+            # 2.2: Prompt caching — wrap system prompt in content blocks with
             # cache_control so Anthropic can cache the stable prefix across calls.
-            kwargs["system"] = [
-                {
-                    "type": "text",
-                    "text": (
-                        system_prompt
-                        if isinstance(system_prompt, str)
-                        else str(system_prompt)
-                    ),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
+            # When cache_prefix is set, only the stable prefix gets cache_control;
+            # the volatile part (feedback, replanning context) is NOT cached.
+            system_str = (
+                system_prompt if isinstance(system_prompt, str) else str(system_prompt)
+            )
+            if request.cache_prefix and request.cache_prefix in system_str:
+                split_idx = system_str.find(request.cache_prefix) + len(request.cache_prefix)
+                stable_part = system_str[:split_idx]
+                volatile_part = system_str[split_idx:].strip()
+                system_blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": stable_part, "cache_control": {"type": "ephemeral"}}
+                ]
+                if volatile_part:
+                    system_blocks.append({"type": "text", "text": volatile_part})
+                kwargs["system"] = system_blocks
+            else:
+                # No cache_prefix — wrap whole system in single ephemeral block
+                kwargs["system"] = [
+                    {"type": "text", "text": system_str, "cache_control": {"type": "ephemeral"}}
+                ]
         if request.response_schema is not None and not request.tools:
             # Force-tool structured output for Anthropic: inject a synthetic tool
             # and force the model to call it so we always get structured JSON back.

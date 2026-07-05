@@ -845,6 +845,7 @@ def run_goal(
             _phase3_grounding = None
             _phase3_synthesizer = None
             _phase3_calibration = None
+            _phase3_consensus = None
             try:
                 from app.agent.grounding import GroundingChecker
                 _phase3_grounding = GroundingChecker()
@@ -860,6 +861,11 @@ def run_goal(
                 _phase3_calibration = _default_calibration_store
             except Exception as _p3c_exc:
                 logger.debug("phase3_calibration_unavailable: %s", _p3c_exc)
+            try:
+                from app.agent.consensus import ConsensusVerifier
+                _phase3_consensus = ConsensusVerifier(primary_verifier=provider)
+            except Exception as _p3cv_exc:
+                logger.debug("phase3_consensus_unavailable: %s", _p3cv_exc)
 
             # Build embedder for pgvector LTM recall (same priority as main.py)
             _embedder_for_graph = None
@@ -903,6 +909,7 @@ def run_goal(
                 grounding_checker=_phase3_grounding,
                 answer_synthesizer=_phase3_synthesizer,
                 calibration_store=_phase3_calibration,
+                consensus_verifier=_phase3_consensus,
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
@@ -2371,7 +2378,7 @@ def expire_stale_documents() -> dict:
                 )
                 deleted = len(result.fetchall())
                 await session.commit()
-                 return {"status": "ok", "deleted": deleted}
+                return {"status": "ok", "deleted": deleted}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
     return asyncio.run(_run())
