@@ -21,6 +21,20 @@ interface AuthState {
    */
   tokenExpiresAt: number;
 
+  // ── Session validation ────────────────────────────────────────────────────
+  /**
+   * True once the session has been validated against the backend in the current
+   * page load.  Prevents RequireAuth from firing GET /tenants/me on every
+   * React Router navigation within the same tab.
+   */
+  sessionValidated: boolean;
+
+  // ── MFA state ─────────────────────────────────────────────────────────────
+  /** True when login succeeded but MFA code is still needed. */
+  mfaRequired: boolean;
+  /** Temporary token identifying the pending MFA session. */
+  mfaToken: string | null;
+
   // ── Actions ───────────────────────────────────────────────────────────────
   /** Set API-key credentials (traditional login). */
   setCredentials: (apiKey: string, tenantId: string, plan: string) => void;
@@ -38,6 +52,12 @@ interface AuthState {
   login: (creds: { apiKey: string; tenantId: string }) => void;
   /** Clear all credentials and reset to unauthenticated state. */
   logout: () => void;
+  /** Mark the current session as validated so RequireAuth skips future checks. */
+  setSessionValidated: (validated: boolean) => void;
+  /** Set whether MFA verification is required for the current login attempt. */
+  setMfaRequired: (required: boolean) => void;
+  /** Set the temporary MFA session token. */
+  setMfaToken: (token: string | null) => void;
 }
 
 // Use sessionStorage (cleared on tab close) to reduce XSS exfiltration risk.
@@ -69,6 +89,9 @@ export const useAuthStore = create<AuthState>()(
       accessToken: "",
       refreshToken: "",
       tokenExpiresAt: 0,
+      sessionValidated: false,
+      mfaRequired: false,
+      mfaToken: null,
 
       setCredentials: (apiKey, tenantId, plan) => {
         sessionStorage.setItem("av_api_key", apiKey);
@@ -135,9 +158,33 @@ export const useAuthStore = create<AuthState>()(
           accessToken: "",
           refreshToken: "",
           tokenExpiresAt: 0,
+          sessionValidated: false,
         });
       },
+
+      setSessionValidated: (validated: boolean) => set({ sessionValidated: validated }),
+      setMfaRequired: (required) => set({ mfaRequired: required }),
+      setMfaToken: (token) => set({ mfaToken: token }),
     }),
     { name: "av-auth", storage: secureStorage }
   )
 );
+
+/**
+ * Returns the correct auth header for any API call.
+ * Handles both API-key mode and SSO Bearer-token mode.
+ * Use this in any raw fetch() call instead of building headers manually.
+ */
+export function getAuthHeader(): Record<string, string> {
+  const { ssoMode, accessToken, apiKey } = useAuthStore.getState();
+  if (ssoMode && accessToken) {
+    return { Authorization: `Bearer ${accessToken}` };
+  }
+  return { 'X-API-Key': apiKey ?? '' };
+}
+
+/** Returns true if the current session token is expired (SSO mode only). */
+export function isTokenExpired(): boolean {
+  const { ssoMode, tokenExpiresAt } = useAuthStore.getState();
+  return ssoMode && Date.now() / 1000 >= (tokenExpiresAt ?? 0);
+}

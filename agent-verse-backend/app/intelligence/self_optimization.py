@@ -14,6 +14,15 @@ from sqlalchemy import text
 from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import TenantContext
 
+import warnings
+
+warnings.warn(
+    "app.intelligence.self_optimization is deprecated. Use app.intelligence.self_optimizer_v2 instead. "
+    "This module will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 
 @dataclass
 class OptimizationSuggestion:

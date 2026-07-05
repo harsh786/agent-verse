@@ -8,7 +8,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -497,3 +497,71 @@ async def suggest_schedule(
         "goal": body.goal_description,
         "llm_powered": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Schedule Run History
+# ---------------------------------------------------------------------------
+
+@router.get("/{schedule_id}/history")
+async def get_schedule_history(
+    schedule_id: str,
+    request: Request,
+    limit: int = Query(default=20, le=100),
+) -> dict:
+    """Get execution history for a schedule."""
+    tenant = _require_tenant(request)
+
+    goal_svc = getattr(request.app.state, "goal_service", None)
+    runs = []
+
+    if goal_svc:
+        try:
+            from sqlalchemy import text as _t
+
+            db = getattr(goal_svc, "_db", None)
+            if db:
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with db() as session:
+                    async with sqlalchemy_rls_context(session, tenant.tenant_id):
+                        rows = (
+                            await session.execute(
+                                _t("""
+                                    SELECT id, status, created_at,
+                                           execution_context->>'duration_s' as duration_s,
+                                           execution_context->>'error' as error
+                                    FROM goals
+                                    WHERE tenant_id = :tid
+                                      AND execution_context->>'schedule_id' = :sid
+                                    ORDER BY created_at DESC
+                                    LIMIT :limit
+                                """),
+                                {
+                                    "tid": tenant.tenant_id,
+                                    "sid": schedule_id,
+                                    "limit": limit,
+                                },
+                            )
+                        ).fetchall()
+                        runs = [
+                            {
+                                "run_id": str(row[0]),
+                                "goal_id": str(row[0]),
+                                "status": (
+                                    "success"
+                                    if row[1] == "complete"
+                                    else ("failed" if row[1] == "failed" else row[1])
+                                ),
+                                "started_at": row[2].isoformat() if row[2] else None,
+                                "duration_ms": (
+                                    int(float(row[3] or 0) * 1000) if row[3] else None
+                                ),
+                                "error": row[4],
+                            }
+                            for row in rows
+                        ]
+        except Exception:
+            pass
+
+    return {"runs": runs, "total": len(runs), "schedule_id": schedule_id}

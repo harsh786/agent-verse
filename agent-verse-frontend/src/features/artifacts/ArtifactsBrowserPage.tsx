@@ -9,18 +9,20 @@
  *  - Detail drawer: inline viewer (image/JSON/text/CSV/fallback), download, delete, "Use as Input", "Go to Goal"
  *  - 30s auto-refresh
  */
-import { useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  FileText, Image, Download, Trash2, Eye, X, Copy, Check,
-  ExternalLink, RefreshCw, Archive, Code, BarChart2,
-  Camera, AlertCircle,
+  FileText, Image, Download, Trash2, Search, X, Copy, Check,
+  ExternalLink, RefreshCw, Archive, Code, BarChart2, ArrowRight,
+  Camera, AlertCircle, Loader2, LayoutList, LayoutGrid,
 } from "lucide-react";
-import { artifactsApi, type Artifact } from "@/lib/api/client";
+import { artifactsApi, type Artifact, type ArtifactListResponse } from "@/lib/api/client";
+import { useDebounce } from "@/hooks/useDebounce";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,6 +74,46 @@ function isDownloadable(uri?: string): boolean {
   return !!uri && (uri.startsWith("http://") || uri.startsWith("https://"));
 }
 
+// ── JSON viewer ───────────────────────────────────────────────────────────────
+
+function JsonViewer({ uri }: { uri: string }) {
+  const [content, setContent] = useState<unknown>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetch(uri)
+      .then((r) => r.json())
+      .then((data) => { setContent(data); setLoading(false); })
+      .catch((e) => { setError(String(e)); setLoading(false); });
+  }, [uri]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="p-3 text-sm text-muted-foreground">
+        <p>Cannot load JSON preview</p>
+        <a href={uri} target="_blank" rel="noreferrer" className="text-primary hover:underline text-xs mt-1 block">
+          Open in new tab →
+        </a>
+      </div>
+    );
+  }
+  return (
+    <pre className="text-xs bg-muted/50 p-3 rounded overflow-auto max-h-64 font-mono whitespace-pre-wrap">
+      {JSON.stringify(content, null, 2)}
+    </pre>
+  );
+}
+
 // ── Inline viewer ─────────────────────────────────────────────────────────────
 
 function ArtifactViewer({ artifact }: { artifact: Artifact }) {
@@ -89,15 +131,7 @@ function ArtifactViewer({ artifact }: { artifact: Artifact }) {
     );
   }
   if (ct === "application/json") {
-    return (
-      <pre className="text-xs font-mono bg-muted/40 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap">
-        {/* We just show the storage URI since we can't fetch cross-origin JSON easily */}
-        <a href={uri} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-          Open JSON in new tab
-        </a>
-        {"\n\nStorage URI: "}{uri}
-      </pre>
-    );
+    return <JsonViewer uri={uri ?? ""} />;
   }
   if (ct.startsWith("text/")) {
     return (
@@ -131,7 +165,8 @@ function DetailDrawer({
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const [copied, setCopied] = useState(false);
+  const [copiedUri, setCopiedUri] = useState(false);
+  const [usedAsInput, setUsedAsInput] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const meta = typeMeta(artifact.artifact_type);
   const Icon = meta.icon;
@@ -149,9 +184,19 @@ function DetailDrawer({
 
   const handleCopyUri = async () => {
     await navigator.clipboard.writeText(artifact.storage_uri);
-    setCopied(true);
+    setCopiedUri(true);
     toast({ kind: "success", message: "URI copied — paste into next goal" });
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setCopiedUri(false), 2000);
+  };
+
+  const handleUseAsInput = () => {
+    navigator.clipboard?.writeText(artifact.storage_uri ?? "").catch(() => {});
+    toast({ kind: "success", message: "URI copied! Opening goal form…" });
+    setUsedAsInput(true);
+    setTimeout(() => setUsedAsInput(false), 2000);
+    setTimeout(() => {
+      navigate("/goals", { state: { prefillGoal: `Process the artifact at: ${artifact.storage_uri}` } });
+    }, 500);
   };
 
   return (
@@ -215,7 +260,7 @@ function DetailDrawer({
             <div className="flex items-center gap-2 bg-muted/40 rounded-lg px-3 py-2">
               <p className="text-xs font-mono truncate flex-1 text-muted-foreground">{artifact.storage_uri}</p>
               <button onClick={handleCopyUri} className="shrink-0 text-muted-foreground hover:text-foreground" aria-label="Copy URI">
-                {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                {copiedUri ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             </div>
           </div>
@@ -240,10 +285,10 @@ function DetailDrawer({
               </button>
             )}
             <button
-              onClick={handleCopyUri}
+              onClick={handleUseAsInput}
               className="flex items-center justify-center gap-1.5 px-3 py-2 border border-border rounded-lg text-xs font-medium hover:bg-muted/60 transition-colors"
             >
-              {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {usedAsInput ? <Check className="h-3.5 w-3.5 text-green-500" /> : <ArrowRight className="h-3.5 w-3.5" />}
               Use as Input
             </button>
             <button
@@ -335,7 +380,7 @@ function ArtifactCard({
           aria-label="Go to goal"
         >
           <ExternalLink className="h-3 w-3" aria-hidden="true" />
-          {artifact.goal_id.slice(0, 16)}…
+          {artifact.goal_id?.slice(0, 16) ?? '(no goal)'}…
         </button>
       </div>
     </div>
@@ -345,28 +390,64 @@ function ArtifactCard({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 const ARTIFACT_TYPES: ArtifactType[] = ["all", "file", "image", "screenshot", "report", "code"];
+const PAGE_SIZE = 30;
 
 export function ArtifactsBrowserPage() {
   const qc = useQueryClient();
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState<ArtifactType>("all");
   const [sort, setSort] = useState<SortKey>("newest");
   const [selected, setSelected] = useState<Artifact | null>(null);
+  const [groupByGoal, setGroupByGoal] = useState(false);
 
-  const { data: artifacts = [], isLoading, error } = useQuery<Artifact[]>({
-    queryKey: ["artifacts"],
-    queryFn: () => artifactsApi.list({ limit: 200 }),
+  // ── URL-backed search/filter/page ─────────────────────────────────────────
+  const [searchParams, setSearchParams] = useSearchParams();
+  const page = parseInt(searchParams.get("page") ?? "1", 10);
+  const typeFilter = (searchParams.get("type") ?? "all") as ArtifactType;
+  const search = searchParams.get("q") ?? "";
+
+  // Local state for immediate UI response; debounced value drives URL
+  const [searchInput, setSearchInput] = useState(search);
+  const debouncedSearch = useDebounce(searchInput, 400);
+
+  const updateParams = (updates: Record<string, string | null>) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([k, v]) => {
+        if (!v || v === "all") next.delete(k);
+        else next.set(k, v);
+      });
+      return next;
+    });
+  };
+
+  // Sync debounced search value to URL (avoids a query per keystroke)
+  useEffect(() => {
+    updateParams({ q: debouncedSearch || null, page: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch]);
+
+  const { data: rawData, isLoading, error } = useQuery<ArtifactListResponse>({
+    queryKey: ["artifacts", page, typeFilter, search],
+    queryFn: () => artifactsApi.list({
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+      type: typeFilter !== "all" ? typeFilter : undefined,
+      search: search || undefined,
+    }),
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
 
+  // Normalise response — backend may return bare array or paginated object
+  const artifacts: Artifact[] = Array.isArray(rawData)
+    ? rawData
+    : (rawData as { items: Artifact[]; total: number } | undefined)?.items ?? [];
+  const total: number = Array.isArray(rawData)
+    ? rawData.length
+    : (rawData as { items: Artifact[]; total: number } | undefined)?.total ?? 0;
+
+  // Client-side sort for the current page (server handles filter/search/offset)
   const filtered = useMemo(() => {
-    let list = [...artifacts];
-    if (typeFilter !== "all") list = list.filter((a) => a.artifact_type?.toLowerCase() === typeFilter);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter((a) => a.name.toLowerCase().includes(q) || a.content_type?.toLowerCase().includes(q));
-    }
+    const list = [...artifacts];
     switch (sort) {
       case "newest": list.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()); break;
       case "oldest": list.sort((a, b) => new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime()); break;
@@ -374,7 +455,18 @@ export function ArtifactsBrowserPage() {
       case "smallest": list.sort((a, b) => (a.size_bytes ?? 0) - (b.size_bytes ?? 0)); break;
     }
     return list;
-  }, [artifacts, typeFilter, search, sort]);
+  }, [artifacts, sort]);
+
+  const grouped = useMemo(() => {
+    if (!groupByGoal) return null;
+    const groups = new Map<string, typeof filtered>();
+    filtered.forEach((a) => {
+      const key = a.goal_id ?? "__no_goal__";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(a);
+    });
+    return groups;
+  }, [filtered, groupByGoal]);
 
   const handleRefresh = useCallback(() => qc.invalidateQueries({ queryKey: ["artifacts"] }), [qc]);
 
@@ -386,30 +478,40 @@ export function ArtifactsBrowserPage() {
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Archive className="h-6 w-6 text-primary" aria-hidden="true" />
             Artifacts
-            {artifacts.length > 0 && (
-              <span className="text-sm font-normal text-muted-foreground ml-1">({artifacts.length})</span>
+            {total > 0 && (
+              <span className="text-sm font-normal text-muted-foreground ml-1">({total})</span>
             )}
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">Files and outputs produced by agent runs</p>
         </div>
-        <button
-          onClick={handleRefresh}
-          className="p-2 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
-          aria-label="Refresh artifacts"
-          title="Refresh"
-        >
-          <RefreshCw className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setGroupByGoal((v) => !v)}
+            className={`p-2 rounded-lg transition-colors ${groupByGoal ? "bg-primary/10 text-primary" : "hover:bg-muted/60 text-muted-foreground hover:text-foreground"}`}
+            aria-label={groupByGoal ? "Switch to flat list" : "Group by goal"}
+            title={groupByGoal ? "Flat list" : "Group by goal"}
+          >
+            {groupByGoal ? <LayoutGrid className="h-4 w-4" aria-hidden="true" /> : <LayoutList className="h-4 w-4" aria-hidden="true" />}
+          </button>
+          <button
+            onClick={handleRefresh}
+            className="p-2 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Refresh artifacts"
+            title="Refresh"
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         {/* Search */}
         <div className="relative flex-1 min-w-[200px]">
-          <Eye className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" aria-hidden="true" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" aria-hidden="true" />
           <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Search by name or type…"
             aria-label="Search artifacts"
             className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
@@ -420,7 +522,7 @@ export function ArtifactsBrowserPage() {
           {ARTIFACT_TYPES.map((t) => (
             <button
               key={t}
-              onClick={() => setTypeFilter(t)}
+              onClick={() => updateParams({ type: t, page: null })}
               className={`px-3 py-1.5 text-xs rounded-lg border capitalize transition-colors ${
                 typeFilter === t ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted/50 text-muted-foreground"
               }`}
@@ -467,21 +569,40 @@ export function ArtifactsBrowserPage() {
       )}
 
       {/* Results count */}
-      {!isLoading && filtered.length > 0 && (
+      {!isLoading && total > 0 && (
         <p className="text-xs text-muted-foreground">
-          {filtered.length} artifact{filtered.length !== 1 ? "s" : ""}
+          {total} artifact{total !== 1 ? "s" : ""}
           {typeFilter !== "all" && ` of type "${typeFilter}"`}
           {search && ` matching "${search}"`}
         </p>
       )}
 
-      {/* Grid */}
+      {/* Grid / Grouped */}
       {!isLoading && filtered.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map((a) => (
-            <ArtifactCard key={a.id} artifact={a} onOpen={() => setSelected(a)} />
-          ))}
-        </div>
+        groupByGoal && grouped ? (
+          <div className="space-y-6">
+            {Array.from(grouped.entries()).map(([goalId, goalArtifacts]) => (
+              <div key={goalId}>
+                <h3 className="text-xs font-semibold text-muted-foreground mb-2 font-mono flex items-center gap-1.5">
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  {goalId === "__no_goal__" ? "(No goal)" : `Goal: ${goalId.slice(0, 16)}…`}
+                  <span className="font-normal">({goalArtifacts.length})</span>
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {goalArtifacts.map((a) => (
+                    <ArtifactCard key={a.id} artifact={a} onOpen={() => setSelected(a)} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filtered.map((a) => (
+              <ArtifactCard key={a.id} artifact={a} onOpen={() => setSelected(a)} />
+            ))}
+          </div>
+        )
       )}
 
       {/* Detail drawer */}
@@ -490,6 +611,17 @@ export function ArtifactsBrowserPage() {
           artifact={selected}
           onClose={() => setSelected(null)}
           onDeleted={() => setSelected(null)}
+        />
+      )}
+
+      {/* Pagination */}
+      {!isLoading && total > PAGE_SIZE && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={total}
+          onPageChange={(p) => updateParams({ page: String(p) })}
+          onPageSizeChange={() => {}}
         />
       )}
     </div>

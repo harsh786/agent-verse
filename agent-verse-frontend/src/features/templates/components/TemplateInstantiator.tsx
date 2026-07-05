@@ -5,6 +5,10 @@ import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { toast } from "@/stores/toast";
 import { X, Play, Eye, Copy, ArrowRight } from "lucide-react";
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 interface TemplateInstantiatorProps {
   template: GoalTemplate;
   onClose: () => void;
@@ -14,9 +18,11 @@ interface TemplateInstantiatorProps {
    * navigating away.  "Run Now" is still available alongside it.
    */
   onUseInGoal?: (instantiatedText: string) => void;
+  /** z-index override for when rendered inside another modal (default 200). */
+  zIndex?: number;
 }
 
-export function TemplateInstantiator({ template, onClose, onUseInGoal }: TemplateInstantiatorProps) {
+export function TemplateInstantiator({ template, onClose, onUseInGoal, zIndex }: TemplateInstantiatorProps) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [params, setParams] = useState<Record<string, string>>(
@@ -25,7 +31,7 @@ export function TemplateInstantiator({ template, onClose, onUseInGoal }: Templat
 
   const preview = template.parameters.reduce((text, p) => {
     const val = params[p.name] || `{{${p.name}}}`;
-    return text.replace(new RegExp(`\\{\\{${p.name}\\}\\}`, "g"), val);
+    return text.replace(new RegExp(`\\{\\{${escapeRegExp(p.name)}\\}\\}`, "g"), val);
   }, template.goal_text);
 
   const instantiate = useMutation({
@@ -57,9 +63,9 @@ export function TemplateInstantiator({ template, onClose, onUseInGoal }: Templat
   };
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: zIndex ?? 200 }}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
-      <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-lg w-full p-6 space-y-5">
+      <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-lg w-full p-6 space-y-5 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold">{template.name}</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
@@ -81,13 +87,37 @@ export function TemplateInstantiator({ template, onClose, onUseInGoal }: Templat
                 {p.required && <span className="text-red-500 ml-1">*</span>}
                 {p.description && <span className="text-muted-foreground ml-2">{p.description}</span>}
               </label>
-              <input
-                id={`param-${p.name}`}
-                value={params[p.name] ?? ""}
-                onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
-                placeholder={p.default ?? `Enter ${p.name}…`}
-                className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
-              />
+              {(p as any).type === 'number' ? (
+                <input
+                  type="number"
+                  id={`param-${p.name}`}
+                  value={params[p.name] ?? ''}
+                  onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                  placeholder={p.default ?? `Enter ${p.name}…`}
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              ) : (p as any).enum ? (
+                <select
+                  id={`param-${p.name}`}
+                  value={params[p.name] ?? ''}
+                  onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="">Select {p.name}…</option>
+                  {((p as any).enum as string[]).map((opt: string) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  id={`param-${p.name}`}
+                  value={params[p.name] ?? ''}
+                  onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                  placeholder={p.default ?? `Enter ${p.name}…`}
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              )}
             </div>
           ))}
         </div>

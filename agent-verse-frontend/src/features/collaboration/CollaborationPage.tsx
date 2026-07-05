@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, AlertCircle, ArrowRight, Bot, Brain, CheckCircle,
-  Clock, Lightbulb, MessageSquare, Send, Shield, Sparkles,
+  Clock, FileDown, Lightbulb, MessageSquare, Send, Shield, Sparkles,
   Target, ThumbsDown, ThumbsUp, Users, Wifi, WifiOff, XCircle, Zap,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { useCollabSocket } from '@/lib/ws/useCollabSocket';
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+import { apiFetch } from '@/lib/api/client';
+import { CRDTEditor } from '@/components/collab/CRDTEditor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,18 +84,6 @@ const ROUND_TYPES = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const hdrs = (apiKey: string) => ({
-  'X-API-Key': apiKey,
-  'Content-Type': 'application/json',
-});
-
-async function apiFetch<T>(apiKey: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { headers: hdrs(apiKey), ...init });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
-}
-
 function operationContent(op: CollabOperation): string {
   const p = op.operation;
   if (typeof p.content === 'string') return p.content;
@@ -155,14 +143,13 @@ function ParticipantPip({ id, live = false }: { id: string; live?: boolean }) {
 
 function LiveSessionPanel({
   session,
-  apiKey,
   onClose,
 }: {
   session: CollabSession;
-  apiKey: string;
   onClose: () => void;
 }) {
   const qc              = useQueryClient();
+  const apiKey          = useAuthStore((s) => s.apiKey);
   const messagesEndRef  = useRef<HTMLDivElement>(null);
   const [messages,       setMessages]      = useState<SessionMessage[]>([]);
   const [input,          setInput]         = useState('');
@@ -176,18 +163,38 @@ function LiveSessionPanel({
   const [delegateFrom,   setDelegateFrom]  = useState('');
   const [delegateTo,     setDelegateTo]    = useState('');
   const [delegateTask,   setDelegateTask]  = useState('');
-  const [actionsDone,    setActionsDone]   = useState<Set<number>>(new Set());
+
+  // Fix 7: persist action-item checkboxes per session across page reloads
+  const ACTIONS_KEY = `av_collab_actions_${session.session_id}`;
+  const [actionsDone, setActionsDone] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(`av_collab_actions_${session.session_id}`);
+      return new Set<string>(stored ? (JSON.parse(stored) as string[]) : []);
+    } catch { return new Set<string>(); }
+  });
+  const toggleAction = (id: string) => {
+    setActionsDone(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try { localStorage.setItem(ACTIONS_KEY, JSON.stringify([...next])); } catch { /* quota */ }
+      return next;
+    });
+  };
+
+  // Fix 10: typing presence
+  const [typingParticipants, setTypingParticipants] = useState<string[]>([]);
 
   const { data: operations = [] } = useQuery({
     queryKey: ['collab-ops', session.session_id],
-    queryFn: () => apiFetch<CollabOperation[]>(apiKey, `/collab/sessions/${session.session_id}/operations`),
-    enabled: !!apiKey && !!session.session_id,
+    queryFn: () => apiFetch<CollabOperation[]>(`/collab/sessions/${session.session_id}/operations`),
+    enabled: !!session.session_id,
   });
 
   const { data: consensus, refetch: refetchConsensus } = useQuery({
     queryKey: ['collab-consensus', session.session_id],
-    queryFn: () => apiFetch<ConsensusResult>(apiKey, `/collab/sessions/${session.session_id}/consensus`),
-    enabled: !!apiKey && !!session.session_id,
+    queryFn: () => apiFetch<ConsensusResult>(`/collab/sessions/${session.session_id}/consensus`),
+    enabled: !!session.session_id,
     refetchInterval: 5_000,
   });
 
@@ -208,6 +215,16 @@ function LiveSessionPanel({
     if (msg.type === 'presence_leave') {
       if (typeof msg.participant === 'string')
         setLivePresence((p) => p.filter((x) => x !== msg.participant));
+      return;
+    }
+    if (msg.type === 'participant_typing') {
+      if (typeof msg.participant === 'string') {
+        const participant = msg.participant as string;
+        setTypingParticipants(prev => Array.from(new Set([...prev, participant])));
+        setTimeout(() => {
+          setTypingParticipants(prev => prev.filter(p => p !== participant));
+        }, 3000);
+      }
       return;
     }
     if (msg.operation) {
@@ -240,7 +257,7 @@ function LiveSessionPanel({
 
   const contentMutation = useMutation({
     mutationFn: (content: string) =>
-      apiFetch<CollabOperation>(apiKey, `/collab/sessions/${session.session_id}/operations`, {
+      apiFetch<CollabOperation>(`/collab/sessions/${session.session_id}/operations`, {
         method: 'POST',
         body: JSON.stringify({ type: 'content_update', content, author: 'human' }),
       }),
@@ -253,7 +270,7 @@ function LiveSessionPanel({
 
   const roundMutation = useMutation({
     mutationFn: (body: { round_type: string; content: string }) =>
-      apiFetch(apiKey, `/collab/sessions/${session.session_id}/rounds`, {
+      apiFetch(`/collab/sessions/${session.session_id}/rounds`, {
         method: 'POST',
         body: JSON.stringify({ agent_id: 'human', ...body }),
       }),
@@ -266,11 +283,13 @@ function LiveSessionPanel({
 
   const insightsMutation = useMutation({
     mutationFn: () =>
-      apiFetch<SessionInsights>(apiKey, `/collab/sessions/${session.session_id}/insights`, {
+      apiFetch<SessionInsights>(`/collab/sessions/${session.session_id}/insights`, {
         method: 'POST',
+        // Fix 9: send only what the backend needs; let it derive insights from session data
         body: JSON.stringify({
-          key_decisions: [], action_items: [], open_questions: [],
-          agreement_level: 0, sentiment: 'neutral', summary: '', llm_powered: true,
+          session_id: session.session_id,
+          operation_count: operations.length,
+          llm_powered: true,
         }),
       }),
     onSuccess: (data) => setInsights(data),
@@ -278,12 +297,42 @@ function LiveSessionPanel({
 
   const delegateMutation = useMutation({
     mutationFn: () =>
-      apiFetch(apiKey, `/collab/sessions/${session.session_id}/delegate`, {
+      apiFetch(`/collab/sessions/${session.session_id}/delegate`, {
         method: 'POST',
         body: JSON.stringify({ from_agent_id: delegateFrom, to_agent_id: delegateTo, sub_task: delegateTask }),
       }),
     onSuccess: () => { setDelegateFrom(''); setDelegateTo(''); setDelegateTask(''); },
   });
+
+  // Fix 8: export session as Markdown report
+  const exportAsMarkdown = () => {
+    const lines = [
+      `# Collaboration Session Report`,
+      `**Session ID:** ${session.session_id}`,
+      `**Date:** ${new Date().toLocaleDateString()}`,
+      `**Mode:** ${session.mode}`,
+      '',
+      '## Operations Log',
+      ...[...operations].slice(0, 50).map((op) =>
+        `- [${timeAgo(op.created_at)}] ${op.author}: ${operationContent(op)}`
+      ),
+      '',
+      '## Key Decisions',
+      ...(insights?.key_decisions ?? []).map((d: string) => `- ${d}`),
+      '',
+      '## Action Items',
+      ...(insights?.action_items ?? []).map((a: string) => `- [ ] ${a}`),
+      '',
+      '## Summary',
+      insights?.summary ?? 'No summary available.',
+    ];
+    const md = lines.join('\n');
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `collab-session-${session.session_id}.md`; a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const send = () => {
     if (!input.trim()) return;
@@ -339,6 +388,14 @@ function LiveSessionPanel({
               className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40 font-medium"
             >
               <Sparkles className="h-3 w-3" /> AI Facilitate
+            </button>
+            <button
+              onClick={exportAsMarkdown}
+              title="Export session as Markdown"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-accent"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              Export
             </button>
             <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-accent">
               Close
@@ -424,7 +481,7 @@ function LiveSessionPanel({
             </section>
           )}
 
-          {/* Shared draft editor (review / suggest) */}
+          {/* Shared draft editor (review / suggest) — CRDT-backed */}
           {showDraft && (
             <section className="border-b border-border flex flex-col" data-testid="draft-editor">
               <div className="px-4 py-2 flex items-center justify-between">
@@ -436,12 +493,25 @@ function LiveSessionPanel({
                   {draftStatus === 'synced' && <span className="text-green-500 flex items-center gap-1"><Wifi className="h-3 w-3" /> WS synced</span>}
                 </div>
               </div>
-              <textarea
-                value={draft}
-                onChange={(e) => { setDraft(e.target.value); setDraftStatus('saving'); }}
-                className="flex-1 min-h-[9rem] max-h-52 p-4 text-sm bg-background outline-none resize-none font-mono leading-relaxed"
-                placeholder="Draft a code review note, incident update, or spec — changes sync in real time…"
-              />
+              <div className="px-4 pb-2">
+                <CRDTEditor
+                  roomId={`${session.session_id}-draft`}
+                  userName="You"
+                  userColor="#6366f1"
+                  initialContent={session.content ?? draft}
+                  onChange={(newText) => {
+                    setDraft(newText);
+                    setDraftStatus('saving');
+                  }}
+                  placeholder="Draft a code review note, incident update, or spec — changes sync in real time…"
+                  minHeight="9rem"
+                />
+              </div>
+              {typingParticipants.length > 0 && (
+                <p className="text-xs text-muted-foreground px-4 pb-1">
+                  {typingParticipants.join(', ')} {typingParticipants.length === 1 ? 'is' : 'are'} typing…
+                </p>
+              )}
               <div className="border-t border-border p-2 flex justify-end">
                 <button
                   onClick={saveDraft}
@@ -604,11 +674,11 @@ function LiveSessionPanel({
                       <li key={i} className="flex items-start gap-2">
                         <input
                           type="checkbox"
-                          checked={actionsDone.has(i)}
-                          onChange={() => setActionsDone((prev) => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; })}
+                          checked={actionsDone.has(item)}
+                          onChange={() => toggleAction(item)}
                           className="h-3 w-3 mt-0.5 accent-primary"
                         />
-                        <span className={`text-xs leading-tight ${actionsDone.has(i) ? 'line-through text-muted-foreground' : ''}`}>{item}</span>
+                        <span className={`text-xs leading-tight ${actionsDone.has(item) ? 'line-through text-muted-foreground' : ''}`}>{item}</span>
                       </li>
                     ))}
                   </ul>
@@ -713,13 +783,13 @@ export function CollaborationPage() {
 
   const { data: sessions = [], isLoading, error } = useQuery({
     queryKey: ['collab-sessions'],
-    queryFn: () => apiFetch<CollabSession[]>(apiKey, '/collab/sessions'),
+    queryFn: () => apiFetch<CollabSession[]>('/collab/sessions'),
     enabled: !!apiKey,
   });
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiFetch<CollabSession>(apiKey, '/collab/sessions', {
+      apiFetch<CollabSession>('/collab/sessions', {
         method: 'POST',
         body: JSON.stringify({
           name: form.name.trim() || 'Collaboration Session',
@@ -853,7 +923,7 @@ export function CollaborationPage() {
 
       {/* Active live session */}
       {activeSession && (
-        <LiveSessionPanel session={activeSession} apiKey={apiKey} onClose={() => setActiveSession(null)} />
+        <LiveSessionPanel session={activeSession} onClose={() => setActiveSession(null)} />
       )}
 
       {/* Status filter bar + sessions grid */}

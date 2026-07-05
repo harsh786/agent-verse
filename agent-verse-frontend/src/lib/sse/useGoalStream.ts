@@ -69,7 +69,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
     setStreamingToken(null);
 
     const API_BASE_URL =
-      (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
+      (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
     const url = `${API_BASE_URL}/goals/${goalId}/stream`;
 
     // scheduleReconnect and startConnection are mutually recursive; both are

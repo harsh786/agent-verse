@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Loader2 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
+import {
+  ArrowLeft, Loader2,
+  CheckCircle, XCircle, Zap,
+  Activity, Pencil,
+} from 'lucide-react';
 import { connectorsApi } from '@/lib/api/client';
 import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -17,37 +18,167 @@ const TABS = [
   { key: 'usage', label: 'Usage' },
 ];
 
+// ── HealthTab ─────────────────────────────────────────────────────────────────
+
+function HealthTab({ connectorId, connector }: { connectorId: string; connector: any }) {
+  const qc = useQueryClient();
+  const testMutation = useMutation({
+    mutationFn: () => connectorsApi.test(connectorId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connector', connectorId] });
+      toast({ kind: 'success', message: 'Connection test passed!' });
+    },
+    onError: (e) => toast({ kind: 'error', message: `Test failed: ${String(e)}` }),
+  });
+
+  const lastTested = connector?.last_tested;
+  const testResult = connector?.test_result;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium">Connection Status</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {lastTested ? `Last tested ${new Date(lastTested).toLocaleString()}` : 'Never tested'}
+          </p>
+        </div>
+        <button
+          onClick={() => testMutation.mutate()}
+          disabled={testMutation.isPending}
+          className="flex items-center gap-2 px-3 py-1.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
+        >
+          {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+          Test Connection
+        </button>
+      </div>
+
+      {testResult && (
+        <div className={`p-4 rounded-lg border ${
+          testResult.success
+            ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800'
+            : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800'
+        }`}>
+          <div className="flex items-center gap-2 mb-2">
+            {testResult.success
+              ? <CheckCircle className="h-4 w-4 text-green-600" />
+              : <XCircle className="h-4 w-4 text-red-600" />}
+            <span className="text-sm font-medium">
+              {testResult.success ? 'Connection successful' : 'Connection failed'}
+            </span>
+          </div>
+          {testResult.latency_ms && (
+            <p className="text-xs text-muted-foreground">Latency: {testResult.latency_ms}ms</p>
+          )}
+          {testResult.error && (
+            <p className="text-xs text-red-600 mt-1">{testResult.error}</p>
+          )}
+        </div>
+      )}
+
+      <div className="bg-muted/30 rounded-lg p-4">
+        <p className="text-xs text-muted-foreground">
+          Run a connection test to verify your credentials and endpoint are valid.
+          Tests are non-destructive and do not modify any data.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── UsageTab ──────────────────────────────────────────────────────────────────
+
+function UsageTab({ connectorId }: { connectorId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['connector-usage', connectorId],
+    queryFn: () => connectorsApi.getUsage(connectorId),
+    staleTime: 60_000,
+  });
+
+  const goals = data?.goals ?? [];
+  const total = data?.total ?? 0;
+  const successRate = data?.success_rate;
+  const isFiltered = data?.filtered ?? false;
+
+  return (
+    <div className="space-y-4">
+      {/* Header note */}
+      <p className="text-xs text-muted-foreground">
+        {isFiltered
+          ? `Goals that referenced this connector`
+          : 'Recent goals (connector filtering coming soon)'}
+      </p>
+
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-card border border-border rounded-lg p-4">
+          <p className="text-xs text-muted-foreground">Total Goals</p>
+          <p className="text-2xl font-bold mt-1">{total.toLocaleString()}</p>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-4">
+          <p className="text-xs text-muted-foreground">Success Rate</p>
+          <p className={`text-2xl font-bold mt-1 ${
+            successRate != null ? (successRate >= 80 ? 'text-green-600' : successRate >= 60 ? 'text-amber-600' : 'text-red-600') : 'text-muted-foreground'
+          }`}>
+            {successRate != null ? `${successRate}%` : '—'}
+          </p>
+        </div>
+      </div>
+
+      {/* Goals list */}
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-14 rounded-lg bg-muted animate-pulse" />
+          ))}
+        </div>
+      ) : goals.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-28 text-muted-foreground">
+          <Activity className="h-7 w-7 opacity-20 mb-2" />
+          <p className="text-sm">No goals found for this connector</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {goals.map((g: any) => (
+            <Link
+              key={g.id}
+              to={`/goals/${g.id}`}
+              className="flex items-center justify-between p-3 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors"
+            >
+              <p className="text-sm truncate max-w-xs">{g.goal}</p>
+              <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ml-2 ${
+                g.status === 'complete' ? 'bg-green-100 text-green-800' :
+                g.status === 'failed' ? 'bg-red-100 text-red-800' :
+                'bg-yellow-100 text-yellow-800'
+              }`}>{g.status}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ConnectorDetailPage ───────────────────────────────────────────────────────
+
 export function ConnectorDetailPage() {
   const { connectorId } = useParams<{ connectorId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const apiKey = useAuthStore((s) => s.apiKey);
   const [activeTab, setActiveTab] = useState('overview');
   const [testResult, setTestResult] = useState<string | null>(null);
 
+  // FIX 1: Use API client instead of raw fetch
   const { data: connector, isLoading } = useQuery({
     queryKey: ['connector', connectorId],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/connectors/${connectorId}`, {
-        headers: { 'X-API-Key': apiKey },
-      });
-      if (!res.ok) throw new Error(res.statusText);
-      return res.json();
-    },
-    enabled: !!connectorId && !!apiKey,
+    queryFn: () => connectorsApi.get(connectorId!),
+    enabled: !!connectorId,
   });
 
-  // Discover tools
   const { data: tools = [], isLoading: toolsLoading } = useQuery({
     queryKey: ['connector-tools', connectorId],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/connectors/${connectorId}/tools`, {
-        headers: { 'X-API-Key': apiKey },
-      });
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: !!connectorId && !!apiKey && activeTab === 'overview',
+    queryFn: () => connectorsApi.tools(connectorId!),
+    enabled: !!connectorId,
   });
 
   const testMutation = useMutation({
@@ -111,6 +242,16 @@ export function ConnectorDetailPage() {
         ]}
         actions={
           <>
+            {/* FIX 4: Edit Credentials button */}
+            <button
+              onClick={() =>
+                navigate('/connectors', { state: { editConnectorId: connectorId } })
+              }
+              className="flex items-center gap-2 px-3 py-1.5 border border-input text-sm rounded-lg hover:bg-muted/50"
+            >
+              <Pencil className="h-4 w-4" />
+              Edit Credentials
+            </button>
             <button
               onClick={() => testMutation.mutate()}
               disabled={testMutation.isPending}
@@ -137,7 +278,13 @@ export function ConnectorDetailPage() {
         {activeTab === 'overview' && (
           <div className="space-y-4">
             {testResult && (
-              <div className={`p-3 rounded-lg text-sm ${testResult.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+              <div
+                className={`p-3 rounded-lg text-sm ${
+                  testResult.startsWith('✓')
+                    ? 'bg-green-50 text-green-800'
+                    : 'bg-red-50 text-red-800'
+                }`}
+              >
                 {testResult}
               </div>
             )}
@@ -162,12 +309,20 @@ export function ConnectorDetailPage() {
               {toolsLoading ? (
                 <Skeleton className="h-16 w-full" />
               ) : tools.length === 0 ? (
-                <EmptyState title="No tools discovered" description="Run discovery to see available tools." />
+                <EmptyState
+                  title="No tools discovered"
+                  description="Run discovery to see available tools."
+                />
               ) : (
                 <ul className="space-y-1">
-                  {tools.map((t: { name?: string; description?: string }, i: number) => (
-                    <li key={i} className="flex items-start gap-2 text-sm py-1 border-b last:border-0">
-                      <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">{t.name ?? `tool_${i}`}</span>
+                  {tools.map((t, i) => (
+                    <li
+                      key={i}
+                      className="flex items-start gap-2 text-sm py-1 border-b last:border-0"
+                    >
+                      <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
+                        {t.name ?? `tool_${i}`}
+                      </span>
                       <span className="text-muted-foreground text-xs">{t.description ?? ''}</span>
                     </li>
                   ))}
@@ -177,19 +332,13 @@ export function ConnectorDetailPage() {
           </div>
         )}
 
+        {/* FIX 2: Health tab — real implementation */}
         {activeTab === 'health' && (
-          <EmptyState
-            title="Health history"
-            description="Connection health checks will appear here once the connector is polled."
-          />
+          <HealthTab connectorId={connectorId!} connector={connector} />
         )}
 
-        {activeTab === 'usage' && (
-          <EmptyState
-            title="Usage"
-            description="Goals and agents using this connector will appear here."
-          />
-        )}
+        {/* FIX 3: Usage tab — real implementation */}
+        {activeTab === 'usage' && <UsageTab connectorId={connectorId!} />}
       </DetailLayout>
     </div>
   );

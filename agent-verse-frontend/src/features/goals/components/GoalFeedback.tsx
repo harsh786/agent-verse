@@ -14,7 +14,7 @@ interface Props {
 
 async function submitFeedback(goalId: string, rating: 1 | -1, correction?: string) {
   const apiKey = (await import('@/stores/auth')).useAuthStore.getState().apiKey;
-  const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
   const resp = await fetch(`${apiBase}/goals/${goalId}/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },

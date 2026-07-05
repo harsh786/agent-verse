@@ -16,6 +16,15 @@ from typing import Any
 
 from app.tenancy.context import TenantContext
 
+import warnings
+
+warnings.warn(
+    "app.enterprise.marketplace is deprecated. Use app.enterprise.marketplace_v2 instead. "
+    "This module will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 # Built-in template gallery (pre-built templates matching the 6 reference domains)
 _BUILTIN_TEMPLATES = [
     {

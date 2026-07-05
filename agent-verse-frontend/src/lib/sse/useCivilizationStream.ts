@@ -9,7 +9,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import type { CivilizationEvent } from '../api/civilizationApi';
 import { useAuthStore } from '@/stores/auth';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 interface UseCivilizationStreamOptions {
   onEvent?: (event: CivilizationEvent) => void;

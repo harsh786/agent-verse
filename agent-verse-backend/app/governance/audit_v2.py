@@ -23,6 +23,15 @@ from uuid import uuid4
 
 from app.observability.logging import get_logger
 
+import warnings
+
+warnings.warn(
+    "app.governance.audit_v2 is deprecated. Use app.governance.audit_v3 instead. "
+    "This module will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------

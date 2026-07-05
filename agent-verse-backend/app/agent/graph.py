@@ -64,6 +64,7 @@ from app.observability.metrics import (
 )
 from app.pipeline.steps import smart_context_fetch
 from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
+from app.providers.circuit_breaker import call_with_circuit_breaker
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
@@ -117,7 +118,9 @@ def _build_verifier_summary(steps: list) -> str:
         if getattr(s, "status", None) is not None:
             from app.agent.state import StepStatus as _SS
             if s.status == _SS.UNGROUNDED:
-                parts.append("  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs")
+                parts.append(
+                    "  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs"
+                )
         for tc in getattr(s, "tool_calls", []) or []:
             if not (tc.get("success", True)):
                 parts.append(
@@ -608,7 +611,13 @@ class AgentGraph:
                 else ""
             ),
         )
-        resp = await self._planner.complete(req)
+        try:
+            resp = await call_with_circuit_breaker(
+                self._planner, "complete", req,
+                provider_name=type(self._planner).__name__,
+            )
+        except RuntimeError as cb_exc:
+            raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
         return {"cot_reasoning": resp.content}
 
     async def _node_reflect(self, state: GraphState) -> dict[str, Any]:
@@ -636,7 +645,13 @@ class AgentGraph:
             ],
             model=_reflect_model,
         )
-        resp = await self._planner.complete(req)
+        try:
+            resp = await call_with_circuit_breaker(
+                self._planner, "complete", req,
+                provider_name=type(self._planner).__name__,
+            )
+        except RuntimeError as cb_exc:
+            raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
         agent_state.verification_feedback = resp.content
         return {"agent_state": agent_state}
 
@@ -853,7 +868,13 @@ class AgentGraph:
                 span.set_attribute("plan.iteration", agent_state.iterations)
                 span.set_attribute("tenant.id", tenant_ctx.tenant_id)
                 _plan_start = time.monotonic()
-                resp = await self._planner.complete(req)
+                try:
+                    resp = await call_with_circuit_breaker(
+                        self._planner, "complete", req,
+                        provider_name=type(self._planner).__name__,
+                    )
+                except RuntimeError as cb_exc:
+                    raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
                 record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
             # 2.3: Per-goal planner cost tracking
             try:
@@ -2449,7 +2470,13 @@ class AgentGraph:
             with self._tracer.start_as_current_span("agentverse.verify") as span:
                 span.set_attribute("verify.iteration", agent_state.iterations)
                 _verify_start = time.monotonic()
-                resp = await self._verifier.complete(req)
+                try:
+                    resp = await call_with_circuit_breaker(
+                        self._verifier, "complete", req,
+                        provider_name=type(self._verifier).__name__,
+                    )
+                except RuntimeError as cb_exc:
+                    raise PermissionError(f"Verification unavailable: {cb_exc}") from cb_exc
                 record_verify_duration(time.monotonic() - _verify_start)
             # 2.3: Per-goal verifier cost tracking
             try:

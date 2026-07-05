@@ -13,9 +13,10 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Download } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
-import { workflowsApi } from '../../lib/api/client';
+import { workflowsApi, apiFetch } from '../../lib/api/client';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
@@ -74,6 +75,8 @@ interface WorkflowNodeData {
   duration_unit?: string;
   // end
   output_mapping?: string;
+  // run status from last execution
+  runStatus?: 'success' | 'error' | 'skipped';
   [key: string]: unknown;
 }
 
@@ -82,7 +85,7 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
   const hasValidationError = data.type === 'tool_call' && !data.tool;
   return (
     <div
-      className={`rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${
+      className={`relative rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${
         selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''
       } ${
         data.status === 'running' ? 'animate-pulse ring-2 ring-blue-400' :
@@ -90,6 +93,12 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
         data.status === 'failed' ? '!bg-red-100 !border-red-500' : ''
       }`}
     >
+      {/* Run-status indicator dot */}
+      {data.runStatus && (
+        <div className={`absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full border-2 border-background ${
+          data.runStatus === 'success' ? 'bg-green-500' : 'bg-red-500'
+        }`} />
+      )}
       <Handle
         type="target"
         position={Position.Top}
@@ -116,11 +125,43 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
           ● {data.status}
         </div>
       )}
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
-      />
+      {/* Fix 8: Multi-handle source handles for decision and parallel nodes */}
+      {data.type === 'decision' ? (
+        <>
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="true"
+            style={{ left: '30%', background: '#22c55e' }}
+            className="!border-slate-600 !w-3 !h-3"
+          />
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="false"
+            style={{ left: '70%', background: '#ef4444' }}
+            className="!border-slate-600 !w-3 !h-3"
+          />
+          <div style={{ position: 'absolute', bottom: -18, left: '18%', fontSize: '10px', color: '#22c55e', pointerEvents: 'none' }}>
+            True
+          </div>
+          <div style={{ position: 'absolute', bottom: -18, left: '62%', fontSize: '10px', color: '#ef4444', pointerEvents: 'none' }}>
+            False
+          </div>
+        </>
+      ) : data.type === 'parallel' ? (
+        <>
+          <Handle type="source" position={Position.Bottom} id="branch-1" style={{ left: '20%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
+          <Handle type="source" position={Position.Bottom} id="branch-2" style={{ left: '50%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
+          <Handle type="source" position={Position.Bottom} id="branch-3" style={{ left: '80%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
+        </>
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
+        />
+      )}
     </div>
   );
 }
@@ -266,6 +307,36 @@ const WORKFLOW_TEMPLATES = [
   },
 ];
 
+// ─── Tool Selector ────────────────────────────────────────────────────────────
+
+function ToolSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data: tools = [] } = useQuery<Record<string, unknown>[]>({
+    queryKey: ['rpa-tools'],
+    queryFn: () => apiFetch<Record<string, unknown>[]>('/rpa/tools').catch(() => []),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  return (
+    <div className="relative">
+      <input
+        list="wf-tool-options"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search tools… (e.g. jira_create_issue)"
+        className="w-full border rounded px-2 py-1 bg-background text-xs font-mono"
+        aria-label="Tool selector"
+      />
+      <datalist id="wf-tool-options">
+        {tools.map((t) => (
+          <option key={t.name as string} value={t.name as string}>
+            {t.description as string | undefined}
+          </option>
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
 // ─── Type-Specific Inspector ──────────────────────────────────────────────────
 
 function TypeSpecificConfig({
@@ -334,13 +405,9 @@ function TypeSpecificConfig({
     <div className="space-y-2">
       <div>
         <label htmlFor="tool-selector" className="text-muted-foreground block mb-1">Tool</label>
-        <input
-          id="tool-selector"
-          aria-label="Tool selector"
+        <ToolSelector
           value={nodeData.tool ?? ''}
-          onChange={(e) => onChange({ tool: e.target.value })}
-          placeholder="tool_name (e.g. jira_create_issue)"
-          className="w-full border rounded px-2 py-1 bg-background text-xs font-mono"
+          onChange={(v) => onChange({ tool: v })}
         />
       </div>
       {field('output-var', 'Output Variable', nodeData.output_variable, (v) => onChange({ output_variable: v }), 'result')}
@@ -509,18 +576,25 @@ function WorkflowBuilderInner() {
   const [generating, setGenerating] = useState(false);
   const [running, setRunning] = useState(false);
   const [runOutput, setRunOutput] = useState<string>('');
+  const [nodeRunData, setNodeRunData] = useState<Record<string, {
+    status: 'success' | 'error' | 'skipped';
+    input?: unknown;
+    output?: unknown;
+    duration_ms?: number;
+    error?: string;
+  }>>({});
   const [showTemplates, setShowTemplates] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [showValidation, setShowValidation] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'unsaved' | 'saved' | 'error'>('idle');
   const nodeCounter = useRef(1);
   // Clipboard: stores a shallow copy of the last-copied node for Ctrl+C / Ctrl+V
   const clipboardNode = useRef<Node | null>(null);
   // Undo/redo history stack
   const historyStack = useRef<{ nodes: Node[]; edges: Edge[] }[]>([{ nodes: [], edges: [] }]);
   const historyIdx = useRef(0);
-
-  const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
-  void API_BASE; // referenced below in save function headers
+  // Fix 10: Debounce timer for auto-save
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: savedWorkflows } = useQuery({
     queryKey: ['workflows'],
@@ -687,6 +761,29 @@ function WorkflowBuilderInner() {
 
   // ── Drag-and-drop handlers ───────────────────────────────────────────────
 
+  // Fix 10: Auto-save existing workflows after nodes/edges settle (2 s debounce)
+  useEffect(() => {
+    if (!currentWfId) return;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    setSaveStatus('unsaved');
+    autoSaveTimer.current = setTimeout(async () => {
+      try {
+        const definition = {
+          steps: nodes.map((n) => {
+            const nodeData = n.data as WorkflowNodeData;
+            return { id: n.id, position: n.position, ...nodeData };
+          }),
+          edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target, label: e.label != null ? String(e.label) : undefined })),
+        };
+        await workflowsApi.update(currentWfId, { name: workflowName, definition });
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
+    }, 2000);
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
+  }, [nodes, edges, currentWfId, workflowName]);
+
   const onDragStart = useCallback((event: DragEvent<HTMLButtonElement>, nodeType: string, label: string) => {
     event.dataTransfer.setData('application/workflow-node-type', nodeType);
     event.dataTransfer.setData('application/workflow-node-label', label);
@@ -793,17 +890,51 @@ function WorkflowBuilderInner() {
     }
     setRunning(true);
     setRunOutput('');
+    setNodeRunData({});
     // Animate: set all nodes to running
     if (!dryRun) {
-      setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: 'running' } })));
+      setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: 'running', runStatus: undefined } })));
     }
     try {
       const data = await workflowsApi.run(currentWfId!, dryRun);
       setRunOutput(JSON.stringify(data, null, 2));
-      // Animate: set all nodes to complete/dry_run status
+
+      // Populate per-node run data from response
+      const nodeMap: Record<string, {
+        status: 'success' | 'error' | 'skipped';
+        input?: unknown;
+        output?: unknown;
+        duration_ms?: number;
+        error?: string;
+      }> = {};
+      const stepResults = (
+        (data as Record<string, unknown>).node_results ??
+        (data as Record<string, unknown>).steps ??
+        []
+      ) as Record<string, unknown>[];
+
+      stepResults.forEach((step) => {
+        const nid = (step.node_id ?? step.id) as string | undefined;
+        if (nid) {
+          nodeMap[nid] = {
+            status: step.status === 'failed' ? 'error' : 'success',
+            input: step.input,
+            output: step.output,
+            duration_ms: step.duration_ms as number | undefined,
+            error: step.error as string | undefined,
+          };
+        }
+      });
+      setNodeRunData(nodeMap);
+
+      // Animate: set all nodes to complete/dry_run status with runStatus dot
       setNodes((nds) => nds.map((n) => ({
         ...n,
-        data: { ...n.data, status: data.status === 'complete' ? 'complete' : dryRun ? 'complete' : n.data.status },
+        data: {
+          ...n.data,
+          status: data.status === 'complete' ? 'complete' : dryRun ? 'complete' : n.data.status,
+          runStatus: nodeMap[n.id]?.status,
+        },
       })));
       toast({ kind: 'success', message: dryRun ? 'Dry run complete' : `Workflow ${data.status ?? 'started'}` });
     } catch {
@@ -923,6 +1054,12 @@ function WorkflowBuilderInner() {
           className="text-xs px-2 py-1 border rounded hover:bg-muted"
         >New</button>
         <button onClick={save} aria-label="Save workflow" className="text-xs px-3 py-1 bg-primary text-primary-foreground rounded hover:opacity-90">Save</button>
+        {/* Fix 10: Auto-save status indicator */}
+        {currentWfId && saveStatus !== 'idle' && (
+          <span className={`text-xs ${saveStatus === 'saved' ? 'text-green-600' : saveStatus === 'error' ? 'text-red-500' : 'text-amber-500'}`}>
+            {saveStatus === 'saved' ? '• Saved' : saveStatus === 'error' ? '• Save failed' : '• Unsaved'}
+          </span>
+        )}
         <button onClick={() => run(true)} disabled={running} aria-label="Dry Run" className="text-xs px-3 py-1 bg-yellow-500 text-foreground rounded hover:bg-yellow-600 disabled:opacity-50">Dry Run</button>
         <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-green-600 text-foreground rounded hover:bg-green-700 disabled:opacity-50">{running ? 'Running…' : '▶ Run'}</button>
       </div>
@@ -1062,6 +1199,71 @@ function WorkflowBuilderInner() {
                 aria-label="Delete selected node"
                 className="w-full text-xs bg-red-50 text-red-600 border border-red-200 rounded py-1 hover:bg-red-100"
               >Delete Node</button>
+
+              {/* Per-node run output — shown after a run */}
+              {nodeRunData[selectedNode.id] && (
+                <div className="border-t border-border pt-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      Last Run Output
+                    </p>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      nodeRunData[selectedNode.id].status === 'success'
+                        ? 'bg-green-100 text-green-800'
+                        : 'bg-red-100 text-red-800'
+                    }`}>
+                      {nodeRunData[selectedNode.id].status}
+                      {nodeRunData[selectedNode.id].duration_ms != null &&
+                        ` · ${nodeRunData[selectedNode.id].duration_ms}ms`}
+                    </span>
+                  </div>
+
+                  {nodeRunData[selectedNode.id].input != null && (
+                    <div>
+                      <p className="text-[10px] font-medium text-muted-foreground mb-1">INPUT</p>
+                      <pre className="text-[10px] bg-muted/50 rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap">
+                        {JSON.stringify(nodeRunData[selectedNode.id].input, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {nodeRunData[selectedNode.id].output != null && (
+                    <div>
+                      <p className="text-[10px] font-medium text-muted-foreground mb-1">OUTPUT</p>
+                      <pre className="text-[10px] bg-muted/50 rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap">
+                        {typeof nodeRunData[selectedNode.id].output === 'string'
+                          ? nodeRunData[selectedNode.id].output as string
+                          : JSON.stringify(nodeRunData[selectedNode.id].output, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {nodeRunData[selectedNode.id].error && (
+                    <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded">
+                      <p className="text-[10px] text-red-700 dark:text-red-400 font-mono">
+                        {nodeRunData[selectedNode.id].error}
+                      </p>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      const runEntry = nodeRunData[selectedNode.id];
+                      const blob = new Blob([JSON.stringify(runEntry, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `node-${selectedNode.id}-output.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+                  >
+                    <Download className="h-3 w-3" />
+                    Export node data
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="p-3 text-xs text-muted-foreground">Click a node to inspect and configure it</div>

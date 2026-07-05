@@ -69,6 +69,7 @@ from app.api.goals import router as goals_router
 from app.api.governance import router as governance_router
 from app.api.guardrails import router as guardrails_router
 from app.api.insights import router as insights_router
+from app.api.observability import router as observability_router
 from app.api.integrations import router as integrations_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
@@ -145,6 +146,7 @@ from app.services.tenant_service import TenantService
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
+from app.main_services import get_service_health  # noqa: F401
 
 logger = get_logger(__name__)
 
@@ -869,6 +871,14 @@ def create_app(
                 await _notif_svc.sync_from_db()
                 logger.info("notification_service_db_wired")
 
+             # Wire DB into MFAStore for persistent TOTP secret + recovery-code storage
+            try:
+                from app.api.mfa import _mfa_db_store as _mfa_store_ref  # noqa: PLC0415
+                _mfa_store_ref.set_db(db_factory)
+                logger.info("mfa_db_store_wired")
+            except Exception as _mfa_exc:
+                logger.warning("mfa_db_store_wire_failed", error=str(_mfa_exc))
+
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
                 from sqlalchemy import text as _sql_text
@@ -1059,6 +1069,23 @@ def create_app(
                 # ── GuardrailEngine v2: wire Redis for tenant config cache ────────────
                 _guardrail_engine_v2._redis = redis_for_runtime
                 logger.info("guardrail_engine_v2_redis_wired")
+
+                # ── CRDT manager: wire Redis for multi-process Yjs sync ───────────────
+                try:
+                    from app.api.collab import _crdt_manager
+                    _crdt_manager.set_redis(redis_for_runtime)
+                    app.state._redis = redis_for_runtime
+                    logger.info("crdt_manager_redis_wired")
+                except Exception as _crdt_exc:
+                    logger.warning("crdt_manager_redis_wire_failed", error=str(_crdt_exc))
+
+                # ── Observability log store: wire Redis Streams backend ───────────────
+                try:
+                    from app.api.observability import log_store as _obs_log_store
+                    _obs_log_store.set_redis(redis_for_runtime)
+                    logger.info("observability_log_store_wired_to_redis")
+                except Exception as _obs_exc:
+                    logger.warning("observability_log_store_wire_failed", error=str(_obs_exc))
 
             # ── PromptOptimizer: load variants from DB (all replicas on startup) ──
             try:
@@ -1377,6 +1404,9 @@ def create_app(
     # Insights & Intelligence
     app.include_router(insights_router)
     logger.info("insights_router_registered")
+    # Observability (real-time logs, SSE stream, structured metrics)
+    app.include_router(observability_router)
+    logger.info("observability_router_registered")
     # Goal Templates
     app.include_router(templates_router)
     logger.info("templates_router_registered")
@@ -1404,6 +1434,11 @@ def create_app(
     # Golden Datasets (eval promotion — Phase M11)
     app.include_router(golden_datasets_router)
     logger.info("golden_datasets_router_registered")
+
+    # MFA (TOTP-based 2FA)
+    from app.api.mfa import router as mfa_router
+    app.include_router(mfa_router)
+    logger.info("mfa_router_registered")
 
     # Phase 13/14 — new capability routers
     try:

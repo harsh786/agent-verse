@@ -60,18 +60,36 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
             # Embed the goal text
             embedding = await embedder.embed(body.goal)
             if embedding:
-                from sqlalchemy import text as _t
+                from sqlalchemy import text as _t  # noqa: PLC0415
                 async with db_factory() as session:
                     await session.execute(
                         _t("SET LOCAL app.tenant_id = :tid"),
                         {"tid": tenant.tenant_id},
                     )
-                    # Find similar completed goals using pgvector cosine similarity
-                    # Fall back to text similarity if no vector index
+                    # Use pgvector cosine similarity (<=> operator) when available;
+                    # fall back to recency-ordered query if pgvector is absent.
+                    vector_str = "[" + ",".join(str(x) for x in embedding) + "]"
                     try:
                         rows = (await session.execute(
                             _t("""
-                                SELECT cost_usd, duration_s, iterations, status
+                                SELECT cost_usd, duration_s, iterations, status,
+                                       1 - (embedding <=> :vec::vector) AS similarity
+                                FROM goals
+                                WHERE tenant_id = :tid
+                                  AND status IN ('complete', 'failed')
+                                  AND cost_usd IS NOT NULL
+                                  AND embedding IS NOT NULL
+                                ORDER BY embedding <=> :vec::vector
+                                LIMIT 20
+                            """),
+                            {"tid": tenant.tenant_id, "vec": vector_str},
+                        )).fetchall()
+                    except Exception:
+                        # pgvector extension unavailable or no embedding column
+                        rows = (await session.execute(
+                            _t("""
+                                SELECT cost_usd, duration_s, iterations, status,
+                                       1.0 AS similarity
                                 FROM goals
                                 WHERE tenant_id = :tid
                                   AND status IN ('complete', 'failed')
@@ -81,8 +99,6 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                             """),
                             {"tid": tenant.tenant_id},
                         )).fetchall()
-                    except Exception:
-                        rows = []
 
                     if rows:
                         completed = [r for r in rows if r[3] == "complete"]
@@ -101,7 +117,10 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 },
                                 "estimated_duration_s": {
                                     "min": int(min(all_durations)) if all_durations else 15,
-                                    "mean": int(statistics.mean(all_durations)) if all_durations else 45,
+                                    "mean": (
+                                        int(statistics.mean(all_durations))
+                                        if all_durations else 45
+                                    ),
                                     "max": int(max(all_durations)) if all_durations else 120,
                                 },
                                 "estimated_iterations": {
@@ -111,7 +130,11 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 },
                                 "success_probability": round(success_rate, 3),
                                 "similar_goals_count": len(rows),
-                                "confidence": "high" if len(rows) >= 10 else "medium" if len(rows) >= 3 else "low",
+                                "confidence": (
+                                    "high" if len(rows) >= 10
+                                    else "medium" if len(rows) >= 3
+                                    else "low"
+                                ),
                                 "based_on": "historical_data",
                             }
         except Exception:
@@ -364,29 +387,66 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
     tenant = _require_tenant(request)
     query_lower = body.query.lower()
 
-    # Parse time range
+    # Defaults
     days: int = 30
-    if "today" in query_lower:
-        days = 1
-    elif "week" in query_lower or "7 day" in query_lower:
-        days = 7
-    elif "month" in query_lower or "30 day" in query_lower:
-        days = 30
-    elif "year" in query_lower:
-        days = 365
-
-    # Parse status filter
     status_filter: str | None = None
-    for s in ("failed", "complete", "executing", "planning", "cancelled"):
-        if s in query_lower:
-            status_filter = s
-            break
-
-    # Parse cost filter
     cost_min: float | None = None
-    cost_match = re.search(r"cost(?:s?)?\s+(?:more|over|greater)\s+than\s+\$?([\d.]+)", query_lower)
-    if cost_match:
-        cost_min = float(cost_match.group(1))
+    llm_parsed = False
+
+    # ── Try LLM-powered parsing first ────────────────────────────────────────
+    provider = getattr(request.app.state, "_app_provider", None)
+    if provider is not None:
+        try:
+            from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+            parse_prompt = (
+                "Parse this natural language query about AI agent goals "
+                "into structured filters.\n\n"
+                f'Query: "{body.query}"\n\n'
+                "Return ONLY valid JSON (no markdown) with these optional fields:\n"
+                '{"days": 30, '
+                '"status": "complete|failed|executing|planning|cancelled|null", '
+                '"cost_min": null, "cost_max": null, "search": null}\n\n'
+                "Examples:\n"
+                '- "failed goals today" \u2192 {"days": 1, "status": "failed"}\n'
+                '- "expensive goals over $1" \u2192 {"cost_min": 1.0}\n'
+                '- "goals about deployment this week"'
+                ' \u2192 {"days": 7, "search": "deploy"}\n'
+            )
+            resp = await provider.complete(CompletionRequest(
+                messages=[Message(role="user", content=parse_prompt)],
+                model="",
+                max_tokens=150,
+            ))
+            import json as _json  # noqa: PLC0415
+            parsed = _json.loads(resp.content.strip())
+            days = int(parsed.get("days", 30))
+            status_filter = parsed.get("status") or None
+            cost_min = float(parsed["cost_min"]) if parsed.get("cost_min") else None
+            llm_parsed = True
+        except Exception:
+            pass  # Fall back to regex on any failure
+
+    # ── Regex/string fallback ─────────────────────────────────────────────────
+    if not llm_parsed:
+        if "today" in query_lower:
+            days = 1
+        elif "week" in query_lower or "7 day" in query_lower:
+            days = 7
+        elif "month" in query_lower or "30 day" in query_lower:
+            days = 30
+        elif "year" in query_lower:
+            days = 365
+
+        for s in ("failed", "complete", "executing", "planning", "cancelled"):
+            if s in query_lower:
+                status_filter = s
+                break
+
+        cost_match = re.search(
+            r"cost(?:s?)?\s+(?:more|over|greater)\s+than\s+\$?([\d.]+)", query_lower
+        )
+        if cost_match:
+            cost_min = float(cost_match.group(1))
 
     # Execute query
     goal_svc = getattr(request.app.state, "goal_service", None)
@@ -440,11 +500,11 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
 
 @router.get("/agent-health/{agent_id}")
 async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
-    """Return 6-axis health radar data for an agent."""
+    """Return 6-axis health radar data for a specific agent."""
     tenant = _require_tenant(request)
     goal_svc = getattr(request.app.state, "goal_service", None)
 
-    # Defaults
+    # Default health values
     health: dict[str, float] = {
         "speed": 0.7,
         "accuracy": 0.7,
@@ -453,9 +513,10 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
         "success_rate": 0.7,
         "coherence": 0.7,
     }
+    sample_size = 0
 
     if goal_svc is None:
-        return {"agent_id": agent_id, "health": health, "sample_size": 0}
+        return {"agent_id": agent_id, "health": health, "sample_size": sample_size}
 
     db_factory = getattr(goal_svc, "_db", None)
     if db_factory is not None:
@@ -463,58 +524,185 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
             from sqlalchemy import text as _t
             async with db_factory() as session:
                 await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
-                row = (await session.execute(
+
+                # Query goals for this specific agent
+                goals_row = (await session.execute(
                     _t("""
                         SELECT
-                          COUNT(*) as total,
-                          AVG(score_task_completion) as accuracy,
-                          AVG(score_efficiency) as speed,
-                          AVG(score_coherence) as coherence,
-                          AVG(score_safety) as safety,
-                          SUM(CASE WHEN passed THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) as success_rate
-                        FROM evaluations
+                            COUNT(*) as total,
+                            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
+                            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                            AVG(COALESCE(cost_usd, 0)) as avg_cost,
+                            AVG(COALESCE(duration_s, 0)) as avg_duration,
+                            AVG(COALESCE(iterations, 0)) as avg_iterations
+                        FROM goals
                         WHERE tenant_id = :tid
-                        LIMIT 1
+                          AND agent_id = :aid
                     """),
-                    {"tid": tenant.tenant_id},
+                    {"tid": tenant.tenant_id, "aid": agent_id},
                 )).fetchone()
-                if row and row[0]:
-                    total = row[0]
-                    health = {
-                        "speed": round(float(row[2] or 0.7), 3),
-                        "accuracy": round(float(row[1] or 0.7), 3),
-                        "cost_efficiency": round(float(row[2] or 0.7), 3),
-                        "tool_coverage": round(min(1.0, total / 10), 3),
-                        "success_rate": round(float(row[5] or 0.7), 3),
-                        "coherence": round(float(row[3] or 0.7), 3),
-                    }
-                    return {"agent_id": agent_id, "health": health, "sample_size": int(total)}
-        except Exception:
-            pass
 
-    return {"agent_id": agent_id, "health": health, "sample_size": 0}
+                if goals_row and goals_row[0] and int(goals_row[0]) > 0:
+                    total = int(goals_row[0])
+                    completed = int(goals_row[1] or 0)
+                    avg_cost = float(goals_row[3] or 0)
+                    avg_duration = float(goals_row[4] or 0)
+
+                    success_rate = completed / total if total > 0 else 0.0
+
+                    # Speed: inverse of avg_duration (faster = higher score)
+                    # Normalize: 0s = 1.0, 60s = 0.5, 300s = 0.1
+                    speed = max(0.0, min(1.0, 1.0 / (1.0 + avg_duration / 60.0))) if avg_duration > 0 else 0.7
+
+                    # Cost efficiency: inverse of avg_cost (cheaper = more efficient)
+                    # Normalize: $0 = 1.0, $0.10 = 0.5, $1.00 = 0.1
+                    cost_efficiency = max(0.0, min(1.0, 1.0 / (1.0 + avg_cost / 0.05))) if avg_cost > 0 else 0.7
+
+                    # Try to get eval scores for this agent
+                    eval_row = (await session.execute(
+                        _t("""
+                            SELECT
+                                COUNT(*) as total,
+                                AVG(score_task_completion) as accuracy,
+                                AVG(score_coherence) as coherence
+                            FROM evaluations e
+                            JOIN goals g ON e.goal_id = g.id
+                            WHERE e.tenant_id = :tid
+                              AND g.agent_id = :aid
+                        """),
+                        {"tid": tenant.tenant_id, "aid": agent_id},
+                    )).fetchone()
+
+                    accuracy = float(eval_row[1] or 0.7) if eval_row and eval_row[0] else 0.7
+                    coherence = float(eval_row[2] or 0.7) if eval_row and eval_row[0] else 0.7
+
+                    # Tool coverage: default until refined by distinct-tool query below
+                    tool_coverage = 0.7
+
+                    health = {
+                        "speed": round(speed, 3),
+                        "accuracy": round(accuracy, 3),
+                        "cost_efficiency": round(cost_efficiency, 3),
+                        "tool_coverage": round(tool_coverage, 3),
+                        "success_rate": round(success_rate, 3),
+                        "coherence": round(coherence, 3),
+                    }
+                    sample_size = total
+
+                    # Refine tool_coverage using actual distinct tools from execution_context
+                    try:
+                        tool_rows = (await session.execute(
+                            _t("""
+                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used')) AS unique_tools
+                                FROM goals
+                                WHERE tenant_id = :tid
+                                  AND agent_id = :aid
+                                  AND execution_context->>'last_tool_used' IS NOT NULL
+                            """),
+                            {"tid": tenant.tenant_id, "aid": agent_id},
+                        )).fetchone()
+                        if tool_rows and tool_rows[0]:
+                            unique_tools = int(tool_rows[0])
+                            # 10+ unique tools = 1.0, 0 = 0.0
+                            tool_coverage = min(1.0, unique_tools / 10.0)
+                    except Exception:
+                        pass
+                    health["tool_coverage"] = round(tool_coverage, 3)
+        except Exception as exc:
+            pass  # Return defaults on any DB error
+
+    return {"agent_id": agent_id, "health": health, "sample_size": sample_size}
 
 
 # ── Platform Benchmarks ───────────────────────────────────────────────────────
 
 @router.get("/benchmarks")
 async def get_benchmarks(request: Request) -> dict[str, Any]:
-    """Return anonymized platform-wide benchmarks for comparison."""
+    """Return platform-wide benchmarks. Uses real data when available, clearly-labeled estimates otherwise."""
     _require_tenant(request)
-    # Platform-wide aggregated benchmarks (pre-computed values; real data would
-    # come from a cross-tenant aggregation job that runs hourly)
-    return {
-        "platform_avg_success_rate": 0.74,
-        "platform_avg_cost_usd": 0.043,
-        "platform_avg_duration_s": 52,
-        "platform_avg_iterations": 3.2,
-        "top_10_pct_success_rate": 0.94,
-        "top_10_pct_cost_usd": 0.018,
-        "percentile_bands": {
-            "p25": {"success_rate": 0.58, "cost_usd": 0.021},
-            "p50": {"success_rate": 0.74, "cost_usd": 0.043},
-            "p75": {"success_rate": 0.87, "cost_usd": 0.089},
-            "p90": {"success_rate": 0.94, "cost_usd": 0.018},
-        },
-        "sample_note": "Anonymized aggregate across opt-in tenants. Updated hourly.",
-    }
+    goal_svc = getattr(request.app.state, "goal_service", None)
+
+    # Try to compute real benchmarks from the platform's goal data
+    real_data = False
+    benchmarks: dict[str, Any] = {}
+
+    if goal_svc is not None:
+        db = getattr(goal_svc, "_db", None)
+        if db is not None:
+            try:
+                from sqlalchemy import text as _t
+                async with db() as session:
+                    # Cross-tenant aggregate (anonymized)
+                    row = (await session.execute(
+                        _t("""
+                            SELECT
+                                COUNT(*) as total,
+                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as success_rate,
+                                AVG(COALESCE(cost_usd, 0)) as avg_cost,
+                                AVG(COALESCE(duration_s, 0)) as avg_duration,
+                                AVG(COALESCE(iterations, 0)) as avg_iterations,
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p25_sr,
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p50_sr,
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p75_sr,
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p90_sr
+                            FROM goals
+                            WHERE status IN ('complete', 'failed')
+                              AND cost_usd IS NOT NULL
+                        """
+                        ),
+                        {},
+                    )).fetchone()
+
+                    if row and row[0] and int(row[0]) >= 10:
+                        real_data = True
+                        benchmarks = {
+                            "platform_avg_success_rate": round(float(row[1] or 0), 3),
+                            "platform_avg_cost_usd": round(float(row[2] or 0), 4),
+                            "platform_avg_duration_s": int(float(row[3] or 0)),
+                            "platform_avg_iterations": round(float(row[4] or 0), 1),
+                            "top_10_pct_success_rate": round(float(row[12] or 0), 3),
+                            "top_10_pct_cost_usd": round(float(row[8] or 0), 4),
+                            "percentile_bands": {
+                                "p25": {
+                                    "success_rate": round(float(row[9] or 0), 3),
+                                    "cost_usd": round(float(row[5] or 0), 4),
+                                },
+                                "p50": {
+                                    "success_rate": round(float(row[10] or 0), 3),
+                                    "cost_usd": round(float(row[6] or 0), 4),
+                                },
+                                "p75": {
+                                    "success_rate": round(float(row[11] or 0), 3),
+                                    "cost_usd": round(float(row[7] or 0), 4),
+                                },
+                                "p90": {
+                                    "success_rate": round(float(row[12] or 0), 3),
+                                    "cost_usd": round(float(row[8] or 0), 4),  # p90 cost > p75 > p50 (correct order)
+                                },
+                            },
+                            "sample_count": int(row[0]),
+                            "data_source": "live_platform_data",
+                        }
+            except Exception:
+                pass
+
+    if not real_data:
+        # Return clearly-labeled placeholder values (no fabricated "real" data)
+        benchmarks = {
+            "platform_avg_success_rate": None,
+            "platform_avg_cost_usd": None,
+            "platform_avg_duration_s": None,
+            "platform_avg_iterations": None,
+            "top_10_pct_success_rate": None,
+            "top_10_pct_cost_usd": None,
+            "percentile_bands": {},
+            "sample_count": 0,
+            "data_source": "insufficient_data",
+            "message": "Benchmarks require at least 10 completed goals with cost data to compute. Run more goals to see real benchmarks.",
+        }
+
+    return benchmarks

@@ -13,10 +13,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BookOpen, Brain, BarChart2, CheckCircle, ChevronRight, ClipboardCopy,
   Database, ExternalLink, Eye, FileText, Globe, Link, Loader2, MessageSquare, Plus,
-  RefreshCw, Search, Sparkles, Trash2, Upload, Zap, XCircle,
+  RefreshCw, Search, Sparkles, Trash2, Upload, X, Zap, XCircle,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { Pagination } from '@/components/ui/Pagination';
+import { apiFetch, API_BASE } from '@/lib/api/client';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -29,20 +33,7 @@ interface CollectionStats {
 }
 interface Citation { index: number; chunk_id: string; collection_id: string; score: number; source_url: string; page_number: number | null; excerpt: string; }
 interface RagAnswer { answer: string; citations: Citation[]; collections_searched: number; chunks_retrieved: number; question: string; }
-type Tab = 'collections' | 'ask' | 'ingest' | 'search' | 'analytics';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-
-function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const apiKey = useAuthStore.getState().apiKey;
-  const headers: Record<string, string> = {};
-  if (apiKey) headers['X-API-Key'] = apiKey;
-  if (!(init?.body instanceof FormData)) headers['Content-Type'] = 'application/json';
-  return fetch(`${API_BASE}${path}`, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } })
-    .then(async (r) => { if (!r.ok) throw new Error(await r.text().catch(() => r.statusText)); return r.json() as Promise<T>; });
-}
+type Tab = 'collections' | 'ask' | 'ingest' | 'search' | 'analytics' | 'documents';
 
 function HealthGauge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
@@ -70,6 +61,7 @@ function CollectionsTab() {
   const [newName, setNewName] = useState('');
   const [newEmbedder, setNewEmbedder] = useState('voyage');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [deleteCollectionId, setDeleteCollectionId] = useState<string | null>(null);
 
   const { data: collections = [], isLoading } = useQuery<Collection[]>({
     queryKey: ['knowledge-collections'],
@@ -88,7 +80,10 @@ function CollectionsTab() {
   });
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/knowledge/collections/${id}`, { method: 'DELETE' }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['knowledge-collections'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
+      setDeleteCollectionId(null);
+    },
   });
 
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
@@ -172,7 +167,7 @@ function CollectionsTab() {
                   <ChevronRight className={`h-3.5 w-3.5 transition-transform ${expanded === c.collection_id ? 'rotate-90' : ''}`} />
                   {expanded === c.collection_id ? 'Hide stats' : 'View stats'}
                 </button>
-                <button data-testid={`delete-collection-${c.collection_id}`} onClick={() => deleteMutation.mutate(c.collection_id)}
+                <button data-testid={`delete-collection-${c.collection_id}`} onClick={() => setDeleteCollectionId(c.collection_id)}
                   className="p-1.5 text-muted-foreground hover:text-red-500 rounded">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -181,6 +176,16 @@ function CollectionsTab() {
           ))}
         </div>
       )}
+      <ConfirmModal
+        open={!!deleteCollectionId}
+        title="Delete collection?"
+        description="All documents and embeddings in this collection will be permanently deleted. This cannot be undone."
+        confirmLabel="Delete Collection"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => { if (deleteCollectionId) deleteMutation.mutate(deleteCollectionId); }}
+        onCancel={() => setDeleteCollectionId(null)}
+      />
     </div>
   );
 }
@@ -191,6 +196,8 @@ function AskAITab() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<Array<{ q: string; a: RagAnswer }>>([]);
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
+  const [streamingAnswer, setStreamingAnswer] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
   const answerRef = useRef<HTMLDivElement>(null);
 
   const { data: collections = [] } = useQuery<Collection[]>({
@@ -211,6 +218,60 @@ function AskAITab() {
     onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
+  const handleAsk = async () => {
+    if (!question.trim()) return;
+    const collectionId = selectedCollections.length === 1 ? selectedCollections[0] : undefined;
+    if (collectionId) {
+      const currentQ = question;
+      setStreamingAnswer('');
+      setIsStreaming(true);
+      try {
+        const apiKey = useAuthStore.getState().apiKey;
+        const response = await fetch(`${API_BASE}/knowledge/collections/${collectionId}/query/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+          },
+          body: JSON.stringify({ query: currentQ, top_k: 5 }),
+        });
+        if (response.ok && response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let fullText = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            chunk.split('\n').forEach((line) => {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+                  const token = ((data.token ?? data.text) as string | undefined) ?? '';
+                  if (token) { fullText += token; setStreamingAnswer(fullText); }
+                } catch { /* ignore parse errors */ }
+              }
+            });
+          }
+          setHistory((h) => [
+            { q: currentQ, a: { question: currentQ, answer: fullText, citations: [], collections_searched: 1, chunks_retrieved: 0 } },
+            ...h.slice(0, 4),
+          ]);
+          setQuestion('');
+          setTimeout(() => answerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+        } else {
+          askMutation.mutate(question);
+        }
+      } catch {
+        askMutation.mutate(question);
+      } finally {
+        setIsStreaming(false);
+      }
+    } else {
+      askMutation.mutate(question);
+    }
+  };
+
   const exampleQuestions = [
     'Summarize the main topics across all documents',
     'What are the key technical decisions made?',
@@ -228,7 +289,7 @@ function AskAITab() {
           <span className="ml-auto text-xs text-muted-foreground bg-violet-50 text-violet-600 px-2 py-0.5 rounded">RAG-powered</span>
         </div>
         <textarea data-testid="ask-input" value={question} onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey && question.trim()) askMutation.mutate(question); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey && question.trim()) void handleAsk(); }}
           rows={3} placeholder="Ask anything about your knowledge base…"
           className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background resize-none" />
         {collections.length > 0 && (
@@ -251,12 +312,19 @@ function AskAITab() {
             <button key={q} onClick={() => setQuestion(q)} className="text-xs px-2 py-1 bg-muted rounded hover:bg-muted/80 truncate max-w-[200px]">{q}</button>
           ))}
         </div>
-        <button data-testid="ask-btn" onClick={() => askMutation.mutate(question)} disabled={!question.trim() || askMutation.isPending}
+        <button data-testid="ask-btn" onClick={() => void handleAsk()} disabled={!question.trim() || askMutation.isPending || isStreaming}
           className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-md text-sm disabled:opacity-50">
-          {askMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />}
-          {askMutation.isPending ? 'Searching & synthesizing…' : 'Ask (⌘+Enter)'}
+          {askMutation.isPending || isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />}
+          {askMutation.isPending ? 'Searching & synthesizing…' : isStreaming ? 'Streaming answer…' : 'Ask (⌘+Enter)'}
         </button>
       </div>
+
+      {/* Streaming answer */}
+      {isStreaming && (
+        <div className="p-4 bg-muted/30 rounded-lg border border-border">
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">{streamingAnswer}<span className="animate-pulse">▊</span></p>
+        </div>
+      )}
 
       {/* Current answer */}
       {history.length > 0 && (
@@ -698,7 +766,22 @@ function AnalyticsTab() {
   });
   const { data: allStats, isLoading } = useQuery<CollectionStats[]>({
     queryKey: ['all-collection-stats'],
-    queryFn: async () => Promise.all(collections.map((c) => apiFetch<CollectionStats>(`/knowledge/collections/${c.collection_id}/stats`))),
+    queryFn: async () => {
+      // Try bulk analytics endpoint first
+      const bulk = await apiFetch<CollectionStats[]>('/knowledge/analytics').catch(() => null);
+      if (Array.isArray(bulk) && bulk.length > 0) return bulk;
+      // Fall back: throttled individual calls (max 3 concurrent)
+      const CONCURRENCY = 3;
+      const results: CollectionStats[] = [];
+      for (let i = 0; i < collections.length; i += CONCURRENCY) {
+        const batch = collections.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map((c) => apiFetch<CollectionStats>(`/knowledge/collections/${c.collection_id}/stats`))
+        );
+        settled.forEach((r) => { if (r.status === 'fulfilled') results.push(r.value); });
+      }
+      return results;
+    },
     enabled: collections.length > 0,
     staleTime: 60_000,
   });
@@ -750,10 +833,243 @@ function AnalyticsTab() {
   );
 }
 
+// ── Documents Tab ─────────────────────────────────────────────────────────────
+
+function DocumentsTab({ collections }: { collections: Collection[] }) {
+  const qc = useQueryClient();
+  const [selectedCollection, setSelectedCollection] = useState<string>(
+    collections[0]?.collection_id ?? ''
+  );
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const PAGE_SIZE = 20;
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['knowledge-docs', selectedCollection, page, search],
+    queryFn: () =>
+      apiFetch<{ documents: Record<string, unknown>[]; total: number }>(
+        `/knowledge/collections/${selectedCollection}/documents?limit=${PAGE_SIZE}&offset=${(page - 1) * PAGE_SIZE}${search ? `&search=${encodeURIComponent(search)}` : ''}`
+      ).catch(() => ({ documents: [], total: 0 })),
+    enabled: !!selectedCollection,
+    staleTime: 30_000,
+  });
+
+  const [previewDoc, setPreviewDoc] = useState<Record<string, unknown> | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: (docId: string) =>
+      apiFetch(`/knowledge/collections/${selectedCollection}/documents/${docId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      toast({ kind: 'success', message: 'Document deleted' });
+      void qc.invalidateQueries({ queryKey: ['knowledge-docs', selectedCollection] });
+    },
+    onError: () => toast({ kind: 'error', message: 'Delete failed' }),
+  });
+
+  const reingestMutation = useMutation({
+    mutationFn: (docId: string) =>
+      apiFetch(`/knowledge/collections/${selectedCollection}/documents/${docId}/reingest`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      toast({ kind: 'success', message: 'Document queued for re-ingestion' });
+      void qc.invalidateQueries({ queryKey: ['knowledge-docs', selectedCollection] });
+    },
+    onError: () => toast({ kind: 'error', message: 'Re-ingest failed' }),
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/knowledge/collections/${selectedCollection}/sync`, { method: 'POST' }),
+    onSuccess: () => toast({ kind: 'success', message: 'Collection sync started' }),
+    onError: () => toast({ kind: 'info', message: 'Sync not available for this collection type' }),
+  });
+
+  if (!selectedCollection) {
+    return (
+      <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+        <Database className="h-8 w-8 opacity-20 mb-2" />
+        <p className="text-sm">Create a collection first to browse documents.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Collection selector + search */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={selectedCollection}
+          onChange={(e) => { setSelectedCollection(e.target.value); setPage(1); }}
+          className="px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+        >
+          {collections.map((c) => (
+            <option key={c.collection_id} value={c.collection_id}>
+              {c.name} ({c.doc_count ?? 0} docs)
+            </option>
+          ))}
+        </select>
+
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            placeholder="Search documents…"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+        </div>
+
+        <span className="text-xs text-muted-foreground">
+          {data?.total ?? 0} documents
+        </span>
+
+        <button
+          onClick={() => syncMutation.mutate()}
+          disabled={syncMutation.isPending || !selectedCollection}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-input rounded-lg hover:bg-muted/50 disabled:opacity-50 transition-colors"
+          title="Sync all documents from their source"
+        >
+          {syncMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Sync All
+        </button>
+      </div>
+
+      {/* Document list */}
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-16 rounded-lg" />
+          ))}
+        </div>
+      ) : (data?.documents ?? []).length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+          <FileText className="h-8 w-8 opacity-20 mb-2" />
+          <p className="text-sm">
+            {search ? 'No documents match your search' : 'No documents in this collection'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {(data?.documents ?? []).map((doc) => {
+            const docId = (doc.id ?? doc.document_id) as string;
+            const docTitle = (doc.title ?? doc.source ?? (docId?.slice(0, 20))) as string | undefined;
+            const chunkCount = (doc.chunk_count ?? 0) as number;
+            const createdAt = doc.created_at as string | undefined;
+            const sourceType = doc.source_type as string | undefined;
+            const preview = doc.preview as string | undefined;
+
+            return (
+              <div
+                key={docId}
+                className="flex items-start gap-3 p-4 border border-border rounded-xl hover:border-primary/30 transition-colors group"
+              >
+                <div className="p-2 bg-primary/10 rounded-lg shrink-0">
+                  <FileText className="h-4 w-4 text-primary" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    {docTitle ?? 'Untitled'}
+                  </p>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className="text-xs text-muted-foreground">{chunkCount} chunks</span>
+                    {createdAt && (
+                      <span className="text-xs text-muted-foreground">
+                        Added {new Date(createdAt).toLocaleDateString()}
+                      </span>
+                    )}
+                    {sourceType && (
+                      <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                        {sourceType}
+                      </span>
+                    )}
+                  </div>
+                  {preview && (
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-1 font-mono">
+                      {preview}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => setPreviewDoc(doc)}
+                    className="p-1.5 text-muted-foreground hover:text-foreground rounded hover:bg-muted/70"
+                    title="Preview"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => reingestMutation.mutate(docId)}
+                    disabled={reingestMutation.isPending}
+                    className="p-1.5 text-muted-foreground hover:text-primary rounded hover:bg-primary/10 transition-colors disabled:opacity-50"
+                    title="Re-ingest document from source"
+                  >
+                    {reingestMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  </button>
+                  <button
+                    onClick={() => deleteMutation.mutate(docId)}
+                    disabled={deleteMutation.isPending}
+                    className="p-1.5 text-muted-foreground hover:text-destructive rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {(data?.total ?? 0) > PAGE_SIZE && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={data?.total ?? 0}
+          onPageChange={setPage}
+        />
+      )}
+
+      {/* Document preview modal */}
+      {previewDoc && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setPreviewDoc(null)}
+          />
+          <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="text-base font-semibold truncate">
+                {(previewDoc.title ?? previewDoc.source ?? 'Document Preview') as string}
+              </h3>
+              <button onClick={() => setPreviewDoc(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
+                {(previewDoc.content ?? previewDoc.preview) != null
+                  ? String(previewDoc.content ?? previewDoc.preview)
+                  : JSON.stringify(previewDoc, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function KnowledgePage() {
   const [activeTab, setActiveTab] = useState<Tab>('collections');
+
+  const { data: collections = [] } = useQuery<Collection[]>({
+    queryKey: ['knowledge-collections'],
+    queryFn: () => apiFetch('/knowledge/collections'),
+  });
 
   const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
     { id: 'collections', label: 'Collections', icon: <BookOpen className="h-4 w-4" /> },
@@ -761,6 +1077,7 @@ export function KnowledgePage() {
     { id: 'ingest',      label: 'Ingest',      icon: <Upload className="h-4 w-4" /> },
     { id: 'search',      label: 'Search',      icon: <Search className="h-4 w-4" /> },
     { id: 'analytics',   label: 'Analytics',   icon: <BarChart2 className="h-4 w-4" /> },
+    { id: 'documents',   label: 'Documents',   icon: <FileText className="h-4 w-4" /> },
   ];
 
   return (
@@ -791,6 +1108,7 @@ export function KnowledgePage() {
           {activeTab === 'ingest'      && <IngestTab />}
           {activeTab === 'search'      && <SearchTab />}
           {activeTab === 'analytics'   && <AnalyticsTab />}
+          {activeTab === 'documents'   && <DocumentsTab collections={collections} />}
         </div>
       </div>
     </div>

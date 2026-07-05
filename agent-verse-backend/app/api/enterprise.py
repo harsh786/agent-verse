@@ -194,7 +194,9 @@ class StreamingSimulationRequest(BaseModel):
 
 
 @router.post("/simulation/stream")
-async def stream_simulation(request: Request, body: StreamingSimulationRequest) -> StreamingResponse:
+async def stream_simulation(
+    request: Request, body: StreamingSimulationRequest
+) -> StreamingResponse:
     """Run simulation with real-time SSE event emission per step."""
     ctx = _require_tenant(request)
     runner = _simulation(request)
@@ -512,6 +514,81 @@ async def search_templates_v2(request: Request, body: SearchRequest) -> dict[str
         page_size=body.page_size,
     )
     return {"templates": templates, "query": body.query}
+
+
+@marketplace_router.get("/domains/counts")
+async def get_domain_counts(request: Request) -> dict[str, Any]:
+    """Return counts of marketplace templates and goal templates per domain."""
+    tenant = _require_tenant(request)
+
+    counts: dict[str, dict[str, int]] = {}
+
+    # Count marketplace templates by domain
+    marketplace = getattr(request.app.state, "marketplace", None)
+    if marketplace is not None:
+        try:
+            templates = await marketplace.list_templates(tenant_id=tenant.tenant_id)
+            items = templates if isinstance(templates, list) else templates.get("items", [])
+            for t in items:
+                domain = t.get("domain", "general")
+                if domain not in counts:
+                    counts[domain] = {"agents": 0, "templates": 0}
+                counts[domain]["agents"] += 1
+        except Exception:
+            pass
+
+    # Count goal templates by domain
+    template_store = getattr(request.app.state, "template_store", None)
+    if template_store is not None:
+        try:
+            goal_templates = await template_store.list(tenant.tenant_id)
+            for t in goal_templates:
+                domain = t.get("domain", "general")
+                if domain not in counts:
+                    counts[domain] = {"agents": 0, "templates": 0}
+                counts[domain]["templates"] += 1
+        except Exception:
+            pass
+
+    return {"counts": counts}
+
+
+@marketplace_router.get("/installs")
+async def list_installs(request: Request) -> dict[str, Any]:
+    """Return list of template IDs this tenant has deployed."""
+    tenant = _require_tenant(request)
+
+    marketplace = getattr(request.app.state, "marketplace", None)
+    installed_ids: list[str] = []
+
+    if marketplace is not None:
+        try:
+            if hasattr(marketplace, "list_installs"):
+                installed_ids = await marketplace.list_installs(tenant.tenant_id)
+            elif hasattr(marketplace, "list_deployments"):
+                deployments = await marketplace.list_deployments(tenant.tenant_id)
+                installed_ids = [
+                    d.get("template_id")
+                    for d in deployments
+                    if d.get("template_id")
+                ]
+        except Exception:
+            pass
+
+    # Fallback: scan agent store for marketplace_template_id attribute
+    agent_store = getattr(request.app.state, "agent_store", None)
+    if agent_store is not None and not installed_ids:
+        try:
+            agents = agent_store.list(tenant_ctx=tenant)
+            if hasattr(agents, "__await__"):
+                agents = await agents
+            for agent in agents if isinstance(agents, list) else []:
+                if agent.get("marketplace_template_id"):
+                    installed_ids.append(agent["marketplace_template_id"])
+        except Exception:
+            pass
+
+    return {"installed_ids": list(set(installed_ids))}
 
 
 @marketplace_router.get("/{template_id}/versions")
@@ -910,7 +987,11 @@ async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> d
         "name": body.name or suite_id,
         "description": body.description,
         "task_count": 0,
-        "created_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "created_at": (
+            __import__("datetime").datetime
+            .now(__import__("datetime").timezone.utc)
+            .isoformat()
+        ),
     }
 
 
@@ -1591,6 +1672,48 @@ async def saml_acs(request: Request) -> dict[str, Any]:
         raise HTTPException(401, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"SAML ACS error: {exc}")
+
+
+@router.post("/saml/test")
+async def test_saml_connection(request: Request) -> dict[str, Any]:
+    """Test SAML IdP connectivity by checking SSO URL reachability or validating metadata XML."""
+    _require_tenant(request)
+    body = await request.json()
+    sso_url = body.get("sso_url", "")
+    metadata_xml = body.get("metadata_xml", "")
+
+    import time
+
+    import httpx
+
+    start = time.monotonic()
+
+    try:
+        if sso_url:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(sso_url, follow_redirects=True)
+                latency_ms = int((time.monotonic() - start) * 1000)
+                return {
+                    "success": resp.status_code < 500,
+                    "status_code": resp.status_code,
+                    "latency_ms": latency_ms,
+                    "message": f"IdP responded with HTTP {resp.status_code}",
+                }
+        elif metadata_xml:
+            import xml.etree.ElementTree as ET
+            try:
+                ET.fromstring(metadata_xml)
+                return {"success": True, "latency_ms": 1, "message": "Metadata XML is valid"}
+            except ET.ParseError as exc:
+                return {"success": False, "message": f"Invalid XML: {exc}"}
+        else:
+            return {"success": False, "message": "No SSO URL or metadata XML provided"}
+    except Exception as exc:
+        return {
+            "success": False,
+            "message": f"Connection failed: {exc}",
+            "latency_ms": int((time.monotonic() - start) * 1000),
+        }
 
 
 # =============================================================================

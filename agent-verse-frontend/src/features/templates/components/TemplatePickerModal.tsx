@@ -13,6 +13,7 @@
  *      GoalsListPage pre-fills its textarea.
  */
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { TemplateCard } from "./TemplateCard";
@@ -159,14 +160,13 @@ export function TemplatePickerModal({ onUseInGoal, onClose }: TemplatePickerModa
           <span>
             {filtered.length} template{filtered.length !== 1 ? "s" : ""}
           </span>
-          <a
-            href="/templates"
-            className="text-primary hover:underline"
-            target="_blank"
-            rel="noreferrer"
+          <Link
+            to="/templates"
+            onClick={onClose}
+            className="text-primary hover:underline text-xs"
           >
             Manage templates →
-          </a>
+          </Link>
         </div>
       </div>
 
@@ -176,6 +176,7 @@ export function TemplatePickerModal({ onUseInGoal, onClose }: TemplatePickerModa
           template={selectedTemplate}
           onClose={() => setSelectedTemplate(null)}
           onUseInGoal={handleUseInGoal}
+          zIndex={300}
         />
       )}
     </div>

@@ -4,6 +4,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging as _logging
+import secrets
+import time
 import uuid
 from binascii import Error as BinasciiError
 from typing import Any, cast
@@ -23,6 +26,22 @@ _ws_connections: dict[str, list[WebSocket]] = {}
 # Short unique ID for this process replica — used to skip re-broadcasting own messages.
 _REPLICA_ID = uuid.uuid4().hex[:8]
 _logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Short-lived CRDT token store
+# ---------------------------------------------------------------------------
+
+_CRDT_TOKEN_TTL = 3600  # seconds (1 hour)
+# Map: token → { tenant_id, expires_at }
+_crdt_tokens: dict[str, dict[str, Any]] = {}
+
+
+def _cleanup_expired_crdt_tokens() -> None:
+    """Evict tokens past their TTL from the in-memory store."""
+    now = time.monotonic()
+    expired = [k for k, v in _crdt_tokens.items() if v["expires_at"] < now]
+    for k in expired:
+        del _crdt_tokens[k]
 
 
 class _CollabPubSub:
@@ -316,7 +335,10 @@ async def append_operation(
                 "message": str(e),
                 "current_version": e.current_version,
                 "expected_version": e.expected_version,
-                "hint": "Fetch the latest session state and retry with current_version as expected_version",
+                "hint": (
+                    "Fetch the latest session state and retry "
+                    "with current_version as expected_version"
+                ),
             },
         ) from e
 
@@ -531,7 +553,11 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
             content_pieces.append(f"[{r.get('round_type','round')}]: {str(r['content'])[:500]}")
 
     session_text = "\n".join(content_pieces[:50])  # cap at 50 entries
-    session_name = session.get("name", "Session") if isinstance(session, dict) else getattr(session, "name", "Session")
+    session_name = (
+        session.get("name", "Session")
+        if isinstance(session, dict)
+        else getattr(session, "name", "Session")
+    )
 
     provider = getattr(request.app.state, "llm_provider", None)
     if provider is None or not session_text.strip():
@@ -585,3 +611,247 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
         "llm_powered": True,
         **data,
     }
+
+
+# ---------------------------------------------------------------------------
+# Yjs CRDT WebSocket sync endpoint
+# ---------------------------------------------------------------------------
+
+_crdt_log = _logging.getLogger("collab.crdt")
+
+
+@router.post("/crdt-token", status_code=201)
+async def generate_crdt_token(request: Request) -> dict[str, Any]:
+    """Generate a short-lived token for CRDT WebSocket authentication.
+
+    Clients should use this token as the ``?token=`` query parameter when
+    connecting to the ``/collab/crdt/{room_id}`` WebSocket.  This avoids
+    sending the long-lived API key in every WebSocket URL.
+    """
+    ctx: TenantContext | None = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+    _cleanup_expired_crdt_tokens()
+
+    token = secrets.token_urlsafe(32)
+    _crdt_tokens[token] = {
+        "tenant_id": ctx.tenant_id,
+        "expires_at": time.monotonic() + _CRDT_TOKEN_TTL,
+    }
+
+    return {"token": token, "expires_in": _CRDT_TOKEN_TTL}
+
+
+class CRDTRoomManager:
+    """Manages Yjs CRDT room connections.
+
+    Uses Redis pub/sub when available for cross-process message delivery.
+    Falls back to in-process dict when Redis is unavailable.
+    """
+
+    def __init__(self) -> None:
+        from collections import defaultdict
+        self._local_rooms: dict[str, set[WebSocket]] = defaultdict(set)
+        self._lock = asyncio.Lock()
+        self._redis: Any = None
+        self._redis_available = False
+
+    def set_redis(self, redis: Any) -> None:
+        """Wire Redis client (called by app lifespan if Redis is configured)."""
+        self._redis = redis
+        self._redis_available = redis is not None
+
+    async def join(self, room_id: str, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._local_rooms[room_id].add(websocket)
+
+    async def leave(self, room_id: str, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._local_rooms[room_id].discard(websocket)
+            if not self._local_rooms[room_id]:
+                del self._local_rooms[room_id]
+
+    async def save_snapshot(self, room_id: str, data: bytes) -> None:
+        """Save full Yjs document snapshot to Redis for late-joining peers."""
+        if self._redis is None:
+            return
+        try:
+            key = f"crdt:snapshot:{room_id}"
+            await self._redis.set(key, data, ex=86400)  # 24h TTL
+        except Exception as exc:
+            _crdt_log.debug("Failed to save CRDT snapshot: %s", exc)
+
+    async def load_snapshot(self, room_id: str) -> bytes | None:
+        """Load Yjs document snapshot for a new peer."""
+        if self._redis is None:
+            return None
+        try:
+            key = f"crdt:snapshot:{room_id}"
+            data = await self._redis.get(key)
+            return data if isinstance(data, bytes) else (data.encode() if data else None)
+        except Exception:
+            return None
+
+    async def broadcast(self, room_id: str, data: bytes, sender: WebSocket) -> None:
+        """Broadcast binary Yjs update to all peers in the room."""
+        # 1. Publish to Redis (for other processes)
+        if self._redis_available and self._redis is not None:
+            try:
+                channel = f"crdt:{room_id}"
+                await self._redis.publish(channel, data)
+            except Exception as exc:
+                _crdt_log.debug("Redis publish failed: %s", exc)
+
+        # 2. Deliver locally (this process)
+        async with self._lock:
+            peers = set(self._local_rooms.get(room_id, set()))
+
+        dead: set[WebSocket] = set()
+        for peer in peers:
+            if peer is sender:
+                continue
+            try:
+                await peer.send_bytes(data)
+            except Exception:
+                dead.add(peer)
+
+        if dead:
+            async with self._lock:
+                self._local_rooms[room_id] -= dead
+
+        # 3. Periodically save a best-effort snapshot (every ~50 updates)
+        if self._redis is not None:
+            try:
+                counter_key = f"crdt:update_count:{room_id}"
+                count = await self._redis.incr(counter_key)
+                await self._redis.expire(counter_key, 3600)
+                if count % 50 == 0:
+                    await self.save_snapshot(room_id, data)
+            except Exception:
+                pass
+
+    async def subscribe_redis(self, room_id: str, websocket: WebSocket) -> None:
+        """Subscribe to Redis channel and forward messages to this WebSocket."""
+        if not self._redis_available or self._redis is None:
+            return
+        try:
+            pubsub = self._redis.pubsub()
+            await pubsub.subscribe(f"crdt:{room_id}")
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                data = message["data"]
+                if isinstance(data, str):
+                    data = data.encode()
+                try:
+                    await websocket.send_bytes(data)
+                except Exception:
+                    break
+        except Exception as exc:
+            _crdt_log.debug("Redis subscribe loop ended: %s", exc)
+        finally:
+            try:
+                await pubsub.unsubscribe(f"crdt:{room_id}")
+                await pubsub.close()
+            except Exception:
+                pass
+
+
+# Module-level singleton
+_crdt_manager = CRDTRoomManager()
+
+
+@router.websocket("/crdt/{room_id}")
+async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
+    """Yjs CRDT WebSocket — binary message fan-out with Redis pub/sub.
+
+    Authentication accepts either:
+    - ``?token=<crdt_token>``  — short-lived token from POST /collab/crdt-token (preferred)
+    - ``?api_key=<key>``       — long-lived API key (fallback for older clients)
+
+    Supports multi-process deployments when Redis is configured.
+    Falls back to in-process routing when Redis is unavailable.
+    """
+    crdt_token = websocket.query_params.get("token", "")
+    api_key = websocket.query_params.get("api_key", "")
+
+    tenant_id: str | None = None
+
+    # 1. Try short-lived CRDT token first (preferred path)
+    if crdt_token:
+        _cleanup_expired_crdt_tokens()
+        token_data = _crdt_tokens.get(crdt_token)
+        if token_data and token_data["expires_at"] > time.monotonic():
+            tenant_id = token_data["tenant_id"]
+        else:
+            await websocket.close(code=4401, reason="Invalid or expired CRDT token")
+            return
+
+    # 2. Fall back to API key validation
+    elif api_key:
+        try:
+            app_state = websocket.app.state if hasattr(websocket, "app") else None
+            tenant_service = getattr(app_state, "tenant_service", None) if app_state else None
+            if tenant_service is None:
+                await websocket.close(code=4401, reason="Unauthorized")
+                return
+            tenant = await tenant_service.resolve_api_key(api_key)
+            if tenant is None:
+                await websocket.close(code=4401, reason="Invalid API key")
+                return
+            tenant_id = tenant.tenant_id
+        except Exception:
+            await websocket.close(code=4401, reason="Auth error")
+            return
+
+    else:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    # 3. Verify the room belongs to this tenant
+    # Room format: collab-{tenantId}-{sessionId}
+    expected_prefix = f"collab-{tenant_id}-"
+    if not room_id.startswith(expected_prefix):
+        await websocket.close(code=4403, reason="Forbidden: room not owned by tenant")
+        return
+
+    await websocket.accept()
+
+    # Wire Redis from app state if available
+    try:
+        redis = getattr(websocket.app.state if hasattr(websocket, "app") else None, "_redis", None)
+        if redis is not None:
+            _crdt_manager.set_redis(redis)
+    except Exception:
+        pass
+
+    # Send existing document snapshot to new peer so they get full history.
+    snapshot = await _crdt_manager.load_snapshot(room_id)
+    if snapshot:
+        try:
+            await websocket.send_bytes(snapshot)
+        except Exception:
+            pass
+
+    await _crdt_manager.join(room_id, websocket)
+
+    # Start Redis subscription task (no-op if Redis not available)
+    redis_task = asyncio.create_task(
+        _crdt_manager.subscribe_redis(room_id, websocket)
+    )
+
+    _crdt_log.debug("crdt_client_joined room_id=%s", room_id)
+
+    try:
+        async for data in websocket.iter_bytes():
+            await _crdt_manager.broadcast(room_id, data, websocket)
+    except Exception:  # noqa: BLE001  # WebSocketDisconnect or network error
+        pass
+    finally:
+        redis_task.cancel()
+        await _crdt_manager.leave(room_id, websocket)
+        _crdt_log.debug("crdt_client_left room_id=%s", room_id)
+        import contextlib  # noqa: PLC0415
+        with contextlib.suppress(Exception):
+            await websocket.close()

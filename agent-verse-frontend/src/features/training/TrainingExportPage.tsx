@@ -3,18 +3,19 @@
  *
  * Features:
  *   - Live preview panel (count + score distribution) before downloading
- *   - Sample records in the chosen format (OpenAI / Anthropic)
+ *   - Sample records in the chosen format (OpenAI / Anthropic / Llama / ShareGPT)
  *   - Train / Validation split with configurable ratio
- *   - Export history (localStorage, last 10)
- *   - One-click export to JSONL
+ *   - Date range filters
+ *   - Export history (localStorage + best-effort backend sync)
+ *   - One-click export to JSONL / JSON
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
+  AlertCircle,
   BarChart2,
   BookOpen,
   ChevronRight,
-  ClipboardCopy,
   Download,
   ExternalLink,
   FileJson,
@@ -26,12 +27,12 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import { trainingApi, type TrainingPreview } from '@/lib/api/client';
+import { trainingApi, apiFetch, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type Format = 'openai' | 'anthropic';
+type Format = 'openai' | 'anthropic' | 'llama' | 'sharegpt';
 
 interface ExportRecord {
   id: string;
@@ -44,6 +45,40 @@ interface ExportRecord {
   splitRatio?: number;
 }
 
+// ── Format definitions ────────────────────────────────────────────────────────
+
+const FORMATS = [
+  { id: 'openai' as Format, label: 'OpenAI (Chat)', description: 'messages array with system/user/assistant', ext: 'jsonl' },
+  { id: 'anthropic' as Format, label: 'Anthropic (Claude)', description: 'human/assistant message pairs', ext: 'jsonl' },
+  { id: 'llama' as Format, label: 'Llama / Mistral', description: 'instruction + output format', ext: 'jsonl' },
+  { id: 'sharegpt' as Format, label: 'ShareGPT', description: 'conversations array format', ext: 'json' },
+] as const;
+
+// ── Format converter (client-side post-processing) ────────────────────────────
+
+function convertToFormat(items: Record<string, unknown>[], format: Format): Record<string, unknown>[] {
+  switch (format) {
+    case 'llama':
+      return items.map(item => {
+        const msgs = (item.messages ?? []) as Array<{ role: string; content: string }>;
+        return {
+          instruction: msgs.find(m => m.role === 'user')?.content ?? '',
+          input: '',
+          output: msgs.find(m => m.role === 'assistant')?.content ?? '',
+        };
+      });
+    case 'sharegpt':
+      return items.map(item => ({
+        conversations: ((item.messages ?? []) as Array<{ role: string; content: string }>).map(m => ({
+          from: m.role === 'user' ? 'human' : 'gpt',
+          value: m.content ?? '',
+        })),
+      }));
+    default:
+      return items;
+  }
+}
+
 // ── localStorage helpers ───────────────────────────────────────────────────────
 
 const HISTORY_KEY = 'training_export_history_v1';
@@ -53,10 +88,20 @@ function loadHistory(): ExportRecord[] {
   catch { return []; }
 }
 
-function addToExportHistory(record: Omit<ExportRecord, 'id' | 'timestamp'>): void {
-  const history = loadHistory();
-  history.unshift({ ...record, id: crypto.randomUUID(), timestamp: Date.now() });
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 10)));
+// Hybrid: localStorage (always) + best-effort backend persist
+async function saveExportHistory(entry: ExportRecord): Promise<void> {
+  const stored = loadHistory();
+  const updated = [entry, ...stored.slice(0, 9)];
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+
+  try {
+    await apiFetch<void>('/training/exports', {
+      method: 'POST',
+      body: JSON.stringify({ format: entry.format, count: entry.count, min_score: entry.minScore, limit: entry.limit }),
+    });
+  } catch {
+    // Silently ignore backend errors — localStorage is the source of truth
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -136,7 +181,7 @@ function SampleRecords({ samples, format }: { samples: TrainingPreview['samples'
   { "role": "assistant", "content": "<result>" }
 ], "metadata": { "eval_score": ${s.eval_score} } }`}
             </pre>
-          ) : (
+          ) : format === 'anthropic' ? (
             <pre className="whitespace-pre-wrap text-[10px] leading-relaxed text-foreground/70 overflow-auto max-h-32">
 {`{ "system": "You are an autonomous AI agent.",
   "messages": [
@@ -144,6 +189,19 @@ function SampleRecords({ samples, format }: { samples: TrainingPreview['samples'
     ... (${s.steps} steps, tools: [${s.tools.slice(0,3).map(t => `"${t}"`).join(', ')}${s.tools.length > 3 ? '…' : ''}])
     { "role": "assistant", "content": "<result>" }
   ], "metadata": { "eval_score": ${s.eval_score} } }`}
+            </pre>
+          ) : format === 'llama' ? (
+            <pre className="whitespace-pre-wrap text-[10px] leading-relaxed text-foreground/70 overflow-auto max-h-32">
+{`{ "instruction": ${JSON.stringify(s.goal)},
+  "input": "",
+  "output": "<agent result after ${s.steps} steps>" }`}
+            </pre>
+          ) : (
+            <pre className="whitespace-pre-wrap text-[10px] leading-relaxed text-foreground/70 overflow-auto max-h-32">
+{`{ "conversations": [
+  { "from": "human", "value": ${JSON.stringify(s.goal)} },
+  { "from": "gpt",   "value": "<agent result after ${s.steps} steps>" }
+] }`}
             </pre>
           )}
         </div>
@@ -166,11 +224,20 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 
 // ── Export History Panel ──────────────────────────────────────────────────────
 
+const FORMAT_BADGE_COLORS: Partial<Record<Format, string>> = {
+  openai: 'bg-green-100 text-green-700',
+  anthropic: 'bg-orange-100 text-orange-700',
+  llama: 'bg-purple-100 text-purple-700',
+  sharegpt: 'bg-blue-100 text-blue-700',
+};
+
 function ExportHistoryPanel({ refresh }: { refresh: number }) {
   const [history, setHistory] = useState<ExportRecord[]>(() => loadHistory());
 
-  const staleRefresh = refresh; // silence unused
-  void staleRefresh;
+  // Re-read history whenever parent signals an export completed
+  useEffect(() => {
+    setHistory(loadHistory());
+  }, [refresh]);
 
   const handleClear = () => {
     localStorage.removeItem(HISTORY_KEY);
@@ -197,9 +264,7 @@ function ExportHistoryPanel({ refresh }: { refresh: number }) {
           <div key={r.id} className="px-4 py-2.5 flex items-center gap-4 text-sm">
             <span
               className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${
-                r.format === 'openai'
-                  ? 'bg-green-100 text-green-700'
-                  : 'bg-orange-100 text-orange-700'
+                FORMAT_BADGE_COLORS[r.format] ?? 'bg-muted text-muted-foreground'
               }`}
             >
               {r.format}
@@ -229,9 +294,15 @@ export function TrainingExportPage() {
   const [limit, setLimit] = useState(1000);
   const [splitEnabled, setSplitEnabled] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.8); // train fraction
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [lastCount, setLastCount] = useState<number | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
+
+  const dateError = fromDate && toDate && new Date(toDate) < new Date(fromDate)
+    ? 'End date must be after start date'
+    : null;
 
   // Live preview query (fires when params change)
   const {
@@ -239,33 +310,81 @@ export function TrainingExportPage() {
     isFetching: previewLoading,
     refetch: refetchPreview,
   } = useQuery({
-    queryKey: ['training-preview', minScore, limit],
-    queryFn: () => trainingApi.preview({ minScore, limit }),
+    queryKey: ['training-preview', minScore, limit, fromDate, toDate],
+    queryFn: () => trainingApi.preview({
+      minScore,
+      limit,
+      from_date: fromDate || undefined,
+      to_date: toDate || undefined,
+    }),
     staleTime: 15_000,
     enabled: true,
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => trainingApi.export({ format, minScore, limit }),
-    onSuccess: ({ blob, filename, count }) => {
+    mutationFn: () => trainingApi.export({
+      // Llama/ShareGPT are client-side transforms of OpenAI format
+      format: (format === 'llama' || format === 'sharegpt') ? 'openai' : (format as 'openai' | 'anthropic'),
+      minScore,
+      limit,
+      fromDate: fromDate || undefined,
+      toDate: toDate || undefined,
+    }),
+    onSuccess: async ({ blob, filename, count }) => {
       setLastCount(count);
       if (count === 0) {
         toast({ kind: 'info', message: 'No examples matched the filters.' });
         return;
       }
-      if (splitEnabled && count >= 2) {
-        // Split into train / validation blobs
-        splitAndDownload(blob, filename, splitRatio);
-      } else {
-        triggerDownload(blob, filename);
+
+      // Client-side format conversion for llama / sharegpt
+      let finalBlob = blob;
+      let finalFilename = filename;
+      if (format === 'llama' || format === 'sharegpt') {
+        try {
+          const text = await blob.text();
+          const lines = text.split('\n').filter(Boolean);
+          const items = lines.map(l => JSON.parse(l) as Record<string, unknown>);
+          const converted = convertToFormat(items, format);
+          const ext = format === 'sharegpt' ? 'json' : 'jsonl';
+          const contentType = format === 'sharegpt' ? 'application/json' : 'application/x-ndjson';
+          const content = format === 'sharegpt'
+            ? JSON.stringify(converted, null, 2)
+            : converted.map(i => JSON.stringify(i)).join('\n');
+          finalBlob = new Blob([content], { type: contentType });
+          finalFilename = filename.replace(/\.(jsonl|json)$/, `.${ext}`).replace('openai', format);
+        } catch {
+          toast({ kind: 'error', message: 'Format conversion failed — downloading as OpenAI JSONL.' });
+        }
       }
-      toast({ kind: 'success', message: `Exported ${count} training examples as ${format.toUpperCase()} JSONL.` });
-      addToExportHistory({ format, minScore, limit, count, filename, splitRatio: splitEnabled ? splitRatio : undefined });
+
+      if (splitEnabled && count >= 2) {
+        splitAndDownload(finalBlob, finalFilename, splitRatio);
+      } else {
+        triggerDownload(finalBlob, finalFilename);
+      }
+
+      const fmt = FORMATS.find(f => f.id === format);
+      toast({ kind: 'success', message: `Exported ${count} training examples as ${fmt?.label ?? format.toUpperCase()}.` });
+
+      const entry: ExportRecord = {
+        id: crypto.randomUUID(),
+        format,
+        minScore,
+        limit,
+        count,
+        filename: finalFilename,
+        timestamp: Date.now(),
+        splitRatio: splitEnabled ? splitRatio : undefined,
+      };
+      await saveExportHistory(entry);
       setHistoryRefresh((n) => n + 1);
       setShowHistory(true);
     },
     onError: () => toast({ kind: 'error', message: 'Export failed. Check server logs.' }),
   });
+
+  const currentFormat = FORMATS.find(f => f.id === format);
 
   return (
     <div className="space-y-6">
@@ -310,13 +429,12 @@ export function TrainingExportPage() {
                 onChange={(e) => setFormat(e.target.value as Format)}
                 className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background"
               >
-                <option value="openai">OpenAI (chat completion fine-tuning)</option>
-                <option value="anthropic">Anthropic (Claude fine-tuning)</option>
+                {FORMATS.map(f => (
+                  <option key={f.id} value={f.id}>{f.label}</option>
+                ))}
               </select>
               <p className="text-xs text-muted-foreground mt-1">
-                {format === 'openai'
-                  ? 'Produces {"messages": [...]} per line — compatible with gpt-3.5-turbo fine-tuning.'
-                  : 'Produces {"system": ..., "messages": [...]} per line — compatible with Claude fine-tuning.'}
+                {currentFormat?.description ?? ''}
               </p>
             </div>
 
@@ -357,6 +475,33 @@ export function TrainingExportPage() {
                 className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background"
               />
             </div>
+
+            {/* Date range */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium mb-1">From Date</label>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={e => setFromDate(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">To Date</label>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={e => setToDate(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background"
+                />
+              </div>
+            </div>
+            {dateError && (
+              <p className="text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" /> {dateError}
+              </p>
+            )}
 
             {/* Train / val split */}
             <div className="border border-border rounded-lg p-3 space-y-2">
@@ -460,7 +605,7 @@ export function TrainingExportPage() {
                   <BookOpen className="h-4 w-4" /> Sample Records
                 </h3>
                 <span className="text-xs text-muted-foreground">
-                  Format: {format === 'openai' ? 'OpenAI chat' : 'Anthropic'}
+                  Format: {currentFormat?.label ?? format}
                 </span>
               </div>
               <SampleRecords samples={preview.samples} format={format} />
@@ -476,7 +621,7 @@ export function TrainingExportPage() {
                 </h3>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {preview
-                    ? `${preview.count} examples ready · ${format.toUpperCase()} format${splitEnabled ? ` · ${Math.round(splitRatio * 100)}/${Math.round((1 - splitRatio) * 100)} split` : ''}`
+                    ? `${preview.count} examples ready · ${currentFormat?.label ?? format} format${splitEnabled ? ` · ${Math.round(splitRatio * 100)}/${Math.round((1 - splitRatio) * 100)} split` : ''}`
                     : 'Preview to confirm count before exporting'}
                 </p>
               </div>
@@ -489,7 +634,7 @@ export function TrainingExportPage() {
                 {exportMutation.isPending ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
                 ) : (
-                  <><Download className="h-4 w-4" /> Export JSONL</>
+                  <><Download className="h-4 w-4" /> Export {currentFormat?.ext?.toUpperCase() ?? 'JSONL'}</>
                 )}
               </button>
             </div>
@@ -542,13 +687,16 @@ function splitAndDownload(blob: Blob, filename: string, trainFraction: number): 
     const trainLines = lines.slice(0, trainSize);
     const valLines = lines.slice(trainSize);
 
-    const base = filename.replace(/\.jsonl$/, '');
+    const base = filename.replace(/\.(jsonl|json)$/, '');
     triggerDownload(new Blob([trainLines.join('\n')], { type: 'application/x-ndjson' }), `${base}_train.jsonl`);
     if (valLines.length > 0) {
       setTimeout(() => {
         triggerDownload(new Blob([valLines.join('\n')], { type: 'application/x-ndjson' }), `${base}_val.jsonl`);
       }, 300);
     }
+  };
+  reader.onerror = () => {
+    toast({ kind: 'error', message: 'Failed to split the file — please try a single file export' });
   };
   reader.readAsText(blob);
 }

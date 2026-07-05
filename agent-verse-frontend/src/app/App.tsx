@@ -1,12 +1,17 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState, lazy, Suspense } from "react";
+import { Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/ui/AppLayout";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { RouteErrorBoundary } from "@/components/ui/RouteErrorBoundary";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import NotFoundPage from '@/features/errors/NotFoundPage';
+import OAuthCallbackPage from '@/features/connectors/OAuthCallbackPage';
 
 // ── Lazy-loaded existing pages ───────────────────────────────────────────────
 const DomainsPage = lazy(() => import('@/features/domains/DomainsPage'));
+const DomainDetailPage = lazy(() => import('@/features/domains/DomainDetailPage'));
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 const GoalDNAPage = lazy(() => import("@/features/goals/GoalDNAPage").then(m => ({ default: m.GoalDNAPage })));
 const AgentRadarPage = lazy(() => import("@/features/agents/AgentRadarPage").then(m => ({ default: m.AgentRadarPage })));
@@ -29,6 +34,7 @@ const SkillsPage = lazy(() => import('@/features/skills/SkillsPage'));
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
+import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { GoalsListPage } from "@/features/goals/GoalsListPage";
 import { GoalDetailPage } from "@/features/goals/GoalDetailPage";
@@ -68,17 +74,34 @@ import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
 import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
 import { StatusPage } from "@/features/status/StatusPage";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
+/** Wrap an element in a per-route error boundary. Keeps route definitions concise. */
+function rb(name: string, element: React.ReactNode): React.ReactNode {
+  return <RouteErrorBoundary routeName={name}>{element}</RouteErrorBoundary>;
+}
+
+/** Lazy element wrapped in Suspense + per-route error boundary. */
+function lazy_rb(name: string, element: React.ReactNode): React.ReactNode {
+  return (
+    <RouteErrorBoundary routeName={name}>
+      <Suspense fallback={<LoadingSpinner />}>{element}</Suspense>
+    </RouteErrorBoundary>
+  );
+}
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const apiKey = useAuthStore((s) => s.apiKey);
   const tenantId = useAuthStore((s) => s.tenantId);
   const logout = useAuthStore((s) => s.logout);
+  const sessionValidated = useAuthStore((s) => s.sessionValidated);
+  const setSessionValidated = useAuthStore((s) => s.setSessionValidated);
   const [isChecking, setIsChecking] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated || !apiKey) return;
+    // Only validate once per app load — skip if already validated this session
+    if (!isAuthenticated || !apiKey || sessionValidated) return;
 
     let cancelled = false;
     setIsChecking(true);
@@ -95,11 +118,15 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
         const tenant = await res.json();
         if (tenant.tenant_id !== tenantId) {
           logout();
+          return;
         }
       } catch {
         // Keep the session during transient backend/network failures
       } finally {
-        if (!cancelled) setIsChecking(false);
+        if (!cancelled) {
+          setSessionValidated(true);
+          setIsChecking(false);
+        }
       }
     }
 
@@ -108,14 +135,21 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [apiKey, isAuthenticated, logout, tenantId]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — intentionally runs once on mount
 
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
-  if (isChecking) return null;
+  if (isChecking) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        </div>
+      </div>
+    );
+  }
   return <>{children}</>;
 }
-
-const spinner = <LoadingSpinner />;
 
 export default function App() {
   return (
@@ -125,11 +159,17 @@ export default function App() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
       <Route path="/auth/callback" element={<SSOCallbackPage />} />
+      <Route path="/auth/mfa" element={<MFAVerifyPage />} />
       <Route path="/status" element={<StatusPage />} />
+      {/* OAuth popup callback — must be public so the provider redirect works without auth */}
+      <Route path="/connectors/oauth/callback" element={<OAuthCallbackPage />} />
 
       {/* ── Authenticated app routes — pathless layout route ────────────
           A pathless <Route> has no path prop; it acts as a layout wrapper.
-          Children still match their own full paths from the root.         */}
+          Children still match their own full paths from the root.
+          The outer ErrorBoundary catches layout-level failures (AppLayout crash).
+          RouteErrorBoundary on each child catches individual page crashes so
+          the sidebar/nav remain functional.                                 */}
       <Route
         element={
           <RequireAuth>
@@ -139,62 +179,63 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="goals" element={<GoalsListPage />} />
-        <Route path="goals/:goalId" element={<GoalDetailPage />} />
-        <Route path="agents" element={<AgentsListPage />} />
-        <Route path="agents/create" element={<AgentCreatePage />} />
-        <Route path="agents/:agentId" element={<AgentDetailPage />} />
-        <Route path="agents/:agentId/identity" element={<Suspense fallback={spinner}><AgentIdentityPage /></Suspense>} />
-        <Route path="agents/:agentId/dashboard" element={<AgentDashboardPage />} />
-        <Route path="agents/:agentId/radar" element={<Suspense fallback={spinner}><AgentRadarPage /></Suspense>} />
-        <Route path="agents/:agentId/personality" element={<Suspense fallback={spinner}><AgentPersonalityPage /></Suspense>} />
-        <Route path="approvals" element={<ApprovalsPage />} />
-        <Route path="onboarding" element={<OnboardingPage />} />
-        <Route path="connectors/catalog" element={<ConnectorsCatalogPage />} />
-        <Route path="connectors" element={<ConnectorsRegisteredPage />} />
-        <Route path="connectors/:connectorId" element={<ConnectorDetailPage />} />
-        <Route path="schedules" element={<SchedulesPage />} />
-        <Route path="knowledge" element={<KnowledgePage />} />
-        <Route path="governance" element={<GovernancePage />} />
-        <Route path="collaboration" element={<CollaborationPage />} />
-        <Route path="observability" element={<ObservabilityPage />} />
-        <Route path="observability/cost" element={<CostDashboardPage />} />
-        <Route path="eval" element={<EvalPage />} />
-        <Route path="marketplace" element={<MarketplacePage />} />
-        <Route path="domains" element={<Suspense fallback={spinner}><DomainsPage /></Suspense>} />
-        <Route path="domains/:domain" element={<Suspense fallback={spinner}><DomainsPage /></Suspense>} />
-        <Route path="enterprise" element={<EnterprisePage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        <Route path="settings/scopes" element={<Suspense fallback={spinner}><ScopeExplorerPage /></Suspense>} />
-        <Route path="settings/guardrails" element={<Suspense fallback={spinner}><GuardrailCenterPage /></Suspense>} />
-        <Route path="settings/budgets" element={<Suspense fallback={spinner}><BudgetManagerPage /></Suspense>} />
-        <Route path="self-improvement" element={<Suspense fallback={spinner}><SelfImprovementPage /></Suspense>} />
-        <Route path="lab" element={<Suspense fallback={spinner}><AgentLabPage /></Suspense>} />
-        <Route path="skills" element={<Suspense fallback={spinner}><SkillsPage /></Suspense>} />
-        <Route path="workflow-builder" element={<Suspense fallback={spinner}><WorkflowBuilderPage /></Suspense>} />
-        <Route path="playground" element={<PlaygroundPage />} />
-        <Route path="analytics" element={<AnalyticsDashboardPage />} />
-        <Route path="simulation" element={<SimulationPage />} />
-        <Route path="audit" element={<AuditExplorerPage />} />
-        <Route path="rpa/live" element={<RpaLivePage />} />
-        <Route path="memory" element={<MemoryExplorerPage />} />
-        <Route path="artifacts" element={<ArtifactsBrowserPage />} />
-        <Route path="tools" element={<ToolsPage />} />
-        <Route path="integrations" element={<IntegrationsPage />} />
-        <Route path="training-export" element={<TrainingExportPage />} />
-        <Route path="perception" element={<PerceptionPage />} />
-        <Route path="a2a" element={<A2APage />} />
-        <Route path="notifications" element={<NotificationCenterPage />} />
-        <Route path="rbac" element={<RbacPage />} />
-        <Route path="compliance" element={<CompliancePage />} />
-        <Route path="goals/:goalId/dna" element={<Suspense fallback={spinner}><GoalDNAPage /></Suspense>} />
-        <Route path="goals/:goalId/diff" element={<Suspense fallback={spinner}><GoalDiffPage /></Suspense>} />
-        <Route path="goals/ghost-run" element={<Suspense fallback={spinner}><GhostRunPage /></Suspense>} />
-        <Route path="templates" element={<Suspense fallback={spinner}><TemplateLibraryPage /></Suspense>} />
-        <Route path="civilization" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
-        <Route path="civilization/:id" element={<Suspense fallback={spinner}><CivilizationPage /></Suspense>} />
-        <Route path="builder" element={<Suspense fallback={spinner}><BuilderPage /></Suspense>} />
+        <Route path="dashboard"             element={rb("Dashboard",          <DashboardPage />)} />
+        <Route path="goals"                 element={rb("Goals",              <GoalsListPage />)} />
+        <Route path="goals/:goalId"         element={rb("Goal Detail",        <GoalDetailPage />)} />
+        <Route path="agents"                element={rb("Agents",             <AgentsListPage />)} />
+        <Route path="agents/create"         element={rb("Create Agent",       <AgentCreatePage />)} />
+        <Route path="agents/:agentId"       element={rb("Agent Detail",       <AgentDetailPage />)} />
+        <Route path="agents/:agentId/identity"    element={lazy_rb("Agent Identity",    <AgentIdentityPage />)} />
+        <Route path="agents/:agentId/dashboard"   element={rb("Agent Dashboard",        <AgentDashboardPage />)} />
+        <Route path="agents/:agentId/radar"       element={lazy_rb("Agent Radar",       <AgentRadarPage />)} />
+        <Route path="agents/:agentId/personality" element={lazy_rb("Agent Personality", <AgentPersonalityPage />)} />
+        <Route path="approvals"             element={rb("Approvals",          <ApprovalsPage />)} />
+        <Route path="onboarding"            element={rb("Onboarding",         <OnboardingPage />)} />
+        <Route path="connectors/catalog"    element={rb("Connectors Catalog", <ConnectorsCatalogPage />)} />
+        <Route path="connectors"            element={rb("Connectors",         <ConnectorsRegisteredPage />)} />
+        <Route path="connectors/:connectorId" element={rb("Connector Detail", <ConnectorDetailPage />)} />
+        <Route path="schedules"             element={rb("Schedules",          <SchedulesPage />)} />
+        <Route path="knowledge"             element={rb("Knowledge",          <KnowledgePage />)} />
+        <Route path="governance"            element={rb("Governance",         <GovernancePage />)} />
+        <Route path="collaboration"         element={rb("Collaboration",      <CollaborationPage />)} />
+        <Route path="observability"         element={rb("Observability",      <ObservabilityPage />)} />
+        <Route path="observability/cost"    element={rb("Cost Dashboard",     <CostDashboardPage />)} />
+        <Route path="eval"                  element={rb("Evaluations",        <EvalPage />)} />
+        <Route path="marketplace"           element={rb("Marketplace",        <MarketplacePage />)} />
+        <Route path="domains"               element={lazy_rb("Domains",       <DomainsPage />)} />
+        <Route path="domains/:domain"       element={lazy_rb("Domain Detail", <DomainDetailPage />)} />
+        <Route path="enterprise"            element={rb("Enterprise",         <EnterprisePage />)} />
+        <Route path="settings"              element={rb("Settings",           <SettingsPage />)} />
+        <Route path="settings/scopes"       element={lazy_rb("Scope Explorer",   <ScopeExplorerPage />)} />
+        <Route path="settings/guardrails"   element={lazy_rb("Guardrail Center", <GuardrailCenterPage />)} />
+        <Route path="settings/budgets"      element={lazy_rb("Budget Manager",   <BudgetManagerPage />)} />
+        <Route path="self-improvement"      element={lazy_rb("Self Improvement", <SelfImprovementPage />)} />
+        <Route path="lab"                   element={lazy_rb("Agent Lab",        <AgentLabPage />)} />
+        <Route path="skills"                element={lazy_rb("Skills",           <SkillsPage />)} />
+        <Route path="workflow-builder"      element={lazy_rb("Workflow Builder", <WorkflowBuilderPage />)} />
+        <Route path="playground"            element={rb("Playground",     <PlaygroundPage />)} />
+        <Route path="analytics"             element={rb("Analytics",      <AnalyticsDashboardPage />)} />
+        <Route path="simulation"            element={rb("Simulation",     <SimulationPage />)} />
+        <Route path="audit"                 element={rb("Audit Explorer", <AuditExplorerPage />)} />
+        <Route path="rpa/live"              element={rb("RPA Live",       <RpaLivePage />)} />
+        <Route path="memory"                element={rb("Memory",         <MemoryExplorerPage />)} />
+        <Route path="artifacts"             element={rb("Artifacts",      <ArtifactsBrowserPage />)} />
+        <Route path="tools"                 element={rb("Tools",          <ToolsPage />)} />
+        <Route path="integrations"          element={rb("Integrations",   <IntegrationsPage />)} />
+        <Route path="training-export"       element={rb("Training Export",<TrainingExportPage />)} />
+        <Route path="perception"            element={rb("Perception",     <PerceptionPage />)} />
+        <Route path="a2a"                   element={rb("A2A",            <A2APage />)} />
+        <Route path="notifications"         element={rb("Notifications",  <NotificationCenterPage />)} />
+        <Route path="rbac"                  element={rb("RBAC",           <RbacPage />)} />
+        <Route path="compliance"            element={rb("Compliance",     <CompliancePage />)} />
+        <Route path="goals/:goalId/dna"     element={lazy_rb("Goal DNA",      <GoalDNAPage />)} />
+        <Route path="goals/:goalId/diff"    element={lazy_rb("Goal Diff",     <GoalDiffPage />)} />
+        <Route path="goals/ghost-run"       element={lazy_rb("Ghost Run",     <GhostRunPage />)} />
+        <Route path="templates"             element={lazy_rb("Templates",     <TemplateLibraryPage />)} />
+        <Route path="civilization"          element={lazy_rb("Civilization",  <CivilizationPage />)} />
+        <Route path="civilization/:id"      element={lazy_rb("Civilization",  <CivilizationPage />)} />
+        <Route path="builder"               element={lazy_rb("Builder",       <BuilderPage />)} />
+        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>
   );

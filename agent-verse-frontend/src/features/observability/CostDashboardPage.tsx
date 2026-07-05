@@ -852,7 +852,7 @@ export function CostDashboardPage(): JSX.Element {
   const { data: kpiData, isLoading: kpiLoading } = useQuery({
     queryKey: ["cost-metrics-kpi"],
     queryFn: async () => {
-      const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+      const apiUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
       const res = await fetch(`${apiUrl}/goals/cost-metrics`, {
         headers: { "X-API-Key": apiKey },
       });

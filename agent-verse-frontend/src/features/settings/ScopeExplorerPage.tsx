@@ -1,12 +1,13 @@
 import { useState } from "react";
 import type { ComponentType, JSX } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
   Key, Lock, CheckCircle2, Copy, Trash2, Plus, Eye, EyeOff,
   Shield, Search, ChevronDown, ChevronRight, AlertCircle,
-  Target, Bot, BookOpen, Plug, BarChart3, X,
+  Target, Bot, BookOpen, Plug, BarChart3, X, Zap,
 } from "lucide-react";
-import { tenantsApi } from "@/lib/api/client";
+import { tenantsApi, apiFetch } from "@/lib/api/client";
 import type { ApiKeyResponse } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
@@ -79,6 +80,14 @@ function fmtDate(iso?: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
 async function copyText(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
   toast({ kind: "success", message: "Copied to clipboard" });
@@ -88,6 +97,7 @@ async function copyText(text: string): Promise<void> {
 
 export function ScopeExplorerPage(): JSX.Element {
   const qc = useQueryClient();
+  const navigate = useNavigate();
 
   // UI state
   const [search, setSearch]               = useState("");
@@ -107,6 +117,11 @@ export function ScopeExplorerPage(): JSX.Element {
   const { data: keys = [], isLoading: keysLoading } = useQuery({
     queryKey: ["tenant-keys"],
     queryFn: () => tenantsApi.listKeys(),
+  });
+  const { data: keyActivity } = useQuery({
+    queryKey: ['key-activity'],
+    queryFn: () => apiFetch<{ last_used?: string }>('/auth/keys/activity').catch(() => ({})),
+    staleTime: 5 * 60_000,
   });
 
   // Mutations
@@ -193,7 +208,7 @@ export function ScopeExplorerPage(): JSX.Element {
         {[
           { icon: Shield,   label: "Total Scopes",   value: String(ALL_SCOPES.length) },
           { icon: Key,      label: "Active Keys",     value: keysLoading ? "…" : String(keys.length) },
-          { icon: BarChart3, label: "Last API Call",  value: "2h ago" },
+          { icon: BarChart3, label: "Last API Call",  value: (keyActivity as any)?.last_used ? timeAgo((keyActivity as any).last_used) : 'Never' },
           { icon: CheckCircle2, label: "Plan Tier",   value: meta.label },
         ].map(({ icon: Icon, label, value }) => (
           <div key={label} className="bg-card border border-border rounded-xl p-4 flex items-start gap-3">
@@ -277,9 +292,18 @@ export function ScopeExplorerPage(): JSX.Element {
                           )}
                         </div>
                         {!granted && (
-                          <button onClick={() => toast({ kind: "info", message: `Upgrade your plan to unlock "${scope.name}"` })}
-                            className="shrink-0 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-muted transition-colors">
-                            Unlock
+                          <button
+                            onClick={() => {
+                              navigate('/settings?tab=billing', {
+                                state: { highlightPlan: 'professional' },
+                              });
+                              toast({ kind: 'info', message: 'Choose a plan to unlock more scopes' });
+                            }}
+                            className="shrink-0 flex items-center gap-1 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-muted transition-colors"
+                            title="Upgrade your plan to unlock this scope"
+                          >
+                            <Zap className="h-3 w-3" />
+                            Upgrade to unlock
                           </button>
                         )}
                       </div>

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { templatesApi, type GoalTemplate } from "@/lib/api/client";
 import { TemplateCard } from "./components/TemplateCard";
 import { TemplateInstantiator } from "./components/TemplateInstantiator";
@@ -8,6 +9,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
 import { Plus, BookOpen, Search, X } from "lucide-react";
+import { useDebounce } from "@/hooks/useDebounce";
 
 const DOMAINS = ["general", "devops", "engineering", "data", "marketing", "sales", "support", "legal", "finance"];
 
@@ -110,16 +112,44 @@ function TemplateFormModal({
 export function TemplateLibraryPage() {
   const { t } = useTranslation();
   const qc = useQueryClient();
-  const [domainFilter, setDomainFilter] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<GoalTemplate | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTemplate, setEditTemplate] = useState<GoalTemplate | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
+  // ── URL-backed domain filter + debounced search ───────────────────────────
+  const [searchParams, setSearchParams] = useSearchParams();
+  const domainFilter = searchParams.get("domain") ?? null;
+  const urlSearch = searchParams.get("q") ?? "";
+
+  // Local search drives the input; debounced value syncs to URL and triggers queries
+  const [localSearch, setLocalSearch] = useState(urlSearch);
+  const debouncedSearch = useDebounce(localSearch, 400);
+
+  // Sync debounced search → URL
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (debouncedSearch) next.set("q", debouncedSearch);
+      else next.delete("q");
+      return next;
+    });
+  }, [debouncedSearch, setSearchParams]);
+
+  const updateParams = (updates: Record<string, string | null>) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([k, v]) => {
+        if (!v) next.delete(k);
+        else next.set(k, v);
+      });
+      return next;
+    });
+  };
+
   const { data: templates = [], isLoading } = useQuery({
-    queryKey: ["templates", domainFilter],
-    queryFn: () => templatesApi.list(domainFilter ?? undefined),
+    queryKey: ["templates", domainFilter, debouncedSearch],
+    queryFn: () => templatesApi.list(domainFilter ?? undefined, debouncedSearch || undefined),
     staleTime: 30_000,
   });
 
@@ -154,17 +184,8 @@ export function TemplateLibraryPage() {
     onError: (e) => toast({ kind: "error", message: String(e) }),
   });
 
-  const filtered = templates.filter((t) => {
-    if (search) {
-      const q = search.toLowerCase();
-      return (
-        t.name.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.goal_text.toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
+  // Server handles search + domain filter; templates are already filtered
+  const filtered = templates;
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -192,8 +213,8 @@ export function TemplateLibraryPage() {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" aria-hidden="true" />
           <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={localSearch}
+            onChange={(e) => setLocalSearch(e.target.value)}
             placeholder="Search templates…"
             className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
             aria-label="Search templates"
@@ -201,7 +222,7 @@ export function TemplateLibraryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setDomainFilter(null)}
+            onClick={() => updateParams({ domain: null })}
             className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${!domainFilter ? "bg-primary text-primary-foreground border-primary" : "bg-background border-input hover:bg-muted/50"}`}
           >
             All
@@ -209,7 +230,7 @@ export function TemplateLibraryPage() {
           {DOMAINS.filter((d) => d !== "general").map((d) => (
             <button
               key={d}
-              onClick={() => setDomainFilter(d === domainFilter ? null : d)}
+              onClick={() => updateParams({ domain: d === domainFilter ? null : d })}
               className={`px-3 py-1.5 text-xs rounded-lg border transition-colors capitalize ${d === domainFilter ? "bg-primary text-primary-foreground border-primary" : "bg-background border-input hover:bg-muted/50"}`}
             >
               {d}
@@ -226,7 +247,7 @@ export function TemplateLibraryPage() {
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
           <BookOpen className="h-10 w-10 opacity-20 mb-2" aria-hidden="true" />
-          <p className="text-sm">{t('marketplace.noResults')}</p>
+          <p className="text-sm">No templates found</p>
           <button onClick={() => setCreateOpen(true)} className="mt-3 text-xs text-primary hover:underline">
             Create your first template
           </button>

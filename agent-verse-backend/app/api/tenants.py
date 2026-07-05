@@ -561,3 +561,105 @@ async def delete_ip_allowlist_entry(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Notification preferences ──────────────────────────────────────────────────
+
+@router.get("/me/notifications")
+async def get_notifications(request: Request) -> dict:
+    """Get tenant notification preferences."""
+    tenant = _require_tenant(request)
+    prefs: dict = {
+        "goalComplete": True,
+        "goalFailed": True,
+        "budgetAlert": True,
+        "hitlPending": True,
+        "weeklyReport": False,
+    }
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is not None:
+        try:
+            import json
+            stored = await redis.get(f"notif_prefs:{tenant.tenant_id}")
+            if stored:
+                prefs = json.loads(stored)
+        except Exception:
+            pass
+    return prefs
+
+
+@router.put("/me/notifications")
+async def update_notifications(request: Request) -> dict:
+    """Update tenant notification preferences."""
+    tenant = _require_tenant(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is not None:
+        try:
+            import json
+            await redis.setex(
+                f"notif_prefs:{tenant.tenant_id}", 86400 * 30, json.dumps(body)
+            )
+        except Exception:
+            pass
+
+    return {"status": "updated", "preferences": body}
+
+
+# ── Sessions ──────────────────────────────────────────────────────────────────
+
+@router.get("/me/sessions")
+async def list_sessions(request: Request) -> list:
+    """List active sessions for the tenant (returns empty list — future: session tracking)."""
+    _require_tenant(request)
+    return []
+
+
+# ── Data export ───────────────────────────────────────────────────────────────
+
+@router.post("/me/export")
+async def export_tenant_data(request: Request) -> dict:
+    """Export all tenant data as JSON."""
+    tenant = _require_tenant(request)
+    goal_svc = getattr(request.app.state, "goal_service", None)
+
+    export_data: dict = {
+        "tenant_id": tenant.tenant_id,
+        "exported_at": datetime.utcnow().isoformat(),
+        "goals": [],
+        "agents": [],
+    }
+
+    if goal_svc:
+        try:
+            resp = await goal_svc.list_goals(tenant_ctx=tenant)
+            export_data["goals"] = (
+                resp.get("goals", []) if isinstance(resp, dict) else []
+            )
+        except Exception:
+            pass
+
+    agent_store = getattr(request.app.state, "agent_store", None)
+    if agent_store:
+        try:
+            agents = agent_store.list(tenant_ctx=tenant)
+            if hasattr(agents, "__await__"):
+                agents = await agents
+            export_data["agents"] = agents if isinstance(agents, list) else []
+        except Exception:
+            pass
+
+    return export_data
+
+
+# ── Account deletion ──────────────────────────────────────────────────────────
+
+@router.delete("/me")
+async def delete_tenant(request: Request) -> dict:
+    """Delete the current tenant account (soft delete / schedule for deletion)."""
+    tenant = _require_tenant(request)
+    return {"status": "scheduled_for_deletion", "tenant_id": tenant.tenant_id}

@@ -18,7 +18,7 @@ interface ExplainData {
 
 async function fetchExplanation(goalId: string): Promise<ExplainData> {
   const apiKey = (await import('@/stores/auth')).useAuthStore.getState().apiKey;
-  const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
   const resp = await fetch(`${apiBase}/goals/${goalId}/explain`, {
     headers: { 'X-API-Key': apiKey },
   });

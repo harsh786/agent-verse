@@ -2,20 +2,27 @@
  * ToolsPage — world-class sandboxed execution, workspace file manager, and email composer.
  *
  * Tabs:
- *   1. Code Runner  — language picker, timeout, snippet templates, execution history, copy stdout/stderr
- *   2. File Manager — fixed path bug, file size + date, breadcrumb, new-file flow, delete confirm
- *   3. Email        — fixed silent-error bug, CC field, char count, sent history
+ *   1. Code Runner  — enhanced editor with tab/line-numbers, localStorage history, Ctrl+Enter
+ *   2. File Manager — directory navigation with breadcrumb, file size + date, delete confirm
+ *   3. Email        — CC field, char count, localStorage sent log
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Play, Send, Trash2, FileText, RefreshCw, Copy, Check,
   FolderOpen, Plus, Clock, Terminal, Mail, ChevronRight,
-  AlertCircle, Loader2, X, Folder,
+  AlertCircle, Loader2, X, Folder, ChevronLeft,
 } from 'lucide-react';
 import { toolsApi, type ExecuteCodeResult, type WorkspaceFile } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { useThemeStore } from '@/stores/theme';
+import CodeMirror from '@uiw/react-codemirror';
+import { python } from '@codemirror/lang-python';
+import { javascript } from '@codemirror/lang-javascript';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { keymap } from '@codemirror/view';
+import { Prec } from '@codemirror/state';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,8 +33,9 @@ interface HistoryEntry {
   id: string;
   language: Language;
   snippet: string;
+  label: string;
   result: ExecuteCodeResult;
-  timestamp: Date;
+  timestamp: number; // epoch ms — safe for JSON round-trip
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -84,15 +92,93 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
   );
 }
 
+// ── CodeEditor — CodeMirror-backed with syntax highlighting ──────────────────
+
+function CodeEditor({
+  value,
+  onChange,
+  language,
+  onRun,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  language: string;
+  onRun?: () => void;
+  canRun?: boolean;
+}) {
+  const { theme } = useThemeStore();
+  const isDark = useMemo(() => {
+    if (theme === 'dark') return true;
+    if (theme === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }, [theme]);
+
+  const getExtensions = () => {
+    switch (language) {
+      case 'python': return [python()];
+      case 'javascript': return [javascript({ jsx: false })];
+      default: return [];
+    }
+  };
+
+  const runKeymap = onRun ? Prec.highest(keymap.of([
+    {
+      key: 'Ctrl-Enter',
+      mac: 'Cmd-Enter',
+      run: () => { onRun(); return true; },
+    },
+  ])) : [];
+
+  return (
+    <div className="border-0 overflow-hidden">
+      <CodeMirror
+        value={value}
+        height="280px"
+        theme={isDark ? oneDark : undefined}
+        extensions={[...getExtensions(), runKeymap]}
+        onChange={onChange}
+        basicSetup={{
+          lineNumbers: true,
+          highlightActiveLineGutter: true,
+          highlightSpecialChars: true,
+          foldGutter: true,
+          dropCursor: true,
+          allowMultipleSelections: true,
+          indentOnInput: true,
+          syntaxHighlighting: true,
+          bracketMatching: true,
+          closeBrackets: true,
+          autocompletion: true,
+          rectangularSelection: true,
+          crosshairCursor: true,
+          highlightActiveLine: true,
+          highlightSelectionMatches: true,
+          closeBracketsKeymap: true,
+          defaultKeymap: true,
+          searchKeymap: true,
+          historyKeymap: true,
+          foldKeymap: true,
+          completionKeymap: true,
+          lintKeymap: true,
+        }}
+      />
+    </div>
+  );
+}
+
 // ── Code Runner ───────────────────────────────────────────────────────────────
+
+const CODE_HISTORY_KEY = 'av_code_history';
 
 function CodeRunner() {
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState<Language>('python');
   const [timeout, setTimeout_] = useState(30);
   const [result, setResult] = useState<ExecuteCodeResult | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem(CODE_HISTORY_KEY) ?? '[]') as HistoryEntry[]; }
+    catch { return []; }
+  });
 
   const meta = LANGUAGE_META[language];
 
@@ -100,29 +186,24 @@ function CodeRunner() {
     mutationFn: () => toolsApi.executeCode(code, language, timeout),
     onSuccess: (r) => {
       setResult(r);
-      setHistory((h) => [
-        { id: Date.now().toString(), language, snippet: code.slice(0, 60), result: r, timestamp: new Date() },
-        ...h.slice(0, 4),
-      ]);
+      const entry: HistoryEntry = {
+        id: crypto.randomUUID(),
+        language,
+        snippet: code,
+        label: code.slice(0, 60),
+        result: r,
+        timestamp: Date.now(),
+      };
+      setHistory(prev => {
+        const updated = [entry, ...prev.slice(0, 19)];
+        localStorage.setItem(CODE_HISTORY_KEY, JSON.stringify(updated));
+        return updated;
+      });
       if (!r.success)
         toast({ kind: 'error', message: r.timed_out ? 'Execution timed out.' : 'Code exited non-zero.' });
     },
     onError: (e) => toast({ kind: 'error', message: `Execution failed: ${String(e)}` }),
   });
-
-  // Ctrl+Enter to run
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && code.trim() && !runMutation.isPending) {
-        e.preventDefault();
-        runMutation.mutate();
-      }
-    };
-    el.addEventListener('keydown', handler);
-    return () => el.removeEventListener('keydown', handler);
-  }, [code, runMutation]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -176,15 +257,17 @@ function CodeRunner() {
             </div>
           </div>
 
-          {/* Code textarea */}
-          <textarea
-            ref={textareaRef}
-            aria-label="Code"
+          {/* Enhanced code editor */}
+          <CodeEditor
             value={code}
-            onChange={(e) => setCode(e.target.value)}
-            placeholder={`# ${meta.label}\n${meta.placeholder}`}
-            spellCheck={false}
-            className="w-full min-h-[240px] px-4 py-3 text-sm font-mono bg-background resize-y focus:outline-none"
+            onChange={setCode}
+            language={language}
+            onRun={() => {
+              if (code.trim() && !runMutation.isPending) {
+                runMutation.mutate();
+              }
+            }}
+            canRun={!!code.trim() && !runMutation.isPending}
           />
 
           {/* Footer */}
@@ -252,15 +335,21 @@ function CodeRunner() {
                     <span aria-hidden="true">{LANGUAGE_META[h.language].icon}</span>
                     <span className={`w-1.5 h-1.5 rounded-full ${h.result.success ? 'bg-green-500' : 'bg-red-500'}`} aria-hidden="true" />
                     <span className="text-[10px] text-muted-foreground ml-auto">
-                      {h.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      {new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </span>
                   </div>
                   <button
-                    onClick={() => setCode(history.find(x => x.id === h.id)?.snippet ?? '')}
+                    onClick={() => {
+                      const entry = history.find(x => x.id === h.id);
+                      if (entry) {
+                        setCode(entry.snippet);
+                        setLanguage(entry.language);
+                      }
+                    }}
                     className="text-xs text-muted-foreground hover:text-foreground font-mono truncate block w-full text-left"
                     title="Restore this snippet"
                   >
-                    {h.snippet}{h.snippet.length >= 60 ? '…' : ''}
+                    {h.label}{h.label.length >= 60 ? '…' : ''}
                   </button>
                 </li>
               ))}
@@ -276,7 +365,8 @@ function CodeRunner() {
 
 function FileManager() {
   const qc = useQueryClient();
-  const [directory] = useState('.');
+  const [directory, setDirectory] = useState('.');
+  const [dirHistory, setDirHistory] = useState<string[]>(['.']);
   const [selectedPath, setSelectedPath] = useState('');
   const [content, setContent] = useState('');
   const [savedContent, setSavedContent] = useState('');
@@ -287,6 +377,19 @@ function FileManager() {
     queryKey: ['workspace-files', directory],
     queryFn: () => toolsApi.listFiles(directory),
   });
+
+  const navigateTo = (path: string) => {
+    setDirectory(path);
+    setDirHistory(prev => [...prev, path]);
+  };
+
+  const navigateBack = () => {
+    if (dirHistory.length > 1) {
+      const newHistory = dirHistory.slice(0, -1);
+      setDirHistory(newHistory);
+      setDirectory(newHistory[newHistory.length - 1]);
+    }
+  };
 
   const openMutation = useMutation({
     mutationFn: (path: string) => toolsApi.readFile(path),
@@ -363,6 +466,21 @@ function FileManager() {
           </div>
         </div>
 
+        {/* Breadcrumb navigation */}
+        <div className="flex items-center gap-1 px-3 py-2 border-b border-border bg-muted/20 text-sm">
+          <button
+            onClick={navigateBack}
+            disabled={dirHistory.length <= 1}
+            className="p-1 hover:bg-muted rounded disabled:opacity-30"
+            aria-label="Navigate back"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <span className="font-mono text-xs text-muted-foreground truncate flex-1" title={directory}>
+            {directory}
+          </span>
+        </div>
+
         <div className="flex-1 overflow-y-auto">
           {isLoading && (
             <div className="p-4 space-y-2">
@@ -386,61 +504,71 @@ function FileManager() {
           )}
           {!isLoading && !isError && files.length > 0 && (
             <ul>
-              {files.map((f: WorkspaceFile) => (
-                <li
-                  key={f.path ?? f.name}
-                  className={`flex items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors group ${
-                    selectedPath === f.path ? 'bg-primary/5 border-l-2 border-primary' : ''
-                  }`}
-                >
-                  {/* Delete confirm inline */}
-                  {deleteTarget === f.path ? (
-                    <div className="flex-1 flex items-center gap-2 text-xs">
-                      <span className="text-red-600 dark:text-red-400">Delete {f.name}?</span>
-                      <button
-                        onClick={() => deleteMutation.mutate(f.path ?? f.name)}
-                        disabled={deleteMutation.isPending}
-                        className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] disabled:opacity-50"
-                      >
-                        {deleteMutation.isPending ? '…' : 'Yes'}
-                      </button>
-                      <button onClick={() => setDeleteTarget(null)} className="text-muted-foreground hover:text-foreground">
-                        No
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => !f.is_dir && openMutation.mutate(f.path ?? f.name)}
-                        className="flex items-center gap-2 text-sm flex-1 min-w-0 text-left"
-                        disabled={!!f.is_dir}
-                      >
-                        {f.is_dir || f.type === 'directory'
-                          ? <Folder className="h-4 w-4 text-amber-500 shrink-0" aria-hidden="true" />
-                          : <FileText className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />}
-                        <div className="min-w-0">
-                          <span className={`truncate block text-xs font-medium ${selectedPath === f.path ? 'text-primary' : 'text-foreground'}`}>
-                            {f.name}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {formatBytes(f.size_bytes)}
-                            {f.modified_at ? ` · ${formatModified(f.modified_at)}` : ''}
-                          </span>
-                        </div>
-                      </button>
-                      {!f.is_dir && f.type !== 'directory' && (
+              {files.map((f: WorkspaceFile) => {
+                const isDir = f.is_dir === true || f.type === 'directory';
+                return (
+                  <li
+                    key={f.path ?? f.name}
+                    className={`flex items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors group ${
+                      selectedPath === f.path ? 'bg-primary/5 border-l-2 border-primary' : ''
+                    }`}
+                  >
+                    {/* Delete confirm inline */}
+                    {deleteTarget === f.path ? (
+                      <div className="flex-1 flex items-center gap-2 text-xs">
+                        <span className="text-red-600 dark:text-red-400">Delete {f.name}?</span>
                         <button
-                          aria-label={`Delete ${f.name}`}
-                          onClick={() => setDeleteTarget(f.path ?? f.name)}
-                          className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+                          onClick={() => deleteMutation.mutate(f.path ?? f.name)}
+                          disabled={deleteMutation.isPending}
+                          className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] disabled:opacity-50"
                         >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          {deleteMutation.isPending ? '…' : 'Yes'}
                         </button>
-                      )}
-                    </>
-                  )}
-                </li>
-              ))}
+                        <button onClick={() => setDeleteTarget(null)} className="text-muted-foreground hover:text-foreground">
+                          No
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            if (isDir) {
+                              navigateTo(`${directory}/${f.name}`.replace('//', '/'));
+                            } else {
+                              openMutation.mutate(f.path ?? f.name);
+                            }
+                          }}
+                          className="flex items-center gap-2 text-sm flex-1 min-w-0 text-left"
+                        >
+                          {isDir
+                            ? <Folder className="h-4 w-4 text-amber-500 shrink-0" aria-hidden="true" />
+                            : <FileText className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />}
+                          <div className="min-w-0">
+                            <span className={`truncate block text-xs font-medium ${selectedPath === f.path ? 'text-primary' : 'text-foreground'}`}>
+                              {f.name}
+                            </span>
+                            {!isDir && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {formatBytes(f.size_bytes)}
+                                {f.modified_at ? ` · ${formatModified(f.modified_at)}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                        {!isDir && (
+                          <button
+                            aria-label={`Delete ${f.name}`}
+                            onClick={() => setDeleteTarget(f.path ?? f.name)}
+                            className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -486,7 +614,9 @@ function FileManager() {
 
 // ── Email Composer ────────────────────────────────────────────────────────────
 
-interface SentItem { to: string; subject: string; ts: Date }
+const SENT_EMAILS_KEY = 'av_sent_emails';
+
+interface SentItem { id: string; to: string; subject: string; preview: string; ts: number }
 
 function EmailComposer() {
   const [to, setTo] = useState('');
@@ -494,7 +624,10 @@ function EmailComposer() {
   const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
-  const [sent, setSent] = useState<SentItem[]>([]);
+  const [sent, setSent] = useState<SentItem[]>(() => {
+    try { return JSON.parse(localStorage.getItem(SENT_EMAILS_KEY) ?? '[]') as SentItem[]; }
+    catch { return []; }
+  });
 
   const sendMutation = useMutation({
     mutationFn: () =>
@@ -502,10 +635,22 @@ function EmailComposer() {
         to: to.includes(',') ? to.split(',').map((s) => s.trim()) : to,
         subject,
         body,
+        cc: cc?.trim() || undefined,
       }),
     onSuccess: () => {
       toast({ kind: 'success', message: 'Email sent successfully.' });
-      setSent((prev) => [{ to, subject, ts: new Date() }, ...prev.slice(0, 2)]);
+      const newSent: SentItem = {
+        id: crypto.randomUUID(),
+        to,
+        subject,
+        preview: body.slice(0, 60),
+        ts: Date.now(),
+      };
+      setSent(prev => {
+        const updated = [newSent, ...prev.slice(0, 9)];
+        localStorage.setItem(SENT_EMAILS_KEY, JSON.stringify(updated));
+        return updated;
+      });
       setTo(''); setCc(''); setSubject(''); setBody('');
     },
     onError: (e) => toast({ kind: 'error', message: `Send failed: ${String(e)}` }),
@@ -611,12 +756,15 @@ function EmailComposer() {
           <p className="px-4 py-6 text-xs text-muted-foreground text-center italic">No emails sent yet.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {sent.map((s, i) => (
-              <li key={i} className="px-4 py-3">
+            {sent.map((s) => (
+              <li key={s.id} className="px-4 py-3">
                 <p className="text-xs font-medium truncate">{s.subject}</p>
                 <p className="text-[10px] text-muted-foreground truncate">To: {s.to}</p>
+                {s.preview && (
+                  <p className="text-[10px] text-muted-foreground truncate italic">{s.preview}…</p>
+                )}
                 <p className="text-[10px] text-muted-foreground">
-                  {s.ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {new Date(s.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </p>
               </li>
             ))}

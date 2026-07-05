@@ -304,10 +304,11 @@ export function RbacPage(): JSX.Element {
   const deleteRole = useMutation({
     mutationFn: (id: string) => rbacApi.deleteRole(id),
     onSuccess: () => {
+      const idToRemove = deleteRoleId;
+      setDeleteRoleId(null);
+      setSelectedIds((prev) => { const n = new Set(prev); if (idToRemove) n.delete(idToRemove); return n; });
       toast({ kind: "success", message: "Role assignment removed" });
       qc.invalidateQueries({ queryKey: ["rbac-roles"] });
-      setDeleteRoleId(null);
-      setSelectedIds((prev) => { const n = new Set(prev); n.delete(deleteRoleId!); return n; });
     },
     onError: (e) => toast({ kind: "error", message: `Failed: ${String(e)}` }),
   });

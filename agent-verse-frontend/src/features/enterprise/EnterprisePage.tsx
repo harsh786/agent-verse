@@ -5,7 +5,7 @@ import {
   Download, Trash2, Globe, AlertTriangle, Shield, CheckCircle2, XCircle,
   ChevronRight, Building,
 } from 'lucide-react';
-import { enterpriseApi } from '@/lib/api/client';
+import { enterpriseApi, apiFetch } from '@/lib/api/client';
 import type { DataResidencyInfo, EnterpriseExportResult } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
@@ -72,6 +72,13 @@ const WIZARD_STEPS = [
   { label: 'Test Connection', description: 'Verify the SSO flow end-to-end' },
 ] as const;
 
+interface SamlTestResult {
+  success: boolean;
+  latency_ms?: number;
+  status_code?: number;
+  message?: string;
+}
+
 function SAMLWizard(): JSX.Element {
   const [step, setStep] = useState(0);
   const [selectedIdp, setSelectedIdp] = useState('');
@@ -79,11 +86,52 @@ function SAMLWizard(): JSX.Element {
   const [attrEmail, setAttrEmail] = useState('email');
   const [attrName, setAttrName] = useState('displayName');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [samlConfig, setSamlConfig] = useState({ metadataXml: '', entityId: '', ssoUrl: '' });
+
+  const testSamlMutation = useMutation({
+    mutationFn: () => apiFetch<SamlTestResult>('/enterprise/saml/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        metadata_xml: samlConfig.metadataXml,
+        entity_id: samlConfig.entityId,
+        sso_url: samlConfig.ssoUrl,
+      }),
+    }),
+    onSuccess: (data) => {
+      if (data.success === false) {
+        setTestStatus('fail');
+        toast({ kind: 'error', message: `SAML test failed: ${data.message ?? 'Unknown error'}` });
+      } else {
+        setTestStatus('ok');
+        toast({ kind: 'success', message: `SAML test passed! IdP responded in ${data.latency_ms ?? 0}ms` });
+      }
+    },
+    onError: (e) => {
+      setTestStatus('fail');
+      toast({ kind: 'error', message: `SAML test failed: ${String(e)}` });
+    },
+  });
 
   const handleTestConnection = (): void => {
     setTestStatus('testing');
-    // Simulate test
-    setTimeout(() => setTestStatus('ok'), 1500);
+    testSamlMutation.mutate();
+  };
+
+  const handleMetadataFile = (file: File): void => {
+    setMetadataFile(file);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const xml = (e.target?.result as string) ?? '';
+      const ssoMatch = /SingleSignOnService[^>]+Location="([^"]+)"/.exec(xml);
+      const entityMatch = /entityID="([^"]+)"/.exec(xml);
+      setSamlConfig(prev => ({
+        ...prev,
+        metadataXml: xml,
+        ssoUrl: ssoMatch?.[1] ?? prev.ssoUrl,
+        entityId: entityMatch?.[1] ?? prev.entityId,
+      }));
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -153,7 +201,7 @@ function SAMLWizard(): JSX.Element {
             onDrop={(e) => {
               e.preventDefault();
               const file = e.dataTransfer.files[0];
-              if (file) setMetadataFile(file);
+              if (file) handleMetadataFile(file);
             }}
             onDragOver={(e) => e.preventDefault()}
             onClick={() => document.getElementById('saml-meta-input')?.click()}
@@ -167,13 +215,38 @@ function SAMLWizard(): JSX.Element {
             type="file"
             accept=".xml"
             className="hidden"
-            onChange={(e) => e.target.files?.[0] && setMetadataFile(e.target.files[0])}
+            onChange={(e) => e.target.files?.[0] && handleMetadataFile(e.target.files[0])}
           />
+          {/* Auto-extracted or manual IdP connection fields */}
+          <div className="grid grid-cols-1 gap-3 pt-1">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                SSO URL <span className="font-normal text-muted-foreground/70">(auto-extracted or enter manually)</span>
+              </label>
+              <input
+                value={samlConfig.ssoUrl}
+                onChange={(e) => setSamlConfig(s => ({ ...s, ssoUrl: e.target.value }))}
+                placeholder="https://idp.example.com/saml/sso"
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Entity ID <span className="font-normal text-muted-foreground/70">(auto-extracted or enter manually)</span>
+              </label>
+              <input
+                value={samlConfig.entityId}
+                onChange={(e) => setSamlConfig(s => ({ ...s, entityId: e.target.value }))}
+                placeholder="https://idp.example.com"
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+          </div>
           <div className="flex gap-2">
             <button onClick={() => setStep(0)} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted">← Back</button>
             <button
               onClick={() => setStep(2)}
-              disabled={!metadataFile}
+              disabled={!metadataFile && !samlConfig.ssoUrl && !samlConfig.entityId}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
             >
               Continue →
@@ -218,13 +291,19 @@ function SAMLWizard(): JSX.Element {
       {step === 3 && (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">{WIZARD_STEPS[3].description}</p>
+          {(samlConfig.ssoUrl || samlConfig.entityId) && (
+            <div className="p-3 bg-muted/40 rounded-lg text-xs space-y-1">
+              {samlConfig.ssoUrl && <p><span className="text-muted-foreground">SSO URL:</span> <span className="font-mono truncate">{samlConfig.ssoUrl}</span></p>}
+              {samlConfig.entityId && <p><span className="text-muted-foreground">Entity ID:</span> <span className="font-mono truncate">{samlConfig.entityId}</span></p>}
+            </div>
+          )}
           <div className="flex items-center gap-3">
             <button
               onClick={handleTestConnection}
-              disabled={testStatus === 'testing'}
+              disabled={testStatus === 'testing' || testSamlMutation.isPending}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
             >
-              {testStatus === 'testing' ? 'Testing…' : 'Test SSO Connection'}
+              {testStatus === 'testing' || testSamlMutation.isPending ? 'Testing…' : 'Test SSO Connection'}
             </button>
             {testStatus === 'ok' && (
               <span className="flex items-center gap-1 text-sm text-green-600">
