@@ -73,8 +73,10 @@ export function Sidebar() {
       items: [
         { to: "/connectors",    icon: Plug,         label: "Connectors"    },
         { to: "/knowledge",     icon: BookOpen,     label: t('nav.knowledge')  },
-        { to: "/schedules",     icon: Calendar,     label: "Schedules"     },
+        { to: "/knowledge-graph", icon: Network,     label: "Knowledge Graph"   },
+        { to: "/schedules",     icon: Calendar,     label: "Schedules"         },
         { to: "/skills",        icon: Sparkles,     label: "Skills"        },
+        { to: "/models",        icon: Brain,        label: "Model Registry" },
         { to: "/collaboration", icon: Users,        label: "Collaboration" },
       ],
     },
