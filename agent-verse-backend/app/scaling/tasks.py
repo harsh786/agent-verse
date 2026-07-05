@@ -861,6 +861,23 @@ def run_goal(
             except Exception as _p3c_exc:
                 logger.debug("phase3_calibration_unavailable: %s", _p3c_exc)
 
+            # Build embedder for pgvector LTM recall (same priority as main.py)
+            _embedder_for_graph = None
+            try:
+                from app.core.config import get_provider_env as _gpe
+                _v_key = _gpe("VOYAGE_API_KEY")
+                _o_key = _gpe("OPENAI_API_KEY")
+                if _v_key:
+                    from app.providers.voyage_provider import VoyageProvider
+                    _embedder_for_graph = VoyageProvider(api_key=_v_key)
+                elif _o_key:
+                    from app.providers.openai_compatible import OpenAICompatibleProvider
+                    _embedder_for_graph = OpenAICompatibleProvider(
+                        api_key=_o_key, default_model="text-embedding-3-small"
+                    )
+            except Exception as _emb_exc:
+                logger.warning("worker_embedder_build_failed: %s", _emb_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
@@ -877,6 +894,7 @@ def run_goal(
                 policy_engine=_policy,
                 exec_memory=_exec_mem,
                 long_term_memory=_ltm,
+                embedder=_embedder_for_graph,
                 eval_runner=_eval,
                 cost_tracker=None,
                 llm_response_cache=_llm_response_cache,
