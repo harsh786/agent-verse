@@ -30,38 +30,12 @@ import { GoalOutcomeHero } from "./components/GoalOutcomeHero";
 import { GoalResultCanvas } from "./components/GoalResultCanvas";
 import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
+import { GoalFeedback } from "./components/GoalFeedback";
+import { GoalExplainPanel } from "./components/GoalExplainPanel";
 import type { GoalEvent } from "@/lib/api/client";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
-type GoalDetailTab = "results" | "evidence" | "execution" | "events" | "eval";
-
-function FeedbackWidget({ goalId }: { goalId: string }) {
-  const [voted, setVoted] = useState<'up' | 'down' | null>(null);
-  const apiKey = useAuthStore(s => s.apiKey) || '';
-
-  const vote = async (isUp: boolean) => {
-    setVoted(isUp ? 'up' : 'down');
-    try {
-      await fetch(`/api/goals/${goalId}/feedback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ rating: isUp ? 5 : 1, is_correct: isUp }),
-      });
-    } catch {}
-  };
-
-  if (voted) return (
-    <p className="text-xs text-muted-foreground mt-2">Thanks for your feedback!</p>
-  );
-
-  return (
-    <div className="flex items-center gap-2 mt-3">
-      <span className="text-xs text-muted-foreground">Was this result helpful?</span>
-      <button onClick={() => vote(true)} className="p-1 rounded hover:bg-muted text-lg">👍</button>
-      <button onClick={() => vote(false)} className="p-1 rounded hover:bg-muted text-lg">👎</button>
-    </div>
-  );
-}
+type GoalDetailTab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
 
 type GoalDetailTabConfig = {
   tab: GoalDetailTab;
@@ -301,6 +275,7 @@ export function GoalDetailPage() {
     execution: null,
     events: null,
     eval: null,
+    explain: null,
   });
 
   const { data: goal, isLoading } = useQuery({
@@ -324,6 +299,7 @@ export function GoalDetailPage() {
     { tab: "execution", label: "Execution" },
     { tab: "events", label: "Developer Log" },
     ...(isTerminal ? [{ tab: "eval", label: "Eval" }] satisfies GoalDetailTabConfig[] : []),
+    ...(isTerminal ? [{ tab: "explain", label: "Why?" }] satisfies GoalDetailTabConfig[] : []),
   ];
   const defaultTab: GoalDetailTab = isTerminal && hasResultArtifact ? "results" : "execution";
   const activeTab: GoalDetailTab = visibleTabs.some(({ tab }) => tab === selectedTab)
@@ -681,7 +657,7 @@ export function GoalDetailPage() {
             artifact={goal.result_artifact}
             onShowExecution={() => selectTab("execution", true)}
           />
-          {goalId && <FeedbackWidget goalId={goalId} />}
+          {goalId && <GoalFeedback goalId={goalId} status={goal.status} />}
         </div>
       )}
 
@@ -970,6 +946,19 @@ export function GoalDetailPage() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Explain tab */}
+      {activeTab === "explain" && (
+        <div
+          id={tabPanelId("explain")}
+          role="tabpanel"
+          aria-labelledby={tabId("explain")}
+          tabIndex={0}
+          className="space-y-4"
+        >
+          <GoalExplainPanel goalId={goalId!} />
         </div>
       )}
 
