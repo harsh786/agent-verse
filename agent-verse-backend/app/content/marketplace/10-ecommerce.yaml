@@ -242,3 +242,54 @@
   revenue_model: "₹10,000/mo per category"
   roi_note: "Revenue uplift avg 4-8% from dynamic repricing; margin maintained"
   version: "1.0.0"
+
+- template_id: tpl-ecommerce-marketplace-analytics
+  slug: ecommerce-marketplace-performance-analytics
+  name: Marketplace Performance Analytics Agent
+  domain: e-commerce
+  description: Analyzes cross-channel marketplace performance (Amazon, Flipkart, own site), identifies winners/losers, and recommends SKU-level pricing and inventory actions.
+  source_use_cases: ["10-ecommerce/UC-7"]
+  system_prompt: >-
+    You are an e-commerce analytics specialist. Analyze SKU performance across all channels. Identify velocity anomalies, stockout risks, price-competitiveness gaps, and conversion rate issues. Ground every recommendation in specific data points — never suggest price changes without citing competitive data.
+  goal_template: "Analyze marketplace performance for brand {brand_name} for {period}. Compare channel performance, identify top/bottom 10 SKUs by velocity, flag price gaps >10% vs competition, and recommend {max_actions} priority actions."
+  parameters_schema:
+    properties:
+      brand_name: {type: string}
+      period: {type: string}
+      max_actions: {type: integer, default: 5}
+    required: [brand_name, period]
+  required_connectors: [database_query, google_sheets, web_search]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Analyze performance for Brand XYZ for Q2 2026. Identify top 10 SKUs and flag price gaps."
+      expected_output_contains: ["SKU", "performance", "recommendation"]
+  tags: [ecommerce, analytics, marketplace, pricing]
+  revenue_model: "₹8,000/analysis run; ₹40,000/mo unlimited"
+  roi_note: "Weekly analysis 6h → 20min; 15% GMV lift from automated repricing signals"
+  version: "1.0.0"
+
+- template_id: tpl-ecommerce-seller-onboarding
+  slug: ecommerce-seller-onboarding-automation
+  name: Seller Onboarding & Compliance Agent
+  domain: e-commerce
+  description: Automates seller verification, GST validation, product listing compliance, and marketplace onboarding documentation.
+  source_use_cases: ["10-ecommerce/UC-9"]
+  system_prompt: >-
+    You are an e-commerce seller onboarding specialist. Verify seller documents (PAN, GSTIN, bank details), check product listings for policy compliance, and generate onboarding checklists. Flag incomplete documents or policy violations immediately. All financial verifications require HITL confirmation.
+  goal_template: "Onboard new seller {seller_name} (GSTIN: {gstin}). Verify all documents in {document_folder}, check first {product_count} product listings for policy compliance, and generate the onboarding summary report."
+  parameters_schema:
+    properties:
+      seller_name: {type: string}
+      gstin: {type: string}
+      document_folder: {type: string}
+      product_count: {type: integer, default: 10}
+    required: [seller_name, gstin, document_folder]
+  required_connectors: [document_reader, gst_portal, email, pdf_generator]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Onboard seller ABC Traders (GSTIN: 29AABCU9603R1ZX). Verify docs and check 10 listings."
+      expected_output_contains: ["verified", "compliance", "onboarding"]
+  tags: [ecommerce, seller-management, compliance, onboarding]
+  revenue_model: "₹500/seller onboarded; ₹15,000/mo unlimited"
+  roi_note: "Manual onboarding 3 days → 4 hours; 90% first-time approval rate"
+  version: "1.0.0"

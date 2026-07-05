@@ -110,6 +110,10 @@ filterwarnings = [
     # setup, Redis pub/sub, audit flusher). These are intentional fire-and-forget; the tasks
     # raise when the event loop closes after the test. They are not test failures.
     "ignore::pytest.PytestUnraisableExceptionWarning",
+    # governance.pricing.estimate_cost() is deprecated in favour of cost_tracker.calculate_cost().
+    # Tests that exercise the legacy function must not fail due to the deprecation warning.
+    # Message-based filter: stacklevel=2 means warning is attributed to the caller, not pricing.py.
+    "ignore:governance.pricing.estimate_cost.*:DeprecationWarning",
 ]
 
 [tool.coverage.report]

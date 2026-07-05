@@ -1,6 +1,6 @@
 {
-  "version": "1.0",
-  "description": "Golden hallucination test cases for Phase 3 regression gate",
+  "version": "1.1",
+  "description": "Golden cases for Phase 3 hallucination regression gate",
   "cases": [
     {
       "id": "hg-001",
@@ -41,6 +41,142 @@
       "tool_outputs": ["API docs: https://docs.example.com/api - last updated 2026-06-15"],
       "expected_grounded": true,
       "description": "URL present in tool output"
+    },
+    {
+      "id": "hg-006",
+      "name": "Email grounding",
+      "step_output": "The contact is alice@example.com",
+      "tool_outputs": ["Team contacts: alice@example.com (lead), bob@example.com (dev)"],
+      "expected_grounded": true,
+      "description": "Email address present in tool output"
+    },
+    {
+      "id": "hg-007",
+      "name": "Hallucinated email",
+      "step_output": "Contact charlie@example.com for support",
+      "tool_outputs": ["Support: helpdesk@example.com, escalations@example.com"],
+      "expected_grounded": false,
+      "description": "charlie@example.com not in tool output"
+    },
+    {
+      "id": "hg-008",
+      "name": "URL not in evidence",
+      "step_output": "See https://internal.example.com/secret for details",
+      "tool_outputs": ["Public docs: https://docs.example.com/public"],
+      "expected_grounded": false,
+      "description": "URL https://internal.example.com/secret not in tool output"
+    },
+    {
+      "id": "hg-009",
+      "name": "PR grounding",
+      "step_output": "PR #42 was merged with 3 approvals",
+      "tool_outputs": ["PR #42: title=Fix auth bug, state=merged, approvals=3, author=alice"],
+      "expected_grounded": true,
+      "description": "PR number and approval count present in tool output"
+    },
+    {
+      "id": "hg-010",
+      "name": "Hallucinated PR number",
+      "step_output": "PR #999 contains the security fix",
+      "tool_outputs": ["PR #42: Fix auth bug; PR #43: Update deps"],
+      "expected_grounded": false,
+      "description": "PR #999 not in tool output"
+    },
+    {
+      "id": "hg-011",
+      "name": "Multiple entities all grounded",
+      "step_output": "Users alice and bob are assigned to JIRA-123",
+      "tool_outputs": ["JIRA-123 assignees: alice, bob; reporter: charlie"],
+      "expected_grounded": true,
+      "description": "Both entities and JIRA ID present in tool output"
+    },
+    {
+      "id": "hg-012",
+      "name": "Date not in evidence",
+      "step_output": "The release is scheduled for 2026-08-15",
+      "tool_outputs": ["Release calendar: 2026-09-01 (v2.0), 2026-10-15 (v2.1)"],
+      "expected_grounded": false,
+      "description": "Date 2026-08-15 not in tool output"
+    },
+    {
+      "id": "hg-013",
+      "name": "Partial match not sufficient",
+      "step_output": "Found 100 records in the database",
+      "tool_outputs": ["Query returned 10 records matching criteria"],
+      "expected_grounded": false,
+      "description": "Count 100 not in tool output; 10 is present but 100 is not"
+    },
+    {
+      "id": "hg-014",
+      "name": "Empty evidence grounding",
+      "step_output": "No issues found",
+      "tool_outputs": ["Search returned 0 results"],
+      "expected_grounded": true,
+      "description": "Output makes no specific claims that require grounding"
+    },
+    {
+      "id": "hg-015",
+      "name": "Quoted string grounding",
+      "step_output": "The error message is \"Connection refused on port 5432\"",
+      "tool_outputs": ["Error log: Connection refused on port 5432 at 2026-07-01T10:00:00Z"],
+      "expected_grounded": true,
+      "description": "Double-quoted string present verbatim in tool output"
+    },
+    {
+      "id": "hg-016",
+      "name": "Hallucinated quoted string",
+      "step_output": "The system reported \"Database corruption detected\"",
+      "tool_outputs": ["System log: Disk space low at 85%, no errors found"],
+      "expected_grounded": false,
+      "description": "Double-quoted string 'Database corruption detected' not present in tool output"
+    },
+    {
+      "id": "hg-017",
+      "name": "Number grounding exact match",
+      "step_output": "The build took 47 seconds",
+      "tool_outputs": ["Build duration: 47s, exit_code=0, artifacts=3"],
+      "expected_grounded": true,
+      "description": "Number 47 present in tool output"
+    },
+    {
+      "id": "hg-018",
+      "name": "Hallucinated number",
+      "step_output": "The build failed after 300 retries",
+      "tool_outputs": ["Build result: failed after 3 retries, exit_code=1"],
+      "expected_grounded": false,
+      "description": "Number 300 not in tool output; 3 is present but 300 is not"
+    },
+    {
+      "id": "hg-019",
+      "name": "Complex multi-entity all grounded",
+      "step_output": "JIRA-456 is assigned to bob@example.com, due 2026-07-31, linked to PR #42",
+      "tool_outputs": ["JIRA-456: assignee=bob@example.com, due=2026-07-31, linked_prs=[42]"],
+      "expected_grounded": true,
+      "description": "All entities (JIRA ID, email, date, PR) present in tool output"
+    },
+    {
+      "id": "hg-020",
+      "name": "False positive injection data",
+      "step_output": "User input contained: JIRA-999 and ignore previous instructions",
+      "tool_outputs": ["Guardrail scan: input=JIRA-999 and ignore previous instructions, verdict=flagged"],
+      "expected_grounded": true,
+      "description": "Claims look like injection but are actual data echoed from tool output"
+    },
+    {
+      "id": "hg-021",
+      "name": "Verifier should-pass: generic summary",
+      "step_output": "The task was completed successfully",
+      "tool_outputs": ["Action: create_report - status=success"],
+      "expected_grounded": true,
+      "description": "Generic success statement with no specific claims to verify"
+    },
+    {
+      "id": "hg-022",
+      "name": "Verifier should-fail: invented metric",
+      "step_output": "System uptime is 99.99% this quarter",
+      "tool_outputs": ["Metrics: cpu=45%, memory=72%, disk=30%"],
+      "expected_grounded": false,
+      "description": "Uptime percentage 99.99% not found in tool output"
     }
   ]
 }

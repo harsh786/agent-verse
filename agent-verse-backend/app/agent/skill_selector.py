@@ -120,6 +120,44 @@ PLATFORM_SKILLS: list[dict[str, Any]] = [
         "allowed_tools": [],
         "token_estimate": 100,
     },
+    {
+        "id": "skill-knowledge-graphify",
+        "name": "knowledge-graphify",
+        "trigger_hints": [
+            "extract entities",
+            "knowledge graph",
+            "entity relation",
+            "map relationships",
+            "ontology",
+        ],
+        "instructions": (
+            "Extract entities and their relationships from content. "
+            "Identify: people, organizations, concepts, events, and how they relate. "
+            "Output as structured JSON: {entities: [...], relationships: [...]}. "
+            "Never invent relationships not present in the source."
+        ),
+        "allowed_tools": ["document_reader", "web_search"],
+        "token_estimate": 110,
+    },
+    {
+        "id": "skill-headroom",
+        "name": "headroom",
+        "trigger_hints": [
+            "compress",
+            "concise",
+            "brief output",
+            "token efficient",
+            "summarize response",
+        ],
+        "instructions": (
+            "Produce maximally concise output. Never restate what the tool already returned"
+            " — cite it. "
+            "Skip ceremony: no 'I found that...', no restating the question. "
+            "Lead with the answer. Use bullet points over prose for lists."
+        ),
+        "allowed_tools": [],
+        "token_estimate": 50,
+    },
 ]
 
 

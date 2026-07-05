@@ -248,3 +248,54 @@
   revenue_model: "₹50/claim audit; ₹20,000/mo unlimited"
   roi_note: "Clean claim rate 72% → 94%; denial revenue recovery ₹15L+/month"
   version: "1.0.0"
+
+- template_id: tpl-healthcare-bed-management
+  slug: healthcare-bed-management-optimization
+  name: Hospital Bed Management & Capacity Planning
+  domain: healthcare
+  description: Tracks bed availability, predicts occupancy, coordinates admissions/discharges, and alerts when capacity thresholds are approached.
+  source_use_cases: ["12-healthcare/UC-5"]
+  system_prompt: >-
+    You are a hospital operations specialist managing bed capacity. Track bed status across wards, predict occupancy based on scheduled procedures and historical patterns, coordinate admission queues, and alert when capacity exceeds 85%. Patient privacy is paramount — never include identifying information in reports.
+  goal_template: "Generate bed management report for {hospital_name} for {date}. Current occupancy: {current_occupancy}%. Alert if any ward exceeds {threshold_pct}% capacity and suggest discharge candidates for {discharge_ward}."
+  parameters_schema:
+    properties:
+      hospital_name: {type: string}
+      date: {type: string, format: date}
+      current_occupancy: {type: number}
+      threshold_pct: {type: number, default: 85}
+      discharge_ward: {type: string, default: "all"}
+    required: [hospital_name, date]
+  required_connectors: [database_query, email, google_sheets]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Generate bed management report for City Hospital for 2026-07-15. Alert if any ward > 85%."
+      expected_output_contains: ["occupancy", "capacity", "ward"]
+  tags: [healthcare, operations, capacity, beds]
+  revenue_model: "₹5,000/month per hospital; enterprise unlimited"
+  roi_note: "Real-time bed visibility reduces patient wait 35%; prevents LAMA due to bed unavailability"
+  version: "1.0.0"
+
+- template_id: tpl-healthcare-clinical-trial-tracking
+  slug: healthcare-clinical-trial-status-tracker
+  name: Clinical Trial Status & Adverse Event Tracker
+  domain: healthcare
+  description: Monitors clinical trial enrollment, tracks adverse events, generates DSMB reports, and ensures protocol compliance.
+  source_use_cases: ["12-healthcare/UC-8"]
+  system_prompt: >-
+    You are a clinical trial coordinator. Monitor enrollment against targets, track all adverse events (AE) with MedDRA coding, generate DSMB safety reports, and flag protocol deviations. SAE (Serious Adverse Events) require immediate notification to the IRB and sponsor within 24 hours. NEVER modify or interpret AE data — only report exactly what is recorded.
+  goal_template: "Generate clinical trial status report for trial {trial_id} as of {report_date}. Include enrollment status, AE summary by grade/category, protocol deviations, and flag any SAEs requiring 24-hour reporting."
+  parameters_schema:
+    properties:
+      trial_id: {type: string}
+      report_date: {type: string, format: date}
+    required: [trial_id, report_date]
+  required_connectors: [database_query, pdf_generator, email]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Generate status report for trial TRIAL-2026-001 as of 2026-07-15."
+      expected_output_contains: ["enrollment", "adverse event", "protocol"]
+  tags: [healthcare, clinical-trials, compliance, pharmacovigilance]
+  revenue_model: "₹10,000/trial/month; ₹80,000/mo unlimited"
+  roi_note: "Manual trial reporting 8h/week → 1h; 100% SAE within-24h notification compliance"
+  version: "1.0.0"

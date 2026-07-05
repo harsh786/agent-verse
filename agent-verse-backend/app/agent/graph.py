@@ -847,6 +847,7 @@ class AgentGraph:
                 ],
                 model=planning_model,
                 response_schema=_response_schema,
+                cache_prefix=system_content,  # stable prefix for Anthropic ephemeral caching
             )
             with self._tracer.start_as_current_span("agentverse.plan") as span:
                 span.set_attribute("plan.iteration", agent_state.iterations)

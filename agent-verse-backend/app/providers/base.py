@@ -48,6 +48,7 @@ class CompletionRequest:
     response_schema: dict[str, Any] | None = None  # JSON Schema; when set, provider MUST
                                                     # return content that is a single valid
                                                     # JSON object matching it
+    cache_prefix: str | None = None  # stable prefix for Anthropic ephemeral caching
 
 
 @dataclass

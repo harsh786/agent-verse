@@ -235,3 +235,55 @@
   revenue_model: "₹5/IoC; ₹15,000/mo unlimited"
   roi_note: "IoC enrichment 20min → 30sec per indicator; analyst coverage 5x"
   version: "1.0.0"
+
+- template_id: tpl-cyber-zero-trust-audit
+  slug: cybersecurity-zero-trust-access-audit
+  name: Zero Trust Access Review & Privilege Audit
+  domain: cybersecurity
+  description: Audits user access permissions against zero-trust principles, identifies over-privileged accounts, and generates remediation recommendations with priority scoring.
+  source_use_cases: ["15-cybersecurity/UC-7"]
+  system_prompt: >-
+    You are a zero-trust security architect. Review all access permissions against the principle of least privilege. Flag accounts with excessive privileges, dormant accounts with active access, and policy violations. Remediation recommendations must include business impact and rollback plan. Never revoke access without HITL approval.
+  goal_template: "Conduct zero-trust access review for {system_name} as of {audit_date}. Review {user_count} accounts, identify over-privileged roles, flag dormant accounts inactive >  {dormant_days} days, and generate remediation plan."
+  parameters_schema:
+    properties:
+      system_name: {type: string}
+      audit_date: {type: string, format: date}
+      user_count: {type: integer}
+      dormant_days: {type: integer, default: 90}
+    required: [system_name, audit_date]
+  required_connectors: [database_query, email, pdf_generator, jira]
+  autonomy_mode: bounded-autonomous
+  eval_fixtures:
+    - goal: "Conduct zero-trust access review for Salesforce CRM as of 2026-07-15. Flag dormant >90 days."
+      expected_output_contains: ["privilege", "dormant", "remediation"]
+  tags: [cybersecurity, zero-trust, access-review, compliance]
+  revenue_model: "₹20,000/access review; ₹1,00,000/mo unlimited"
+  roi_note: "Manual access review 3 weeks → 2 days; 95% reduction in orphaned accounts"
+  version: "1.0.0"
+
+- template_id: tpl-cyber-ransomware-playbook
+  slug: cybersecurity-ransomware-response-playbook
+  name: Ransomware Incident Response Automation
+  domain: cybersecurity
+  description: Guides ransomware incident response — containment, forensics coordination, stakeholder notifications, and recovery orchestration per NIST IR framework.
+  source_use_cases: ["15-cybersecurity/UC-8"]
+  system_prompt: >-
+    You are a ransomware incident response specialist following NIST IR 800-61. On detection, immediately initiate containment procedures. Coordinate forensics, notify required stakeholders (CISO, legal, board), preserve evidence chain of custody, and track recovery milestones. All external communications (regulators, media) require HITL approval. Document everything for post-incident review.
+  goal_template: "Initiate ransomware response for incident {incident_id} detected at {detection_time}. Affected systems: {affected_systems}. Execute containment phase, notify stakeholders in {notification_list}, and generate preliminary impact assessment."
+  parameters_schema:
+    properties:
+      incident_id: {type: string}
+      detection_time: {type: string}
+      affected_systems: {type: string}
+      notification_list: {type: string}
+    required: [incident_id, detection_time, affected_systems]
+  required_connectors: [jira, slack, email, pdf_generator]
+  autonomy_mode: supervised
+  eval_fixtures:
+    - goal: "Initiate ransomware response for INC-2026-001 detected at 02:30 UTC. Affected: web-server-01."
+      expected_output_contains: ["containment", "notification", "impact"]
+  tags: [cybersecurity, ransomware, incident-response, NIST]
+  revenue_model: "₹50,000/incident response; ₹2,00,000/mo retainer"
+  roi_note: "Response time from detection to containment 4h → 45min; MTTR reduced 70%"
+  version: "1.0.0"

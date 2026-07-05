@@ -790,6 +790,12 @@ class GoalService:
         _grounding_checker = GroundingChecker()
         _answer_synthesizer = AnswerSynthesizer(llm_provider=provider)
         _calibration_store = getattr(app_state, "calibration_store", _default_calibration_store)
+        _consensus_verifier = None
+        try:
+            from app.agent.consensus import ConsensusVerifier
+            _consensus_verifier = ConsensusVerifier(primary_verifier=provider) if provider else None
+        except Exception:
+            pass
 
         graph = AgentGraph(
             planner=provider,
@@ -832,6 +838,7 @@ class GoalService:
             grounding_checker=_grounding_checker,
             answer_synthesizer=_answer_synthesizer,
             calibration_store=_calibration_store,
+            consensus_verifier=_consensus_verifier,
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
