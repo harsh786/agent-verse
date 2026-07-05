@@ -20,13 +20,9 @@ def upgrade() -> None:
         sa.Column('promoted_to_golden', sa.Boolean, server_default='false'),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
-    op.execute("""
-        ALTER TABLE goal_feedback ENABLE ROW LEVEL SECURITY;
-        ALTER TABLE goal_feedback FORCE ROW LEVEL SECURITY;
-        CREATE POLICY tenant_isolation ON goal_feedback
-            USING (tenant_id = current_setting('app.tenant_id', TRUE))
-            WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE));
-    """)
+    op.execute("ALTER TABLE goal_feedback ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE goal_feedback FORCE ROW LEVEL SECURITY")
+    op.execute("CREATE POLICY tenant_isolation ON goal_feedback USING (tenant_id = current_setting('app.tenant_id', TRUE)) WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE))")
 
 
 def downgrade() -> None:
