@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Multi-stage build using uv for fast, reproducible installs.
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
@@ -10,15 +9,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first (cached layer) using only the lockfiles.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev --extra browser
+# Avoid BuildKit-only RUN --mount syntax so this image builds on Minikube/Colima
+# Docker daemons that do not ship with buildx.
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --frozen --no-install-project --no-dev --extra browser
 
 # Now copy the app and install the project itself.
 COPY . /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra browser
+RUN uv sync --frozen --no-dev --extra browser
 
 
 FROM python:3.12-slim-bookworm AS runtime
@@ -44,8 +42,10 @@ USER app
 EXPOSE 8000
 
 # Install Playwright Chromium browser as the app user so the runtime process
-# can locate it at /home/app/.cache/ms-playwright.
-RUN .venv/bin/playwright install chromium
+# can locate it at /home/app/.cache/ms-playwright. This is optional for small
+# Minikube smoke profiles; production/RPA builds should keep it enabled.
+ARG INSTALL_PLAYWRIGHT=true
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then .venv/bin/playwright install chromium; else echo "Skipping Playwright browser install"; fi
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"

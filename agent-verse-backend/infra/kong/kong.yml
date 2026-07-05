@@ -1,0 +1,37 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: backend
+    url: http://backend:8000
+    routes:
+      - name: api
+        paths: ["/api"]
+        strip_path: true
+      - name: health
+        paths: ["/health", "/metrics"]
+        strip_path: false
+  - name: frontend
+    url: http://frontend:80
+    routes:
+      - name: frontend
+        paths: ["/"]
+        strip_path: false
+  - name: grafana
+    url: http://grafana:3000
+    routes:
+      - name: grafana
+        paths: ["/grafana"]
+        strip_path: true
+
+plugins:
+  - name: cors
+    config:
+      origins: ["*"]
+      methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+      headers: [Accept, Authorization, Content-Type, X-API-Key, Last-Event-ID]
+      credentials: false
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 100
+      size_unit: megabytes

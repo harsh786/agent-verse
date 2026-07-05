@@ -1,0 +1,64 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentverse.fullname" . }}-redis
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "agentverse.fullname" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+      - name: redis
+        image: {{ .Values.redis.image | quote }}
+        args: ["redis-server", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: REDIS_PASSWORD
+        ports:
+        - name: redis
+          containerPort: 6379
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "redis-cli -a $REDIS_PASSWORD ping | grep PONG"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          {{- toYaml .Values.redis.resources | nindent 10 }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "agentverse.fullname" . }}-redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-redis
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  ports:
+  - name: redis
+    port: {{ .Values.redis.service.port }}
+    targetPort: redis
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+{{- end }}
