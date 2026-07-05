@@ -20,6 +20,10 @@ class ArtifactStoreProtocol(Protocol):
 
     async def delete(self, *, artifact_id: str) -> bool: ...
 
+    async def list_artifacts(
+        self, workspace_id: str | None = None, goal_id: str | None = None
+    ) -> list[dict]: ...
+
 
 @dataclass
 class RPAArtifact:
@@ -197,6 +201,29 @@ class MinIOArtifactStore:
         except Exception:
             return ""
 
+    async def list_artifacts(
+        self, workspace_id: str | None = None, goal_id: str | None = None
+    ) -> list[dict]:
+        """List artifacts in MinIO. Filters by workspace_id prefix or goal_id prefix."""
+        prefix = self._prefix
+        if goal_id:
+            prefix = f"{prefix}/{goal_id}".lstrip("/")
+        elif workspace_id:
+            prefix = f"{prefix}/{workspace_id}".lstrip("/")
+        try:
+            async with await self._get_client() as client:
+                response = await client.list_objects_v2(Bucket=self._bucket, Prefix=prefix, MaxKeys=200)
+                contents = response.get("Contents", [])
+                return [
+                    {"id": obj["Key"].split("/")[1] if "/" in obj["Key"] else obj["Key"],
+                     "name": obj["Key"].split("/")[-1],
+                     "size_bytes": obj.get("Size", 0),
+                     "key": obj["Key"]}
+                    for obj in contents
+                ]
+        except Exception:
+            return []
+
 
 class _RPAArtifactStoreFallback:
     """Fallback to /tmp when MinIO is not available (CI, local dev without Docker)."""
@@ -216,6 +243,36 @@ class _RPAArtifactStoreFallback:
             name=name,
             size_bytes=len(content),
         )
+
+    async def list_artifacts(
+        self, workspace_id: str | None = None, goal_id: str | None = None
+    ) -> list[dict]:
+        """List artifacts from /tmp store. Filters by goal_id or workspace_id substring."""
+        base = Path("/tmp/agentverse-rpa")
+        if not base.exists():
+            return []
+        results = []
+        try:
+            filter_key = goal_id or workspace_id or ""
+            for goal_dir in base.iterdir():
+                if not goal_dir.is_dir():
+                    continue
+                if filter_key and filter_key not in goal_dir.name:
+                    continue
+                for artifact_dir in goal_dir.iterdir():
+                    if not artifact_dir.is_dir():
+                        continue
+                    for f in artifact_dir.iterdir():
+                        if f.is_file():
+                            results.append({
+                                "id": artifact_dir.name,
+                                "name": f.name,
+                                "size_bytes": f.stat().st_size,
+                                "path": str(f),
+                            })
+        except Exception:
+            pass
+        return results
 
 
 def _safe_name(name: str) -> str:
