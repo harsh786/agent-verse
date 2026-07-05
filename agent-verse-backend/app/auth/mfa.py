@@ -103,3 +103,70 @@ async def validate_mfa(body: ValidateRequest, request: Request) -> dict[str, Any
     if not totp.verify(body.code, valid_window=1):
         raise HTTPException(401, "Invalid MFA code.")
     return {"valid": True}
+
+
+# ── MFA-gated login completion ─────────────────────────────────────────────────
+
+
+class MFACompleteRequest(BaseModel):
+    pending_token: str
+    code: str
+
+
+@router.post("/complete")
+async def complete_mfa_login(body: MFACompleteRequest, request: Request) -> dict[str, Any]:
+    """Complete MFA-gated login: validate TOTP code and issue full session.
+
+    Flow:
+      1. OAuth / API-key auth issues a short-lived ``mfa_pending:<token>`` Redis key.
+      2. Client POSTs here with the pending_token + their current TOTP code.
+      3. On success the pending token is consumed (one-time use) and the caller
+         receives ``authenticated=true`` — the actual JWT is minted by the caller
+         using the returned user_id.
+    """
+    redis = getattr(request.app.state, "_rate_limiter_redis", None)
+    if redis is None:
+        raise HTTPException(503, "Session store unavailable")
+
+    # Retrieve the pending user ID
+    user_id_bytes = await redis.get(f"mfa_pending:{body.pending_token}")
+    if not user_id_bytes:
+        raise HTTPException(401, "MFA token expired or invalid. Please log in again.")
+
+    user_id = user_id_bytes.decode() if isinstance(user_id_bytes, bytes) else user_id_bytes
+
+    # Load the user's MFA secret from DB
+    db = getattr(request.app.state, "db_session_factory", None)
+    if not db:
+        raise HTTPException(503, "Database unavailable")
+    from sqlalchemy import text
+    async with db() as session:
+        row = (await session.execute(
+            text("SELECT mfa_secret FROM users WHERE id = :uid"),
+            {"uid": user_id},
+        )).fetchone()
+
+    if not row or not row[0]:
+        raise HTTPException(401, "MFA not enrolled.")
+
+    pyotp = _get_pyotp()
+    import base64 as _b64
+    try:
+        secret = _b64.b64decode(row[0]).decode()
+    except Exception:
+        secret = row[0]
+
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(body.code, valid_window=1):
+        raise HTTPException(401, "Invalid MFA code. Please try again.")
+
+    # Consume the pending token (one-time use)
+    await redis.delete(f"mfa_pending:{body.pending_token}")
+
+    # Issue the full session — actual JWT minting depends on the auth system.
+    # Returning user_id so the caller can mint the session token.
+    return {
+        "authenticated": True,
+        "user_id": user_id,
+        "message": "MFA verified. Login complete.",
+    }
