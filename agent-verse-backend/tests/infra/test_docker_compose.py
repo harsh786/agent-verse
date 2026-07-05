@@ -49,3 +49,41 @@ def test_backend_env_has_embedding_dim():
     backend_env = compose["services"]["backend"].get("environment", {})
     assert "EMBEDDING_DIM" in backend_env, "EMBEDDING_DIM must be in backend environment"
     assert str(backend_env["EMBEDDING_DIM"]) == "1536", "EMBEDDING_DIM must be 1536"
+
+
+# ── PITR / backup tests ────────────────────────────────────────────────────────
+
+def test_pgbackup_service_exists():
+    """Backup service must be defined for PITR readiness."""
+    compose = _load_compose(COMPOSE_PATH)
+    services = compose.get("services", {})
+    assert "pgbackup" in services, (
+        "pgbackup service missing — add a postgres-backup-local or wal-g container"
+    )
+
+
+def test_pgbackup_depends_on_postgres():
+    compose = _load_compose(COMPOSE_PATH)
+    pgbackup = compose["services"].get("pgbackup", {})
+    depends = pgbackup.get("depends_on", {})
+    assert "postgres" in depends or "postgres" in str(depends), (
+        "pgbackup must depend on postgres"
+    )
+
+
+def test_pgbackup_volume_defined():
+    compose = _load_compose(COMPOSE_PATH)
+    volumes = compose.get("volumes", {})
+    assert "pgbackups" in volumes, "pgbackups volume must be defined"
+
+
+def test_all_services_have_restart_policy():
+    compose = _load_compose(COMPOSE_PATH)
+    for name, svc in compose.get("services", {}).items():
+        assert svc.get("restart"), f"Service '{name}' must have a restart policy"
+
+
+def test_postgres_has_healthcheck():
+    compose = _load_compose(COMPOSE_PATH)
+    pg = compose["services"]["postgres"]
+    assert "healthcheck" in pg, "postgres must have a healthcheck"

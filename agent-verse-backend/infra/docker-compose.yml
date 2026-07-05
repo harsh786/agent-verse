@@ -12,6 +12,7 @@ services:
       POSTGRES_USER: agentverse
       POSTGRES_PASSWORD: agentverse
       POSTGRES_DB: agentverse
+      POSTGRES_INITDB_ARGS: "--wal-segsize=16"
     ports:
       - "5432:5432"
     volumes:
@@ -21,6 +22,25 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  pgbackup:
+    image: prodrigestivill/postgres-backup-local:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: agentverse
+      POSTGRES_USER: agentverse
+      POSTGRES_PASSWORD: agentverse
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: "7"
+      BACKUP_KEEP_WEEKS: "4"
+      BACKUP_KEEP_MONTHS: "6"
+      HEALTHCHECK_PORT: "8080"
+    volumes:
+      - pgbackups:/var/opt/pgbackups
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
@@ -39,6 +59,7 @@ services:
   # ── PgBouncer — connection pool proxy ────────────────────────────────────────
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
+    restart: unless-stopped
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -147,6 +168,7 @@ services:
 
   keycloak-db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
@@ -161,6 +183,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
+    restart: unless-stopped
     command: start-dev --import-realm
     environment:
       KEYCLOAK_ADMIN: admin
@@ -265,6 +288,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -282,6 +306,7 @@ services:
 
   mailpit:
     image: axllent/mailpit:latest
+    restart: unless-stopped
     ports:
       - "1025:1025"   # SMTP
       - "8025:8025"   # Web UI
@@ -297,6 +322,7 @@ services:
   # ── OpenTelemetry Collector ───────────────────────────────────────────────────
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.103.0
+    restart: unless-stopped
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
@@ -316,6 +342,7 @@ services:
   # ── Jaeger — distributed tracing UI ──────────────────────────────────────────
   jaeger:
     image: jaegertracing/all-in-one:1.58
+    restart: unless-stopped
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: badger
@@ -354,6 +381,7 @@ services:
 
   searxng:
     image: searxng/searxng:latest
+    restart: unless-stopped
     ports:
       - "8081:8080"
     volumes:
@@ -432,4 +460,6 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  pgbackups:
     driver: local
