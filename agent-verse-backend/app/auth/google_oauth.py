@@ -32,8 +32,36 @@ _CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
 _REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
 _FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
-# In-memory PKCE state store (use Redis in production)
+# In-memory PKCE state store — replaced with Redis helpers when Redis is available
 _pkce_store: dict[str, dict[str, Any]] = {}
+
+
+def _pkce_redis_key(state: str) -> str:
+    return f"pkce_state:{state}"
+
+
+async def _pkce_store_set(state: str, data: dict[str, Any], redis: Any = None) -> None:
+    """Persist PKCE state to Redis (with 5-min TTL) or in-memory fallback."""
+    if redis is not None:
+        import contextlib
+        import json as _json
+        with contextlib.suppress(Exception):
+            await redis.set(_pkce_redis_key(state), _json.dumps(data), ex=300)
+    _pkce_store[state] = data
+
+
+async def _pkce_store_pop(state: str, redis: Any = None) -> dict[str, Any] | None:
+    """Retrieve-and-delete PKCE state from Redis or in-memory fallback."""
+    if redis is not None:
+        import json as _json
+        try:
+            raw = await redis.get(_pkce_redis_key(state))
+            if raw:
+                await redis.delete(_pkce_redis_key(state))
+                return _json.loads(raw)
+        except Exception:
+            pass
+    return _pkce_store.pop(state, None)
 
 
 def _generate_pkce() -> tuple[str, str]:
@@ -53,7 +81,9 @@ async def google_login(request: Request) -> RedirectResponse:
 
     state = secrets.token_urlsafe(32)
     verifier, challenge = _generate_pkce()
-    _pkce_store[state] = {"verifier": verifier, "created_at": time.time()}
+    _redis = getattr(getattr(request, "app", None), "state", None)
+    _redis = getattr(_redis, "redis", None) if _redis else None
+    await _pkce_store_set(state, {"verifier": verifier, "created_at": time.time()}, redis=_redis)
 
     params = {
         "client_id": _CLIENT_ID,
@@ -74,7 +104,9 @@ async def google_callback(
     request: Request = None,  # type: ignore[assignment]
 ) -> JSONResponse:
     """Exchange auth code for tokens, upsert user, mint AgentVerse JWT."""
-    pkce = _pkce_store.pop(state, None)
+    _redis = getattr(getattr(request, "app", None), "state", None)
+    _redis = getattr(_redis, "redis", None) if _redis else None
+    pkce = await _pkce_store_pop(state, redis=_redis)
     if not pkce:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 

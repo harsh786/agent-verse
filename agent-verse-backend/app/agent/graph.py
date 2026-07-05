@@ -217,6 +217,10 @@ class AgentGraph:
         step_callback: Any | None = None,
         # Phase 3 Track C — citation-carrying synthesis
         answer_synthesizer: Any | None = None,
+        # Phase 3 Track D — grounding, consensus, calibration
+        grounding_checker: Any | None = None,
+        consensus_verifier: Any | None = None,
+        calibration_store: Any | None = None,
         **kwargs: Any,
     ) -> None:
         self._planner = planner
@@ -253,6 +257,9 @@ class AgentGraph:
         self._cost_tracker = cost_tracker
         self._step_callback = step_callback
         self._answer_synthesizer = answer_synthesizer
+        self._grounding_checker = grounding_checker
+        self._consensus_verifier = consensus_verifier
+        self._calibration_store = calibration_store
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -387,6 +394,20 @@ class AgentGraph:
         tenant_ctx: TenantContext = state["tenant_ctx"]
         context_parts: list[str] = []
 
+        # Select retrieval strategy using RetrievalPlanner heuristics
+        try:
+            from app.rag.engine import RetrievalPlanner
+            planner = RetrievalPlanner()
+            strategy = planner.select_strategy(agent_state.goal)
+            agent_state.context["retrieval_strategy"] = strategy
+            self._logger.debug(
+                "retrieval_strategy_selected",
+                strategy=strategy,
+                goal=agent_state.goal[:60],
+            )
+        except Exception:
+            pass
+
         # 1. Execution memory: recall past winning plans (DB-backed async recall, BUG 2 fix)
         if self._exec_memory is not None:
             exec_plans: list[dict] = []
@@ -509,6 +530,66 @@ class AgentGraph:
                         )
             except Exception as _ks_exc:
                 self._logger.warning("knowledge_store_rag_failed", error=str(_ks_exc))
+
+        # Enhanced retrieval using RRF engine when DB session factory is available
+        if self._db_session_factory is not None and self._embedder is not None:
+            try:
+                from app.providers.base import EmbedRequest
+                from app.rag.engine import hybrid_search
+
+                _rrf_strategy = agent_state.context.get("retrieval_strategy", "hybrid")
+                # Map RetrievalPlanner strategy to engine retrieval_mode
+                _mode = (
+                    _rrf_strategy
+                    if _rrf_strategy in ("hybrid", "lexical", "vector")
+                    else "hybrid"
+                )
+
+                _rrf_embed_resp = await self._embedder.embed(
+                    EmbedRequest(texts=[agent_state.goal])
+                )
+                _rrf_query_embedding: list[float] | None = (
+                    _rrf_embed_resp.embeddings[0] if _rrf_embed_resp.embeddings else None
+                )
+
+                # Determine collections to search (mirror KnowledgeStore logic)
+                _rrf_collections = list(self._agent_collection_ids[:2])
+                if not _rrf_collections and self._knowledge_store is not None:
+                    try:
+                        _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+                        _rrf_collections = [c.collection_id for c in _all_cols[:2]]
+                    except Exception:
+                        pass
+
+                if _rrf_collections:
+                    async with self._db_session_factory() as _rrf_session:
+                        for _rrf_cid in _rrf_collections:
+                            _rrf_results = await hybrid_search(
+                                _rrf_session,
+                                query=agent_state.goal,
+                                query_embedding=_rrf_query_embedding,
+                                collection_id=_rrf_cid,
+                                top_k=5,
+                                retrieval_mode=_mode,
+                            )
+                            if _rrf_results:
+                                _rrf_text = "\n\n".join(
+                                    f"[RRF:{r.score:.3f}|{','.join(r.retrieval_legs)}] "
+                                    f"{r.content[:300]}"
+                                    for r in _rrf_results[:3]
+                                )
+                                context_parts.append(
+                                    f"[RRF knowledge: {_rrf_cid}]\n{_rrf_text}"
+                                )
+                                self._logger.debug(
+                                    "rrf_engine_retrieval_hit",
+                                    collection=_rrf_cid,
+                                    results=len(_rrf_results),
+                                    strategy=_rrf_strategy,
+                                    mode=_mode,
+                                )
+            except Exception:
+                pass  # fall through — never block execution on retrieval enhancement
 
         rag_context = "\n\n".join(context_parts)
         return {"rag_context": rag_context}
@@ -2194,6 +2275,12 @@ class AgentGraph:
                     )
                     raw_output = annotate_ungrounded(raw_output, _ground_result)
                     state.ungrounded_claims.extend(_ground_result.ungrounded_claims[:5])
+                    # C4: Mark the current step as UNGROUNDED
+                    if state.steps:
+                        _last_step = state.steps[-1]
+                        if hasattr(_last_step, "status"):
+                            from app.agent.state import StepStatus
+                            _last_step.status = StepStatus.UNGROUNDED
                     await self._emit({
                         "type": "grounding_warning",
                         "ungrounded_claims": _ground_result.ungrounded_claims[:5],
@@ -2370,6 +2457,40 @@ class AgentGraph:
         # Store retry flag for routing: True = can replan, False = permanently blocked
         retry: bool = bool(parsed.get("retry", True)) if not success else True
         agent_state.context["verification_retry"] = retry
+
+        # C5: 3-way consensus for high-risk goals
+        if self._consensus_verifier is not None and not success:
+            # Only attempt consensus when primary verifier says fail (to save cost)
+            try:
+                from app.agent.consensus import requires_consensus
+                tool_risks = [
+                    tc.risk_level
+                    for step in agent_state.steps
+                    for tc in getattr(step, "tool_calls", [])
+                ]
+                if requires_consensus(
+                    agent_state.goal,
+                    agent_state.context.get("domain"),
+                    tool_risks,
+                ):
+                    consensus_result = await self._consensus_verifier.verify(
+                        goal=agent_state.goal,
+                        summary=summary,
+                        model=_verify_model,
+                    )
+                    success = consensus_result.success
+                    reason = consensus_result.majority_reason or reason
+                    # HITL if disagreement
+                    if consensus_result.requires_hitl and self._hitl_gateway is not None:
+                        req_id = str(self._hitl_gateway.request_approval(
+                            goal_id=agent_state.goal_id,
+                            action=f"Consensus disagreement on goal: {agent_state.goal[:100]}",
+                            risk_level="high",
+                            tenant_ctx=tenant_ctx,
+                        ))
+                        self._logger.info("consensus_hitl_requested", req_id=req_id)
+            except Exception as exc:
+                self._logger.warning("consensus_verify_failed", error=str(exc)[:80])
 
         agent_state.verification_success = success
         agent_state.verification_feedback = reason

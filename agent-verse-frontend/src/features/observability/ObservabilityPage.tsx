@@ -11,6 +11,7 @@ import {
 } from 'recharts';
 import { useAuthStore } from '@/stores/auth';
 import { observabilityApi } from '@/lib/api/client';
+import { TraceExplorer } from './TraceExplorer';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
@@ -812,7 +813,15 @@ export function ObservabilityPage() {
           onRefresh={() => refetchMetrics()}
         />
       )}
-      {tab === 'traces' && <TracesTab apiKey={apiKey} />}
+      {tab === 'traces' && (
+        <div className="space-y-6">
+          <TracesTab apiKey={apiKey} />
+          <div>
+            <h3 className="text-sm font-semibold text-foreground mb-2">Goal Execution Traces</h3>
+            <TraceExplorer />
+          </div>
+        </div>
+      )}
       {tab === 'logs' && <LogsTab />}
     </div>
   );

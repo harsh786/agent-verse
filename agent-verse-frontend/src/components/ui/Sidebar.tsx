@@ -7,6 +7,7 @@ import {
   GitBranch, FlaskConical, BarChart2, Globe,
   Brain, FileBox, Wrench, Webhook, GraduationCap, Eye, Network,
   Bell, KeyRound, FileLock, X, Package, Ghost, TrendingUp, LayoutGrid,
+  Hammer,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -53,6 +54,7 @@ export function Sidebar() {
         { to: "/connectors",    icon: Plug,         label: "Connectors"    },
         { to: "/knowledge",     icon: BookOpen,     label: "Knowledge"     },
         { to: "/schedules",     icon: Calendar,     label: "Schedules"     },
+        { to: "/skills",        icon: Sparkles,     label: "Skills"        },
         { to: "/collaboration", icon: Users,        label: "Collaboration" },
       ],
     },
@@ -73,6 +75,7 @@ export function Sidebar() {
     {
       heading: "Enterprise",
       items: [
+        { to: "/builder",             icon: Hammer,       label: "AI Builder"       },
         { to: "/marketplace",         icon: ShoppingBag,  label: "Marketplace"      },
         { to: "/domains",             icon: LayoutGrid,   label: "Domains"          },
         { to: "/observability",       icon: Activity,     label: "Observability"    },

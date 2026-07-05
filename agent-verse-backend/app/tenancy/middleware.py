@@ -211,6 +211,23 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         request.state.tenant = tenant_ctx
 
+        # ── MFA enforcement (when enabled) ───────────────────────────────────
+        from app.core.config import get_settings as _get_settings
+        _settings = _get_settings()
+        if _settings.mfa_enforcement_enabled:
+            mfa_enabled = getattr(tenant_ctx, "mfa_enabled", False)
+            if mfa_enabled:
+                mfa_token = request.headers.get("X-MFA-Token")
+                if not mfa_token:
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": "mfa_required",
+                            "detail": "This account requires MFA. Provide X-MFA-Token header.",
+                        },
+                    )
+                # TODO: validate TOTP token (Phase 14 full implementation)
+
         # ── Rate limiting (check BEFORE processing; headers added AFTER) ──────
         rl_limit: int | None = None
         rl_remaining: int | None = None

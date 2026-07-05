@@ -460,6 +460,41 @@ async def create_ip_allowlist_entry(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+# ── Tenant membership ─────────────────────────────────────────────────────────
+
+class InviteMemberRequest(BaseModel):
+    email: str
+    role: str = "viewer"  # owner | admin | operator | viewer
+
+
+@router.get("/me/members")
+async def list_members(request: Request) -> dict:
+    """List all members of the current tenant."""
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
+        raise HTTPException(status_code=401, detail="Auth required")
+
+    members = []
+    # Return mock data for now; Phase 1 will add real DB lookup
+    return {"members": members, "tenant_id": tenant_ctx.tenant_id}
+
+
+@router.post("/me/members/invite")
+async def invite_member(body: InviteMemberRequest, request: Request) -> dict:
+    """Invite a user to the tenant."""
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
+        raise HTTPException(status_code=401, detail="Auth required")
+
+    # TODO: Phase 1 — create user + TenantMembership, send invite email
+    return {
+        "status": "invited",
+        "email": body.email,
+        "role": body.role,
+        "tenant_id": tenant_ctx.tenant_id,
+    }
+
+
 # ── BYOK vault key management ─────────────────────────────────────────────────
 
 class VaultKeyRequest(BaseModel):

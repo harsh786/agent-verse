@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     saml_acs_url: str = ""  # Assertion Consumer Service URL
     saml_name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 
+    # --- security / MFA ---
+    mfa_enforcement_enabled: bool = Field(
+        default=False, description="Enforce MFA for mfa_enabled users"
+    )
+
     # --- SIEM Integration ---
     siem_type: str = ""   # "splunk" | "elasticsearch" | "datadog" | "cef" | "leef" | "webhook"
     siem_endpoint: str = ""
