@@ -426,7 +426,8 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         #    full enforcement path below so role-based restrictions are honoured.
         tenant_roles: tuple[str, ...] = getattr(tenant, "roles", ())
         if not tenant_roles:
-            # Check env flag for legacy/migration mode
+            # Check env flag for legacy/migration mode.
+            # Env var: SCOPE_ENFORCEMENT_LEGACY_ALLOW=true enables pass-through for role-less keys.
             from app.core.config import get_settings as _gs
             _legacy = _gs().scope_enforcement_legacy_allow
             if _legacy:
