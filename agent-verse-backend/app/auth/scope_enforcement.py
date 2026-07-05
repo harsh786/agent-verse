@@ -426,23 +426,24 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         #    full enforcement path below so role-based restrictions are honoured.
         tenant_roles: tuple[str, ...] = getattr(tenant, "roles", ())
         if not tenant_roles:
-            # Check legacy allow flag for backward compatibility
-            import os
-            if os.getenv("SCOPE_ENFORCEMENT_LEGACY_ALLOW", "false").lower() == "true":
-                return await call_next(request)  # legacy: allow (migration window only)
-            # Default secure: deny access to no-roles keys on protected endpoints
-            # Allow read-only GET requests for backward compat (gradual migration)
-            if request.method in ("GET", "HEAD", "OPTIONS"):
-                return await call_next(request)  # allow reads
+            # Check env flag for legacy/migration mode
+            from app.core.config import get_settings as _gs
+            _legacy = _gs().scope_enforcement_legacy_allow
+            if _legacy:
+                return await call_next(request)
+            # Default-secure: role-less keys still checked for non-read methods
+            if request.method in {"GET", "HEAD", "OPTIONS"}:
+                # Allow reads for gradual migration — log warning
+                import logging as _log
+                _log.getLogger(__name__).debug("scope_no_roles_read_allowed path=%s", request.url.path)
+                return await call_next(request)
+            # Block writes/deletes for role-less keys by default
             return JSONResponse(
                 status_code=403,
                 content={
-                    "error": "forbidden",
-                    "detail": (
-                        "API key has no role assignments. "
-                        "Assign roles to enable write access."
-                    ),
-                    "correlation_id": getattr(request.state, "correlation_id", ""),
+                    "error": "INSUFFICIENT_SCOPE",
+                    "detail": "API key has no roles assigned. Assign roles to enable write access.",
+                    "granted_scopes": [],
                 },
             )
 
