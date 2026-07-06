@@ -19,18 +19,21 @@ jobs:
   deploy:
     name: Build and deploy full stack to local Minikube
     runs-on: [self-hosted, macOS, ARM64, agentverse-local, minikube]
+    env:
+      MINIKUBE_PROFILE: agentverse
     steps:
       - uses: actions/checkout@v4
 
       - name: Ensure Minikube is running
         run: |
-          minikube status || minikube start --cpus=4 --memory=7168 --disk-size=40g
+          minikube -p "$MINIKUBE_PROFILE" status || minikube -p "$MINIKUBE_PROFILE" start --cpus=4 --memory=7600 --disk-size=60g
+          kubectl config use-context "$MINIKUBE_PROFILE"
           kubectl cluster-info
 
       - name: Build local images inside Minikube Docker
         run: |
           set -euo pipefail
-          eval $(minikube docker-env)
+          eval $(minikube -p "$MINIKUBE_PROFILE" docker-env)
           docker build -t agentverse/backend:local ./agent-verse-backend \
             --build-arg INSTALL_PLAYWRIGHT=${{ github.event.inputs.install_playwright }}
           docker build -t agentverse/frontend:local ./agent-verse-frontend \
@@ -59,7 +62,7 @@ jobs:
       - name: Smoke test via Kong NodePort
         run: |
           set -euo pipefail
-          URL="http://$(minikube ip):30080"
+          URL="http://$(minikube -p "$MINIKUBE_PROFILE" ip):30080"
           echo "Gateway: $URL"
           curl -fsS "$URL/health"
           curl -fsS "$URL/api/health" || curl -fsS "$URL/health"

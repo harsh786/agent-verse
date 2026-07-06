@@ -30,13 +30,14 @@ Install:
 Start Minikube:
 
 ```bash
-minikube start --cpus=6 --memory=12288 --disk-size=60g
+minikube -p agentverse start --cpus=4 --memory=7600 --disk-size=60g
+kubectl config use-context agentverse
 ```
 
 Use Minikube's Docker daemon so locally-built images are visible to the cluster:
 
 ```bash
-eval $(minikube docker-env)
+eval $(minikube -p agentverse docker-env)
 ```
 
 ## Build Images
@@ -162,13 +163,13 @@ kubectl -n agentverse get pods -w
 Kong is exposed as NodePort `30080` by default.
 
 ```bash
-minikube service -n agentverse agentverse-agentverse-kong --url
+minikube -p agentverse service -n agentverse agentverse-agentverse-kong --url
 ```
 
 Or use:
 
 ```bash
-export AGENTVERSE_URL="http://$(minikube ip):30080"
+export AGENTVERSE_URL="http://$(minikube -p agentverse ip):30080"
 open "$AGENTVERSE_URL"
 ```
 
