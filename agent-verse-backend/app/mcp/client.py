@@ -318,6 +318,17 @@ class MCPClient:
             headers["Accept"] = "application/json, text/event-stream"
             headers["Content-Type"] = "application/json"
 
+        # SSRF guard — validate URL before any outbound HTTP call
+        _disc_url = _absolute_http_url(cfg.url or cfg.base_url or "")
+        if _disc_url and not _disc_url.startswith("builtin://"):
+            try:
+                assert_public_url(_disc_url, context=f"MCP discover_tools {server_id}")
+            except SSRFError as exc:
+                logger.warning(
+                    "ssrf_guard_blocked_discover: server_id=%s, error=%s", server_id, str(exc)
+                )
+                raise ValueError(f"Connector URL blocked by SSRF guard: {exc}") from exc
+
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 if is_mcp_endpoint:

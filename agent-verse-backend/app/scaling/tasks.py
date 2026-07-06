@@ -11,6 +11,8 @@ import time
 from datetime import UTC
 from typing import Any, cast
 
+from celery.signals import worker_init as _worker_init
+
 from app.observability.logging import get_logger
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
@@ -69,6 +71,45 @@ def _get_sync_redis() -> Any:
     """Get a synchronous Redis client using the module-level pool."""
     import redis
     return redis.Redis(connection_pool=_get_redis_pool())
+
+
+# ── Module-level LangGraph checkpointer for Celery workers ────────────────────
+# Set once per worker process by _setup_worker_checkpointer (worker_init signal).
+# None → AgentGraph falls back to MemorySaver (state lost on worker restart).
+_WORKER_CHECKPOINTER: Any = None
+
+
+@_worker_init.connect
+def _setup_worker_checkpointer(**kwargs: Any) -> None:
+    """Called once when the Celery worker process starts.
+
+    Wires a Redis-backed LangGraph checkpointer so that goal state survives
+    across retries and worker restarts.  Falls back to MemorySaver (None)
+    when REDIS_URL is unset or the Redis connection cannot be established.
+    """
+    global _WORKER_CHECKPOINTER
+    import logging as _logging
+
+    redis_url = os.getenv("REDIS_URL", "")
+    if not redis_url:
+        _logging.getLogger(__name__).warning(
+            "REDIS_URL not set — Celery worker using MemorySaver "
+            "(goal state will be lost on worker restart)"
+        )
+        return
+    try:
+        from langgraph.checkpoint.redis import RedisSaver
+
+        _raw = RedisSaver.from_conn_string(redis_url)
+        # langgraph-checkpoint-redis >= 0.0.6 returns a sync context manager;
+        # enter it to obtain the real saver instance.
+        _WORKER_CHECKPOINTER = _raw.__enter__() if hasattr(_raw, "__enter__") else _raw
+        _logging.getLogger(__name__).info("celery_worker_redis_checkpointer_ready")
+    except Exception as exc:
+        _logging.getLogger(__name__).warning(
+            "celery_worker_checkpointer_failed error=%s — falling back to MemorySaver",
+            exc,
+        )
 
 
 class _SyncGoalLock:
@@ -914,6 +955,8 @@ def run_goal(
                 cost_tracker=None,
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
+                # Redis-backed checkpointer set by worker_init signal; None → MemorySaver
+                checkpointer=_WORKER_CHECKPOINTER,
                 # Phase 3 services — grounding, consensus, synthesis, calibration
                 grounding_checker=_phase3_grounding,
                 answer_synthesizer=_phase3_synthesizer,

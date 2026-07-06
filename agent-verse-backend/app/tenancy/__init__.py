@@ -2,7 +2,7 @@
 
 from app.tenancy.context import PLAN_LIMITS, PlanLimits, PlanTier, TenantContext
 from app.tenancy.middleware import KeyResolver, SecurityHeadersMiddleware, TenantMiddleware
-from app.tenancy.rate_limiter import SlidingWindowRateLimiter
+from app.tenancy.rate_limiter import RateLimiter, SlidingWindowRateLimiter
 from app.tenancy.store import TenantScopedStore
 
 __all__ = [
@@ -10,6 +10,7 @@ __all__ = [
     "KeyResolver",
     "PlanLimits",
     "PlanTier",
+    "RateLimiter",
     "SecurityHeadersMiddleware",
     "SlidingWindowRateLimiter",
     "TenantContext",

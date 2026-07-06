@@ -91,7 +91,35 @@ def test_get_vault_uses_development_fallback_without_key(monkeypatch: pytest.Mon
     monkeypatch.delenv("VAULT_MASTER_KEY_FILE", raising=False)
     monkeypatch.delenv("AGENTVERSE_VAULT_KEY", raising=False)
     monkeypatch.delenv("AGENTVERSE_VAULT_KEY_FILE", raising=False)
+    monkeypatch.setenv("ALLOW_DEV_VAULT", "true")  # suppress warning for this test
 
     vault = get_vault()
 
     assert vault.decrypt(vault.encrypt("dev-secret")) == "dev-secret"
+
+
+def test_dev_vault_emits_warning_without_allow_dev(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_DEV_VAULT", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.providers.vault"):
+        from app.providers import vault as vault_module
+
+        vault_module._get_master_key()
+    assert any(
+        "VAULT SECURITY WARNING" in r.message or "dev-insecure" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_production_vault_raises_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    from app.providers import vault as vault_module
+
+    with pytest.raises(RuntimeError, match="VAULT_MASTER_KEY must be set"):
+        vault_module._get_master_key()

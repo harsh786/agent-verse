@@ -1,0 +1,8 @@
+[allowlist]
+  description = "Global allowlist — test fixtures with obviously fake credentials"
+  regexes = [
+    "test-key",
+    "fake-api-key",
+    "sk-your-key-here",
+    "dev-insecure-master-key",
+  ]

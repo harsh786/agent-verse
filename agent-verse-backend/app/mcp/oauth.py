@@ -52,13 +52,33 @@ _OAUTH_STATE_TTL = 600  # 10 minutes
 class OAuthFlowManager:
     """Manages PKCE OAuth 2.0 authorization code flows."""
 
-    def __init__(self) -> None:
+    def __init__(self, vault: Any = None) -> None:
+        # vault may be injected from app.state; None means plaintext storage (dev mode)
+        self._vault = vault
         # state_token → OAuthState
         self._pending_flows: dict[str, OAuthState] = {}
         # (tenant_id, server_id) → OAuthToken
         self._tokens: dict[tuple[str, str], OAuthToken] = {}
         # Set externally to enable DB persistence
         self._db_session_factory: Any = None
+
+    def _encrypt_token(self, value: str) -> str:
+        """Encrypt *value* using the vault if available, else return as-is."""
+        if self._vault is not None and value:
+            try:
+                return self._vault.encrypt(value)
+            except Exception:
+                pass
+        return value
+
+    def _decrypt_token(self, value: str) -> str:
+        """Decrypt *value* using the vault if available, else return as-is."""
+        if self._vault is not None and value:
+            try:
+                return self._vault.decrypt(value)
+            except Exception:
+                pass
+        return value
 
     def _cleanup_expired_flows(self) -> None:
         """Remove OAuth state tokens older than 10 minutes."""
@@ -243,15 +263,8 @@ class OAuthFlowManager:
             from sqlalchemy import text
 
             expires_at = datetime.now(UTC) + timedelta(seconds=max(token.expires_in, 60))
-            # Encrypt tokens before storage if vault is available
-            access_enc = token.access_token
-            refresh_enc = token.refresh_token or ""
-            if hasattr(self, "_vault") and self._vault:
-                try:
-                    access_enc = self._vault.encrypt(token.access_token)
-                    refresh_enc = self._vault.encrypt(token.refresh_token or "")
-                except Exception:
-                    pass
+            access_enc = self._encrypt_token(token.access_token)
+            refresh_enc = self._encrypt_token(token.refresh_token or "")
             async with self._db_session_factory() as session, session.begin():
                 await session.execute(
                     text(
@@ -298,16 +311,8 @@ class OAuthFlowManager:
                 )
                 rows = result.fetchall()
             for row in rows:
-                access = row[2]
-                refresh = row[3]
-                # Decrypt if vault available
-                if hasattr(self, "_vault") and self._vault:
-                    try:
-                        access = self._vault.decrypt(access)
-                        if refresh:
-                            refresh = self._vault.decrypt(refresh)
-                    except Exception:
-                        pass
+                access = self._decrypt_token(row[2])
+                refresh = self._decrypt_token(row[3]) if row[3] else ""
                 expires_in = int(
                     (
                         row[4].replace(tzinfo=UTC) - datetime.now(UTC)

@@ -12,15 +12,44 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+import logging as _logging
 import os
 from collections.abc import MutableMapping
 from typing import Any
 
 from cryptography.fernet import Fernet
 
+_vault_log = _logging.getLogger(__name__)
+
 _DEV_INSECURE_MASTER_KEY = "dev-insecure-master-key"
 _CONNECTOR_SECRET_PREFIX = "vault://connectors/"
 _CONNECTOR_SECRET_STORE: dict[str, str] = {}
+
+
+def _get_master_key() -> str:
+    """Return the vault master key from the environment.
+
+    - Raises ``RuntimeError`` if ``ENVIRONMENT=production`` and no key is set.
+    - Logs a prominent WARNING in development when the insecure dev key is used
+      without ``ALLOW_DEV_VAULT=true`` acknowledgment.
+    """
+    key = os.getenv("VAULT_MASTER_KEY", "")
+    if key:
+        return key
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    if env == "production":
+        raise RuntimeError(
+            "VAULT_MASTER_KEY must be set in production. "
+            "Set VAULT_MASTER_KEY environment variable."
+        )
+    allow_dev = os.getenv("ALLOW_DEV_VAULT", "").lower() in ("true", "1", "yes")
+    if not allow_dev:
+        _vault_log.warning(
+            "VAULT SECURITY WARNING: Using dev-insecure-master-key because "
+            "VAULT_MASTER_KEY is not set. Encrypted credentials are NOT secure. "
+            "Set ALLOW_DEV_VAULT=true to suppress this warning in development."
+        )
+    return _DEV_INSECURE_MASTER_KEY
 
 
 def connector_secret_ref(server_id: str, key: str) -> str:
@@ -334,5 +363,5 @@ def get_vault() -> CredentialVault:
             "VAULT_MASTER_KEY_FILE, or VAULT_MASTER_KEY."
         )
 
-    master_key = _DEV_INSECURE_MASTER_KEY
+    master_key = _get_master_key()  # emits warning unless ALLOW_DEV_VAULT=true
     return CredentialVault(master_key=master_key)

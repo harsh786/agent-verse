@@ -640,11 +640,29 @@ async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[s
 
 @router.get("/batch/{batch_id}/status")
 async def get_batch_status(request: Request, batch_id: str) -> dict[str, Any]:
-    """Get status summary for a batch submission (track individual goal_ids for details)."""
-    _require_tenant(request)
+    """Get status summary for a batch submission."""
+    tenant_ctx = _require_tenant(request)
+    svc = _goal_service(request)
+
+    # batch_id is a comma-separated list of goal_ids
+    goal_ids = [g.strip() for g in batch_id.split(",") if g.strip()]
+
+    statuses = []
+    for gid in goal_ids[:50]:  # cap at 50 to prevent abuse
+        try:
+            goal = await svc.get_goal(goal_id=gid, tenant_ctx=tenant_ctx)
+            statuses.append({"goal_id": gid, "status": goal.get("status"), "error": None})
+        except Exception as exc:
+            statuses.append({"goal_id": gid, "status": "not_found", "error": str(exc)})
+
+    all_done = all(
+        s["status"] in ("complete", "failed", "cancelled", "not_found") for s in statuses
+    )
     return {
         "batch_id": batch_id,
-        "message": "Track individual goal_ids from batch submission",
+        "goals": statuses,
+        "all_complete": all_done,
+        "total": len(statuses),
     }
 
 
@@ -702,14 +720,14 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
     try:
         from sqlalchemy import text
 
+        from app.db.rls import sqlalchemy_rls_context
         from app.db.session import get_session_factory
 
         db = get_session_factory()
         if db is None:
             return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
 
-        async with db() as session:
-            await session.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
+        async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             rows = (await session.execute(text("""
                 SELECT
                     gl.id, gl.root_goal_id, gl.parent_goal_id, gl.child_goal_id,
@@ -769,14 +787,14 @@ async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, An
     try:
         from sqlalchemy import text
 
+        from app.db.rls import sqlalchemy_rls_context
         from app.db.session import get_session_factory
 
         db = get_session_factory()
         if db is None:
             return []
 
-        async with db() as session:
-            await session.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
+        async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             rows = (await session.execute(text("""
                 SELECT id, attempt_number, strategy, enriched_goal, started_at,
                        ended_at, succeeded, failure_reason, iterations_used,
@@ -862,6 +880,41 @@ async def submit_goal_feedback(
                     break
         except Exception:
             pass
+
+    # Persist to goal_feedback table (migration 0082)
+    try:
+        import uuid as _uuid
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        _db = get_session_factory()
+        if _db is not None:
+            async with (
+                _db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                await session.execute(
+                    text("""
+                        INSERT INTO goal_feedback
+                            (id, goal_id, tenant_id, rating, correction, created_at)
+                        VALUES
+                            (:id, :goal_id, :tenant_id, :rating, :correction, NOW())
+                    """),
+                    {
+                        "id": str(_uuid.uuid4()),
+                        "goal_id": goal_id,
+                        "tenant_id": tenant_ctx.tenant_id,
+                            "rating": body.rating,
+                            "correction": body.comment or None,
+                        },
+                    )
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning("goal_feedback_persist_failed: %s", _exc)
 
     return {
         "goal_id": goal_id,
