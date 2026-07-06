@@ -631,37 +631,30 @@ async def test_http_status_error_returns_dict(module_name: str) -> None:
 
 
 def test_registry_wiring_includes_all_catalog_connectors() -> None:
-    """Every connector in CONNECTOR_CATALOG must have a matching entry in registry_wiring."""
-    catalog_content = (
-        (
-            __file__  # find project root via this file's location
-            .replace("tests/mcp/test_all_connectors_e2e.py", "")
-        )
-    )
-    catalog_path = os.path.join(
-        os.path.dirname(__file__), "..", "..", "app", "mcp", "catalog.py"
-    )
-    catalog_content = open(catalog_path).read()
-    catalog_names: set[str] = {
-        n
-        for n in re.findall(r'name="([^"]+)"', catalog_content)
-        if not n.startswith("_")
-    }
+    """Builtin connectors in CONNECTOR_CATALOG must have a matching entry in registry_wiring.
 
+    Remote connectors (those with real external URLs) don't need registry_wiring entries
+    since they're accessed via HTTP, not via local handlers.
+    """
+    from app.mcp.catalog import CONNECTOR_CATALOG
     from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
+    # Only check connectors that explicitly declare a builtin_server_id
+    # (meaning they have a local handler registered in the codebase)
+    builtin_catalog_names = {
+        c.name for c in CONNECTOR_CATALOG if c.builtin_server_id
+    }
+
     configs = get_builtin_server_configs()
-    # Normalise: strip 'builtin-' prefix, convert hyphens → underscores
     registered_norm: set[str] = {
         c["server_id"].replace("builtin-", "").replace("-", "_")
         for c in configs
     }
 
     missing: list[str] = []
-    for name in sorted(catalog_names):
+    for name in sorted(builtin_catalog_names):
         norm = name.lower().replace("-", "_").replace(" ", "_")
         parts = norm.split("_")
-        # Accept exact match OR a suffix match (e.g. 'microsoft_onedrive' → 'onedrive')
         found = norm in registered_norm or any(
             "_".join(parts[i:]) in registered_norm for i in range(1, len(parts))
         )
@@ -669,7 +662,7 @@ def test_registry_wiring_includes_all_catalog_connectors() -> None:
             missing.append(name)
 
     assert not missing, (
-        f"Catalog connectors with no registry_wiring entry ({len(missing)}): {missing}\n"
+        f"Builtin catalog connectors with no registry_wiring entry ({len(missing)}): {missing}\n"
         "Add them to get_builtin_server_configs() in registry_wiring.py"
     )
 

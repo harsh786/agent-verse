@@ -698,7 +698,7 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
             return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
 
         async with db() as session:
-            await session.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
+            await session.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
             rows = (await session.execute(text("""
                 SELECT
                     gl.id, gl.root_goal_id, gl.parent_goal_id, gl.child_goal_id,
@@ -765,7 +765,7 @@ async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, An
             return []
 
         async with db() as session:
-            await session.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
+            await session.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
             rows = (await session.execute(text("""
                 SELECT id, attempt_number, strategy, enriched_goal, started_at,
                        ended_at, succeeded, failure_reason, iterations_used,

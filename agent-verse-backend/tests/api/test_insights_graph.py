@@ -29,6 +29,7 @@ def _make_app(events: list[dict]) -> TestClient:
     app.include_router(insights_router)
 
     mock_goal_svc = MagicMock()
+    mock_goal_svc.get_events = AsyncMock(return_value=events)
     mock_goal_svc.get_event_log = AsyncMock(return_value=events)
     app.state.goal_service = mock_goal_svc
     return TestClient(app)

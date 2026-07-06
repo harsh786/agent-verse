@@ -144,8 +144,8 @@ async def create_skill(body: SkillCreateRequest, request: Request) -> dict[str, 
                                 visibility, is_active, created_by
                             )
                             VALUES (
-                                :id, :tid, :name, :desc, :hints::jsonb,
-                                :instructions, :tools::jsonb, :tokens,
+                                :id, :tid, :name, :desc, CAST(:hints AS jsonb),
+                                :instructions, CAST(:tools AS jsonb), :tokens,
                                 :vis, true, :creator
                             )
                         """),

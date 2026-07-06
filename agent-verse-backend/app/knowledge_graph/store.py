@@ -212,7 +212,7 @@ class KnowledgeGraphStore:
                              confidence, extra_metadata, created_at, updated_at)
                         VALUES
                             (:id, :tenant_id, :node_type, :label, :content, :source_id,
-                             :confidence, :metadata::jsonb, :now, :now)
+                             :confidence, CAST(:metadata AS jsonb), :now, :now)
                         ON CONFLICT (id) DO UPDATE SET
                             label        = EXCLUDED.label,
                             content      = EXCLUDED.content,

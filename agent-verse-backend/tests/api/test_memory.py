@@ -146,8 +146,11 @@ def test_clear_all_memories() -> None:
             tenant_ctx=_CTX,
         )
 
+    from unittest.mock import patch
     client = TestClient(_make_app(ltm=store), raise_server_exceptions=False)
-    resp = client.delete("/memory", headers={"X-API-Key": _VALID_KEY})
+    # Patch _get_db to return None so the in-memory path is used, not the DB path
+    with patch("app.api.memory._get_db", return_value=None):
+        resp = client.delete("/memory", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 204
 
     list_resp = client.get("/memory/long-term", headers={"X-API-Key": _VALID_KEY})

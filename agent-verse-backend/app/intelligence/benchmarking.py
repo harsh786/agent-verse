@@ -134,7 +134,7 @@ class BenchmarkStore:
                     await session.execute(text("""
                         INSERT INTO benchmark_runs
                             (id, tenant_id, suite_name, score, metadata, created_at)
-                        VALUES (:id, :tid, :suite, :score, :meta::jsonb, NOW())
+                        VALUES (:id, :tid, :suite, :score, CAST(:meta AS jsonb), NOW())
                     """), {
                         "id": uuid.uuid4().hex,
                         "tid": getattr(run, "tenant_id", "global"),

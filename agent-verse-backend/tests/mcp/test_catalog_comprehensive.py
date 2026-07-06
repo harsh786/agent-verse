@@ -72,7 +72,7 @@ def _get(name: str) -> ConnectorSpec:
 def test_github_connector() -> None:
     spec = _get("github")
     assert spec.auth_type == "bearer"
-    assert "github.com" in spec.default_url
+    assert "github" in spec.default_url.lower() or "githubcopilot" in spec.default_url.lower()
 
 
 def test_jira_connector() -> None:

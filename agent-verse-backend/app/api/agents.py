@@ -37,7 +37,7 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
                     text(
                         """INSERT INTO agent_snapshots
                            (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
-                           VALUES (:id, :tid, :aid, :version, :snap::jsonb, NOW())
+                           VALUES (:id, :tid, :aid, :version, CAST(:snap AS jsonb), NOW())
                            ON CONFLICT (id) DO NOTHING"""
                     ),
                     {

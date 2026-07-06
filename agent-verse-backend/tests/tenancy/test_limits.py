@@ -31,12 +31,12 @@ def test_goal_limit_enterprise_high():
 
 
 def test_agent_limit_not_exceeded():
-    check_agent_limit(FREE, 1)  # limit is 2
+    check_agent_limit(FREE, 1)  # limit is 3, should not raise
 
 
 def test_agent_limit_exceeded():
     with pytest.raises(PlanLimitExceededError, match="Agent limit"):
-        check_agent_limit(FREE, 2)
+        check_agent_limit(FREE, 3)  # limit is 3, count=3 triggers it
 
 
 def test_api_key_limit_exceeded():

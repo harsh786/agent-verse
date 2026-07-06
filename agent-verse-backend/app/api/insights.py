@@ -63,7 +63,7 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                 from sqlalchemy import text as _t  # noqa: PLC0415
                 async with db_factory() as session:
                     await session.execute(
-                        _t("SET LOCAL app.tenant_id = :tid"),
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant.tenant_id},
                     )
                     # Use pgvector cosine similarity (<=> operator) when available;
@@ -523,7 +523,7 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
         try:
             from sqlalchemy import text as _t
             async with db_factory() as session:
-                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id})
+                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
 
                 # Query goals for this specific agent
                 goals_row = (await session.execute(

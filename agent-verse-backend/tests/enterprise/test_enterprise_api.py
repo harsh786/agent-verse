@@ -318,9 +318,12 @@ def test_api_suggestions_apply() -> None:
     assert resp.status_code == 200
     assert resp.json()["applied"] is True
 
-    # Confirm it appears in the applied filter
+    # Confirm it appears in the applied filter (suggestion_id returned as "id" in response)
     list_resp = client.get("/intelligence/suggestions?applied=true", headers=_HDR)
-    assert any(s["suggestion_id"] == sid for s in list_resp.json())
+    assert any(
+        s.get("id") == sid or s.get("suggestion_id") == sid
+        for s in list_resp.json()
+    )
 
 
 def test_api_suggestions_apply_not_found() -> None:

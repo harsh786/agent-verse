@@ -257,7 +257,7 @@ class AgentIdentityService:
         if self._db is not None:
             async with self._db() as session:
                 await session.execute(
-                    _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
                 )
                 await session.execute(
                     _t("""
@@ -265,7 +265,7 @@ class AgentIdentityService:
                         (id, agent_id, tenant_id, key_type, key_id, public_key,
                          private_key_ref, scopes, expires_at, created_by, metadata)
                         VALUES (:id, :agent, :tenant, :ktype, :kid, :pub,
-                                :vault, :scopes, :exp, :by, :meta::jsonb)
+                                :vault, :scopes, :exp, :by, CAST(:meta AS jsonb))
                     """),
                     {
                         "id": credential_id,
@@ -308,7 +308,7 @@ class AgentIdentityService:
 
         async with self._db() as session:
             await session.execute(
-                _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             result = await session.execute(
                 _t("""
@@ -341,7 +341,7 @@ class AgentIdentityService:
 
         async with self._db() as session:
             await session.execute(
-                _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             row = (
                 await session.execute(
@@ -390,7 +390,7 @@ class AgentIdentityService:
 
         async with self._db() as session:
             await session.execute(
-                _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             rows = (
                 await session.execute(

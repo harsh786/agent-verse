@@ -253,7 +253,7 @@ class CostTracker:
                             "(tenant_id, goal_id, agent_id, model, prompt_tokens, "
                             " completion_tokens, cost_usd, cost_type, tags) "
                             "VALUES (:tid, :gid, :aid, :model, :pt, :ct, :cost, 'llm', "
-                            "        :tags::jsonb)"
+                            "        CAST(:tags AS jsonb))"
                         ),
                         {
                             "tid": tenant_id,

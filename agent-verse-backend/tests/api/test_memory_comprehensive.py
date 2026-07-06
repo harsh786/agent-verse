@@ -293,11 +293,16 @@ def test_clear_all_memories_with_ltm() -> None:
     m2 = _make_memory_entry("mem-2")
     ltm.list_all = MagicMock(return_value=[m1, m2])
     ltm.delete = MagicMock(return_value=True)
+    # Set _memories as a dict so the bulk-clear path can pop it
+    ltm._memories = {_CTX.tenant_id: [m1, m2]}
     app = _make_app(ltm)
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.delete("/memory", headers={"X-API-Key": _VALID_KEY})
+    from unittest.mock import patch
+    with patch("app.api.memory._get_db", return_value=None):
+        resp = client.delete("/memory", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 204
-    assert ltm.delete.call_count == 2
+    # After clearing, tenant should be removed from _memories
+    assert _CTX.tenant_id not in ltm._memories
 
 
 # ---------------------------------------------------------------------------

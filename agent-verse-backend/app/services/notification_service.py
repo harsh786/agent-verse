@@ -48,7 +48,7 @@ class NotificationService:
             from sqlalchemy import text as _t
             async with self._db() as session:
                 if tenant_id:
-                    await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                    await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
                 query = (
                     "SELECT channel_id, tenant_id, channel_type, config, enabled"
                     " FROM notification_channels"
@@ -88,7 +88,7 @@ class NotificationService:
                 await session.execute(_t("""
                     INSERT INTO notification_channels
                         (channel_id, tenant_id, channel_type, config, enabled)
-                    VALUES (:cid, :tid, :ctype, :cfg::jsonb, :enabled)
+                    VALUES (:cid, :tid, :ctype, CAST(:cfg AS jsonb), :enabled)
                     ON CONFLICT (channel_id) DO UPDATE
                         SET config = EXCLUDED.config, enabled = EXCLUDED.enabled
                 """), {

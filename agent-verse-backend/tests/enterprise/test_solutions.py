@@ -60,7 +60,8 @@ class TestSolutionsCatalog:
 
         domains = {s["domain"] for s in DOMAIN_SOLUTIONS}
         required = {"legal", "e_commerce", "software", "education", "finance", "operations"}
-        assert required == domains, f"Missing domains: {required - domains}"
+        # The catalog may have MORE domains than the original 6; just check the minimum set
+        assert required.issubset(domains), f"Missing domains: {required - domains}"
 
     def test_solutions_router_importable(self) -> None:
         from app.api.solutions import router

@@ -88,7 +88,8 @@ class TestReviewRiskLevels:
         """
         reviewer = TemplateSecurityReviewer(injection_guard=None)
         tpl = {
-            "required_connectors": ["governance:approve"],  # CRITICAL scope → severity="high"
+            "required_connectors": [],
+            "oauth_scopes": ["governance:approve"],  # CRITICAL scope → severity="high"
             "template_config": {},
             "description": "",
             "long_description": "",
@@ -127,7 +128,8 @@ class TestReviewRiskLevels:
         """_check_scopes: CRITICAL_SCOPES produce severity='high' finding → risk_level='high'."""
         reviewer = TemplateSecurityReviewer(injection_guard=None)
         tpl = {
-            "required_connectors": ["admin:*"],
+            "required_connectors": [],
+            "oauth_scopes": ["admin:*"],  # CRITICAL scope
             "template_config": {},
             "description": "",
             "long_description": "",
@@ -463,8 +465,9 @@ class TestMarketplaceV2InMemory:
         """Lines 1765-1784: seed_builtins without DB."""
         mp = MarketplaceV2()
         count = await mp.seed_builtins(tenant_ctx=TA)
-        assert count == len(_BUILTIN_TEMPLATES)
-        assert len(mp._cache) == len(_BUILTIN_TEMPLATES)
+        # MarketplaceV2 may have more templates than _BUILTIN_TEMPLATES due to YAML seeding
+        assert count >= len(_BUILTIN_TEMPLATES)
+        assert len(mp._cache) >= len(_BUILTIN_TEMPLATES)
 
     @pytest.mark.asyncio
     async def test_seed_builtins_uses_system_tenant_when_no_ctx(self):

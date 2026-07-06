@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import builtins
 import json
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -18,6 +19,9 @@ TENANT = TenantContext(
     api_key_id="mcp-key-1",
 )
 
+# Patch SSRF guard to allow localhost in tests (production blocks loopback)
+_ssrf_patcher = patch("app.mcp.client.assert_public_url")
+_ssrf_mock = _ssrf_patcher.start()
 
 class FakeRedis:
     def __init__(self) -> None:

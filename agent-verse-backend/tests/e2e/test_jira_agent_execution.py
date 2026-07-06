@@ -33,6 +33,7 @@ TENANT = TenantContext(
     tenant_id="jira-e2e-tenant",
     plan=PlanTier.PROFESSIONAL,
     api_key_id="jira-e2e-key",
+    roles=("admin", "goals:write", "goals:read", "connectors:write", "connectors:read", "agents:write", "agents:read"),
 )
 
 

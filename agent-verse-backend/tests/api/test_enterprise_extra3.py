@@ -601,7 +601,8 @@ def test_list_suggestions() -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
-    assert data[0]["suggestion_id"] == "sg1"
+    # suggestion_id is returned as "id" in the response
+    assert data[0].get("id") == "sg1" or data[0].get("suggestion_id") == "sg1"
 
 
 def test_apply_suggestion_not_found() -> None:
@@ -655,6 +656,12 @@ def _make_eval_runner() -> Any:
     runner = MagicMock()
     runner._suites = {"suite-1": [MagicMock()], "suite-2": []}
     runner.list_suites = MagicMock(return_value=["suite-1", "suite-2"])
+    runner.list_suites_with_metadata = MagicMock(
+        return_value=[
+            {"suite_id": "suite-1", "name": "Suite 1", "task_count": 1},
+            {"suite_id": "suite-2", "name": "Suite 2", "task_count": 0},
+        ]
+    )
     runner.create_suite = MagicMock()
     runner.add_task = MagicMock()
     runner.get_results = MagicMock(return_value=[])

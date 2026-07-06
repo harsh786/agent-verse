@@ -338,7 +338,7 @@ class Marketplace:
                         text("""
                             INSERT INTO template_versions
                                 (id, template_id, version, changelog, template_data, published_at)
-                            VALUES (:id, :tid, :ver, :log, :data::jsonb, NOW())
+                            VALUES (:id, :tid, :ver, :log, CAST(:data AS jsonb), NOW())
                         """),
                         {
                             "id": uuid.uuid4().hex,
