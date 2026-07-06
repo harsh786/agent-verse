@@ -41,6 +41,9 @@ jobs:
           CHART=agent-verse-backend/infra/helm/agentverse
           FRONTEND_ENABLED="${{ github.event.inputs.deploy_frontend }}"
           BACKEND_ENABLED="${{ github.event.inputs.deploy_backend }}"
+          POSTGRES_HOST="${{ vars.POSTGRES_SERVICE_HOST }}"
+          REDIS_HOST="${{ vars.REDIS_SERVICE_HOST }}"
+          MINIO_ENDPOINT="${{ vars.MINIO_ENDPOINT }}"
           helm upgrade --install agentverse-app "$CHART" -n agentverse --create-namespace \
             -f "$CHART/values-app.yaml" \
             --set backend.enabled="$BACKEND_ENABLED" \
@@ -55,6 +58,9 @@ jobs:
             --set beat.image.tag="$TAG" \
             --set frontend.image.repository=ghcr.io/${{ github.repository_owner }}/agentverse-frontend \
             --set frontend.image.tag="$TAG" \
+            --set externalServices.postgresHost="${POSTGRES_HOST:-agentverse-infra-agentverse-postgres}" \
+            --set externalServices.redisHost="${REDIS_HOST:-agentverse-infra-agentverse-redis}" \
+            --set externalServices.minioEndpoint="${MINIO_ENDPOINT:-http://agentverse-infra-agentverse-minio:9000}" \
             --set secrets.databasePassword='${{ secrets.DATABASE_PASSWORD }}' \
             --set secrets.redisPassword='${{ secrets.REDIS_PASSWORD }}' \
             --set secrets.vaultMasterKey='${{ secrets.VAULT_MASTER_KEY }}' \
