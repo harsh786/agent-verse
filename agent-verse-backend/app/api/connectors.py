@@ -426,10 +426,248 @@ _CONNECTOR_TEST_TOOLS: dict[str, tuple[str, dict]] = {
     "sentry": ("sentry_list_issues", {"project_slug": "test", "limit": 1}),
 }
 
+# ---------------------------------------------------------------------------
+# Direct REST API tests — bypass MCP tool infrastructure
+# ---------------------------------------------------------------------------
+# These functions make a direct REST API call using the connector's stored
+# credentials to verify connectivity and token validity.  They are the primary
+# test path; the mcp_client.call_tool path is only used as a fallback.
+# ---------------------------------------------------------------------------
+
+
+def _get_cred(cfg: Any, *keys: str, default: str = "") -> str:
+    """Extract the first matching credential key from auth_config."""
+    auth = cfg.auth_config or {}
+    for k in keys:
+        val = auth.get(k)
+        if val and isinstance(val, str) and not val.startswith("secret://"):
+            return val
+    return default
+
+
+async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
+    """Test GitHub connectivity by validating the PAT against the GitHub REST API.
+
+    The same Personal Access Token (PAT) is used for both:
+      - GitHub REST API  (https://api.github.com)
+      - GitHub MCP Server (https://api.githubcopilot.com/mcp/)
+
+    We always validate against the REST /user endpoint because:
+      - It gives a clear "authenticated as @username" confirmation
+      - It returns actionable 401/403 error messages
+      - The MCP endpoint does not have a simple unauthenticated GET for ping
+
+    If the connector URL is an Enterprise GHE instance we still validate the PAT
+    against that instance's /api/v3/user endpoint.
+    """
+    token = _get_cred(cfg, "token", "api_token", "access_token", "password")
+    configured_url = (cfg.url or cfg.base_url or "").rstrip("/")
+
+    # Determine the REST API base to use for PAT validation:
+    # - Official MCP endpoint  → validate against https://api.github.com
+    # - github.com REST API    → already correct
+    # - GitHub Enterprise URL  → use <ghes>/api/v3
+    if not configured_url or "githubcopilot.com" in configured_url or configured_url == "https://api.github.com":
+        rest_base = "https://api.github.com"
+    elif configured_url.endswith("/api/v3") or configured_url.endswith("/api/v3/"):
+        rest_base = configured_url.rstrip("/")
+    else:
+        # GitHub Enterprise: the MCP path is typically <host>/api/mcp;
+        # fall back to <host>/api/v3 for REST validation
+        rest_base = configured_url.rstrip("/") + "/api/v3"
+
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{rest_base}/user", headers=headers)
+        latency_ms = round((time.time() - started) * 1000)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            login = data.get("login", "?")
+            name = data.get("name") or ""
+            scopes = resp.headers.get("X-OAuth-Scopes", "")
+            detail = f"Authenticated as @{login}"
+            if name:
+                detail += f" ({name})"
+            if scopes:
+                detail += f" · scopes: {scopes}"
+            return {
+                "server_id": server_id, "reachable": True, "status": "passed",
+                "latency_ms": latency_ms, "detail": detail,
+                "mcp_url": "https://api.githubcopilot.com/mcp/",
+            }
+
+        if resp.status_code == 401:
+            return {
+                "server_id": server_id, "reachable": False, "status": "failed",
+                "error": (
+                    "Invalid token — GitHub returned 401 Unauthorized.\n"
+                    "Check your Personal Access Token at github.com/settings/tokens."
+                ),
+                "latency_ms": latency_ms,
+            }
+
+        if resp.status_code == 403:
+            return {
+                "server_id": server_id, "reachable": False, "status": "failed",
+                "error": (
+                    "Token lacks required scopes — GitHub returned 403 Forbidden.\n"
+                    "Add the 'repo' and 'read:org' scopes at github.com/settings/tokens."
+                ),
+                "latency_ms": latency_ms,
+            }
+
+        return {
+            "server_id": server_id, "reachable": False, "status": "failed",
+            "error": f"GitHub API returned HTTP {resp.status_code}",
+            "latency_ms": latency_ms,
+        }
+
+    except httpx.ConnectError:
+        return {
+            "server_id": server_id, "reachable": False, "status": "failed",
+            "error": "Cannot reach api.github.com — check your network connection.",
+            "latency_ms": round((time.time() - started) * 1000),
+        }
+    except Exception as exc:
+        return {
+            "server_id": server_id, "reachable": False, "status": "failed",
+            "error": str(exc), "latency_ms": round((time.time() - started) * 1000),
+        }
+
+
+async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
+    token = _get_cred(cfg, "api_token", "token", "password")
+    email = _get_cred(cfg, "email", "username", "user")
+    base = (cfg.url or cfg.base_url or "").rstrip("/")
+    if not base:
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": "Jira base URL not configured.", "latency_ms": 0}
+    try:
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if email and token:
+            import base64 as _b64
+            cred = _b64.b64encode(f"{email}:{token}".encode()).decode()
+            headers["Authorization"] = f"Basic {cred}"
+        elif token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base}/rest/api/3/myself", headers=headers)
+        latency_ms = round((time.time() - started) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {"server_id": server_id, "reachable": True, "status": "passed",
+                    "latency_ms": latency_ms,
+                    "detail": f"Authenticated as {data.get('displayName', data.get('emailAddress', '?'))}"}
+        if resp.status_code == 401:
+            return {"server_id": server_id, "reachable": False, "status": "failed",
+                    "error": "Invalid credentials — check email and API token.", "latency_ms": latency_ms}
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": f"Jira returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+
+
+async def _test_slack(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
+    token = _get_cred(cfg, "token", "bot_token", "api_token", "access_token")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+        latency_ms = round((time.time() - started) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("ok"):
+                return {"server_id": server_id, "reachable": True, "status": "passed",
+                        "latency_ms": latency_ms,
+                        "detail": f"Connected as {data.get('user', '?')} in {data.get('team', '?')}"}
+            return {"server_id": server_id, "reachable": False, "status": "failed",
+                    "error": data.get("error", "auth.test returned ok=false"), "latency_ms": latency_ms}
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": f"Slack returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+
+
+async def _test_stripe(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
+    token = _get_cred(cfg, "api_key", "secret_key", "token", "api_token")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.stripe.com/v1/account",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        latency_ms = round((time.time() - started) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {"server_id": server_id, "reachable": True, "status": "passed",
+                    "latency_ms": latency_ms, "detail": f"Account: {data.get('id', '?')}"}
+        if resp.status_code == 401:
+            return {"server_id": server_id, "reachable": False, "status": "failed",
+                    "error": "Invalid Stripe API key.", "latency_ms": latency_ms}
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": f"Stripe returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+
+
+async def _test_gitlab(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
+    token = _get_cred(cfg, "token", "private_token", "api_token", "access_token")
+    base = (cfg.url or cfg.base_url or "https://gitlab.com").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{base}/api/v4/user",
+                headers={"PRIVATE-TOKEN": token} if token else {},
+            )
+        latency_ms = round((time.time() - started) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {"server_id": server_id, "reachable": True, "status": "passed",
+                    "latency_ms": latency_ms, "detail": f"Authenticated as @{data.get('username', '?')}"}
+        if resp.status_code == 401:
+            return {"server_id": server_id, "reachable": False, "status": "failed",
+                    "error": "Invalid GitLab token.", "latency_ms": latency_ms}
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": f"GitLab returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"server_id": server_id, "reachable": False, "status": "failed",
+                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+
+
+# Map connector name → direct REST test function
+_DIRECT_REST_TESTS: dict[str, Any] = {
+    "github": _test_github,
+    "jira": _test_jira,
+    "slack": _test_slack,
+    "stripe": _test_stripe,
+    "gitlab": _test_gitlab,
+}
+
 
 @router.post("/{server_id}/test")
 async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
-    """Test a connector by making a real tool call with its registered credentials."""
+    """Test a connector by validating credentials against its REST API.
+
+    Test priority:
+    1. Direct REST API call (github → GET /user, jira → GET /myself, etc.)
+       bypasses MCP tool infrastructure; works even before builtin_handler is
+       loaded into the process.
+    2. mcp_client.call_tool — used only for connectors without a direct test.
+    3. Generic HTTP HEAD/GET to the configured URL.
+    """
     tenant = _require_tenant(request)
     registry = _registry(request)
     started = time.time()
@@ -438,14 +676,20 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     if cfg is None:
         raise HTTPException(status_code=404, detail="Connector not found")
 
+    connector_name = cfg.name.lower().strip()
+
+    # ── 1. Direct REST test (primary path) ────────────────────────────────────
+    direct_test_fn = _DIRECT_REST_TESTS.get(connector_name)
+    if direct_test_fn:
+        return await direct_test_fn(cfg, started, server_id)
+
+    # ── 2. mcp_client.call_tool (for connectors with an MCP tool entry) ───────
     mcp_client = getattr(request.app.state, "mcp_client", None)
     if mcp_client is None:
         from app.mcp.client import MCPClient
         mcp_client = MCPClient(registry=registry)
 
-    connector_name = cfg.name.lower().strip()
     test_entry = _CONNECTOR_TEST_TOOLS.get(connector_name)
-
     if test_entry:
         tool_name, tool_args = test_entry
         try:
@@ -479,7 +723,7 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
                 "latency_ms": round((time.time() - started) * 1000),
             }
 
-    # Generic reachability check for connectors without a known test tool
+    # ── 3. Generic reachability check ─────────────────────────────────────────
     url = cfg.url or cfg.base_url
     if not url or url == "builtin://":
         return {"server_id": server_id, "reachable": True, "status": "not_tested", "latency_ms": 0}

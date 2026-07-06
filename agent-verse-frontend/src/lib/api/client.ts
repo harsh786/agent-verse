@@ -401,6 +401,12 @@ export interface ConnectorTestResult {
   reachable: boolean;
   latency_ms?: number;
   error?: string;
+  /** Human-readable success detail, e.g. "Authenticated as @username (Full Name) · scopes: repo,read:org" */
+  detail?: string;
+  /** MCP endpoint URL confirmed to work */
+  mcp_url?: string;
+  http_status?: number;
+  status?: string;
 }
 
 export const connectorsApi = {

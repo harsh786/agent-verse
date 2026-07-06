@@ -22,17 +22,25 @@ const TABS = [
 
 function HealthTab({ connectorId, connector }: { connectorId: string; connector: any }) {
   const qc = useQueryClient();
+  const [liveResult, setLiveResult] = useState<import('@/lib/api/client').ConnectorTestResult | null>(null);
+
   const testMutation = useMutation({
     mutationFn: () => connectorsApi.test(connectorId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      setLiveResult(data);
       qc.invalidateQueries({ queryKey: ['connector', connectorId] });
-      toast({ kind: 'success', message: 'Connection test passed!' });
+      if (data.reachable) {
+        toast({ kind: 'success', message: data.detail ? `Connected: ${data.detail}` : 'Connection test passed!' });
+      } else {
+        toast({ kind: 'error', message: data.error ?? 'Connection test failed' });
+      }
     },
     onError: (e) => toast({ kind: 'error', message: `Test failed: ${String(e)}` }),
   });
 
   const lastTested = connector?.last_tested;
-  const testResult = connector?.test_result;
+  // Use live result from this session first; fall back to connector.test_result
+  const testResult = liveResult ?? connector?.test_result;
 
   return (
     <div className="space-y-4">
@@ -49,29 +57,39 @@ function HealthTab({ connectorId, connector }: { connectorId: string; connector:
           className="flex items-center gap-2 px-3 py-1.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
         >
           {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-          Test Connection
+          {testMutation.isPending ? 'Testing…' : 'Test Connection'}
         </button>
       </div>
 
+      {/* Live test result */}
       {testResult && (
         <div className={`p-4 rounded-lg border ${
-          testResult.success
+          (testResult.reachable ?? testResult.success)
             ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800'
             : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800'
         }`}>
           <div className="flex items-center gap-2 mb-2">
-            {testResult.success
+            {(testResult.reachable ?? testResult.success)
               ? <CheckCircle className="h-4 w-4 text-green-600" />
               : <XCircle className="h-4 w-4 text-red-600" />}
             <span className="text-sm font-medium">
-              {testResult.success ? 'Connection successful' : 'Connection failed'}
+              {(testResult.reachable ?? testResult.success) ? 'Connection successful' : 'Connection failed'}
             </span>
+            {testResult.latency_ms != null && (
+              <span className="ml-auto text-xs text-muted-foreground">{testResult.latency_ms} ms</span>
+            )}
           </div>
-          {testResult.latency_ms && (
-            <p className="text-xs text-muted-foreground">Latency: {testResult.latency_ms}ms</p>
+          {/* Detail line — e.g. "Authenticated as @username · scopes: repo,read:org" */}
+          {testResult.detail && (
+            <p className="text-xs text-green-700 dark:text-green-400 mb-1 font-medium">{testResult.detail}</p>
+          )}
+          {testResult.mcp_url && (
+            <p className="text-xs text-muted-foreground">
+              MCP endpoint: <code className="font-mono">{testResult.mcp_url}</code>
+            </p>
           )}
           {testResult.error && (
-            <p className="text-xs text-red-600 mt-1">{testResult.error}</p>
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1 whitespace-pre-line">{testResult.error}</p>
           )}
         </div>
       )}
