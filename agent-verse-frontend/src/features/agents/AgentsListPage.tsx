@@ -20,10 +20,10 @@ interface Agent {
 }
 
 const AUTONOMY_COLORS: Record<string, string> = {
-  supervised:           'bg-verified-green/15 text-verified-green border border-verified-green/30',
-  'bounded-autonomous': 'bg-telemetry-cyan/15 text-telemetry-cyan border border-telemetry-cyan/30',
-  'fully-autonomous':   'bg-neural-violet/20 text-neural-violet border border-neural-violet/40',
-  manual:               'bg-white/5 text-white/50 border border-white/15',
+  supervised:           'bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800',
+  'bounded-autonomous': 'bg-cyan-100 text-cyan-800 border border-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-300 dark:border-cyan-800',
+  'fully-autonomous':   'bg-violet-100 text-violet-800 border border-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:border-violet-800',
+  manual:               'bg-muted text-muted-foreground border border-border',
 };
 
 // Human-readable autonomy mode labels
@@ -48,11 +48,11 @@ function AgentStatusBadge({ agent }: { agent: Agent }) {
     <span
       className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium border ${
         isActive
-          ? 'bg-verified-green/15 text-verified-green border-verified-green/30'
-          : 'bg-white/5 text-white/30 border-white/15'
+          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+          : 'bg-muted text-muted-foreground'
       }`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-verified-green animate-pulse' : 'bg-white/20'}`} />
+      <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-500 animate-pulse' : 'bg-muted'}`} />
       {isActive ? 'Active' : 'Inactive'}
     </span>
   );
@@ -151,19 +151,19 @@ export function AgentsListPage() {
       {/* Page header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-neural-violet/20 border border-neural-violet/30 shadow-lg shadow-neural-violet/10">
-              <Bot className="h-5 w-5 text-neural-violet" />
+            <div className="p-2.5 rounded-lg bg-primary/10 border border-primary/20">
+              <Bot className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white tracking-tight">Agent Registry</h1>
-              <p className="text-white/40 text-sm mt-0.5">
+              <h1 className="text-2xl font-bold text-foreground tracking-tight">Agent Registry</h1>
+              <p className="text-muted-foreground text-sm mt-0.5">
                 {(agents as Agent[]).length} autonomous agents under mission control
               </p>
             </div>
           </div>
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 bg-neural-violet hover:bg-neural-violet/90 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-neural-violet/20"
+            className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium transition-colors "
           >
             <Plus className="h-4 w-4" />
             {t('agents.new')}
@@ -173,12 +173,12 @@ export function AgentsListPage() {
         {/* Search input + autonomy filter row */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30 pointer-events-none" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <input
               value={search}
               onChange={(e) => updateParams({ q: e.target.value, page: null })}
               placeholder="Search agents…"
-              className="w-full pl-9 pr-3 py-2 text-sm border border-neural-violet/20 rounded-lg bg-panel-graphite/80 text-white placeholder-white/25 focus:outline-none focus:ring-2 focus:ring-neural-violet/40 focus:border-neural-violet/50 transition-colors"
+              className="w-full pl-9 pr-3 py-2 text-sm border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors"
             />
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -188,8 +188,8 @@ export function AgentsListPage() {
                 onClick={() => updateParams({ mode, page: null })}
                 className={`px-3 py-1 text-xs rounded-full border transition-all ${
                   filterMode === mode
-                    ? 'bg-neural-violet text-white border-neural-violet shadow-sm shadow-neural-violet/30'
-                    : 'border-neural-violet/20 text-white/50 hover:border-neural-violet/40 hover:text-white/80 hover:bg-neural-violet/10'
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'border-border text-muted-foreground hover:border-primary/40 hover:text-foreground hover:bg-muted'
                 }`}
               >
                 {mode === 'all' ? 'All' : (AUTONOMY_LABELS[mode] ?? mode)}
@@ -201,14 +201,14 @@ export function AgentsListPage() {
         {/* Create modal */}
         {showCreate && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-            <div className="bg-panel-graphite border border-neural-violet/30 rounded-xl p-6 w-full max-w-lg shadow-2xl shadow-neural-violet/10">
+            <div className="bg-card border border-border rounded-xl p-6 w-full max-w-lg shadow-xl">
               <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 rounded-lg bg-neural-violet/20 border border-neural-violet/30">
-                  <Bot className="h-4 w-4 text-neural-violet" />
+                <div className="p-2 rounded-lg bg-primary/10 border border-primary/20">
+                  <Bot className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-white">Deploy New Agent</h2>
-                  <p className="text-white/40 text-xs mt-0.5">Describe the mission in plain English</p>
+                  <h2 className="text-lg font-semibold text-foreground">Deploy New Agent</h2>
+                  <p className="text-muted-foreground text-xs mt-0.5">Describe the mission in plain English</p>
                 </div>
               </div>
               <textarea
@@ -216,7 +216,7 @@ export function AgentsListPage() {
                 onChange={(e) => setNlCommand(e.target.value)}
                 placeholder="e.g. 'Create an agent that monitors GitHub issues labeled bug and creates JIRA tickets automatically'"
                 rows={4}
-                className="w-full border border-neural-violet/20 rounded-lg p-3 text-sm resize-none focus:ring-2 focus:ring-neural-violet/40 focus:border-neural-violet/40 outline-none bg-command-black text-white placeholder-white/25 transition-colors"
+                className="w-full border border-input rounded-lg p-3 text-sm resize-none focus:ring-2 focus:ring-primary focus:border-primary outline-none bg-background text-foreground placeholder:text-muted-foreground transition-colors"
                 autoFocus
               />
               {createMutation.isError && (
@@ -230,14 +230,14 @@ export function AgentsListPage() {
                     setShowCreate(false);
                     setNlCommand('');
                   }}
-                  className="px-4 py-2 border border-neural-violet/20 rounded-lg text-sm text-white/50 hover:text-white/80 hover:border-neural-violet/40 transition-colors"
+                  className="px-4 py-2 border border-border rounded-lg text-sm text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => createMutation.mutate()}
                   disabled={!nlCommand.trim() || createMutation.isPending}
-                  className="bg-neural-violet text-white px-4 py-2 rounded-lg text-sm hover:bg-neural-violet/90 disabled:opacity-50 transition-opacity shadow-lg shadow-neural-violet/20"
+                  className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50 transition-opacity "
                 >
                   {createMutation.isPending ? 'Deploying…' : 'Deploy Agent'}
                 </button>
@@ -259,19 +259,19 @@ export function AgentsListPage() {
         />
 
         {/* Agent Table */}
-        <div className="bg-panel-graphite border border-neural-violet/20 rounded-xl overflow-hidden">
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
           {isLoading ? (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-neural-violet/15 bg-command-black/60">
+                <tr className="border-b border-border bg-muted/40">
                   {['Name', 'Status', 'Autonomy Mode', 'Goal Template', 'Created', 'Actions'].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider">
+                    <th key={h} className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">
                       {h}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neural-violet/10">
+              <tbody className="divide-y divide-border">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
@@ -290,14 +290,14 @@ export function AgentsListPage() {
             </div>
           ) : filteredAgents.length === 0 ? (
             <div className="px-5 py-16 text-center">
-              <Bot className="h-10 w-10 text-white/15 mx-auto mb-3" />
-              <p className="font-medium text-white/50">
+              <Bot className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+              <p className="font-medium text-muted-foreground">
                 {filterMode === 'all' && !search
                   ? t('agents.noAgents')
                   : 'No matching agents'}
               </p>
               {filterMode === 'all' && !search && (
-                <p className="mt-1 text-white/30 text-sm">
+                <p className="mt-1 text-muted-foreground text-sm">
                   Deploy your first agent using the button above.
                 </p>
               )}
@@ -305,11 +305,11 @@ export function AgentsListPage() {
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-neural-violet/15 bg-command-black/60">
+                <tr className="border-b border-border bg-muted/40">
                   {/* Sortable: Name */}
                   <th
                     onClick={() => handleSort('name')}
-                    className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider cursor-pointer hover:text-white/60 select-none transition-colors"
+                    className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider cursor-pointer hover:text-foreground select-none transition-colors"
                   >
                     <span className="inline-flex items-center gap-1">
                       Name{' '}
@@ -320,13 +320,13 @@ export function AgentsListPage() {
                       )}
                     </span>
                   </th>
-                  <th className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider">Status</th>
-                  <th className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider">Autonomy Mode</th>
-                  <th className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider">Goal Template</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">Status</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">Autonomy Mode</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">Goal Template</th>
                   {/* Sortable: Created */}
                   <th
                     onClick={() => handleSort('created_at')}
-                    className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider cursor-pointer hover:text-white/60 select-none transition-colors"
+                    className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider cursor-pointer hover:text-foreground select-none transition-colors"
                   >
                     <span className="inline-flex items-center gap-1">
                       Created{' '}
@@ -337,19 +337,19 @@ export function AgentsListPage() {
                       )}
                     </span>
                   </th>
-                  <th className="text-left px-4 py-3 font-medium text-white/30 text-xs uppercase tracking-wider">Actions</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neural-violet/10">
+              <tbody className="divide-y divide-border">
                 {paginatedAgents.map((agent) => (
                   <tr
                     key={agent.agent_id}
                     onClick={() => navigate(`/agents/${agent.agent_id}`)}
-                    className="hover:bg-neural-violet/5 transition-colors cursor-pointer group"
+                    className="hover:bg-muted/50 transition-colors cursor-pointer group"
                     role="button"
                     aria-label={`View agent ${agent.name}`}
                   >
-                    <td className="px-4 py-3 font-medium text-white group-hover:text-neural-violet transition-colors">
+                    <td className="px-4 py-3 font-medium text-foreground group-hover:text-primary transition-colors">
                       {agent.name}
                     </td>
                     {/* Status badge */}
@@ -361,16 +361,16 @@ export function AgentsListPage() {
                       <span
                         className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                           AUTONOMY_COLORS[agent.autonomy_mode] ??
-                          'bg-white/5 text-white/40 border border-white/15'
+                          'bg-muted text-muted-foreground border border-border'
                         }`}
                       >
                         {AUTONOMY_LABELS[agent.autonomy_mode] ?? agent.autonomy_mode}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-white/40 max-w-xs truncate font-mono text-xs">
+                    <td className="px-4 py-3 text-muted-foreground max-w-xs truncate font-mono text-xs">
                       {agent.goal_template || '—'}
                     </td>
-                    <td className="px-4 py-3 text-white/30 font-mono text-xs">
+                    <td className="px-4 py-3 text-muted-foreground/70 font-mono text-xs">
                       {agent.created_at
                         ? new Date(agent.created_at).toLocaleDateString()
                         : '—'}
@@ -382,7 +382,7 @@ export function AgentsListPage() {
                             e.stopPropagation();
                             navigate(`/agents/${agent.agent_id}`);
                           }}
-                          className="text-telemetry-cyan hover:text-telemetry-cyan/70 text-sm font-medium transition-colors"
+                          className="text-primary hover:text-primary/70 text-sm font-medium transition-colors"
                         >
                           View
                         </button>
