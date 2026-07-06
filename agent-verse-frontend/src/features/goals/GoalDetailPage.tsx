@@ -22,10 +22,10 @@ import {
   ChevronDown, ChevronRight, Pause, Play, Dna, GitCompare,
   Ghost, FlaskConical, RotateCcw, Download, FileJson, FileText,
   Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
-  Clock, AlertTriangle,
+  Clock, AlertTriangle, Bot, Plug, Shield, Layers,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { goalsApi, governanceApi } from "@/lib/api/client";
+import { goalsApi, governanceApi, agentsApi } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -666,6 +666,15 @@ export function GoalDetailPage() {
     // pick up status transitions from "planning" → "executing" → "complete"
   }, []);
 
+  // Fetch agent details so we can show which agent executed this goal
+  const agentId = goal?.agent_id;
+  const { data: agentDetail } = useQuery({
+    queryKey: ["agent-for-goal", agentId],
+    queryFn: () => agentsApi.get(agentId!),
+    enabled: !!agentId,
+    staleTime: 60_000,
+  });
+
   const [streamKey, setStreamKey] = useState(0);
   const { events: sseEvents, connected, streamingToken } = useGoalStream(
     streamKey > 0 || true ? (goalId ?? "") : ""
@@ -827,6 +836,78 @@ export function GoalDetailPage() {
               isRunning={["planning", "executing"].includes(goal.status)}
             />
           </div>
+        </div>
+
+        {/* ── Agent execution context ── */}
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          {/* Agent */}
+          {agentId ? (
+            <button
+              onClick={() => navigate(`/agents/${agentId}`)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted hover:border-primary/30 transition-colors group"
+              title="View agent details"
+            >
+              <Bot className="h-3.5 w-3.5 text-primary shrink-0" aria-hidden="true" />
+              <div className="flex flex-col items-start min-w-0">
+                <span className="font-semibold text-foreground group-hover:text-primary transition-colors">
+                  {agentDetail?.name ?? "Loading agent…"}
+                </span>
+                {agentDetail?.autonomy_mode && (
+                  <span className="text-[10px] text-muted-foreground capitalize">
+                    {agentDetail.autonomy_mode.replace(/-/g, " ")}
+                  </span>
+                )}
+              </div>
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-dashed border-border text-muted-foreground">
+              <Bot className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              No agent assigned
+            </span>
+          )}
+
+          {/* Connectors used */}
+          {agentDetail && (agentDetail as any).connector_ids?.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card">
+              <Plug className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
+              <span className="text-muted-foreground">
+                {((agentDetail as any).connector_ids as string[])
+                  .slice(0, 4)
+                  .join(", ")}
+                {((agentDetail as any).connector_ids as string[]).length > 4 &&
+                  ` +${((agentDetail as any).connector_ids as string[]).length - 4}`}
+              </span>
+            </span>
+          )}
+
+          {/* Workflow mode */}
+          {goal.workflow_mode && goal.workflow_mode !== "single_agent" && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card">
+              <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
+              <span className="text-muted-foreground capitalize">
+                {goal.workflow_mode.replace(/_/g, " ")}
+              </span>
+            </span>
+          )}
+
+          {/* Iterations count */}
+          {goal.iterations != null && goal.iterations > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted text-muted-foreground">
+              <span className="font-mono font-semibold text-foreground">{goal.iterations}</span>
+              {goal.iterations === 1 ? " iteration" : " iterations"}
+            </span>
+          )}
+
+          {/* Priority */}
+          {goal.priority && goal.priority !== "normal" && (
+            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-semibold ${
+              goal.priority === "high"
+                ? "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300"
+                : "bg-muted text-muted-foreground"
+            }`}>
+              {goal.priority}
+            </span>
+          )}
         </div>
       </div>
 

@@ -385,19 +385,29 @@ export function GoalsListPage() {
                       aria-label={`Select goal ${goal.id}`}
                     />
                   </td>
-                  {/* Fix 6: timestamp + event count */}
-                  <td className="px-4 py-3">
-                    <p className="font-medium truncate max-w-lg">{goal.goal}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {goal.created_at ? (
-                        timeAgo(goal.created_at)
-                      ) : (
-                        <span className="font-mono">{goal.id}</span>
-                      )}
-                      {" · "}
-                      {goal.event_count ?? 0} events
-                    </p>
-                  </td>
+                   {/* Goal text + metadata */}
+                   <td className="px-4 py-3">
+                     <p className="font-medium truncate max-w-lg">{goal.goal}</p>
+                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                       <span className="text-xs text-muted-foreground">
+                         {goal.created_at ? timeAgo(goal.created_at) : <span className="font-mono">{goal.id}</span>}
+                         {" · "}
+                         {goal.event_count ?? 0} events
+                       </span>
+                       {/* Agent badge */}
+                       {(goal as any).agent_id && (
+                         <span className="inline-flex items-center gap-1 text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-medium">
+                           🤖 {(goal as any).agent_name ?? (goal as any).agent_id?.slice(0, 8)}
+                         </span>
+                       )}
+                       {/* Iteration count */}
+                       {(goal as any).iterations > 0 && (
+                         <span className="text-[10px] text-muted-foreground font-mono">
+                           {(goal as any).iterations} iters
+                         </span>
+                       )}
+                     </div>
+                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={goal.status} />
                   </td>
