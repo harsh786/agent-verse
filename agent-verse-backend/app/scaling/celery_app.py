@@ -7,6 +7,32 @@ from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+_SENTINEL_URLS = os.getenv("REDIS_SENTINEL_URLS", "")
+_SENTINEL_MASTER = os.getenv("REDIS_SENTINEL_MASTER", "mymaster")
+
+
+def _build_celery_broker_url() -> str:
+    """Build the Celery broker URL, adding Sentinel support when configured.
+
+    Celery's Redis Sentinel transport uses the ``sentinel://`` scheme::
+
+        sentinel://[:password@]host1:port1;host2:port2/db?master_name=master
+
+    Multiple Sentinel nodes are separated by ``;`` (semicolons) in Celery's
+    format.  The ``master_name`` is passed separately via
+    ``broker_transport_options`` rather than in the URL query-string, because
+    Celery only reads it from the transport options dict.
+    """
+    if _SENTINEL_URLS:
+        password = os.getenv("REDIS_SENTINEL_PASSWORD") or os.getenv("REDIS_PASSWORD", "")
+        auth = f":{password}@" if password else ""
+        nodes = ";".join(entry.strip() for entry in _SENTINEL_URLS.split(",") if entry.strip())
+        db = os.getenv("REDIS_SENTINEL_DB", "0")
+        return f"sentinel://{auth}{nodes}/{db}"
+    return REDIS_URL
+
+
+_BROKER_URL = _build_celery_broker_url()
 
 # ── Per-plan queue routing ─────────────────────────────────────────────────────
 # Enterprise tenants get dedicated queues to prevent noisy-neighbour effects.
@@ -22,7 +48,8 @@ PLAN_QUEUE_MAP = {
 
 celery_app = Celery(
     "agent_verse",
-    broker=REDIS_URL,
+    broker=_BROKER_URL,
+    # Result backend stays single-node — cross-shard atomic ops not needed.
     backend=REDIS_URL,
     include=[
         "app.scaling.tasks",
@@ -183,6 +210,22 @@ try:
 except ImportError:
     # redbeat not installed — falls back to default file-based beat scheduler
     pass
+
+# ── Redis Sentinel transport options ──────────────────────────────────────────
+# When Sentinel is active, tell Celery which master name to watch and point the
+# result backend at the same Sentinel topology.
+if _SENTINEL_URLS:
+    celery_app.conf.broker_transport_options = {
+        "master_name": _SENTINEL_MASTER,
+        "sentinel_kwargs": {},
+    }
+    # Result backend mirrors the broker topology so failover works end-to-end.
+    celery_app.conf.result_backend = _BROKER_URL
+    celery_app.conf.redis_backend_use_ssl = REDIS_URL.startswith("rediss://")
+
+    # RedBeat also needs the Sentinel URL so the lock key survives failover.
+    if getattr(celery_app.conf, "beat_scheduler", "").endswith("RedBeatScheduler"):
+        celery_app.conf.redbeat_redis_url = _BROKER_URL
 
 # Backwards-compatible alias used by some imports
 app = celery_app

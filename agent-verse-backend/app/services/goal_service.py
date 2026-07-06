@@ -135,6 +135,21 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             if isinstance(_url_attr, str) and _url_attr:
                 redis_url = _url_attr
 
+    # When Redis Sentinel is configured but no explicit REDIS_URL is set,
+    # derive a sentinel:// connection string so RedisSaver can still connect.
+    # The RedisSaver libraries accept "sentinel://host:port/db" as a shorthand;
+    # for multi-node Sentinel pass the first node only (they all proxy the same
+    # master) — the sentinel client discovers the rest automatically.
+    if not redis_url:
+        _sentinel_urls = os.getenv("REDIS_SENTINEL_URLS", "")
+        if _sentinel_urls:
+            _first_node = _sentinel_urls.split(",")[0].strip()
+            _sentinel_db = os.getenv("REDIS_SENTINEL_DB", "0")
+            redis_url = f"sentinel://{_first_node}/{_sentinel_db}"
+            _std_logger.info(
+                "checkpointer_using_sentinel_url sentinel_node=%s", _first_node
+            )
+
     if redis_url:
         # AsyncRedisSaver (preferred).
         # NOTE: from_conn_string() may return an async context manager in some
@@ -296,6 +311,10 @@ class GoalService:
         self._logger = _svc_logger
         # Redis client for pub/sub (set by create_app lifespan when manage_pools=True)
         self._redis: Any = None
+        # Redis URL for creating dedicated pub/sub connections (set by create_app lifespan).
+        # Required for the cross-replica SSE path — a separate connection per SSE consumer
+        # is needed because redis-py pub/sub blocks the connection while listening.
+        self._redis_url_for_pubsub: str = ""
         # Eval scorecards keyed by goal_id; populated on goal completion.
         self._eval_scores: dict[str, Any] = {}
         # Per-tenant list of completed goal durations (seconds) for latency metrics.
@@ -1339,7 +1358,16 @@ class GoalService:
                     await _goal_dedup.release(record.tenant_id, _goal_text)
             except Exception:
                 pass
-        # Publish terminal events to Redis pub/sub for cross-replica SSE delivery.
+        # Publish ALL non-ephemeral events to a goal-specific Redis channel so that
+        # replica B can receive events for goals executing on replica A (P1-2 fix).
+        if not _is_ephemeral and self._redis is not None and tenant_ctx is not None:
+            try:
+                _channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
+                await self._redis.publish(_channel, json.dumps(sanitized_event))
+            except Exception:
+                pass  # Redis unavailable — in-process delivery still works
+        # Also publish terminal events to the broader platform channel used by
+        # other subscribers (notification service, billing hooks, etc.).
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:
             try:
                 await self._redis.publish(
@@ -2353,8 +2381,87 @@ class GoalService:
         sequence > since_sequence (SSE resume-from-cursor).  Each event yielded
         from the persisted replay path carries a ``_seq`` key for the SSE
         endpoint to emit as an ``id:`` line.
+
+        **Cross-replica delivery (P1-2):** when the goal record is not present
+        in this replica's in-memory ``_goals`` dict (it was submitted to a
+        different replica), the method falls back to Redis pub/sub on the
+        ``goal_events:{tenant_id}:{goal_id}`` channel that is published by
+        ``_dispatch_event`` on the owning replica.
         """
-        record = self._get_record(goal_id, tenant_ctx)
+        # ── Try local record first ─────────────────────────────────────────────
+        local_record: GoalRecord | None = None
+        try:
+            local_record = self._get_record(goal_id, tenant_ctx)
+        except Exception:
+            pass  # goal is on another replica — cross-replica path below
+
+        # ── Cross-replica path: subscribe via Redis pub/sub ────────────────────
+        if local_record is None:
+            # Validate the goal exists in DB and belongs to this tenant before
+            # opening a long-lived pub/sub connection (avoids silent no-ops for
+            # truly missing goal IDs).
+            db_record = await self._db_get_goal_record(goal_id, tenant_ctx)
+            if db_record is None:
+                raise NotFoundError(f"Goal not found: {goal_id}")
+
+            # Replay historical events persisted by the owning replica.
+            if since_sequence > 0:
+                replay_events = await self._list_events_since_persisted(
+                    goal_id, after_sequence=since_sequence, tenant_ctx=tenant_ctx
+                )
+            else:
+                replay_events = await self._list_persisted_events(goal_id, tenant_ctx)
+            for event in replay_events:
+                yield event
+
+            # If the goal is already in a terminal state we're done — no need
+            # to subscribe to live events.
+            status_str = (
+                db_record.status.value
+                if hasattr(db_record.status, "value")
+                else str(db_record.status)
+            )
+            if status_str in ("complete", "failed", "cancelled"):
+                return
+
+            # Subscribe to Redis pub/sub for live events published by the
+            # owning replica's _dispatch_event().
+            if not self._redis_url_for_pubsub:
+                return  # No Redis URL configured — cross-replica delivery unavailable
+
+            try:
+                import redis.asyncio as _aioredis
+                async with _aioredis.from_url(
+                    self._redis_url_for_pubsub, decode_responses=True
+                ) as _pubsub_client:
+                    async with _pubsub_client.pubsub() as pubsub:
+                        channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
+                        await pubsub.subscribe(channel)
+                        async for message in pubsub.listen():
+                            if message.get("type") != "message":
+                                continue
+                            try:
+                                event = json.loads(message["data"])
+                                yield event
+                                # Stop streaming at terminal events
+                                if event.get("type") in (
+                                    "goal_complete",
+                                    "goal_failed",
+                                    "goal_cancelled",
+                                ):
+                                    break
+                            except Exception:
+                                continue
+            except Exception as exc:
+                _svc_logger.warning(
+                    "cross_replica_sse_failed",
+                    goal_id=goal_id,
+                    error=str(exc)[:120],
+                )
+            return
+
+        # ── Local replica path (unchanged) ────────────────────────────────────
+        record = local_record
         queue: asyncio.Queue[dict[str, Any] | None] | None = None
         if record.status not in _TERMINAL_STATUSES:
             queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=512)
