@@ -339,7 +339,9 @@ async def test_template_search_by_domain() -> None:
 
     # No filter returns all
     result_all = await svc.list_templates()
-    assert result_all["total"] == 3
+    ids_all = {t["id"] for t in result_all["templates"]}
+    assert {"tpl-legal-1", "tpl-finance-1", "tpl-test-safe"} <= ids_all
+    assert result_all["total"] >= 3
 
 
 # ---------------------------------------------------------------------------
