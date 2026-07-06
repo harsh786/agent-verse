@@ -65,6 +65,15 @@ class GoalRequest(BaseModel):
     image_url: str | None = Field(None, description="URL of an image to include in goal context")
     attachment_base64: str | None = Field(None, description="Base64-encoded file (PDF/image)")
     attachment_mime: str | None = Field(None, description="MIME type of attachment")
+    # Structured multimodal attachments list (Phase 1 gap fix)
+    attachments: list[dict[str, str]] | None = Field(
+        None,
+        description='[{"type": "image_url", "url": "..."}, {"type": "pdf_base64", "data": "..."}]',
+    )
+    # Model override — takes priority over tenant default (Gap 1)
+    model_override: str | None = Field(
+        None, description="Override the tenant's default model for this goal"
+    )
 
 
 def _build_multimodal_goal_text(
@@ -110,6 +119,16 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     if body.persistence_mode:
         exec_ctx["persistence_mode"] = True
         exec_ctx["persistence_config"] = body.persistence_config.model_dump()
+
+    # Gap 2: Multimodal attachments → propagate to execution context
+    if body.attachments:
+        exec_ctx["attachments"] = body.attachments
+    if body.image_url:
+        exec_ctx["image_url"] = body.image_url
+
+    # Gap 1: Model override → execution context (provider picks it up)
+    if body.model_override:
+        exec_ctx["model_override"] = body.model_override
 
     # ── Debate mode: run multi-agent consensus before goal execution ──────────
     if body.workflow_mode == "debate":
@@ -224,6 +243,13 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
         agent_id=agent_id,
         workflow_mode=body.workflow_mode,
         execution_context=exec_ctx,
+    )
+    # Gap 5: Dry-run vs simulation — surface execution mode in response
+    result["execution_mode"] = "preview" if body.dry_run else "live"
+    result["execution_mode_description"] = (
+        "Plan generated but no tools executed"
+        if body.dry_run
+        else "Fully autonomous execution"
     )
     return result
 

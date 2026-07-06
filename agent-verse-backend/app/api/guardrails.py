@@ -8,7 +8,7 @@ from collections import defaultdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.intelligence.guardrail_engine import GuardrailEngine
 
@@ -21,13 +21,28 @@ router = APIRouter(prefix="/guardrails", tags=["guardrails"])
 
 class CreateGuardrailConfigRequest(BaseModel):
     name: str
-    layer: str = "goal"
+    # Gap 4: accept singular `layer` OR plural `layers`; normalize to `layers`
+    layer: str | None = None  # backward-compat alias
+    layers: list[str] = Field(default_factory=list)
     rule_type: str = "injection"
     config: dict[str, Any] = Field(default_factory=dict)
     severity: str = "high"
     action: str = "block"
     agent_id: str | None = None
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def normalize_layers(self) -> "CreateGuardrailConfigRequest":
+        """Ensure `layers` is always populated; fall back to `layer` when not set."""
+        if self.layer and not self.layers:
+            self.layers = [self.layer]
+        # If neither set, default to ["goal"] for backward compat
+        if not self.layers:
+            self.layers = ["goal"]
+        # Keep `layer` in sync with first entry (backward compat reads)
+        if not self.layer and self.layers:
+            self.layer = self.layers[0]
+        return self
 
 
 class UpdateGuardrailConfigRequest(BaseModel):
@@ -149,7 +164,8 @@ async def create_guardrail_config(
         "tenant_id": tenant_id,
         "agent_id": body.agent_id,
         "name": body.name,
-        "layer": body.layer,
+        "layer": body.layer,   # normalized by model_validator
+        "layers": body.layers, # normalized by model_validator
         "rule_type": body.rule_type,
         "config": body.config,
         "severity": body.severity,
@@ -167,6 +183,7 @@ async def create_guardrail_config(
             async with db_factory() as session:
                 from app.db.rls import rls_context
                 async with rls_context(session, tenant_id):
+                    db_record = {k: v for k, v in record.items() if k != "layers"}
                     await session.execute(_sql("""
                         INSERT INTO guardrail_configs
                             (id, tenant_id, agent_id, name, layer, rule_type,
@@ -174,7 +191,7 @@ async def create_guardrail_config(
                         VALUES
                             (:id, :tenant_id, :agent_id, :name, :layer, :rule_type,
                              :config, :severity, :action, :enabled)
-                    """), {**record, "config": _json.dumps(body.config)})
+                    """), {**db_record, "config": _json.dumps(body.config)})
                     await session.commit()
             return record
         except Exception:

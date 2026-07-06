@@ -1,0 +1,47 @@
+# Application-only deployment overlay.
+# Deploy this after values-infra.yaml. It keeps app releases independent from stateful infra.
+
+backend:
+  enabled: true
+
+frontend:
+  enabled: true
+
+worker:
+  enabled: true
+
+beat:
+  enabled: true
+
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
+
+minio:
+  enabled: false
+
+kong:
+  enabled: false
+
+loki:
+  enabled: false
+
+promtail:
+  enabled: false
+
+grafana:
+  enabled: false
+
+prometheus:
+  enabled: false
+
+otel:
+  enabled: false
+
+mailpit:
+  enabled: false
+
+backup:
+  enabled: false

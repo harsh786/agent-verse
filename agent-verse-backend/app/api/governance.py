@@ -1313,7 +1313,7 @@ async def verify_audit_chain(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     try:
-        from app.governance.audit_v2 import HashChainVerifier
+        from app.governance.audit_v3 import HashChainVerifier
 
         async with db() as session:
             verifier = HashChainVerifier()

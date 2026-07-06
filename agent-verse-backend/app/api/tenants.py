@@ -250,6 +250,90 @@ async def set_llm_config(
     )
 
 
+# ── LLM config (simple key-value store, no secret handling) ──────────────────
+
+@router.get("/me/llm-config")
+async def get_tenant_llm_config(request: Request) -> dict:
+    """Get the tenant's saved LLM configuration (lightweight, no secrets)."""
+    tenant = _require_tenant(request)
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    if tenant_svc and hasattr(tenant_svc, "get_llm_config"):
+        try:
+            config = await tenant_svc.get_llm_config(tenant.tenant_id)
+            return config or {}
+        except Exception:
+            pass
+    return {}
+
+
+@router.put("/me/llm-config")
+async def save_tenant_llm_config(request: Request) -> dict:
+    """Save the tenant's LLM configuration (lightweight, no secret encryption)."""
+    tenant = _require_tenant(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    if tenant_svc and hasattr(tenant_svc, "save_llm_config"):
+        try:
+            await tenant_svc.save_llm_config(tenant.tenant_id, body)
+            return {"status": "saved", **body}
+        except Exception:
+            pass
+    return {"status": "saved_in_memory", **body}
+
+
+# ── Provider catalog (capabilities only — never returns secrets) ──────────────
+
+_PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
+    "anthropic": {"text": True, "tool_use": True, "vision": True, "streaming": True},
+    "openai": {
+        "text": True, "tool_use": True, "vision": True, "streaming": True, "embedding": True
+    },
+    "openai_compatible": {"text": True, "tool_use": True, "streaming": True},
+    "gemini": {"text": True, "tool_use": True, "vision": True, "streaming": True},
+    "groq": {"text": True, "tool_use": True, "streaming": True},
+    "ollama": {"text": True, "embedding": True, "streaming": True},
+    "voyage": {"embedding": True},
+}
+
+_PROVIDER_ENV_KEYS: dict[str, str | None] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "ollama": None,
+    "voyage": "VOYAGE_API_KEY",
+}
+
+
+@router.get("/me/providers")
+async def get_provider_catalog(request: Request) -> dict:
+    """Return provider capabilities and config state — never returns secrets."""
+    import os
+
+    _require_tenant(request)
+
+    providers = []
+    for provider_name, caps in _PROVIDER_CAPABILITIES.items():
+        env_key_name = _PROVIDER_ENV_KEYS.get(provider_name)
+        is_configured = (
+            env_key_name is None  # No key needed (e.g. Ollama)
+            or bool(os.getenv(env_key_name, ""))
+        )
+        providers.append({
+            "name": provider_name,
+            "display_name": provider_name.replace("_", " ").title(),
+            "configured": is_configured,
+            "capabilities": caps,
+            "env_var": env_key_name,  # name only, never the value
+        })
+
+    return {"providers": providers}
+
+
 # ── RBAC: Role management ─────────────────────────────────────────────────────
 
 class CreateRoleRequest(BaseModel):

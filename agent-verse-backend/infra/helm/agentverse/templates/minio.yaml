@@ -1,0 +1,67 @@
+{{- if .Values.minio.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentverse.fullname" . }}-minio
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  serviceName: {{ include "agentverse.fullname" . }}-minio
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio
+    spec:
+      containers:
+      - name: minio
+        image: {{ .Values.minio.image | quote }}
+        args: ["server", "/data", "--console-address", ":9001"]
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: MINIO_ACCESS_KEY
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: MINIO_SECRET_KEY
+        ports:
+        - name: api
+          containerPort: 9000
+        - name: console
+          containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "agentverse.fullname" . }}-minio
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-minio
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  ports:
+  - name: api
+    port: {{ .Values.minio.service.apiPort }}
+    targetPort: api
+  - name: console
+    port: {{ .Values.minio.service.consolePort }}
+    targetPort: console
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+{{- end }}

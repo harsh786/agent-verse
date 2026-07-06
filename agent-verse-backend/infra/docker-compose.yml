@@ -367,7 +367,8 @@ services:
       context: ../../agent-verse-frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://localhost:8000
+        VITE_API_URL: /api
+        VITE_GRAFANA_URL: /grafana
     restart: unless-stopped
     ports:
       - "5173:80"
@@ -378,6 +379,36 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # ── Kong Gateway — front door for API, frontend, Grafana ───────────────────
+  kong:
+    image: kong:3.7
+    container_name: agentverse-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./kong/kong.yml:/kong/declarative/kong.yml:ro
+    ports:
+      - "8080:8000"  # main gateway: http://localhost:8080
+      - "8001:8001"  # Kong admin API (local dev only)
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   searxng:
     image: searxng/searxng:latest
@@ -418,6 +449,38 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── Loki — log aggregation ─────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: agentverse-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── Promtail — ships Docker container logs to Loki ─────────────────────────
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: agentverse-promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+
   # ── Grafana — metrics dashboards ──────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.0
@@ -436,6 +499,7 @@ services:
       - "3001:3000"
     depends_on:
       - prometheus
+      - loki
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3000/api/health"]
       interval: 15s
@@ -460,6 +524,8 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  loki_data:
     driver: local
   pgbackups:
     driver: local

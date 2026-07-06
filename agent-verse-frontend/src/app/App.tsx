@@ -30,12 +30,15 @@ const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovem
 const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
 const BuilderPage = lazy(() => import("@/features/builder/BuilderPage"));
 const SkillsPage = lazy(() => import('@/features/skills/SkillsPage'));
+const ModelControlCenter = lazy(() => import('@/features/models/ModelControlCenter').then(m => ({ default: m.ModelControlCenter })));
+const GraphExplorerPage = lazy(() => import('@/features/knowledge-graph/GraphExplorerPage').then(m => ({ default: m.GraphExplorerPage })));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
+import { AIOpsDashboard } from "@/features/dashboard/AIOpsDashboard";
 import { GoalsListPage } from "@/features/goals/GoalsListPage";
 import { GoalDetailPage } from "@/features/goals/GoalDetailPage";
 import { AgentsListPage } from "@/features/agents/AgentsListPage";
@@ -180,6 +183,7 @@ export default function App() {
         }
       >
         <Route path="dashboard"             element={rb("Dashboard",          <DashboardPage />)} />
+        <Route path="ai-ops"                element={rb("AI Ops",             <AIOpsDashboard />)} />
         <Route path="goals"                 element={rb("Goals",              <GoalsListPage />)} />
         <Route path="goals/:goalId"         element={rb("Goal Detail",        <GoalDetailPage />)} />
         <Route path="agents"                element={rb("Agents",             <AgentsListPage />)} />
@@ -235,6 +239,8 @@ export default function App() {
         <Route path="civilization"          element={lazy_rb("Civilization",  <CivilizationPage />)} />
         <Route path="civilization/:id"      element={lazy_rb("Civilization",  <CivilizationPage />)} />
         <Route path="builder"               element={lazy_rb("Builder",       <BuilderPage />)} />
+        <Route path="models"                element={lazy_rb("Model Registry", <ModelControlCenter />)} />
+        <Route path="knowledge-graph"       element={lazy_rb("Knowledge Graph", <GraphExplorerPage />)} />
         <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>

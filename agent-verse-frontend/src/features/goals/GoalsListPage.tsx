@@ -1,25 +1,19 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Plus,
   Search,
   XCircle,
-  BookOpen,
-  Ghost,
   ArrowUpDown,
   CheckCircle2,
   Zap,
   Loader2,
 } from "lucide-react";
-import { useTranslation } from "react-i18next";
-import { agentsApi, goalsApi } from "@/lib/api/client";
-import { CostEstimateWidget } from "@/features/goals/components/CostEstimateWidget";
-import { TemplatePickerModal } from "@/features/templates/components/TemplatePickerModal";
+import { goalsApi } from "@/lib/api/client";
+import { MissionGoalComposer } from "@/features/goals/components/MissionGoalComposer";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
-import { VoiceGoalInput } from "@/components/voice/VoiceGoalInput";
 import { toast } from "@/stores/toast";
 
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
@@ -54,17 +48,8 @@ function StatusBadge({ status }: { status: string }) {
 
 export function GoalsListPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
-  const apiKey = useAuthStore((s) => s.apiKey);
-  const { t } = useTranslation();
-  const location = useLocation();
 
-  const [goalText, setGoalText] = useState(
-    (location.state as { prefillGoal?: string } | null)?.prefillGoal ?? ""
-  );
-  const [dryRun, setDryRun] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState("auto");
   const [pageSize, setPageSize] = useState(25);
-  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // Fix 1: bulk selection state
   const [selectedGoals, setSelectedGoals] = useState<Set<string>>(new Set());
@@ -111,26 +96,6 @@ export function GoalsListPage() {
     queryKey: ["goals", tenantId],
     queryFn: () => goalsApi.list(),
     refetchInterval: 5_000,
-  });
-
-  const { data: agents = [] } = useQuery({
-    queryKey: ["agents", apiKey],
-    queryFn: () => agentsApi.list(),
-    enabled: !!apiKey,
-  });
-
-  const submit = useMutation({
-    mutationFn: (goal: string) =>
-      goalsApi.submit({
-        goal,
-        dry_run: dryRun,
-        agent_id: selectedAgentId === "auto" ? undefined : selectedAgentId,
-        workflow_mode: "single_agent",
-      }),
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ["goals", tenantId] });
-      navigate(`/goals/${res.goal_id ?? res.id}`);
-    },
   });
 
   const cancel = useMutation({
@@ -227,96 +192,8 @@ export function GoalsListPage() {
         </div>
       </div>
 
-      {/* Submit form */}
-      <div className="bg-card border border-border rounded-xl p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-sm">Submit a new goal</h2>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <button
-              type="button"
-              onClick={() => setShowTemplatePicker(true)}
-              className="flex items-center gap-1 hover:text-foreground transition-colors"
-              aria-label="Browse goal templates"
-            >
-              <BookOpen className="h-3 w-3" aria-hidden="true" />
-              Templates
-            </button>
-            <a
-              href="/goals/ghost-run"
-              onClick={(e) => { e.preventDefault(); navigate("/goals/ghost-run"); }}
-              className="flex items-center gap-1 hover:text-foreground transition-colors"
-              aria-label="Try Ghost Run A/B comparison"
-            >
-              <Ghost className="h-3 w-3" aria-hidden="true" />
-              Ghost Run
-            </a>
-          </div>
-        </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (goalText.trim()) submit.mutate(goalText.trim());
-          }}
-          className="flex flex-col gap-3"
-        >
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
-            Agent
-            <select
-              value={selectedAgentId}
-              onChange={(e) => setSelectedAgentId(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              <option value="auto">Auto-select best agent</option>
-              {agents.map((agent) => (
-                <option key={agent.agent_id} value={agent.agent_id}>
-                  {agent.name} ({agent.autonomy_mode})
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="relative">
-            <textarea
-              value={goalText}
-              onChange={(e) => setGoalText(e.target.value)}
-              placeholder={t("goals.placeholder")}
-              rows={3}
-              className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none pr-10"
-              aria-label="Goal text"
-            />
-            <div className="absolute right-2 top-2">
-              <VoiceGoalInput
-                onTranscript={(text) => setGoalText((prev) => (prev ? `${prev} ${text}` : text))}
-                disabled={submit.isPending}
-              />
-            </div>
-          </div>
-          <CostEstimateWidget goal={goalText} enabled={goalText.length >= 10} />
-          <div className="flex items-center justify-between gap-3">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
-                className="accent-primary"
-              />
-              Dry run (preview only)
-            </label>
-            <button
-              type="submit"
-              disabled={submit.isPending || !goalText.trim()}
-              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              {submit.isPending ? "Submitting…" : dryRun ? "Dry run" : t("goals.submit")}
-            </button>
-          </div>
-          {submit.isError && (
-            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
-              {String(submit.error)}
-            </p>
-          )}
-        </form>
-      </div>
+      {/* Mission Goal Composer */}
+      <MissionGoalComposer />
 
       {/* Fix 4: Filter pills with status count badges */}
       <div className="flex flex-wrap items-center gap-3">
@@ -555,17 +432,6 @@ export function GoalsListPage() {
             setPageSize(s);
             updateParams({ page: null });
           }}
-        />
-      )}
-
-      {/* Template picker modal — pre-fills goal textarea */}
-      {showTemplatePicker && (
-        <TemplatePickerModal
-          onUseInGoal={(text) => {
-            setGoalText(text);
-            setShowTemplatePicker(false);
-          }}
-          onClose={() => setShowTemplatePicker(false)}
         />
       )}
     </div>

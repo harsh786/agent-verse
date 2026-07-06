@@ -135,6 +135,12 @@ export interface GoalRequest {
   dry_run?: boolean;
   agent_id?: string;
   workflow_mode?: string;
+  /** Multimodal attachments (Gap 2) */
+  attachments?: Array<{ type: string; url?: string; data?: string; name?: string }>;
+  /** Single image shorthand (Gap 2) */
+  image_url?: string;
+  /** Override the tenant's default model for this goal (Gap 1) */
+  model_override?: string;
 }
 
 // ── Ghost Run types ───────────────────────────────────────────────────────────
@@ -468,6 +474,22 @@ export const tenantsApi = {
       `/tenants/me/keys/${keyId}/rotate`,
       { method: "POST", body: JSON.stringify({ revoke_old: true }) }
     ),
+  /** Get tenant LLM config (lightweight, no secrets) — Gap 1 */
+  getLLMConfig: () => request<Record<string, unknown>>("/tenants/me/llm-config"),
+  /** Save tenant LLM config (lightweight, no secret encryption) — Gap 1 */
+  saveLLMConfig: (config: Record<string, unknown>) =>
+    request<Record<string, unknown>>("/tenants/me/llm-config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  /** Get provider capabilities catalog — never returns secrets (Gap 3) */
+  getProviders: () => request<{ providers: Array<{
+    name: string;
+    display_name: string;
+    configured: boolean;
+    capabilities: Record<string, boolean>;
+    env_var: string | null;
+  }> }>("/tenants/me/providers"),
 };
 
 // ── Governance ────────────────────────────────────────────────────────────────

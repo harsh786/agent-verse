@@ -1,0 +1,227 @@
+{{- if .Values.kong.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-kong
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kong
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kong
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kong
+    spec:
+      containers:
+      - name: kong
+        image: {{ .Values.kong.image | quote }}
+        env:
+        - name: KONG_DATABASE
+          value: "off"
+        - name: KONG_DECLARATIVE_CONFIG
+          value: /kong/declarative/kong.yml
+        - name: KONG_PROXY_ACCESS_LOG
+          value: /dev/stdout
+        - name: KONG_ADMIN_ACCESS_LOG
+          value: /dev/stdout
+        - name: KONG_PROXY_ERROR_LOG
+          value: /dev/stderr
+        - name: KONG_ADMIN_ERROR_LOG
+          value: /dev/stderr
+        ports:
+        - name: proxy
+          containerPort: 8000
+        - name: admin
+          containerPort: 8001
+        volumeMounts:
+        - name: config
+          mountPath: /kong/declarative
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "agentverse.fullname" . }}-kong
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-kong
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.kong.service.type }}
+  ports:
+  - name: proxy
+    port: {{ .Values.kong.service.proxyPort }}
+    targetPort: proxy
+    {{- if and (eq .Values.kong.service.type "NodePort") .Values.kong.service.nodePort }}
+    nodePort: {{ .Values.kong.service.nodePort }}
+    {{- end }}
+  - name: admin
+    port: {{ .Values.kong.service.adminPort }}
+    targetPort: admin
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kong
+{{- end }}
+---
+{{- if .Values.loki.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentverse.fullname" . }}-loki
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loki
+spec:
+  serviceName: {{ include "agentverse.fullname" . }}-loki
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: loki
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: loki
+    spec:
+      containers:
+      - name: loki
+        image: {{ .Values.loki.image | quote }}
+        args: ["-config.file=/etc/loki/loki.yml"]
+        ports:
+        - name: http
+          containerPort: 3100
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki
+        - name: data
+          mountPath: /loki
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "agentverse.fullname" . }}-loki
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "agentverse.fullname" . }}-loki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-loki
+spec:
+  ports:
+  - name: http
+    port: {{ .Values.loki.service.port }}
+    targetPort: http
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: loki
+{{- end }}
+---
+{{- if .Values.promtail.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "agentverse.fullname" . }}-promtail
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: promtail
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: promtail
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: promtail
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: promtail
+        image: {{ .Values.promtail.image | quote }}
+        args: ["-config.file=/etc/promtail/promtail.yml"]
+        volumeMounts:
+        - name: config
+          mountPath: /etc/promtail
+        - name: pods
+          mountPath: /var/log/pods
+          readOnly: true
+        - name: run
+          mountPath: /run/promtail
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "agentverse.fullname" . }}-promtail
+      - name: pods
+        hostPath:
+          path: /var/log/pods
+      - name: run
+        emptyDir: {}
+{{- end }}
+---
+{{- if .Values.grafana.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-grafana
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: grafana
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: {{ .Values.grafana.image | quote }}
+        env:
+        - name: GF_SECURITY_ADMIN_USER
+          value: {{ .Values.grafana.adminUser | quote }}
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: {{ .Values.grafana.adminPassword | quote }}
+        ports:
+        - name: http
+          containerPort: 3000
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/grafana
+        - name: datasources
+          mountPath: /etc/grafana/provisioning/datasources
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "agentverse.fullname" . }}-grafana
+      - name: datasources
+        configMap:
+          name: {{ include "agentverse.fullname" . }}-grafana-datasources
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-grafana
+spec:
+  ports:
+  - name: http
+    port: {{ .Values.grafana.service.port }}
+    targetPort: http
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+{{- end }}

@@ -16,20 +16,19 @@ tests, which mock the DB to inject failures.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.api.enterprise import DeployV2Request
 from app.enterprise.marketplace_v2 import (
+    _BUILTIN_TEMPLATES,
     MarketplaceV2,
     TemplateSecurityReviewer,
-    _BUILTIN_TEMPLATES,
 )
 from app.tenancy.context import PlanTier, TenantContext
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -137,6 +136,53 @@ async def test_deploy_fails_completely_on_db_error() -> None:
     # (The in-memory path is only used when db_factory is None; with a db_factory
     # that fails, the code goes through the DB path which raises before commit)
     assert len(svc._installs) == 0, "No ghost install should exist after DB error"
+
+
+@pytest.mark.asyncio
+async def test_list_templates_falls_back_to_builtins_when_db_unavailable() -> None:
+    """Marketplace listing should still show built-in templates if DB reads fail."""
+
+    class FailingSession:
+        async def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("database unavailable")
+
+        async def __aenter__(self) -> FailingSession:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+    @asynccontextmanager
+    async def failing_db() -> Any:
+        yield FailingSession()
+
+    svc = MarketplaceV2(db_factory=failing_db)
+
+    result = await svc.list_templates(tenant_id=T_A.tenant_id, page_size=10)
+
+    assert result["total"] >= len(_BUILTIN_TEMPLATES)
+    assert result["templates"]
+    assert result["templates"][0]["template_id"]
+
+
+def test_deploy_request_accepts_frontend_parameters_payload() -> None:
+    """Frontend deploy sends `parameters`; backend must map it to params."""
+
+    body = DeployV2Request.model_validate({"parameters": {"case_id": "CASE-7"}})
+
+    assert body.params == {"case_id": "CASE-7"}
+
+
+@pytest.mark.asyncio
+async def test_list_templates_normalizes_ecommerce_domain_alias() -> None:
+    """Domains UI uses e-commerce; marketplace built-ins use ecommerce."""
+
+    svc = MarketplaceV2(db_factory=None)
+
+    result = await svc.list_templates(domain="e-commerce", tenant_id=T_A.tenant_id)
+
+    assert result["total"] > 0
+    assert {t["domain"] for t in result["templates"]} == {"ecommerce"}
 
 
 # ---------------------------------------------------------------------------

@@ -17,21 +17,22 @@ import { Download } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
 import { workflowsApi, apiFetch } from '../../lib/api/client';
+import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
 const NODE_COLORS: Record<string, string> = {
-  trigger:        'bg-green-100 border-green-400 text-green-800',
-  tool_call:      'bg-blue-100 border-blue-400 text-blue-800',
-  agent_step:     'bg-purple-100 border-purple-400 text-purple-800',
-  decision:       'bg-yellow-100 border-yellow-400 text-yellow-800',
-  parallel:       'bg-orange-100 border-orange-400 text-orange-800',
-  loop:           'bg-cyan-100 border-cyan-400 text-cyan-800',
-  human_approval: 'bg-red-100 border-red-400 text-red-800',
-  delay:          'bg-slate-100 border-slate-400 text-slate-700',
-  rag:            'bg-teal-100 border-teal-400 text-teal-800',
-  skill:          'bg-indigo-100 border-indigo-400 text-indigo-800',
-  end:            'bg-muted/60 border-muted-foreground/50 text-gray-900 dark:text-gray-100',
+  trigger:        'bg-verified-green/15 border-verified-green/60 text-verified-green',
+  tool_call:      'bg-telemetry-cyan/15 border-telemetry-cyan/60 text-telemetry-cyan',
+  agent_step:     'bg-neural-violet/20 border-neural-violet/60 text-neural-violet',
+  decision:       'bg-risk-amber/15 border-risk-amber/60 text-risk-amber',
+  parallel:       'bg-orange-500/15 border-orange-400/60 text-orange-400',
+  loop:           'bg-telemetry-cyan/10 border-telemetry-cyan/40 text-telemetry-cyan/80',
+  human_approval: 'bg-mission-red/15 border-mission-red/60 text-mission-red',
+  delay:          'bg-white/5 border-white/20 text-white/50',
+  rag:            'bg-teal-500/15 border-teal-400/60 text-teal-400',
+  skill:          'bg-neural-violet/25 border-neural-violet text-white/90',
+  end:            'bg-white/5 border-white/15 text-white/40',
 };
 
 const NODE_ICONS: Record<string, string> = {
@@ -81,34 +82,34 @@ interface WorkflowNodeData {
 }
 
 function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: boolean }) {
-  const color = NODE_COLORS[data.type] ?? 'bg-muted border-border';
+  const color = NODE_COLORS[data.type] ?? 'bg-white/5 border-white/20 text-white/60';
   const hasValidationError = data.type === 'tool_call' && !data.tool;
   return (
     <div
-      className={`relative rounded-lg border-2 p-3 min-w-[140px] shadow-sm text-xs ${color} ${
-        selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''
+      className={`relative rounded-lg border-2 p-3 min-w-[140px] shadow-lg text-xs ${color} ${
+        selected ? 'ring-2 ring-neural-violet ring-offset-1 ring-offset-command-black' : ''
       } ${
-        data.status === 'running' ? 'animate-pulse ring-2 ring-blue-400' :
-        data.status === 'complete' ? '!bg-green-100 !border-green-500' :
-        data.status === 'failed' ? '!bg-red-100 !border-red-500' : ''
+        data.status === 'running'  ? 'animate-pulse ring-2 ring-neural-violet/60' :
+        data.status === 'complete' ? '!bg-verified-green/15 !border-verified-green' :
+        data.status === 'failed'   ? '!bg-mission-red/15 !border-mission-red' : ''
       }`}
     >
       {/* Run-status indicator dot */}
       {data.runStatus && (
-        <div className={`absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full border-2 border-background ${
-          data.runStatus === 'success' ? 'bg-green-500' : 'bg-red-500'
+        <div className={`absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full border-2 border-command-black ${
+          data.runStatus === 'success' ? 'bg-verified-green' : 'bg-mission-red'
         }`} />
       )}
       <Handle
         type="target"
         position={Position.Top}
-        className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
+        className="!bg-neural-violet/60 !border-neural-violet !w-4 !h-4"
       />
       <div className="flex items-center gap-1.5 font-semibold mb-0.5">
         <span>{NODE_ICONS[data.type] ?? '◻'}</span>
         <span className="truncate">{String(data.label)}</span>
         {hasValidationError && (
-          <span className="ml-auto text-red-500 text-[9px] font-bold" title="Tool not configured">⚠</span>
+          <span className="ml-auto text-risk-amber text-[9px] font-bold" title="Tool not configured">⚠</span>
         )}
       </div>
       {data.subtitle && (
@@ -117,49 +118,49 @@ function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: b
       {data.status && (
         <div
           className={`mt-1 text-[10px] font-medium ${
-            data.status === 'running'  ? 'text-blue-600'  :
-            data.status === 'complete' ? 'text-green-600' :
-            data.status === 'failed'   ? 'text-red-600'   : 'opacity-50'
+            data.status === 'running'  ? 'text-neural-violet'   :
+            data.status === 'complete' ? 'text-verified-green'  :
+            data.status === 'failed'   ? 'text-mission-red'     : 'opacity-50'
           }`}
         >
           ● {data.status}
         </div>
       )}
-      {/* Fix 8: Multi-handle source handles for decision and parallel nodes */}
+      {/* Multi-handle source handles for decision and parallel nodes */}
       {data.type === 'decision' ? (
         <>
           <Handle
             type="source"
             position={Position.Bottom}
             id="true"
-            style={{ left: '30%', background: '#22c55e' }}
-            className="!border-slate-600 !w-3 !h-3"
+            style={{ left: '30%', background: '#22C55E' }}
+            className="!border-command-black !w-3 !h-3"
           />
           <Handle
             type="source"
             position={Position.Bottom}
             id="false"
-            style={{ left: '70%', background: '#ef4444' }}
-            className="!border-slate-600 !w-3 !h-3"
+            style={{ left: '70%', background: '#EF4444' }}
+            className="!border-command-black !w-3 !h-3"
           />
-          <div style={{ position: 'absolute', bottom: -18, left: '18%', fontSize: '10px', color: '#22c55e', pointerEvents: 'none' }}>
+          <div style={{ position: 'absolute', bottom: -18, left: '18%', fontSize: '10px', color: '#22C55E', pointerEvents: 'none' }}>
             True
           </div>
-          <div style={{ position: 'absolute', bottom: -18, left: '62%', fontSize: '10px', color: '#ef4444', pointerEvents: 'none' }}>
+          <div style={{ position: 'absolute', bottom: -18, left: '62%', fontSize: '10px', color: '#EF4444', pointerEvents: 'none' }}>
             False
           </div>
         </>
       ) : data.type === 'parallel' ? (
         <>
-          <Handle type="source" position={Position.Bottom} id="branch-1" style={{ left: '20%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
-          <Handle type="source" position={Position.Bottom} id="branch-2" style={{ left: '50%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
-          <Handle type="source" position={Position.Bottom} id="branch-3" style={{ left: '80%' }} className="!bg-slate-400 !border-slate-600 !w-3 !h-3" />
+          <Handle type="source" position={Position.Bottom} id="branch-1" style={{ left: '20%' }} className="!bg-neural-violet/60 !border-neural-violet !w-3 !h-3" />
+          <Handle type="source" position={Position.Bottom} id="branch-2" style={{ left: '50%' }} className="!bg-neural-violet/60 !border-neural-violet !w-3 !h-3" />
+          <Handle type="source" position={Position.Bottom} id="branch-3" style={{ left: '80%' }} className="!bg-neural-violet/60 !border-neural-violet !w-3 !h-3" />
         </>
       ) : (
         <Handle
           type="source"
           position={Position.Bottom}
-          className="!bg-slate-400 !border-slate-600 !w-4 !h-4"
+          className="!bg-neural-violet/60 !border-neural-violet !w-4 !h-4"
         />
       )}
     </div>
@@ -170,7 +171,7 @@ const NODE_TYPES = { workflow: WorkflowNode };
 export const SNAP_GRID: [number, number] = [16, 16]; // module-level constant — prevents ReactFlow useEffect loop
 
 const CONNECTION_LINE_STYLE: React.CSSProperties = {
-  stroke: '#6366f1',
+  stroke: '#7C3AED',
   strokeWidth: 2,
   strokeDasharray: '5 5',
 };
@@ -206,10 +207,10 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 530 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e3', source: 's2', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e3', source: 's2', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
     ],
   },
   {
@@ -223,9 +224,9 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 410 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e3', source: 's2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e3', source: 's2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
     ],
   },
   {
@@ -240,10 +241,10 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 530 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e3', source: 's2', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e3', source: 's2', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
     ],
   },
   {
@@ -259,12 +260,12 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 530 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
       { id: 'e3', source: 's2', target: 's3', label: 'Yes', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#ef4444', strokeWidth: 2 } },
-      { id: 'e4', source: 's2', target: 's4', label: 'No', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e5', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e6', source: 's4', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e4', source: 's2', target: 's4', label: 'No', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e5', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e6', source: 's4', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
     ],
   },
   {
@@ -279,11 +280,11 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 410 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e3', source: 's1', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e4', source: 's2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e5', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e3', source: 's1', target: 's3', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e4', source: 's2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e5', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
     ],
   },
   {
@@ -298,10 +299,10 @@ const WORKFLOW_TEMPLATES = [
       { id: 'end', type: 'workflow' as const, position: { x: 250, y: 530 }, data: { type: 'end', label: 'End', status: null } },
     ],
     edges: [
-      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
-      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e1', source: 'trigger', target: 's1', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
+      { id: 'e2', source: 's1', target: 's2', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
       { id: 'e3', source: 's2', target: 's3', label: 'Over', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#ef4444', strokeWidth: 2 } },
-      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#6366f1', strokeWidth: 2 } },
+      { id: 'e4', source: 's3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#7C3AED', strokeWidth: 2 } },
       { id: 'e5', source: 's2', target: 'end', label: 'OK', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#22c55e', strokeWidth: 2 } },
     ],
   },
@@ -323,7 +324,7 @@ function ToolSelector({ value, onChange }: { value: string; onChange: (v: string
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search tools… (e.g. jira_create_issue)"
-        className="w-full border rounded px-2 py-1 bg-background text-xs font-mono"
+        className="w-full border border-neural-violet/20 rounded px-2 py-1 bg-command-black text-white/80 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-neural-violet/40 placeholder-white/25"
         aria-label="Tool selector"
       />
       <datalist id="wf-tool-options">
@@ -347,6 +348,9 @@ function TypeSpecificConfig({
   onChange: (patch: Partial<WorkflowNodeData>) => void;
 }) {
   const type = nodeData.type;
+  const inputCls = 'w-full border border-neural-violet/20 rounded px-2 py-1 bg-command-black text-white/80 text-xs focus:outline-none focus:ring-1 focus:ring-neural-violet/40';
+  const labelCls = 'text-white/40 block mb-1';
+
   const field = (
     id: string,
     label: string,
@@ -356,7 +360,7 @@ function TypeSpecificConfig({
     inputType: 'text' | 'number' | 'textarea' = 'text',
   ) => (
     <div key={id}>
-      <label htmlFor={id} className="text-muted-foreground block mb-1">{label}</label>
+      <label htmlFor={id} className={labelCls}>{label}</label>
       {inputType === 'textarea' ? (
         <textarea
           id={id}
@@ -364,7 +368,7 @@ function TypeSpecificConfig({
           onChange={(e) => handler(e.target.value)}
           placeholder={placeholder}
           rows={2}
-          className="w-full border rounded px-2 py-1 resize-none bg-background text-xs"
+          className={`${inputCls} resize-none`}
         />
       ) : (
         <input
@@ -373,7 +377,7 @@ function TypeSpecificConfig({
           value={value != null ? String(value) : ''}
           onChange={(e) => handler(e.target.value)}
           placeholder={placeholder}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         />
       )}
     </div>
@@ -382,17 +386,17 @@ function TypeSpecificConfig({
   if (type === 'trigger') return (
     <div className="space-y-2">
       <div>
-        <label htmlFor="trigger-type" className="text-muted-foreground block mb-1">Trigger Type</label>
+        <label htmlFor="trigger-type" className={labelCls}>Trigger Type</label>
         <select
           id="trigger-type"
           value={nodeData.trigger_type ?? 'manual'}
           onChange={(e) => onChange({ trigger_type: e.target.value })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         >
-          <option value="manual">Manual</option>
-          <option value="cron">CRON Schedule</option>
-          <option value="webhook">Webhook</option>
-          <option value="event">Event</option>
+          <option value="manual" className="bg-command-black">Manual</option>
+          <option value="cron" className="bg-command-black">CRON Schedule</option>
+          <option value="webhook" className="bg-command-black">Webhook</option>
+          <option value="event" className="bg-command-black">Event</option>
         </select>
       </div>
       {nodeData.trigger_type === 'cron' &&
@@ -404,7 +408,7 @@ function TypeSpecificConfig({
   if (type === 'tool_call') return (
     <div className="space-y-2">
       <div>
-        <label htmlFor="tool-selector" className="text-muted-foreground block mb-1">Tool</label>
+        <label htmlFor="tool-selector" className={labelCls}>Tool</label>
         <ToolSelector
           value={nodeData.tool ?? ''}
           onChange={(v) => onChange({ tool: v })}
@@ -433,14 +437,14 @@ function TypeSpecificConfig({
   if (type === 'parallel') return (
     <div className="space-y-2">
       <div>
-        <label htmlFor="max-conc" className="text-muted-foreground block mb-1">Max Concurrency</label>
+        <label htmlFor="max-conc" className={labelCls}>Max Concurrency</label>
         <input
           id="max-conc"
           type="number"
           min={1} max={20}
           value={nodeData.max_concurrency ?? 5}
           onChange={(e) => onChange({ max_concurrency: parseInt(e.target.value, 10) })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         />
       </div>
     </div>
@@ -450,14 +454,14 @@ function TypeSpecificConfig({
     <div className="space-y-2">
       {field('iterator', 'Iterator Expression', nodeData.iterator, (v) => onChange({ iterator: v }), 'item in items')}
       <div>
-        <label htmlFor="max-iter" className="text-muted-foreground block mb-1">Max Iterations</label>
+        <label htmlFor="max-iter" className={labelCls}>Max Iterations</label>
         <input
           id="max-iter"
           type="number"
           min={1} max={1000}
           value={nodeData.max_iterations ?? 100}
           onChange={(e) => onChange({ max_iterations: parseInt(e.target.value, 10) })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         />
       </div>
       {field('break-cond', 'Break Condition', nodeData.break_condition, (v) => onChange({ break_condition: v }), 'item.done == true')}
@@ -469,14 +473,14 @@ function TypeSpecificConfig({
       {field('approval-msg', 'Approval Message', nodeData.approval_message, (v) => onChange({ approval_message: v }), 'Please review and approve…', 'textarea')}
       {field('approvers', 'Approvers (comma-separated emails)', nodeData.approvers, (v) => onChange({ approvers: v }), 'user@example.com')}
       <div>
-        <label htmlFor="timeout-min" className="text-muted-foreground block mb-1">Timeout (minutes)</label>
+        <label htmlFor="timeout-min" className={labelCls}>Timeout (minutes)</label>
         <input
           id="timeout-min"
           type="number"
           min={1}
           value={nodeData.timeout_minutes ?? 60}
           onChange={(e) => onChange({ timeout_minutes: parseInt(e.target.value, 10) })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         />
       </div>
     </div>
@@ -486,28 +490,28 @@ function TypeSpecificConfig({
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label htmlFor="delay-dur" className="text-muted-foreground block mb-1">Duration</label>
+          <label htmlFor="delay-dur" className={labelCls}>Duration</label>
           <input
             id="delay-dur"
             type="number"
             min={1}
             value={nodeData.duration ?? 1}
             onChange={(e) => onChange({ duration: parseInt(e.target.value, 10) })}
-            className="w-full border rounded px-2 py-1 bg-background text-xs"
+            className={inputCls}
           />
         </div>
         <div>
-          <label htmlFor="delay-unit" className="text-muted-foreground block mb-1">Unit</label>
+          <label htmlFor="delay-unit" className={labelCls}>Unit</label>
           <select
             id="delay-unit"
             value={nodeData.duration_unit ?? 'minutes'}
             onChange={(e) => onChange({ duration_unit: e.target.value })}
-            className="w-full border rounded px-2 py-1 bg-background text-xs"
+            className={inputCls}
           >
-            <option value="seconds">Seconds</option>
-            <option value="minutes">Minutes</option>
-            <option value="hours">Hours</option>
-            <option value="days">Days</option>
+            <option value="seconds" className="bg-command-black">Seconds</option>
+            <option value="minutes" className="bg-command-black">Minutes</option>
+            <option value="hours" className="bg-command-black">Hours</option>
+            <option value="days" className="bg-command-black">Days</option>
           </select>
         </div>
       </div>
@@ -525,27 +529,27 @@ function TypeSpecificConfig({
       {field('collection-id', 'Collection ID', nodeData.collection_id as string | undefined, (v) => onChange({ collection_id: v }), 'col-uuid')}
       {field('query-tmpl', 'Query Template', nodeData.query_template as string | undefined, (v) => onChange({ query_template: v }), '{{goal}}', 'textarea')}
       <div>
-        <label htmlFor="rag-strategy" className="text-muted-foreground block mb-1">Strategy</label>
+        <label htmlFor="rag-strategy" className={labelCls}>Strategy</label>
         <select
           id="rag-strategy"
           value={(nodeData.strategy as string | undefined) ?? 'hybrid'}
           onChange={(e) => onChange({ strategy: e.target.value })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         >
-          <option value="hybrid">Hybrid</option>
-          <option value="vector">Vector</option>
-          <option value="lexical">Lexical</option>
+          <option value="hybrid" className="bg-command-black">Hybrid</option>
+          <option value="vector" className="bg-command-black">Vector</option>
+          <option value="lexical" className="bg-command-black">Lexical</option>
         </select>
       </div>
       <div>
-        <label htmlFor="rag-topk" className="text-muted-foreground block mb-1">Top K</label>
+        <label htmlFor="rag-topk" className={labelCls}>Top K</label>
         <input
           id="rag-topk"
           type="number"
           min={1} max={20}
           value={(nodeData.top_k as number | undefined) ?? 5}
           onChange={(e) => onChange({ top_k: parseInt(e.target.value, 10) })}
-          className="w-full border rounded px-2 py-1 bg-background text-xs"
+          className={inputCls}
         />
       </div>
     </div>
@@ -593,7 +597,7 @@ function WorkflowBuilderInner() {
   // Undo/redo history stack
   const historyStack = useRef<{ nodes: Node[]; edges: Edge[] }[]>([{ nodes: [], edges: [] }]);
   const historyIdx = useRef(0);
-  // Fix 10: Debounce timer for auto-save
+  // Debounce timer for auto-save
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: savedWorkflows } = useQuery({
@@ -680,7 +684,7 @@ function WorkflowBuilderInner() {
       const newEdges = addEdge({
         ...connection,
         markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: '#6366f1', strokeWidth: 2 },
+        style: { stroke: '#7C3AED', strokeWidth: 2 },
       }, eds);
       pushHistory(nodes, newEdges);
       return newEdges;
@@ -759,9 +763,8 @@ function WorkflowBuilderInner() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectedNode, setNodes, setEdges, undo, redo, fitView, pushHistory, edges]);
 
-  // ── Drag-and-drop handlers ───────────────────────────────────────────────
+  // ── Auto-save existing workflows after nodes/edges settle (2 s debounce) ──
 
-  // Fix 10: Auto-save existing workflows after nodes/edges settle (2 s debounce)
   useEffect(() => {
     if (!currentWfId) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
@@ -831,7 +834,7 @@ function WorkflowBuilderInner() {
           source: e.source,
           target: e.target,
           markerEnd: { type: MarkerType.ArrowClosed },
-          style: { stroke: '#6366f1', strokeWidth: 2 },
+          style: { stroke: '#7C3AED', strokeWidth: 2 },
         }));
         setNodes(newNodes);
         setEdges(newEdges);
@@ -968,7 +971,7 @@ function WorkflowBuilderInner() {
         id: e.id ?? `e_${i}`, source: e.source, target: e.target,
         ...(e.label != null ? { label: String(e.label) } : {}),
         markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: '#6366f1', strokeWidth: 2 },
+        style: { stroke: '#7C3AED', strokeWidth: 2 },
       }));
       setNodes(loadedNodes);
       setEdges(loadedEdges);
@@ -993,38 +996,25 @@ function WorkflowBuilderInner() {
   const canUndo = historyIdx.current > 0;
   const canRedo = historyIdx.current < historyStack.current.length - 1;
 
+  const toolbarBtnCls = 'text-xs px-2 py-1 border border-neural-violet/20 rounded text-white/60 hover:bg-neural-violet/10 hover:text-white/80 disabled:opacity-40 transition-colors';
+
   return (
-    <div className="flex flex-col h-screen bg-background">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b bg-card flex-wrap">
+    <div className="flex flex-col h-full bg-command-black overflow-hidden">
+      {/* Cockpit Toolbar */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-neural-violet/20 bg-panel-graphite/80 flex-wrap shrink-0">
+        {/* Workflow name input */}
         <input
           value={workflowName}
           onChange={(e) => setWorkflowName(e.target.value)}
           aria-label="Workflow name"
-          className="font-semibold text-sm bg-transparent border-b border-transparent hover:border-muted-foreground focus:border-primary focus:outline-none w-48"
+          className="font-semibold text-sm bg-transparent border-b border-transparent hover:border-neural-violet/30 focus:border-neural-violet focus:outline-none w-48 text-white placeholder-white/30"
         />
         <div className="flex-1" />
         {/* Undo / Redo */}
-        <button
-          onClick={undo}
-          disabled={!canUndo}
-          aria-label="Undo"
-          title="Undo (Ctrl+Z)"
-          className="text-xs px-2 py-1 border rounded hover:bg-muted disabled:opacity-40"
-        >↩ Undo</button>
-        <button
-          onClick={redo}
-          disabled={!canRedo}
-          aria-label="Redo"
-          title="Redo (Ctrl+Y)"
-          className="text-xs px-2 py-1 border rounded hover:bg-muted disabled:opacity-40"
-        >↪ Redo</button>
+        <button onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)" className={toolbarBtnCls}>↩ Undo</button>
+        <button onClick={redo} disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Y)" className={toolbarBtnCls}>↪ Redo</button>
         {/* Templates */}
-        <button
-          onClick={() => setShowTemplates(true)}
-          aria-label="Open templates"
-          className="text-xs px-2 py-1 border rounded hover:bg-muted"
-        >⚡ Templates</button>
+        <button onClick={() => setShowTemplates(true)} aria-label="Open templates" className={toolbarBtnCls}>⚡ Templates</button>
         {/* Validate */}
         <button
           onClick={() => {
@@ -1034,63 +1024,63 @@ function WorkflowBuilderInner() {
             if (errs.length === 0) toast({ kind: 'success', message: 'Workflow is valid' });
           }}
           aria-label="Validate workflow"
-          className={`text-xs px-2 py-1 border rounded hover:bg-muted ${errors.length > 0 && showValidation ? 'border-red-400 text-red-600' : ''}`}
+          className={`${toolbarBtnCls} ${errors.length > 0 && showValidation ? '!border-mission-red/50 !text-mission-red' : ''}`}
         >
           {errors.length > 0 && showValidation ? `⚠ ${errors.length} issue${errors.length > 1 ? 's' : ''}` : '✓ Validate'}
         </button>
         {savedWorkflows && savedWorkflows.length > 0 && (
           <select
             onChange={(e) => { if (e.target.value) loadWorkflow(e.target.value); }}
-            className="text-xs border rounded px-2 py-1 bg-background"
+            className="text-xs border border-neural-violet/20 rounded px-2 py-1 bg-command-black text-white/60 focus:outline-none focus:ring-1 focus:ring-neural-violet/40"
             defaultValue=""
             aria-label="Load saved workflow"
           >
-            <option value="">Load saved…</option>
-            {savedWorkflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            <option value="" className="bg-command-black">Load saved…</option>
+            {savedWorkflows.map((w) => <option key={w.id} value={w.id} className="bg-command-black">{w.name}</option>)}
           </select>
         )}
         <button
           onClick={() => { setNodes([]); setEdges([]); setCurrentWfId(null); setWorkflowName('My Workflow'); historyStack.current = [{ nodes: [], edges: [] }]; historyIdx.current = 0; setValidationErrors([]); }}
-          className="text-xs px-2 py-1 border rounded hover:bg-muted"
+          className={toolbarBtnCls}
         >New</button>
-        <button onClick={save} aria-label="Save workflow" className="text-xs px-3 py-1 bg-primary text-primary-foreground rounded hover:opacity-90">Save</button>
-        {/* Fix 10: Auto-save status indicator */}
+        <button onClick={save} aria-label="Save workflow" className="text-xs px-3 py-1 bg-neural-violet text-white rounded hover:bg-neural-violet/90 transition-colors shadow-sm shadow-neural-violet/20">Save</button>
+        {/* Auto-save status indicator */}
         {currentWfId && saveStatus !== 'idle' && (
-          <span className={`text-xs ${saveStatus === 'saved' ? 'text-green-600' : saveStatus === 'error' ? 'text-red-500' : 'text-amber-500'}`}>
-            {saveStatus === 'saved' ? '• Saved' : saveStatus === 'error' ? '• Save failed' : '• Unsaved'}
+          <span className={`text-xs font-mono ${saveStatus === 'saved' ? 'text-verified-green' : saveStatus === 'error' ? 'text-mission-red' : 'text-risk-amber'}`}>
+            {saveStatus === 'saved' ? '● Saved' : saveStatus === 'error' ? '● Save failed' : '● Unsaved'}
           </span>
         )}
-        <button onClick={() => run(true)} disabled={running} aria-label="Dry Run" className="text-xs px-3 py-1 bg-yellow-500 text-foreground rounded hover:bg-yellow-600 disabled:opacity-50">Dry Run</button>
-        <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-green-600 text-foreground rounded hover:bg-green-700 disabled:opacity-50">{running ? 'Running…' : '▶ Run'}</button>
+        <button onClick={() => run(true)} disabled={running} aria-label="Dry Run" className="text-xs px-3 py-1 bg-risk-amber/80 text-white rounded hover:bg-risk-amber disabled:opacity-50 transition-colors">Dry Run</button>
+        <button onClick={() => run(false)} disabled={running} className="text-xs px-3 py-1 bg-verified-green/80 text-white rounded hover:bg-verified-green disabled:opacity-50 transition-colors">{running ? 'Running…' : '▶ Run'}</button>
       </div>
 
       {/* Validation banner */}
       {showValidation && errors.length > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2 bg-red-50 dark:bg-red-950/30 border-b border-red-200 text-xs text-red-700">
+        <div className="flex items-center gap-2 px-4 py-2 bg-mission-red/10 border-b border-mission-red/20 text-xs text-mission-red shrink-0">
           <span className="font-medium">Validation issues:</span>
           {errors.map((e, i) => <span key={i}>• {e}</span>)}
-          <button onClick={() => setShowValidation(false)} className="ml-auto text-red-400 hover:text-red-600">✕</button>
+          <button onClick={() => setShowValidation(false)} className="ml-auto text-mission-red/60 hover:text-mission-red">✕</button>
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left: Node Palette */}
-        <div className="w-48 border-r bg-card flex flex-col shrink-0">
-          <div className="p-2 text-xs font-semibold text-muted-foreground border-b">Node Palette</div>
-          <div className="p-2 border-b">
+        <div className="w-48 border-r border-neural-violet/20 bg-panel-graphite flex flex-col shrink-0">
+          <div className="p-2 text-xs font-semibold text-white/30 border-b border-neural-violet/15 uppercase tracking-wider">Node Palette</div>
+          <div className="p-2 border-b border-neural-violet/15">
             <textarea
               value={nlGoal}
               onChange={(e) => setNlGoal(e.target.value)}
               rows={2}
               aria-label="Natural language workflow description"
-              className="w-full text-xs border rounded p-1 resize-none bg-background"
+              className="w-full text-xs border border-neural-violet/20 rounded p-1 resize-none bg-command-black text-white/80 placeholder-white/25 focus:outline-none focus:ring-1 focus:ring-neural-violet/40"
               placeholder="Describe workflow…"
             />
             <button
               onClick={generateFromNL}
               disabled={generating || !nlGoal.trim()}
               aria-label="Generate workflow from natural language"
-              className="w-full mt-1 text-xs bg-purple-600 text-foreground rounded py-1 disabled:opacity-50"
+              className="w-full mt-1 text-xs bg-neural-violet text-white rounded py-1 disabled:opacity-50 hover:bg-neural-violet/90 transition-colors shadow-sm shadow-neural-violet/20"
             >{generating ? '…' : '✨ Generate'}</button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -1101,19 +1091,19 @@ function WorkflowBuilderInner() {
                 onDragStart={(e) => onDragStart(e, n.type, n.label)}
                 onClick={() => addNode(n.type, n.label)}
                 aria-label={`Add ${n.label} node`}
-                className={`w-full text-left text-xs p-2 rounded border ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity cursor-grab active:cursor-grabbing`}
+                className={`w-full text-left text-xs p-2 rounded border-2 ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity cursor-grab active:cursor-grabbing`}
               >{NODE_ICONS[n.type]} {n.label}</button>
             ))}
           </div>
         </div>
 
         {/* Center: Canvas */}
-        <div className="flex-1 relative" onDragOver={onDragOver} onDrop={onDrop}>
+        <div className="flex-1 relative bg-command-black" onDragOver={onDragOver} onDrop={onDrop}>
           {isEmpty && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground pointer-events-none z-10">
-              <div className="text-5xl mb-3">🔧</div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-white/20 pointer-events-none z-10">
+              <div className="text-5xl mb-3 opacity-40">⬡</div>
               <div className="text-lg font-medium">Build your workflow</div>
-              <div className="text-sm mt-1">Drag nodes from the palette or generate from natural language</div>
+              <div className="text-sm mt-1 text-white/30">Drag nodes from the palette or generate from natural language</div>
             </div>
           )}
           <ReactFlow
@@ -1128,35 +1118,36 @@ function WorkflowBuilderInner() {
             connectionMode={ConnectionMode.Strict}
             connectionLineStyle={CONNECTION_LINE_STYLE}
             isValidConnection={isValidConnection}
+            style={{ background: '#080A12' }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={16} />
-            <Controls />
-            <MiniMap style={{ background: '#f8fafc' }} />
+            <Background variant={BackgroundVariant.Dots} gap={16} color="#7C3AED22" />
+            <Controls className="!bg-panel-graphite !border-neural-violet/20" />
+            <MiniMap style={{ background: '#080A12', border: '1px solid rgba(124,58,237,0.2)' }} maskColor="rgba(8,10,18,0.8)" />
           </ReactFlow>
         </div>
 
         {/* Right: Inspector */}
-        <div className="w-64 border-l bg-card flex flex-col shrink-0">
-          <div className="p-2 text-xs font-semibold text-muted-foreground border-b">
+        <div className="w-64 border-l border-neural-violet/20 bg-panel-graphite flex flex-col shrink-0">
+          <div className="p-2 text-xs font-semibold text-white/30 border-b border-neural-violet/15 uppercase tracking-wider">
             {selectedNode ? `Inspector — ${(selectedNode.data as WorkflowNodeData).type}` : 'Inspector'}
           </div>
           {selectedNode ? (
             <div className="p-3 space-y-3 text-xs overflow-y-auto flex-1">
               {/* Common: Label */}
               <div>
-                <label htmlFor="node-label" className="text-muted-foreground block mb-1">Label</label>
+                <label htmlFor="node-label" className="text-white/40 block mb-1">Label</label>
                 <input
                   id="node-label"
                   value={String((selectedNode.data as WorkflowNodeData).label ?? '')}
                   onChange={(e) => {
                     updateSelectedNodeData({ label: e.target.value });
                   }}
-                  className="w-full border rounded px-2 py-1 bg-background"
+                  className="w-full border border-neural-violet/20 rounded px-2 py-1 bg-command-black text-white/80 focus:outline-none focus:ring-1 focus:ring-neural-violet/40"
                 />
               </div>
               {/* Common: Description */}
               <div>
-                <label htmlFor="node-description" className="text-muted-foreground block mb-1">Description</label>
+                <label htmlFor="node-description" className="text-white/40 block mb-1">Description</label>
                 <textarea
                   id="node-description"
                   value={String((selectedNode.data as WorkflowNodeData).description ?? (selectedNode.data as WorkflowNodeData).subtitle ?? '')}
@@ -1164,13 +1155,13 @@ function WorkflowBuilderInner() {
                     updateSelectedNodeData({ description: e.target.value, subtitle: e.target.value });
                   }}
                   rows={2}
-                  className="w-full border rounded px-2 py-1 resize-none bg-background"
+                  className="w-full border border-neural-violet/20 rounded px-2 py-1 resize-none bg-command-black text-white/80 focus:outline-none focus:ring-1 focus:ring-neural-violet/40"
                 />
               </div>
 
               {/* Type-Specific config section */}
-              <div className="border-t pt-2">
-                <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wide mb-2">
+              <div className="border-t border-neural-violet/15 pt-2">
+                <p className="text-[10px] text-white/30 font-semibold uppercase tracking-wide mb-2">
                   {String((selectedNode.data as WorkflowNodeData).type)} Config
                 </p>
                 <TypeSpecificConfig
@@ -1179,7 +1170,7 @@ function WorkflowBuilderInner() {
                 />
               </div>
 
-              <div className="text-[10px] text-muted-foreground border-t pt-2">
+              <div className="text-[10px] text-white/25 border-t border-neural-violet/15 pt-2 font-mono">
                 Node ID: {selectedNode.id}<br />
                 Type: {String((selectedNode.data as WorkflowNodeData).type)}
               </div>
@@ -1197,20 +1188,20 @@ function WorkflowBuilderInner() {
                   setSelectedNode(null);
                 }}
                 aria-label="Delete selected node"
-                className="w-full text-xs bg-red-50 text-red-600 border border-red-200 rounded py-1 hover:bg-red-100"
+                className="w-full text-xs bg-mission-red/10 text-mission-red border border-mission-red/30 rounded py-1 hover:bg-mission-red/20 transition-colors"
               >Delete Node</button>
 
               {/* Per-node run output — shown after a run */}
               {nodeRunData[selectedNode.id] && (
-                <div className="border-t border-border pt-3 space-y-2">
+                <div className="border-t border-neural-violet/15 pt-3 space-y-2">
                   <div className="flex items-center gap-2">
-                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wide">
                       Last Run Output
                     </p>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${
                       nodeRunData[selectedNode.id].status === 'success'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-red-100 text-red-800'
+                        ? 'bg-verified-green/15 text-verified-green border-verified-green/30'
+                        : 'bg-mission-red/15 text-mission-red border-mission-red/30'
                     }`}>
                       {nodeRunData[selectedNode.id].status}
                       {nodeRunData[selectedNode.id].duration_ms != null &&
@@ -1220,8 +1211,8 @@ function WorkflowBuilderInner() {
 
                   {nodeRunData[selectedNode.id].input != null && (
                     <div>
-                      <p className="text-[10px] font-medium text-muted-foreground mb-1">INPUT</p>
-                      <pre className="text-[10px] bg-muted/50 rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap">
+                      <p className="text-[10px] font-medium text-white/30 mb-1">INPUT</p>
+                      <pre className="text-[10px] bg-command-black/80 text-telemetry-cyan rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap border border-neural-violet/15">
                         {JSON.stringify(nodeRunData[selectedNode.id].input, null, 2)}
                       </pre>
                     </div>
@@ -1229,8 +1220,8 @@ function WorkflowBuilderInner() {
 
                   {nodeRunData[selectedNode.id].output != null && (
                     <div>
-                      <p className="text-[10px] font-medium text-muted-foreground mb-1">OUTPUT</p>
-                      <pre className="text-[10px] bg-muted/50 rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap">
+                      <p className="text-[10px] font-medium text-white/30 mb-1">OUTPUT</p>
+                      <pre className="text-[10px] bg-command-black/80 text-telemetry-cyan rounded p-2 overflow-auto max-h-24 font-mono whitespace-pre-wrap border border-neural-violet/15">
                         {typeof nodeRunData[selectedNode.id].output === 'string'
                           ? nodeRunData[selectedNode.id].output as string
                           : JSON.stringify(nodeRunData[selectedNode.id].output, null, 2)}
@@ -1239,8 +1230,8 @@ function WorkflowBuilderInner() {
                   )}
 
                   {nodeRunData[selectedNode.id].error && (
-                    <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded">
-                      <p className="text-[10px] text-red-700 dark:text-red-400 font-mono">
+                    <div className="p-2 bg-mission-red/10 rounded border border-mission-red/20">
+                      <p className="text-[10px] text-mission-red font-mono">
                         {nodeRunData[selectedNode.id].error}
                       </p>
                     </div>
@@ -1257,7 +1248,7 @@ function WorkflowBuilderInner() {
                       a.click();
                       URL.revokeObjectURL(url);
                     }}
-                    className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+                    className="flex items-center gap-1 text-[10px] text-neural-violet hover:text-neural-violet/70 transition-colors"
                   >
                     <Download className="h-3 w-3" />
                     Export node data
@@ -1266,12 +1257,12 @@ function WorkflowBuilderInner() {
               )}
             </div>
           ) : (
-            <div className="p-3 text-xs text-muted-foreground">Click a node to inspect and configure it</div>
+            <div className="p-3 text-xs text-white/30">Click a node to inspect and configure it</div>
           )}
           {runOutput && (
-            <div className="border-t p-2 overflow-auto">
-              <div className="text-xs font-semibold mb-1">Run Output</div>
-              <pre className="text-[10px] bg-muted rounded p-2 overflow-auto max-h-40">{runOutput}</pre>
+            <div className="border-t border-neural-violet/15 p-2 overflow-auto shrink-0">
+              <div className="text-xs font-semibold mb-1 text-white/50">Run Output</div>
+              <pre className="text-[10px] bg-command-black rounded p-2 overflow-auto max-h-40 text-telemetry-cyan font-mono border border-neural-violet/15">{runOutput}</pre>
             </div>
           )}
         </div>
@@ -1280,28 +1271,30 @@ function WorkflowBuilderInner() {
       {/* Templates Modal */}
       {showTemplates && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
           onClick={(e) => { if (e.target === e.currentTarget) setShowTemplates(false); }}
           role="dialog"
           aria-label="Workflow templates"
           aria-modal="true"
         >
-          <div className="bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-xl">
-            <div className="flex items-center justify-between px-5 py-4 border-b">
-              <h2 className="font-semibold text-sm">⚡ Starter Templates</h2>
-              <button onClick={() => setShowTemplates(false)} className="text-muted-foreground hover:text-foreground" aria-label="Close templates modal">✕</button>
+          <div className="bg-panel-graphite border border-neural-violet/30 rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-2xl shadow-neural-violet/10">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-neural-violet/20">
+              <h2 className="font-semibold text-sm text-white flex items-center gap-2">
+                <span className="text-neural-violet">⚡</span> Starter Templates
+              </h2>
+              <button onClick={() => setShowTemplates(false)} className="text-white/40 hover:text-white/80 transition-colors" aria-label="Close templates modal">✕</button>
             </div>
             <div className="grid grid-cols-2 gap-3 p-5 overflow-y-auto max-h-[60vh]">
               {WORKFLOW_TEMPLATES.map((tmpl) => (
                 <button
                   key={tmpl.id}
                   onClick={() => loadTemplate(tmpl)}
-                  className="text-left p-4 border border-border rounded-xl hover:border-primary hover:bg-muted/50 transition-colors"
+                  className="text-left p-4 border border-neural-violet/20 rounded-xl hover:border-neural-violet/50 hover:bg-neural-violet/5 transition-all group"
                   aria-label={`Load template ${tmpl.name}`}
                 >
-                  <p className="font-medium text-sm">{tmpl.name}</p>
-                  <p className="text-xs text-muted-foreground mt-1">{tmpl.description}</p>
-                  <p className="text-[10px] text-muted-foreground mt-2">{tmpl.nodes.length} nodes · {tmpl.edges.length} edges</p>
+                  <p className="font-medium text-sm text-white group-hover:text-neural-violet transition-colors">{tmpl.name}</p>
+                  <p className="text-xs text-white/40 mt-1">{tmpl.description}</p>
+                  <p className="text-[10px] text-white/25 mt-2 font-mono">{tmpl.nodes.length} nodes · {tmpl.edges.length} edges</p>
                 </button>
               ))}
             </div>
@@ -1316,9 +1309,11 @@ function WorkflowBuilderInner() {
 
 export function WorkflowBuilderPage() {
   return (
-    <ReactFlowProvider>
-      <WorkflowBuilderInner />
-    </ReactFlowProvider>
+    <MissionControlLayout showOperationalBar={false}>
+      <ReactFlowProvider>
+        <WorkflowBuilderInner />
+      </ReactFlowProvider>
+    </MissionControlLayout>
   );
 }
 
