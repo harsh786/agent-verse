@@ -426,9 +426,9 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
 
     from app.db.models.goal import Goal
     from app.db.rls import system_session
-    from app.db.session import get_session_factory
+    from app.db.session import _make_session_factory as _get_fresh_db
     try:
-        db = get_session_factory()
+        db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             await session.execute(
                 update(Goal)
@@ -518,12 +518,16 @@ def run_goal(
     goal_bridge: Any = None
     event_store: Any = None
     try:
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory  # bypass global cache
         from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
 
         def _make_worker_goal_bridge() -> tuple[Any, Any, Any]:
-            fresh_db = get_session_factory()
+            # Create a FRESH session factory — never reuse the module-level cached
+            # factory from the parent API process.  The parent's asyncpg connections
+            # are bound to the parent's (now-closed) event loop; using them in the
+            # Celery forked worker causes "Future attached to a different loop".
+            fresh_db = _make_session_factory()
             fresh_event_store = EventStore(fresh_db)
             fresh_goal_bridge = GoalService(
                 db_session_factory=fresh_db, event_store=fresh_event_store
@@ -1279,9 +1283,9 @@ async def _load_db_schedules() -> dict[str, dict[str, Any]]:
         from app.db.models.scheduling import Schedule
         from app.db.models.tenant import Tenant
         from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory as _get_fresh_db
 
-        db_factory = get_session_factory()
+        db_factory = _get_fresh_db()
         schedules: dict[str, dict[str, Any]] = {}
         async with db_factory() as session:
             tenant_result = await session.execute(
@@ -1320,9 +1324,9 @@ async def _update_db_schedule_last_fired_at(
 
         from app.db.models.scheduling import Schedule
         from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory as _get_fresh_db
 
-        db_factory = get_session_factory()
+        db_factory = _get_fresh_db()
         async with db_factory() as session:
             async with sqlalchemy_rls_context(session, tenant_id):
                 await session.execute(
@@ -1788,8 +1792,8 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text("""UPDATE goals
@@ -1837,8 +1841,8 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             for table in ["goal_events", "decision_traces"]:
                 try:
@@ -1874,8 +1878,8 @@ async def _expire_db_approvals() -> list[str]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text(
@@ -1910,12 +1914,12 @@ async def _do_check_email_goals() -> dict[str, Any]:
     from app.integrations.email.imap_listener import check_and_process_emails
 
     try:
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory as _get_fresh_db
         from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
         from app.tenancy.context import PlanTier, TenantContext
 
-        db_factory = get_session_factory()
+        db_factory = _get_fresh_db()
         event_store = EventStore(db_factory)
         goal_service = GoalService(db_session_factory=db_factory, event_store=event_store)
 
@@ -1938,9 +1942,9 @@ def consolidate_memories_task() -> dict:
     async def _run() -> dict:
         from sqlalchemy import text
 
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory as _get_fresh_db
 
-        db = get_session_factory()
+        db = _get_fresh_db()
         results: dict = {}
         try:
             async with db() as session, session.begin():
@@ -2000,8 +2004,8 @@ def reindex_stale_knowledge() -> dict:
     async def _run() -> dict:
         from sqlalchemy import text
 
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         async with db() as session, session.begin():
             result = await session.execute(text("""
                 UPDATE documents
@@ -2046,8 +2050,8 @@ def purge_expired_artifacts() -> dict:
     async def _run() -> dict:
         from sqlalchemy import text
 
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         async with db() as session, session.begin():
             result = await session.execute(text(
                 "DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()"
@@ -2066,8 +2070,8 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
         from sqlalchemy import text
 
-        from app.db.session import get_session_factory
-        db = get_session_factory()
+        from app.db.session import _make_session_factory as _get_fresh_db
+        db = _get_fresh_db()
         try:
             # Collect all tenant data
             async with db() as session:
@@ -2146,9 +2150,9 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             from app.civilization.models import Constitution
             from app.civilization.orchestrator import CivilizationOrchestrator
             from app.civilization.society import Society
-            from app.db.session import get_session_factory
+            from app.db.session import _make_session_factory as _get_fresh_db
 
-            db = get_session_factory()
+            db = _get_fresh_db()
             redis_url = os.getenv("REDIS_URL", "")
             redis = None
             if redis_url:
@@ -2219,8 +2223,8 @@ def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
     async def _run() -> dict:
         try:
             from app.civilization.learning import LearningPipeline
-            from app.db.session import get_session_factory
-            db = get_session_factory()
+            from app.db.session import _make_session_factory as _get_fresh_db
+            db = _get_fresh_db()
             pipeline = LearningPipeline(
                 civilization_id=civilization_id, tenant_id=tenant_id,
                 db_session_factory=db,
@@ -2247,8 +2251,8 @@ def warm_jwks_cache() -> dict:
     async def _run() -> dict:
         try:
             from app.auth.agent_identity import _build_jwks  # type: ignore[import]
-            from app.db.session import get_session_factory
-            db = get_session_factory()
+            from app.db.session import _make_session_factory as _get_fresh_db
+            db = _get_fresh_db()
             jwks_keys = await _build_jwks(db)
             import redis as _redis
             r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
@@ -2275,9 +2279,9 @@ def enforce_hitl_sla() -> dict:
         try:
             from sqlalchemy import text as _t
 
-            from app.db.session import get_session_factory
+            from app.db.session import _make_session_factory as _get_fresh_db
 
-            db = get_session_factory()
+            db = _get_fresh_db()
             enforced = 0
             async with db() as session:
                 overdue = (
@@ -2319,10 +2323,10 @@ def flush_audit_wal() -> dict:
             import redis.asyncio as aioredis
 
             r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
-            from app.db.session import get_session_factory
+            from app.db.session import _make_session_factory as _get_fresh_db
             from app.governance.audit_v3 import AuditFlusher
 
-            flusher = AuditFlusher(redis=r, db_factory=get_session_factory())
+            flusher = AuditFlusher(redis=r, db_factory=_get_fresh_db())
             flushed = await flusher.flush()
             await r.aclose()
             return {"flushed": flushed}
@@ -2374,8 +2378,8 @@ def embed_marketplace_templates() -> dict:
     async def _run() -> dict:
         try:
             from sqlalchemy import text
-            from app.db.session import get_session_factory
-            db = get_session_factory()
+            from app.db.session import _make_session_factory as _get_fresh_db
+            db = _get_fresh_db()
             async with db() as session:
                 result = await session.execute(
                     text("SELECT COUNT(*) FROM marketplace_templates WHERE embedding IS NULL")
@@ -2393,8 +2397,8 @@ def conclude_stale_experiments() -> dict:
     async def _run() -> dict:
         try:
             from sqlalchemy import text
-            from app.db.session import get_session_factory
-            db = get_session_factory()
+            from app.db.session import _make_session_factory as _get_fresh_db
+            db = _get_fresh_db()
             async with db() as session:
                 result = await session.execute(
                     text(
@@ -2417,10 +2421,10 @@ def expire_stale_documents() -> dict:
     async def _run() -> dict:
         try:
             from sqlalchemy import text
-            from app.db.session import get_session_factory
+            from app.db.session import _make_session_factory as _get_fresh_db
             from app.core.config import get_settings
             retention_days = getattr(get_settings(), "data_retention_days", 90)
-            db = get_session_factory()
+            db = _get_fresh_db()
             async with db() as session:
                 result = await session.execute(
                     text(
@@ -2446,9 +2450,9 @@ def process_dpdp_erasures(self: Any) -> dict:
     async def _run() -> dict:
         from datetime import UTC, datetime
 
-        from app.db.session import get_session_factory
+        from app.db.session import _make_session_factory as _get_fresh_db
 
-        db = get_session_factory()
+        db = _get_fresh_db()
         if db is None:
             return {"status": "skipped", "reason": "no_db"}
         from sqlalchemy import text
@@ -2504,8 +2508,8 @@ def discover_and_tick_civilizations() -> dict:
         try:
             from sqlalchemy import text
 
-            from app.db.session import get_session_factory
-            db = get_session_factory()
+            from app.db.session import _make_session_factory as _get_fresh_db
+            db = _get_fresh_db()
             async with db() as session:
                 rows = (await session.execute(text(
                     "SELECT id, tenant_id FROM civilizations WHERE status = 'active'"
@@ -2542,10 +2546,10 @@ def re_embed_collection(
         try:
             from sqlalchemy import text
 
-            from app.db.session import get_session_factory
+            from app.db.session import _make_session_factory as _get_fresh_db
             from app.embedding.router import embedding_router
 
-            db = get_session_factory()
+            db = _get_fresh_db()
 
             # Load all chunks for this collection
             async with db() as session:
