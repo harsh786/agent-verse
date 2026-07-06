@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import datetime
+import json
+import logging
 import uuid
+from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -20,6 +23,8 @@ from app.skills_runtime.models import (
     SkillStatus,
 )
 
+_log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/skills-runtime", tags=["skills-runtime"])
 
 
@@ -33,9 +38,10 @@ def _require_tenant(request: Request) -> Any:
 # Platform registry (builtins loaded at startup)
 _platform_skills: dict[str, dict] = {}
 _tenant_skills: dict[str, list] = {}  # tenant_id → skills
-_executions: dict[str, list] = {}  # tenant_id → executions
+_executions: dict[str, deque] = {}  # tenant_id → bounded deque of executions (maxlen=1000)
 _enabled_skills: dict[str, set] = {}  # tenant_id → {skill_ids}
 _skill_versions: dict[str, list] = {}  # skill_id → list of archived versions
+_loaded_tenants: set[str] = set()  # tenant_ids whose custom skills have been loaded from DB
 
 # Load builtins
 for _s in BUILTIN_SKILLS:
@@ -100,6 +106,128 @@ def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
         metadata=skill_dict.get("metadata", {}),
         created_at=skill_dict.get("created_at"),
     )
+
+
+# ── DB persistence helpers (write-through cache for custom tenant skills) ──────
+
+async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
+    """Persist a custom tenant skill to the skills table.
+
+    Uses the real 0074 migration schema: id=String(32), visibility, is_active.
+    Fails silently — in-memory store is the source of truth.
+    """
+    if db_factory is None:
+        return
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+
+        # The DB id column is String(32); strip UUID dashes.
+        db_id = skill_dict["skill_id"].replace("-", "")
+        async with db_factory() as session, session.begin(), system_session(session):
+            await session.execute(
+                text("""
+                    INSERT INTO skills (
+                        id, tenant_id, name, version, description,
+                        trigger_hints, instructions, few_shot_examples,
+                        allowed_tools, required_connectors, token_estimate,
+                        visibility, is_active, created_by, created_at, updated_at
+                    ) VALUES (
+                        :id, :tenant_id, :name, :version, :description,
+                        :trigger_hints, :instructions, :few_shot_examples,
+                        :allowed_tools, :required_connectors, :token_estimate,
+                        :visibility, :is_active, :created_by, :created_at, NOW()
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        name         = EXCLUDED.name,
+                        description  = EXCLUDED.description,
+                        instructions = EXCLUDED.instructions,
+                        trigger_hints = EXCLUDED.trigger_hints,
+                        allowed_tools = EXCLUDED.allowed_tools,
+                        is_active    = EXCLUDED.is_active,
+                        updated_at   = NOW()
+                """),
+                {
+                    "id": db_id,
+                    "tenant_id": skill_dict.get("tenant_id", ""),
+                    "name": skill_dict["name"],
+                    "version": skill_dict.get("version", "1.0.0"),
+                    "description": skill_dict["description"],
+                    "trigger_hints": json.dumps(skill_dict.get("trigger_hints", [])),
+                    "instructions": skill_dict.get("instructions", ""),
+                    "few_shot_examples": json.dumps([]),
+                    "allowed_tools": json.dumps(skill_dict.get("allowed_tools", [])),
+                    "required_connectors": json.dumps([]),
+                    "token_estimate": 0,
+                    "visibility": "tenant",
+                    "is_active": True,
+                    "created_by": skill_dict.get("tenant_id", ""),
+                    "created_at": skill_dict.get("created_at"),
+                },
+            )
+    except Exception as exc:
+        _log.warning(
+            "skill_db_persist_failed skill_id=%s error=%s",
+            skill_dict.get("skill_id"),
+            exc,
+        )
+
+
+async def _load_tenant_skills_from_db(tenant_id: str, db_factory: Any) -> None:
+    """Load persisted custom skills for a tenant into the in-memory cache.
+
+    Idempotent — skips if the tenant has already been loaded this process lifetime.
+    """
+    if db_factory is None or tenant_id in _loaded_tenants:
+        return
+    try:
+        from sqlalchemy import text
+
+        async with db_factory() as session, session.begin():
+            result = await session.execute(
+                text(
+                    "SELECT id, tenant_id, name, version, description, "
+                    "trigger_hints, instructions, allowed_tools, is_active, created_at "
+                    "FROM skills WHERE tenant_id = :tid AND is_active = true"
+                ),
+                {"tid": tenant_id},
+            )
+            rows = result.fetchall()
+            existing_ids = {s["skill_id"] for s in _tenant_skills.get(tenant_id, [])}
+            for row in rows:
+                # Convert 32-char hex ID back to standard UUID format
+                try:
+                    standard_id = str(uuid.UUID(hex=row.id))
+                except Exception:
+                    standard_id = row.id
+                if standard_id in existing_ids:
+                    continue
+                _tenant_skills.setdefault(tenant_id, []).append({
+                    "skill_id": standard_id,
+                    "tenant_id": row.tenant_id,
+                    "name": row.name,
+                    "description": row.description,
+                    "trigger_hints": (
+                        row.trigger_hints if isinstance(row.trigger_hints, list) else []
+                    ),
+                    "instructions": row.instructions or "",
+                    "allowed_tools": (
+                        row.allowed_tools if isinstance(row.allowed_tools, list) else []
+                    ),
+                    "permissions_required": [],
+                    "version": row.version or "1.0.0",
+                    "scope": "tenant",
+                    "status": "active",
+                    "is_builtin": False,
+                    "author": row.tenant_id[:12] if row.tenant_id else "system",
+                    "created_at": str(row.created_at) if row.created_at else None,
+                })
+        _loaded_tenants.add(tenant_id)
+    except Exception as exc:
+        _log.debug("skill_db_load_failed tenant=%s error=%s", tenant_id, exc)
+        # Mark as loaded anyway so we don't retry on every request
+        _loaded_tenants.add(tenant_id)
 
 
 @router.get("")
@@ -288,6 +416,22 @@ async def create_tenant_skill(request: Request, body: CreateSkillRequest) -> dic
         "created_at": now,
     }
     _tenant_skills.setdefault(tenant.tenant_id, []).append(skill)
+
+    # Write-through: persist to DB (non-blocking, best-effort)
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    if db_factory is None:
+        try:
+            from app.db.session import get_session_factory
+
+            db_factory = get_session_factory()
+        except Exception:
+            db_factory = None
+    import asyncio
+
+    _save_task = asyncio.create_task(_db_save_skill(skill, db_factory))
+    # Suppress the task reference warning; fire-and-forget with best-effort error logging.
+    _save_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
     return {"skill_id": skill_id, "status": "created"}
 
 
@@ -382,7 +526,7 @@ async def execute_skill(
         "model_used": model_used,
         "created_at": now,
     }
-    _executions.setdefault(tenant.tenant_id, []).append(execution)
+    _executions.setdefault(tenant.tenant_id, deque(maxlen=1000)).append(execution)
 
     return {
         "execution_id": execution_id,

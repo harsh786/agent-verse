@@ -457,18 +457,21 @@ async def _upgrade_tenant_plan(
 @router.post("/webhook")
 async def razorpay_webhook(request: Request) -> dict[str, Any]:
     """Handle Razorpay webhook events."""
-    from app.core.config import get_settings  # noqa: PLC0415
-
-    settings = get_settings()
     body = await request.body()
-    sig = request.headers.get("x-razorpay-signature", "")
 
-    if settings.razorpay_webhook_secret:
-        expected = hmac.new(
-            settings.razorpay_webhook_secret.encode(), body, hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(expected, sig):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid webhook signature")
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+    if not webhook_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Billing webhook not configured. Set RAZORPAY_WEBHOOK_SECRET.",
+        )
+
+    sig = request.headers.get("x-razorpay-signature", "")
+    expected = hmac.new(
+        webhook_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid webhook signature")
 
     try:
         event = json.loads(body)

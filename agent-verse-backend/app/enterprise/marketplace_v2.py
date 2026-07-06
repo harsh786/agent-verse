@@ -1500,10 +1500,14 @@ class MarketplaceV2:
             except Exception:
                 pass
 
-        # In-memory fallback
+        # In-memory fallback — apply same visibility rule as the DB path:
+        # public/community templates are visible to all; private templates only to their owner.
         if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
-        templates = list(self._cache.values())
+        templates = [
+            t for t in self._cache.values()
+            if t.get("visibility") in ("public", "community") or t.get("tenant_id") == tenant_id
+        ]
         if domain:
             templates = [t for t in templates if t.get("domain") == domain]
         if category:

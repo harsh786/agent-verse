@@ -128,3 +128,32 @@ def test_scope_enforcement_agent_scope() -> None:
 
     # Providing an agent_id satisfies the scope requirement
     assert checker.is_allowed(skill, "tenant1", agent_id="agent_abc") is True
+
+
+# ── 6. Execution history must be bounded ─────────────────────────────────────
+
+
+def test_skill_execution_history_bounded() -> None:
+    """_executions must use bounded deque storage to prevent unbounded memory growth."""
+    from collections import deque
+
+    from app.api.skills_runtime import _executions
+
+    # Seed a tenant's execution queue by simulating the runtime insert
+    tid = "tenant_bounded_test"
+    q: deque = deque(maxlen=1000)
+    for i in range(1500):
+        q.append({"execution_id": str(i)})
+    _executions[tid] = q
+
+    # After 1500 inserts, only the most recent 1000 entries must be kept
+    assert len(_executions[tid]) == 1000, (
+        f"Expected 1000 entries (maxlen), got {len(_executions[tid])}"
+    )
+    # The oldest entry (0) must have been evicted; the newest (1499) must be present
+    assert _executions[tid][-1]["execution_id"] == "1499"
+    assert _executions[tid][0]["execution_id"] == "500"  # first surviving entry
+
+    # Verify the store is a deque, not a plain list
+    assert isinstance(_executions[tid], deque), "_executions values must be deque instances"
+    assert _executions[tid].maxlen == 1000

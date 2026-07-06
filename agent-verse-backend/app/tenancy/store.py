@@ -64,3 +64,14 @@ class TenantScopedStore:
     async def zcard(self, key: str) -> int:
         result: int = await self._redis.zcard(self._key(key))
         return result
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> Any:
+        """Execute a Lua script, prefixing the first *numkeys* positional
+        arguments (the KEYS) with the tenant namespace.
+
+        Extra ARGV arguments (positions numkeys onward) are forwarded as-is.
+        """
+        prefixed_keys = [self._key(k) for k in keys_and_args[:numkeys]]
+        argv = list(keys_and_args[numkeys:])
+        result: Any = await self._redis.eval(script, numkeys, *prefixed_keys, *argv)
+        return result
