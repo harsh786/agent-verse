@@ -18,6 +18,13 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: kong
     spec:
+      initContainers:
+      - name: fix-permissions
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /loki/chunks /loki/rules && chown -R 10001:10001 /loki"]
+        volumeMounts:
+        - name: data
+          mountPath: /loki
       containers:
       - name: kong
         image: {{ .Values.kong.image | quote }}
@@ -144,6 +151,8 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: promtail
     spec:
+      securityContext:
+        fsGroup: 0
       serviceAccountName: default
       containers:
       - name: promtail
@@ -188,9 +197,19 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: grafana
     spec:
+      initContainers:
+      - name: fix-permissions
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /var/lib/grafana && chown -R 472:472 /var/lib/grafana"]
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/grafana
       containers:
       - name: grafana
         image: {{ .Values.grafana.image | quote }}
+        securityContext:
+          runAsUser: 472
+          runAsGroup: 472
         env:
         - name: GF_SECURITY_ADMIN_USER
           value: {{ .Values.grafana.adminUser | quote }}

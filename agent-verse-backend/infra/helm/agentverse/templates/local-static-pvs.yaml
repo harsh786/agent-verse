@@ -26,6 +26,9 @@ spec:
   accessModes: ["ReadWriteOnce"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: {{ $.Values.localStaticPVs.storageClassName | quote }}
+  claimRef:
+    namespace: {{ $.Release.Namespace }}
+    name: {{ $full }}-{{ $item.name }}
   hostPath:
     path: {{ printf "%s/%s/%s" $.Values.localStaticPVs.pathPrefix $.Release.Name $item.name | quote }}
     type: DirectoryOrCreate
