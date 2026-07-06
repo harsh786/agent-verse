@@ -112,9 +112,15 @@ jobs:
       - name: Deploy app-only
         if: ${{ github.event.inputs.mode == 'app-only' }}
         run: |
+          POSTGRES_IP=$(kubectl -n agentverse get svc agentverse-infra-agentverse-postgres -o jsonpath='{.spec.clusterIP}')
+          REDIS_IP=$(kubectl -n agentverse get svc agentverse-infra-agentverse-redis -o jsonpath='{.spec.clusterIP}')
+          MINIO_IP=$(kubectl -n agentverse get svc agentverse-infra-agentverse-minio -o jsonpath='{.spec.clusterIP}')
           helm upgrade --install agentverse-app ./agent-verse-backend/infra/helm/agentverse \
             -n agentverse --create-namespace \
             -f ./agent-verse-backend/infra/helm/agentverse/values-app.yaml \
+            --set externalServices.postgresHost="$POSTGRES_IP" \
+            --set externalServices.redisHost="$REDIS_IP" \
+            --set externalServices.minioEndpoint="http://$MINIO_IP:9000" \
             --wait --timeout 15m
 
       - name: Show resources
