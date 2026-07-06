@@ -1260,6 +1260,15 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 _SYSTEM_TENANT_ID = "system"
+_DOMAIN_ALIASES = {
+    "e-commerce": "ecommerce",
+    "e_commerce": "ecommerce",
+}
+
+
+def _normalize_domain_filter(domain: str) -> str:
+    normalized = domain.strip().lower()
+    return _DOMAIN_ALIASES.get(normalized, normalized)
 
 
 class MarketplaceV2:
@@ -1277,6 +1286,21 @@ class MarketplaceV2:
         self._cache: dict[str, dict[str, Any]] = {}
         self._installs: list[dict[str, Any]] = []
         self._reviews: list[dict[str, Any]] = []
+
+    def _ensure_builtin_cache(self) -> None:
+        """Populate deterministic built-ins for degraded DB/no-DB read paths."""
+        for tpl in _BUILTIN_TEMPLATES:
+            template_id = str(tpl["template_id"])
+            if template_id in self._cache:
+                continue
+            self._cache[template_id] = {
+                **tpl,
+                "id": template_id,
+                "install_count": tpl.get("install_count", 0),
+                "rating_avg": tpl.get("rating_avg", 0.0),
+                "rating_count": tpl.get("rating_count", 0),
+                "is_verified": tpl.get("is_verified", True),
+            }
 
     # ------------------------------------------------------------------
     # Template CRUD
@@ -1332,6 +1356,7 @@ class MarketplaceV2:
         tenant_id: str = "",
     ) -> dict[str, Any]:
         """Paginated template list with optional filters."""
+        domain = _normalize_domain_filter(domain) if domain else ""
         if self._db is not None:
             try:
                 async with self._db() as session:
@@ -1384,6 +1409,8 @@ class MarketplaceV2:
                 pass
 
         # In-memory fallback
+        if not self._cache:
+            self._ensure_builtin_cache()
         templates = list(self._cache.values())
         if domain:
             templates = [t for t in templates if t.get("domain") == domain]

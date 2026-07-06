@@ -261,3 +261,54 @@ async def rebuild_graph(request: Request) -> dict[str, Any]:
     from app.knowledge_graph.store import kg_store
     kg_store.delete_tenant_graph(tenant.tenant_id)
     return {"status": "cleared", "tenant_id": tenant.tenant_id}
+
+
+@router.get("/communities")
+async def get_communities(request: Request) -> dict[str, Any]:
+    """Detect and return knowledge graph communities (connected components)."""
+    tenant = _require_tenant(request)
+    from app.knowledge_graph.store import kg_store
+    communities = kg_store.detect_communities(tenant.tenant_id)
+    return {"communities": communities, "total": len(communities)}
+
+
+@router.get("/export")
+async def export_graph(request: Request) -> dict[str, Any]:
+    """Export the tenant's knowledge graph as JSON."""
+    import datetime
+
+    tenant = _require_tenant(request)
+    from app.knowledge_graph.store import kg_store
+
+    node_ids = kg_store._tenant_nodes.get(tenant.tenant_id, set())
+    edge_ids = kg_store._tenant_edges.get(tenant.tenant_id, set())
+
+    nodes = [kg_store._nodes[nid] for nid in node_ids if nid in kg_store._nodes]
+    edges = [kg_store._edges[eid] for eid in edge_ids if eid in kg_store._edges]
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "nodes": [
+            {
+                "node_id": n.node_id,
+                "node_type": n.node_type.value,
+                "label": n.label,
+                "confidence": n.confidence,
+                "source_id": n.source_id,
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "edge_id": e.edge_id,
+                "edge_type": e.edge_type.value,
+                "source": e.source_node_id,
+                "target": e.target_node_id,
+                "confidence": e.confidence,
+            }
+            for e in edges
+        ],
+        "stats": {"nodes": len(nodes), "edges": len(edges)},
+        "format": "agentverse_kg_v1",
+    }
