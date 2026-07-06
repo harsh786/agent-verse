@@ -60,16 +60,17 @@ jobs:
           kubectl config use-context "$MINIKUBE_PROFILE"
           kubectl cluster-info
 
-      - name: Build local images
+      - name: Build local images and load into Minikube
         if: ${{ github.event.inputs.mode == 'all-in-one' || github.event.inputs.mode == 'app-only' }}
         run: |
           set -euo pipefail
-          eval $(minikube -p "$MINIKUBE_PROFILE" docker-env)
           docker build -t agentverse/backend:local ./agent-verse-backend \
             --build-arg INSTALL_PLAYWRIGHT=${{ github.event.inputs.install_playwright }}
           docker build -t agentverse/frontend:local ./agent-verse-frontend \
             --build-arg VITE_API_URL=/api \
             --build-arg VITE_GRAFANA_URL=/grafana
+          minikube -p "$MINIKUBE_PROFILE" image load agentverse/backend:local
+          minikube -p "$MINIKUBE_PROFILE" image load agentverse/frontend:local
 
       - name: Helm validate all variants
         run: |

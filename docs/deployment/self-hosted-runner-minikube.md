@@ -140,3 +140,8 @@ For Minikube, Promtail defaults to `scrapeMode=synthetic`: a tiny sidecar writes
 smoke log lines into an `emptyDir`, Promtail ships them to Loki, and Grafana can
 verify the Loki datasource without requiring broad host log access. Staging and
 production values use `scrapeMode=pods` for real Kubernetes pod log scraping.
+
+The local workflows build images on the host Docker daemon and then run
+`minikube -p agentverse image load ...`. This is more reliable than building
+inside the Minikube Docker daemon because local Docker DNS/networking is less
+constrained when downloading Python and npm dependencies.
