@@ -117,23 +117,15 @@ data:
     clients:
     - url: http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}/loki/api/v1/push
     scrape_configs:
-    - job_name: kubernetes-pods
-      kubernetes_sd_configs:
-      - role: pod
-      relabel_configs:
-      - action: keep
-        source_labels: [__meta_kubernetes_namespace]
-        regex: {{ .Release.Namespace }}
-      - source_labels: [__meta_kubernetes_namespace]
-        target_label: namespace
-      - source_labels: [__meta_kubernetes_pod_name]
-        target_label: pod
-      - source_labels: [__meta_kubernetes_pod_container_name]
-        target_label: container
-      - replacement: /var/log/pods/*$1/*.log
-        separator: /
-        source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
-        target_label: __path__
+    - job_name: agentverse-pods
+      static_configs:
+      - targets: [localhost]
+        labels:
+          namespace: {{ .Release.Namespace | quote }}
+          job: agentverse-pods
+          __path__: /var/log/pods/{{ .Release.Namespace }}_*/*/*.log
+      pipeline_stages:
+      - cri: {}
 {{- end }}
 ---
 {{- if .Values.grafana.enabled }}
