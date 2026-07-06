@@ -204,6 +204,42 @@ spec:
         emptyDir: {}
 {{- end }}
 ---
+{{- if and .Values.loki.enabled .Values.lokiSmoke.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-loki-smoke
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loki-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: loki-smoke
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: loki-smoke
+    spec:
+      containers:
+      - name: loki-smoke
+        image: {{ .Values.lokiSmoke.image | quote }}
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            TS=$(date +%s%N)
+            curl -fsS -H 'Content-Type: application/json' \
+              -X POST http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}/loki/api/v1/push \
+              --data-raw "{\"streams\":[{\"stream\":{\"job\":\"agentverse-loki-smoke\",\"namespace\":\"{{ .Release.Namespace }}\"},\"values\":[[\"$TS\",\"level=info component=loki-smoke msg=synthetic-log\"]]}]}" || true
+            sleep 15
+          done
+{{- end }}
+---
 {{- if .Values.grafana.enabled }}
 apiVersion: apps/v1
 kind: Deployment

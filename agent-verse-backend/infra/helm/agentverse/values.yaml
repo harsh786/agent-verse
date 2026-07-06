@@ -177,9 +177,13 @@ loki:
     storageClassName: ""
 
 promtail:
-  enabled: true
+  enabled: false
   image: grafana/promtail:2.9.8
   scrapeMode: synthetic # synthetic for Minikube smoke, pods for production
+
+lokiSmoke:
+  enabled: true
+  image: curlimages/curl:8.10.1
 
 grafana:
   enabled: true

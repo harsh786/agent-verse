@@ -136,10 +136,11 @@ hostPath PersistentVolumes under `/data/agentverse/<release>/<component>` inside
 the Minikube node. This avoids relying on Minikube's dynamic storage provisioner,
 which can be flaky on Docker-driver profiles under heavy load.
 
-For Minikube, Promtail defaults to `scrapeMode=synthetic`: a tiny sidecar writes
-smoke log lines into an `emptyDir`, Promtail ships them to Loki, and Grafana can
-verify the Loki datasource without requiring broad host log access. Staging and
-production values use `scrapeMode=pods` for real Kubernetes pod log scraping.
+For Minikube, the chart defaults to `lokiSmoke.enabled=true` and
+`promtail.enabled=false`: a tiny curl-based pod pushes synthetic logs directly to
+Loki so Grafana can verify the datasource without requiring host log watcher
+permissions. Staging and production values enable Promtail with `scrapeMode=pods`
+for real Kubernetes pod log scraping.
 
 The local workflows build images on the host Docker daemon and then run
 `minikube -p agentverse image load ...`. This is more reliable than building

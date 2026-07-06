@@ -78,4 +78,8 @@ prometheus:
     size: 100Gi
 
 promtail:
+  enabled: true
   scrapeMode: pods
+
+lokiSmoke:
+  enabled: false
