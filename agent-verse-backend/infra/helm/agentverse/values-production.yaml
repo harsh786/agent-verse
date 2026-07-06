@@ -76,3 +76,6 @@ grafana:
 prometheus:
   persistence:
     size: 100Gi
+
+promtail:
+  scrapeMode: pods

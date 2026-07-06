@@ -117,6 +117,7 @@ data:
     clients:
     - url: http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}/loki/api/v1/push
     scrape_configs:
+    {{- if eq .Values.promtail.scrapeMode "pods" }}
     - job_name: agentverse-pods
       static_configs:
       - targets: [localhost]
@@ -126,6 +127,15 @@ data:
           __path__: /var/log/containers/*_{{ .Release.Namespace }}_*.log
       pipeline_stages:
       - cri: {}
+    {{- else }}
+    - job_name: agentverse-synthetic
+      static_configs:
+      - targets: [localhost]
+        labels:
+          namespace: {{ .Release.Namespace | quote }}
+          job: agentverse-synthetic
+          __path__: /var/log/agentverse/*.log
+    {{- end }}
 {{- end }}
 ---
 {{- if .Values.grafana.enabled }}

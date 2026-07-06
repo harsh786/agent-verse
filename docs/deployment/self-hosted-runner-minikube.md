@@ -135,3 +135,8 @@ The local workflows enable `localStaticPVs.enabled=true`, which creates static
 hostPath PersistentVolumes under `/data/agentverse/<release>/<component>` inside
 the Minikube node. This avoids relying on Minikube's dynamic storage provisioner,
 which can be flaky on Docker-driver profiles under heavy load.
+
+For Minikube, Promtail defaults to `scrapeMode=synthetic`: a tiny sidecar writes
+smoke log lines into an `emptyDir`, Promtail ships them to Loki, and Grafana can
+verify the Loki datasource without requiring broad host log access. Staging and
+production values use `scrapeMode=pods` for real Kubernetes pod log scraping.

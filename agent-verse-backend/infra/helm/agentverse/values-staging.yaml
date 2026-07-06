@@ -50,3 +50,6 @@ loki:
 prometheus:
   persistence:
     size: 25Gi
+
+promtail:
+  scrapeMode: pods
