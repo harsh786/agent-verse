@@ -1,0 +1,44 @@
+name: Deploy Full Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_tag:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-full:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Deploy full stack
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then TAG="${GITHUB_SHA}"; fi
+          CHART=agent-verse-backend/infra/helm/agentverse
+          VALUES="$CHART/values-${{ github.event.inputs.environment }}.yaml"
+          helm upgrade --install agentverse "$CHART" -n agentverse --create-namespace -f "$VALUES" \
+            --set backend.image.tag="$TAG" \
+            --set worker.image.tag="$TAG" \
+            --set beat.image.tag="$TAG" \
+            --set frontend.image.tag="$TAG" \
+            --set secrets.databasePassword='${{ secrets.DATABASE_PASSWORD }}' \
+            --set secrets.redisPassword='${{ secrets.REDIS_PASSWORD }}' \
+            --set secrets.vaultMasterKey='${{ secrets.VAULT_MASTER_KEY }}' \
+            --set secrets.jwtSecret='${{ secrets.JWT_SECRET }}' \
+            --wait --timeout 20m

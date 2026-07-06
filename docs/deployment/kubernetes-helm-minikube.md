@@ -56,7 +56,20 @@ For production or RPA/browser-automation validation, build the backend with
 above avoids loading several hundred MB of browser binaries into constrained
 local Docker-driver profiles.
 
-## Deploy with Helm
+## Deployment Modes
+
+The chart supports three deployment modes:
+
+1. **Full stack** — app + infra together, using `values.yaml`.
+2. **Infrastructure-only** — Postgres, Redis, MinIO, Kong, Loki, Promtail,
+   Grafana, Prometheus, OTel, Mailpit, backups using `values-infra.yaml`.
+3. **Application-only** — backend, frontend, worker, beat using `values-app.yaml`.
+
+Keep using the all-in-one chart for one-click local deployment. Use the infra/app
+split for production where infrastructure changes must be controlled separately
+from application rollouts.
+
+## Deploy Full Stack with Helm
 
 ```bash
 helm upgrade --install agentverse ./agent-verse-backend/infra/helm/agentverse \
@@ -69,6 +82,73 @@ helm upgrade --install agentverse ./agent-verse-backend/infra/helm/agentverse \
   --set secrets.goalTokenSecret=change-me-goal-token \
   --set secrets.manifestSigningSecret=change-me-manifest \
   --set secrets.platformAdminKey=change-me-admin-key
+```
+
+## Deploy Infrastructure Only
+
+```bash
+helm upgrade --install agentverse-infra ./agent-verse-backend/infra/helm/agentverse \
+  --namespace agentverse \
+  --create-namespace \
+  -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+  --set secrets.databasePassword=agentverse \
+  --set secrets.redisPassword=agentverse-redis \
+  --set secrets.vaultMasterKey=change-me-vault-master-key-min-32-chars \
+  --set secrets.jwtSecret=change-me-jwt
+```
+
+Deploy just one infrastructure component, for example Postgres:
+
+```bash
+helm upgrade --install agentverse-postgres ./agent-verse-backend/infra/helm/agentverse \
+  --namespace agentverse \
+  --create-namespace \
+  -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+  --set redis.enabled=false \
+  --set minio.enabled=false \
+  --set kong.enabled=false \
+  --set loki.enabled=false \
+  --set promtail.enabled=false \
+  --set grafana.enabled=false \
+  --set prometheus.enabled=false \
+  --set otel.enabled=false \
+  --set mailpit.enabled=false
+```
+
+Common component toggles:
+
+```bash
+# Redis only
+--set postgresql.enabled=false --set minio.enabled=false --set kong.enabled=false \
+--set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false \
+--set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false --set backup.enabled=false
+
+# Observability only (Loki/Promtail/Grafana/Prometheus/Otel)
+--set postgresql.enabled=false --set redis.enabled=false --set minio.enabled=false \
+--set kong.enabled=false --set mailpit.enabled=false --set backup.enabled=false
+
+# Kong only
+--set postgresql.enabled=false --set redis.enabled=false --set minio.enabled=false \
+--set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false \
+--set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false --set backup.enabled=false
+```
+
+## Deploy Application Only
+
+Deploy this after infrastructure:
+
+```bash
+helm upgrade --install agentverse-app ./agent-verse-backend/infra/helm/agentverse \
+  --namespace agentverse \
+  -f ./agent-verse-backend/infra/helm/agentverse/values-app.yaml \
+  --set backend.image.repository=agentverse/backend \
+  --set backend.image.tag=local \
+  --set worker.image.repository=agentverse/backend \
+  --set worker.image.tag=local \
+  --set beat.image.repository=agentverse/backend \
+  --set beat.image.tag=local \
+  --set frontend.image.repository=agentverse/frontend \
+  --set frontend.image.tag=local
 ```
 
 Wait for workloads:
@@ -206,3 +286,64 @@ For production:
   route reconciliation from Kubernetes resources.
 - Run migrations as a one-shot Job or a controlled release step before scaling the
   backend above one replica.
+
+## GitHub Actions Pipelines
+
+The repository contains separate pipelines for each stage:
+
+| Workflow | Purpose |
+|---|---|
+| `.github/workflows/ci-full.yml` | Runs full backend and frontend CI, plus Helm render checks |
+| `.github/workflows/build-images.yml` | Builds backend/frontend images and pushes to GHCR |
+| `.github/workflows/helm-validate.yml` | Lints/renders/packages all chart variants |
+| `.github/workflows/deploy-infra.yml` | Manually deploys infra-only or one infra component |
+| `.github/workflows/deploy-app.yml` | Manually deploys backend/frontend/worker/beat using existing infra |
+| `.github/workflows/deploy-full.yml` | Manually deploys the entire stack |
+| `.github/workflows/rollback.yml` | Rolls a Helm release back to a previous revision |
+
+Required GitHub environment secrets:
+
+```text
+KUBE_CONFIG              # base64-encoded kubeconfig
+DATABASE_PASSWORD
+REDIS_PASSWORD
+VAULT_MASTER_KEY
+JWT_SECRET
+```
+
+Optional production secrets:
+
+```text
+ANTHROPIC_API_KEY
+OPENAI_API_KEY
+GOOGLE_API_KEY
+VOYAGE_API_KEY
+STRIPE_SECRET_KEY
+```
+
+### Deploy infra from GitHub Actions
+
+Run workflow: **Deploy Infrastructure**.
+
+Inputs:
+
+- `environment`: `staging` or `production`
+- `component`: `all`, `postgres`, `redis`, `minio`, `kong`, or `observability`
+
+### Deploy app from GitHub Actions
+
+Run workflow: **Deploy Application**.
+
+Inputs:
+
+- `environment`: `staging` or `production`
+- `image_tag`: image tag to deploy, default `${GITHUB_SHA}`
+- `deploy_frontend`: true/false
+- `deploy_backend`: true/false
+
+### Rollback
+
+Run workflow: **Helm Rollback** with:
+
+- `release`: `agentverse`, `agentverse-app`, or `agentverse-infra`
+- `revision`: revision from `helm history <release> -n agentverse`

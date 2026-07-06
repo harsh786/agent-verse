@@ -24,6 +24,7 @@ secrets:
   platformAdminKey: change-me-admin-key
 
 backend:
+  enabled: true
   replicaCount: 1
   image:
     repository: agentverse/backend
@@ -47,6 +48,7 @@ backend:
     MINIO_BUCKET: agentverse-artifacts
 
 frontend:
+  enabled: true
   replicaCount: 1
   image:
     repository: agentverse/frontend
@@ -65,6 +67,7 @@ frontend:
       memory: 256Mi
 
 worker:
+  enabled: true
   replicaCount: 1
   image:
     repository: agentverse/backend

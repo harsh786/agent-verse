@@ -1,0 +1,47 @@
+# Infrastructure-only deployment overlay.
+# Use this when DB/cache/gateway/observability are managed separately from app rollouts.
+
+backend:
+  enabled: false
+
+frontend:
+  enabled: false
+
+worker:
+  enabled: false
+
+beat:
+  enabled: false
+
+postgresql:
+  enabled: true
+
+redis:
+  enabled: true
+
+minio:
+  enabled: true
+
+kong:
+  enabled: true
+
+loki:
+  enabled: true
+
+promtail:
+  enabled: true
+
+grafana:
+  enabled: true
+
+prometheus:
+  enabled: true
+
+otel:
+  enabled: true
+
+mailpit:
+  enabled: true
+
+backup:
+  enabled: true

@@ -1,0 +1,52 @@
+# Staging overlay. Intended for shared non-production Kubernetes clusters.
+
+backend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: staging
+  env:
+    ENVIRONMENT: staging
+    MANAGE_POOLS: "true"
+    CORS_ORIGINS: https://staging.agentverse.example.com
+    FRONTEND_URL: https://staging.agentverse.example.com
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://agentverse-agentverse-otel:4317
+    OTEL_SERVICE_NAME: agentverse-backend-staging
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/harsh786/agentverse-frontend
+    tag: staging
+
+worker:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: staging
+
+beat:
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: staging
+
+kong:
+  service:
+    type: LoadBalancer
+    nodePort: null
+
+postgresql:
+  persistence:
+    size: 50Gi
+
+redis:
+  persistence:
+    size: 10Gi
+
+loki:
+  persistence:
+    size: 25Gi
+
+prometheus:
+  persistence:
+    size: 25Gi
