@@ -146,6 +146,14 @@ jobs:
         run: pip-audit --requirement <(uv export --no-hashes) || true
         working-directory: agent-verse-backend
 
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # advisory for now, remove before launch
+
   publish-openapi:
     name: Generate & Publish OpenAPI Schema
     runs-on: ubuntu-latest

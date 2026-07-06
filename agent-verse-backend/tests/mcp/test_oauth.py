@@ -151,3 +151,26 @@ def test_oauth_token_expiry() -> None:
 def test_oauth_token_not_expired() -> None:
     token = OAuthToken(access_token="tok", expires_in=3600)
     assert token.is_expired() is False
+
+
+def test_oauth_manager_encrypts_tokens() -> None:
+    """OAuthFlowManager must encrypt access tokens before storage."""
+    from unittest.mock import MagicMock
+
+    mock_vault = MagicMock()
+    mock_vault.encrypt.return_value = "ENCRYPTED:token123"
+    mock_vault.decrypt.return_value = "token123"
+
+    mgr = OAuthFlowManager(vault=mock_vault)
+    encrypted = mgr._encrypt_token("token123")
+    assert encrypted == "ENCRYPTED:token123"
+    mock_vault.encrypt.assert_called_once_with("token123")
+
+
+def test_oauth_manager_no_vault_stores_plaintext() -> None:
+    """Without vault, tokens are stored as plaintext (dev mode)."""
+    mgr = OAuthFlowManager(vault=None)
+    # Should not raise
+    result = mgr._encrypt_token("token123")
+    # Without vault, returns unchanged
+    assert result == "token123"

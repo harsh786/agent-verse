@@ -1,5 +1,6 @@
 """Tests for TenantScopedStore — Redis key prefixing ensures tenant isolation."""
 
+from typing import Any
 
 from app.tenancy.store import TenantScopedStore
 
@@ -60,6 +61,44 @@ class FakeRedis:
 
     async def zcard(self, key: str) -> int:
         return len(self._sets.get(key, {}))
+
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        """Simulate the rate-limiter Lua script atomically.
+
+        Expects: KEYS[1]=key, ARGV[1]=now_ms, ARGV[2]=window_ms,
+                 ARGV[3]=limit, ARGV[4]=member
+        Returns: [allowed (0|1), remaining]
+        """
+        import math
+        key = args[0]                        # KEYS[1] (already prefixed)
+        now_ms = float(args[numkeys + 0])    # ARGV[1]
+        window_ms = float(args[numkeys + 1]) # ARGV[2]
+        limit = int(args[numkeys + 2])       # ARGV[3]
+        member = str(args[numkeys + 3])      # ARGV[4]
+
+        # ZREMRANGEBYSCORE key 0 (now_ms - window_ms)
+        cutoff = now_ms - window_ms
+        if key in self._sets:
+            self._sets[key] = {
+                m: s for m, s in self._sets[key].items()
+                if not (0 <= s <= cutoff)
+            }
+
+        # ZCARD
+        count = len(self._sets.get(key, {}))
+
+        if count >= limit:
+            return [0, 0]
+
+        # ZADD key now_ms member
+        if key not in self._sets:
+            self._sets[key] = {}
+        self._sets[key][member] = now_ms
+
+        # EXPIRE (track TTL)
+        self._ttls[key] = math.ceil(window_ms / 1000) + 1
+
+        return [1, limit - count - 1]
 
 
 async def test_get_returns_none_for_missing_key() -> None:
