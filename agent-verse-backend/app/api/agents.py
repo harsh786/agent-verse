@@ -1103,7 +1103,7 @@ async def export_agent(
             "object": "assistant",
             "name": agent.get("name", ""),
             "instructions": agent.get("system_prompt", "") or agent.get("goal_template", ""),
-            "model": model_override or "gpt-4o",
+            "model": model_override or "gpt-5.2",
             "tools": tools,
         }
     elif format == "anthropic":

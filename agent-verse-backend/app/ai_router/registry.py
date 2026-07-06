@@ -46,7 +46,7 @@ BUILTIN_MODELS: list[ModelEndpoint] = [
     ),
     # OpenAI
     ModelEndpoint(
-        provider="openai", model_id="gpt-4o", display_name="GPT-4o",
+        provider="openai", model_id="gpt-5.2", display_name="GPT-5.2",
         capabilities=[_TG, _TU, _VI, _SO],
         context_window=128000, cost_per_1k_input=0.005, cost_per_1k_output=0.015,
         supports_streaming=True, supports_tools=True, supports_vision=True,

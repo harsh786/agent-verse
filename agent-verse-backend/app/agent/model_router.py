@@ -40,10 +40,10 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
         fallback_model="claude-opus-4-8",
     ),
     "openai": ModelRouterConfig(
-        planning_model="gpt-4o",
+        planning_model="gpt-5.2",
         execution_model="gpt-4o-mini",
         verification_model="gpt-4o-mini",
-        fallback_model="gpt-4o",
+        fallback_model="gpt-5.2",
     ),
     "groq": ModelRouterConfig(
         planning_model="llama-3.1-70b-versatile",

@@ -278,7 +278,7 @@ def _get_llm_provider(tenant_id: str) -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
             return OpenAICompatibleProvider(
-                api_key=api_key, base_url=base_url, default_model=model or "gpt-4-turbo"
+                api_key=api_key, base_url=base_url, default_model=model or "gpt-5.2"
             )
 
     except Exception as exc:
