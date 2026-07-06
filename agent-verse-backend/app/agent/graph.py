@@ -83,7 +83,7 @@ except ImportError:
     GuardrailLayer = None  # type: ignore[assignment]
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
-_DEFAULT_MAX_ITERATIONS = 15
+_DEFAULT_MAX_ITERATIONS = 100
 _HIGH_RISK_KEYWORDS = frozenset(
     ("deploy", "delete", "drop", "rm ", "prod", "production", "destroy", "wipe", "truncate")
 )
