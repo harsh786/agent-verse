@@ -56,7 +56,6 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
   const prefill = (location.state as { prefillGoal?: string } | null)?.prefillGoal ?? '';
   const [goal, setGoal] = useState(prefill);
   const [dryRun, setDryRun] = useState(false);
-  const [agentId, setAgentId] = useState('auto');
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('single_agent');
   const [showOptions, setShowOptions] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
