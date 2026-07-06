@@ -72,6 +72,16 @@ from app.reliability.result_processor import ResultProcessor
 from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _DEFAULT_MAX_ITERATIONS = 15
 _HIGH_RISK_KEYWORDS = frozenset(
@@ -1692,6 +1702,27 @@ class AgentGraph:
                 except Exception as _ge_exc:
                     self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
 
+            # Guardrail check: tool_args (Guardrails 2.0)
+            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                try:
+                    _g2_args_str = json.dumps(tool_call.arguments) if isinstance(tool_call.arguments, dict) else str(tool_call.arguments)
+                    _g2_args_result = await guardrails_engine.evaluate(
+                        content=_g2_args_str,
+                        layer=GuardrailLayer.TOOL_ARGS,
+                        tenant_id=tenant_ctx.tenant_id,
+                        goal_id=getattr(state, "goal_id", None),
+                        step_description=step,
+                    )
+                    if _g2_args_result.get("blocked"):
+                        _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get("rule_name", "policy")
+                        raise PermissionError(
+                            f"Tool call blocked by guardrail: {_g2_viol_name}"
+                        )
+                except PermissionError:
+                    raise
+                except Exception:
+                    pass  # Guardrail errors must never break execution
+
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
                 error = self._sanitize_tool_raw_output("MCP client unavailable")
@@ -2143,6 +2174,19 @@ class AgentGraph:
                                             pass
                             raw_result_output = self._sanitize_tool_raw_output(result.output)
                             raw_result_error = self._sanitize_tool_raw_output(result.error)
+
+                            # Guardrail check: tool_output (Guardrails 2.0)
+                            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                                try:
+                                    _g2_out_preview = str(raw_result_output)[:500] if raw_result_output else ""
+                                    await guardrails_engine.evaluate(
+                                        content=_g2_out_preview,
+                                        layer=GuardrailLayer.TOOL_OUTPUT,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                        goal_id=getattr(state, "goal_id", None),
+                                    )
+                                except Exception:
+                                    pass  # Guardrail errors must never break execution
 
                             # ── Indirect injection scan on tool output ──────────────
                             # External tool results (Confluence, web, email) may contain
@@ -2637,6 +2681,26 @@ class AgentGraph:
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
+
+            # Guardrail check: final_output (Guardrails 2.0)
+            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                try:
+                    _g2_final_content = (
+                        agent_state.cited_answer
+                        or " ".join(s.output[:200] for s in agent_state.steps if s.output)
+                        or agent_state.verification_feedback
+                    )
+                    if _g2_final_content:
+                        _g2_final_result = await guardrails_engine.evaluate(
+                            content=str(_g2_final_content)[:2000],
+                            layer=GuardrailLayer.FINAL_OUTPUT,
+                            tenant_id=tenant_ctx.tenant_id,
+                            goal_id=getattr(agent_state, "goal_id", None),
+                        )
+                        if _g2_final_result.get("blocked"):
+                            agent_state.cited_answer = "[Output redacted by guardrail policy]"
+                except Exception:
+                    pass  # Guardrail errors must never block completion
 
             # Phase 3 Track C: synthesize cited answer on success
             if self._answer_synthesizer is not None:

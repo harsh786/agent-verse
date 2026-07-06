@@ -1,0 +1,31 @@
+name: Helm Validate
+
+on:
+  pull_request:
+    paths:
+      - agent-verse-backend/infra/helm/**
+      - .github/workflows/helm-validate.yml
+  push:
+    branches: [main, feature/god-mode-17-phases]
+    paths:
+      - agent-verse-backend/infra/helm/**
+      - .github/workflows/helm-validate.yml
+  workflow_dispatch:
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: helm lint agent-verse-backend/infra/helm/agentverse
+      - name: Render chart variants
+        run: |
+          set -euo pipefail
+          helm template agentverse agent-verse-backend/infra/helm/agentverse >/tmp/all.yaml
+          helm template agentverse agent-verse-backend/infra/helm/agentverse -f agent-verse-backend/infra/helm/agentverse/values-infra.yaml >/tmp/infra.yaml
+          helm template agentverse agent-verse-backend/infra/helm/agentverse -f agent-verse-backend/infra/helm/agentverse/values-app.yaml >/tmp/app.yaml
+          helm template agentverse agent-verse-backend/infra/helm/agentverse -f agent-verse-backend/infra/helm/agentverse/values-production.yaml >/tmp/prod.yaml
+      - name: Package chart
+        run: helm package agent-verse-backend/infra/helm/agentverse --destination /tmp/chart

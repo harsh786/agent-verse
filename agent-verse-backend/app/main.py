@@ -879,6 +879,14 @@ def create_app(
             except Exception as _mfa_exc:
                 logger.warning("mfa_db_store_wire_failed", error=str(_mfa_exc))
 
+            # Wire DB into KnowledgeGraphStore for persistent node/edge storage
+            try:
+                from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
+                _kg_store.set_db(db_factory)
+                logger.info("knowledge_graph_db_wired")
+            except Exception as _kg_exc:
+                logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
+
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
                 from sqlalchemy import text as _sql_text
@@ -1048,23 +1056,22 @@ def create_app(
                     _agent_identity_svc.set_redis(redis_for_runtime)
                     logger.info("agent_identity_service_redis_wired")
 
-                # ── AuditWriter + AuditFlusher: Redis WAL for v2 audit system ────────
+                # ── AuditV3: wire DB+Redis backed audit chain ────────────────────────
                 try:
                     import asyncio as _asyncio_wal
-
-                    from app.governance.audit_v2 import (
+                    from app.governance.audit_v3 import (
                         AuditFlusher as _AuditFlusher,
                     )
-                    from app.governance.audit_v2 import (
+                    from app.governance.audit_v3 import (
                         AuditWriter as _AuditWriter,
                     )
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
                     _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
                     _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
-                    logger.info("audit_wal_flusher_started")
+                    logger.info("audit_v3_wired")
                 except Exception as _aw_exc:
-                    logger.warning("audit_writer_wire_failed", error=str(_aw_exc))
+                    logger.warning("audit_v3_wire_failed", error=str(_aw_exc))
 
                 # ── GuardrailEngine v2: wire Redis for tenant config cache ────────────
                 _guardrail_engine_v2._redis = redis_for_runtime
@@ -1481,6 +1488,91 @@ def create_app(
         app.include_router(v1_router)
     except Exception as _e:
         logger.warning("v1_router_failed", error=str(_e))
+    try:
+        from app.api.model_registry import router as model_registry_router
+        app.include_router(model_registry_router)
+    except Exception as _e:
+        logger.warning("model_registry_router_failed", error=str(_e))
+
+    # Phase 3: Embedding Platform
+    try:
+        from app.api.embeddings import router as embeddings_router
+        app.include_router(embeddings_router)
+        logger.info("embeddings_router_registered")
+    except Exception as _e:
+        logger.warning("embeddings_router_failed", error=str(_e))
+
+    # Phase 4: Multimodal Intelligence
+    try:
+        from app.api.multimodal import router as multimodal_router
+        app.include_router(multimodal_router)
+        logger.info("multimodal_router_registered")
+    except Exception as _e:
+        logger.warning("multimodal_router_failed", error=str(_e))
+
+    # Phase 5: Tenant Knowledge Graph
+    try:
+        from app.api.knowledge_graph import router as knowledge_graph_router
+        app.include_router(knowledge_graph_router)
+        logger.info("knowledge_graph_router_registered")
+    except Exception as _e:
+        logger.warning("knowledge_graph_router_failed", error=str(_e))
+
+    # Phase 6: GraphRAG / RAG Platform
+    try:
+        from app.api.rag_platform import router as rag_platform_router
+        app.include_router(rag_platform_router)
+        logger.info("rag_platform_router_registered")
+    except Exception as _e:
+        logger.warning("rag_platform_router_failed", error=str(_e))
+
+    # Phase 7: Agent Runtime 2.0
+    try:
+        from app.api.agent_runtime import router as agent_runtime_router
+        app.include_router(agent_runtime_router)
+        logger.info("agent_runtime_router_registered")
+    except Exception as _e:
+        logger.warning("agent_runtime_router_failed", error=str(_e))
+
+    # Phase 8: Guardrails 2.0
+    try:
+        from app.api.guardrails_v2 import router as guardrails_v2_router
+        app.include_router(guardrails_v2_router)
+        logger.info("guardrails_v2_router_registered")
+    except Exception as _e:
+        logger.warning("guardrails_v2_router_failed", error=str(_e))
+
+    # Phase 9: Trust and Governance 2.0
+    try:
+        from app.api.trust_governance import router as trust_governance_router
+        app.include_router(trust_governance_router)
+        logger.info("trust_governance_router_registered")
+    except Exception as _e:
+        logger.warning("trust_governance_router_failed", error=str(_e))
+
+    # Phase 12: Skills Runtime (composable skill execution engine)
+    try:
+        from app.api.skills_runtime import router as skills_runtime_router
+        app.include_router(skills_runtime_router)
+        logger.info("skills_runtime_router_registered")
+    except Exception as _e:
+        logger.warning("skills_runtime_router_failed", error=str(_e))
+
+    # Phase 10: AI Ops (Evals, Drift, Regression)
+    try:
+        from app.api.ai_ops import router as ai_ops_router
+        app.include_router(ai_ops_router)
+        logger.info("ai_ops_router_registered")
+    except Exception as _e:
+        logger.warning("ai_ops_router_failed", error=str(_e))
+
+    # Phase 11: Agent Memory 2.0
+    try:
+        from app.api.memory_v2 import router as memory_v2_router
+        app.include_router(memory_v2_router)
+        logger.info("memory_v2_router_registered")
+    except Exception as _e:
+        logger.warning("memory_v2_router_failed", error=str(_e))
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

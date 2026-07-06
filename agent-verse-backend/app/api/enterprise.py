@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
@@ -322,7 +322,16 @@ class PublishTemplateV2Request(BaseModel):
 
 
 class DeployV2Request(BaseModel):
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = Field(default_factory=dict)
+    # Frontend uses `parameters` for the same payload. Keep both accepted so
+    # existing clients do not silently deploy with an empty parameter set.
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _copy_frontend_parameters(self) -> DeployV2Request:
+        if not self.params and self.parameters:
+            self.params = dict(self.parameters)
+        return self
 
 
 class AddReviewRequest(BaseModel):

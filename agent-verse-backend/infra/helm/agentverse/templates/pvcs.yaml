@@ -1,0 +1,33 @@
+{{- $full := include "agentverse.fullname" . -}}
+{{- $items := list
+  (dict "name" "postgres" "enabled" .Values.postgresql.enabled "persistence" .Values.postgresql.persistence)
+  (dict "name" "redis" "enabled" .Values.redis.enabled "persistence" .Values.redis.persistence)
+  (dict "name" "minio" "enabled" .Values.minio.enabled "persistence" .Values.minio.persistence)
+  (dict "name" "loki" "enabled" .Values.loki.enabled "persistence" .Values.loki.persistence)
+  (dict "name" "grafana" "enabled" .Values.grafana.enabled "persistence" .Values.grafana.persistence)
+  (dict "name" "prometheus" "enabled" .Values.prometheus.enabled "persistence" .Values.prometheus.persistence)
+}}
+{{- range $item := $items }}
+{{- $cfg := $item.persistence }}
+{{- if and $item.enabled $cfg.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $full }}-{{ $item.name }}
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/component: {{ $item.name }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if $cfg.storageClassName }}
+  storageClassName: {{ $cfg.storageClassName | quote }}
+  {{- else if $.Values.global.storageClassName }}
+  storageClassName: {{ $.Values.global.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $cfg.size | quote }}
+{{- end }}
+{{- end }}

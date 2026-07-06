@@ -1,0 +1,65 @@
+name: Local Minikube Full Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      install_playwright:
+        description: Install Playwright browser in backend image (large image)
+        type: boolean
+        default: false
+      helm_timeout:
+        description: Helm wait timeout
+        default: 15m
+
+concurrency:
+  group: local-minikube-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy full stack to local Minikube
+    runs-on: [self-hosted, macOS, ARM64, agentverse-local, minikube]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure Minikube is running
+        run: |
+          minikube status || minikube start --cpus=4 --memory=7168 --disk-size=40g
+          kubectl cluster-info
+
+      - name: Build local images inside Minikube Docker
+        run: |
+          set -euo pipefail
+          eval $(minikube docker-env)
+          docker build -t agentverse/backend:local ./agent-verse-backend \
+            --build-arg INSTALL_PLAYWRIGHT=${{ github.event.inputs.install_playwright }}
+          docker build -t agentverse/frontend:local ./agent-verse-frontend \
+            --build-arg VITE_API_URL=/api \
+            --build-arg VITE_GRAFANA_URL=/grafana
+
+      - name: Helm lint and render
+        run: |
+          helm lint ./agent-verse-backend/infra/helm/agentverse
+          helm template agentverse ./agent-verse-backend/infra/helm/agentverse >/tmp/agentverse-full.yaml
+
+      - name: Deploy full stack
+        run: |
+          helm upgrade --install agentverse ./agent-verse-backend/infra/helm/agentverse \
+            --namespace agentverse \
+            --create-namespace \
+            --wait \
+            --timeout "${{ github.event.inputs.helm_timeout }}"
+
+      - name: Show Kubernetes resources
+        if: always()
+        run: |
+          kubectl -n agentverse get pods,pvc,svc -o wide || true
+          helm status agentverse -n agentverse || true
+
+      - name: Smoke test via Kong NodePort
+        run: |
+          set -euo pipefail
+          URL="http://$(minikube ip):30080"
+          echo "Gateway: $URL"
+          curl -fsS "$URL/health"
+          curl -fsS "$URL/api/health" || curl -fsS "$URL/health"

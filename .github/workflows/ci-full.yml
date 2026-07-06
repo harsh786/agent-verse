@@ -1,0 +1,74 @@
+name: CI Full Test Suite
+
+on:
+  push:
+    branches: [main, feature/god-mode-17-phases]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-verse-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+      - name: Install backend dependencies
+        run: uv sync
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Mypy (advisory until legacy errors are retired)
+        run: uv run mypy app --ignore-missing-imports
+        continue-on-error: true
+      - name: Unit tests (non-integration, non-slow)
+        run: uv run pytest tests/ -q --tb=short -m "not integration and not slow"
+
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-verse-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: agent-verse-frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+      - name: Unit tests
+        run: npm run test -- --run
+      - name: Build
+        run: npm run build
+
+  helm-validate:
+    name: Helm Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Helm lint
+        run: helm lint agent-verse-backend/infra/helm/agentverse
+      - name: Render all-in-one
+        run: helm template agentverse agent-verse-backend/infra/helm/agentverse >/tmp/all.yaml
+      - name: Render infra-only
+        run: helm template agentverse agent-verse-backend/infra/helm/agentverse -f agent-verse-backend/infra/helm/agentverse/values-infra.yaml >/tmp/infra.yaml
+      - name: Render app-only
+        run: helm template agentverse agent-verse-backend/infra/helm/agentverse -f agent-verse-backend/infra/helm/agentverse/values-app.yaml >/tmp/app.yaml
+      - name: Package chart
+        run: helm package agent-verse-backend/infra/helm/agentverse --destination /tmp/chart

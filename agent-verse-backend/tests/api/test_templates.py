@@ -1,8 +1,14 @@
 """Tests for /templates endpoints."""
 from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import Any
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.api.templates import router as templates_router, _TemplateStore
+
+from app.api.templates import _TemplateStore
+from app.api.templates import router as templates_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
@@ -206,3 +212,29 @@ def test_seeded_templates_instantiable() -> None:
     assert resp.status_code == 200
     assert "api-gateway" in resp.json()["instantiated_goal"]
     assert "staging" in resp.json()["instantiated_goal"]
+
+
+async def test_db_backed_list_falls_back_to_builtins_when_db_unavailable() -> None:
+    """DB-backed template listing must not blank the UI when DB reads fail."""
+
+    class FailingSession:
+        async def execute(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("database unavailable")
+
+        async def __aenter__(self) -> FailingSession:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+    @asynccontextmanager
+    async def failing_db() -> Any:
+        yield FailingSession()
+
+    store = _TemplateStore(seed_builtins=True)
+    store.set_db(failing_db)
+
+    templates = await store.list("tenant-db-down")
+
+    assert len(templates) >= 15
+    assert {t["domain"] for t in templates} >= {"devops", "engineering", "legal"}

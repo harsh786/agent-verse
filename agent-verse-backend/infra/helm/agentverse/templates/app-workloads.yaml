@@ -1,0 +1,259 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-backend
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      imagePullSecrets:
+        {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      containers:
+      - name: backend
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        ports:
+        - name: http
+          containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: DATABASE_PASSWORD
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: REDIS_PASSWORD
+        - name: REDIS_URL
+          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: MINIO_ACCESS_KEY
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: MINIO_SECRET_KEY
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: JWT_SECRET
+        - name: VAULT_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: VAULT_MASTER_KEY
+        - name: GOAL_TOKEN_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: GOAL_TOKEN_SECRET
+        - name: MANIFEST_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: MANIFEST_SIGNING_SECRET
+        - name: PLATFORM_ADMIN_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: PLATFORM_ADMIN_KEY
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          {{- toYaml .Values.backend.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-backend
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  ports:
+  - name: http
+    port: {{ .Values.backend.service.port }}
+    targetPort: http
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+{{- end }}
+---
+{{- if .Values.frontend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-frontend
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        ports:
+        - name: http
+          containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.frontend.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-frontend
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  ports:
+  - name: http
+    port: {{ .Values.frontend.service.port }}
+    targetPort: http
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+{{- end }}
+---
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-worker
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+      - name: worker
+        image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["celery"]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.worker.queues | quote }}, "--concurrency", {{ .Values.worker.concurrency | quote }}]
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: DATABASE_PASSWORD
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: REDIS_PASSWORD
+        - name: REDIS_URL
+          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        resources:
+          {{- toYaml .Values.worker.resources | nindent 10 }}
+{{- end }}
+---
+{{- if .Values.beat.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-beat
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: beat
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: beat
+    spec:
+      containers:
+      - name: beat
+        image: "{{ .Values.beat.image.repository }}:{{ .Values.beat.image.tag }}"
+        command: ["celery"]
+        args: ["-A", "app.scaling.celery_app", "beat", "--loglevel=info"]
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: REDIS_PASSWORD
+        - name: REDIS_URL
+          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: DATABASE_PASSWORD
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+        resources:
+          {{- toYaml .Values.beat.resources | nindent 10 }}
+{{- end }}

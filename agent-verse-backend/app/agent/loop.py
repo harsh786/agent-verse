@@ -35,6 +35,16 @@ from app.reliability.result_processor import ResultProcessor
 from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine as _loop_guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer as _LoopGuardrailLayer
+    _LOOP_GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _LOOP_GUARDRAILS_AVAILABLE = False
+    _loop_guardrails_engine = None  # type: ignore[assignment]
+    _LoopGuardrailLayer = None  # type: ignore[assignment]
+
 logger = get_logger(__name__)
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -314,6 +324,29 @@ class AgentLoop:
                     )
 
         # ── Step 8: Execute LLM call ─────────────────────────────────────────
+
+        # Guardrail check: tool_args (Guardrails 2.0) — validate step before execution
+        if _LOOP_GUARDRAILS_AVAILABLE and _loop_guardrails_engine is not None and tenant_ctx:
+            try:
+                import json as _json
+                _loop_args_str = _json.dumps({"step": step}) if step else ""
+                _loop_args_result = await _loop_guardrails_engine.evaluate(
+                    content=_loop_args_str,
+                    layer=_LoopGuardrailLayer.TOOL_ARGS,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=getattr(state, "goal_id", None),
+                    step_description=step,
+                )
+                if _loop_args_result.get("blocked"):
+                    _loop_viol_name = (_loop_args_result.get("violations") or [{}])[0].get("rule_name", "policy")
+                    raise PermissionError(
+                        f"Step blocked by guardrail: {_loop_viol_name}"
+                    )
+            except PermissionError:
+                raise
+            except Exception:
+                pass  # Guardrail errors must never break execution
+
         recent_outputs = "\n".join(s.output for s in state.steps[-3:] if s.output)
         content = (
             f"Step: {step}\nRecent context:\n{recent_outputs}"
@@ -329,6 +362,18 @@ class AgentLoop:
         )
         resp = await self._executor.complete(req)
         raw_output = resp.content
+
+        # Guardrail check: tool_output (Guardrails 2.0) — validate executor output
+        if _LOOP_GUARDRAILS_AVAILABLE and _loop_guardrails_engine is not None and tenant_ctx:
+            try:
+                await _loop_guardrails_engine.evaluate(
+                    content=str(raw_output)[:500] if raw_output else "",
+                    layer=_LoopGuardrailLayer.TOOL_OUTPUT,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=getattr(state, "goal_id", None),
+                )
+            except Exception:
+                pass  # Guardrail errors must never break execution
 
         # ── Step 9: Result processor ─────────────────────────────────────────
         if self._result_processor is not None:
