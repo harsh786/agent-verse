@@ -1,6 +1,7 @@
 /**
  * Mission Goal Composer — premium goal submission with model preview,
  * workflow mode selector, attachment support, and template picker.
+ * Uses standard CSS design tokens (bg-card, text-foreground, etc.)
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -67,7 +68,6 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
     staleTime: 60_000,
   });
 
-  // Get AI Router model recommendation
   const { data: modelRec } = useQuery({
     queryKey: ['model-rec-planning'],
     queryFn: () =>
@@ -102,15 +102,15 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
 
   return (
     <>
-      <div className="bg-panel-graphite/80 border border-neural-violet/30 rounded-2xl overflow-hidden shadow-lg shadow-neural-violet/5">
+      <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-neural-violet/20">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-muted/30">
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-verified-green animate-pulse" />
-            <span className="text-xs font-medium text-white/70">New Goal</span>
+            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" aria-hidden="true" />
+            <span className="text-xs font-semibold text-foreground">New Goal</span>
             {recommendedModel?.display_name && (
-              <span className="text-[10px] bg-neural-violet/20 text-neural-violet px-1.5 py-0.5 rounded-full flex items-center gap-1">
-                <Brain className="h-2.5 w-2.5" />
+              <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                <Brain className="h-2.5 w-2.5" aria-hidden="true" />
                 {recommendedModel.display_name}
               </span>
             )}
@@ -119,17 +119,17 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             <button
               type="button"
               onClick={() => setShowTemplatePicker(true)}
-              className="flex items-center gap-1 text-xs text-white/50 hover:text-neural-violet transition-colors"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
             >
-              <BookOpen className="h-3 w-3" />
+              <BookOpen className="h-3 w-3" aria-hidden="true" />
               Templates
             </button>
             <button
               type="button"
               onClick={() => navigate('/goals/ghost-run')}
-              className="flex items-center gap-1 text-xs text-white/50 hover:text-telemetry-cyan transition-colors"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Ghost className="h-3 w-3" />
+              <Ghost className="h-3 w-3" aria-hidden="true" />
               Ghost Run
             </button>
           </div>
@@ -148,7 +148,7 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             }}
             rows={3}
             placeholder="Describe your goal in natural language… (⌘↵ to submit)"
-            className="w-full bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none resize-none pr-10"
+            className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none resize-none pr-10"
             aria-label="Goal text"
           />
           <div className="absolute right-5 top-4">
@@ -165,7 +165,7 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             {attachments.map((a, i) => (
               <span
                 key={i}
-                className="flex items-center gap-1 text-xs bg-telemetry-cyan/10 text-telemetry-cyan px-2 py-0.5 rounded-full"
+                className="flex items-center gap-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full"
               >
                 {a.name ?? a.type}
                 <button
@@ -173,7 +173,7 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
                   onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
                   aria-label={`Remove attachment ${a.name ?? a.type}`}
                 >
-                  <X className="h-2.5 w-2.5" />
+                  <X className="h-2.5 w-2.5" aria-hidden="true" />
                 </button>
               </span>
             ))}
@@ -181,18 +181,20 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
         )}
 
         {/* Cost estimate */}
-        <CostEstimateWidget goal={goal} enabled={goal.length >= 10} />
+        <div className="px-5 pb-3">
+          <CostEstimateWidget goal={goal} enabled={goal.length >= 10} />
+        </div>
 
-        {/* Options row */}
+        {/* Options (collapsible) */}
         {showOptions && (
-          <div className="px-5 py-3 border-t border-white/5 space-y-3">
+          <div className="px-5 py-3 border-t border-border bg-muted/20 space-y-3">
             {/* Agent selector */}
             <div className="flex items-center gap-3">
-              <span className="text-xs text-white/50 w-20">Agent</span>
+              <span className="text-xs text-muted-foreground w-20 shrink-0">Agent</span>
               <select
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
-                className="flex-1 bg-command-black border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-neural-violet"
+                className="flex-1 bg-background border border-input rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="auto">Auto-select best agent</option>
                 {agents.map((a) => (
@@ -205,21 +207,21 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
 
             {/* Workflow mode */}
             <div className="flex items-center gap-3">
-              <span className="text-xs text-white/50 w-20">Strategy</span>
-              <div className="flex gap-1.5">
+              <span className="text-xs text-muted-foreground w-20 shrink-0">Strategy</span>
+              <div className="flex gap-1.5 flex-wrap">
                 {WORKFLOW_MODES.map(({ id, label, icon: Icon, description }) => (
                   <button
                     key={id}
                     type="button"
                     onClick={() => setWorkflowMode(id)}
                     title={description}
-                    className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                    className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
                       workflowMode === id
-                        ? 'bg-neural-violet text-white'
-                        : 'bg-white/5 text-white/60 hover:bg-white/10'
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-background text-muted-foreground border-border hover:bg-muted hover:text-foreground'
                     }`}
                   >
-                    <Icon className="h-3 w-3" />
+                    <Icon className="h-3 w-3" aria-hidden="true" />
                     {label}
                   </button>
                 ))}
@@ -227,12 +229,12 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             </div>
 
             {/* Dry run */}
-            <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
               <input
                 type="checkbox"
                 checked={dryRun}
                 onChange={(e) => setDryRun(e.target.checked)}
-                className="accent-neural-violet"
+                className="accent-primary"
               />
               Dry run (preview only — no tools executed)
             </label>
@@ -240,9 +242,9 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
         )}
 
         {/* Footer */}
-        <div className="flex items-center gap-2 px-5 py-3 border-t border-white/5">
-          <label className="flex items-center gap-1.5 text-xs text-white/50 cursor-pointer hover:text-white/70 transition-colors">
-            <Paperclip className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-2 px-5 py-3 border-t border-border">
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+            <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
             Attach
             <input
               type="file"
@@ -272,10 +274,11 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
           <button
             type="button"
             onClick={() => setShowOptions((v) => !v)}
-            className="flex items-center gap-1 text-xs text-white/50 hover:text-white/70 transition-colors"
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             <ChevronDown
               className={`h-3.5 w-3.5 transition-transform ${showOptions ? 'rotate-180' : ''}`}
+              aria-hidden="true"
             />
             {showOptions ? 'Less' : 'Options'}
           </button>
@@ -286,15 +289,15 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             type="button"
             onClick={() => goal.trim() && submit.mutate()}
             disabled={!goal.trim() || submit.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-neural-violet hover:bg-neural-violet/80 disabled:opacity-40 text-white text-xs font-medium rounded-xl transition-colors"
+            className="flex items-center gap-2 px-5 py-2 bg-primary hover:bg-primary/90 disabled:opacity-40 text-primary-foreground text-sm font-semibold rounded-xl transition-colors"
           >
             {submit.isPending ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Launching…
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> Launching…
               </>
             ) : (
               <>
-                <Zap className="h-3.5 w-3.5" />
+                <Zap className="h-3.5 w-3.5" aria-hidden="true" />
                 {dryRun ? 'Preview' : 'Launch'}
               </>
             )}
@@ -302,7 +305,6 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
         </div>
       </div>
 
-      {/* Template picker modal */}
       {showTemplatePicker && (
         <TemplatePickerModal
           onUseInGoal={(text) => {
