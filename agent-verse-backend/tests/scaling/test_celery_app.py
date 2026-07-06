@@ -129,7 +129,11 @@ def test_record_queue_depths_records_redis_llen_for_named_queues(monkeypatch: An
 
     class FakeRedis:
         def llen(self, queue: str) -> int:
-            return {"goals": 4, "schedules": 2, "maintenance": 1}[queue]
+            return {
+                "goals": 4, "schedules": 2, "maintenance": 1,
+                "goals.free": 1, "goals.starter": 0,
+                "goals.professional": 2, "goals.enterprise": 1,
+            }.get(queue, 0)
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
     monkeypatch.setitem(
@@ -144,12 +148,16 @@ def test_record_queue_depths_records_redis_llen_for_named_queues(monkeypatch: An
 
     result = tasks.record_queue_depths()
 
-    assert result == {
-        "status": "ok",
-        "queues_recorded": 3,
-        "depths": {"goals": 4, "schedules": 2, "maintenance": 1},
-    }
-    assert recorded == [("goals", 4.0), ("schedules", 2.0), ("maintenance", 1.0)]
+    assert result["status"] == "ok"
+    assert result["queues_recorded"] == 7  # 3 base + 4 plan queues
+    assert result["depths"]["goals"] == 4
+    assert result["depths"]["schedules"] == 2
+    assert result["depths"]["maintenance"] == 1
+    assert result["depths"]["goals.free"] == 1
+    # Verify base queues were recorded via metrics
+    assert ("goals", 4.0) in recorded
+    assert ("schedules", 2.0) in recorded
+    assert ("maintenance", 1.0) in recorded
 
 
 def test_fire_due_schedules_discovers_schedule_store_payload(monkeypatch: Any) -> None:

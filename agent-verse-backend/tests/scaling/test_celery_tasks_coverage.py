@@ -1254,7 +1254,7 @@ def test_record_queue_depths_records_depths_with_mocked_redis(
         result = record_queue_depths.run()
 
     assert result["status"] == "ok"
-    assert result["queues_recorded"] == 3  # goals, schedules, maintenance
+    assert result["queues_recorded"] == 7  # 3 base + 4 plan-specific queues
 
 
 # ===========================================================================

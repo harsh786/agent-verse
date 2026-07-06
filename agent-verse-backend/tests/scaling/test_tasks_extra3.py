@@ -668,13 +668,18 @@ class TestRunGoalPaths:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("ENVIRONMENT", "production")
+        # Provide a vault key so vault init doesn't block before the LLM check
+        monkeypatch.setenv("VAULT_MASTER_KEY", "a" * 32)
         from app.scaling.tasks import run_goal
+        # Patch get_session_factory to avoid asyncpg cross-loop teardown errors
+        mock_factory = MagicMock(return_value=None)
         with self._lock_acquired_ctx(), \
              patch("app.scaling.tasks._get_sync_redis", return_value=None), \
              patch("app.scaling.tasks._run_async",
                    side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)), \
              patch("app.scaling.tasks._get_llm_provider", return_value=None), \
-             patch("app.scaling.tasks._REAL_AGENT_LOOP_CLASS", None):
+             patch("app.scaling.tasks._REAL_AGENT_LOOP_CLASS", None), \
+             patch("app.db.session.get_session_factory", return_value=mock_factory):
             result = run_goal.run(
                 goal_id="g4",
                 tenant_id="t1",
@@ -838,8 +843,8 @@ class TestFlushAuditWalDbFactory:
             self._db = db_factory
             self._chain_cache = {}
 
-        with patch("app.governance.audit_v2.AuditFlusher.__init__", capture_init), \
-             patch("app.governance.audit_v2.AuditFlusher.flush", AsyncMock(return_value=5)), \
+        with patch("app.governance.audit_v3.AuditFlusher.__init__", capture_init), \
+             patch("app.governance.audit_v3.AuditFlusher.flush", AsyncMock(return_value=5)), \
              patch("app.db.session.get_session_factory", return_value=MagicMock()), \
              patch("redis.asyncio.from_url", return_value=AsyncMock(aclose=AsyncMock())), \
              patch("asyncio.run", _run_in_new_loop):

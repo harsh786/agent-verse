@@ -17,19 +17,21 @@ class FileOps:
 
     def __init__(self, tenant_id: str) -> None:
         self._tenant_id = tenant_id
-        self._workspace = pathlib.Path(_BASE_WORKSPACE) / tenant_id
-        self._workspace.mkdir(parents=True, exist_ok=True)
+        # Resolve immediately so symlinks (e.g. /tmp → /private/tmp on macOS)
+        # are normalised before any relative_to() comparisons.
+        raw = pathlib.Path(_BASE_WORKSPACE) / tenant_id
+        raw.mkdir(parents=True, exist_ok=True)
+        self._workspace = raw.resolve()
 
     def _safe_path(self, path: str) -> pathlib.Path:
         """Resolve path and verify it stays within the tenant workspace.
 
         Raises PermissionError if the resolved path would escape the workspace.
         """
-        # Resolve relative to workspace
+        # Resolve relative to workspace (workspace is already resolved in __init__)
         resolved = (self._workspace / path).resolve()
-        workspace_resolved = self._workspace.resolve()
         try:
-            resolved.relative_to(workspace_resolved)
+            resolved.relative_to(self._workspace)
         except ValueError:
             raise PermissionError(
                 f"Path {path!r} resolves outside workspace for tenant {self._tenant_id}"

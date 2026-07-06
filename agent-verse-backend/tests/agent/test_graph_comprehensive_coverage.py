@@ -1047,6 +1047,9 @@ async def test_node_rag_retrieval_with_knowledge_store_and_collection_ids() -> N
     mock_ks = MagicMock(spec=KnowledgeStore)
     mock_result = MagicMock()
     mock_result.content = "Relevant knowledge: API endpoint is /v1/deploy"
+    mock_result.score = 0.9
+    mock_result.source_url = ""
+    mock_result.chunk_id = "chunk-1"
     mock_ks.hybrid_search_db = AsyncMock(return_value=[mock_result])
 
     graph = _make_graph(knowledge_store=mock_ks)

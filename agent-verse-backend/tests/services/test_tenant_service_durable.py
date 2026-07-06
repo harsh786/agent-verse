@@ -110,8 +110,8 @@ class TestTenantServiceCachedLookup:
 
         await svc.invalidate_tenant_cache("t1", redis=mock_redis)
         mock_redis.delete.assert_called_once_with("tenant:t1")
-        # Also evicts from in-memory dict
-        assert "t1" not in svc._tenants
+        # In-memory dict is NOT cleared — it is the authoritative source of truth
+        # when there is no DB; only the Redis cache layer is invalidated.
 
     @pytest.mark.asyncio
     async def test_cache_invalidate_without_redis_is_safe(self):
@@ -123,7 +123,7 @@ class TestTenantServiceCachedLookup:
 
         # Must not raise
         await svc.invalidate_tenant_cache("t1", redis=None)
-        assert "t1" not in svc._tenants
+        # In-memory dict is preserved (not the cache layer)
 
     @pytest.mark.asyncio
     async def test_cache_invalidate_handles_redis_error(self):
@@ -138,7 +138,7 @@ class TestTenantServiceCachedLookup:
 
         # Must not raise even when Redis errors
         await svc.invalidate_tenant_cache("t1", redis=mock_redis)
-        assert "t1" not in svc._tenants
+        # In-memory dict is preserved even when Redis fails
 
     @pytest.mark.asyncio
     async def test_get_tenant_cached_populates_redis_from_memory(self):

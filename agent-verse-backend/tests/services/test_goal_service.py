@@ -909,6 +909,7 @@ async def test_run_agent_loop_seeds_tool_context_without_mcp_client() -> None:
             tenant_ctx: TenantContext,
             initial_context: dict[str, Any] | None = None,
             event_callback: Any = None,
+            goal_id: str | None = None,
         ) -> None:
             captured["goal"] = goal
             captured["tenant_ctx"] = tenant_ctx
