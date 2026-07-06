@@ -179,6 +179,7 @@ loki:
 promtail:
   enabled: true
   image: grafana/promtail:2.9.8
+  scrapeMode: synthetic # synthetic for Minikube smoke, pods for production
 
 grafana:
   enabled: true

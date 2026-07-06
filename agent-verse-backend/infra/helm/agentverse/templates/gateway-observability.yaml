@@ -161,18 +161,45 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/promtail
+        {{- if eq .Values.promtail.scrapeMode "pods" }}
         - name: pods
           mountPath: /var/log/containers
           readOnly: true
+        {{- else }}
+        - name: synthetic-logs
+          mountPath: /var/log/agentverse
+        {{- end }}
         - name: run
           mountPath: /run/promtail
+      {{- if ne .Values.promtail.scrapeMode "pods" }}
+      - name: synthetic-log-writer
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          i=0
+          while true; do
+            i=$((i+1))
+            echo "$(date -Iseconds) level=info component=agentverse-smoke msg=\"synthetic loki pipeline log\" counter=$i" >> /var/log/agentverse/smoke.log
+            sleep 10
+          done
+        volumeMounts:
+        - name: synthetic-logs
+          mountPath: /var/log/agentverse
+      {{- end }}
       volumes:
       - name: config
         configMap:
           name: {{ include "agentverse.fullname" . }}-promtail
+      {{- if eq .Values.promtail.scrapeMode "pods" }}
       - name: pods
         hostPath:
           path: /var/log/containers
+      {{- else }}
+      - name: synthetic-logs
+        emptyDir: {}
+      {{- end }}
       - name: run
         emptyDir: {}
 {{- end }}
