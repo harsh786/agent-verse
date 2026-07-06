@@ -76,7 +76,27 @@ class OpenAICompatibleProvider:
                 },
             }
 
-        response = await self._client.chat.completions.create(**kwargs)
+        try:
+            response = await self._client.chat.completions.create(**kwargs)
+        except Exception as _strict_err:
+            # OpenAI strict mode rejects schemas that don't list every property
+            # in `required`. If we get a 400 schema validation error, fall back
+            # to non-strict json_object mode so the goal can still proceed.
+            _err_str = str(_strict_err).lower()
+            if (
+                request.response_schema is not None
+                and ("400" in _err_str or "invalid_request_error" in _err_str
+                     or "invalid schema" in _err_str or "response_format" in _err_str)
+            ):
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "openai_strict_schema_rejected_falling_back_to_json_object: %s",
+                    str(_strict_err)[:200],
+                )
+                kwargs["response_format"] = {"type": "json_object"}
+                response = await self._client.chat.completions.create(**kwargs)
+            else:
+                raise
 
         # Record token and cost metrics (never let this break the main path)
         try:
