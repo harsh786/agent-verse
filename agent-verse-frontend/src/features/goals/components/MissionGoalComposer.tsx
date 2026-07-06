@@ -68,6 +68,11 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
     staleTime: 60_000,
   });
 
+  // Default agentId to first available agent once agents load
+  // so goals always run with connectors rather than with agent_id=null
+  const defaultAgentId = agents.length > 0 ? agents[0].agent_id : 'auto';
+  const [agentId, setAgentId] = useState<string>('auto');
+
   const { data: modelRec } = useQuery({
     queryKey: ['model-rec-planning'],
     queryFn: () =>
@@ -76,14 +81,21 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
   });
 
   const submit = useMutation({
-    mutationFn: () =>
-      goalsApi.submit({
+    mutationFn: () => {
+      // Use explicitly selected agent, or auto-routing if 'auto',
+      // or the first available agent as fallback so connectors are always wired.
+      const resolvedAgentId =
+        agentId !== 'auto' ? agentId :
+        defaultAgentId !== 'auto' ? defaultAgentId :
+        undefined;
+      return goalsApi.submit({
         goal,
         dry_run: dryRun,
-        agent_id: agentId === 'auto' ? undefined : agentId,
+        agent_id: resolvedAgentId,
         workflow_mode: workflowMode,
         attachments: attachments.length > 0 ? attachments : undefined,
-      }),
+      });
+    },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['goals'] });
       const goalId = res.goal_id ?? res.id;
@@ -112,6 +124,15 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
               <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
                 <Brain className="h-2.5 w-2.5" aria-hidden="true" />
                 {recommendedModel.display_name}
+              </span>
+            )}
+            {/* Show which agent will run this goal */}
+            {agents.length > 0 && (
+              <span className="text-[10px] bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
+                {agentId === 'auto'
+                  ? `→ ${agents.find(a => a.agent_id === defaultAgentId)?.name ?? agents[0].name}`
+                  : agents.find(a => a.agent_id === agentId)?.name ?? agentId.slice(0, 8)
+                }
               </span>
             )}
           </div>
@@ -196,10 +217,14 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
                 onChange={(e) => setAgentId(e.target.value)}
                 className="flex-1 bg-background border border-input rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="auto">Auto-select best agent</option>
+                <option value="auto">
+                  {defaultAgentId !== 'auto'
+                    ? `Auto → ${agents.find(a => a.agent_id === defaultAgentId)?.name ?? 'first agent'}`
+                    : 'Auto-select (no agents configured)'}
+                </option>
                 {agents.map((a) => (
                   <option key={a.agent_id} value={a.agent_id}>
-                    {a.name} ({a.autonomy_mode})
+                    {a.name} · {a.autonomy_mode}
                   </option>
                 ))}
               </select>
