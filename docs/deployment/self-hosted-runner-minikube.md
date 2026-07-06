@@ -93,15 +93,16 @@ node + npm
 ## Recommended Local Minikube Profile
 
 ```bash
-minikube start --cpus=4 --memory=7168 --disk-size=40g
+minikube -p agentverse start --cpus=4 --memory=7600 --disk-size=60g
+kubectl config use-context agentverse
 ```
 
 If your existing Minikube profile has fewer resources, Minikube may refuse to
 resize it. Delete only if you are okay losing local cluster state:
 
 ```bash
-minikube delete
-minikube start --cpus=4 --memory=7168 --disk-size=40g
+minikube -p agentverse delete
+minikube -p agentverse start --cpus=4 --memory=7600 --disk-size=60g
 ```
 
 ## Running Local Workflows
