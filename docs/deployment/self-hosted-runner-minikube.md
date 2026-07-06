@@ -146,3 +146,17 @@ The local workflows build images on the host Docker daemon and then run
 `minikube -p agentverse image load ...`. This is more reliable than building
 inside the Minikube Docker daemon because local Docker DNS/networking is less
 constrained when downloading Python and npm dependencies.
+
+The workflows also run a Kubernetes networking preflight before any Helm deploy:
+
+```bash
+kubectl -n kube-system rollout status daemonset/kube-proxy --timeout=120s
+kubectl -n kube-system rollout status deployment/coredns --timeout=120s
+kubectl -n default run dns-preflight --image=busybox:1.36 --restart=Never --rm -i -- nslookup kubernetes.default.svc.cluster.local
+```
+
+If this preflight fails, Helm deployment is intentionally skipped because the
+cluster cannot resolve services. On this machine, the Docker-driver Minikube
+profile may show `kube-proxy` crashing with `too many open files`; fix the local
+Docker/Minikube environment first (increase Docker resources, prune Docker disk,
+or use a non-Docker Minikube driver such as QEMU after installing it).

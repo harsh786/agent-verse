@@ -60,6 +60,14 @@ jobs:
           kubectl config use-context "$MINIKUBE_PROFILE"
           kubectl cluster-info
 
+      - name: Verify Minikube service networking
+        if: ${{ github.event.inputs.mode != 'ci-only' }}
+        run: |
+          set -euo pipefail
+          kubectl -n kube-system rollout status daemonset/kube-proxy --timeout=120s
+          kubectl -n kube-system rollout status deployment/coredns --timeout=120s
+          kubectl -n default run dns-preflight --image=busybox:1.36 --restart=Never --rm -i -- nslookup kubernetes.default.svc.cluster.local
+
       - name: Build local images and load into Minikube
         if: ${{ github.event.inputs.mode == 'all-in-one' || github.event.inputs.mode == 'app-only' }}
         run: |
