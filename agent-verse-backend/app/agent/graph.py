@@ -2858,6 +2858,41 @@ class AgentGraph:
             record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
             return "max_iter"
 
+        # ── Stagnation detection ────────────────────────────────────────────
+        # If the last 3 verification feedbacks are identical (agent keeps making
+        # the same mistake) — stop immediately rather than burning all iterations.
+        _feedback_history: list[str] = agent_state.context.get("_feedback_history", [])
+        _current_feedback = agent_state.verification_feedback or ""
+        if _current_feedback:
+            _feedback_history = (_feedback_history + [_current_feedback])[-6:]
+            agent_state.context["_feedback_history"] = _feedback_history
+
+        if len(_feedback_history) >= 3 and len(set(_feedback_history[-3:])) == 1:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = (
+                "Goal stagnated: agent repeated the same failing approach 3 times in a row. "
+                f"Last feedback: {_current_feedback[:200]}"
+            )
+            record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
+            return "max_iter"
+
+        # Also stop if plan steps haven't changed for 3 iterations
+        # (same plan, same failure = wrong agent/tools)
+        _plan_history: list[str] = agent_state.context.get("_plan_history", [])
+        _current_plan_key = "|".join(agent_state.plan[:3]) if agent_state.plan else ""
+        if _current_plan_key:
+            _plan_history = (_plan_history + [_current_plan_key])[-4:]
+            agent_state.context["_plan_history"] = _plan_history
+
+        if len(_plan_history) >= 3 and len(set(_plan_history[-3:])) == 1:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = (
+                "Goal stagnated: same plan was repeated 3 times without success. "
+                "Check that the agent has the right connectors for this goal."
+            )
+            record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
+            return "max_iter"
+
         # Supervised mode: pause if any HITL requests are pending
         if self._autonomy_mode == "supervised" and self._hitl_gateway is not None:
             tenant_ctx: TenantContext | None = state.get("tenant_ctx")

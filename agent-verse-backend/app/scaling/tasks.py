@@ -556,26 +556,32 @@ def run_goal(
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
 
     async def append_submitted_goal_event(event: dict[str, Any]) -> None:
+        # ── ALWAYS publish to Redis pub/sub first (SSE real-time feed) ────────
+        # This must happen regardless of DB availability. Previously the function
+        # returned early when event_store was None, silently dropping all events
+        # from the SSE stream. Now Redis publish runs unconditionally.
+        try:
+            import json as _json
+            _r = _get_sync_redis()
+            if _r is not None:
+                _event_data = _json.dumps({
+                    "goal_id": goal_id,
+                    "tenant_id": tenant_id,
+                    "type": event.get("type", ""),
+                    "payload": event,
+                })
+                _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
+        except Exception as _pub_exc:
+            logger.debug("redis_event_publish_failed (non-fatal): %s", _pub_exc)
+
+        # ── Also persist to event store (DB) for the historical Dev Log ───────
         if event_store is None:
             return
         try:
             _, fresh_event_store, _ = _make_worker_goal_bridge()
             await fresh_event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
         except Exception as db_exc:
-            logger.warning("DB event append failed (non-fatal): %s", db_exc)
-        # C-1: Publish to Redis pub/sub so API-process SSE bridge receives it
-        try:
-            import json as _json
-            _r = _get_sync_redis()
-            _event_data = _json.dumps({
-                "goal_id": goal_id,
-                "tenant_id": tenant_id,
-                "type": event.get("type", ""),
-                "payload": event,
-            })
-            _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
-        except Exception:
-            pass  # Non-fatal: SSE may degrade but goal execution continues
+            logger.debug("DB event append failed (non-fatal): %s", db_exc)
 
     async def ensure_submitted_goal_row() -> None:
         if goal_bridge is None:

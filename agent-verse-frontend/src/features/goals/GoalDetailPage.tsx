@@ -476,7 +476,9 @@ function TerminalLine({ event, goalStatus, onRetry, isRetrying }: {
     }
   })();
 
-  const hasDetails = isTool || type === "plan_ready" || type === "verification_done";
+  const isStep = type === "step_complete" || type === "step_started";
+  const stepOutput = isStep ? (event.output ?? event.result ?? (event as any).data) : null;
+  const hasDetails = isTool || type === "plan_ready" || type === "verification_done" || stepOutput != null;
 
   return (
     <div className={`group ${isFailure ? "bg-red-950/10" : ""}`}>
@@ -512,6 +514,14 @@ function TerminalLine({ event, goalStatus, onRetry, isRetrying }: {
           {event.error && (
             <pre className="text-[10px] text-red-400 whitespace-pre-wrap">{String(event.error)}</pre>
           )}
+        </div>
+      )}
+
+      {expanded && (isStep) && stepOutput != null && (
+        <div className="px-8 pb-2">
+          <pre className="text-[10px] text-emerald-400 whitespace-pre-wrap break-words max-h-64 overflow-auto leading-relaxed border border-emerald-900/30 rounded p-1.5 bg-emerald-950/20">
+            {typeof stepOutput === "string" ? stepOutput : JSON.stringify(stepOutput, null, 2)}
+          </pre>
         </div>
       )}
 

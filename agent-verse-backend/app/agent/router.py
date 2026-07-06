@@ -82,13 +82,78 @@ class AgentRouter:
         return len(overlap) / max(len(goal_tokens), len(agent_tokens))
 
     def _score_by_connector_match(self, goal: str, agent: dict[str, Any]) -> float:
-        """Fraction of connector IDs that appear as substrings in the goal."""
+        """Bidirectional connector relevance score.
+
+        Old approach: checked if the raw connector_id string appeared in the goal.
+        Problem: connector_ids are often UUIDs (e.g. 'a56b384d...') or prefixed names
+        like 'builtin-jira' — none of which appear verbatim in a goal like
+        'Fetch latest Jira tickets'.
+
+        New approach (bidirectional):
+          1. Extract meaningful words from connector IDs by stripping 'builtin-'
+             prefixes and splitting on '-' (e.g. 'builtin-jira' → 'jira',
+             'a56b384d...' → raw UUID which we keep as-is but also check agent name).
+          2. Check if any connector-derived word appears in the goal text.
+          3. Also check if key goal words appear in any connector ID or agent connectors.
+
+        Domain keyword map: maps common goal terms to connector names so that
+        'jira', 'ticket', 'sprint', 'issue' → score boosted for jira-connected agents.
+        """
         connector_ids: list[str] = agent.get("connector_ids", []) or []
         if not connector_ids:
             return 0.0
+
         goal_lower = goal.lower()
-        matched = sum(1 for cid in connector_ids if str(cid).lower() in goal_lower)
-        return min(matched / len(connector_ids), 1.0)
+        goal_tokens = self._tokenize(goal)
+
+        # Domain keyword → connector name mapping for semantic matching
+        DOMAIN_KEYWORDS: dict[str, list[str]] = {
+            "jira":       ["jira", "ticket", "issue", "sprint", "project", "backlog", "epic", "story"],
+            "confluence": ["confluence", "wiki", "page", "document", "space", "knowledge"],
+            "github":     ["github", "git", "repo", "repository", "pr", "pullrequest", "commit", "branch", "code", "file"],
+            "gitlab":     ["gitlab", "merge", "pipeline", "ci", "cd"],
+            "slack":      ["slack", "channel", "message", "notify", "post", "chat"],
+            "linear":     ["linear", "issue", "cycle", "roadmap"],
+            "datadog":    ["datadog", "monitor", "alert", "metric", "apm"],
+            "sentry":     ["sentry", "error", "exception", "traceback", "crash"],
+            "stripe":     ["stripe", "payment", "invoice", "charge", "customer", "subscription"],
+            "hubspot":    ["hubspot", "crm", "contact", "deal", "lead", "pipeline"],
+            "notion":     ["notion", "page", "block", "database"],
+            "postgres":   ["postgres", "postgresql", "sql", "database", "query", "table"],
+        }
+
+        total_score = 0.0
+        matched = 0
+
+        for cid in connector_ids:
+            cid_lower = cid.lower()
+
+            # Strip common prefixes to get the core connector name
+            core = cid_lower.replace("builtin-", "").replace("builtin_", "").split("/")[0]
+            # e.g. 'builtin-jira' → 'jira', 'a56b384d...' → 'a56b384d...'
+
+            # Direct: connector core name in goal
+            if core in goal_lower:
+                total_score += 1.0
+                matched += 1
+                continue
+
+            # Semantic: goal keywords matching domain keywords for this connector
+            domain_kws = DOMAIN_KEYWORDS.get(core, [])
+            kw_hit = any(kw in goal_lower for kw in domain_kws)
+            if kw_hit:
+                total_score += 0.8
+                matched += 1
+                continue
+
+            # Reverse: goal tokens in connector core (partial)
+            if any(tok in core for tok in goal_tokens if len(tok) > 3):
+                total_score += 0.5
+                matched += 1
+                continue
+
+        # Normalize: score = avg hit weight across all connectors, capped at 1.0
+        return min(total_score / len(connector_ids), 1.0)
 
     def _score_by_history(self, agent_id: str, tenant_ctx: TenantContext) -> float:
         """Return historical success rate from eval store, or 0.0 when unavailable."""
