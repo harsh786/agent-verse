@@ -23,6 +23,8 @@ import {
   Loader2,
   Download,
   ShieldCheck,
+  X,
+  ChevronRight,
 } from 'lucide-react';
 import {
   marketplaceApi,
@@ -35,7 +37,6 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { TemplateCard } from '@/features/templates/components/TemplateCard';
 import { TemplateInstantiator } from '@/features/templates/components/TemplateInstantiator';
 import { toast } from '@/stores/toast';
-
 // ── Domain metadata lookup ────────────────────────────────────────────────────
 
 const DOMAIN_META: Record<
@@ -303,19 +304,174 @@ const DOMAIN_META: Record<
   },
 };
 
-// ── Agent template card (inline — MarketplaceCard not exported) ───────────────
+// ── Deploy parameter modal ────────────────────────────────────────────────────
+
+function DeployParamModal({
+  template,
+  onClose,
+  onDeployed,
+}: {
+  template: MarketplaceV2Template;
+  onClose: () => void;
+  onDeployed: (agentId: string) => void;
+}) {
+  const paramDefs = Object.entries(template.parameters_schema?.properties ?? {}).map(
+    ([name, def]) => ({
+      name,
+      type: def.type ?? 'string',
+      description: def.description ?? '',
+      enumValues: def.enum,
+      defaultValue: def.default != null ? String(def.default) : '',
+      required: (template.parameters_schema?.required ?? []).includes(name),
+    }),
+  );
+
+  const [params, setParams] = useState<Record<string, string>>(
+    Object.fromEntries(paramDefs.map((p) => [p.name, p.defaultValue])),
+  );
+  const [deploying, setDeploying] = useState(false);
+  const [result, setResult] = useState<{ agent_id: string; agent_name?: string } | null>(null);
+
+  const allRequiredFilled = paramDefs
+    .filter((p) => p.required)
+    .every((p) => (params[p.name] ?? '').trim().length > 0);
+
+  const handleDeploy = async () => {
+    setDeploying(true);
+    try {
+      const res = await marketplaceApi.deploy(template.template_id, params);
+      if (res.agent_id) {
+        setResult({ agent_id: res.agent_id, agent_name: res.agent_name });
+        onDeployed(res.agent_id);
+        toast({ kind: 'success', message: `Agent "${res.agent_name ?? res.agent_id}" deployed!` });
+      } else {
+        toast({ kind: 'error', message: res.error ?? 'Deploy failed' });
+      }
+    } catch (e) {
+      toast({ kind: 'error', message: `Deploy failed: ${String(e)}` });
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
+      <div className="relative bg-card border border-border rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 max-h-[85vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">
+              <Package className="h-4 w-4 text-primary" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-sm font-bold truncate">{template.name}</h2>
+              <p className="text-[10px] text-muted-foreground">Configure &amp; deploy</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1" aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Success state */}
+        {result ? (
+          <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-xl p-4 space-y-2">
+            <p className="text-sm font-semibold text-green-800 dark:text-green-300">Agent deployed!</p>
+            <p className="text-xs text-green-700 dark:text-green-400 font-mono">{result.agent_id}</p>
+            {result.agent_name && <p className="text-xs text-green-700 dark:text-green-400">{result.agent_name}</p>}
+            <button onClick={onClose} className="text-xs text-green-700 dark:text-green-400 underline">Close</button>
+          </div>
+        ) : (
+          <>
+            {/* Parameters */}
+            {paramDefs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">This agent has no required parameters.</p>
+            ) : (
+              <div className="space-y-3">
+                {paramDefs.map((p) => (
+                  <div key={p.name}>
+                    <label className="block text-xs font-medium mb-1" htmlFor={`dp-${p.name}`}>
+                      {p.name}
+                      {p.required && <span className="text-red-500 ml-0.5">*</span>}
+                      {p.description && (
+                        <span className="font-normal text-muted-foreground ml-1">— {p.description}</span>
+                      )}
+                    </label>
+                    {p.enumValues ? (
+                      <select
+                        id={`dp-${p.name}`}
+                        value={params[p.name] ?? ''}
+                        onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                        className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                      >
+                        <option value="">Select…</option>
+                        {p.enumValues.map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        id={`dp-${p.name}`}
+                        type="text"
+                        value={params[p.name] ?? ''}
+                        onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                        placeholder={p.defaultValue || `Enter ${p.name}…`}
+                        className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Required fields warning */}
+            {paramDefs.some((p) => p.required) && !allRequiredFilled && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Fill in required fields (<span className="text-red-500">*</span>) to deploy.
+              </p>
+            )}
+
+            {/* Action buttons */}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => void handleDeploy()}
+                disabled={deploying || (paramDefs.length > 0 && !allRequiredFilled)}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {deploying ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Deploying…</>
+                ) : (
+                  <><Zap className="h-4 w-4" aria-hidden="true" /> Deploy Agent</>
+                )}
+              </button>
+              <button onClick={onClose} className="px-4 py-2.5 border border-input text-sm rounded-lg hover:bg-muted/50">
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Agent template card ───────────────────────────────────────────────────────
 
 function DomainAgentCard({
   template,
   onDeploy,
+  onConfigure,
   deploying,
   deployed,
 }: {
   template: MarketplaceV2Template;
   onDeploy: () => void;
+  onConfigure: () => void;
   deploying: boolean;
   deployed?: string;
 }) {
+  const requiredParams = template.parameters_schema?.required ?? [];
+  const hasRequiredParams = requiredParams.length > 0;
+
   return (
     <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 hover:border-primary/30 hover:shadow-sm transition-all">
       <div className="flex items-start gap-2">
@@ -356,14 +512,30 @@ function DomainAgentCard({
               {c}
             </span>
           ))}
+          {(template.required_connectors ?? []).length > 4 && (
+            <span className="text-[10px] text-muted-foreground">
+              +{(template.required_connectors ?? []).length - 4} more
+            </span>
+          )}
         </div>
       )}
 
       {deployed ? (
         <div className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
-          Deployed — <span className="font-mono">{deployed.slice(0, 12)}…</span>
+          Deployed ✓ — <span className="font-mono">{deployed.slice(0, 12)}…</span>
         </div>
+      ) : hasRequiredParams ? (
+        /* Template has required parameters → must configure before deploying */
+        <button
+          onClick={onConfigure}
+          className="flex items-center justify-center gap-1.5 py-1.5 px-3 text-xs font-medium border border-primary text-primary rounded-lg hover:bg-primary/10 transition-colors"
+          aria-label={`Configure and deploy ${template.name}`}
+        >
+          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          Configure &amp; Deploy
+        </button>
       ) : (
+        /* No required parameters → quick one-click deploy */
         <button
           onClick={onDeploy}
           disabled={deploying}
@@ -400,6 +572,7 @@ export default function DomainDetailPage() {
   const [deployingId, setDeployingId] = useState<string | null>(null);
   const [deployedMap, setDeployedMap] = useState<Record<string, string>>({});
   const [instantiatingTemplate, setInstantiatingTemplate] = useState<GoalTemplate | null>(null);
+  const [configuringTemplate, setConfiguringTemplate] = useState<MarketplaceV2Template | null>(null);
 
   const { data: marketplaceData, isLoading: marketplaceLoading } = useQuery({
     queryKey: ['marketplace-domain', domainKey],
@@ -545,6 +718,7 @@ export default function DomainDetailPage() {
                     key={t.template_id}
                     template={t}
                     onDeploy={() => void handleDeploy(t)}
+                    onConfigure={() => setConfiguringTemplate(t)}
                     deploying={deployingId === t.template_id}
                     deployed={deployedMap[t.template_id]}
                   />
@@ -585,6 +759,18 @@ export default function DomainDetailPage() {
           onUseInGoal={(text) => {
             navigate('/goals', { state: { prefillGoal: text } });
             setInstantiatingTemplate(null);
+          }}
+        />
+      )}
+
+      {configuringTemplate && (
+        <DeployParamModal
+          template={configuringTemplate}
+          onClose={() => setConfiguringTemplate(null)}
+          onDeployed={(agentId) => {
+            setDeployedMap((prev) => ({ ...prev, [configuringTemplate.template_id]: agentId }));
+            void qc.invalidateQueries({ queryKey: ['agents'] });
+            // Keep modal open to show success state; user closes it manually
           }}
         />
       )}

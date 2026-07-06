@@ -1373,7 +1373,15 @@ class MarketplaceV2:
     async def get_template(
         self, *, template_id: str | None = None, slug: str | None = None
     ) -> dict[str, Any] | None:
-        """Fetch a single template by id or slug. Returns None if not found."""
+        """Fetch a single template by id or slug. Returns None if not found.
+
+        Lookup order:
+        1. DB (when available) — returns immediately if found.
+        2. In-memory cache (YAML-loaded agents + hard-coded built-ins) — used
+           when DB is unavailable OR when the template hasn't been seeded yet.
+           This prevents "Template not found" 422s for YAML-defined agents that
+           exist in the cache but haven't been persisted to DB yet.
+        """
         if self._db is not None:
             try:
                 async with self._db() as session:
@@ -1395,11 +1403,20 @@ class MarketplaceV2:
                         ).fetchone()
                     else:
                         return None
-                    return dict(row._mapping) if row else None
+                    # ── KEY FIX ──────────────────────────────────────────────
+                    # If found in DB return immediately; if NOT found, fall
+                    # through to the in-memory cache below instead of returning
+                    # None, so YAML-loaded agents that haven't been DB-seeded
+                    # yet are still deployable.
+                    if row is not None:
+                        return dict(row._mapping)
+                    # Not in DB → fall through to in-memory cache
             except Exception:
                 pass
 
-        # In-memory fallback
+        # In-memory fallback — always populate before querying
+        if not self._cache:
+            self._ensure_builtin_cache()
         if template_id:
             return self._cache.get(template_id)
         if slug:
@@ -1611,8 +1628,17 @@ class MarketplaceV2:
         if template is None:
             return {"success": False, "error": "Template not found", "template_id": template_id}
 
+        # Auto-fill schema defaults for any parameter not supplied by the caller.
+        # This allows quick-deploy (empty params {}) to work when all required
+        # fields either have defaults or the caller chose not to provide them.
+        schema = template.get("parameters_schema") or {}
+        if schema and isinstance(schema, dict):
+            props = schema.get("properties") or {}
+            for field_name, field_def in props.items():
+                if field_name not in params and "default" in field_def:
+                    params = {**params, field_name: field_def["default"]}
+
         # Validate parameters against JSON Schema BEFORE creating any agent
-        schema = template.get("parameters_schema") or template.get("parameters_schema", {})
         if schema and isinstance(schema, dict) and schema:
             try:
                 import jsonschema  # type: ignore[import]
