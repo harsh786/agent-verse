@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import contextlib
+import hmac
 import os
 from typing import Any
 
@@ -32,7 +33,7 @@ def _require_admin(x_admin_key: str = Header(default="")) -> None:
     admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
     if not admin_key:
         raise HTTPException(status_code=503, detail="Platform admin not configured")
-    if x_admin_key != admin_key:
+    if not hmac.compare_digest(x_admin_key.encode(), admin_key.encode()):
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
 

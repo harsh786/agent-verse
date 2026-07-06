@@ -18,7 +18,7 @@ from app.scaling.celery_app import celery_app
 def test_celery_routes_core_tasks_to_named_queues() -> None:
     routes = cast(Mapping[str, Mapping[str, str]], celery_app.conf.task_routes)
 
-    assert routes["app.scaling.tasks.run_goal"]["queue"] == "goals"
+    assert routes["app.scaling.tasks.run_goal"]["queue"] == "goals.free"
     assert routes["app.scaling.tasks.run_scheduled_goal"]["queue"] == "schedules"
     assert routes["app.scaling.tasks.fire_due_schedules"]["queue"] == "schedules"
     assert routes["app.scaling.tasks.check_mcp_health"]["queue"] == "maintenance"

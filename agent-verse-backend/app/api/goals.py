@@ -380,8 +380,19 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
     The stream ends when the goal reaches a terminal status
     (`complete`, `failed`, or `cancelled`).
     """
-    _require_tenant(request)
+    tenant_ctx = _require_tenant(request)
     svc = _goal_service(request)
+
+    # Validate the goal exists and belongs to the calling tenant *before* opening
+    # the stream.  If we deferred this check to the async generator, the 200
+    # response header would already be sent when the error was discovered.
+    try:
+        record = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant_ctx)
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
+
+    if record.get("tenant_id") and record["tenant_id"] != tenant_ctx.tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     last_event_id = request.headers.get("Last-Event-ID", "0")
     since_sequence = int(last_event_id) if last_event_id.isdigit() else 0
@@ -390,7 +401,7 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
         seq = 0
         async for event in svc.subscribe_events(
             goal_id=goal_id,
-            tenant_ctx=request.state.tenant,
+            tenant_ctx=tenant_ctx,
             since_sequence=since_sequence,
         ):
             seq += 1

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import MCPRegistry, MCPServerConfig
+from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.providers.vault import (
     connector_secret_ref,
     is_connector_secret_ref,
@@ -320,6 +321,15 @@ async def register_connector(
     request: Request, body: RegisterConnectorRequest
 ) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
+    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time.
+    if body.url and body.url != "builtin://":
+        try:
+            assert_public_url(body.url, context="connector registration")
+        except SSRFError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Connector URL rejected by SSRF guard: {exc}",
+            ) from exc
     reg = _registry(request)
     secret_store = _connector_secret_store(
         request,
@@ -749,6 +759,18 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
         return {"server_id": server_id, "reachable": True, "status": "not_tested", "latency_ms": 0}
 
     try:
+        # SSRF protection: validate the URL before making any outbound request.
+        # Never allow requests to internal/metadata endpoints.
+        try:
+            assert_public_url(url, context="connector test")
+        except SSRFError as ssrf_exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="SSRF protection: disallowed URL",
+            ) from ssrf_exc
+
+        # Build auth headers from connector config — never forward the incoming
+        # request's own Authorization header to external services.
         headers: dict[str, str] = {}
         for key, value in (cfg.auth_config or {}).items():
             if isinstance(value, str) and (

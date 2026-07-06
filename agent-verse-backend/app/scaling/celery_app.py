@@ -42,9 +42,9 @@ celery_app.conf.update(
     task_default_retry_delay=30,
     worker_prefetch_multiplier=1,
     task_routes={
-        # Default goal queue — workers pick up based on tenant plan at dispatch time.
-        # Per-plan queues allow enterprise tenants to get dedicated worker pools.
-        "app.scaling.tasks.run_goal": {"queue": "goals"},
+        # Default goal queue — falls back to goals.free when no queue is specified.
+        # At dispatch time CeleryGoalTaskQueue overrides this via apply_async(queue=).
+        "app.scaling.tasks.run_goal": {"queue": "goals.free"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},

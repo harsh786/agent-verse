@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from app.observability.logging import get_logger
 from app.scaling.beat_guard import beat_task_guard
-from app.scaling.celery_app import celery_app
+from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
 
 logger = get_logger(__name__)
 
@@ -411,6 +411,7 @@ def run_goal(
     connector_ids: list[str] | None = None,
     workflow_mode: str = "single_agent",
     goal_template: str = "",
+    plan: str = "free",
 ) -> dict[str, Any]:
     """Run a goal worker task and return its local result.
 
@@ -422,6 +423,14 @@ def run_goal(
     from app.tenancy.context import TenantContext
 
     logger.info("Running goal %s for tenant %s", goal_id, tenant_id)
+    # Log which queue tier this task was dispatched to for observability
+    _dispatch_queue = PLAN_QUEUE_MAP.get(plan, "goals.free")
+    logger.info(
+        "run_goal_queue_selected",
+        goal_id=goal_id,
+        plan=plan,
+        queue=_dispatch_queue,
+    )
     started_monotonic = _monotonic()
     effective_goal = goal_text or goal_template
 

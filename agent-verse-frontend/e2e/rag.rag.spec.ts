@@ -2,8 +2,9 @@ import { test, expect } from '@playwright/test';
 
 test.describe('RAG Live', () => {
   test.beforeEach(async ({ page }) => {
-    await page.route('**/rag-platform/**', r => r.fulfill({ json: { answer: 'test answer', citations: [], strategy: 'direct' } }));
-    await page.route('**/knowledge/**', r => r.fulfill({ json: { collections: [], results: [] } }));
+    // Pin to localhost:8000 so the mock never intercepts Vite's source-file requests
+    await page.route('http://localhost:8000/rag-platform**', r => r.fulfill({ json: { answer: 'test answer', citations: [], strategy: 'direct' } }));
+    await page.route('http://localhost:8000/knowledge**', r => r.fulfill({ json: { collections: [], results: [] } }));
   });
 
   test('knowledge search page renders', async ({ page }) => {

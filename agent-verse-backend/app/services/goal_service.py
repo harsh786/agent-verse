@@ -540,16 +540,20 @@ class GoalService:
         key = f"daily_goals:{tenant_ctx.tenant_id}:{today}"
 
         try:
-            # Peek at current count (don't increment yet — increment after validation)
-            current = int(await redis.get(key) or 0)
-            check_daily_goal_limit(tenant_ctx, current)
-            # Passed — increment atomically
-            await redis.incr(key)
-            # Set TTL to end of day + buffer
+            # INCR first (atomic), then validate — eliminates GET→check→INCR TOCTOU race.
+            # If the limit is exceeded we roll back with DECR before raising.
+            new_count = int(await redis.incr(key))
             now = datetime.now(UTC)
             end_of_day = datetime(now.year, now.month, now.day, 23, 59, 59, tzinfo=UTC)
             ttl = int((end_of_day - now).total_seconds()) + 3600
             await redis.expire(key, ttl)
+            try:
+                check_daily_goal_limit(tenant_ctx, new_count)
+            except Exception:
+                # Rollback the pre-emptive increment — goal is rejected.
+                with suppress(Exception):
+                    await redis.decr(key)
+                raise
         except Exception:
             raise
 
@@ -1344,13 +1348,25 @@ class GoalService:
                 )
             except Exception:
                 pass
-        # Push event to every live subscriber queue
+        # Push event to every live subscriber queue, pruning dead ones on all
+        # non-ephemeral events so they don't accumulate until goal completion.
+        _dead: list[asyncio.Queue[dict[str, Any] | None]] = []
         for q in list(record.subscribers):
-            await q.put(sanitized_event)
+            try:
+                q.put_nowait(sanitized_event)
+            except asyncio.QueueFull:
+                if not _is_ephemeral:
+                    _dead.append(q)
+            except Exception:
+                _dead.append(q)
+        for q in _dead:
+            with suppress(ValueError):
+                record.subscribers.remove(q)
         # If the goal has reached a terminal state, send the end-of-stream sentinel
         if record.status in {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED}:
             for q in list(record.subscribers):
-                await q.put(_SENTINEL)
+                with suppress(Exception):
+                    q.put_nowait(_SENTINEL)
 
     def _record_terminal_goal_metrics(self, record: GoalRecord, status: str) -> None:
         if record.terminal_metrics_recorded:

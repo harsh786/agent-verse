@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Eye, EyeOff, RefreshCw, Trash2, Copy, Check,
   User, Cpu, KeyRound, Shield, Bell, Palette, AlertTriangle,
-  Sun, Moon, Monitor, CheckCircle, Loader2, Download,
+  Sun, Moon, Monitor, CheckCircle, Loader2, Download, CreditCard,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
@@ -964,6 +964,14 @@ export function SettingsPage() {
                 <span className="truncate">{label}</span>
               </button>
             ))}
+            {/* Billing — separate route, not a tab */}
+            <Link
+              to="/settings/billing"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm rounded-lg transition-colors text-left text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            >
+              <CreditCard className="h-4 w-4 flex-shrink-0" />
+              <span className="truncate">Billing</span>
+            </Link>
           </nav>
         </aside>
 

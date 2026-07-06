@@ -26,6 +26,7 @@ const AgentIdentityPage = lazy(() => import("@/features/agents/AgentIdentityPage
 const ScopeExplorerPage = lazy(() => import("@/features/settings/ScopeExplorerPage").then(m => ({ default: m.ScopeExplorerPage })));
 const GuardrailCenterPage = lazy(() => import("@/features/settings/GuardrailCenterPage").then(m => ({ default: m.GuardrailCenterPage })));
 const BudgetManagerPage = lazy(() => import("@/features/settings/BudgetManagerPage").then(m => ({ default: m.BudgetManagerPage })));
+const BillingPage = lazy(() => import("@/features/settings/BillingPage"));
 const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({ default: m.SelfImprovementPage })));
 const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
 const BuilderPage = lazy(() => import("@/features/builder/BuilderPage"));
@@ -213,6 +214,7 @@ export default function App() {
         <Route path="settings/scopes"       element={lazy_rb("Scope Explorer",   <ScopeExplorerPage />)} />
         <Route path="settings/guardrails"   element={lazy_rb("Guardrail Center", <GuardrailCenterPage />)} />
         <Route path="settings/budgets"      element={lazy_rb("Budget Manager",   <BudgetManagerPage />)} />
+        <Route path="settings/billing"      element={lazy_rb("Billing",          <BillingPage />)} />
         <Route path="self-improvement"      element={lazy_rb("Self Improvement", <SelfImprovementPage />)} />
         <Route path="lab"                   element={lazy_rb("Agent Lab",        <AgentLabPage />)} />
         <Route path="skills"                element={lazy_rb("Skills",           <SkillsPage />)} />
