@@ -45,3 +45,8 @@ mailpit:
 
 backup:
   enabled: false
+
+externalServices:
+  postgresHost: agentverse-infra-agentverse-postgres
+  redisHost: agentverse-infra-agentverse-redis
+  minioEndpoint: http://agentverse-infra-agentverse-minio:9000

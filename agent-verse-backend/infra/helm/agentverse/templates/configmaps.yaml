@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "agentverse.labels" . | nindent 4 }}
 data:
-  MINIO_ENDPOINT: http://{{ include "agentverse.fullname" . }}-minio:{{ .Values.minio.service.apiPort }}
+  MINIO_ENDPOINT: {{ include "agentverse.minioEndpoint" . | quote }}
   SMTP_HOST: {{ include "agentverse.fullname" . }}-mailpit
   SMTP_PORT: "1025"
   SMTP_TLS: "false"
