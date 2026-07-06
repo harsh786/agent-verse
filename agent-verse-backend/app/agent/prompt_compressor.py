@@ -140,8 +140,14 @@ class PromptCompressor:
         """Truncate [context] / [Relevant context] blocks that exceed max token size."""
         def _truncate_block(m: re.Match) -> str:
             block = m.group(0)
-            if self._tokenizer.count(block) > self._max_rag_tokens:
+            # Truncate if either character OR token limit is exceeded
+            char_exceeded = len(block) > self._max_rag_chars
+            token_exceeded = self._tokenizer.count(block) > self._max_rag_tokens
+            if char_exceeded or token_exceeded:
                 truncated = self._tokenizer.truncate_to_tokens(block, self._max_rag_tokens)
+                # If char limit is the binding constraint, also truncate by chars
+                if char_exceeded and len(truncated) > self._max_rag_chars:
+                    truncated = truncated[:self._max_rag_chars]
                 return truncated + "\n...[truncated]"
             return block
         # Match blocks starting with [Something context] or [Knowledge ...] up to next [

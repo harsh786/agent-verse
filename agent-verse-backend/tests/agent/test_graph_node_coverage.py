@@ -487,6 +487,8 @@ def test_route_waiting_human_in_supervised_mode() -> None:
 
     graph = _make_graph(autonomy_mode="supervised", hitl_gateway=hitl)
     agent_state = AgentState(goal="Deploy to prod", tenant_ctx=T)
+    # Align goal_id so list_pending() matches the queued approval
+    agent_state.goal_id = "g1"
     agent_state.verification_success = False
     agent_state.context["verification_retry"] = True
     state = _make_state(agent_state=agent_state, iteration=1)

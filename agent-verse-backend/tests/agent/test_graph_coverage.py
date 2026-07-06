@@ -415,7 +415,7 @@ async def test_graph_requires_approval_for_jira_update_tool_call() -> None:
         and event["tool"] == "jira_update_issue"
         for event in events
     )
-    assert "Waiting for approval" in state.steps[0].output
+    assert "requires approval" in state.steps[0].output
 
 
 async def test_graph_requires_approval_for_atlassian_update_jira_issue_tool_call() -> None:
@@ -449,7 +449,7 @@ async def test_graph_requires_approval_for_atlassian_update_jira_issue_tool_call
     assert len(pending) == 1
     assert pending[0].action == "update_jira_issue"
     assert pending[0].risk_level == "write_high"
-    assert "Waiting for approval" in state.steps[0].output
+    assert "requires approval" in state.steps[0].output
 
 
 async def test_graph_denies_destructive_jira_tool_call() -> None:
@@ -572,7 +572,7 @@ async def test_graph_requires_approval_for_generic_update_issue_on_jira_connecto
     assert len(pending) == 1
     assert pending[0].action == "update_issue"
     assert pending[0].risk_level == "write_high"
-    assert "Waiting for approval" in state.steps[0].output
+    assert "requires approval" in state.steps[0].output
 
 
 async def test_graph_executes_generic_search_on_jira_connector_as_read() -> None:

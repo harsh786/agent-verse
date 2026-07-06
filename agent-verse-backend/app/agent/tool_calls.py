@@ -360,6 +360,11 @@ def validate_tool_name(tool_name: str, allowed_tools: set[str]) -> str | None:
     if any(bare == t.split(".")[-1] for t in allowed_tools):
         return None
 
+    # Alias match: if tool_name is the canonical form of an allowed tool
+    # (e.g. "jira_search_issues" is the canonical alias of "jira_search")
+    if any(_canonical_tool_name(t) == tool_name for t in allowed_tools):
+        return None
+
     # Rejected
     available_sample = ", ".join(sorted(allowed_tools)[:8])
     if len(allowed_tools) > 8:

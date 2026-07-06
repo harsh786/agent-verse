@@ -62,6 +62,12 @@ class ToolContext:
             tool
             for tool in self.tools
             if name_key == _normalize(tool.name)
+            or (
+                # Both the lookup name AND the registered tool name are Jira-search aliases —
+                # e.g. looking up "jira_search_issues" while tool is registered as "jira_search"
+                name_key in jira_search_aliases
+                and _normalize(tool.name) in jira_search_aliases
+            )
             or (name_key in jira_search_aliases and tool.name == "jira_search_issues")
         ]
         if alias_matches:
