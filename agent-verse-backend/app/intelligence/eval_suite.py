@@ -395,7 +395,7 @@ class EvalSuiteRunner:
                         text(
                             """INSERT INTO evaluations
                                (id, suite_id, run_id, pass_rate, results, evaluated_at)
-                               VALUES (:id, :suite_id, :run_id, :pass_rate, :results::jsonb, NOW())
+                               VALUES (:id, :suite_id, :run_id, :pass_rate, CAST(:results AS jsonb), NOW())
                                ON CONFLICT (id) DO NOTHING"""
                         ),
                         {
@@ -440,8 +440,8 @@ async def add_golden_task(
                 INSERT INTO golden_tasks
                     (id, eval_suite_id, tenant_id, goal, expected_output_contains,
                      expected_tool_calls, forbidden_tools, min_score, tags, created_at)
-                VALUES (:id, :suite, :tid, :goal, :expected, :tools::jsonb,
-                        :forbidden::jsonb, :min_score, :tags::jsonb, NOW())
+                VALUES (:id, :suite, :tid, :goal, :expected, CAST(:tools AS jsonb),
+                        CAST(:forbidden AS jsonb), :min_score, CAST(:tags AS jsonb), NOW())
                 ON CONFLICT (id) DO UPDATE SET goal = EXCLUDED.goal
             """),
             {

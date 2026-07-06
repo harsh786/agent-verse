@@ -235,11 +235,10 @@ async def test_scope_check_requires_both_conditions() -> None:
     # Case A: high-risk scope present → should NOT pass
     high_risk_template = {
         **_SAFE_TEMPLATE,
-        "required_connectors": ["governance:approve"],  # high-risk
+        "oauth_scopes": ["governance:approve"],  # high-risk
     }
     result_a = reviewer._check_scopes(high_risk_template)
-    # With AND logic: over_requested is non-empty (governance:approve not in PREAPPROVED)
-    # AND high_risk is non-empty → passed = False
+    # With HIGH_RISK check: governance:approve is in HIGH_RISK_SCOPES → passed = False
     assert result_a["passed"] is False, (
         "high-risk scope alone should fail with AND logic (not OR)"
     )
@@ -247,17 +246,17 @@ async def test_scope_check_requires_both_conditions() -> None:
     # Case B: only pre-approved scopes → should pass
     safe_template = {
         **_SAFE_TEMPLATE,
-        "required_connectors": ["goals:read", "knowledge:read"],
+        "oauth_scopes": [],  # no high-risk scopes
     }
     result_b = reviewer._check_scopes(safe_template)
     assert result_b["passed"] is True, (
-        "Pre-approved-only scopes should pass"
+        "No high-risk scopes should pass"
     )
 
     # Case C: critical scope triggers explicit finding
     critical_template = {
         **_SAFE_TEMPLATE,
-        "required_connectors": ["governance:approve", "admin:*"],
+        "oauth_scopes": ["governance:approve", "admin:*"],
     }
     result_c = reviewer._check_scopes(critical_template)
     assert result_c["passed"] is False

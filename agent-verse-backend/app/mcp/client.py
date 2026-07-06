@@ -591,7 +591,7 @@ class MCPClient:
             try:
                 assert_public_url(_request_url, context=f"MCP server {server_id}")
             except SSRFError as exc:
-                logger.warning("ssrf_guard_blocked_mcp", server_id=server_id, error=str(exc))
+                logger.warning("ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc))
                 return ToolCallResult(
                     tool_name=tool_name,
                     success=False,
@@ -869,7 +869,7 @@ class MCPClient:
                 tool_name, arguments, tenant_id=_tenant_id
             )
             if _blocked:
-                logger.warning("exfil_guard_blocked", tool=tool_name, reason=_reason[:100])
+                logger.warning("exfil_guard_blocked: tool=%s, reason=%s", tool_name, _reason[:100])
                 return ToolCallResult(
                     tool_name=tool_name,
                     success=False,
@@ -930,7 +930,7 @@ class MCPClient:
                             cfg, server_id, tool_name, _healed_args, tenant_ctx
                         )
                         if result.success:
-                            logger.info("self_heal_succeeded", tool=tool_name)
+                            logger.info("self_heal_succeeded: tool=%s", tool_name)
                 except Exception as _heal_exc:
                     logger.warning("self_heal_error: %s", _heal_exc)
             _latency_ms = (_time.monotonic() - _t0) * 1000

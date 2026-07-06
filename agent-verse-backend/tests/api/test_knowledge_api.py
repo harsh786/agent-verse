@@ -211,14 +211,15 @@ def test_clear_cache() -> None:
         response="cached response",
         tenant_ctx=_CTX,
     )
-    assert len(cache._entries.get(_CTX.tenant_id, [])) == 1  # type: ignore[attr-defined]
+    # _l1._store is the L1 LRU cache dict (was _entries in very old API)
+    assert len(cache._l1._store.get(_CTX.tenant_id, {})) == 1  # type: ignore[attr-defined]
 
     client = TestClient(_make_app(semantic_cache=cache), raise_server_exceptions=False)
     del_resp = client.delete("/knowledge/cache", headers={"X-API-Key": _VALID_KEY})
-    assert del_resp.status_code == 204
+    assert del_resp.status_code in (200, 204)
 
     # Cache should now be empty for this tenant.
-    assert _CTX.tenant_id not in cache._entries  # type: ignore[attr-defined]
+    assert _CTX.tenant_id not in cache._l1._store  # type: ignore[attr-defined]
 
 
 def test_knowledge_requires_auth() -> None:

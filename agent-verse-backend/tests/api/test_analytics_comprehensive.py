@@ -54,9 +54,13 @@ def _make_mock_aggregator() -> Any:
     tool.failure_rate = 0.04
     tool.avg_latency_ms = 120.0
     agg.tool_metrics = MagicMock(return_value=[tool])
+    # DB-backed methods used by the analytics endpoints
+    agg.tool_metrics_db = AsyncMock(return_value=[tool])
 
-    trend = {"date": "2024-01-01", "cost_usd": 1.5}
+    trend = {"date": "2024-01-01", "cost_usd": 1.5, "period": "2024-01-01"}
     agg.cost_trends = MagicMock(return_value=[trend])
+    agg.cost_trends_db = AsyncMock(return_value=[trend])
+    agg.cost_by_model_db = AsyncMock(return_value={})
 
     agent = MagicMock(spec=AgentMetrics)
     agent.agent_id = "agent-1"
@@ -149,6 +153,7 @@ def test_tool_analytics(monkeypatch) -> None:
 def test_tool_analytics_empty(monkeypatch) -> None:
     agg = _make_mock_aggregator()
     agg.tool_metrics = MagicMock(return_value=[])
+    agg.tool_metrics_db = AsyncMock(return_value=[])
     monkeypatch.setattr("app.analytics.aggregator.GoalAnalyticsAggregator", lambda **kw: agg)
 
     client = TestClient(_make_app(), raise_server_exceptions=False)

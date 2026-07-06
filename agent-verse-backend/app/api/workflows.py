@@ -217,7 +217,7 @@ class _WorkflowStore:
 
         async with self._db() as session:
             await session.execute(
-                sa_text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             result = await session.execute(
                 select(Workflow)
@@ -236,7 +236,7 @@ class _WorkflowStore:
 
         async with self._db() as session:
             await session.execute(
-                sa_text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             result = await session.execute(
                 select(Workflow).where(
@@ -261,7 +261,7 @@ class _WorkflowStore:
         now = datetime.now(UTC)
         async with self._db() as session:
             await session.execute(
-                sa_text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             wf = Workflow(
                 id=str(uuid.uuid4()),
@@ -294,7 +294,7 @@ class _WorkflowStore:
 
         async with self._db() as session:
             await session.execute(
-                sa_text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             result = await session.execute(
                 select(Workflow).where(
@@ -322,7 +322,7 @@ class _WorkflowStore:
 
         async with self._db() as session:
             await session.execute(
-                sa_text("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             result = await session.execute(
                 select(Workflow).where(

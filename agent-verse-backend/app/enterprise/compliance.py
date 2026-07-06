@@ -93,7 +93,7 @@ class ComplianceController:
                     text(
                         """INSERT INTO compliance_requests
                            (request_id, tenant_id, status, download_url, payload, created_at)
-                           VALUES (:rid, :tid, :status, :url, :payload::jsonb, NOW())
+                           VALUES (:rid, :tid, :status, :url, CAST(:payload AS jsonb), NOW())
                            ON CONFLICT (request_id) DO UPDATE
                              SET status = EXCLUDED.status,
                                  download_url = EXCLUDED.download_url,

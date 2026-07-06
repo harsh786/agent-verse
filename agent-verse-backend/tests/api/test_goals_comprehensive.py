@@ -314,7 +314,7 @@ def test_cancel_goal() -> None:
 # ---------------------------------------------------------------------------
 
 def test_stream_goal_returns_event_stream() -> None:
-    async def _gen(goal_id, tenant_ctx):
+    async def _gen(goal_id, tenant_ctx, since_sequence=0):
         yield {"type": "goal_started", "goal": "do it"}
         yield {"type": "goal_complete"}
 

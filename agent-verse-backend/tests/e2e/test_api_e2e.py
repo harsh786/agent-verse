@@ -79,6 +79,7 @@ class FakeTenantService:
             tenant_id=tid,
             plan=PlanTier.PROFESSIONAL,
             api_key_id=key_id,
+            roles=("admin", "goals:write", "goals:read"),
         )
         self.test_api_key = raw_key
         self.test_tenant_id = tid

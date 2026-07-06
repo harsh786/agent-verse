@@ -187,7 +187,7 @@ class GoalPersistenceEngine:
         try:
             from sqlalchemy import text as _t
             async with self._db() as session:
-                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
                 await session.execute(_t("""
                     INSERT INTO goal_attempts
                         (id, goal_id, tenant_id, attempt_number, strategy,
@@ -222,7 +222,7 @@ class GoalPersistenceEngine:
         try:
             from sqlalchemy import text as _t
             async with self._db() as session:
-                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
                 await session.execute(_t("""
                     UPDATE goal_attempts
                     SET ended_at = NOW(),

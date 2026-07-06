@@ -1207,7 +1207,7 @@ async def get_connector_usage(
                 cid_pattern = f"%{connector_id}%"
                 async with db() as session:
                     await session.execute(
-                        _t("SET LOCAL app.tenant_id = :tid"),
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant.tenant_id},
                     )
                     rows = (await session.execute(
@@ -1482,7 +1482,7 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
                                  last_discovered)
                             VALUES
                                 (:id, :tid, :cid, :name,
-                                 :desc, :schema::jsonb, :risk,
+                                 :desc, CAST(:schema AS jsonb), :risk,
                                  NOW())
                             ON CONFLICT (tenant_id, connector_id, tool_name)
                             DO UPDATE SET

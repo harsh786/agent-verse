@@ -361,7 +361,7 @@ async def get_structured_metrics(request: Request) -> dict[str, Any]:
 
             async with db() as session:
                 await session.execute(
-                    _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id}
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
                 )
                 row = (
                     await session.execute(
@@ -600,7 +600,7 @@ async def get_timeseries(
 
         async with db() as session:
             await session.execute(
-                _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant.tenant_id}
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
             )
 
             # Goals per time bucket

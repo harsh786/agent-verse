@@ -1454,7 +1454,7 @@ class MarketplaceV2:
                 async with self._db() as session:
                     if tenant_id:
                         await session.execute(
-                            _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                            _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
                         )
                     clauses = ["(visibility IN ('public','community') OR tenant_id = :tid)"]
                     params: dict[str, Any] = {"tid": tenant_id or ""}
@@ -1571,7 +1571,7 @@ class MarketplaceV2:
             try:
                 async with self._db() as session:
                     await session.execute(
-                        _t("SET LOCAL app.tenant_id = :tid"),
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
                     await session.execute(
@@ -1585,7 +1585,7 @@ class MarketplaceV2:
                             VALUES
                                 (:id, :tenant_id, :name, :slug, :description,
                                  :long_description, :domain, :subdomain, :category,
-                                 :tags, :template_config::jsonb, :parameters_schema::jsonb,
+                                 :tags, CAST(:template_config AS jsonb), CAST(:parameters_schema AS jsonb),
                                  :required_connectors, :optional_connectors,
                                  :author_name, :icon_url, :visibility, :review_status,
                                  :is_builtin, :is_verified, :version)
@@ -1698,7 +1698,7 @@ class MarketplaceV2:
                 async with self._db() as session:
                     # Set RLS context
                     await session.execute(
-                        _t("SET LOCAL app.tenant_id = :tid"),
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
                     # ATOMIC: create agent row (B.2: include connector_ids + system_prompt)
@@ -1712,7 +1712,7 @@ class MarketplaceV2:
                                 (id, tenant_id, name, goal_template, autonomy_mode,
                                  connector_ids, system_prompt)
                             VALUES (:id, :tenant, :name, :goal, :mode,
-                                    :connector_ids::jsonb, :system_prompt)
+                                    CAST(:connector_ids AS jsonb), :system_prompt)
                         """),
                         {
                             "id": agent_id,
@@ -1737,7 +1737,7 @@ class MarketplaceV2:
                                  parameters, installed_at)
                             VALUES
                                 (:id, :tid, :installer, :agent,
-                                 :params::jsonb, NOW())
+                                 CAST(:params AS jsonb), NOW())
                             ON CONFLICT (template_id, installer_tenant_id) DO UPDATE
                                 SET agent_id = EXCLUDED.agent_id,
                                     parameters = EXCLUDED.parameters,
@@ -1821,7 +1821,7 @@ class MarketplaceV2:
             try:
                 async with self._db() as session:
                     await session.execute(
-                        _t("SET LOCAL app.tenant_id = :tid"),
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
                     await session.execute(
@@ -1910,7 +1910,7 @@ class MarketplaceV2:
                 async with self._db() as session:
                     if tenant_id:
                         await session.execute(
-                            _t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id}
+                            _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
                         )
                     offset = (page - 1) * page_size
                     rows = (

@@ -153,7 +153,7 @@ class ExecutionMemory:
                 await session.execute(
                     text("""
                         INSERT INTO execution_memory (id, tenant_id, goal_text, plan, success, created_at)
-                        VALUES (:id, :tid, :goal, :plan::jsonb, FALSE, NOW())
+                        VALUES (:id, :tid, :goal, CAST(:plan AS jsonb), FALSE, NOW())
                         ON CONFLICT DO NOTHING
                     """),
                     {

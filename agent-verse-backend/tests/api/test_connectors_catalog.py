@@ -123,8 +123,8 @@ async def test_connector_test_endpoint_returns_passed_for_jira_with_valid_creden
     app.state.mcp_client = mcp_client
 
     with respx.mock:
-        respx.post("https://testco.atlassian.net/rest/api/3/search/jql").mock(
-            return_value=httpx.Response(200, json={"issues": []})
+        respx.get("https://testco.atlassian.net/rest/api/3/myself").mock(
+            return_value=httpx.Response(200, json={"displayName": "Test User", "emailAddress": "t@co.com"})
         )
         test_resp = client.post(f"/connectors/{server_id}/test")
 

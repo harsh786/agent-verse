@@ -256,7 +256,7 @@ class _TemplateStore:
             source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
 
             async with self._db() as session:
-                await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
                 for tpl in source:
                     tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
                     params = _extract_parameters(tpl["goal_text"])
@@ -268,7 +268,7 @@ class _TemplateStore:
                                  use_count, version, created_at, updated_at)
                             VALUES
                                 (:id, :tenant_id, :name, :description, :goal_text, :domain,
-                                 :parameters::jsonb, 0, 1, :now, :now)
+                                 CAST(:parameters AS jsonb), 0, 1, :now, :now)
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
@@ -358,7 +358,7 @@ class _TemplateStore:
             try:
                 from sqlalchemy import text as _t
                 async with self._db() as session:
-                    await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+                    await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
                     await session.execute(
                         _t("UPDATE goal_templates SET use_count = use_count + 1 WHERE id = :id"),
                         {"id": template_id},
@@ -377,7 +377,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
         async with self._db() as session:
-            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
             q = select(GoalTemplate).where(GoalTemplate.tenant_id == tenant_id)
             if domain:
                 q = q.where(GoalTemplate.domain == domain)
@@ -390,7 +390,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
         async with self._db() as session:
-            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
             row = (await session.execute(
                 select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
             )).scalar_one_or_none()
@@ -403,7 +403,7 @@ class _TemplateStore:
         from app.db.models.template import GoalTemplate
         now = datetime.now(UTC)
         async with self._db() as session:
-            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
             obj = GoalTemplate(id=str(uuid.uuid4()), tenant_id=tenant_id, name=name,
                                description=description, goal_text=goal_text, domain=domain,
                                parameters=parameters, use_count=0, version=1, created_at=now, updated_at=now)
@@ -419,7 +419,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
         async with self._db() as session:
-            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
             obj = (await session.execute(
                 select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
             )).scalar_one_or_none()
@@ -442,7 +442,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
         async with self._db() as session:
-            await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
+            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
             obj = (await session.execute(
                 select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
             )).scalar_one_or_none()

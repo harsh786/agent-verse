@@ -162,7 +162,7 @@ class LongTermMemoryStore:
                                     (id, tenant_id, content, memory_type, confidence,
                                      source_goal_id, tags, embedding)
                                     VALUES (:id, :tid, :content, :mtype, :conf, :sgid,
-                                            :tags, :emb::vector)
+                                            :tags, CAST(:emb AS vector))
                                     ON CONFLICT (id) DO UPDATE SET
                                         embedding = EXCLUDED.embedding"""
                             ),
@@ -305,11 +305,11 @@ class LongTermMemoryStore:
                                 """
                                 SELECT id, content, memory_type, confidence,
                                        source_goal_id, tags, created_at,
-                                       1 - (embedding <=> :qvec::vector) AS similarity
+                                       1 - (embedding <=> CAST(:qvec AS vector)) AS similarity
                                 FROM long_term_memory
                                 WHERE tenant_id = :tid
                                   AND embedding IS NOT NULL
-                                ORDER BY embedding <=> :qvec::vector
+                                ORDER BY embedding <=> CAST(:qvec AS vector)
                                 LIMIT :k
                                 """
                             ),

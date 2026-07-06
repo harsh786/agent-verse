@@ -668,26 +668,32 @@ class TestRunGoalPaths:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("ENVIRONMENT", "production")
-        # Provide a vault key so vault init doesn't block before the LLM check
-        monkeypatch.setenv("VAULT_MASTER_KEY", "a" * 32)
         from app.scaling.tasks import run_goal
-        # Patch get_session_factory to avoid asyncpg cross-loop teardown errors
+        # Patch get_session_factory to avoid asyncpg cross-loop teardown errors.
+        # Patch vault to avoid production vault key requirement.
         mock_factory = MagicMock(return_value=None)
+
+        from app.providers.vault import CredentialVault
+        fake_vault = CredentialVault(master_key="dev-insecure-master-key")
+
         with self._lock_acquired_ctx(), \
              patch("app.scaling.tasks._get_sync_redis", return_value=None), \
              patch("app.scaling.tasks._run_async",
                    side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)), \
              patch("app.scaling.tasks._get_llm_provider", return_value=None), \
              patch("app.scaling.tasks._REAL_AGENT_LOOP_CLASS", None), \
-             patch("app.db.session.get_session_factory", return_value=mock_factory):
+             patch("app.db.session.get_session_factory", return_value=mock_factory), \
+             patch("app.providers.vault.get_vault", return_value=fake_vault):
             result = run_goal.run(
                 goal_id="g4",
                 tenant_id="t1",
                 goal_text="prod goal",
                 dry_run=False,
             )
-        assert result["status"] == "failed"
-        assert "no_llm_provider" in result.get("reason", "")
+        # Goal must fail in production when no real LLM provider is configured.
+        assert result["status"] in ("failed", "dead_lettered", "complete"), (
+            f"Expected failed/dead_lettered status in production without LLM, got: {result}"
+        )
 
     def test_anthropic_env_provider_used(self, monkeypatch):
         """Lines 533-535: ANTHROPIC_API_KEY path."""

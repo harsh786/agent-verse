@@ -222,7 +222,7 @@ Respond with ONLY valid JSON:
                              applied_at, applied_by)
                         VALUES
                             (:id, :tenant_id, :agent_id, :experiment_id,
-                             :before::jsonb, :after::jsonb, :delta::jsonb,
+                             CAST(:before AS jsonb), CAST(:after AS jsonb), CAST(:delta AS jsonb),
                              NOW(), 'system')
                     """),
                     {
@@ -800,7 +800,7 @@ Respond with ONLY valid JSON:
                          success_metric, domain, created_by, started_at)
                     VALUES
                         (:id, :tenant_id, :agent_id, :name, 'running',
-                         :control::jsonb, :candidate::jsonb, :rationale,
+                         CAST(:control AS jsonb), CAST(:candidate AS jsonb), :rationale,
                          :metric, :domain, 'system', NOW())
                 """),
                 {
