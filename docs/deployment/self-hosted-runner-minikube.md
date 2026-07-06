@@ -130,3 +130,8 @@ smoke tests, workflows default to:
 ```
 
 Use `install_playwright=true` only when validating RPA/browser automation.
+
+The local workflows enable `localStaticPVs.enabled=true`, which creates static
+hostPath PersistentVolumes under `/data/agentverse/<release>/<component>` inside
+the Minikube node. This avoids relying on Minikube's dynamic storage provisioner,
+which can be flaky on Docker-driver profiles under heavy load.

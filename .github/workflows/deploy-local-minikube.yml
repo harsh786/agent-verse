@@ -50,6 +50,7 @@ jobs:
           helm upgrade --install agentverse ./agent-verse-backend/infra/helm/agentverse \
             --namespace agentverse \
             --create-namespace \
+            --set localStaticPVs.enabled=true \
             --wait \
             --timeout "${{ github.event.inputs.helm_timeout }}"
 
