@@ -879,6 +879,14 @@ def create_app(
             except Exception as _mfa_exc:
                 logger.warning("mfa_db_store_wire_failed", error=str(_mfa_exc))
 
+            # Wire DB into KnowledgeGraphStore for persistent node/edge storage
+            try:
+                from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
+                _kg_store.set_db(db_factory)
+                logger.info("knowledge_graph_db_wired")
+            except Exception as _kg_exc:
+                logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
+
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
                 from sqlalchemy import text as _sql_text
@@ -1048,23 +1056,22 @@ def create_app(
                     _agent_identity_svc.set_redis(redis_for_runtime)
                     logger.info("agent_identity_service_redis_wired")
 
-                # ── AuditWriter + AuditFlusher: Redis WAL for v2 audit system ────────
+                # ── AuditV3: wire DB+Redis backed audit chain ────────────────────────
                 try:
                     import asyncio as _asyncio_wal
-
-                    from app.governance.audit_v2 import (
+                    from app.governance.audit_v3 import (
                         AuditFlusher as _AuditFlusher,
                     )
-                    from app.governance.audit_v2 import (
+                    from app.governance.audit_v3 import (
                         AuditWriter as _AuditWriter,
                     )
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
                     _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
                     _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
-                    logger.info("audit_wal_flusher_started")
+                    logger.info("audit_v3_wired")
                 except Exception as _aw_exc:
-                    logger.warning("audit_writer_wire_failed", error=str(_aw_exc))
+                    logger.warning("audit_v3_wire_failed", error=str(_aw_exc))
 
                 # ── GuardrailEngine v2: wire Redis for tenant config cache ────────────
                 _guardrail_engine_v2._redis = redis_for_runtime

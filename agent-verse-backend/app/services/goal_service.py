@@ -861,7 +861,44 @@ class GoalService:
         if _self_optimizer is None:
             _self_optimizer = SelfOptimizer()
         graph._self_optimizer = _self_optimizer
+
+        # Record model selections for observability (AI Router)
+        try:
+            model_selections = self._select_models_for_tenant(tenant_ctx)
+            if model_selections:
+                _svc_logger.info(
+                    "ai_router_selections",
+                    tenant=tenant_ctx.tenant_id,
+                    selections=model_selections,
+                )
+        except Exception:
+            pass
+
         return graph
+
+    def _select_models_for_tenant(self, tenant_ctx: "TenantContext") -> dict[str, str]:
+        """Use AI Router to select optimal models for each role."""
+        try:
+            from app.ai_router.router import ai_router
+            from app.ai_router.models import TaskType
+
+            selections: dict[str, str] = {}
+            for task_type, role_name, need_tools in [
+                (TaskType.PLANNING, "planner", False),
+                (TaskType.EXECUTION, "executor", True),
+                (TaskType.VERIFICATION, "verifier", False),
+            ]:
+                model = ai_router.select_model(
+                    task_type,
+                    tenant_ctx.tenant_id,
+                    require_tools=(need_tools),
+                )
+                if model:
+                    selections[role_name] = f"{model.provider}/{model.model_id}"
+            return selections
+        except Exception:
+            return {}
+
     # ── private helpers ───────────────────────────────────────────────────────
 
     async def _submit_single_goal(
@@ -1160,6 +1197,17 @@ class GoalService:
             record.status = GoalStatus.COMPLETE
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "completed")
+            # Agent Runtime: mark trace success
+            try:
+                from app.api.agent_runtime import _traces
+                _t_id = record.execution_context.get("agent_runtime_trace_id")
+                if _t_id and _t_id in _traces:
+                    _traces[_t_id].success = True
+                    _traces[_t_id].duration_ms = (
+                        (_monotonic() - record.started_monotonic) * 1000
+                    )
+            except Exception:
+                pass
             # Persist status update to PostgreSQL in the background.
             if self._db is not None:
                 self._track_db_task(
@@ -1247,6 +1295,18 @@ class GoalService:
             record.status = GoalStatus.FAILED
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "failed")
+            # Agent Runtime: mark trace failed
+            try:
+                from app.api.agent_runtime import _traces
+                _t_id = record.execution_context.get("agent_runtime_trace_id")
+                if _t_id and _t_id in _traces:
+                    _traces[_t_id].success = False
+                    _traces[_t_id].error = sanitized_event.get("reason", "goal_failed")
+                    _traces[_t_id].duration_ms = (
+                        (_monotonic() - record.started_monotonic) * 1000
+                    )
+            except Exception:
+                pass
             if self._db is not None:
                 self._track_db_task(
                     self._db_update_goal_status(
@@ -1663,6 +1723,54 @@ class GoalService:
                 execution_context=execution_context or {},
             )
             self._goals[goal_id] = record
+
+            # AI Router model selection — record in execution_context for observability
+            try:
+                from app.ai_router.router import ai_router
+                from app.ai_router.models import TaskType
+                planner_model = ai_router.select_model(TaskType.PLANNING, tenant_ctx.tenant_id)
+                if planner_model:
+                    record.execution_context["ai_router_planner"] = (
+                        f"{planner_model.provider}/{planner_model.model_id}"
+                    )
+                    record.execution_context["ai_router_quality_score"] = planner_model.quality_score
+            except Exception:
+                pass
+
+            # Agent Runtime 2.0: auto-create AgentExecutionPlan + AgentRunTrace per goal
+            try:
+                from app.agent_runtime.models import AgentExecutionPlan, AgentRunTrace
+                from app.api.agent_runtime import _plans, _traces
+                _ar_now = datetime.now(UTC).isoformat()
+                _plan_id = uuid.uuid4().hex
+                _trace_id = uuid.uuid4().hex
+                _ar_plan = AgentExecutionPlan(
+                    plan_id=_plan_id,
+                    goal_id=goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_text=goal,
+                    strategy=workflow_mode,
+                    created_at=_ar_now,
+                    agent_id=agent_id,
+                )
+                _ar_trace = AgentRunTrace(
+                    trace_id=_trace_id,
+                    goal_id=goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    plan=_ar_plan,
+                )
+                _plans[_plan_id] = _ar_plan
+                _traces[_trace_id] = _ar_trace
+                record.execution_context["agent_runtime_plan_id"] = _plan_id
+                record.execution_context["agent_runtime_trace_id"] = _trace_id
+                _svc_logger.debug(
+                    "agent_runtime_plan_created",
+                    goal_id=goal_id,
+                    plan_id=_plan_id,
+                    trace_id=_trace_id,
+                )
+            except Exception as _ar_exc:
+                _svc_logger.debug("agent_runtime_wire_skipped", error=str(_ar_exc)[:60])
 
             # Time-based eviction: evict stale terminal goals to prevent OOM.
             now = time.monotonic()
