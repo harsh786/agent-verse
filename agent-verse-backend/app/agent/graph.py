@@ -780,8 +780,11 @@ class AgentGraph:
         # extra_parts.append). The duplicate discover_all_tools block has been
         # removed — single source of truth is now the tiered ToolSelector output.
 
-        # Determine planning model via model_router if wired
-        planning_model = "claude-opus-4-8"
+        # Determine planning model — derive from the wired provider's default so
+        # the model name always matches the active provider (OpenAI → gpt-4-turbo,
+        # Anthropic → claude-opus-4-8, Fake → "fake", etc.).
+        # Never hard-code a vendor-specific model name here.
+        planning_model = getattr(self._planner, "_default_model", None) or "gpt-4o"
         if self._model_router is not None:
             routed = self._model_router.model_for_goal("planning", goal=agent_state.goal)
             if routed:
@@ -899,17 +902,23 @@ class AgentGraph:
                 )
             except Exception:
                 pass
-            # Store in LLM cache for future identical requests
+            # Store in LLM cache — only on successful, non-error responses
             if _llm_rc is not None:
                 try:
-                    await _llm_rc.set(
-                        system=system_content,
-                        user=user_content,
-                        model=planning_model,
-                        response=resp.content,
-                        tenant_id=tenant_ctx.tenant_id,
-                        task_type="planning",
+                    _is_error_resp = (
+                        not resp.content
+                        or "error" in resp.content.lower()[:40]
+                        or resp.content.strip().startswith("{\"error")
                     )
+                    if not _is_error_resp:
+                        await _llm_rc.set(
+                            system=system_content,
+                            user=user_content,
+                            model=planning_model,
+                            response=resp.content,
+                            tenant_id=tenant_ctx.tenant_id,
+                            task_type="planning",
+                        )
                 except Exception:
                     pass
         parsed = _parse_json(resp.content, key="steps")
@@ -2430,8 +2439,17 @@ class AgentGraph:
 
         raw_output = await self._execute_step(step, state, tenant_ctx)
 
-        # Store result using true-similarity store
-        if self._semantic_cache is not None and _cache_embedding is not None:
+        # Store result — skip caching error responses so bad LLM outputs
+        # (API errors, model-not-found messages, timeouts) never poison the cache.
+        _is_error_output = (
+            not raw_output
+            or raw_output.strip().startswith("{\"error")
+            or "model_not_found" in raw_output.lower()
+            or "invalid model" in raw_output.lower()
+            or "rate_limit_exceeded" in raw_output.lower()
+            or raw_output.strip().lower().startswith("error:")
+        )
+        if self._semantic_cache is not None and _cache_embedding is not None and not _is_error_output:
             try:
                 await self._semantic_cache.store_async(
                     embedding=_cache_embedding,
@@ -2535,17 +2553,23 @@ class AgentGraph:
                 )
             except Exception:
                 pass
-            # Store in LLM cache for future identical requests
+            # Store in LLM cache — only on successful, non-error responses
             if _llm_rc is not None:
                 try:
-                    await _llm_rc.set(
-                        system=VERIFIER_SYSTEM,
-                        user=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
-                        model=_verify_model,
-                        response=resp.content,
-                        tenant_id=tenant_ctx.tenant_id,
-                        task_type="verification",
+                    _is_error_verify = (
+                        not resp.content
+                        or resp.content.strip().startswith("{\"error")
+                        or "model_not_found" in resp.content.lower()
                     )
+                    if not _is_error_verify:
+                        await _llm_rc.set(
+                            system=VERIFIER_SYSTEM,
+                            user=f"Goal: {agent_state.goal}\nExecuted steps:\n{summary}",
+                            model=_verify_model,
+                            response=resp.content,
+                            tenant_id=tenant_ctx.tenant_id,
+                            task_type="verification",
+                        )
                 except Exception:
                     pass
         # Phase 3 Track A: use parse_verifier_verdict (handles JSON and text fallback)
