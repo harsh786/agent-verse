@@ -29,7 +29,7 @@ loki:
   enabled: true
 
 promtail:
-  enabled: true
+  enabled: false
 
 grafana:
   enabled: true
