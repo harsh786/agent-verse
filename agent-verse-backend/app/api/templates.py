@@ -243,8 +243,27 @@ class _TemplateStore:
     async def list(self, tenant_id: str, domain: str | None = None) -> list[dict[str, Any]]:
         if self._db:
             # Seed built-ins on first request per tenant (idempotent via ON CONFLICT)
-            await self._seed_builtins_db(tenant_id)
-            return await self._list_db(tenant_id, domain)
+            try:
+                await self._seed_builtins_db(tenant_id)
+                rows = await self._list_db(tenant_id, domain)
+                if rows or not self._seed_builtins:
+                    return rows
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "template_db_list_failed_falling_back_to_memory: %s", exc
+                )
+
+            # If DB is down, migrated incompletely, or built-in seeding failed,
+            # keep user-facing template/domain pages useful with deterministic
+            # in-memory built-ins instead of surfacing a 500/blank page.
+            self._seeded_tenants.discard(tenant_id)
+            self._seed_builtins_for_tenant(tenant_id)
+            rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]
+            if domain:
+                rows = [t for t in rows if t["domain"] == domain]
+            return sorted(rows, key=lambda t: t["created_at"], reverse=True)
         # In-memory mode: seed built-ins on first request per tenant
         self._seed_builtins_for_tenant(tenant_id)
         rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]

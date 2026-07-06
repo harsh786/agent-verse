@@ -231,6 +231,15 @@ async def delete_memory(request: Request, memory_id: str) -> dict[str, Any]:
     return {"memory_id": memory_id, "status": "deleted"}
 
 
+@router.post("/consolidate")
+async def consolidate_memories(request: Request) -> dict[str, Any]:
+    """Run memory consolidation - dedup, merge, lifecycle management."""
+    tenant = _require_tenant(request)
+    from app.memory_v2.consolidation import memory_consolidator
+    stats = await memory_consolidator.consolidate(tenant.tenant_id, _memories)
+    return {"status": "consolidated", **stats}
+
+
 async def _detect_conflicts(tenant_id: str, new_memory_id: str, new_content: str) -> None:
     """Detect potential conflicts with existing memories."""
     new_words = set(new_content.lower().split())

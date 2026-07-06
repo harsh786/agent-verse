@@ -22,6 +22,7 @@ _platform_skills: dict[str, dict] = {}
 _tenant_skills: dict[str, list] = {}  # tenant_id → skills
 _executions: dict[str, list] = {}  # tenant_id → executions
 _enabled_skills: dict[str, set] = {}  # tenant_id → {skill_ids}
+_skill_versions: dict[str, list] = {}  # skill_id → list of archived versions
 
 # Load builtins
 for _s in BUILTIN_SKILLS:
@@ -233,6 +234,61 @@ async def list_skill_executions(request: Request, skill_id: str) -> dict[str, An
         if e["skill_id"] == skill_id
     ]
     return {"executions": list(reversed(executions))[:20], "total": len(executions)}
+
+
+@router.put("/{skill_id}")
+async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]:
+    """Update a tenant skill and create a new version."""
+    import copy
+
+    tenant = _require_tenant(request)
+    body = await request.json()
+
+    # Find existing skill
+    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+    skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+    if not skill:
+        raise HTTPException(404, "Skill not found")
+
+    # Store old version
+    old_version = copy.deepcopy(skill)
+    old_version["archived_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _skill_versions.setdefault(skill_id, []).append(old_version)
+
+    # Update skill fields
+    skill.update({
+        k: v for k, v in body.items()
+        if k in ("name", "description", "trigger_hints", "instructions", "allowed_tools")
+    })
+
+    # Increment patch version
+    current_version = skill.get("version", "1.0.0")
+    parts = current_version.split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    skill["version"] = ".".join(parts)
+    skill["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    return {"skill_id": skill_id, "version": skill["version"], "status": "updated"}
+
+
+@router.get("/{skill_id}/versions")
+async def get_skill_versions(request: Request, skill_id: str) -> dict[str, Any]:
+    """List version history for a skill."""
+    tenant = _require_tenant(request)
+    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+    skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+    if not skill:
+        # Check platform skills too
+        platform = _platform_skills.get(skill_id)
+        if not platform:
+            raise HTTPException(404, "Skill not found")
+        skill = platform
+
+    versions = _skill_versions.get(skill_id, [])
+    return {
+        "versions": versions,
+        "current_version": skill.get("version", "1.0.0"),
+    }
 
 
 @router.post("/match-trigger")

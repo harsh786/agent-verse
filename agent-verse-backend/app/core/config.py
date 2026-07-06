@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     # --- LLM (default provider) ---
     default_llm_provider: str = "anthropic"
+    default_model: str = ""  # Canonical default model slug; empty = provider default
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     google_api_key: str = ""

@@ -60,6 +60,16 @@ class RAGRetriever:
         for leg in result.legs:
             all_chunks.extend(leg.results)
 
+        # Rerank results
+        if len(all_chunks) > top_k:
+            try:
+                from app.rag_platform.reranker import reranker
+                if self._provider:
+                    reranker.set_provider(self._provider)
+                all_chunks = await reranker.rerank(query, all_chunks, top_k)
+            except Exception:
+                all_chunks = all_chunks[:top_k]
+
         if all_chunks:
             result.citations = [
                 {
@@ -78,6 +88,20 @@ class RAGRetriever:
         # 5. Generate answer
         result.answer = await self._synthesize(query, all_chunks[:top_k])
         result.grounded = len(result.citations) > 0
+
+        # Verify citations
+        if result.answer and result.citations:
+            try:
+                from app.rag_platform.reranker import citation_verifier
+                if self._provider:
+                    citation_verifier.set_provider(self._provider)
+                verification = await citation_verifier.verify_citations(
+                    result.answer, result.citations
+                )
+                result.grounded = verification.get("grounded", True)
+                result.refused_claims = verification.get("unsupported_claims", [])
+            except Exception:
+                pass
 
         return result
 
