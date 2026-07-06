@@ -393,11 +393,12 @@ async def list_templates_v2(
     search: str = "",
     page: int = 1,
     page_size: int = 20,
+    sort_by: str = "install_count",
 ) -> dict[str, Any]:
     """Paginated marketplace template list with full-text search and filters."""
     ctx = _require_tenant(request)
     svc = _marketplace_v2(request)
-    return await svc.list_templates(
+    result = await svc.list_templates(
         domain=domain,
         category=category,
         search=search,
@@ -405,6 +406,16 @@ async def list_templates_v2(
         page=page,
         page_size=page_size,
     )
+    # Normalise response: always expose both `items` and `templates` keys so all
+    # frontend code paths work regardless of which key they read.
+    templates_list = result.get("templates") or result.get("items") or []
+    return {
+        "items": templates_list,
+        "templates": templates_list,
+        "total": result.get("total", len(templates_list)),
+        "page": result.get("page", page),
+        "page_size": result.get("page_size", page_size),
+    }
 
 
 @marketplace_router.post("/templates", status_code=201)
