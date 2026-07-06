@@ -42,37 +42,58 @@ class VerifierVerdict(BaseModel):
 
 
 def planner_schema() -> dict[str, Any]:
-    """Return the JSON Schema for PlannerPlan (passed as response_schema)."""
+    """Return the JSON Schema for PlannerPlan (passed as response_schema).
+
+    OpenAI strict mode rules:
+      - ALL properties must appear in 'required'
+      - Optional fields use anyOf [..., {"type": "null"}]
+      - No unsupported keywords (minItems, minimum, maximum, etc.)
+      - additionalProperties must be False
+    """
     return {
         "type": "object",
         "properties": {
             "steps": {
                 "type": "array",
                 "items": {"type": "string"},
-                "minItems": 1,
             },
-            "reasoning": {"type": "string"},
+            "reasoning": {
+                "anyOf": [{"type": "string"}, {"type": "null"}]
+            },
         },
-        "required": ["steps"],
+        "required": ["steps", "reasoning"],
         "additionalProperties": False,
     }
 
 
 def verifier_schema() -> dict[str, Any]:
-    """Return the JSON Schema for VerifierVerdict (passed as response_schema)."""
+    """Return the JSON Schema for VerifierVerdict (passed as response_schema).
+
+    OpenAI strict mode rules:
+      - ALL properties must appear in 'required'
+      - Optional fields use anyOf [..., {"type": "null"}]
+      - No unsupported keywords (minimum, maximum, etc.)
+      - additionalProperties must be False
+    """
     return {
         "type": "object",
         "properties": {
             "success": {"type": "boolean"},
             "reason": {"type": "string"},
-            "retry": {"type": "boolean"},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "retry": {
+                "anyOf": [{"type": "boolean"}, {"type": "null"}]
+            },
+            "confidence": {
+                "anyOf": [{"type": "number"}, {"type": "null"}]
+            },
             "ungrounded_claims": {
-                "type": "array",
-                "items": {"type": "string"},
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ]
             },
         },
-        "required": ["success", "reason"],
+        "required": ["success", "reason", "retry", "confidence", "ungrounded_claims"],
         "additionalProperties": False,
     }
 
