@@ -233,7 +233,7 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
 const CONNECTOR_URL_MAP: Record<string, { url: string; hint: string; label: string }> = {
   jira:           { url: 'https://yourcompany.atlassian.net', hint: 'Replace "yourcompany" with your Atlassian subdomain', label: 'JIRA Base URL' },
   confluence:     { url: 'https://yourcompany.atlassian.net', hint: 'Same domain as JIRA for Atlassian Cloud', label: 'Confluence Base URL' },
-  github:         { url: 'https://api.github.com', hint: 'For GitHub Enterprise: https://github.COMPANY.com/api/v3', label: 'GitHub API URL' },
+  github:         { url: 'https://api.githubcopilot.com/mcp/', hint: 'Official GitHub MCP Server. For GitHub Enterprise use your GHE MCP endpoint.', label: 'GitHub MCP URL' },
   gitlab:         { url: 'https://gitlab.com', hint: 'For self-hosted: https://gitlab.yourcompany.com', label: 'GitLab URL' },
   slack:          { url: 'https://slack.com/api', hint: 'Always use this URL for Slack API calls', label: 'Slack API URL' },
   salesforce:     { url: 'https://yourinstance.salesforce.com', hint: 'Replace with your Salesforce instance domain', label: 'Salesforce Instance URL' },
@@ -272,7 +272,7 @@ const CONNECTOR_AUTH_HINTS: Record<string, Record<string, string>> = {
     password: 'Same API token as JIRA — generated at id.atlassian.com → Security → API Tokens',
   },
   github: {
-    token: 'Generate at: github.com → Settings → Developer settings → Personal access tokens',
+    token: 'Generate at: github.com → Settings → Developer settings → Personal access tokens → Tokens (classic). Needs repo and read:org scopes for the GitHub MCP Server.',
   },
   gitlab: {
     token: 'Generate at: GitLab → User Settings → Access Tokens',

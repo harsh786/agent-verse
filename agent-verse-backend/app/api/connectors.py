@@ -676,6 +676,26 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     if cfg is None:
         raise HTTPException(status_code=404, detail="Connector not found")
 
+    # ── Resolve vault secret references in auth_config ─────────────────────
+    # Tokens are stored as "secret://connector/<id>/token" vault refs.
+    # Direct test functions call _get_cred() which skips vault refs,
+    # so we must resolve them here before dispatching.
+    resolved_auth_config: dict[str, Any] = {}
+    secret_store = _connector_secret_store(request)
+    for key, value in (cfg.auth_config or {}).items():
+        if isinstance(value, str) and is_connector_secret_ref(value):
+            try:
+                plain = await resolve_connector_secret_ref_for_tenant(
+                    value, store=secret_store, tenant_ctx=tenant
+                )
+                resolved_auth_config[key] = plain or value
+            except Exception:
+                resolved_auth_config[key] = value
+        else:
+            resolved_auth_config[key] = value
+    # Overlay resolved values onto a copy of cfg so test functions see plain text
+    cfg = cfg.model_copy(update={"auth_config": resolved_auth_config})
+
     connector_name = cfg.name.lower().strip()
 
     # ── 1. Direct REST test (primary path) ────────────────────────────────────
