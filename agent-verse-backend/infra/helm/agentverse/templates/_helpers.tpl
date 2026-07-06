@@ -28,9 +28,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "agentverse.postgresHost" -}}
+{{- if and (not .Values.postgresql.enabled) .Values.externalServices.postgresHost -}}
+{{- .Values.externalServices.postgresHost -}}
+{{- else -}}
 {{ include "agentverse.fullname" . }}-postgres
+{{- end -}}
 {{- end -}}
 
 {{- define "agentverse.redisHost" -}}
+{{- if and (not .Values.redis.enabled) .Values.externalServices.redisHost -}}
+{{- .Values.externalServices.redisHost -}}
+{{- else -}}
 {{ include "agentverse.fullname" . }}-redis
+{{- end -}}
+{{- end -}}
+
+{{- define "agentverse.minioEndpoint" -}}
+{{- if and (not .Values.minio.enabled) .Values.externalServices.minioEndpoint -}}
+{{- .Values.externalServices.minioEndpoint -}}
+{{- else -}}
+http://{{ include "agentverse.fullname" . }}-minio:{{ .Values.minio.service.apiPort }}
+{{- end -}}
 {{- end -}}

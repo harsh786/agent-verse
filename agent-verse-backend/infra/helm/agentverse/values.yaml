@@ -14,6 +14,11 @@ localStaticPVs:
   storageClassName: agentverse-local
   pathPrefix: /data/agentverse
 
+externalServices:
+  postgresHost: ""
+  redisHost: ""
+  minioEndpoint: ""
+
 imagePullPolicy: IfNotPresent
 
 secrets:
