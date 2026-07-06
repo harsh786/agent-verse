@@ -1,0 +1,122 @@
+name: Local Minikube CI/CD Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to run locally
+        type: choice
+        options:
+          - ci-only
+          - all-in-one
+          - infra-only
+          - app-only
+          - observability-only
+        default: all-in-one
+      skip_tests:
+        description: Skip local unit tests before deploy
+        type: boolean
+        default: false
+      install_playwright:
+        description: Install Playwright browser in backend image
+        type: boolean
+        default: false
+
+concurrency:
+  group: local-minikube-ci-cd
+  cancel-in-progress: false
+
+jobs:
+  local:
+    name: Local Minikube ${{ github.event.inputs.mode }}
+    runs-on: [self-hosted, macOS, ARM64, agentverse-local, minikube]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backend CI subset
+        if: ${{ github.event.inputs.skip_tests != 'true' }}
+        working-directory: agent-verse-backend
+        run: |
+          uv sync
+          uv run pytest tests/net tests/security tests/auth/test_agent_identity_layer.py tests/governance/test_governance_v2.py -q --tb=short
+
+      - name: Frontend CI subset
+        if: ${{ github.event.inputs.skip_tests != 'true' }}
+        working-directory: agent-verse-frontend
+        run: |
+          npm ci
+          npm run test -- --run src/features/security src/features/builder src/features/domains
+
+      - name: Stop after CI-only
+        if: ${{ github.event.inputs.mode == 'ci-only' }}
+        run: echo "CI-only mode complete"
+
+      - name: Ensure Minikube is running
+        if: ${{ github.event.inputs.mode != 'ci-only' }}
+        run: |
+          minikube status || minikube start --cpus=4 --memory=7168 --disk-size=40g
+          kubectl cluster-info
+
+      - name: Build local images
+        if: ${{ github.event.inputs.mode == 'all-in-one' || github.event.inputs.mode == 'app-only' }}
+        run: |
+          set -euo pipefail
+          eval $(minikube docker-env)
+          docker build -t agentverse/backend:local ./agent-verse-backend \
+            --build-arg INSTALL_PLAYWRIGHT=${{ github.event.inputs.install_playwright }}
+          docker build -t agentverse/frontend:local ./agent-verse-frontend \
+            --build-arg VITE_API_URL=/api \
+            --build-arg VITE_GRAFANA_URL=/grafana
+
+      - name: Helm validate all variants
+        run: |
+          helm lint ./agent-verse-backend/infra/helm/agentverse
+          helm template agentverse ./agent-verse-backend/infra/helm/agentverse >/tmp/agentverse-all.yaml
+          helm template agentverse ./agent-verse-backend/infra/helm/agentverse -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml >/tmp/agentverse-infra.yaml
+          helm template agentverse ./agent-verse-backend/infra/helm/agentverse -f ./agent-verse-backend/infra/helm/agentverse/values-app.yaml >/tmp/agentverse-app.yaml
+
+      - name: Deploy all-in-one
+        if: ${{ github.event.inputs.mode == 'all-in-one' }}
+        run: |
+          helm upgrade --install agentverse ./agent-verse-backend/infra/helm/agentverse \
+            -n agentverse --create-namespace --wait --timeout 15m
+
+      - name: Deploy infra-only
+        if: ${{ github.event.inputs.mode == 'infra-only' }}
+        run: |
+          helm upgrade --install agentverse-infra ./agent-verse-backend/infra/helm/agentverse \
+            -n agentverse --create-namespace \
+            -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+            --wait --timeout 15m
+
+      - name: Deploy observability-only
+        if: ${{ github.event.inputs.mode == 'observability-only' }}
+        run: |
+          helm upgrade --install agentverse-observability ./agent-verse-backend/infra/helm/agentverse \
+            -n agentverse --create-namespace \
+            -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+            --set postgresql.enabled=false \
+            --set redis.enabled=false \
+            --set minio.enabled=false \
+            --set kong.enabled=false \
+            --set mailpit.enabled=false \
+            --set backup.enabled=false \
+            --wait --timeout 10m
+
+      - name: Deploy app-only
+        if: ${{ github.event.inputs.mode == 'app-only' }}
+        run: |
+          helm upgrade --install agentverse-app ./agent-verse-backend/infra/helm/agentverse \
+            -n agentverse --create-namespace \
+            -f ./agent-verse-backend/infra/helm/agentverse/values-app.yaml \
+            --wait --timeout 15m
+
+      - name: Show resources
+        if: always()
+        run: kubectl -n agentverse get pods,pvc,svc -o wide || true
+
+      - name: Smoke test gateway
+        if: ${{ github.event.inputs.mode == 'all-in-one' }}
+        run: |
+          URL="http://$(minikube ip):30080"
+          curl -fsS "$URL/health"
