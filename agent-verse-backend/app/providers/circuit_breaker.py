@@ -1,6 +1,8 @@
 """Circuit breaker for LLM provider calls."""
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from collections import defaultdict
 from typing import Any
@@ -70,6 +72,7 @@ async def call_with_circuit_breaker(
     method_name: str,
     *args: Any,
     provider_name: str = "llm",
+    timeout_seconds: float | None = None,
     **kwargs: Any,
 ) -> Any:
     """Wrap a provider call with circuit breaker protection.
@@ -84,9 +87,20 @@ async def call_with_circuit_breaker(
 
     _provider_cb.before_call(provider_name)
     try:
-        result = await getattr(provider, method_name)(*args, **kwargs)
+        timeout = timeout_seconds
+        if timeout is None:
+            timeout = float(os.getenv("AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS", "60"))
+        result = await asyncio.wait_for(
+            getattr(provider, method_name)(*args, **kwargs),
+            timeout=timeout,
+        )
         _provider_cb.record_success(provider_name)
         return result
+    except TimeoutError as exc:
+        _provider_cb.record_failure(provider_name)
+        raise TimeoutError(
+            f"LLM provider call timed out for {provider_name} after {timeout}s"
+        ) from exc
     except Exception:
         _provider_cb.record_failure(provider_name)
         raise

@@ -219,7 +219,11 @@ def test_seeded_templates_instantiable() -> None:
         deploy = next((t for t in templates if t.get("id")), None)
         if deploy is None:
             pytest.skip("No templates available to instantiate")
-        params = {}  # YAML templates may not have parameters
+        params = {
+            p["name"]: str(p.get("default") or "test-value")
+            for p in deploy.get("parameters", [])
+            if p.get("required", True)
+        }
     else:
         params = {"service": "api-gateway", "environment": "staging", "tag": "v2.1.0"}
     resp = client.post(f"/templates/{deploy['id']}/instantiate", json={
