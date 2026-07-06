@@ -4,7 +4,8 @@
  * Native EventSource cannot set custom headers, so we use fetch + ReadableStream.
  *
  * Reconnect behaviour: on unexpected close or network error the hook retries
- * with exponential backoff (1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s) up to 8 attempts.
+ * with exponential backoff (1s, 2s, 4s, 8s, 16s, 30s, 30s…) up to 100 attempts.
+ * This supports goals that run for 1+ hours without losing the live feed.
  * Retries are cancelled on terminal events (goal_complete / goal_failed /
  * goal_cancelled) and on component unmount.
  *
@@ -75,7 +76,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
     // scheduleReconnect and startConnection are mutually recursive; both are
     // defined before use via hoisting of the async function declaration.
     const scheduleReconnect = () => {
-      if (retryCountRef.current >= 8) {
+      if (retryCountRef.current >= 100) {
         setConnected(false);
         return;
       }

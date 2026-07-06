@@ -717,23 +717,29 @@ def run_goal(
     # Resolve the agent's autonomy_mode from the DB so that fully-autonomous
     # agents bypass the HITL gate on write_high tool calls.
     _agent_autonomy_mode = "bounded-autonomous"
+    _agent_max_iterations: int | None = None   # None = use graph default (100)
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_autonomy() -> str:
+            async def _lookup_agent_config() -> tuple[str, int | None]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (await _sess.execute(
-                        _sa_text("SELECT autonomy_mode FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
+                        _sa_text("SELECT autonomy_mode, max_iterations FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
                         {"aid": agent_id, "tid": tenant_id},
                     )).fetchone()
-                    return str(row[0]) if row and row[0] else "bounded-autonomous"
+                    if row:
+                        mode = str(row[0]) if row[0] else "bounded-autonomous"
+                        iters = int(row[1]) if row[1] else None
+                        return mode, iters
+                    return "bounded-autonomous", None
 
-            _agent_autonomy_mode = _run_async(_lookup_agent_autonomy())
-            logger.info("worker_agent_autonomy goal=%s agent=%s mode=%s", goal_id, agent_id, _agent_autonomy_mode)
+            _agent_autonomy_mode, _agent_max_iterations = _run_async(_lookup_agent_config())
+            logger.info("worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
+                        goal_id, agent_id, _agent_autonomy_mode, _agent_max_iterations)
         except Exception as _ae:
-            logger.debug("worker_agent_autonomy_lookup_failed: %s", _ae)
+            logger.debug("worker_agent_config_lookup_failed: %s", _ae)
 
     _agent_runner: Any = None
     _use_agent_graph = False
@@ -938,12 +944,23 @@ def run_goal(
             except Exception as _emb_exc:
                 logger.warning("worker_embedder_build_failed: %s", _emb_exc)
 
+            # Wire KnowledgeStore so RAG context is retrieved before planning.
+            # Without this, the rag_retrieval node is a no-op in the worker.
+            _knowledge_store_worker = None
+            try:
+                from app.knowledge.store import KnowledgeStore as _KnowledgeStore
+                if db_factory is not None:
+                    _knowledge_store_worker = _KnowledgeStore(db_factory=db_factory)
+            except Exception as _ks_exc:
+                logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
                 verifier=_verifier_for_graph,
                 model_router=_model_router,
                 autonomy_mode=_agent_autonomy_mode,
+                max_iterations=_agent_max_iterations if _agent_max_iterations is not None else 100,
                 result_processor=ResultProcessor(),
                 dedup_cache=DeduplicationCache(),
                 rollback_engine=RollbackEngine(),
@@ -959,6 +976,7 @@ def run_goal(
                 cost_tracker=None,
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
+                knowledge_store=_knowledge_store_worker,
                 # Redis-backed checkpointer set by worker_init signal; None → MemorySaver
                 checkpointer=_WORKER_CHECKPOINTER,
                 # Phase 3 services — grounding, consensus, synthesis, calibration
