@@ -93,3 +93,6 @@ class AgentState:
     ungrounded_claims: list[str] = field(default_factory=list)
     cited_answer: str = ""
     provenance: list[dict[str, Any]] = field(default_factory=list)
+
+    # Agent Runtime 2.0 — execution trace (populated by AgentLoop.run, not checkpointed)
+    run_trace: Any = None

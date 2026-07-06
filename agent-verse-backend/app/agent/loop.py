@@ -17,11 +17,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time as _time
+import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.agent.prompts import EXECUTOR_SYSTEM, PLANNER_SYSTEM, VERIFIER_SYSTEM
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
+from app.agent_runtime.models import AgentRunTrace
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway
@@ -171,6 +174,25 @@ class AgentLoop:
         """Execute the agent loop and return the final state."""
         state = AgentState(goal=goal, tenant_ctx=tenant_ctx, context=initial_context or {})
 
+        # ── Tracing setup ────────────────────────────────────────────────────
+        _run_start = _time.monotonic()
+        self._current_trace = AgentRunTrace(
+            trace_id=_uuid.uuid4().hex,
+            goal_id=state.goal_id,
+            tenant_id=tenant_ctx.tenant_id,
+        )
+
+        def _finalize_trace() -> None:
+            try:
+                if self._current_trace is not None:
+                    self._current_trace.duration_ms = (_time.monotonic() - _run_start) * 1000
+                    self._current_trace.success = state.status == GoalStatus.COMPLETE
+                    if state.status == GoalStatus.FAILED:
+                        self._current_trace.error = state.error_message
+                    state.run_trace = self._current_trace
+            except Exception:
+                pass  # trace finalization errors must never break the loop
+
         async def emit(event: dict[str, Any]) -> None:
             state.events.append(event)
             if event_callback is not None:
@@ -217,6 +239,7 @@ class AgentLoop:
                     )
                 state.status = GoalStatus.COMPLETE
                 await emit({"type": "goal_complete"})
+                _finalize_trace()
                 return state
 
             # Verification failed — will replan in the next iteration
@@ -226,6 +249,7 @@ class AgentLoop:
         state.status = GoalStatus.FAILED
         state.error_message = f"Goal failed: max iterations ({self._max_iterations}) reached."
         await emit({"type": "goal_failed", "reason": state.error_message})
+        _finalize_trace()
         return state
 
     async def _plan(self, state: AgentState) -> list[str]:
@@ -243,6 +267,23 @@ class AgentLoop:
             model="claude-opus-4-8",
         )
         resp = await self._planner.complete(req)
+
+        # ── Trace: record planner role call ──────────────────────────────────
+        try:
+            if self._current_trace is not None:
+                _tokens = resp.total_tokens or max(len(resp.content) // 4, 1)
+                self._current_trace.role_calls.append({
+                    "role": "planner",
+                    "step": content[:100],
+                    "tokens": _tokens,
+                    "cost_usd": 0.01,
+                    "model": req.model,
+                })
+                self._current_trace.total_tokens += _tokens
+                self._current_trace.total_cost_usd += 0.01
+        except Exception:
+            pass  # trace errors must never break the loop
+
         parsed = _parse_json_response(resp.content, key="steps")
         steps: list[str] = parsed.get("steps", [resp.content])
         return steps if steps else [resp.content]
@@ -363,6 +404,22 @@ class AgentLoop:
         resp = await self._executor.complete(req)
         raw_output = resp.content
 
+        # ── Trace: record executor role call ─────────────────────────────────
+        try:
+            if self._current_trace is not None:
+                _tokens = resp.total_tokens or max((len(raw_output) + len(content)) // 4, 1)
+                self._current_trace.role_calls.append({
+                    "role": "executor",
+                    "step": step[:100],
+                    "tokens": _tokens,
+                    "cost_usd": 0.01,
+                    "model": req.model,
+                })
+                self._current_trace.total_tokens += _tokens
+                self._current_trace.total_cost_usd += 0.01
+        except Exception:
+            pass  # trace errors must never break the loop
+
         # Guardrail check: tool_output (Guardrails 2.0) — validate executor output
         if _LOOP_GUARDRAILS_AVAILABLE and _loop_guardrails_engine is not None and tenant_ctx:
             try:
@@ -417,6 +474,23 @@ class AgentLoop:
             model="claude-opus-4-8",
         )
         resp = await self._verifier.complete(req)
+
+        # ── Trace: record verifier role call ─────────────────────────────────
+        try:
+            if self._current_trace is not None:
+                _tokens = resp.total_tokens or max(len(resp.content) // 4, 1)
+                self._current_trace.role_calls.append({
+                    "role": "verifier",
+                    "step": state.goal[:100],
+                    "tokens": _tokens,
+                    "cost_usd": 0.01,
+                    "model": req.model,
+                })
+                self._current_trace.total_tokens += _tokens
+                self._current_trace.total_cost_usd += 0.01
+        except Exception:
+            pass  # trace errors must never break the loop
+
         parsed = _parse_json_response(resp.content)
         success: bool = bool(parsed.get("success", False))
         reason: str = str(parsed.get("reason", ""))

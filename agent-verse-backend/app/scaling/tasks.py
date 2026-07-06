@@ -2471,3 +2471,76 @@ def discover_and_tick_civilizations() -> dict:
 
     import asyncio
     return asyncio.run(_run())
+
+
+@celery_app.task(name="app.scaling.tasks.re_embed_collection", queue="maintenance")
+def re_embed_collection(
+    tenant_id: str,
+    collection_id: str,
+    model_key: str = "openai/text-embedding-3-small",
+) -> dict:
+    """Re-embed all chunks in a collection with a new model.
+
+    Queries all knowledge_chunks for the collection, embeds them in batches
+    of 50, updates each chunk's embedding vector in the DB, and returns a
+    summary dict.  Returns ``{"error": ...}`` on failure.
+    """
+
+    async def _run() -> dict:
+        try:
+            from sqlalchemy import text
+
+            from app.db.session import get_session_factory
+            from app.embedding.router import embedding_router
+
+            db = get_session_factory()
+
+            # Load all chunks for this collection
+            async with db() as session:
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, content FROM knowledge_chunks "
+                            "WHERE collection_id = :cid AND tenant_id = :tid"
+                        ),
+                        {"cid": collection_id, "tid": tenant_id},
+                    )
+                ).fetchall()
+
+            if not rows:
+                return {"collection_id": collection_id, "re_embedded": 0, "model": model_key}
+
+            # Parse provider/model from model_key (e.g. "openai/text-embedding-3-small")
+            parts = model_key.split("/", 1)
+            provider = parts[0] if len(parts) == 2 else "openai"
+            model = parts[1] if len(parts) == 2 else model_key
+
+            batch_size = 50
+            count = 0
+
+            async with db() as session, session.begin():
+                for i in range(0, len(rows), batch_size):
+                    batch = rows[i : i + batch_size]
+                    texts = [str(row[1] or "") for row in batch]
+                    embeddings = await embedding_router.embed_texts(
+                        texts, provider=provider, model=model
+                    )
+                    for row, vec in zip(batch, embeddings):
+                        await session.execute(
+                            text(
+                                "UPDATE knowledge_chunks SET embedding = :vec WHERE id = :id"
+                            ),
+                            {"vec": str(vec), "id": row[0]},
+                        )
+                        count += 1
+
+            return {"collection_id": collection_id, "re_embedded": count, "model": model_key}
+
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
