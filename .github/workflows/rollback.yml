@@ -1,0 +1,37 @@
+name: Helm Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Helm release name
+        default: agentverse
+      namespace:
+        default: agentverse
+      revision:
+        description: Helm revision to roll back to
+        required: true
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Roll back release
+        run: |
+          helm rollback "${{ github.event.inputs.release }}" "${{ github.event.inputs.revision }}" \
+            -n "${{ github.event.inputs.namespace }}" --wait --timeout 10m

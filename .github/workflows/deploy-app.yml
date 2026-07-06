@@ -1,0 +1,64 @@
+name: Deploy Application
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_tag:
+        description: Image tag to deploy (defaults to current SHA)
+        required: false
+      deploy_frontend:
+        type: boolean
+        default: true
+      deploy_backend:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-app:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Deploy app release
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then TAG="${GITHUB_SHA}"; fi
+          CHART=agent-verse-backend/infra/helm/agentverse
+          FRONTEND_ENABLED="${{ github.event.inputs.deploy_frontend }}"
+          BACKEND_ENABLED="${{ github.event.inputs.deploy_backend }}"
+          helm upgrade --install agentverse-app "$CHART" -n agentverse --create-namespace \
+            -f "$CHART/values-app.yaml" \
+            --set backend.enabled="$BACKEND_ENABLED" \
+            --set frontend.enabled="$FRONTEND_ENABLED" \
+            --set worker.enabled="$BACKEND_ENABLED" \
+            --set beat.enabled="$BACKEND_ENABLED" \
+            --set backend.image.repository=ghcr.io/${{ github.repository_owner }}/agentverse-backend \
+            --set backend.image.tag="$TAG" \
+            --set worker.image.repository=ghcr.io/${{ github.repository_owner }}/agentverse-backend \
+            --set worker.image.tag="$TAG" \
+            --set beat.image.repository=ghcr.io/${{ github.repository_owner }}/agentverse-backend \
+            --set beat.image.tag="$TAG" \
+            --set frontend.image.repository=ghcr.io/${{ github.repository_owner }}/agentverse-frontend \
+            --set frontend.image.tag="$TAG" \
+            --set secrets.databasePassword='${{ secrets.DATABASE_PASSWORD }}' \
+            --set secrets.redisPassword='${{ secrets.REDIS_PASSWORD }}' \
+            --set secrets.vaultMasterKey='${{ secrets.VAULT_MASTER_KEY }}' \
+            --set secrets.jwtSecret='${{ secrets.JWT_SECRET }}' \
+            --wait --timeout 15m
+      - name: Smoke test
+        run: kubectl -n agentverse rollout status deploy/agentverse-app-agentverse-backend --timeout=120s || true

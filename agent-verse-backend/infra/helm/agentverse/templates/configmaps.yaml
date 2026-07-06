@@ -13,6 +13,7 @@ data:
   {{ $k }}: {{ $v | quote }}
   {{- end }}
 ---
+{{- if .Values.kong.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -61,7 +62,9 @@ data:
         allowed_payload_size: 100
         size_unit: megabytes
     {{- end }}
+{{- end }}
 ---
+{{- if .Values.loki.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -95,7 +98,9 @@ data:
           period: 24h
     ruler:
       alertmanager_url: http://localhost:9093
+{{- end }}
 ---
+{{- if .Values.promtail.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -126,7 +131,9 @@ data:
         separator: /
         source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
         target_label: __path__
+{{- end }}
 ---
+{{- if .Values.grafana.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -148,7 +155,9 @@ data:
       url: http://{{ include "agentverse.fullname" . }}-loki:{{ .Values.loki.service.port }}
       jsonData:
         maxLines: 1000
+{{- end }}
 ---
+{{- if .Values.prometheus.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -167,7 +176,9 @@ data:
     - job_name: otel
       static_configs:
       - targets: ["{{ include "agentverse.fullname" . }}-otel:8889"]
+{{- end }}
 ---
+{{- if .Values.otel.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -200,3 +211,4 @@ data:
           receivers: [otlp]
           processors: [memory_limiter, batch]
           exporters: [prometheus, logging]
+{{- end }}

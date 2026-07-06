@@ -1,0 +1,51 @@
+name: Deploy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+      component:
+        description: "Component to deploy: all, postgres, redis, minio, kong, observability"
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-infra:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      - name: Deploy selected infra component
+        run: |
+          set -euo pipefail
+          CHART=agent-verse-backend/infra/helm/agentverse
+          NS=agentverse
+          VALUES="$CHART/values-infra.yaml"
+          EXTRA=""
+          case "${{ github.event.inputs.component }}" in
+            all) EXTRA="" ;;
+            postgres) EXTRA="--set redis.enabled=false --set minio.enabled=false --set kong.enabled=false --set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false --set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false" ;;
+            redis) EXTRA="--set postgresql.enabled=false --set minio.enabled=false --set kong.enabled=false --set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false --set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false --set backup.enabled=false" ;;
+            minio) EXTRA="--set postgresql.enabled=false --set redis.enabled=false --set kong.enabled=false --set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false --set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false --set backup.enabled=false" ;;
+            kong) EXTRA="--set postgresql.enabled=false --set redis.enabled=false --set minio.enabled=false --set loki.enabled=false --set promtail.enabled=false --set grafana.enabled=false --set prometheus.enabled=false --set otel.enabled=false --set mailpit.enabled=false --set backup.enabled=false" ;;
+            observability) EXTRA="--set postgresql.enabled=false --set redis.enabled=false --set minio.enabled=false --set kong.enabled=false --set mailpit.enabled=false --set backup.enabled=false" ;;
+            *) echo "Unknown component" >&2; exit 1 ;;
+          esac
+          helm upgrade --install agentverse-infra "$CHART" -n "$NS" --create-namespace -f "$VALUES" $EXTRA \
+            --set secrets.databasePassword='${{ secrets.DATABASE_PASSWORD }}' \
+            --set secrets.redisPassword='${{ secrets.REDIS_PASSWORD }}' \
+            --set secrets.vaultMasterKey='${{ secrets.VAULT_MASTER_KEY }}' \
+            --set secrets.jwtSecret='${{ secrets.JWT_SECRET }}' \
+            --wait --timeout 15m
