@@ -102,8 +102,36 @@ def parse_verifier_verdict(raw: str) -> dict[str, Any]:
     """
     Parse verifier response into a VerifierVerdict-compatible dict.
     Tries JSON parse first, falls back to text heuristics.
+
+    Handles nullable fields from the OpenAI strict-mode schema:
+      - confidence / retry / ungrounded_claims can be null → use safe defaults
     """
     raw = raw.strip()
+
+    def _safe_float(val: Any, default: float = 0.8) -> float:
+        """Convert val to float; return default if val is None or unconvertible."""
+        if val is None:
+            return default
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_bool(val: Any, default: bool = True) -> bool:
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.lower() not in ("false", "0", "no")
+        return bool(val)
+
+    def _safe_list(val: Any) -> list[str]:
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return [str(v) for v in val]
+        return []
 
     # Try direct JSON parse
     try:
@@ -112,9 +140,9 @@ def parse_verifier_verdict(raw: str) -> dict[str, Any]:
             return {
                 "success": bool(data.get("success", False)),
                 "reason": str(data.get("reason", "")),
-                "retry": bool(data.get("retry", True)),
-                "confidence": float(data.get("confidence", 0.8)),
-                "ungrounded_claims": data.get("ungrounded_claims", []),
+                "retry": _safe_bool(data.get("retry"), True),
+                "confidence": _safe_float(data.get("confidence"), 0.8),
+                "ungrounded_claims": _safe_list(data.get("ungrounded_claims")),
             }
     except (json.JSONDecodeError, ValueError):
         pass
@@ -127,9 +155,9 @@ def parse_verifier_verdict(raw: str) -> dict[str, Any]:
             return {
                 "success": bool(data.get("success", False)),
                 "reason": str(data.get("reason", "")),
-                "retry": bool(data.get("retry", True)),
-                "confidence": float(data.get("confidence", 0.8)),
-                "ungrounded_claims": data.get("ungrounded_claims", []),
+                "retry": _safe_bool(data.get("retry"), True),
+                "confidence": _safe_float(data.get("confidence"), 0.8),
+                "ungrounded_claims": _safe_list(data.get("ungrounded_claims")),
             }
         except Exception:
             pass
