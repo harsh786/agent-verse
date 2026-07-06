@@ -176,6 +176,19 @@ export interface GoalResponse {
   created_at?: string;
   event_count?: number;
   result_artifact?: ResultArtifact;
+  /** Agent that executed (or is executing) this goal */
+  agent_id?: string | null;
+  agent_name?: string | null;
+  /** Workflow mode: single_agent | multi_agent | debate */
+  workflow_mode?: string;
+  /** Error message if the goal failed */
+  error_message?: string;
+  /** Verifier feedback on last iteration */
+  verification_feedback?: string;
+  /** Priority: normal | high | low */
+  priority?: string;
+  /** Whether this was a dry run */
+  dry_run?: boolean;
 }
 
 export interface StepResponse {
