@@ -777,7 +777,19 @@ export function ConnectorsRegisteredPage() {
                   const result = testResults[c.server_id];
                   return (
                     <tr key={c.server_id} className="hover:bg-accent/50 transition-colors">
-                      <td className="px-4 py-3 font-medium">{c.name}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{c.name}</span>
+                          {c.has_builtin && (
+                            <span
+                              title="Built-in handler — runs inside AgentVerse, no external MCP server needed"
+                              className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-300"
+                            >
+                              ⚡ Built-in
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
                         {c.url}
                       </td>

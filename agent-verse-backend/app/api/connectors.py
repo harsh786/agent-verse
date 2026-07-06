@@ -230,6 +230,13 @@ async def _persist_connector_secrets(
 def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data = cfg.model_dump(exclude={"server_id"})
     data["auth_config"] = _mask_auth_config(dict(cfg.auth_config))
+    # Expose whether this connector has a native builtin Python handler
+    # so the frontend can show the ⚡ Built-in badge on registered connectors.
+    from app.mcp.registry import MCPRegistry as _MCPReg
+    data["has_builtin"] = (
+        cfg.builtin_handler is not None
+        or _MCPReg.get_builtin_handler(server_id) is not None
+    )
     return {"server_id": server_id, **data}
 
 
