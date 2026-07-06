@@ -64,6 +64,31 @@ class InstantiateRequest(BaseModel):
     priority: str = "normal"
 
 
+def _load_yaml_goal_templates() -> list[dict[str, Any]]:
+    """Load goal templates from YAML content files (152 templates across 37 domains).
+
+    Falls back to the hard-coded list if the content package is unavailable.
+    """
+    try:
+        from app.content.loader import ContentLoader
+
+        loader = ContentLoader().load_all()
+        if loader.goal_templates:
+            return [
+                {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "goal_text": t.get("goal_text", ""),
+                    "domain": t.get("domain", "general"),
+                }
+                for t in loader.goal_templates
+                if t.get("name") and t.get("goal_text")
+            ]
+    except Exception:
+        pass
+    return []
+
+
 _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
     # DevOps
     {
@@ -181,14 +206,22 @@ class _TemplateStore:
         self._db = db_factory
 
     def _seed_builtins_for_tenant(self, tenant_id: str) -> None:
-        """Seed read-only starter templates for a tenant (in-memory mode only)."""
+        """Seed read-only starter templates for a tenant (in-memory mode only).
+
+        Uses YAML content files (152 templates) when available, falls back to
+        the 14 hard-coded built-in templates.
+        """
         if not self._seed_builtins:
             return
         if tenant_id in self._seeded_tenants:
             return
         self._seeded_tenants.add(tenant_id)
         now = datetime.now(UTC)
-        for tpl in _BUILTIN_TEMPLATES:
+
+        yaml_templates = _load_yaml_goal_templates()
+        source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
+
+        for tpl in source:
             t: dict[str, Any] = {
                 "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}")),
                 "tenant_id": tenant_id,
@@ -205,7 +238,11 @@ class _TemplateStore:
             self._mem[t["id"]] = t
 
     async def _seed_builtins_db(self, tenant_id: str) -> None:
-        """Idempotently seed starter templates in DB mode (INSERT ... ON CONFLICT DO NOTHING)."""
+        """Idempotently seed starter templates in DB mode (INSERT ... ON CONFLICT DO NOTHING).
+
+        Uses YAML content files (152 templates) when available, falls back to the
+        14 hard-coded built-in templates.
+        """
         if not self._seed_builtins:
             return
         if tenant_id in self._seeded_tenants:
@@ -214,9 +251,13 @@ class _TemplateStore:
         try:
             from sqlalchemy import text as _t
             now = datetime.now(UTC)
+
+            yaml_templates = _load_yaml_goal_templates()
+            source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
+
             async with self._db() as session:
                 await session.execute(_t("SET LOCAL app.tenant_id = :tid"), {"tid": tenant_id})
-                for tpl in _BUILTIN_TEMPLATES:
+                for tpl in source:
                     tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
                     params = _extract_parameters(tpl["goal_text"])
                     import json
@@ -431,9 +472,19 @@ template_store = _TemplateStore()
 async def list_templates(
     request: Request,
     domain: str | None = Query(default=None),
+    search: str | None = Query(default=None),
 ) -> list[dict[str, Any]]:
     tenant = _require_tenant(request)
-    return await template_store.list(tenant.tenant_id, domain)
+    results = await template_store.list(tenant.tenant_id, domain)
+    if search:
+        q = search.lower()
+        results = [
+            t for t in results
+            if q in t.get("name", "").lower()
+            or q in t.get("description", "").lower()
+            or q in t.get("goal_text", "").lower()
+        ]
+    return results
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

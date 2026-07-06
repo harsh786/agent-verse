@@ -1287,9 +1287,73 @@ class MarketplaceV2:
         self._installs: list[dict[str, Any]] = []
         self._reviews: list[dict[str, Any]] = []
 
+    @staticmethod
+    def _yaml_agents_as_builtin() -> list[dict[str, Any]]:
+        """Load marketplace agents from YAML content files.
+
+        Returns a list of dicts in the same format as _BUILTIN_TEMPLATES so
+        they can be used in _ensure_builtin_cache() and seed_builtins().
+        """
+        try:
+            from app.content.loader import ContentLoader
+
+            loader = ContentLoader().load_all()
+            result: list[dict[str, Any]] = []
+            for agent in loader.agents:
+                tpl_id = agent.get("template_id", "")
+                if not tpl_id:
+                    continue
+                result.append(
+                    {
+                        "template_id": tpl_id,
+                        "slug": agent.get("slug", tpl_id),
+                        "name": agent.get("name", ""),
+                        "domain": agent.get("domain", "general"),
+                        "description": agent.get("description", ""),
+                        "long_description": agent.get("long_description", ""),
+                        "template_config": {
+                            "goal_template": agent.get("goal_template", ""),
+                            "autonomy_mode": agent.get("autonomy_mode", "bounded-autonomous"),
+                            "system_prompt": agent.get("system_prompt", ""),
+                        },
+                        "parameters_schema": agent.get("parameters_schema", {}),
+                        "required_connectors": agent.get("required_connectors", []),
+                        "optional_connectors": agent.get("optional_connectors", []),
+                        "autonomy_mode": agent.get("autonomy_mode", "bounded-autonomous"),
+                        "author_name": agent.get("author_name", "AgentVerse"),
+                        "is_verified": agent.get("is_verified", True),
+                        "version": agent.get("version", "1.0.0"),
+                        "tags": agent.get("tags", []),
+                        "visibility": "public",
+                        "review_status": "approved",
+                        "is_builtin": True,
+                        "install_count": 0,
+                        "rating_avg": 0.0,
+                        "rating_count": 0,
+                    }
+                )
+            return result
+        except Exception:
+            return []
+
     def _ensure_builtin_cache(self) -> None:
-        """Populate deterministic built-ins for degraded DB/no-DB read paths."""
+        """Populate deterministic built-ins for degraded DB/no-DB read paths.
+
+        Priority: YAML content files (214 agents) > hard-coded _BUILTIN_TEMPLATES.
+        The hard-coded list is kept as a fallback for environments where the
+        content YAML files are unavailable.
+        """
+        # Load YAML-defined agents first (214 agents across 37 domains)
+        yaml_agents = self._yaml_agents_as_builtin()
+        all_templates = yaml_agents if yaml_agents else _BUILTIN_TEMPLATES
+
+        # Also merge hard-coded templates not already covered by YAML
+        yaml_ids = {t["template_id"] for t in yaml_agents}
         for tpl in _BUILTIN_TEMPLATES:
+            if tpl.get("template_id") not in yaml_ids:
+                all_templates = all_templates + [tpl]
+
+        for tpl in all_templates:
             template_id = str(tpl["template_id"])
             if template_id in self._cache:
                 continue
@@ -1859,7 +1923,11 @@ class MarketplaceV2:
     # ------------------------------------------------------------------
 
     async def seed_builtins(self, tenant_ctx: TenantContext | None = None) -> int:
-        """Upsert all _BUILTIN_TEMPLATES into DB (idempotent).
+        """Upsert all built-in templates into DB (idempotent).
+
+        Sources (in priority order):
+        1. YAML content files — 214 marketplace agents across 37 domains
+        2. Hard-coded _BUILTIN_TEMPLATES — fallback / legacy entries
 
         Returns the number of templates seeded.
         """
@@ -1870,8 +1938,15 @@ class MarketplaceV2:
             plan=PlanTier.ENTERPRISE,
             api_key_id="system",
         )
+
+        # Build combined list: YAML agents + any hard-coded entries not in YAML
+        yaml_agents = self._yaml_agents_as_builtin()
+        yaml_ids = {t["template_id"] for t in yaml_agents}
+        extra_builtins = [t for t in _BUILTIN_TEMPLATES if t.get("template_id") not in yaml_ids]
+        all_templates = yaml_agents + extra_builtins
+
         count = 0
-        for tpl in _BUILTIN_TEMPLATES:
+        for tpl in all_templates:
             record = await self.publish_template(
                 data=tpl, tenant_ctx=ctx, run_security_review=False
             )

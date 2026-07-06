@@ -11,7 +11,20 @@ import { toast } from "@/stores/toast";
 import { Plus, BookOpen, Search, X } from "lucide-react";
 import { useDebounce } from "@/hooks/useDebounce";
 
-const DOMAINS = ["general", "devops", "engineering", "data", "marketing", "sales", "support", "legal", "finance"];
+// All 37 content-YAML domains + legacy soft-coded domains for backwards compat
+const DOMAINS = [
+  "general",
+  // Legacy
+  "devops", "engineering", "data", "marketing", "sales", "support", "legal", "finance",
+  // YAML domains
+  "hr-talent", "software", "sales-crm", "operations", "gst-tax", "invoicing-finance",
+  "government-portal", "e-commerce", "education", "healthcare", "real-estate",
+  "cybersecurity", "logistics", "insurance", "customer-support", "manufacturing",
+  "banking-fintech", "agriculture", "hospitality-travel", "media-publishing",
+  "pharmaceutical", "telecom", "construction", "energy-utilities", "accounting-ca",
+  "food-restaurant", "recruitment", "automobile", "nonprofit-ngo", "events-mice",
+  "wealth-management", "fashion-apparel", "architecture-interior", "public-health",
+];
 
 type TemplateForm = { name: string; description: string; goal_text: string; domain: string };
 const EMPTY_FORM: TemplateForm = { name: "", description: "", goal_text: "", domain: "general" };
