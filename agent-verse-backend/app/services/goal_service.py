@@ -1754,22 +1754,42 @@ class GoalService:
                     except Exception as exc:
                         _svc_logger.warning("agent_router_failed", error=str(exc))
 
-                    # ── Fallback: pick first available agent when router fails or returns
-                    # low confidence — prevents goals from running with no connectors.
+                    # ── Fallback: pick BEST-SCORED agent using router's scoring
+                    # (not just first created) — prevents wrong agent selection
+                    # when the main route() call fails or returns low confidence.
                     if agent_id is None:
                         try:
                             _all_agents = agent_store.list(tenant_ctx=tenant_ctx)
                             if asyncio.iscoroutine(_all_agents):
                                 _all_agents = await _all_agents
                             if _all_agents:
-                                agent_id = getattr(_all_agents[0], "agent_id", None) or (
-                                    _all_agents[0].get("agent_id") if isinstance(_all_agents[0], dict) else None
+                                # Use router scoring to pick the best agent
+                                from app.agent.router import AgentRouter as _AR
+                                _fallback_router = _AR(agent_store=agent_store)
+                                _fallback_agents = [
+                                    a if isinstance(a, dict) else a.__dict__
+                                    for a in _all_agents
+                                ]
+                                # Score each agent and pick highest
+                                _best_id = None
+                                _best_score = -1.0
+                                for _fa in _fallback_agents:
+                                    _kw = _fallback_router._score_by_keywords(goal, _fa)
+                                    _cn = _fallback_router._score_by_connector_match(goal, _fa)
+                                    _score = _kw * 0.5 + _cn * 0.5
+                                    if _score > _best_score:
+                                        _best_score = _score
+                                        _best_id = _fa.get("agent_id")
+                                # Use best if it has any score; otherwise first
+                                agent_id = _best_id or (
+                                    _fallback_agents[0].get("agent_id") if _fallback_agents else None
                                 )
                                 if agent_id:
                                     _svc_logger.info(
                                         "auto_routed_fallback",
                                         goal_id=goal_id,
                                         agent_id=agent_id,
+                                        score=round(_best_score, 3),
                                     )
                         except Exception as _fb_exc:
                             _svc_logger.debug("agent_fallback_failed: %s", _fb_exc)
