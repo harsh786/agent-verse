@@ -29,8 +29,13 @@ def _session_store(request: Request) -> Any:
 
 
 @router.get("/tools")
-async def list_rpa_tools() -> list[dict[str, Any]]:
-    """Return built-in RPA tool metadata for agent clients."""
+async def list_rpa_tools(request: Request) -> list[dict[str, Any]]:
+    """Return built-in RPA tool metadata for agent clients.
+
+    Security: requires a valid tenant API key — tool metadata is not public
+    information and could aid reconnaissance of automation capabilities.
+    """
+    _require_tenant(request)
     return [dict(tool) for tool in RPA_TOOLS]
 
 

@@ -2,9 +2,10 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Governance Live', () => {
   test.beforeEach(async ({ page }) => {
-    await page.route('**/approvals/**', r => r.fulfill({ json: { approvals: [] } }));
-    await page.route('**/governance/**', r => r.fulfill({ json: { policies: [], audit: [] } }));
-    await page.route('**/audit/**', r => r.fulfill({ json: { records: [] } }));
+    // Pin to localhost:8000 so the mock never intercepts Vite's source-file requests
+    await page.route('http://localhost:8000/approvals**', r => r.fulfill({ json: { approvals: [] } }));
+    await page.route('http://localhost:8000/governance**', r => r.fulfill({ json: { policies: [], audit: [] } }));
+    await page.route('http://localhost:8000/audit**', r => r.fulfill({ json: { records: [] } }));
   });
 
   test('governance page renders', async ({ page }) => {

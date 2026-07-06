@@ -92,7 +92,7 @@ export function GoalsListPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["goals", tenantId],
     queryFn: () => goalsApi.list(),
     refetchInterval: 5_000,
@@ -255,7 +255,11 @@ export function GoalsListPage() {
 
       {/* Goals table */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {isLoading ? (
+        {isError ? (
+          <div className="flex items-center justify-center h-64 text-risk-amber">
+            <p>Failed to load goals. {error instanceof Error ? error.message : 'Please try again.'}</p>
+          </div>
+        ) : isLoading ? (
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40">

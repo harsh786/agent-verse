@@ -127,6 +127,37 @@ def _is_totp_replayed(tenant_id: str, code: str) -> bool:
     return False
 
 
+async def _check_totp_replay(tenant_id: str, code: str, request: Any = None) -> bool:
+    """Return True if code was already used (replay detected).
+
+    Uses Redis for cross-replica consistency when available; falls back to the
+    process-local set in degraded mode (single-replica or Redis down).
+
+    The Redis key has a 31-second TTL — one TOTP window (30 s) plus a 1-second
+    grace — so replayed codes are rejected across all replicas.
+    """
+    redis = None
+    if request is not None:
+        try:
+            redis = getattr(request.app.state, "_redis", None)
+        except Exception:
+            pass
+
+    if redis is not None:
+        try:
+            key = f"mfa:used_totp:{tenant_id}:{code}"
+            # SET key "1" NX EX 31: set only if not exists, with 31-second TTL.
+            # Returns the set result (truthy) if the key was newly created,
+            # or None/False if the key already existed (code already used → replay).
+            was_set = await redis.set(key, "1", nx=True, ex=31)
+            return was_set is None or not was_set
+        except Exception:
+            pass  # fall through to in-process fallback on Redis error
+
+    # Degraded mode: in-process set (single-replica only)
+    return _is_totp_replayed(tenant_id, code)
+
+
 # ---------------------------------------------------------------------------
 # DB-backed MFA store with in-memory cache
 # ---------------------------------------------------------------------------

@@ -1,11 +1,18 @@
 """Agent Memory 2.0 API - governed memory with provenance and lifecycle."""
 from __future__ import annotations
-import uuid
+
 import datetime
+import json
+import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
 from app.memory_v2.models import MemoryLifecycleState, MemoryPrivacyClass
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/memory-v2", tags=["memory-v2"])
 
@@ -15,9 +22,87 @@ def _require_tenant(request: Request):
         raise HTTPException(401, "Unauthorized")
     return ctx
 
-# In-memory store for demo
+
+def _get_db(request: Request) -> Any:
+    """Return the async session factory from app state, or fall back to module-level."""
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        try:
+            from app.db.session import get_session_factory
+            db = get_session_factory()
+        except Exception:
+            pass
+    return db
+
+
+# ── In-memory write-through cache ──────────────────────────────────────────────
+# Written to DB on every mutating operation.  On first access per tenant the
+# cache is hydrated from DB so that data survives process restarts.
 _memories: dict[str, dict] = {}
 _conflicts: dict[str, list] = {}
+# Tracks which tenant IDs have already been loaded from DB in this process.
+_db_loaded_tenants: set[str] = set()
+
+
+async def _ensure_loaded_from_db(tenant_id: str, db: Any) -> None:
+    """Lazy-load v2 memories from DB into the module-level cache on first access."""
+    if tenant_id in _db_loaded_tenants or db is None:
+        return
+    _db_loaded_tenants.add(tenant_id)
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            result = await session.execute(
+                text(
+                    "SELECT content FROM long_term_memory "
+                    "WHERE tenant_id = :tid AND memory_type = 'memory_v2' "
+                    "ORDER BY created_at DESC"
+                ),
+                {"tid": tenant_id},
+            )
+            for row in result.fetchall():
+                try:
+                    m = json.loads(row[0])
+                    key = f"{m['tenant_id']}:{m['memory_id']}"
+                    # Only populate entries absent in the current process to avoid
+                    # overwriting writes that happened after this process started.
+                    if key not in _memories:
+                        _memories[key] = m
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("memory_v2_db_load_failed", error=str(exc))
+
+
+async def _db_upsert_memory(db: Any, memory: dict) -> None:
+    """Persist (insert or update) a v2 memory row in long_term_memory."""
+    if db is None:
+        return
+    try:
+        from sqlalchemy import text
+        async with db() as session, session.begin():
+            await session.execute(
+                text(
+                    """INSERT INTO long_term_memory
+                           (id, tenant_id, content, memory_type, confidence,
+                            source_goal_id, tags)
+                       VALUES (:id, :tid, :content, 'memory_v2', :conf, :sgid, :tags)
+                       ON CONFLICT (id) DO UPDATE SET
+                           content    = EXCLUDED.content,
+                           confidence = EXCLUDED.confidence,
+                           tags       = EXCLUDED.tags"""
+                ),
+                {
+                    "id": memory["memory_id"],
+                    "tid": memory["tenant_id"],
+                    "content": json.dumps(memory),
+                    "conf": float(memory.get("confidence", 0.8)),
+                    "sgid": memory.get("memory_id", ""),
+                    "tags": json.dumps(memory.get("tags", [])),
+                },
+            )
+    except Exception as exc:
+        logger.warning("memory_v2_db_upsert_failed", error=str(exc))
 
 
 class CreateMemoryRequest(BaseModel):
@@ -41,7 +126,10 @@ class UpdateMemoryRequest(BaseModel):
 async def create_memory(request: Request, body: CreateMemoryRequest) -> dict[str, Any]:
     """Create a memory entry with provenance tracking."""
     tenant = _require_tenant(request)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     memory_id = str(uuid.uuid4())
 
     try:
@@ -69,6 +157,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict[str
         "graph_links": [],
     }
     _memories[f"{tenant.tenant_id}:{memory_id}"] = memory
+    await _db_upsert_memory(db, memory)
 
     # Check for conflicts with existing memories (simple content similarity)
     await _detect_conflicts(tenant.tenant_id, memory_id, body.content)
@@ -86,6 +175,9 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories with lifecycle filtering."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     memories = [
         v for k, v in _memories.items()
         if k.startswith(f"{tenant.tenant_id}:")
@@ -124,7 +216,7 @@ async def resolve_conflict(request: Request, conflict_id: str) -> dict[str, Any]
 
     conflict["resolved"] = True
     conflict["resolution"] = body.get("resolution", "manual resolution")
-    conflict["resolved_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conflict["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
     return {"conflict_id": conflict_id, "status": "resolved"}
 
@@ -133,10 +225,13 @@ async def resolve_conflict(request: Request, conflict_id: str) -> dict[str, Any]
 async def mark_stale_memories(request: Request) -> dict[str, Any]:
     """Mark memories as stale based on age."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     body = await request.json()
     days_threshold = body.get("days_old", 30)
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_threshold)
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days_threshold)
     marked = 0
 
     for key, memory in _memories.items():
@@ -149,9 +244,10 @@ async def mark_stale_memories(request: Request) -> dict[str, Any]:
             try:
                 updated_dt = datetime.datetime.fromisoformat(
                     updated.rstrip("Z")
-                ).replace(tzinfo=datetime.timezone.utc)
+                ).replace(tzinfo=datetime.UTC)
                 if updated_dt < cutoff:
                     memory["lifecycle_state"] = "stale"
+                    await _db_upsert_memory(db, memory)
                     marked += 1
             except Exception:
                 pass
@@ -163,6 +259,9 @@ async def mark_stale_memories(request: Request) -> dict[str, Any]:
 async def export_gdpr(request: Request) -> dict[str, Any]:
     """Export all memories for GDPR data subject request."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     memories = [
         {k: v for k, v in m.items() if k != "tenant_id"}
         for key, m in _memories.items()
@@ -170,7 +269,7 @@ async def export_gdpr(request: Request) -> dict[str, Any]:
     ]
     return {
         "tenant_id": tenant.tenant_id,
-        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "exported_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "total_memories": len(memories),
         "memories": memories,
         "format": "gdpr_data_export_v1",
@@ -181,6 +280,9 @@ async def export_gdpr(request: Request) -> dict[str, Any]:
 async def get_memory(request: Request, memory_id: str) -> dict[str, Any]:
     """Get a specific memory with provenance."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
     if not memory or memory.get("lifecycle_state") == "deleted":
         raise HTTPException(404, "Memory not found")
@@ -193,11 +295,14 @@ async def update_memory(
 ) -> dict[str, Any]:
     """Update a memory entry."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
     if not memory or memory.get("lifecycle_state") == "deleted":
         raise HTTPException(404, "Memory not found")
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     if body.content is not None:
         memory["content"] = body.content
     if body.confidence is not None:
@@ -206,14 +311,16 @@ async def update_memory(
         try:
             MemoryLifecycleState(body.lifecycle_state)
             memory["lifecycle_state"] = body.lifecycle_state
-        except ValueError:
-            raise HTTPException(400, f"Invalid lifecycle state: {body.lifecycle_state}")
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid lifecycle state: {body.lifecycle_state}") from exc
     if body.tags is not None:
         memory["tags"] = body.tags
 
     memory["updated_at"] = now
     memory["update_count"] = memory.get("update_count", 0) + 1
     memory["provenance"]["update_count"] = memory["update_count"]
+
+    await _db_upsert_memory(db, memory)
 
     return {"memory_id": memory_id, "status": "updated", "update_count": memory["update_count"]}
 
@@ -222,12 +329,17 @@ async def update_memory(
 async def delete_memory(request: Request, memory_id: str) -> dict[str, Any]:
     """Soft-delete a memory (GDPR compliant — marks as deleted)."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
+
     memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
     if not memory:
         raise HTTPException(404, "Memory not found")
 
     memory["lifecycle_state"] = "deleted"
-    memory["deleted_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    memory["deleted_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+    await _db_upsert_memory(db, memory)
+
     return {"memory_id": memory_id, "status": "deleted"}
 
 
@@ -235,6 +347,8 @@ async def delete_memory(request: Request, memory_id: str) -> dict[str, Any]:
 async def consolidate_memories(request: Request) -> dict[str, Any]:
     """Run memory consolidation - dedup, merge, lifecycle management."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    await _ensure_loaded_from_db(tenant.tenant_id, db)
     from app.memory_v2.consolidation import memory_consolidator
     stats = await memory_consolidator.consolidate(tenant.tenant_id, _memories)
     return {"status": "consolidated", **stats}
@@ -268,7 +382,7 @@ async def _detect_conflicts(tenant_id: str, new_memory_id: str, new_content: str
                     "conflict_description": "High content overlap with potential contradiction",
                     "severity": "medium",
                     "resolved": False,
-                    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
                 _conflicts.setdefault(tenant_id, []).append(conflict)
                 break  # Max 1 conflict per new memory

@@ -73,12 +73,12 @@ def _is_blocked_ip(ip_str: str) -> bool:
 
 
 def _resolve_host(hostname: str) -> list[str]:
-    """Resolve hostname to IP addresses. Returns empty list on failure."""
-    try:
-        results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-        return [str(r[4][0]) for r in results]
-    except (socket.gaierror, OSError):
-        return []
+    """Resolve hostname to IP addresses.
+
+    Raises on any failure — callers must fail closed on exception.
+    """
+    results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    return [str(r[4][0]) for r in results]
 
 
 def assert_public_url(
@@ -142,11 +142,16 @@ def assert_public_url(
         pass  # not a literal IP; proceed to DNS resolution
 
     # DNS resolution — anti-rebinding: resolve and check ALL addresses
-    ips = _resolve_host(hostname)
+    try:
+        ips = _resolve_host(hostname)
+    except Exception:
+        raise SSRFError(
+            f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"
+        )
     if not ips:
-        # Can't resolve — log warning but don't block (may be valid in some environments)
-        logger.warning("ssrf_guard_dns_unresolvable", hostname=hostname, context=context)
-        return
+        raise SSRFError(
+            f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"
+        )
 
     for ip in ips:
         if _is_blocked_ip(ip):

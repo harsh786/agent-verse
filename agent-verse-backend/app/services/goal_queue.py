@@ -59,6 +59,7 @@ class CeleryGoalTaskQueue:
                 "connector_ids": connector_ids or [],
                 "workflow_mode": workflow_mode,
                 "goal_template": goal_template,
+                "plan": plan,
             },
             queue=target_queue,
         )

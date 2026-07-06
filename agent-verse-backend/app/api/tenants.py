@@ -65,6 +65,27 @@ async def signup(
     request: Request,
 ) -> JSONResponse:
     """Create a new tenant account and return the initial API key."""
+    # IP-based rate limit: 10 signups per IP per hour.
+    # Fail open if Redis is unavailable — blocking legitimate users is worse here.
+    _client_ip = request.client.host if request.client else "unknown"
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is not None:
+        try:
+            rl_key = f"signup_rl:{_client_ip}"
+            count = await redis.incr(rl_key)
+            if count == 1:
+                # Set TTL on first request in window
+                await redis.expire(rl_key, 3600)  # 1-hour window
+            if count > 10:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many signup attempts from this IP. Try again later.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # fail open on Redis errors
+
     svc = _get_tenant_service(request)
     try:
         result = await svc.create_tenant(name=body.name, email=str(body.email))

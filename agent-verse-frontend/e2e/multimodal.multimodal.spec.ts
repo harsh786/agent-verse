@@ -2,8 +2,9 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Multimodal', () => {
   test.beforeEach(async ({ page }) => {
-    await page.route('**/multimodal/**', r => r.fulfill({ json: { job_id: 'test', status: 'complete', spans: [] } }));
-    await page.route('**/knowledge/**', r => r.fulfill({ json: { collections: [] } }));
+    // Pin to localhost:8000 so the mock never intercepts Vite's source-file requests
+    await page.route('http://localhost:8000/multimodal**', r => r.fulfill({ json: { job_id: 'test', status: 'complete', spans: [] } }));
+    await page.route('http://localhost:8000/knowledge**', r => r.fulfill({ json: { collections: [] } }));
   });
 
   test('knowledge page renders for multimodal content', async ({ page }) => {

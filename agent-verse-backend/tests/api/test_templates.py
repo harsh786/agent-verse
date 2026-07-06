@@ -232,9 +232,11 @@ def test_seeded_templates_instantiable() -> None:
     }, headers=_HEADERS)
     assert resp.status_code == 200
     instantiated = resp.json().get("instantiated_goal", "")
-    if params:  # Only check parameter substitution for BUILTIN_TEMPLATES
+    if "Deploy Service" in deploy["name"]:
         assert "api-gateway" in instantiated
         assert "staging" in instantiated
+    elif params:
+        assert "test-value" in instantiated
 
 
 async def test_db_backed_list_falls_back_to_builtins_when_db_unavailable() -> None:
