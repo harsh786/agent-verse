@@ -9,6 +9,11 @@ global:
   imagePullSecrets: []
   storageClassName: ""
 
+localStaticPVs:
+  enabled: false
+  storageClassName: agentverse-local
+  pathPrefix: /data/agentverse
+
 imagePullPolicy: IfNotPresent
 
 secrets:

@@ -90,6 +90,7 @@ jobs:
           helm upgrade --install agentverse-infra ./agent-verse-backend/infra/helm/agentverse \
             -n agentverse --create-namespace \
             -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+            --set localStaticPVs.enabled=true \
             --wait --timeout 15m
 
       - name: Deploy observability-only
@@ -98,6 +99,7 @@ jobs:
           helm upgrade --install agentverse-observability ./agent-verse-backend/infra/helm/agentverse \
             -n agentverse --create-namespace \
             -f ./agent-verse-backend/infra/helm/agentverse/values-infra.yaml \
+            --set localStaticPVs.enabled=true \
             --set postgresql.enabled=false \
             --set redis.enabled=false \
             --set minio.enabled=false \

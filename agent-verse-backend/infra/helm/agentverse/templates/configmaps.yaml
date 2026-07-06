@@ -121,6 +121,9 @@ data:
       kubernetes_sd_configs:
       - role: pod
       relabel_configs:
+      - action: keep
+        source_labels: [__meta_kubernetes_namespace]
+        regex: {{ .Release.Namespace }}
       - source_labels: [__meta_kubernetes_namespace]
         target_label: namespace
       - source_labels: [__meta_kubernetes_pod_name]

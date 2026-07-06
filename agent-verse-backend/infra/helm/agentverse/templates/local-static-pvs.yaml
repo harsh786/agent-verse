@@ -1,3 +1,4 @@
+{{- if .Values.localStaticPVs.enabled }}
 {{- $full := include "agentverse.fullname" . -}}
 {{- $items := list
   (dict "name" "postgres" "enabled" .Values.postgresql.enabled "persistence" .Values.postgresql.persistence)
@@ -12,24 +13,22 @@
 {{- if and $item.enabled $cfg.enabled }}
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: PersistentVolume
 metadata:
-  name: {{ $full }}-{{ $item.name }}
+  name: {{ $full }}-{{ $item.name }}-pv
   labels:
-    app.kubernetes.io/instance: {{ $.Release.Name }}
     app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
     app.kubernetes.io/component: {{ $item.name }}
 spec:
+  capacity:
+    storage: {{ $cfg.size | quote }}
   accessModes: ["ReadWriteOnce"]
-  {{- if $.Values.localStaticPVs.enabled }}
+  persistentVolumeReclaimPolicy: Retain
   storageClassName: {{ $.Values.localStaticPVs.storageClassName | quote }}
-  {{- else if $cfg.storageClassName }}
-  storageClassName: {{ $cfg.storageClassName | quote }}
-  {{- else if $.Values.global.storageClassName }}
-  storageClassName: {{ $.Values.global.storageClassName | quote }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ $cfg.size | quote }}
+  hostPath:
+    path: {{ printf "%s/%s/%s" $.Values.localStaticPVs.pathPrefix $.Release.Name $item.name | quote }}
+    type: DirectoryOrCreate
+{{- end }}
 {{- end }}
 {{- end }}
