@@ -1286,6 +1286,11 @@ class MarketplaceV2:
         self._cache: dict[str, dict[str, Any]] = {}
         self._installs: list[dict[str, Any]] = []
         self._reviews: list[dict[str, Any]] = []
+        # Flag: True once _ensure_builtin_cache() has fully populated all
+        # YAML-loaded agents. Separate from self._cache being non-empty because
+        # seed_builtins() may populate self._cache with only the hard-coded
+        # _BUILTIN_TEMPLATES before _yaml_agents_as_builtin() is called.
+        self._builtin_cache_populated: bool = False
 
     @staticmethod
     def _yaml_agents_as_builtin() -> list[dict[str, Any]]:
@@ -1341,7 +1346,8 @@ class MarketplaceV2:
 
         Priority: YAML content files (214 agents) > hard-coded _BUILTIN_TEMPLATES.
         The hard-coded list is kept as a fallback for environments where the
-        content YAML files are unavailable.
+        content YAML files are unavailable. Sets _builtin_cache_populated=True
+        so get_template() stops calling this on every lookup.
         """
         # Load YAML-defined agents first (214 agents across 37 domains)
         yaml_agents = self._yaml_agents_as_builtin()
@@ -1365,6 +1371,8 @@ class MarketplaceV2:
                 "rating_count": tpl.get("rating_count", 0),
                 "is_verified": tpl.get("is_verified", True),
             }
+
+        self._builtin_cache_populated = True
 
     # ------------------------------------------------------------------
     # Template CRUD
@@ -1414,8 +1422,11 @@ class MarketplaceV2:
             except Exception:
                 pass
 
-        # In-memory fallback — always populate before querying
-        if not self._cache:
+        # In-memory fallback — ensure full YAML cache is populated.
+        # Use _builtin_cache_populated flag instead of `if not self._cache`
+        # because seed_builtins() may have added only the hard-coded templates,
+        # leaving the cache non-empty but missing YAML-loaded agents.
+        if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
         if template_id:
             return self._cache.get(template_id)
@@ -1490,7 +1501,7 @@ class MarketplaceV2:
                 pass
 
         # In-memory fallback
-        if not self._cache:
+        if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
         templates = list(self._cache.values())
         if domain:
