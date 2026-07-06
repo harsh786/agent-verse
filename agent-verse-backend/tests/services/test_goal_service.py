@@ -111,19 +111,17 @@ async def test_submit_goal_enqueues_worker_without_local_task() -> None:
 
     record = svc._goals[result["goal_id"]]
     assert record.task is None
-    assert queue.enqueued == [
-        {
-            "goal_id": result["goal_id"],
-            "tenant_id": _CTX_A.tenant_id,
-            "goal_text": "Run deployment verification",
-            "priority": "high",
-            "dry_run": False,
-            "agent_id": "agent-123",
-            "workflow_mode": "multi_agent",
-            "goal_template": "",
-            "plan": _CTX_A.plan.value,
-        }
-    ]
+    # connector_ids is always included in the enqueue payload (may be empty)
+    enqueued = queue.enqueued[0]
+    assert enqueued["goal_id"] == result["goal_id"]
+    assert enqueued["tenant_id"] == _CTX_A.tenant_id
+    assert enqueued["goal_text"] == "Run deployment verification"
+    assert enqueued["priority"] == "high"
+    assert enqueued["dry_run"] is False
+    assert enqueued["agent_id"] == "agent-123"
+    assert enqueued["workflow_mode"] == "multi_agent"
+    assert enqueued["goal_template"] == ""
+    assert enqueued["plan"] == _CTX_A.plan.value
 
 
 async def test_submit_goal_with_queue_awaits_db_persist_before_enqueue() -> None:

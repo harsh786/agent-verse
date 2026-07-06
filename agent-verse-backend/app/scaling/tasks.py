@@ -2268,7 +2268,7 @@ def flush_audit_wal() -> dict:
 
             r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
             from app.db.session import get_session_factory
-            from app.governance.audit_v2 import AuditFlusher
+            from app.governance.audit_v3 import AuditFlusher
 
             flusher = AuditFlusher(redis=r, db_factory=get_session_factory())
             flushed = await flusher.flush()
