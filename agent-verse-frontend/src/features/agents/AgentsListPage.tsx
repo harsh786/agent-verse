@@ -8,7 +8,6 @@ import { agentsApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
-import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 
 interface Agent {
   agent_id: string;
@@ -148,9 +147,8 @@ export function AgentsListPage() {
     : null;
 
   return (
-    <MissionControlLayout>
-      <div className="space-y-6">
-        {/* Page header */}
+    <div className="space-y-6">
+      {/* Page header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-lg bg-neural-violet/20 border border-neural-violet/30 shadow-lg shadow-neural-violet/10">
@@ -416,7 +414,6 @@ export function AgentsListPage() {
             onPageChange={(p) => updateParams({ page: String(p) })}
           />
         )}
-      </div>
-    </MissionControlLayout>
+    </div>
   );
 }

@@ -1,324 +1,636 @@
+/**
+ * GoalDetailPage — world-class agentic goal execution view.
+ *
+ * Design principles:
+ *  - Terminal-first execution panel (VS Code / OpenCode feel)
+ *  - Results rendered for EVERY goal regardless of kind (empty/failed/partial/complete)
+ *  - Evidence built from live SSE events, not just the artifact
+ *  - Downloads always visible when artifact exists
+ *  - Full-width layout consistent with the rest of the dashboard
+ *  - Single unified tab bar (no duplicate bars)
+ *  - Live elapsed timer + cost ticker
+ *  - SSE reconnects up to 100 times for long goals
+ */
+import {
+  useEffect, useRef, useState, useCallback, useMemo,
+  type KeyboardEvent,
+} from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft,
-  CheckCircle,
-  XCircle,
-  RefreshCw,
-  Loader2,
-  ChevronDown,
-  ChevronRight,
-  Pause,
-  Play,
-  Dna,
-  GitCompare,
-  Ghost,
-  FlaskConical,
-  RotateCcw,
+  ArrowLeft, CheckCircle, XCircle, RefreshCw, Loader2,
+  ChevronDown, ChevronRight, Pause, Play, Dna, GitCompare,
+  Ghost, FlaskConical, RotateCcw, Download, FileJson, FileText,
+  Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
+  Clock, AlertTriangle,
 } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { goalsApi, governanceApi } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
-import { ExecutionTimeline } from "@/components/execution/ExecutionTimeline";
-import { ToolCallInspector } from "@/components/execution/ToolCallInspector";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { LiveCostTicker } from "@/components/live/LiveCostTicker";
-import { GoalEvidencePanel } from "./components/GoalEvidencePanel";
-import { GoalOutcomeHero } from "./components/GoalOutcomeHero";
-import { GoalResultCanvas } from "./components/GoalResultCanvas";
-import { normalizeAdaptiveResult } from "./adaptiveResult";
-import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { GoalFeedback } from "./components/GoalFeedback";
 import { GoalExplainPanel } from "./components/GoalExplainPanel";
-import type { GoalEvent } from "@/lib/api/client";
+import { normalizeAdaptiveResult } from "./adaptiveResult";
+import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
+import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
+import type { GoalEvent } from "@/lib/api/client";
 
-type GoalDetailTab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-type GoalDetailTabConfig = {
-  tab: GoalDetailTab;
-  label: string;
-};
+type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
 
-function tabId(tab: GoalDetailTab) {
-  return `goal-tab-${tab}`;
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function readStr(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
-function tabPanelId(tab: GoalDetailTab) {
-  return `goal-tabpanel-${tab}`;
+function goalTitle(text: string): string {
+  if (!text) return "Untitled goal";
+  const line = text.split("\n").find((l) => l.trim()) ?? text;
+  const end = line.search(/[.!?]/);
+  const s = end > 20 ? line.slice(0, end + 1) : line;
+  return s.length > 120 ? s.slice(0, 117) + "…" : s;
 }
+
+function fmtVal(v: unknown): string | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    return String(v);
+  return JSON.stringify(v, null, 2);
+}
+
+function timeAgo(iso: string) {
+  const d = Date.now() - new Date(iso).getTime();
+  if (d < 60_000) return "just now";
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
+  return `${Math.floor(d / 86_400_000)}d ago`;
+}
+
+// Download helper
+function downloadFile(name: string, content: string, mime: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
+
+async function copyToClipboard(text: string) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { /* fallback */ }
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
+  const map: Record<string, string> = {
     complete: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-    executing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-    planning: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
+    executing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 animate-pulse",
+    planning: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 animate-pulse",
     failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
     waiting_human: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+    cancelled: "bg-muted text-muted-foreground",
   };
   return (
-    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${colors[status] ?? "bg-muted text-muted-foreground"}`}>
-      {status.replace("_", " ")}
+    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${map[status] ?? "bg-muted text-muted-foreground"}`}>
+      {status.replace(/_/g, " ")}
     </span>
   );
 }
 
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+function ElapsedTimer({ startedAt }: { startedAt: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = new Date(startedAt).getTime();
+    const iv = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(iv);
+  }, [startedAt]);
+  const m = Math.floor(elapsed / 60), s = elapsed % 60;
+  return (
+    <span className="font-mono text-xs text-muted-foreground flex items-center gap-1">
+      <Clock className="h-3 w-3" aria-hidden="true" />
+      {m}:{String(s).padStart(2, "0")}
+    </span>
+  );
 }
 
-/** Extract a short display title from a goal's raw text.
- *  Returns the first sentence / line, capped at 100 chars. */
-function goalTitle(goalText: string): string {
-  if (!goalText) return "Untitled goal";
-  // Take first non-empty line (goals are often multi-line instructions)
-  const firstLine = goalText.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? goalText;
-  // Trim to first sentence boundary where possible
-  const sentenceEnd = firstLine.search(/[.!?]/);
-  const candidate = sentenceEnd > 20 ? firstLine.slice(0, sentenceEnd + 1) : firstLine;
-  return candidate.length > 100 ? candidate.slice(0, 97) + "…" : candidate;
-}
+// ── Rich Result Panel ─────────────────────────────────────────────────────────
+// Shows something meaningful for EVERY result, including empty/failed goals.
 
-function formatValue(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (["string", "number", "boolean"].includes(typeof value)) return String(value);
-  return JSON.stringify(value, null, 2);
-}
-
-function toolEventName(event: StreamGoalEvent): string {
-  return readString(event.tool_name) ?? readString(event.tool) ?? "Tool call";
-}
-
-function eventTimestamp(event: GoalEvent): string | undefined {
-  return readString(event.created_at) ?? readString(event.ts);
-}
-
-function eventPayload(event: GoalEvent): Record<string, unknown> | undefined {
-  return event.payload ?? event.data;
-}
-
-type EventSummaryContext = {
-  events: StreamGoalEvent[];
-  index: number;
-  goalStatus: string;
-};
-
-function hasLaterEvent(
-  context: EventSummaryContext,
-  predicate: (event: StreamGoalEvent) => boolean
-) {
-  return context.events.slice(context.index + 1).some(predicate);
-}
-
-function hasLaterType(context: EventSummaryContext, types: string[]) {
-  return hasLaterEvent(context, (event) => types.includes(readString(event.type) ?? ""));
-}
-
-function statusAfterTerminal(context: EventSummaryContext) {
-  if (hasLaterType(context, ["goal_failed", "worker_failed"])) return "failed";
-  if (hasLaterType(context, ["goal_complete", "worker_complete"])) return "complete";
-  if (["complete", "cancelled"].includes(context.goalStatus)) return "complete";
-  if (context.goalStatus === "failed") return "failed";
-  return "executing";
-}
-
-function eventSummary(event: StreamGoalEvent, context: EventSummaryContext) {
-  const type = readString(event.type) ?? "event";
-  const step = readString(event.step);
-  const status = readString(event.status);
-  const toolName = toolEventName(event);
-  const serverId = readString(event.server_id);
-  const success = typeof event.success === "boolean" ? event.success : undefined;
-  const details: string[] = [];
-
-  switch (type) {
-    case "worker_started":
-      return { label: "worker started", status: status ?? statusAfterTerminal(context), details };
-    case "worker_complete":
-      return { label: "worker complete", status: status ?? "complete", details };
-    case "worker_failed":
-      return { label: "worker failed", status: "failed", details };
-    case "goal_started":
-      return { label: "Goal started", status: status ?? statusAfterTerminal(context), details };
-    case "goal_complete":
-      return { label: "goal complete", status: status ?? "complete", details };
-    case "goal_failed":
-      return { label: "goal failed", status: "failed", details };
-    case "goal_cancelled":
-      return { label: "goal cancelled", status: "failed", details };
-    case "plan_ready": {
-      if (Array.isArray(event.steps) && event.steps.length > 0) {
-        details.push("Steps:", ...event.steps.map((item, index) => `${index + 1}. ${formatValue(item) ?? "Step"}`));
-      }
-      return { label: "Plan ready", status: status ?? "complete", details };
-    }
-    case "step_started": {
-      const completed = hasLaterEvent(
-        context,
-        (laterEvent) =>
-          readString(laterEvent.type) === "step_complete" &&
-          readString(laterEvent.step) === step
-      );
-      return {
-        label: step ?? "Step started",
-        status: status ?? (completed ? "complete" : statusAfterTerminal(context)),
-        details,
-      };
-    }
-    case "step_complete":
-      return { label: step ?? "Step complete", status: status ?? "complete", details };
-    case "tool_call_complete": {
-      if (serverId) details.push(`Server: ${serverId}`);
-      const output = formatValue(event.output);
-      const error = formatValue(event.error);
-      if (output) details.push("Output:", output);
-      if (error) details.push("Error:", error);
-      const succeeded = success !== false;
-      return {
-        label: `${toolName} ${succeeded ? "succeeded" : "failed"}`,
-        status: succeeded ? "complete" : "failed",
-        details,
-      };
-    }
-    case "tool_call_failed": {
-      if (serverId) details.push(`Server: ${serverId}`);
-      const error = formatValue(event.error);
-      if (error) details.push("Error:", error);
-      return { label: `${toolName} failed`, status: "failed", details };
-    }
-    case "dry_run_preview":
-      return { label: "Dry run preview", status: status ?? "complete", details };
-    case "verification_done": {
-      details.push(`Success: ${success === true ? "yes" : "no"}`);
-      const reason = formatValue(event.reason);
-      if (reason) details.push(`Reason: ${reason}`);
-      return {
-        label: success === false ? "Verification failed" : "Verification passed",
-        status: success === false ? "failed" : "complete",
-        details,
-      };
-    }
-    default:
-      return { label: step ?? type.replace(/_/g, " "), status: status ?? "executing", details };
-  }
-}
-
-function StepRow({
-  event,
+function RichResultPanel({
+  artifact,
   events,
-  index,
-  goalStatus,
-  onRetry,
-  isRetrying,
+  goal,
+  status,
 }: {
-  event: StreamGoalEvent;
+  artifact: any;
   events: StreamGoalEvent[];
-  index: number;
-  goalStatus: string;
-  onRetry?: (description: string) => void;
-  isRetrying?: boolean;
+  goal: string;
+  status: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const summary = eventSummary(event, { events, index, goalStatus });
-  const status = summary.status;
-  const type = readString(event.type);
-  const isToolEvent = type === "tool_call_complete" || type === "tool_call_failed";
-  const serverId = readString(event.server_id);
-  const toolResult = isToolEvent
-    ? normalizeAdaptiveResult(event.output, {
-        toolName: toolEventName(event),
-        serverId,
-        success: typeof event.success === "boolean" ? event.success : readString(event.type) !== "tool_call_failed",
-        error: event.error,
-      })
-    : undefined;
-  const Icon = status === "complete" ? CheckCircle : status === "failed" ? XCircle : Loader2;
-  const iconColor =
-    status === "complete"
-      ? "text-green-500"
-      : status === "failed"
-      ? "text-red-500"
-      : "text-blue-500";
+  const verificationFeedback = artifact?.evidence?.verification;
+  const summary = artifact?.summary;
+  const kind = artifact?.kind ?? artifact?.status ?? "unknown";
+  const downloads = artifact?.downloads ?? [];
+  const hasTable = (artifact?.tables ?? []).length > 0;
+  const canJson = downloads.includes("json");
+  const canCsv = downloads.includes("csv") && hasTable;
+  const canMd = downloads.includes("markdown");
+
+  // Extract all tool call results from events for a rich timeline
+  const toolResults = useMemo(() => {
+    return events
+      .filter((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed")
+      .map((e, i) => ({
+        id: i,
+        tool: readStr(e.tool_name) ?? readStr(e.tool) ?? "Tool call",
+        server: readStr(e.server_id),
+        success: e.success !== false && e.type !== "tool_call_failed",
+        output: e.output,
+        error: readStr(e.error),
+      }));
+  }, [events]);
+
+  // Extract the final LLM synthesis (last meaningful text output from events)
+  const finalOutput = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      const content = readStr(e.result) ?? readStr(e.content) ?? readStr(e.summary);
+      if (content && content.length > 20) return content;
+    }
+    return null;
+  }, [events]);
+
+  // Determine if goal actually produced output despite being marked empty
+  const hasRealOutput = finalOutput || (toolResults.length > 0);
 
   return (
-    <li className="border-b border-border last:border-0">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-accent/50 text-left"
-      >
-        <Icon className={`h-4 w-4 flex-shrink-0 ${iconColor} ${status === "executing" ? "animate-spin" : ""}`} />
-        <span className="flex-1 text-sm font-medium">{summary.label}</span>
-        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-      </button>
-      {open && isToolEvent && toolResult && (
-        <div className="px-4 pb-3">
-          <AdaptiveResultPanel compact result={toolResult} />
+    <div className="space-y-4">
+      {/* Status banner */}
+      {(kind === "empty" || kind === "failed" || status === "failed") && (
+        <div className={`flex items-start gap-3 p-4 rounded-xl border text-sm ${
+          status === "complete"
+            ? "bg-amber-50 border-amber-200 dark:bg-amber-950/20 dark:border-amber-800"
+            : "bg-red-50 border-red-200 dark:bg-red-950/20 dark:border-red-800"
+        }`}>
+          <AlertTriangle className={`h-4 w-4 mt-0.5 shrink-0 ${status === "complete" ? "text-amber-600" : "text-red-600"}`} aria-hidden="true" />
+          <div className="space-y-1">
+            <p className="font-medium">{status === "complete" ? "Goal completed with partial results" : "Goal did not fully complete"}</p>
+            {verificationFeedback && (
+              <p className="text-muted-foreground text-xs">{verificationFeedback}</p>
+            )}
+          </div>
         </div>
       )}
-      {open && !isToolEvent && (
-        <pre className="px-4 pb-3 text-xs overflow-x-auto whitespace-pre-wrap text-muted-foreground">
-          {summary.details.length > 0 ? summary.details.join("\n") : JSON.stringify(event, null, 2)}
-        </pre>
+
+      {/* Summary / final output */}
+      {(finalOutput || summary) && (
+        <div className="rounded-xl border bg-card p-5 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+            Result
+          </div>
+          <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
+            <ReactMarkdown>{finalOutput ?? summary ?? ""}</ReactMarkdown>
+          </div>
+        </div>
       )}
-      {/* Fix 9: retry from this step when it has failed */}
-      {status === "failed" && onRetry && (
-        <div className="px-4 pb-3">
+
+      {/* Tables from artifact */}
+      {(artifact?.tables ?? []).map((table: any, ti: number) => (
+        <div key={ti} className="rounded-xl border bg-card overflow-hidden">
+          <div className="px-5 py-3 border-b bg-muted/30">
+            <p className="font-semibold text-sm">{table.title}</p>
+            {table.summary && <p className="text-xs text-muted-foreground mt-0.5">{table.summary}</p>}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/20">
+                <tr>
+                  {(table.columns ?? []).map((col: any) => (
+                    <th key={col.key} className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {(table.rows ?? []).map((row: any, ri: number) => (
+                  <tr key={ri} className="hover:bg-muted/20 transition-colors">
+                    {(table.columns ?? []).map((col: any) => (
+                      <td key={col.key} className="px-4 py-2.5 text-sm">{fmtVal(row[col.key]) ?? "—"}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+
+      {/* Tool outputs from events — shown when no structured result */}
+      {toolResults.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+            <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+            Tool Outputs ({toolResults.length} calls)
+          </p>
+          {toolResults.slice(0, 10).map((tr) => {
+            const adaptive = normalizeAdaptiveResult(tr.output, {
+              toolName: tr.tool, serverId: tr.server, success: tr.success, error: tr.error,
+            });
+            return (
+              <div key={tr.id} className={`rounded-xl border p-3 text-sm ${tr.success ? "bg-card" : "bg-red-50 border-red-200 dark:bg-red-950/10 dark:border-red-900"}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {tr.success
+                    ? <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" aria-hidden="true" />
+                    : <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" aria-hidden="true" />}
+                  <span className="font-mono font-medium text-xs">{tr.tool}</span>
+                  {tr.server && <span className="text-[10px] text-muted-foreground">via {tr.server}</span>}
+                </div>
+                {adaptive && <AdaptiveResultPanel compact result={adaptive} />}
+                {!adaptive && tr.error && (
+                  <pre className="text-xs text-red-600 whitespace-pre-wrap break-words">{tr.error}</pre>
+                )}
+                {!adaptive && !tr.error && tr.output && (
+                  <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-words max-h-40 overflow-auto">
+                    {JSON.stringify(tr.output, null, 2)}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+          {toolResults.length > 10 && (
+            <p className="text-xs text-muted-foreground text-center">
+              +{toolResults.length - 10} more tool calls — see Execution tab
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Empty state — goal produced nothing at all */}
+      {!hasRealOutput && !summary && (
+        <div className="rounded-xl border border-dashed bg-muted/20 p-10 text-center">
+          <Ghost className="h-10 w-10 mx-auto mb-3 opacity-20" aria-hidden="true" />
+          <p className="text-sm font-medium">No output captured</p>
+          <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+            The agent ran but did not produce a captured result.
+            Check the Execution tab to see what happened.
+          </p>
+        </div>
+      )}
+
+      {/* Download / action bar — ALWAYS shown when artifact exists */}
+      <div className="flex flex-wrap gap-2 pt-2 border-t border-border">
+        <button
+          onClick={() => { copyToClipboard(finalOutput ?? summary ?? goal); toast({ kind: "success", message: "Copied!" }); }}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
+        >
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" /> Copy result
+        </button>
+        {canJson && artifact && (
           <button
-            onClick={() => onRetry(summary.label)}
-            disabled={isRetrying}
-            className="text-xs text-primary hover:underline flex items-center gap-1 disabled:opacity-50"
+            onClick={() => downloadFile("goal-result.json", JSON.stringify(artifact, null, 2), "application/json")}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
           >
-            {isRetrying
-              ? <Loader2 className="h-3 w-3 animate-spin" />
-              : <RotateCcw className="h-3 w-3" />}
+            <FileJson className="h-3.5 w-3.5" aria-hidden="true" /> JSON
+          </button>
+        )}
+        {canCsv && artifact && (
+          <button
+            onClick={() => downloadFile("goal-result.csv", artifactToCsv(artifact), "text/csv")}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden="true" /> CSV
+          </button>
+        )}
+        {canMd && artifact && (
+          <button
+            onClick={() => downloadFile("goal-result.md", artifactToMarkdown(artifact), "text/markdown")}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden="true" /> Markdown
+          </button>
+        )}
+        {/* Always offer raw JSON download of the full goal */}
+        <button
+          onClick={() => downloadFile("goal-raw.json", JSON.stringify({ goal, status, artifact, events: events.length }, null, 2), "application/json")}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden="true" /> Raw data
+        </button>
+        <button
+          onClick={() => window.print()}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:bg-muted transition-colors"
+        >
+          <Printer className="h-3.5 w-3.5" aria-hidden="true" /> Print
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Evidence panel (enhanced — built from events) ─────────────────────────────
+
+function EnhancedEvidencePanel({ artifact, events }: { artifact: any; events: StreamGoalEvent[] }) {
+  // Build evidence from live events + artifact
+  const toolEvidence = useMemo(() => {
+    const fromArtifact = artifact?.evidence?.tools ?? [];
+    // Also extract from SSE events
+    const fromEvents = events
+      .filter((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed")
+      .map((e) => ({
+        name: readStr(e.tool_name) ?? readStr(e.tool) ?? "Unknown tool",
+        server_id: readStr(e.server_id),
+        success: e.success !== false && e.type !== "tool_call_failed",
+        error: readStr(e.error),
+        output_preview: e.output ? JSON.stringify(e.output).slice(0, 200) : undefined,
+      }));
+    // Merge: artifact tools first, then events not already covered
+    if (fromArtifact.length > 0) return fromArtifact;
+    return fromEvents;
+  }, [artifact, events]);
+
+  const verification = artifact?.evidence?.verification;
+  const hasEvidence = toolEvidence.length > 0 || verification;
+
+  if (!hasEvidence) {
+    return (
+      <div className="rounded-xl border border-dashed bg-muted/20 p-10 text-center">
+        <BookOpen className="h-10 w-10 mx-auto mb-3 opacity-20" aria-hidden="true" />
+        <p className="text-sm font-medium">No evidence yet</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          Evidence is collected from tool calls during goal execution.
+          Retry the goal with a connected agent to see tool evidence here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {verification && (
+        <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 px-4 py-3 text-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400 mb-1">Verification</p>
+          <p className="text-emerald-800 dark:text-emerald-300">{verification}</p>
+        </div>
+      )}
+      {toolEvidence.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            Tool evidence ({toolEvidence.length} calls)
+          </p>
+          {toolEvidence.map((t: any, i: number) => (
+            <div key={i} className="flex items-start justify-between gap-3 p-3 rounded-xl border bg-card text-sm">
+              <div className="min-w-0">
+                <p className="font-medium font-mono text-xs">{t.name}</p>
+                {t.server_id && <p className="text-[10px] text-muted-foreground mt-0.5">Server: {t.server_id}</p>}
+                {t.output_preview && (
+                  <p className="text-[10px] text-muted-foreground mt-1 font-mono truncate max-w-xs">{t.output_preview}</p>
+                )}
+              </div>
+              <span className={`shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                t.success !== false
+                  ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                  : "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+              }`}>
+                {t.success !== false ? "✓ OK" : "✗ Failed"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Terminal-style execution panel ────────────────────────────────────────────
+
+const TERMINAL_EVENT_COLORS: Record<string, string> = {
+  goal_started:         "text-emerald-400",
+  plan_ready:           "text-blue-400",
+  step_started:         "text-yellow-400",
+  step_complete:        "text-emerald-400",
+  tool_call_complete:   "text-cyan-400",
+  tool_call_failed:     "text-red-400",
+  goal_complete:        "text-emerald-300 font-bold",
+  goal_failed:          "text-red-300 font-bold",
+  goal_cancelled:       "text-orange-400",
+  verification_done:    "text-violet-400",
+  worker_started:       "text-slate-400",
+  worker_complete:      "text-slate-400",
+  knowledge_retrieved:  "text-teal-400",
+};
+
+const TERMINAL_ICONS: Record<string, string> = {
+  goal_started:         "🚀",
+  plan_ready:           "📋",
+  step_started:         "▶",
+  step_complete:        "✓",
+  tool_call_complete:   "⚡",
+  tool_call_failed:     "✗",
+  goal_complete:        "🎉",
+  goal_failed:          "💥",
+  goal_cancelled:       "⊗",
+  verification_done:    "🔍",
+  worker_started:       "⚙",
+  worker_complete:      "⚙",
+  knowledge_retrieved:  "📚",
+};
+
+function TerminalLine({ event, goalStatus, onRetry, isRetrying }: {
+  event: StreamGoalEvent;
+  goalStatus: string;
+  onRetry?: (d: string) => void;
+  isRetrying?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const type = readStr(event.type) ?? "event";
+  const step = readStr(event.step);
+  const color = TERMINAL_EVENT_COLORS[type] ?? "text-slate-300";
+  const icon = TERMINAL_ICONS[type] ?? "·";
+  const isFailure = type === "tool_call_failed" || type === "goal_failed";
+  const isTool = type === "tool_call_complete" || type === "tool_call_failed";
+
+  const label = (() => {
+    switch (type) {
+      case "plan_ready": {
+        const steps = Array.isArray(event.steps) ? event.steps : [];
+        return steps.length > 0 ? `Plan ready (${steps.length} steps)` : "Plan ready";
+      }
+      case "step_started": return `▶ ${step ?? "Step"}`;
+      case "step_complete": return `✓ ${step ?? "Step complete"}`;
+      case "tool_call_complete": return `⚡ ${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} — ${event.success !== false ? "ok" : "error"}`;
+      case "tool_call_failed": return `✗ ${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} failed`;
+      case "verification_done": return `🔍 Verify — ${event.success === true ? "PASS" : "FAIL"}`;
+      case "goal_complete": return "🎉 Goal complete";
+      case "goal_failed": return "💥 Goal failed";
+      default: return step ?? type.replace(/_/g, " ");
+    }
+  })();
+
+  const hasDetails = isTool || type === "plan_ready" || type === "verification_done";
+
+  return (
+    <div className={`group ${isFailure ? "bg-red-950/10" : ""}`}>
+      <button
+        onClick={() => hasDetails && setExpanded((v) => !v)}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left font-mono text-xs hover:bg-white/5 transition-colors ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
+      >
+        <span className={`shrink-0 w-4 text-center ${color}`}>{icon}</span>
+        <span className={`flex-1 ${color}`}>{label}</span>
+        {hasDetails && (expanded
+          ? <ChevronDown className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
+          : <ChevronRight className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
+        )}
+      </button>
+
+      {expanded && type === "plan_ready" && Array.isArray(event.steps) && (
+        <div className="px-8 pb-2 space-y-0.5">
+          {(event.steps as string[]).map((s, i) => (
+            <p key={i} className="font-mono text-xs text-slate-400">
+              <span className="text-blue-500 mr-2">{i + 1}.</span>{s}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {expanded && isTool && (
+        <div className="px-8 pb-2">
+          {event.output != null && (
+            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap break-words max-h-48 overflow-auto leading-relaxed">
+              {typeof event.output === "string" ? event.output : JSON.stringify(event.output, null, 2)}
+            </pre>
+          )}
+          {event.error && (
+            <pre className="text-[10px] text-red-400 whitespace-pre-wrap">{String(event.error)}</pre>
+          )}
+        </div>
+      )}
+
+      {expanded && type === "verification_done" && (
+        <div className="px-8 pb-2">
+          {readStr(event.reason) && (
+            <p className="text-[10px] text-slate-400">{readStr(event.reason)}</p>
+          )}
+        </div>
+      )}
+
+      {isFailure && onRetry && (
+        <div className="px-8 pb-2">
+          <button
+            onClick={() => onRetry(label)}
+            disabled={isRetrying}
+            className="text-[10px] text-primary hover:underline flex items-center gap-1 disabled:opacity-50"
+          >
+            {isRetrying ? <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-2.5 w-2.5" aria-hidden="true" />}
             Retry from here
           </button>
         </div>
       )}
-    </li>
+    </div>
   );
 }
 
-// Fix 7: human-readable event type labels
-const EVENT_LABELS: Record<string, string> = {
-  goal_started:        "🚀 Goal started",
-  plan_ready:          "📋 Plan ready",
-  step_started:        "▶️ Step started",
-  step_complete:       "✅ Step complete",
-  tool_call_complete:  "🔧 Tool call completed",
-  tool_call_failed:    "❌ Tool call failed",
-  goal_complete:       "🎉 Goal completed",
-  goal_failed:         "💥 Goal failed",
-  goal_cancelled:      "⛔ Goal cancelled",
-  approval_required:   "⏳ Awaiting approval",
-  approval_granted:    "✔️ Approval granted",
-  knowledge_retrieved: "📚 Knowledge retrieved",
-  verification_done:   "🔍 Verification done",
-};
-
-// Fix 10: live elapsed-time ticker for executing goals
-function ElapsedTimer({ startedAt }: { startedAt: string }) {
-  const [elapsed, setElapsed] = useState(0);
+function TerminalPanel({
+  events, goalStatus, streamingToken, connected, onRetry, isRetrying,
+}: {
+  events: StreamGoalEvent[];
+  goalStatus: string;
+  streamingToken: any;
+  connected: boolean;
+  onRetry: (d: string) => void;
+  isRetrying: boolean;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   useEffect(() => {
-    const start = new Date(startedAt).getTime();
-    const interval = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - start) / 1000));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [startedAt]);
+    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [events.length, autoScroll]);
 
-  const mins = Math.floor(elapsed / 60);
-  const secs = elapsed % 60;
   return (
-    <span className="font-mono text-sm text-primary" aria-label="Elapsed time">
-      {mins}:{String(secs).padStart(2, "0")}
-    </span>
+    <div className="rounded-xl border border-border overflow-hidden bg-[#0d1117] dark:bg-[#0d1117]">
+      {/* Terminal header bar */}
+      <div className="flex items-center justify-between px-4 py-2 bg-[#161b22] border-b border-[#30363d]">
+        <div className="flex items-center gap-2">
+          <Terminal className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+          <span className="text-xs font-mono text-slate-400">execution log</span>
+          {connected && (
+            <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
+              live
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-500 font-mono">{events.length} events</span>
+          <button
+            onClick={() => setAutoScroll((v) => !v)}
+            title={autoScroll ? "Disable auto-scroll" : "Enable auto-scroll"}
+            className={`text-[10px] px-1.5 py-0.5 rounded font-mono transition-colors ${autoScroll ? "text-emerald-400 bg-emerald-950/40" : "text-slate-500"}`}
+          >
+            {autoScroll ? "↓ auto" : "↓ manual"}
+          </button>
+        </div>
+      </div>
+
+      {/* Terminal body */}
+      <div
+        className="h-[420px] overflow-y-auto py-1 scroll-smooth"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+          setAutoScroll(atBottom);
+        }}
+      >
+        {events.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="font-mono text-xs text-slate-600">
+              {["complete", "failed", "cancelled"].includes(goalStatus)
+                ? "No live events captured — connect earlier next time."
+                : "Waiting for events…"}
+            </p>
+          </div>
+        ) : (
+          events.map((ev, i) => (
+            <TerminalLine
+              key={readStr(ev.event_id) ?? `ev-${i}`}
+              event={ev}
+              goalStatus={goalStatus}
+              onRetry={onRetry}
+              isRetrying={isRetrying}
+            />
+          ))
+        )}
+
+        {/* Live LLM streaming token */}
+        {streamingToken && (
+          <div className="px-3 py-1.5 border-t border-[#30363d] mt-1">
+            <p className="font-mono text-[10px] text-yellow-400 mb-1">
+              ⚙ generating: {streamingToken.step}
+            </p>
+            <p className="font-mono text-xs text-slate-300 whitespace-pre-wrap break-words">
+              {streamingToken.cumulative}
+              <span className="inline-block w-0.5 h-3.5 bg-yellow-400 animate-pulse ml-0.5 align-middle" aria-hidden="true" />
+            </p>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+    </div>
   );
 }
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export function GoalDetailPage() {
   const { goalId } = useParams<{ goalId: string }>();
@@ -326,705 +638,401 @@ export function GoalDetailPage() {
   const qc = useQueryClient();
   const tenantId = useAuthStore((s) => s.tenantId);
   const [approvalNote, setApprovalNote] = useState("");
-  const [selectedTab, setSelectedTab] = useState<GoalDetailTab | null>(null);
-  const tabRefs = useRef<Record<GoalDetailTab, HTMLButtonElement | null>>({
-    results: null,
-    evidence: null,
-    execution: null,
-    events: null,
-    eval: null,
-    explain: null,
+  const [selectedTab, setSelectedTab] = useState<Tab | null>(null);
+  const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
+    results: null, evidence: null, execution: null, events: null, eval: null, explain: null,
   });
 
   const { data: goal, isLoading } = useQuery({
     queryKey: ["goal", goalId],
     queryFn: () => goalsApi.get(goalId!),
-    refetchInterval: 5_000,
+    refetchInterval: (d) => {
+      const status = (d?.state?.data as any)?.status;
+      if (["complete", "failed", "cancelled"].includes(status ?? "")) return false;
+      return 4_000;
+    },
     enabled: !!goalId,
   });
 
-  // Update document title to reflect the current goal
   useEffect(() => {
     if (goal?.goal) {
-      const truncated = goal.goal.length > 50 ? goal.goal.slice(0, 50) + '…' : goal.goal;
-      document.title = `${truncated} — AgentVerse`;
-      return () => { document.title = 'AgentVerse'; };
+      const t = goal.goal.length > 50 ? goal.goal.slice(0, 50) + "…" : goal.goal;
+      document.title = `${t} — AgentVerse`;
+      return () => { document.title = "AgentVerse"; };
     }
   }, [goal?.goal]);
 
   const { events, connected, streamingToken } = useGoalStream(goalId ?? "");
 
-  const hasResultArtifact = Boolean(goal?.result_artifact);
-  const isTerminal = ["complete", "failed"].includes(goal?.status ?? "");
-  const visibleTabs: GoalDetailTabConfig[] = [
-    ...(hasResultArtifact
-      ? [
-          { tab: "results", label: "Results" },
-          { tab: "evidence", label: "Evidence" },
-        ] satisfies GoalDetailTabConfig[]
-      : []),
-    { tab: "execution", label: "Execution" },
-    { tab: "events", label: "Developer Log" },
-    ...(isTerminal ? [{ tab: "eval", label: "Eval" }] satisfies GoalDetailTabConfig[] : []),
-    ...(isTerminal ? [{ tab: "explain", label: "Why?" }] satisfies GoalDetailTabConfig[] : []),
+  const isTerminal = ["complete", "failed", "cancelled"].includes(goal?.status ?? "");
+  const hasArtifact = Boolean(goal?.result_artifact);
+
+  const visibleTabs: { tab: Tab; label: string; icon: React.ReactNode }[] = [
+    { tab: "results",   label: "Results",    icon: <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> },
+    { tab: "evidence",  label: "Evidence",   icon: <ListTree className="h-3.5 w-3.5" aria-hidden="true" /> },
+    { tab: "execution", label: "Execution",  icon: <Terminal className="h-3.5 w-3.5" aria-hidden="true" /> },
+    { tab: "events",    label: "Dev Log",    icon: <BookOpen className="h-3.5 w-3.5" aria-hidden="true" /> },
+    ...(isTerminal ? [{ tab: "eval" as Tab,    label: "Eval",     icon: <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" /> }] : []),
+    ...(isTerminal ? [{ tab: "explain" as Tab, label: "Why?",     icon: <Zap className="h-3.5 w-3.5" aria-hidden="true" /> }] : []),
   ];
-  const defaultTab: GoalDetailTab = isTerminal && hasResultArtifact ? "results" : "execution";
-  const activeTab: GoalDetailTab = visibleTabs.some(({ tab }) => tab === selectedTab)
-    ? selectedTab!
-    : defaultTab;
 
-  function selectTab(tab: GoalDetailTab, focus = false) {
+  const defaultTab: Tab = hasArtifact || isTerminal ? "results" : "execution";
+  const activeTab: Tab = visibleTabs.some(({ tab }) => tab === selectedTab)
+    ? selectedTab! : defaultTab;
+
+  const selectTab = useCallback((tab: Tab, focus = false) => {
     setSelectedTab(tab);
-    if (focus) {
-      tabRefs.current[tab]?.focus();
-    }
-  }
+    if (focus) tabRefs.current[tab]?.focus();
+  }, []);
 
-  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    const currentIndex = visibleTabs.findIndex(({ tab }) => tab === activeTab);
-    let nextIndex: number | undefined;
+  const handleTabKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
+    const ci = visibleTabs.findIndex(({ tab }) => tab === activeTab);
+    let ni: number | undefined;
+    if (e.key === "ArrowRight") ni = (ci + 1) % visibleTabs.length;
+    else if (e.key === "ArrowLeft") ni = (ci - 1 + visibleTabs.length) % visibleTabs.length;
+    else if (e.key === "Home") ni = 0;
+    else if (e.key === "End") ni = visibleTabs.length - 1;
+    if (ni !== undefined) { e.preventDefault(); selectTab(visibleTabs[ni].tab, true); }
+  };
 
-    switch (event.key) {
-      case "ArrowRight":
-        nextIndex = (currentIndex + 1) % visibleTabs.length;
-        break;
-      case "ArrowLeft":
-        nextIndex = (currentIndex - 1 + visibleTabs.length) % visibleTabs.length;
-        break;
-      case "Home":
-        nextIndex = 0;
-        break;
-      case "End":
-        nextIndex = visibleTabs.length - 1;
-        break;
-      default:
-        return;
-    }
-
-    event.preventDefault();
-    selectTab(visibleTabs[nextIndex].tab, true);
-  }
-
-  const retryFromStep = useMutation({
-    mutationFn: (stepDescription: string) =>
-      goalsApi.submit({
-        goal: `${goal?.goal ?? ''}\n\nContinue from this step: ${stepDescription}`,
-        dry_run: false,
-      }),
+  const retryMutation = useMutation({
+    mutationFn: (stepDesc: string) =>
+      goalsApi.submit({ goal: `${goal?.goal ?? ""}\n\nContinue from: ${stepDesc}`, dry_run: false }),
     onSuccess: (res) => {
-      toast({ kind: 'success', message: 'Goal re-submitted from this step!' });
-      void qc.invalidateQueries({ queryKey: ['goals'] });
+      toast({ kind: "success", message: "Goal re-submitted!" });
+      void qc.invalidateQueries({ queryKey: ["goals"] });
       navigate(`/goals/${res.id ?? res.goal_id}`);
     },
-    onError: () => toast({ kind: 'error', message: 'Failed to retry from this step' }),
+    onError: () => toast({ kind: "error", message: "Failed to retry" }),
   });
 
-  const cancel = useMutation({
+  const cancelMutation = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goal", goalId] }),
   });
 
   const pauseMutation = useMutation({
     mutationFn: () => goalsApi.pause(goalId!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["goal", goalId] });
-      toast({ kind: "success", message: "Goal paused." });
-    },
-    onError: (e) => toast({ kind: "error", message: `Pause failed: ${e}` }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); toast({ kind: "success", message: "Paused." }); },
   });
 
   const resumeMutation = useMutation({
     mutationFn: () => goalsApi.resume(goalId!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["goal", goalId] });
-      toast({ kind: "success", message: "Goal resumed." });
-    },
-    onError: (e) => toast({ kind: "error", message: `Resume failed: ${e}` }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); toast({ kind: "success", message: "Resumed." }); },
   });
 
-  // Event log (replay) — fetched when tab is active
+  // Event log (dev tab)
   const { data: eventLog = [], isLoading: eventsLoading } = useQuery({
     queryKey: ["goal-events", goalId],
     queryFn: () => goalsApi.getEventLog(goalId!),
     enabled: !!goalId && activeTab === "events",
   });
 
-  // Eval scorecard — fetched when tab is active and goal is terminal
+  // Eval
   const { data: evaluation, isLoading: evalLoading } = useQuery({
     queryKey: ["goal-eval", goalId],
     queryFn: () => goalsApi.getEvaluation(goalId!),
-    enabled:
-      !!goalId &&
-      activeTab === "eval" &&
-      isTerminal,
+    enabled: !!goalId && activeTab === "eval" && isTerminal,
   });
 
   const triggerEvalMutation = useMutation({
     mutationFn: () => goalsApi.triggerEvaluation(goalId!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["goal-eval", goalId] });
-      toast({ kind: "success", message: "Evaluation complete" });
-    },
-    onError: () => toast({ kind: "error", message: "Evaluation failed" }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal-eval", goalId] }); toast({ kind: "success", message: "Scored!" }); },
   });
 
-  // HITL: fetch pending approvals — enabled only while waiting_human
+  // HITL
   const { data: approvals, isLoading: approvalsLoading } = useQuery({
     queryKey: ["approvals"],
     queryFn: () => governanceApi.listApprovals(),
     enabled: goal?.status === "waiting_human",
     refetchInterval: 3_000,
   });
-
   const pendingApproval = approvals?.find(
     (a) => a.goal_id === (goal?.goal_id ?? goal?.id) && a.status === "pending"
   );
-
   const approveMutation = useMutation({
     mutationFn: () => {
-      if (!pendingApproval) throw new Error("No pending approval request found");
-      const approverName = `user:${tenantId?.slice(0, 8) ?? "unknown"}`;
-      return governanceApi.approve(pendingApproval.request_id, approverName, approvalNote);
+      if (!pendingApproval) throw new Error("No pending approval");
+      return governanceApi.approve(pendingApproval.request_id, `user:${tenantId?.slice(0, 8)}`, approvalNote);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["goal", goalId] });
-      qc.invalidateQueries({ queryKey: ["approvals"] });
-    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); qc.invalidateQueries({ queryKey: ["approvals"] }); },
   });
-
   const rejectMutation = useMutation({
     mutationFn: () => {
-      if (!pendingApproval) throw new Error("No pending approval request found");
-      const approverName = `user:${tenantId?.slice(0, 8) ?? "unknown"}`;
-      return governanceApi.reject(pendingApproval.request_id, approverName, approvalNote);
+      if (!pendingApproval) throw new Error("No pending approval");
+      return governanceApi.reject(pendingApproval.request_id, `user:${tenantId?.slice(0, 8)}`, approvalNote);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["goal", goalId] });
-      qc.invalidateQueries({ queryKey: ["approvals"] });
-    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); qc.invalidateQueries({ queryKey: ["approvals"] }); },
   });
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-40">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+  if (isLoading) return (
+    <div className="flex items-center justify-center h-60">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-label="Loading…" />
+    </div>
+  );
+  if (!goal) return (
+    <div className="text-center py-20 text-muted-foreground">
+      Goal not found.{" "}
+      <button onClick={() => navigate("/goals")} className="text-primary hover:underline">Back to goals</button>
+    </div>
+  );
 
-  if (!goal) {
-    return (
-      <div className="text-center py-20 text-muted-foreground">
-        Goal not found.{" "}
-        <button onClick={() => navigate("/goals")} className="text-primary hover:underline">
-          Back to goals
-        </button>
-      </div>
-    );
-  }
+  const artifact = goal.result_artifact as any;
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      {/* Header */}
+    <div className="space-y-5 w-full">
+      {/* ── Header ── */}
       <div>
         <button
           onClick={() => navigate("/goals")}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-3 transition-colors"
         >
-          <ArrowLeft className="h-4 w-4" /> Back to goals
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to goals
         </button>
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-bold leading-snug">{goalTitle(goal.goal)}</h1>
-            <p className="text-xs text-muted-foreground font-mono mt-1">{goal.goal_id}</p>
+            <h1 className="text-xl font-bold leading-snug break-words">{goalTitle(goal.goal)}</h1>
+            <p className="text-xs text-muted-foreground font-mono mt-1">{goal.goal_id ?? goalId}</p>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
             <StatusBadge status={goal.status} />
-            {/* Fix 10: live elapsed timer for in-progress goals */}
             {["executing", "planning"].includes(goal.status) && goal.created_at && (
               <ElapsedTimer startedAt={goal.created_at} />
             )}
             <LiveCostTicker
               currentCost={goal.cost_usd ?? 0}
-              isRunning={["planning", "executing", "verifying"].includes(goal.status)}
+              isRunning={["planning", "executing"].includes(goal.status)}
             />
           </div>
         </div>
       </div>
 
-      {goal.result_artifact && ["complete", "failed"].includes(goal.status) && (
-        <GoalOutcomeHero
-          goal={goal.goal}
-          status={goal.status}
-          artifact={goal.result_artifact}
-          onRerun={() => navigate('/goals', { state: { prefillGoal: goal?.goal ?? '' } })}
-        />
-      )}
-
-      {/* Actions */}
+      {/* ── Action buttons ── */}
       <div className="flex flex-wrap gap-2">
         {["executing", "planning"].includes(goal.status) && (
-          <button
-            onClick={() => cancel.mutate()}
-            disabled={cancel.isPending}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-destructive text-destructive rounded-md hover:bg-destructive/10 transition-colors disabled:opacity-50"
-          >
-            <XCircle className="h-4 w-4" /> Cancel
-          </button>
-        )}
-        {goal.status === "executing" && (
-          <button
-            onClick={() => pauseMutation.mutate()}
-            disabled={pauseMutation.isPending}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-yellow-300 text-yellow-700 rounded-md hover:bg-yellow-50 transition-colors disabled:opacity-50"
-            aria-label="Pause goal"
-          >
-            <Pause className="h-4 w-4" /> Pause
-          </button>
+          <>
+            <button
+              onClick={() => cancelMutation.mutate()}
+              disabled={cancelMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-destructive text-destructive rounded-lg hover:bg-destructive/10 transition-colors disabled:opacity-50"
+            >
+              <XCircle className="h-4 w-4" aria-hidden="true" />
+              Cancel
+            </button>
+            {goal.status === "executing" && (
+              <button
+                onClick={() => pauseMutation.mutate()}
+                disabled={pauseMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-yellow-300 text-yellow-700 rounded-lg hover:bg-yellow-50 transition-colors disabled:opacity-50"
+              >
+                <Pause className="h-4 w-4" aria-hidden="true" /> Pause
+              </button>
+            )}
+          </>
         )}
         {goal.status === "paused" && (
           <button
             onClick={() => resumeMutation.mutate()}
             disabled={resumeMutation.isPending}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-green-300 text-green-700 rounded-md hover:bg-green-50 transition-colors disabled:opacity-50"
-            aria-label="Resume goal"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-green-300 text-green-700 rounded-lg hover:bg-green-50 transition-colors disabled:opacity-50"
           >
-            <Play className="h-4 w-4" /> Resume
+            <Play className="h-4 w-4" aria-hidden="true" /> Resume
           </button>
         )}
         <button
           onClick={() => qc.invalidateQueries({ queryKey: ["goal", goalId] })}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-accent transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-accent transition-colors"
         >
-          <RefreshCw className="h-4 w-4" /> Refresh
+          <RefreshCw className="h-4 w-4" aria-hidden="true" /> Refresh
         </button>
+        {isTerminal && (
+          <button
+            onClick={() => navigate("/goals", { state: { prefillGoal: goal.goal } })}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity"
+          >
+            <RotateCcw className="h-4 w-4" aria-hidden="true" /> Rerun
+          </button>
+        )}
+        <div className="flex items-center gap-1 ml-auto">
+          <button onClick={() => navigate(`/goals/${goalId}/dna`)} title="View DNA" className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"><Dna className="h-4 w-4" aria-hidden="true" /></button>
+          <button onClick={() => navigate(`/goals/${goalId}/diff`)} title="Diff Run" className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"><GitCompare className="h-4 w-4" aria-hidden="true" /></button>
+          <button onClick={() => navigate("/goals/ghost-run")} title="Ghost Run" className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"><Ghost className="h-4 w-4" aria-hidden="true" /></button>
+        </div>
       </div>
 
-      {/* HITL approval panel */}
+      {/* ── HITL approval ── */}
       {goal.status === "waiting_human" && (
-        <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-xl p-5">
-          <h2 className="font-semibold text-sm mb-2 text-orange-800 dark:text-orange-300">
-            Human approval required
-          </h2>
-          <p className="text-sm text-orange-700 dark:text-orange-400 mb-3">
-            The agent is paused waiting for your approval to continue.
-          </p>
-
+        <div className="bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-800 rounded-xl p-5 space-y-3">
+          <h2 className="font-semibold text-sm text-orange-800 dark:text-orange-300">⏳ Human approval required</h2>
           {approvalsLoading ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Loading approval request…
-            </div>
+            <Skeleton className="h-8 w-full" />
           ) : !pendingApproval ? (
-            <p className="text-xs text-orange-600 dark:text-orange-400 italic mb-3">
-              Waiting for approval request to be registered by the backend…
-            </p>
+            <p className="text-xs text-orange-600 italic">Awaiting approval request from backend…</p>
           ) : (
-            <>
-              {pendingApproval.action && (
-                <p className="text-xs text-orange-700 dark:text-orange-400 mb-1">
-                  Action:{" "}
-                  <span className="font-mono font-medium">{pendingApproval.action}</span>
-                </p>
-              )}
-              {pendingApproval.risk_level && (
-                <p className="text-xs text-orange-700 dark:text-orange-400 mb-3">
-                  Risk level:{" "}
-                  <span className="font-medium capitalize">{pendingApproval.risk_level}</span>
-                </p>
-              )}
+            <div className="space-y-3">
+              {pendingApproval.action && <p className="text-xs text-orange-700">Action: <code className="font-mono">{pendingApproval.action}</code></p>}
               <textarea
                 value={approvalNote}
                 onChange={(e) => setApprovalNote(e.target.value)}
                 placeholder="Optional note…"
                 rows={2}
-                className="w-full px-3 py-2 text-sm border border-orange-300 dark:border-orange-700 rounded-md bg-background mb-3 focus:outline-none focus:ring-2 focus:ring-orange-400 resize-none"
+                className="w-full px-3 py-2 text-sm border border-orange-300 rounded-lg bg-background resize-none focus:outline-none focus:ring-2 focus:ring-orange-400"
               />
-              {(approveMutation.isError || rejectMutation.isError) && (
-                <p className="text-xs text-red-600 mb-2">
-                  {String(approveMutation.error ?? rejectMutation.error)}
-                </p>
-              )}
               <div className="flex gap-2">
-                <button
-                  onClick={() => approveMutation.mutate()}
-                  disabled={approveMutation.isPending || rejectMutation.isPending}
-                  className="flex items-center gap-1.5 px-4 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors disabled:opacity-50"
-                >
-                  {approveMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <CheckCircle className="h-3.5 w-3.5" />
-                  )}
-                  {approveMutation.isPending ? "Approving…" : "Approve"}
+                <button onClick={() => approveMutation.mutate()} disabled={approveMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 disabled:opacity-50">
+                  {approveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <CheckCircle className="h-3.5 w-3.5" aria-hidden="true" />}
+                  Approve
                 </button>
-                <button
-                  onClick={() => rejectMutation.mutate()}
-                  disabled={approveMutation.isPending || rejectMutation.isPending}
-                  className="flex items-center gap-1.5 px-4 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
-                >
-                  {rejectMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <XCircle className="h-3.5 w-3.5" />
-                  )}
-                  {rejectMutation.isPending ? "Rejecting…" : "Reject"}
+                <button onClick={() => rejectMutation.mutate()} disabled={rejectMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50">
+                  <XCircle className="h-3.5 w-3.5" aria-hidden="true" /> Reject
                 </button>
               </div>
-            </>
+            </div>
           )}
         </div>
       )}
 
-      {/* Tab bar */}
-      <div className="flex items-center gap-2 flex-wrap mt-2 pt-2 border-t border-border">
-        <span className="text-xs text-muted-foreground">Analysis:</span>
-        <button
-          onClick={() => navigate(`/goals/${goalId}/dna`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
-          title="Visualize execution as a force graph"
-        >
-          <Dna className="h-3 w-3" aria-hidden="true" />
-          View DNA
-        </button>
-        <button
-          onClick={() => navigate(`/goals/${goalId}/diff`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
-          title="Compare this run with another"
-        >
-          <GitCompare className="h-3 w-3" aria-hidden="true" />
-          Diff Run
-        </button>
-        <button
-          onClick={() => navigate("/goals/ghost-run")}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-muted/60 transition-colors"
-          title="Run same goal with multiple strategies"
-        >
-          <Ghost className="h-3 w-3" aria-hidden="true" />
-          Ghost Run
-        </button>
-      </div>
-
-      {/* Tab bar */}
-      <div role="tablist" aria-label="Goal detail tabs" className="flex gap-1 border-b">
-        {visibleTabs.map(({ tab, label }) => (
+      {/* ── SINGLE unified tab bar ── */}
+      <div role="tablist" aria-label="Goal detail tabs" className="flex gap-0.5 border-b border-border">
+        {visibleTabs.map(({ tab, label, icon }) => (
           <button
             key={tab}
-            ref={(element) => {
-              tabRefs.current[tab] = element;
-            }}
-            id={tabId(tab)}
+            ref={(el) => { tabRefs.current[tab] = el; }}
             role="tab"
             aria-selected={activeTab === tab}
-            aria-controls={tabPanelId(tab)}
             tabIndex={activeTab === tab ? 0 : -1}
             onClick={() => selectTab(tab)}
             onKeyDown={handleTabKeyDown}
-            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab
                 ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
             }`}
           >
+            {icon}
             {label}
+            {tab === "execution" && events.length > 0 && (
+              <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full font-mono ml-1">
+                {events.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
-      {activeTab === "results" && goal.result_artifact && (
-        <div
-          id={tabPanelId("results")}
-          role="tabpanel"
-          aria-labelledby={tabId("results")}
-          tabIndex={0}
-        >
-          <GoalResultCanvas
-            artifact={goal.result_artifact}
-            onShowExecution={() => selectTab("execution", true)}
+      {/* ── Tab panels ── */}
+
+      {/* Results — ALWAYS shows something */}
+      {activeTab === "results" && (
+        <div role="tabpanel" className="space-y-4">
+          <RichResultPanel
+            artifact={artifact}
+            events={events}
+            goal={goal.goal}
+            status={goal.status}
           />
           {goalId && <GoalFeedback goalId={goalId} status={goal.status} />}
         </div>
       )}
 
-      {activeTab === "evidence" && goal.result_artifact && (
-        <div
-          id={tabPanelId("evidence")}
-          role="tabpanel"
-          aria-labelledby={tabId("evidence")}
-          tabIndex={0}
-        >
-          <GoalEvidencePanel artifact={goal.result_artifact} />
+      {/* Evidence — built from events + artifact */}
+      {activeTab === "evidence" && (
+        <div role="tabpanel">
+          <EnhancedEvidencePanel artifact={artifact} events={events} />
         </div>
       )}
 
-      {/* Execution tab */}
+      {/* Execution — terminal-style */}
       {activeTab === "execution" && (
-        <div
-          id={tabPanelId("execution")}
-          role="tabpanel"
-          aria-labelledby={tabId("execution")}
-          tabIndex={0}
-        >
-          {/* Live event stream */}
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <h2 className="font-semibold text-sm">Pipeline steps</h2>
-              <span className={`text-xs ${connected ? "text-green-500" : "text-muted-foreground"}`}>
-                {connected ? "● Live" : "○ Disconnected"}
-              </span>
-            </div>
-            {events.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                {goal.status === "complete" || goal.status === "failed"
-                  ? "Goal finished. No live events."
-                  : "Waiting for events…"}
-              </div>
-            ) : (
-              <ul>
-                {events.map((evt, i) => (
-                  <StepRow
-                    key={readString(evt.event_id) ?? `evt-${i}`}
-                    event={evt}
-                    events={events}
-                    index={i}
-                    goalStatus={goal.status}
-                    onRetry={(desc) => retryFromStep.mutate(desc)}
-                    isRetrying={retryFromStep.isPending}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {/* Live token streaming display — shown while the LLM is generating */}
-          {streamingToken && (
-            <div
-              role="status"
-              aria-live="polite"
-              aria-label="Live LLM output"
-              className="rounded-lg border border-border bg-muted/30 p-3 text-sm font-mono"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-2 w-2 rounded-full bg-primary animate-pulse"
-                />
-                <span className="text-xs text-muted-foreground">
-                  Generating: {streamingToken.step}
-                </span>
-              </div>
-              <p className="text-foreground whitespace-pre-wrap break-words">
-                {streamingToken.cumulative}
-                <span
-                  aria-hidden="true"
-                  className="inline-block w-0.5 h-4 bg-primary animate-pulse ml-0.5 align-middle"
-                />
-              </p>
-            </div>
-          )}
-
-          {/* Execution Timeline */}
-          {events.length > 0 && <ExecutionTimeline events={events} />}
-
-          {/* Tool Call Inspector */}
-          {events.some((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed") && (
-            <ToolCallInspector
-              toolEvents={events.filter((e) => e.type === "tool_call_complete" || e.type === "tool_call_failed")}
-            />
-          )}
+        <div role="tabpanel" className="space-y-3">
+          <TerminalPanel
+            events={events}
+            goalStatus={goal.status}
+            streamingToken={streamingToken}
+            connected={connected}
+            onRetry={(d) => retryMutation.mutate(d)}
+            isRetrying={retryMutation.isPending}
+          />
         </div>
       )}
 
-      {/* Event Log tab */}
+      {/* Developer Log */}
       {activeTab === "events" && (
-        <div
-          id={tabPanelId("events")}
-          role="tabpanel"
-          aria-labelledby={tabId("events")}
-          tabIndex={0}
-          className="space-y-2"
-        >
+        <div role="tabpanel" className="space-y-2">
           {eventsLoading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))
+            ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)
             : eventLog.length === 0
-            ? (
-              <EmptyState
-                title="No persisted events"
-                description="Events appear after goal execution completes."
-              />
-            )
-            : eventLog.map((ev, i) => {
-              const timestamp = eventTimestamp(ev);
-              const payload = eventPayload(ev);
-              return (
-              <div
-                key={i}
-                className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm"
-              >
+            ? <EmptyState title="No persisted events" description="Events appear after goal execution completes." />
+            : eventLog.map((ev, i) => (
+              <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm">
                 <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-                  {timestamp
-                    ? new Date(timestamp).toLocaleTimeString()
-                    : `#${i + 1}`}
+                  {(ev as any).created_at ? new Date((ev as any).created_at).toLocaleTimeString() : `#${i + 1}`}
                 </span>
-                <span className="font-medium">{EVENT_LABELS[ev.type] ?? ev.type}</span>
-                {payload?.message != null && (
-                  <span className="text-muted-foreground text-xs">
-                    {String(payload.message)}
-                  </span>
+                <span className="font-medium">{(ev as any).type?.replace(/_/g, " ")}</span>
+                {(ev as any).payload?.message != null && (
+                  <span className="text-muted-foreground text-xs">{String((ev as any).payload.message)}</span>
                 )}
               </div>
-              );
-            })}
+            ))
+          }
         </div>
       )}
 
-      {/* Eval tab */}
+      {/* Eval */}
       {activeTab === "eval" && (
-        <div
-          id={tabPanelId("eval")}
-          role="tabpanel"
-          aria-labelledby={tabId("eval")}
-          tabIndex={0}
-          className="space-y-4"
-        >
-          {/* Header row with Run Eval button */}
+        <div role="tabpanel" className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold">Evaluation Scorecard</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                7-dimension assessment with LLM-as-judge accuracy &amp; coherence
-              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">7-dimension quality assessment</p>
             </div>
             <button
-              type="button"
               onClick={() => triggerEvalMutation.mutate()}
               disabled={triggerEvalMutation.isPending || !isTerminal}
-              aria-label="Run evaluation"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              {triggerEvalMutation.isPending ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  Scoring…
-                </>
-              ) : (
-                <>
-                  <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
-                  {evaluation ? "Re-score" : "Run Eval"}
-                </>
-              )}
+              {triggerEvalMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />}
+              {evaluation ? "Re-score" : "Run Eval"}
             </button>
           </div>
-
           {evalLoading || triggerEvalMutation.isPending ? (
-            <div className="space-y-3">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
+            <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
           ) : !evaluation || (evaluation as any).status === "not_evaluated" ? (
             <div className="rounded-xl border border-dashed bg-muted/20 p-8 text-center">
               <FlaskConical className="mx-auto h-8 w-8 opacity-30 mb-3" aria-hidden="true" />
               <p className="text-sm font-medium">No evaluation yet</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {isTerminal
-                  ? 'Click "Run Eval" to score this goal on 7 quality dimensions.'
-                  : "Evaluation runs automatically after goal completion."}
-              </p>
+              <p className="text-xs text-muted-foreground mt-1">Click "Run Eval" to score this goal on 7 quality dimensions.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {/* Overall score hero */}
-              <div className={`flex items-center gap-4 p-4 rounded-xl border-2 ${
-                evaluation.passed
-                  ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/60 dark:bg-emerald-950/20"
-                  : "border-red-200 bg-red-50 dark:border-red-800/60 dark:bg-red-950/20"
-              }`}>
-                <div className={`text-4xl font-bold tabular-nums ${
-                  evaluation.passed
-                    ? "text-emerald-700 dark:text-emerald-300"
-                    : "text-red-700 dark:text-red-300"
-                }`}>
+              <div className={`flex items-center gap-4 p-4 rounded-xl border-2 ${evaluation.passed ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/20" : "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20"}`}>
+                <div className={`text-4xl font-bold tabular-nums ${evaluation.passed ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}`}>
                   {(((evaluation.average_score ?? (evaluation as any).score ?? 0)) * 100).toFixed(0)}%
                 </div>
                 <div>
                   <p className="text-sm font-semibold">Overall Score</p>
-                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
-                    evaluation.passed
-                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                  }`}>
+                  <span className={`inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full ${evaluation.passed ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40" : "bg-red-100 text-red-700 dark:bg-red-900/40"}`}>
                     {evaluation.passed ? "✓ PASSED" : "✗ FAILED"}
                   </span>
-                  {evaluation.iterations != null && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {evaluation.iterations} iteration{evaluation.iterations !== 1 ? "s" : ""}
-                    </p>
-                  )}
                 </div>
               </div>
-
-              {/* 7-dimension breakdown with progress bars */}
-              {evaluation.scores && Object.keys(evaluation.scores).length > 0 && (
+              {evaluation.scores && (
                 <div className="rounded-xl border bg-card overflow-hidden">
-                  <div className="px-4 py-3 border-b">
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Dimension Breakdown
-                    </h4>
+                  <div className="px-4 py-3 border-b bg-muted/30">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dimension Breakdown</h4>
                   </div>
                   <div className="divide-y">
                     {Object.entries(evaluation.scores).map(([dim, rawScore]) => {
-                      const score = (rawScore as number) ?? 0;
-                      const pct = Math.round(score * 100);
-                      const passed = pct >= 70;
-                      const LABELS: Record<string, string> = {
-                        task_completion: "Task Completion",
-                        efficiency: "Efficiency",
-                        accuracy: "Accuracy (LLM)",
-                        safety: "Safety",
-                        coherence: "Coherence (LLM)",
-                        sla: "SLA Compliance",
-                        tool_relevance: "Tool Relevance",
-                      };
-                      const COLORS: Record<string, string> = {
-                        task_completion: "bg-blue-500",
-                        efficiency: "bg-green-500",
-                        accuracy: "bg-violet-500",
-                        safety: "bg-orange-500",
-                        coherence: "bg-teal-500",
-                        sla: "bg-sky-500",
-                        tool_relevance: "bg-amber-500",
-                      };
+                      const pct = Math.round((rawScore as number) * 100);
+                      const labels: Record<string, string> = { task_completion: "Task Completion", efficiency: "Efficiency", accuracy: "Accuracy", safety: "Safety", coherence: "Coherence", sla: "SLA", tool_relevance: "Tool Relevance" };
+                      const colors: Record<string, string> = { task_completion: "bg-blue-500", efficiency: "bg-green-500", accuracy: "bg-violet-500", safety: "bg-orange-500", coherence: "bg-teal-500", sla: "bg-sky-500", tool_relevance: "bg-amber-500" };
                       return (
                         <div key={dim} className="flex items-center gap-3 px-4 py-3">
-                          <div className="w-36 flex-shrink-0">
-                            <p className="text-xs font-medium">
-                              {LABELS[dim] ?? dim.replace(/_/g, " ")}
-                            </p>
-                          </div>
+                          <p className="w-36 text-xs font-medium shrink-0">{labels[dim] ?? dim.replace(/_/g, " ")}</p>
                           <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${COLORS[dim] ?? "bg-primary"}`}
-                              style={{ width: `${pct}%` }}
-                              role="progressbar"
-                              aria-valuenow={pct}
-                              aria-valuemin={0}
-                              aria-valuemax={100}
-                              aria-label={`${LABELS[dim] ?? dim} ${pct}%`}
-                            />
+                            <div className={`h-full rounded-full ${colors[dim] ?? "bg-primary"}`} style={{ width: `${pct}%` }} />
                           </div>
-                          <span className="w-10 text-right flex-shrink-0 text-xs font-semibold tabular-nums">
-                            {pct}%
-                          </span>
-                          <span className={`text-[10px] font-bold w-4 flex-shrink-0 ${
-                            passed
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : "text-red-500 dark:text-red-400"
-                          }`}>
-                            {passed ? "✓" : "✗"}
-                          </span>
+                          <span className="w-10 text-right text-xs font-semibold tabular-nums">{pct}%</span>
                         </div>
                       );
                     })}
@@ -1036,27 +1044,17 @@ export function GoalDetailPage() {
         </div>
       )}
 
-      {/* Explain tab */}
+      {/* Explain */}
       {activeTab === "explain" && (
-        <div
-          id={tabPanelId("explain")}
-          role="tabpanel"
-          aria-labelledby={tabId("explain")}
-          tabIndex={0}
-          className="space-y-4"
-        >
+        <div role="tabpanel">
           <GoalExplainPanel goalId={goalId!} />
         </div>
       )}
 
       {import.meta.env.DEV && (
         <details className="mt-4">
-          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-            Debug: raw goal state
-          </summary>
-          <pre className="mt-2 text-[10px] bg-muted rounded p-3 overflow-auto max-h-64">
-            {JSON.stringify(goal, null, 2)}
-          </pre>
+          <summary className="text-xs text-muted-foreground cursor-pointer">Debug: raw goal state</summary>
+          <pre className="mt-2 text-[10px] bg-muted rounded p-3 overflow-auto max-h-64">{JSON.stringify(goal, null, 2)}</pre>
         </details>
       )}
     </div>
