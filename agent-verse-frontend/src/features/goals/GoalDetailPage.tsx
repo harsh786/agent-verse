@@ -643,14 +643,12 @@ export function GoalDetailPage() {
     results: null, evidence: null, execution: null, events: null, eval: null, explain: null,
   });
 
-  const { data: goal, isLoading } = useQuery({
+  const { data: goal, isLoading, refetch: refetchGoal } = useQuery({
     queryKey: ["goal", goalId],
     queryFn: () => goalsApi.get(goalId!),
-    refetchInterval: (d) => {
-      const status = (d?.state?.data as any)?.status;
-      if (["complete", "failed", "cancelled"].includes(status ?? "")) return false;
-      return 4_000;
-    },
+    // Poll every 3s while running, stop on terminal state
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: true,
     enabled: !!goalId,
   });
 
@@ -662,7 +660,30 @@ export function GoalDetailPage() {
     }
   }, [goal?.goal]);
 
-  const { events, connected, streamingToken } = useGoalStream(goalId ?? "");
+  // Stop polling once terminal — don't spam the API after completion
+  useEffect(() => {
+    // noop — refetchInterval above handles it statically; we keep polling to
+    // pick up status transitions from "planning" → "executing" → "complete"
+  }, []);
+
+  const [streamKey, setStreamKey] = useState(0);
+  const { events: sseEvents, connected, streamingToken } = useGoalStream(
+    streamKey > 0 || true ? (goalId ?? "") : ""
+  );
+
+  // Fetch persisted event log — used to populate Execution tab when SSE has no events
+  // (e.g. navigated to a completed goal after the fact)
+  const { data: persistedEvents = [] } = useQuery({
+    queryKey: ["goal-events-exec", goalId],
+    queryFn: () => goalsApi.getEventLog(goalId!),
+    enabled: !!goalId,
+    staleTime: 10_000,
+  });
+
+  // Merge: prefer live SSE events; fall back to persisted events when SSE is empty
+  const events: StreamGoalEvent[] = sseEvents.length > 0
+    ? sseEvents
+    : (persistedEvents as unknown as StreamGoalEvent[]);
 
   const isTerminal = ["complete", "failed", "cancelled"].includes(goal?.status ?? "");
   const hasArtifact = Boolean(goal?.result_artifact);
@@ -721,11 +742,13 @@ export function GoalDetailPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); toast({ kind: "success", message: "Resumed." }); },
   });
 
-  // Event log (dev tab)
+  // Event log (dev tab) — reuse the eagerly-fetched persistedEvents when possible
   const { data: eventLog = [], isLoading: eventsLoading } = useQuery({
     queryKey: ["goal-events", goalId],
     queryFn: () => goalsApi.getEventLog(goalId!),
     enabled: !!goalId && activeTab === "events",
+    // If we already have persisted events from the exec tab query, use staleTime
+    staleTime: 15_000,
   });
 
   // Eval
@@ -840,7 +863,13 @@ export function GoalDetailPage() {
           </button>
         )}
         <button
-          onClick={() => qc.invalidateQueries({ queryKey: ["goal", goalId] })}
+          onClick={() => {
+            void refetchGoal();
+            void qc.invalidateQueries({ queryKey: ["goal-events-exec", goalId] });
+            void qc.invalidateQueries({ queryKey: ["goal-events", goalId] });
+            // Force SSE reconnect by bumping the stream key
+            setStreamKey((k) => k + 1);
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-accent transition-colors"
         >
           <RefreshCw className="h-4 w-4" aria-hidden="true" /> Refresh

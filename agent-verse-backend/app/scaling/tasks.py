@@ -948,7 +948,7 @@ def run_goal(
             # Without this, the rag_retrieval node is a no-op in the worker.
             _knowledge_store_worker = None
             try:
-                from app.knowledge.store import KnowledgeStore as _KnowledgeStore
+                from app.rag.store import KnowledgeStore as _KnowledgeStore  # correct path
                 if db_factory is not None:
                     _knowledge_store_worker = _KnowledgeStore(db_factory=db_factory)
             except Exception as _ks_exc:

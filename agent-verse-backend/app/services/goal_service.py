@@ -1701,7 +1701,7 @@ class GoalService:
             if agent_id is None and self._app_state is not None:
                 agent_store = self._get_agent_store()
                 if agent_store is not None:
-                    # H-6: Use pre-wired router from app.state (has DB session)
+                    # H-6: Use pre-wired router from app.state (has DB history scoring)
                     agent_router = getattr(self._app_state, "agent_router", None)
                     try:
                         if agent_router is not None:
@@ -1753,6 +1753,26 @@ class GoalService:
                                     }
                     except Exception as exc:
                         _svc_logger.warning("agent_router_failed", error=str(exc))
+
+                    # ── Fallback: pick first available agent when router fails or returns
+                    # low confidence — prevents goals from running with no connectors.
+                    if agent_id is None:
+                        try:
+                            _all_agents = agent_store.list(tenant_ctx=tenant_ctx)
+                            if asyncio.iscoroutine(_all_agents):
+                                _all_agents = await _all_agents
+                            if _all_agents:
+                                agent_id = getattr(_all_agents[0], "agent_id", None) or (
+                                    _all_agents[0].get("agent_id") if isinstance(_all_agents[0], dict) else None
+                                )
+                                if agent_id:
+                                    _svc_logger.info(
+                                        "auto_routed_fallback",
+                                        goal_id=goal_id,
+                                        agent_id=agent_id,
+                                    )
+                        except Exception as _fb_exc:
+                            _svc_logger.debug("agent_fallback_failed: %s", _fb_exc)
 
             record = GoalRecord(
                 goal_id=goal_id,
