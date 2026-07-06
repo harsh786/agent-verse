@@ -1,7 +1,10 @@
-"""Tests for SlidingWindowRateLimiter."""
+"""Tests for SlidingWindowRateLimiter and RateLimiter."""
 
+import asyncio
 
-from app.tenancy.rate_limiter import SlidingWindowRateLimiter
+import pytest
+
+from app.tenancy.rate_limiter import RateLimiter, SlidingWindowRateLimiter
 from app.tenancy.store import TenantScopedStore
 from tests.tenancy.test_store import FakeRedis
 
@@ -70,3 +73,30 @@ async def test_different_endpoints_have_separate_counters() -> None:
     # ep2 should still be under limit
     allowed, _, _ = await limiter.check_and_record("ep2", limit=5, now=1000.0)
     assert allowed is True
+
+
+# ---------------------------------------------------------------------------
+# RateLimiter tests (atomic in-memory fallback)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rate_limit_atomic_under_concurrent_requests() -> None:
+    """Concurrent requests must not exceed the rate limit (in-memory path)."""
+    from app.tenancy.context import PlanTier, TenantContext
+
+    # Use in-memory fallback (redis=None) — exercises asyncio.Lock path
+    limiter = RateLimiter(redis=None, limit=5, window_seconds=60)
+    ctx = TenantContext(tenant_id="test-rl", plan=PlanTier.FREE, api_key_id="k1")
+
+    results = await asyncio.gather(*[limiter.check(tenant_ctx=ctx) for _ in range(10)])
+
+    allowed = sum(1 for r in results if r is True or r == "allowed")
+    # With a 5-request limit, at most 5 should be allowed
+    assert allowed <= 5
+
+
+def test_worker_checkpointer_module_exists() -> None:
+    """The _WORKER_CHECKPOINTER module-level var must exist in tasks."""
+    from app.scaling import tasks
+
+    assert hasattr(tasks, "_WORKER_CHECKPOINTER")

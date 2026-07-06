@@ -81,6 +81,7 @@ _BYPASS_PREFIXES = (
     "/auth/config",     # frontend SSO config discovery
     "/auth/token",      # authorization code exchange
     "/integrations/",   # integration webhooks use their own auth (Slack sig, Zapier secret)
+    "/billing/webhook", # Razorpay webhook — authenticated by HMAC signature, not API key
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]

@@ -505,6 +505,7 @@ def test_submit_batch_goals_requires_auth() -> None:
 
 def test_get_batch_status() -> None:
     svc = AsyncMock()
+    svc.get_goal.return_value = {"status": "complete", "goal": "test goal"}
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.get(
         "/goals/batch/batch-123/status",
