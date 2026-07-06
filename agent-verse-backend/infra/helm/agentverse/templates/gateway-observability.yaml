@@ -162,7 +162,7 @@ spec:
         - name: config
           mountPath: /etc/promtail
         - name: pods
-          mountPath: /var/log/pods
+          mountPath: /var/log/containers
           readOnly: true
         - name: run
           mountPath: /run/promtail
@@ -172,7 +172,7 @@ spec:
           name: {{ include "agentverse.fullname" . }}-promtail
       - name: pods
         hostPath:
-          path: /var/log/pods
+          path: /var/log/containers
       - name: run
         emptyDir: {}
 {{- end }}

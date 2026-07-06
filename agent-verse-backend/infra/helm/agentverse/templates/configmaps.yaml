@@ -123,7 +123,7 @@ data:
         labels:
           namespace: {{ .Release.Namespace | quote }}
           job: agentverse-pods
-          __path__: /var/log/pods/{{ .Release.Namespace }}_*/*/*.log
+          __path__: /var/log/containers/*_{{ .Release.Namespace }}_*.log
       pipeline_stages:
       - cri: {}
 {{- end }}
