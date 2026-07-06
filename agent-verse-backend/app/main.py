@@ -716,10 +716,11 @@ def create_app(
                 _redis_url = settings.redis_url
                 if _redis_url:
                     try:
-                        import redis.asyncio as aioredis
-                        _aioredis: Any = aioredis
-                        _direct_redis: Any = _aioredis.from_url(
-                            _redis_url, decode_responses=True
+                        from app.net.redis_factory import get_redis_kwargs, make_async_redis
+
+                        _direct_redis: Any = make_async_redis(
+                            **get_redis_kwargs(),
+                            decode_responses=True,
                         )
                         redis_for_runtime = _direct_redis
                         app.state._rate_limiter_redis = _direct_redis
@@ -940,6 +941,10 @@ def create_app(
             if redis_for_runtime is not None:
                 # GoalService: Redis pub/sub for cross-replica SSE delivery.
                 _goal_svc_with_db._redis = redis_for_runtime
+                # Store URL so subscribe_events() can open dedicated pub/sub connections
+                # (a single shared Redis client cannot serve multiple blocking subscribers).
+                if settings.redis_url:
+                    _goal_svc_with_db._redis_url_for_pubsub = str(settings.redis_url)
 
                 # CostController: Redis for cross-replica budget accuracy.
                 _cost_ctrl = getattr(app.state, "cost_controller", None)

@@ -1,0 +1,54 @@
+# Redis HA production configuration for AgentVerse.
+#
+# Override on install:
+#   helm upgrade --install agentverse ./agentverse -f values.yaml -f values-ha.yaml
+#
+# Choose ONE mode: sentinel (recommended) or cluster (high-throughput).
+# Set the corresponding `enabled` flag to true and supply the node list.
+
+# ── Sentinel (recommended for <50 k goals/day) ────────────────────────────────
+# Requires an external Redis Sentinel cluster or a managed Redis HA product
+# (e.g. AWS ElastiCache with Cluster Mode disabled, Azure Cache for Redis with
+# geo-replication, or a self-managed redis-sentinel StatefulSet).
+#
+# Env vars injected into every workload pod:
+#   REDIS_SENTINEL_URLS   = sentinel1:26379,sentinel2:26379,sentinel3:26379
+#   REDIS_SENTINEL_MASTER = mymaster
+#   REDIS_SENTINEL_DB     = 0          (optional, default 0)
+#
+# ── Cluster (for high-throughput / horizontal sharding) ───────────────────────
+# Requires Redis Cluster mode.  Set REDIS_CLUSTER_NODES instead of SENTINEL_URLS.
+#
+# ── Single-node (default / dev) ───────────────────────────────────────────────
+# Controlled by externalServices.redisHost (existing setting).
+
+redis:
+  ha:
+    # ----- Sentinel -----
+    sentinel:
+      enabled: false
+      # Comma-separated list of sentinel nodes: "s1:26379,s2:26379,s3:26379"
+      urls: ""
+      master: "mymaster"
+      db: "0"
+      # Optional — leave empty if Redis is not password-protected.
+      password: ""
+
+    # ----- Cluster -----
+    cluster:
+      enabled: false
+      # Comma-separated list of cluster seed nodes: "n1:6379,n2:6379,n3:6379"
+      nodes: ""
+      password: ""
+
+# Example: map the HA env vars into the backend Deployment via extraEnv.
+# Uncomment and fill in when sentinel.enabled = true.
+#
+# backend:
+#   extraEnv:
+#     - name: REDIS_SENTINEL_URLS
+#       value: "sentinel1.redis.svc:26379,sentinel2.redis.svc:26379,sentinel3.redis.svc:26379"
+#     - name: REDIS_SENTINEL_MASTER
+#       value: "mymaster"
+#     - name: REDIS_URL
+#       value: ""   # clear single-node URL so the factory picks Sentinel

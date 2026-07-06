@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Redis HA settings ---
+    # Sentinel (recommended for <50 k goals/day):
+    #   REDIS_SENTINEL_URLS=sentinel1:26379,sentinel2:26379,sentinel3:26379
+    redis_sentinel_urls: str = ""
+    redis_sentinel_master: str = "mymaster"
+    # Cluster (high-throughput / horizontal sharding):
+    #   REDIS_CLUSTER_NODES=node1:6379,node2:6379,node3:6379
+    redis_cluster_nodes: str = ""
+    # Shared Redis password (used by Sentinel master, Cluster, and single-node)
+    redis_password: str = ""
+
     # --- database pool ---
     db_pool_size: int = 10
     db_max_overflow: int = 5

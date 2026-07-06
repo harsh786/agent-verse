@@ -56,6 +56,47 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── Redis Sentinel — HA failover testing (activate with: COMPOSE_PROFILES=sentinel) ──
+  # Usage:
+  #   docker-compose --profile sentinel up -d
+  #   REDIS_SENTINEL_URLS=localhost:26379,localhost:26380,localhost:26381
+  #   REDIS_SENTINEL_MASTER=mymaster
+  redis-sentinel-1:
+    image: redis:7-alpine
+    profiles: ["sentinel"]
+    restart: unless-stopped
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+    ports:
+      - "26379:26379"
+    depends_on:
+      - redis
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    profiles: ["sentinel"]
+    restart: unless-stopped
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+    ports:
+      - "26380:26379"
+    depends_on:
+      - redis
+
+  redis-sentinel-3:
+    image: redis:7-alpine
+    profiles: ["sentinel"]
+    restart: unless-stopped
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+    ports:
+      - "26381:26379"
+    depends_on:
+      - redis
+
   # ── PgBouncer — connection pool proxy ────────────────────────────────────────
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
