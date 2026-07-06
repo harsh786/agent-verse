@@ -100,11 +100,11 @@ function ConnectorCard({
               </h3>
               {entry.has_builtin && (
                 <span
-                  title="Native optimised handler — faster and more reliable"
-                  className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                  title="Native built-in handler — runs inside AgentVerse, no external MCP server needed. Faster, more reliable, works with env vars OR per-connector credentials."
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 dark:border-amber-700"
                 >
-                  <Zap className="h-2.5 w-2.5" aria-hidden="true" />
-                  Native
+                  <Zap className="h-3 w-3 fill-amber-600 text-amber-600 dark:fill-amber-400 dark:text-amber-400" aria-hidden="true" />
+                  Built-in
                 </span>
               )}
             </div>
@@ -176,6 +176,8 @@ export function ConnectorsCatalogPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
+  const [builtinOnly, setBuiltinOnly] = useState(false);
+  const [showBuiltinInfo, setShowBuiltinInfo] = useState(false);
 
   const { data: catalog = [], isLoading, isError } = useQuery({
     queryKey: ['connectors-catalog'],
@@ -194,6 +196,9 @@ export function ConnectorsCatalogPage() {
     if (activeCategory !== 'all') {
       result = result.filter((e) => e.category === activeCategory);
     }
+    if (builtinOnly) {
+      result = result.filter((e) => e.has_builtin);
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter(
@@ -208,7 +213,7 @@ export function ConnectorsCatalogPage() {
       if (a.has_builtin !== b.has_builtin) return a.has_builtin ? -1 : 1;
       return (a.display_name || a.name).localeCompare(b.display_name || b.name);
     });
-  }, [catalog, search, activeCategory]);
+  }, [catalog, search, activeCategory, builtinOnly]);
 
   const configuredCount = catalog.filter((e) => e.is_configured).length;
 
@@ -238,16 +243,77 @@ export function ConnectorsCatalogPage() {
                 · {configuredCount} configured
               </span>
             )}
+            <span className="ml-2 font-medium text-amber-700 dark:text-amber-400">
+              · {catalog.filter((e) => e.has_builtin).length} built-in
+            </span>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => navigate('/connectors')}
-          className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
-        >
-          My Connectors
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowBuiltinInfo((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 transition-colors dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+            title="What is a built-in connector?"
+          >
+            <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+            What is Built-in?
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/connectors')}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+          >
+            My Connectors
+          </button>
+        </div>
       </div>
+
+      {/* Built-in explanation callout */}
+      {showBuiltinInfo && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-4 space-y-3">
+          <div className="flex items-start gap-2">
+            <Zap className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0 fill-amber-200 dark:fill-amber-900" />
+            <div>
+              <p className="font-semibold text-amber-900 dark:text-amber-200 text-sm">
+                Built-in connectors run inside AgentVerse
+              </p>
+              <p className="text-xs text-amber-800 dark:text-amber-300 mt-1 leading-relaxed">
+                When you configure a <strong>Built-in</strong> connector (marked with ⚡), tool calls are handled
+                by native Python code inside AgentVerse — not an external MCP server. This means:
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="rounded-lg bg-white dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
+              <p className="font-semibold text-amber-900 dark:text-amber-200">⚡ Built-in (Native)</p>
+              <ul className="space-y-1 text-amber-800 dark:text-amber-300">
+                <li>✅ No external server needed</li>
+                <li>✅ Sub-millisecond dispatch (in-process)</li>
+                <li>✅ Works with env vars or per-connector credentials</li>
+                <li>✅ Tools: fixed set, well-tested</li>
+                <li>✅ Works even if Atlassian/GitHub MCP is down</li>
+                <li>Example: Jira, GitHub, Slack, Confluence, Stripe…</li>
+              </ul>
+            </div>
+            <div className="rounded-lg bg-white dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
+              <p className="font-semibold text-amber-900 dark:text-amber-200">🔌 Custom Registration</p>
+              <ul className="space-y-1 text-amber-800 dark:text-amber-300">
+                <li>🔵 Points to any external MCP server URL</li>
+                <li>🔵 HTTP round-trip per tool call (50–500ms)</li>
+                <li>🔵 Credentials from vault only (no env fallback)</li>
+                <li>🔵 Tools: dynamically discovered from remote server</li>
+                <li>🔵 Can use official vendor-hosted MCP endpoints</li>
+                <li>Example: GitHub Copilot MCP, Atlassian MCP, custom servers</li>
+              </ul>
+            </div>
+          </div>
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            <strong>Tip:</strong> For Jira, Confluence, GitHub, Slack etc. — prefer the built-in connector.
+            Use custom registration only if you specifically need a vendor-hosted MCP endpoint
+            (e.g. <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded font-mono">https://api.githubcopilot.com/mcp/</code>).
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="relative flex-1 max-w-sm">
@@ -262,6 +328,20 @@ export function ConnectorsCatalogPage() {
           />
         </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by category">
+          {/* Built-in toggle — always first */}
+          <button
+            type="button"
+            onClick={() => setBuiltinOnly((v) => !v)}
+            aria-pressed={builtinOnly}
+            className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold transition-colors border ${
+              builtinOnly
+                ? 'bg-amber-500 text-white border-amber-500'
+                : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-700'
+            }`}
+          >
+            <Zap className={`h-3 w-3 ${builtinOnly ? 'fill-white text-white' : 'fill-amber-400 text-amber-600 dark:fill-amber-500'}`} aria-hidden="true" />
+            Built-in only
+          </button>
           {categories.map((cat) => (
             <button
               key={cat}

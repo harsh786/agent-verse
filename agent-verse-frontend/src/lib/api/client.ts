@@ -368,6 +368,8 @@ export interface ConnectorResponse {
   auth_config?: Record<string, string>;
   last_tested?: string;
   test_result?: { success: boolean; latency_ms?: number; error?: string };
+  has_builtin?: boolean;
+  builtin_server_id?: string;
 }
 
 export interface CatalogAuthField {
