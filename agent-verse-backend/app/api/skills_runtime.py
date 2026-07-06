@@ -1,11 +1,24 @@
 """Skills Runtime API."""
 from __future__ import annotations
-import uuid
+
 import datetime
+import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from app.skills_runtime.models import BUILTIN_SKILLS
+
+from app.skills_runtime.executor import (
+    SkillExecutor,
+    permission_checker,
+    trigger_matcher,
+)
+from app.skills_runtime.models import (
+    BUILTIN_SKILLS,
+    SkillDefinition,
+    SkillScope,
+    SkillStatus,
+)
 
 router = APIRouter(prefix="/skills-runtime", tags=["skills-runtime"])
 
@@ -50,6 +63,45 @@ class ExecuteSkillRequest(BaseModel):
     goal_id: str | None = None
 
 
+class ExecuteByIdRequest(BaseModel):
+    skill_id: str
+    input_context: str
+    goal_id: str | None = None
+
+
+class AutoMatchRequest(BaseModel):
+    goal: str
+    goal_id: str | None = None
+
+
+class PermissionToggleRequest(BaseModel):
+    skill_id: str
+
+
+# ── Helper: dict → SkillDefinition ────────────────────────────────────────────
+
+def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
+    """Convert an in-memory skill dict to a SkillDefinition dataclass."""
+    return SkillDefinition(
+        skill_id=skill_dict["skill_id"],
+        name=skill_dict["name"],
+        description=skill_dict["description"],
+        scope=SkillScope(skill_dict.get("scope", "platform")),
+        trigger_hints=skill_dict.get("trigger_hints", []),
+        instructions=skill_dict.get("instructions", ""),
+        allowed_tools=skill_dict.get("allowed_tools", []),
+        permissions_required=skill_dict.get("permissions_required", []),
+        output_contract=skill_dict.get("output_contract", {}),
+        version=skill_dict.get("version", "1.0.0"),
+        status=SkillStatus(skill_dict.get("status", "active")),
+        tenant_id=skill_dict.get("tenant_id"),
+        author=skill_dict.get("author", "system"),
+        is_builtin=skill_dict.get("is_builtin", False),
+        metadata=skill_dict.get("metadata", {}),
+        created_at=skill_dict.get("created_at"),
+    )
+
+
 @router.get("")
 async def list_skills(
     request: Request,
@@ -79,6 +131,123 @@ async def list_skills(
     return {"skills": skills, "total": len(skills)}
 
 
+# ── Executor-backed endpoints (declared before /{skill_id} for routing priority) ──
+
+@router.get("/match")
+async def match_skills(
+    request: Request,
+    goal: str = Query(...),
+) -> dict[str, Any]:
+    """Get top matching skills for a goal without executing (uses TriggerMatcher)."""
+    _require_tenant(request)
+    skills = [_dict_to_skill_def(s) for s in _platform_skills.values()]
+    ranked = trigger_matcher.rank_skills(goal, skills)
+    return {
+        "matches": [
+            {"skill_id": skill.skill_id, "name": skill.name, "score": round(score, 4)}
+            for skill, score in ranked
+        ]
+    }
+
+
+@router.post("/execute")
+async def execute_skill_by_id(
+    request: Request,
+    body: ExecuteByIdRequest,
+) -> dict[str, Any]:
+    """Execute a skill by ID supplied in the request body."""
+    tenant = _require_tenant(request)
+
+    skill_dict = _platform_skills.get(body.skill_id)
+    if not skill_dict:
+        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+        skill_dict = next((s for s in tenant_skills if s["skill_id"] == body.skill_id), None)
+    if not skill_dict:
+        raise HTTPException(404, f"Skill {body.skill_id!r} not found")
+
+    provider = getattr(request.app.state, "_app_provider", None)
+    executor = SkillExecutor(
+        permission_checker=permission_checker,
+        trigger_matcher=trigger_matcher,
+        provider=provider,
+    )
+    result = await executor.execute(
+        skill=_dict_to_skill_def(skill_dict),
+        input_context=body.input_context,
+        tenant_id=tenant.tenant_id,
+        goal_id=body.goal_id,
+    )
+    return {
+        "execution_id": result.execution_id,
+        "skill_id": result.skill_id,
+        "output": result.output,
+        "success": result.success,
+        "error": result.error,
+        "duration_ms": result.duration_ms,
+    }
+
+
+@router.post("/execute/match")
+async def execute_best_match(
+    request: Request,
+    body: AutoMatchRequest,
+) -> dict[str, Any]:
+    """Auto-match the best skill for a goal and execute it."""
+    tenant = _require_tenant(request)
+
+    skills = [_dict_to_skill_def(s) for s in _platform_skills.values()]
+    ranked = trigger_matcher.rank_skills(body.goal, skills)
+    if not ranked:
+        return {"matched": False}
+
+    best_skill, score = ranked[0]
+    provider = getattr(request.app.state, "_app_provider", None)
+    executor = SkillExecutor(
+        permission_checker=permission_checker,
+        trigger_matcher=trigger_matcher,
+        provider=provider,
+    )
+    result = await executor.execute(
+        skill=best_skill,
+        input_context=body.goal,
+        tenant_id=tenant.tenant_id,
+        goal_id=body.goal_id,
+    )
+    return {
+        "skill_id": best_skill.skill_id,
+        "score": round(score, 4),
+        "execution": {
+            "execution_id": result.execution_id,
+            "output": result.output,
+            "success": result.success,
+            "error": result.error,
+            "duration_ms": result.duration_ms,
+        },
+    }
+
+
+@router.post("/permissions/enable")
+async def permission_enable_skill(
+    request: Request,
+    body: PermissionToggleRequest,
+) -> dict[str, Any]:
+    """Re-enable a skill for the current tenant via ScopedPermissionChecker."""
+    tenant = _require_tenant(request)
+    permission_checker.enable_for_tenant(tenant.tenant_id, body.skill_id)
+    return {"skill_id": body.skill_id, "status": "enabled"}
+
+
+@router.post("/permissions/disable")
+async def permission_disable_skill(
+    request: Request,
+    body: PermissionToggleRequest,
+) -> dict[str, Any]:
+    """Disable a skill for the current tenant via ScopedPermissionChecker."""
+    tenant = _require_tenant(request)
+    permission_checker.disable_for_tenant(tenant.tenant_id, body.skill_id)
+    return {"skill_id": body.skill_id, "status": "disabled"}
+
+
 @router.get("/{skill_id}")
 async def get_skill(request: Request, skill_id: str) -> dict[str, Any]:
     """Get a specific skill."""
@@ -99,7 +268,7 @@ async def get_skill(request: Request, skill_id: str) -> dict[str, Any]:
 async def create_tenant_skill(request: Request, body: CreateSkillRequest) -> dict[str, Any]:
     """Create a tenant-specific skill."""
     tenant = _require_tenant(request)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     skill_id = str(uuid.uuid4())
 
     skill = {
@@ -164,7 +333,7 @@ async def execute_skill(
     import time
     start = time.monotonic()
     execution_id = str(uuid.uuid4())
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
 
     # Execute using LLM if available
     provider = getattr(request.app.state, "_app_provider", None)
@@ -252,7 +421,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
 
     # Store old version
     old_version = copy.deepcopy(skill)
-    old_version["archived_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    old_version["archived_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     _skill_versions.setdefault(skill_id, []).append(old_version)
 
     # Update skill fields
@@ -266,7 +435,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
     parts = current_version.split(".")
     parts[-1] = str(int(parts[-1]) + 1)
     skill["version"] = ".".join(parts)
-    skill["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    skill["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
     return {"skill_id": skill_id, "version": skill["version"], "status": "updated"}
 

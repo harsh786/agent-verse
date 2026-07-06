@@ -1,5 +1,6 @@
 """Embedding Router - vendor-agnostic embedding with fallbacks."""
 from __future__ import annotations
+
 import logging
 import math
 from dataclasses import dataclass
@@ -98,6 +99,19 @@ class EmbeddingRouter:
 
     def get_usage_stats(self) -> dict[str, Any]:
         return {"usage_by_model": self._usage, "errors_by_model": self._errors}
+
+    def get_drift_metrics(self) -> dict[str, Any]:
+        """Return embedding usage and error metrics for drift monitoring."""
+        total = sum(self._usage.values())
+        errors = sum(self._errors.values())
+        return {
+            "total_tokens_embedded": total,
+            "total_errors": errors,
+            "error_rate": errors / max(total + errors, 1),
+            "models_used": list(self._usage.keys()),
+            "usage_by_model": dict(self._usage),
+            "errors_by_model": dict(self._errors),
+        }
 
 
 # Module-level singleton

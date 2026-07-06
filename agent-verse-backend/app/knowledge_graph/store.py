@@ -163,52 +163,31 @@ class KnowledgeGraphStore:
         self._tenant_edges.pop(tenant_id, None)
 
     def detect_communities(self, tenant_id: str) -> list[dict[str, Any]]:
-        """Simple community detection using connected components."""
-        import uuid as _uuid
+        """Community detection using Union-Find connected components via CommunityDetector."""
+        from app.knowledge_graph.community_detection import CommunityDetector
 
         node_ids = self._tenant_nodes.get(tenant_id, set())
         edge_ids = self._tenant_edges.get(tenant_id, set())
 
-        # Build adjacency (undirected)
-        adj: dict[str, set[str]] = {nid: set() for nid in node_ids}
-        for eid in edge_ids:
-            e = self._edges.get(eid)
-            if e and e.source_node_id in adj and e.target_node_id in adj:
-                adj[e.source_node_id].add(e.target_node_id)
-                adj[e.target_node_id].add(e.source_node_id)
+        nodes = [self._nodes[nid] for nid in node_ids if nid in self._nodes]
+        edges = [self._edges[eid] for eid in edge_ids if eid in self._edges]
 
-        # BFS to find connected components
-        visited: set[str] = set()
+        detector = CommunityDetector()
+        raw_communities = detector.detect_communities(nodes, edges)
+
+        # Enrich with tenant context and human-readable fields
         communities = []
-
-        for start_node in node_ids:
-            if start_node in visited:
-                continue
-            community: list[str] = []
-            queue = [start_node]
-            while queue:
-                node = queue.pop(0)
-                if node in visited:
-                    continue
-                visited.add(node)
-                community.append(node)
-                queue.extend(adj.get(node, set()) - visited)
-
-            if len(community) >= 2:  # Only report meaningful communities
-                community_id = str(_uuid.uuid4())
-                label = (
-                    self._nodes[community[0]].label
-                    if community[0] in self._nodes
-                    else "Community"
-                )
-                communities.append({
-                    "community_id": community_id,
-                    "tenant_id": tenant_id,
-                    "name": f"Cluster: {label}",
-                    "node_ids": community,
-                    "size": len(community),
-                    "summary": f"Connected component with {len(community)} nodes",
-                })
+        for c in raw_communities:
+            central = c.get("central_node", "")
+            label = (
+                self._nodes[central].label if central in self._nodes else "Community"
+            )
+            communities.append({
+                **c,
+                "tenant_id": tenant_id,
+                "name": f"Cluster: {label}",
+                "summary": f"Connected component with {c['size']} nodes",
+            })
 
         return communities
 
