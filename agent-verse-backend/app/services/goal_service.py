@@ -685,7 +685,7 @@ class GoalService:
                 provider = OpenAICompatibleProvider(
                     api_key=api_key,
                     base_url=tenant_cfg.get("base_url"),
-                    default_model=tenant_cfg.get("default_model", "gpt-4o"),
+                    default_model=tenant_cfg.get("default_model", "gpt-5.2"),
                 )
 
         # 2. Fall back to env-var provider

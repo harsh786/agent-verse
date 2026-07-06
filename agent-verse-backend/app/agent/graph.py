@@ -784,7 +784,7 @@ class AgentGraph:
         # the model name always matches the active provider (OpenAI → gpt-4-turbo,
         # Anthropic → claude-opus-4-8, Fake → "fake", etc.).
         # Never hard-code a vendor-specific model name here.
-        planning_model = getattr(self._planner, "_default_model", None) or "gpt-4o"
+        planning_model = getattr(self._planner, "_default_model", None) or "gpt-5.2"
         if self._model_router is not None:
             routed = self._model_router.model_for_goal("planning", goal=agent_state.goal)
             if routed:

@@ -32,7 +32,7 @@ class OpenAICompatibleProvider:
         api_key: str | None = None,
         *,
         base_url: str | None = None,
-        default_model: str = "gpt-4-turbo",
+        default_model: str = "gpt-5.2",
         supports_vision_flag: bool = True,
     ) -> None:
         try:
@@ -44,14 +44,31 @@ class OpenAICompatibleProvider:
         self._default_model = default_model
         self._vision = supports_vision_flag
 
+    # Models in the gpt-5.x series use max_completion_tokens; older models use max_tokens.
+    _MAX_COMPLETION_TOKENS_MODELS = frozenset({
+        "gpt-5.2", "gpt-5.2-pro", "gpt-5.1", "gpt-5.1-codex",
+        "gpt-5", "gpt-5-pro", "gpt-5-mini", "gpt-5-nano",
+        "gpt-5.3-chat-latest", "gpt-5.2-chat-latest", "gpt-5.1-chat-latest",
+        "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
+        "o1", "o1-pro", "o1-preview", "o3", "o3-pro", "o3-mini", "o4-mini",
+    })
+
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._default_model
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
+        # gpt-5.x and o-series require max_completion_tokens instead of max_tokens
+        _use_completion_tokens = (
+            model in self._MAX_COMPLETION_TOKENS_MODELS
+            or model.startswith("gpt-5")
+            or model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
+        )
+        _token_key = "max_completion_tokens" if _use_completion_tokens else "max_tokens"
+
         kwargs = {
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens,
+            _token_key: request.max_tokens,
             "temperature": request.temperature,
         }
         if request.tools:
@@ -155,11 +172,17 @@ class OpenAICompatibleProvider:
         """Stream completion tokens one by one via the OpenAI streaming API."""
         model = request.model or self._default_model
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        _use_completion_tokens = (
+            model in self._MAX_COMPLETION_TOKENS_MODELS
+            or model.startswith("gpt-5") or model.startswith("o1")
+            or model.startswith("o3") or model.startswith("o4")
+        )
+        _token_key = "max_completion_tokens" if _use_completion_tokens else "max_tokens"
         try:
             stream = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
-                max_tokens=request.max_tokens,
+                **{_token_key: request.max_tokens},
                 stream=True,
             )
             async for chunk in stream:
@@ -183,10 +206,15 @@ class OpenAICompatibleProvider:
         model = request.model or self._default_model
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
+        _use_ct = (
+            model in self._MAX_COMPLETION_TOKENS_MODELS
+            or model.startswith("gpt-5") or model.startswith("o1")
+            or model.startswith("o3") or model.startswith("o4")
+        )
         kwargs = {
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens,
+            "max_completion_tokens" if _use_ct else "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": True,
         }

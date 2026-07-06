@@ -32,6 +32,9 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-haiku-3-5":        {"input":  0.80,  "output":  4.0},
     "claude-3-haiku-20240307": {"input":  0.25,  "output":  1.25},
     # OpenAI
+    "gpt-5.2":                 {"input": 10.0,   "output": 40.0},
+    "gpt-5.2-pro":             {"input": 20.0,   "output": 80.0},
+    "gpt-4.5-preview":         {"input":  7.5,   "output": 22.5},
     "gpt-4o":                  {"input":  2.5,   "output": 10.0},
     "gpt-4o-mini":             {"input":  0.15,  "output":  0.60},
     "o1-preview":              {"input": 15.0,   "output": 60.0},
