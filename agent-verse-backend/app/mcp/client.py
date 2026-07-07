@@ -280,11 +280,17 @@ class MCPClient:
             or (cfg.url or "").startswith("builtin://")
         )
 
-        # Try to restore builtin handler from process-local registry regardless of URL
+        # Try to restore builtin handler from process-local registry regardless of URL.
+        # IMPORTANT: cfg.server_id may be a UUID (the key under which the user's
+        # registration is stored) while the builtin handler is registered under the
+        # canonical builtin server_id (e.g. 'builtin-jira').  Try both.
         if cfg.builtin_handler is None:
             try:
                 from app.mcp.registry import MCPRegistry as _MCPReg
-                _restored = _MCPReg.get_builtin_handler(server_id)
+                _restored = (
+                    _MCPReg.get_builtin_handler(server_id)       # e.g. 'builtin-jira'
+                    or _MCPReg.get_builtin_handler(cfg.server_id)  # UUID fallback
+                )
                 if _restored is not None:
                     cfg = cfg.model_copy(update={"builtin_handler": _restored})
                     is_builtin = True  # treat as builtin now that we have the handler
@@ -673,16 +679,37 @@ class MCPClient:
         # the client falls through to HTTP dispatch against that remote URL,
         # which requires OAuth — not the Basic auth stored in auth_config.
         if cfg.builtin_handler is None:
-             try:
-                 from app.mcp.registry import MCPRegistry as _MCPReg
-                 _restored = _MCPReg.get_builtin_handler(cfg.server_id)
-                 if _restored is not None:
-                     cfg = cfg.model_copy(update={"builtin_handler": _restored})
-             except Exception:
-                 pass
+            try:
+                from app.mcp.registry import MCPRegistry as _MCPReg
+                # The config's server_id may be a UUID (the key under which the user's
+                # registration is stored) while the builtin handler is registered under
+                # the canonical builtin server_id (e.g. 'builtin-jira').
+                # Try cfg.server_id first, then fall back to the original server_id arg.
+                _restored = (
+                    _MCPReg.get_builtin_handler(cfg.server_id)
+                    or _MCPReg.get_builtin_handler(server_id)
+                )
+                if _restored is not None:
+                    cfg = cfg.model_copy(update={"builtin_handler": _restored})
+                    logger.info(
+                        "builtin_handler_restored",
+                        cfg_server_id=cfg.server_id,
+                        lookup_server_id=server_id,
+                        tool=tool_name,
+                    )
+                else:
+                    logger.warning(
+                        "builtin_handler_not_found",
+                        cfg_server_id=cfg.server_id,
+                        lookup_server_id=server_id,
+                        tool=tool_name,
+                        url=cfg.url,
+                    )
+            except Exception as _bh_exc:
+                logger.warning("builtin_handler_restore_error: %s", _bh_exc)
 
         if cfg.builtin_handler is not None:
-             return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
+            return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
 
         # SSRF guard — validate server URL before any outbound HTTP call
         _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
