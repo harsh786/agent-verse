@@ -1103,6 +1103,16 @@ class AgentGraph:
                                 # Skip cached empty/error results so they are not
                                 # served on fresh runs — forces a real tool call.
                                 cached_resp = hit.response if hasattr(hit, 'response') else str(hit)
+                                _cr_stripped = cached_resp.strip().lower() if cached_resp else ""
+                                _is_llm_reasoning = (
+                                    _cr_stripped.startswith((
+                                        "i'll ", "i will ", "i'll use", "i will use",
+                                        "to complete", "let me ", "i need to ",
+                                        "step 1", "first,", "first i",
+                                    ))
+                                    or ("will use" in _cr_stripped and "tool" in _cr_stripped)
+                                    or ("will call" in _cr_stripped and len(_cr_stripped) < 500)
+                                )
                                 _is_empty = (
                                     not cached_resp
                                     or '"total": 0' in cached_resp
@@ -1110,6 +1120,7 @@ class AgentGraph:
                                     or '"projects": []' in cached_resp
                                     or cached_resp.strip() in ('{}', '[]', '')
                                     or len(cached_resp.strip()) < 10
+                                    or _is_llm_reasoning  # Never serve stale LLM text as tool result
                                 )
                                 if not _is_empty:
                                     _batch_cache_results[desc] = cached_resp
@@ -1395,10 +1406,12 @@ class AgentGraph:
                 )
 
         # 6. Guardrails — validate tool name, check injection/dangerous patterns
+        # Only check the tool_name; do NOT pass the step description as tool_args
+        # since it triggers false positives on benign words like "extract", "format".
         if self._guardrail_checker is not None:
             violations = self._guardrail_checker.check(
                 tool_name=tool_name,
-                tool_args={"step_description": step},
+                tool_args={},
             )
             if violations:
                 return f"Guardrail blocked step: {'; '.join(violations)}"
@@ -1478,16 +1491,21 @@ class AgentGraph:
             content += "\n\n" + "\n\n".join(context_parts)
 
         # Collect available tools for structured tool calling (Task 1)
+        # IMPORTANT: OpenAI function names must match ^[a-zA-Z0-9_-]{1,64}$
+        # DO NOT include server_name in the name — "Jira Connector.jira_search_issues"
+        # is invalid and causes OpenAI to return text instead of a tool call.
         _tool_defs: list[ToolDefinition] = []
         _tc_ctx = state.context.get("tool_context")
         if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
             for _t in _tc_ctx.tools:
+                import re as _re
+                # Use only the bare tool name, sanitized to valid function-name chars
+                _raw_name = _t.name if hasattr(_t, "name") else ""
+                _safe_name = _re.sub(r"[^a-zA-Z0-9_-]", "_", _raw_name)[:64]
+                if not _safe_name:
+                    continue
                 _tool_defs.append(ToolDefinition(
-                    name=(
-                        f"{_t.server_name}.{_t.name}"
-                        if hasattr(_t, "server_name")
-                        else _t.name
-                    ),
+                    name=_safe_name,
                     description=getattr(_t, "description", ""),
                     input_schema=getattr(_t, "input_schema", {}),
                 ))
@@ -1746,6 +1764,7 @@ class AgentGraph:
 
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
+                self._logger.warning("mcp_client_none_at_tool_dispatch tool=%s", tool_call.tool)
                 error = self._sanitize_tool_raw_output("MCP client unavailable")
                 await self._emit(
                     {
@@ -2368,15 +2387,19 @@ class AgentGraph:
                 tenant_ctx=tenant_ctx,
             )
 
-        # 13. Claim grounding check — verify LLM claims against tool outputs
+        # 13. Claim grounding check — verify LLM claims against tool outputs.
+        # SKIP when raw_output is already a structured tool result (JSON/dict),
+        # as it IS the evidence and cannot be "ungrounded" against itself.
         try:
             from app.agent.grounding import annotate_ungrounded, check_grounding
+            _raw_stripped = (raw_output or "").strip()
+            _is_structured_tool_output = _raw_stripped.startswith(('{', '[', "{'"))
             _tool_outputs_for_grounding = [
                 str(tc.get("output", ""))
                 for tc in (state.steps[-1].tool_calls if state.steps else [])
                 if tc.get("output")
             ]
-            if raw_output and _tool_outputs_for_grounding:
+            if raw_output and _tool_outputs_for_grounding and not _is_structured_tool_output:
                 _ground_result = check_grounding(
                     output=raw_output,
                     tool_outputs=_tool_outputs_for_grounding,
@@ -2436,7 +2459,9 @@ class AgentGraph:
                         embedding=_cache_embedding,
                         tenant_id=tenant_ctx.tenant_id,
                     )
-                    if hit is not None:
+                    # Only serve non-empty, non-error responses from cache.
+                    # Empty responses (stored by failed prior runs) must be ignored.
+                    if hit is not None and hit.response and len(hit.response.strip()) >= 10:
                         await self._emit({
                             "type": "cache_hit",
                             "step": step,
@@ -2456,6 +2481,20 @@ class AgentGraph:
         # Also skip caching empty/minimal results — they often represent transient
         # failures (401 auth, wrong JQL, empty project) and should not be served
         # as "correct" cached answers on future runs.
+        # CRITICAL: Never cache plain-text "I'll call..." executor reasoning text.
+        # Only cache actual tool call results (JSON or clearly structured output).
+        _out_stripped = (raw_output or "").strip()
+        _looks_like_llm_reasoning = (
+            _out_stripped.lower().startswith((
+                "i'll ", "i will ", "i'll use", "i will use",
+                "to complete", "let me ", "i need to ", "i can ", "i should ",
+                "step 1", "first,", "first i", "i'll now",
+                "i'll start", "i'll call", "i'll search",
+                "now i'll", "next, i", "to search",
+            ))
+            or ("will use" in _out_stripped.lower() and "tool" in _out_stripped.lower())
+            or ("will call" in _out_stripped.lower() and len(_out_stripped) < 500)
+        )
         _is_error_output = (
             not raw_output
             or raw_output.strip().startswith("{\"error")
@@ -2463,12 +2502,19 @@ class AgentGraph:
             or "invalid model" in raw_output.lower()
             or "rate_limit_exceeded" in raw_output.lower()
             or raw_output.strip().lower().startswith("error:")
+            or "mcp client unavailable" in raw_output.lower()
+            or "tool not available" in raw_output.lower()
+            or "argument validation failed" in raw_output.lower()
+            or "circuit open" in raw_output.lower()
+            or "requires approval" in raw_output.lower()
             # Don't cache empty collection results (Jira 0 issues, empty lists)
             or raw_output.strip() in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', '[]', '{}')
             or '"total": 0' in raw_output
             or '"issues": []' in raw_output
             or '"projects": []' in raw_output
             or len(raw_output.strip()) < 10
+            # Don't cache plain LLM reasoning text (no actual tool result)
+            or _looks_like_llm_reasoning
         )
         if self._semantic_cache is not None and _cache_embedding is not None and not _is_error_output:
             try:
@@ -3016,11 +3062,17 @@ class AgentGraph:
                         return err_state
                     raise  # genuine governance denials surface to the caller
                 except Exception as exc:
+                    import traceback as _tb
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "agentgraph_run_exception type=%s msg=%r",
+                        type(exc).__name__, str(exc)[:200],
+                    )
                     err_state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
                     err_state.status = GoalStatus.FAILED
-                    err_state.error_message = str(exc)
+                    err_state.error_message = str(exc) or f"{type(exc).__name__} (no message)"
                     if event_callback:
-                        await self._emit({"type": "goal_failed", "reason": str(exc)})
+                        await self._emit({"type": "goal_failed", "reason": err_state.error_message})
                     return err_state
         finally:
             if ctx_token is not None:

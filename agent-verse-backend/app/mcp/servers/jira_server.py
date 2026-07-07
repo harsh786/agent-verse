@@ -301,13 +301,42 @@ async def _call_tool_inner(
                     "total": 0,
                     "issues": [],
                 }
+            # If the JQL is only an ORDER BY clause without a WHERE filter,
+            # prepend "project is not EMPTY" to make it valid for Jira Cloud.
+            _jql_lower = jql.strip().lower()
+            if _jql_lower.startswith("order by"):
+                jql = f"project is not EMPTY {jql.strip()}"
+            # Always include default fields — merge with any caller-specified fields
+            # to ensure status/priority/assignee are always returned.
+            _caller_fields = arguments.get("fields", [])
+            _effective_fields = list({*default_fields, *(_caller_fields if isinstance(_caller_fields, list) else [])})
             payload: dict[str, Any] = {
                 "jql": jql,
-                "maxResults": arguments.get("max_results", 50),
-                "fields": arguments.get("fields", default_fields),
+                "maxResults": min(int(arguments.get("max_results", 10)), 50),
+                "fields": _effective_fields,
             }
-            resp = await client.post("/rest/api/3/search/jql", json=payload)
-            resp.raise_for_status()
+            try:
+                resp = await client.post("/rest/api/3/search/jql", json=payload)
+                resp.raise_for_status()
+            except Exception as _search_err:
+                # Fall back to GET endpoint which is more widely supported
+                try:
+                    resp = await client.get(
+                        "/rest/api/3/search",
+                        params={
+                            "jql": jql,
+                            "maxResults": arguments.get("max_results", 50),
+                            "fields": ",".join(arguments.get("fields", default_fields)),
+                        },
+                    )
+                    resp.raise_for_status()
+                except Exception as _get_err:
+                    return {
+                        "error": f"Jira search failed: {_search_err} | GET fallback: {_get_err}",
+                        "jql_used": jql,
+                        "total": 0,
+                        "issues": [],
+                    }
             data = resp.json()
             issues = data.get("issues", [])
             return {
