@@ -22,10 +22,9 @@ class PlanRiskAnalyzer:
                 if pattern.search(step):
                     findings.append(f"CRITICAL: {label} in step: {step[:80]}")
                     max_risk = "critical"
-            if max_risk != "critical":
-                for pattern, label in _HIGH:
-                    if pattern.search(step):
-                        findings.append(f"HIGH: {label} in step: {step[:80]}")
-                        if max_risk not in ("critical", "high"):
-                            max_risk = "high"
+            for pattern, label in _HIGH:
+                if pattern.search(step):
+                    findings.append(f"HIGH: {label} in step: {step[:80]}")
+                    if max_risk not in ("critical", "high"):
+                        max_risk = "high"
         return max_risk, findings

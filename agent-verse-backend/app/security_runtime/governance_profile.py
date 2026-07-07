@@ -35,18 +35,32 @@ class GovernanceProfileSelector:
         plan = tenant_ctx.plan
         risk = profile.properties.risk
         hitl = profile.security.hitl_required
-        if plan == PlanTier.ENTERPRISE or risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+        compliance = profile.security.compliance_tags
+
+        # Enterprise plan always gets enterprise governance
+        if plan == PlanTier.ENTERPRISE:
             return GovernanceConfig(
                 name=GovernanceBundle.ENTERPRISE, hitl_enabled=hitl, cost_control_enabled=True,
                 policy_engine_enabled=True, audit_enabled=True, compliance_reporting_enabled=True,
                 rbac_enforcement="full", max_goal_cost_usd=100.0,
             )
-        if profile.security.compliance_tags:
+
+        # Compliance-tagged goals get regulated governance (regardless of plan tier)
+        if compliance:
             return GovernanceConfig(
                 name=GovernanceBundle.REGULATED, hitl_enabled=hitl, cost_control_enabled=True,
                 policy_engine_enabled=True, audit_enabled=True, compliance_reporting_enabled=True,
                 rbac_enforcement="full", max_goal_cost_usd=50.0,
             )
+
+        # High/critical risk non-enterprise goals get elevated governance
+        if risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+            return GovernanceConfig(
+                name=GovernanceBundle.ENTERPRISE, hitl_enabled=hitl, cost_control_enabled=True,
+                policy_engine_enabled=True, audit_enabled=True, compliance_reporting_enabled=False,
+                rbac_enforcement="full", max_goal_cost_usd=50.0,
+            )
+
         return GovernanceConfig(
             name=GovernanceBundle.FREE, hitl_enabled=hitl, cost_control_enabled=True,
             policy_engine_enabled=False, audit_enabled=True, rbac_enforcement="basic",

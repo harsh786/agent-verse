@@ -25,6 +25,9 @@ _PATTERNS: list[tuple[DataClass, re.Pattern[str]]] = [
     (DataClass.INTERNAL, re.compile(
         r"(?i)\b(internal|confidential|proprietary|q[1-4]\s+revenue|forecast|roadmap)\b"
     )),
+    (DataClass.CONFIDENTIAL, re.compile(
+        r"(?i)\b(strictly confidential|classified|top secret|need to know|nda protected)\b"
+    )),
 ]
 
 
@@ -59,9 +62,11 @@ class DataClassifier:
     def classify_or_safe_fallback(self, text: str) -> DataClassification:
         try:
             return self.classify(text)
-        except Exception:
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("data_classification_failed", error=str(exc))
             return DataClassification(
-                data_id=uuid.uuid4().hex,
+                data_id=__import__("uuid").uuid4().hex,
                 classes=[DataClass.INTERNAL],
                 retention_policy="default",
                 blocked_sinks=["external_tool"],
