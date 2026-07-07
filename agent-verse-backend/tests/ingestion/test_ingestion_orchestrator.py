@@ -142,3 +142,53 @@ async def test_ingest_unknown_type_defaults_to_text(orchestrator, tenant_ctx):
         tenant_ctx=tenant_ctx,
     )
     assert result.chunks_created >= 1
+
+
+def test_chunking_strategy_selector_all_types():
+    """ChunkingStrategySelector must map all content types to correct strategies."""
+    from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
+    from app.ingestion.content_classifier import ContentType
+    selector = ChunkingStrategySelector()
+    expected = {
+        ContentType.TEXT: "semantic",
+        ContentType.CODE: "ast",
+        ContentType.PDF: "layout",
+        ContentType.AUDIO: "timestamp",
+        ContentType.VIDEO: "scene",
+        ContentType.CSV: "row_group",
+        ContentType.DOCX: "paragraph",
+        ContentType.IMAGE: "region",
+    }
+    for ct, strategy in expected.items():
+        assert selector.select(ct) == strategy, f"{ct.value}: expected {strategy}"
+
+
+async def test_orchestrator_auto_detects_type(orchestrator, tenant_ctx):
+    """IngestionOrchestrator with content_type='auto' must detect HTML correctly."""
+    html = "<html><body><p>Hello World</p></body></html>"
+    from app.ingestion.content_classifier import ContentType
+    result = await orchestrator.ingest(
+        content=html, content_type="auto",
+        collection_id="col1", tenant_ctx=tenant_ctx,
+    )
+    assert result.content_type == ContentType.HTML
+
+
+async def test_orchestrator_ingests_pdf_bytes(orchestrator, tenant_ctx):
+    """IngestionOrchestrator must handle PDF content_type and produce chunks."""
+    from app.ingestion.parsers.pdf_parser import PDFParser
+    pdf_parser = PDFParser()
+    result_text = "Sample PDF content for testing ingestion."
+    pdf_result = pdf_parser.parse_text(result_text, "test.pdf")
+    chunks = pdf_result.to_chunks()
+    assert len(chunks) >= 1
+    # Now ingest the extracted text as pdf type
+    result = await orchestrator.ingest(
+        content=result_text,
+        content_type="pdf",
+        collection_id="col1",
+        tenant_ctx=tenant_ctx,
+        source_url="https://example.com/report.pdf",
+    )
+    assert result.chunks_created >= 1
+    assert result.chunking_strategy == "layout"

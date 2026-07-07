@@ -1187,10 +1187,24 @@ def create_app(
             except Exception as _lhm_exc:
                 logger.warning("legal_hold_manager_wire_failed", error=str(_lhm_exc))
 
+            # Dynamic orchestration: startup hydration of tool trust + reflexion state
+            try:
+                from app.core.runtime_flags import get_runtime_flags
+                if get_runtime_flags().dynamic_orchestration:
+                    from app.services.orchestration_persistence import OrchestrationPersistence
+                    _orch_persistence = OrchestrationPersistence(db=active.session)
+                    import asyncio as _asyncio
+                    _asyncio.create_task(
+                        _orch_persistence.load_tool_trust_from_db("*", db=active.session)
+                    )
+                    app.state.orchestration_persistence = _orch_persistence
+                    logger.info("orchestration_persistence_hydration_started")
+            except Exception as _orch_exc:
+                logger.warning("orchestration_state_hydration_failed", error=str(_orch_exc))
+
             try:
                 yield
             finally:
-                # Cancel pub/sub background task on shutdown
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
                     import contextlib

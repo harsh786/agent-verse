@@ -69,6 +69,11 @@ browser = ["playwright>=1.40.0"]
 artifacts = ["aioboto3>=13.0"]
 pdf = ["pypdf>=5.0"]
 docx = ["python-docx>=1.1"]
+multimodal = [
+    "pdfminer.six>=20221105",
+    "pymupdf>=1.24.0",
+    "pillow>=11.0.0",
+]
 
 # Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"
 

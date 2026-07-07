@@ -928,8 +928,9 @@ class GoalService:
         *,
         goal_id: str,
         tenant_ctx: Any,
+        db_session: Any = None,
     ) -> dict:
-        """Build GoalRuntimeProfile if dynamic orchestration is enabled."""
+        """Build GoalRuntimeProfile and persist to goals.execution_context."""
         from app.core.runtime_flags import get_runtime_flags
         flags = get_runtime_flags()
         if not flags.dynamic_orchestration:
@@ -940,7 +941,37 @@ class GoalService:
             profile, trace = await builder.build_with_trace(
                 goal, tenant_id=tenant_ctx.tenant_id, goal_id=goal_id
             )
-            return profile.to_dict()
+            profile_data = {
+                "runtime_profile": profile.to_dict(),
+                "decision_trace": trace.to_dict(),
+                "profile_id": profile.profile_id,
+                "assembly_latency_ms": profile.assembly_latency_ms,
+            }
+            # Persist to goal.execution_context in Postgres
+            if db_session is not None:
+                try:
+                    import json
+                    from sqlalchemy import text
+                    await db_session.execute(
+                        text("""
+                            UPDATE goals
+                            SET execution_context = COALESCE(execution_context, '{}'::jsonb)
+                                || :profile_data::jsonb
+                            WHERE id = :goal_id AND tenant_id = :tenant_id
+                        """),
+                        {
+                            "profile_data": json.dumps(profile_data),
+                            "goal_id": goal_id,
+                            "tenant_id": tenant_ctx.tenant_id,
+                        }
+                    )
+                except Exception as db_exc:
+                    from app.observability.logging import get_logger
+                    get_logger(__name__).warning(
+                        "runtime_profile_persist_failed",
+                        error=str(db_exc), goal_id=goal_id,
+                    )
+            return profile_data
         except Exception as exc:
             from app.observability.logging import get_logger
             get_logger(__name__).warning(
@@ -1874,6 +1905,19 @@ class GoalService:
                         f"{planner_model.provider}/{planner_model.model_id}"
                     )
                     record.execution_context["ai_router_quality_score"] = planner_model.quality_score
+            except Exception:
+                pass
+
+            # Dynamic orchestration: build runtime profile and embed in execution_context
+            try:
+                _profile_data = await self._build_runtime_profile(
+                    goal, goal_id=goal_id, tenant_ctx=tenant_ctx
+                )
+                if _profile_data:
+                    record.execution_context["runtime_profile"] = _profile_data.get("runtime_profile", {})
+                    record.execution_context["decision_trace"] = _profile_data.get("decision_trace", {})
+                    record.execution_context["profile_id"] = _profile_data.get("profile_id", "")
+                    record.execution_context["assembly_latency_ms"] = _profile_data.get("assembly_latency_ms", 0.0)
             except Exception:
                 pass
 
