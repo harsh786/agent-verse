@@ -148,3 +148,23 @@ class RuntimeSSEEmitter:
             "strategy": strategy,
             "reason": reason,
         }
+
+    def embedding_strategy_selected(
+        self,
+        *,
+        goal_id: str,
+        model_id: str,
+        modality: str,
+        dimension: int,
+        cost_class: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "type": SSEEventType.EMBEDDING_STRATEGY_SELECTED,
+            "goal_id": goal_id,
+            "model_id": model_id,
+            "modality": modality,
+            "dimension": dimension,
+            "cost_class": cost_class,
+            "reason": reason,
+        }
