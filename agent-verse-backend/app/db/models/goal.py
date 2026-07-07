@@ -18,6 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models import Base
@@ -62,6 +63,15 @@ class Goal(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    patterns_used: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    rag_strategy_used: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
     )
 
     steps: Mapped[list[GoalStep]] = relationship(
