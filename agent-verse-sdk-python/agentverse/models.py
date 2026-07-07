@@ -31,6 +31,9 @@ class Goal(BaseModel):
     steps_completed: int = 0
     cost_usd: float = 0.0
     metadata: dict[str, Any] = Field(default_factory=dict)
+    runtime_profile_id: str | None = None
+    patterns_used: list[str] = Field(default_factory=list)
+    rag_strategy_used: str = ""
 
 
 class GoalEvent(BaseModel):
