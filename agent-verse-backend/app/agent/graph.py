@@ -1100,7 +1100,19 @@ class AgentGraph:
                         )
                         for desc, hit in zip(_all_descs, _batch_hits):
                             if hit is not None:
-                                _batch_cache_results[desc] = hit.response
+                                # Skip cached empty/error results so they are not
+                                # served on fresh runs — forces a real tool call.
+                                cached_resp = hit.response if hasattr(hit, 'response') else str(hit)
+                                _is_empty = (
+                                    not cached_resp
+                                    or '"total": 0' in cached_resp
+                                    or '"issues": []' in cached_resp
+                                    or '"projects": []' in cached_resp
+                                    or cached_resp.strip() in ('{}', '[]', '')
+                                    or len(cached_resp.strip()) < 10
+                                )
+                                if not _is_empty:
+                                    _batch_cache_results[desc] = cached_resp
                         if _batch_cache_results:
                             self._logger.info(
                                 "batch_cache_prefetch",
@@ -2441,6 +2453,9 @@ class AgentGraph:
 
         # Store result — skip caching error responses so bad LLM outputs
         # (API errors, model-not-found messages, timeouts) never poison the cache.
+        # Also skip caching empty/minimal results — they often represent transient
+        # failures (401 auth, wrong JQL, empty project) and should not be served
+        # as "correct" cached answers on future runs.
         _is_error_output = (
             not raw_output
             or raw_output.strip().startswith("{\"error")
@@ -2448,6 +2463,12 @@ class AgentGraph:
             or "invalid model" in raw_output.lower()
             or "rate_limit_exceeded" in raw_output.lower()
             or raw_output.strip().lower().startswith("error:")
+            # Don't cache empty collection results (Jira 0 issues, empty lists)
+            or raw_output.strip() in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', '[]', '{}')
+            or '"total": 0' in raw_output
+            or '"issues": []' in raw_output
+            or '"projects": []' in raw_output
+            or len(raw_output.strip()) < 10
         )
         if self._semantic_cache is not None and _cache_embedding is not None and not _is_error_output:
             try:
