@@ -948,6 +948,36 @@ class GoalService:
             )
             return {}
 
+    async def _check_readiness(self, goal: str, tenant_ctx: Any) -> tuple[bool, str]:
+        """Check if platform is ready to execute this goal (behind feature flag)."""
+        from app.core.runtime_flags import get_runtime_flags
+        if not getattr(get_runtime_flags(), "readiness_gate", False):
+            return True, ""
+        try:
+            from app.runtime_readiness.readiness_gate import ReadinessGate
+            from app.runtime_readiness.dependency_health import DependencyHealth
+            health = DependencyHealth.all_healthy()
+            gate = ReadinessGate(health)
+            from app.orchestration.runtime_profile import (
+                GoalRuntimeProfile, GoalProperties as GProps, AgentPatternConfig,
+                RAGStrategyConfig, ModelPlanConfig, SecurityConfig,
+                MemoryCacheConfig, EvalConfig,
+            )
+            profile = GoalRuntimeProfile(
+                goal_id="",
+                tenant_id=getattr(tenant_ctx, "tenant_id", "unknown"),
+                properties=GProps(raw_goal=goal[:100]),
+                agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+                model_plan=ModelPlanConfig(), security=SecurityConfig(),
+                memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+            )
+            result = gate.check(profile)
+            if not result.ready:
+                return False, f"Platform not ready: {result.blocking_deps}"
+            return True, ""
+        except Exception:
+            return True, ""   # fail open — never block goals on readiness errors
+
     # ── private helpers ───────────────────────────────────────────────────────
 
     async def _submit_single_goal(

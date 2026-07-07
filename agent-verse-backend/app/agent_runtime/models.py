@@ -81,6 +81,9 @@ class AgentRunTrace:
     success: bool = False
     error: str | None = None
     model_selections: list[dict[str, Any]] = field(default_factory=list)
+    runtime_profile_id: str | None = None   # GoalRuntimeProfile.profile_id
+    patterns_used: list[str] = field(default_factory=list)  # active agent patterns
+    rag_strategy_used: str = ""             # RAG strategy selected
 
 
 @dataclass

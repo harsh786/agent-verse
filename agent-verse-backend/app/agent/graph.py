@@ -405,6 +405,44 @@ class AgentGraph:
             except Exception:
                 pass
 
+        # Dynamic orchestration: build runtime profile
+        try:
+            from app.core.runtime_flags import get_runtime_flags
+            if get_runtime_flags().dynamic_orchestration:
+                from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
+                builder = RuntimeProfileBuilder()
+                profile, trace = await builder.build_with_trace(
+                    agent_state.goal,
+                    tenant_id=agent_state.tenant_ctx.tenant_id,
+                    goal_id=agent_state.goal_id,
+                )
+                agent_state.context["_runtime_profile"] = profile
+                agent_state.context["_decision_trace"] = trace
+                if self._event_callback is not None:
+                    from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                    emitter = RuntimeSSEEmitter()
+                    await self._event_callback(emitter.pattern_assembled(
+                        goal_id=agent_state.goal_id,
+                        complexity=profile.properties.complexity.value,
+                        risk=profile.properties.risk.value,
+                        patterns_active={
+                            "reasoning": profile.agent_patterns.reasoning,
+                            "rag": profile.rag_strategy.sources,
+                            "safety": (
+                                [profile.security.guardrail_bundle]
+                                if profile.security.guardrail_bundle else []
+                            ),
+                        },
+                        models={"planner": profile.model_plan.planner},
+                        selection_reasons={},
+                        assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0),
+                    ))
+        except Exception as _profile_exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning(
+                "runtime_profile_build_in_graph_failed", error=str(_profile_exc)
+            )
+
         return {"agent_state": agent_state, "iteration": 0, "rag_context": ""}
 
     async def _node_rag_retrieval(self, state: GraphState) -> dict[str, Any]:
@@ -2901,6 +2939,30 @@ class AgentGraph:
             agent_state.status = GoalStatus.COMPLETE
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
+
+            # Dynamic orchestration: scorecard + self-improvement + reflexion
+            try:
+                from app.evals.runtime_scorecard import RuntimeScorecard
+                _profile = agent_state.context.get("_runtime_profile")
+                if _profile is not None:
+                    _scorecard = RuntimeScorecard()
+                    _scorecard_result = _scorecard.score(state=agent_state, profile=_profile)
+                    agent_state.context["scorecard"] = _scorecard_result.to_dict()
+                    from app.evals.self_improvement_engine import SelfImprovementEngine
+                    _engine = SelfImprovementEngine()
+                    _actions = _engine.decide_actions(
+                        _scorecard_result, _profile, state=agent_state
+                    )
+                    agent_state.context["improvement_actions"] = [
+                        a.action_type.value for a in _actions
+                    ]
+            except Exception:
+                pass
+            try:
+                from app.agent.reflexion_wirer import get_reflexion_wirer
+                get_reflexion_wirer().maybe_store(agent_state)
+            except Exception:
+                pass
 
             # Guardrail check: final_output (Guardrails 2.0)
             if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
