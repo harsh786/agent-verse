@@ -65,20 +65,29 @@ def _absolute_http_url(url: str) -> str:
 def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
 
-    auth_config entries are written first; the server-level URL always wins
-    (prevents auth_config["url"] from overwriting the real server URL).
+    auth_config entries are written first. The server-level URL is added ONLY
+    when auth_config does NOT already contain a 'url' or 'base_url' key.
+
+    IMPORTANT: for builtin connectors (e.g. 'builtin-jira') whose cfg.url is set
+    to a remote MCP endpoint like https://mcp.atlassian.com/v1/mcp/authv2, we must
+    NOT override auth_config['url'] (which holds the actual Jira Cloud URL like
+    https://pinelabsgroups.atlassian.net). Overriding it would cause jira_server.py
+    to call https://mcp.atlassian.com/.../rest/api/3/search instead of the real API.
     """
     result: dict[str, str] = {}
-    # auth_config entries first (connector-level credentials)
+    # auth_config entries first (connector-level credentials — these are the REAL creds)
     for key, value in (cfg.auth_config or {}).items():
         if isinstance(value, str):
             result[key] = value
-    # Server-level URL always wins over anything in auth_config
-    for url_field in ("url", "base_url"):
-        url_val = getattr(cfg, url_field, None)
-        if url_val and url_val != "builtin://":
-            result["url"] = str(url_val)
-            break
+    # Only add server-level URL if auth_config does not already have a url.
+    # This preserves the Jira Cloud URL from auth_config when the server URL
+    # is an MCP endpoint (not the actual API base URL).
+    if "url" not in result and "base_url" not in result:
+        for url_field in ("url", "base_url"):
+            url_val = getattr(cfg, url_field, None)
+            if url_val and url_val not in ("builtin://", ""):
+                result["url"] = str(url_val)
+                break
     return result
 
 
