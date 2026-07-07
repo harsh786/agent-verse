@@ -147,3 +147,17 @@ async def test_retrieval_context_text_property(tenant_ctx, loaded_store):
     assert isinstance(result.context_text, str)
     if result.chunks:
         assert len(result.context_text) > 0
+
+
+async def test_parallel_retrieve_never_returns_empty_on_all_failures(tenant_ctx):
+    """parallel_retrieve must never return empty list — even when all sources fail."""
+    # Use empty store with no web search — will fail all attempts
+    tool = RetrieverTool(knowledge_store=KnowledgeStore())
+    results = await tool.parallel_retrieve(
+        query="any query",
+        tenant_ctx=tenant_ctx,
+        sources=["kb"],
+    )
+    assert isinstance(results, list)
+    assert len(results) >= 1  # MUST never be empty
+    assert all(isinstance(r, RetrievalResult) for r in results)
