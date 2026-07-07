@@ -170,3 +170,12 @@ def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool
         return True
     except (SSRFError, ValueError):
         return False
+
+
+def is_ssrf_blocked(url: str) -> bool:
+    """Alias for SSRF protection check — returns True if URL is blocked (internal/private)."""
+    try:
+        assert_public_url(url)
+        return False  # No exception = URL is public = not blocked
+    except Exception:
+        return True   # Exception = URL is blocked/private
