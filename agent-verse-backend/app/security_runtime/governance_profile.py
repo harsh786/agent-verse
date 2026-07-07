@@ -1,0 +1,54 @@
+"""GovernanceProfileSelector — selects governance bundle per plan tier and risk."""
+from __future__ import annotations
+import enum
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.orchestration.runtime_profile import GoalRuntimeProfile
+    from app.tenancy.context import TenantContext
+
+
+class GovernanceBundle(str, enum.Enum):
+    FREE = "free"
+    ENTERPRISE = "enterprise"
+    REGULATED = "regulated"
+
+
+@dataclass
+class GovernanceConfig:
+    name: GovernanceBundle
+    hitl_enabled: bool = False
+    cost_control_enabled: bool = True
+    policy_engine_enabled: bool = False
+    audit_enabled: bool = True
+    compliance_reporting_enabled: bool = False
+    rbac_enforcement: str = "basic"
+    max_goal_cost_usd: float = 10.0
+    allowed_tools: list[str] = field(default_factory=list)
+
+
+class GovernanceProfileSelector:
+    def select(self, profile: "GoalRuntimeProfile", *, tenant_ctx: "TenantContext") -> GovernanceConfig:
+        from app.tenancy.context import PlanTier
+        from app.orchestration.runtime_profile import RiskLevel
+        plan = tenant_ctx.plan
+        risk = profile.properties.risk
+        hitl = profile.security.hitl_required
+        if plan == PlanTier.ENTERPRISE or risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+            return GovernanceConfig(
+                name=GovernanceBundle.ENTERPRISE, hitl_enabled=hitl, cost_control_enabled=True,
+                policy_engine_enabled=True, audit_enabled=True, compliance_reporting_enabled=True,
+                rbac_enforcement="full", max_goal_cost_usd=100.0,
+            )
+        if profile.security.compliance_tags:
+            return GovernanceConfig(
+                name=GovernanceBundle.REGULATED, hitl_enabled=hitl, cost_control_enabled=True,
+                policy_engine_enabled=True, audit_enabled=True, compliance_reporting_enabled=True,
+                rbac_enforcement="full", max_goal_cost_usd=50.0,
+            )
+        return GovernanceConfig(
+            name=GovernanceBundle.FREE, hitl_enabled=hitl, cost_control_enabled=True,
+            policy_engine_enabled=False, audit_enabled=True, rbac_enforcement="basic",
+            max_goal_cost_usd=10.0,
+        )
