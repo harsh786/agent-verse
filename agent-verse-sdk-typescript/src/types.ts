@@ -7,6 +7,9 @@ export interface Goal {
   agent_id?: string;
   created_at?: string;
   event_count?: number;
+  runtime_profile_id?: string;
+  patterns_used?: string[];
+  rag_strategy_used?: string;
 }
 
 export interface GoalEvent {
