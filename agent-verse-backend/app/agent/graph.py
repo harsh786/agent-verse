@@ -336,8 +336,13 @@ class AgentGraph:
         if self._enable_reflection:
             g.add_edge("reflect", "plan")
 
+        # rag_remediate node: re-retrieves missing context then falls back to plan
+        g.add_node("rag_remediate", self._node_rag_remediate)
+        g.add_edge("rag_remediate", "plan")
+
         routing_map: dict[str, Any] = {
             "complete": END, "replan": "plan", "max_iter": END, "waiting_human": END,
+            "rag_remediate": "rag_remediate",
         }
         if self._enable_reflection:
             routing_map["reflect"] = "reflect"
@@ -606,6 +611,130 @@ class AgentGraph:
 
         rag_context = "\n\n".join(context_parts)
         return {"rag_context": rag_context}
+
+    async def _node_rag_prime(self, state: GraphState) -> dict:
+        """Alias for _node_rag_retrieval — spec-required name (doc-2 §9.1).
+
+        Fires comprehensive first retrieval across all available sources before planning.
+        Builds source_inventory for planner awareness. Activates web_search when KB is empty.
+        """
+        return await self._node_rag_retrieval(state)
+
+    async def _node_rag_remediate(self, state: GraphState) -> dict:
+        """Targeted re-retrieval when verification fails due to context gap (doc-2 §9.2).
+
+        Triggered by _route() when verification_feedback contains gap signals:
+          "insufficient", "unclear", "no information", "cannot determine",
+          "lack of context", "not mentioned", "unknown"
+
+        Strategy:
+        1. Extract missing topic from verification_feedback
+        2. Search with BROADER strategy (web if KB was empty before)
+        3. Inject as [Remediation context: iteration N] into next plan
+        4. Increment remediation_count (max 2 to prevent loops)
+        """
+        agent_state = state.get("agent_state")
+        if agent_state is None:
+            return {}
+
+        try:
+            from app.rag.agentic.context_gap_detector import ContextGapDetector
+            from app.rag.agentic.retriever_tool import RetrieverTool
+
+            feedback = agent_state.verification_feedback or ""
+            detector = ContextGapDetector()
+            missing_topic = detector.extract_missing_topic(feedback) or agent_state.goal[:100]
+
+            knowledge_store = getattr(self, "_knowledge_store", None)
+            tool = RetrieverTool(knowledge_store=knowledge_store, web_search_available=True)
+
+            result = await tool.retrieve(
+                query=missing_topic,
+                tenant_ctx=agent_state.tenant_ctx,
+                strategy="auto",
+                top_k=7,
+                min_confidence=0.2,
+                allow_web_fallback=True,
+            )
+
+            count = agent_state.context.get("remediation_count", 0) + 1
+            agent_state.context["remediation_count"] = count
+            agent_state.context["remediation_context"] = (
+                f"[Remediation context — iteration {count}]\n"
+                f"Query: {missing_topic}\n"
+                f"Source: {result.source} (confidence={result.confidence:.2f})\n\n"
+                f"{result.context_text[:2000]}"
+            )
+
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("rag_remediate_failed", error=str(exc))
+            except Exception:
+                pass
+
+        return {"agent_state": agent_state}
+
+    async def _node_refine(self, state: GraphState) -> dict:
+        """Self-Refine node — improves last step output before verification (doc-1 §3.4).
+
+        Different from Reflection (which diagnoses a FAILURE).
+        Self-Refine improves a SUCCESS — makes a good output better.
+
+        Activated when 'self_refine' is in PatternConfig.reasoning_patterns.
+        Fires AFTER execute, BEFORE verify, at most max_refine_iterations times.
+        """
+        agent_state = state.get("agent_state")
+        if agent_state is None:
+            return {}
+
+        try:
+            from app.agent.prompts import SELF_REFINE_SYSTEM
+            from app.providers.base import CompletionRequest, Message
+
+            if not agent_state.steps:
+                return {"agent_state": agent_state}
+
+            last_step = agent_state.steps[-1]
+            if not last_step.output or not last_step.output.strip():
+                return {"agent_state": agent_state}
+
+            refine_iterations = agent_state.context.get("refine_iterations", 0)
+            max_refine = agent_state.context.get("max_refine_iterations", 2)
+            if refine_iterations >= max_refine:
+                return {"agent_state": agent_state}
+
+            refine_prompt = (
+                f"Task: {last_step.description}\n\n"
+                f"Current output:\n{last_step.output[:2000]}\n\n"
+                "Improve this output following the review checklist."
+            )
+
+            resp = await self._executor.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=SELF_REFINE_SYSTEM),
+                        Message(role="user", content=refine_prompt),
+                    ],
+                    model="",
+                    max_tokens=2000,
+                    temperature=0.0,
+                )
+            )
+
+            refined = resp.content.strip() if resp.content else ""
+            if refined and not refined.startswith("NO_CHANGES_NEEDED"):
+                last_step.output = refined
+                agent_state.context["refine_iterations"] = refine_iterations + 1
+
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("node_refine_failed", error=str(exc))
+            except Exception:
+                pass
+
+        return {"agent_state": agent_state}
 
     async def _node_think(self, state: GraphState) -> dict[str, Any]:
         """Chain-of-thought thinking node: produces reasoning before planning."""
@@ -2968,6 +3097,18 @@ class AgentGraph:
                 if pending:
                     agent_state.status = GoalStatus.WAITING_HUMAN
                     return "waiting_human"
+
+        # Context-gap detection (doc-2 §9.3) — route to rag_remediate before replanning
+        try:
+            from app.rag.agentic.context_gap_detector import ContextGapDetector
+            _gap_detector = ContextGapDetector()
+            _remediation_count = agent_state.context.get("remediation_count", 0)
+            if (not agent_state.verification_success
+                    and _gap_detector.has_gap(agent_state.verification_feedback or "")
+                    and _remediation_count < 2):
+                return "rag_remediate"
+        except Exception:
+            pass  # never crash routing
 
         # Use reflection node on verify failure when reflection is enabled (Fix 2)
         if self._enable_reflection:
