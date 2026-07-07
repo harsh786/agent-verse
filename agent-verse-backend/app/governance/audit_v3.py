@@ -213,11 +213,86 @@ class AuditV3:
         logger.debug("audit_appended", tenant=tenant_id, action=action, hash=entry_hash[:16])
         return record
 
-    def verify_chain(self, tenant_id: str) -> dict[str, Any]:
+    def record(
+        self,
+        *,
+        tenant_id: str,
+        goal_id: str,
+        action: str,
+        tool_name: str = "",
+        tool_args: dict[str, Any] | None = None,
+        actor: str = "system",
+        actor_ip: str = "",
+        delegation_chain: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,  # absorb extra kwargs like risk_level
+    ) -> AuditRecord:
+        """Synchronous record() — convenience wrapper for non-async callers."""
+        ts = datetime.now(UTC).isoformat()
+        previous_hash = self._get_previous_hash(tenant_id)
+        tool_args_hash = _hash_dict(tool_args or {})
+        delegation_chain_hash = _hash_dict(delegation_chain or {})
+        metadata_hash = _hash_dict(metadata or {})
+
+        entry_hash = compute_entry_hash(
+            previous_hash=previous_hash,
+            timestamp=ts,
+            tenant_id=tenant_id,
+            goal_id=goal_id,
+            action=action,
+            tool_name=tool_name,
+            tool_args_hash=tool_args_hash,
+            actor=actor,
+            actor_ip=actor_ip,
+            delegation_chain_hash=delegation_chain_hash,
+            metadata_hash=metadata_hash,
+        )
+
+        audit_record = AuditRecord(
+            id=uuid.uuid4().hex,
+            tenant_id=tenant_id,
+            goal_id=goal_id,
+            action=action,
+            tool_name=tool_name,
+            tool_args_hash=tool_args_hash,
+            actor=actor,
+            actor_ip=actor_ip,
+            delegation_chain_hash=delegation_chain_hash,
+            previous_hash=previous_hash,
+            entry_hash=entry_hash,
+            timestamp=ts,
+            metadata_hash=metadata_hash,
+            sequence=self._next_sequence(tenant_id),
+        )
+        self._chain_tips[tenant_id] = entry_hash
+        self._records.append(audit_record)
+        logger.debug("audit_recorded", tenant=tenant_id, action=action, hash=entry_hash[:16])
+        return audit_record
+
+    def verify_chain(self, tenant_id: str | None = None) -> bool | dict[str, Any]:
         """
         Verify the hash chain integrity for a tenant.
         Recomputes hashes and detects any tampered records.
+
+        When called without arguments (tenant_id=None), verifies ALL tenants
+        and returns True if all chains are intact, False otherwise.
         """
+        # No-arg call: verify all tenants, return bool
+        if tenant_id is None:
+            tenants = {r.tenant_id for r in self._records}
+            if not tenants:
+                return True
+            for tid in tenants:
+                result = self._verify_single_chain(tid)
+                if not result["valid"]:
+                    return False
+            return True
+
+        # Single-tenant call: return full dict (backward compat)
+        return self._verify_single_chain(tenant_id)
+
+    def _verify_single_chain(self, tenant_id: str) -> dict[str, Any]:
+        """Internal: verify chain for a single tenant, always returns a dict."""
         records = [r for r in self._records if r.tenant_id == tenant_id]
         records.sort(key=lambda r: r.sequence)
 
