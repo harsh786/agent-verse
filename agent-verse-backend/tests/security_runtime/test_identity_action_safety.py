@@ -69,6 +69,17 @@ def test_action_safety_medium_is_log_only():
     assert profile.safety_level == ActionSafetyLevel.LOG_ONLY
     assert profile.audit_required is True
 
+def test_action_safety_profile_has_rollback_registered():
+    selector = ActionSafetyProfileSelector()
+    profile = selector.select(
+        tool_name="create_jira_issue",
+        tool_args={"summary": "Test issue"},
+        risk_level="medium",
+    )
+    assert isinstance(profile, ActionSafetyProfile)
+    assert profile.rollback_registered is not None
+
+
 def test_action_safety_serializable():
     import json
     selector = ActionSafetyProfileSelector()
