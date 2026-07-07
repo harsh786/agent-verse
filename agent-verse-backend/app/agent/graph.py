@@ -1638,6 +1638,22 @@ class AgentGraph:
             if violations:
                 return f"Guardrail blocked step: {'; '.join(violations)}"
 
+        # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
+        try:
+            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+            _runtime_profile = state.context.get("_runtime_profile")
+            if _runtime_profile is not None:
+                _ge = GuardrailEnforcer()
+                _ge_result = _ge.check_tool_args(
+                    tool_name=tool_name,
+                    tool_args=tool_args if isinstance(tool_args, dict) else {},
+                    profile=_runtime_profile,
+                )
+                if _ge_result.blocked:
+                    return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
+        except Exception:
+            pass  # profile-based guardrail never crashes execution
+
         # 6b. Policy engine check (glob-based policies)
         _hitl_already_requested = False
         if self._policy_engine is not None:
@@ -3041,6 +3057,17 @@ class AgentGraph:
                     agent_state.context["improvement_actions"] = [
                         a.action_type.value for a in _actions
                     ]
+                    # Emit eval_score_recorded SSE
+                    try:
+                        from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                        _sse_emitter = RuntimeSSEEmitter()
+                        await self._emit(_sse_emitter.eval_score_recorded(
+                            goal_id=agent_state.goal_id,
+                            overall_score=_scorecard_result.overall_score,
+                            scores=_scorecard_result.scores,
+                        ))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:

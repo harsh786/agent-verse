@@ -57,3 +57,20 @@ async def test_semantic_cache_bridge_tenant_isolation_with_real_cache():
         tenant_id="tenant_beta_isolated",
     )
     assert result is None
+
+
+@pytest.mark.integration
+async def test_full_goal_submission_with_dynamic_orchestration(signed_up_client):
+    """Full flow: submit goal with DYNAMIC_ORCHESTRATION=true → goal accepted, no crash."""
+    os.environ["DYNAMIC_ORCHESTRATION"] = "true"
+    from app.core.runtime_flags import get_runtime_flags
+    get_runtime_flags.cache_clear()
+
+    r = await signed_up_client.post("/goals", json={
+        "goal": "analyse code quality of the codebase",
+        "agent_id": None,
+    })
+    assert r.status_code in (200, 201, 202)
+
+    os.environ.pop("DYNAMIC_ORCHESTRATION", None)
+    get_runtime_flags.cache_clear()
