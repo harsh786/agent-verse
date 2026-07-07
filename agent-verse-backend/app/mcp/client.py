@@ -257,24 +257,32 @@ class MCPClient:
         # ── Builtin servers MUST be checked first ─────────────────────────────
         # The builtin_handler is a Python callable that is NOT serialised to Redis.
         # After a Redis round-trip it will be None, but the URL prefix "builtin://"
-        # identifies these servers unambiguously. Always return their stored
-        # tool_definitions, and lazily restore the handler from the process-local
-        # MCPRegistry._BUILTIN_HANDLER_REGISTRY dict registered at startup / worker init.
+        # identifies these servers unambiguously.
+        #
+        # EXTENDED: also check process-local handler registry even when the URL
+        # is NOT "builtin://" — this handles connectors like "builtin-jira" whose
+        # URL was set to https://mcp.atlassian.com/... by the user but which have
+        # a registered native Python handler.  Without this check, discover_tools
+        # falls through to HTTP discovery → gets Atlassian tool names ("search_issues"
+        # instead of "jira_search_issues") → tool name mismatch → 401 errors.
         is_builtin = (
             cfg.builtin_handler is not None
             or (cfg.base_url or "").startswith("builtin://")
             or (cfg.url or "").startswith("builtin://")
         )
+
+        # Try to restore builtin handler from process-local registry regardless of URL
+        if cfg.builtin_handler is None:
+            try:
+                from app.mcp.registry import MCPRegistry as _MCPReg
+                _restored = _MCPReg.get_builtin_handler(server_id)
+                if _restored is not None:
+                    cfg = cfg.model_copy(update={"builtin_handler": _restored})
+                    is_builtin = True  # treat as builtin now that we have the handler
+            except Exception:
+                pass
+
         if is_builtin and cfg.tool_definitions:
-            # Lazily restore the builtin handler into this process if missing
-            if cfg.builtin_handler is None:
-                try:
-                    from app.mcp.registry import MCPRegistry as _MCPReg
-                    restored = _MCPReg.get_builtin_handler(server_id)
-                    if restored is not None:
-                        cfg = cfg.model_copy(update={"builtin_handler": restored})
-                except Exception:
-                    pass
             return [
                 ToolDefinition(
                     name=str(t.get("name", "")),
@@ -286,6 +294,10 @@ class MCPClient:
                 for t in cfg.tool_definitions
                 if t.get("name")
             ]
+
+        if is_builtin and not cfg.tool_definitions:
+            # Handler found but no tool defs cached — return empty list (not HTTP discovery)
+            return []
 
         # ── Non-builtin Jira REST connector ───────────────────────────────────
         # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
