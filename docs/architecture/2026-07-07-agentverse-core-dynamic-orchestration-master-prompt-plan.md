@@ -349,6 +349,301 @@ The platform must move from feature modules calling each other ad hoc to a layer
 
 ## 3. End-to-End Dynamic Runtime Flow
 
+Before runtime flow, these subsystems are **mandatory first-class dynamic contracts**. They must not be hidden implementation details.
+
+### 3.1 Mandatory Contract: Multimodal and Multi-Model Data Runtime
+
+AgentVerse must support multiple data types and choose the right model and processing strategy dynamically per input, not per hardcoded endpoint.
+
+**Target folder ownership:**
+- `app/ingestion/` owns content detection and parser/chunker selection.
+- `app/multimodal/` owns modality-specific extraction pipelines.
+- `app/ai_router/` owns model selection for modality-specific reasoning.
+- `app/embedding/` owns embedding model selection per modality.
+- `app/context/` owns multimodal context packaging for planner/executor/verifier.
+
+**Required strategy selectors:**
+- `app/ingestion/content_classifier.py` — detects `text | pdf | docx | html | markdown | code | image | audio | video | csv | json | web_page | mixed`.
+- `app/ingestion/parser_registry.py` — maps content type to parser implementation.
+- `app/ingestion/chunking_strategy_selector.py` — selects chunking strategy.
+- `app/embedding/orchestrator.py` — selects embedding model by modality and collection policy.
+- `app/ai_router/model_orchestrator.py` — selects LLM/vision/audio/video model by task and modality.
+
+**Dynamic decision matrix:**
+
+| Data Type | Parser | Chunking Strategy | Embedding Strategy | Model Strategy | RAG Strategy |
+|---|---|---|---|---|---|
+| Plain text | text parser | semantic / sentence | text embedding | text LLM | hybrid RAG |
+| PDF | layout parser + OCR | page + section + table-aware | text + optional vision | text/vision LLM | layout-aware RAG |
+| DOCX | document parser | heading + paragraph | text embedding | text LLM | hybrid RAG |
+| HTML/web | readability parser | DOM/header aware | text embedding | text LLM + web verifier | web-augmented RAG |
+| Code repo | AST + file parser | symbol/function/class chunks | code/text embedding | code-capable LLM | code RAG + graph RAG |
+| Image | vision extractor | region/object captions | multimodal/image embedding | vision model | visual RAG |
+| Audio | STT pipeline | timestamp chunks | transcript embedding | audio/STT + text LLM | transcript RAG |
+| Video | scene detector + ASR + frame OCR | scene + timestamp + transcript | multimodal + transcript | vision/audio/text models | video RAG |
+| CSV/table | schema/table parser | row group + column summary | table/text embedding | data reasoning model | table RAG + code tool |
+| Mixed | composite pipeline | per-modality chunks + cross-links | per-modality embeddings | model per subtask | multimodal RAG |
+
+**Runtime profile output:**
+
+```python
+MultimodalRuntimeProfile(
+    content_type="pdf|image|audio|video|code|mixed",
+    parser="layout_pdf|ocr|asr|vision_caption|ast|html_readability",
+    chunking_strategy="semantic|layout|ast|timestamp|scene|table",
+    embedding_model="text-embedding-3-small|voyage|multimodal",
+    model_roles={"extractor": "vision/audio/text model", "reasoner": "gpt-5.2"},
+    provenance_required=True,
+)
+```
+
+**Acceptance criteria:**
+- Same ingestion API accepts all supported content types.
+- Chunks include modality, source, page/time/region metadata, and tenant ID.
+- RAG can cite a PDF page, video timestamp, audio timestamp, image region, code symbol, or web URL.
+
+---
+
+### 3.2 Mandatory Contract: Self-Improvement Runtime
+
+Self-improvement must be a core runtime loop, not a post-hoc dashboard. Every goal must produce signals that can improve future routing, prompts, retrieval, tools, and models.
+
+**Target folder ownership:**
+- `app/evals/` owns scoring.
+- `app/optimization/` owns policy changes and A/B experiments.
+- `app/state_runtime/reflexion_store.py` owns persistent lessons.
+- `app/intelligence/` existing modules are adapters until migrated.
+
+**Required files:**
+- `app/evals/runtime_scorecard.py`
+- `app/evals/rag_score.py`
+- `app/evals/model_score.py`
+- `app/evals/safety_score.py`
+- `app/optimization/ab_testing.py`
+- `app/optimization/prompt_optimizer.py`
+- `app/optimization/model_optimizer.py`
+- `app/state_runtime/reflexion_store.py`
+
+**Self-improvement loop:**
+
+```text
+Goal completes/fails
+  ↓
+RuntimeScorecard
+  ├─ success score
+  ├─ grounding score
+  ├─ citation score
+  ├─ retrieval confidence
+  ├─ tool success rate
+  ├─ cost/token efficiency
+  ├─ latency score
+  └─ safety score
+  ↓
+Improvement decision
+  ├─ update prompt variant
+  ├─ update model routing policy
+  ├─ update RAG strategy policy
+  ├─ store Reflexion failure lesson
+  ├─ blacklist fragile tool pattern
+  └─ create eval regression case
+```
+
+**Runtime profile output:**
+
+```python
+SelfImprovementProfile(
+    enabled=True,
+    eval_suite="default|security|rag|coding|ops",
+    score_threshold=0.72,
+    reflexion_enabled=True,
+    prompt_ab_test_enabled=True,
+    model_ab_test_enabled=True,
+    creates_regression_case_on_failure=True,
+)
+```
+
+**Acceptance criteria:**
+- Any failed goal creates either a failure lesson or an explicit reason why no lesson is safe to store.
+- Low RAG score can change future RAG strategy.
+- Low model score can change future model route.
+- Prompt variants are gated by eval regression checks before promotion.
+
+---
+
+### 3.3 Mandatory Contract: Reranking and Context Quality Runtime
+
+Agentic RAG is incomplete without reranking, filtering, deduplication, citation threading, and context budget enforcement.
+
+**Target folder ownership:**
+- `app/context/` owns reranking policy and final context construction.
+- `app/rag_platform/reranker.py` remains the reranker implementation adapter.
+- `app/rag/agentic/` owns retrieval before reranking.
+
+**Required files:**
+- `app/context/rerank_policy.py`
+- `app/context/context_budget.py`
+- `app/context/citation_manager.py`
+- `app/context/prompt_builder.py`
+
+**Reranking strategies:**
+
+| Strategy | Use Case | Cost | Notes |
+|---|---|---|---|
+| Score-based | Fast default for simple goals | Low | Uses existing retrieval scores |
+| RRF fusion | Multi-source retrieval | Low | Combines vector/FTS/web/graph rankings |
+| Cross-encoder | High precision search | Medium | Best for technical docs/code |
+| LLM reranker | Complex semantic relevance | High | Use only for expert goals |
+| Diversity reranker | Avoid duplicate chunks | Low | Maximal marginal relevance |
+
+**Context pipeline:**
+
+```text
+raw retrieval results
+  ↓
+deduplicate chunks
+  ↓
+rerank by selected strategy
+  ↓
+filter below relevance threshold
+  ↓
+enforce source diversity
+  ↓
+apply token budget
+  ↓
+thread citations
+  ↓
+build planner/executor/verifier-specific context
+```
+
+**Runtime profile output:**
+
+```python
+ContextRuntimeProfile(
+    reranker="score|rrf|cross_encoder|llm|diversity",
+    max_context_tokens=6000,
+    min_relevance_score=0.35,
+    max_chunks_per_source=5,
+    citation_required=True,
+    deduplication_enabled=True,
+)
+```
+
+**Acceptance criteria:**
+- Planner receives strategic context, not raw chunk dumps.
+- Executor receives per-step context, not all retrieved context.
+- Verifier receives citations and source confidence.
+- Unsupported claims are refused or marked low confidence.
+
+---
+
+### 3.4 Mandatory Contract: Guardrails and Governance Runtime
+
+Guardrails and governance must be dynamically selected but never optional for unsafe flows.
+
+**Target folder ownership:**
+- `app/security_runtime/` owns dynamic safety profile selection.
+- `app/guardrails_v2/` owns scanner implementation.
+- `app/governance/` owns audit, policies, HITL, cost, compliance, RBAC.
+- `app/auth/` and `app/tenancy/` own identity and tenant boundary.
+
+**Policy dimensions:**
+
+| Dimension | Dynamic Inputs | Output |
+|---|---|---|
+| Prompt safety | goal text, retrieved context, user role | injection/toxicity policy |
+| Tool safety | tool name, tool args, connector risk | allow/deny/HITL/rollback |
+| Data safety | PII/PHI/PCI/secrets classification | redact/block/review |
+| Agent identity | tenant, delegated identity, sponsor | allowed scopes |
+| Compliance | tenant policy, domain, geography | GDPR/HIPAA/SOC2/PCI/DPDP bundle |
+| Audit | action risk and data class | immutable audit event |
+
+**Required runtime profile:**
+
+```python
+SecurityRuntimeProfile(
+    guardrail_bundle="default|strict|regulated|developer|rpa",
+    governance_bundle="free|enterprise|regulated",
+    identity_scope="tenant|agent|delegated_agent",
+    hitl_required=True,
+    consensus_required=True,
+    rollback_required=True,
+    audit_level="standard|full|forensic",
+    compliance_tags=["gdpr", "soc2"],
+)
+```
+
+**Acceptance criteria:**
+- No tool call bypasses tool-arg guardrails.
+- No final output bypasses final-output guardrails.
+- High-risk tool calls always create audit + HITL record.
+- Cross-tenant access is denied at app and RLS layers.
+
+---
+
+### 3.5 Mandatory Contract: Knowledge and Knowledge Graph Runtime
+
+Knowledge and graph are not passive stores. They are runtime decision surfaces.
+
+**Target folder ownership:**
+- `app/knowledge/` owns document collections and chunks.
+- `app/knowledge_graph/` owns entities, relationships, paths, communities.
+- `app/rag/agentic/` decides when and how to use them.
+- `app/evals/rag_score.py` evaluates retrieval quality.
+
+**Knowledge runtime responsibilities:**
+- Build source inventory per tenant and agent.
+- Detect empty, stale, sparse, or low-confidence knowledge.
+- Route to graph expansion for relationship questions.
+- Route to web when knowledge is absent or stale.
+- Track citation coverage and retrieval confidence.
+
+**Knowledge graph strategy matrix:**
+
+| Query Type | Use KG? | Strategy |
+|---|---|---|
+| "related to" | Yes | entity expansion |
+| "depends on" | Yes | path traversal |
+| "impact of X" | Yes | neighbourhood + community |
+| "who caused" | Yes | causal edge traversal |
+| simple factual lookup | Maybe | use only if KB confidence low |
+| code architecture | Yes | symbol graph + dependencies |
+
+**Runtime profile output:**
+
+```python
+KnowledgeRuntimeProfile(
+    kb_state="empty|sparse|healthy|stale",
+    graph_state="empty|healthy|partial",
+    selected_collections=[...],
+    graph_strategy="none|entity|path|community|impact",
+    web_fallback_required=True,
+    citation_required=True,
+)
+```
+
+**Acceptance criteria:**
+- Empty KB triggers explicit `kb_empty` state, not silent failure.
+- KG is used for relationship and impact queries.
+- Retrieval traces include whether KB, KG, web, memory, or parametric source was used.
+
+---
+
+### 3.6 Mandatory Contract: Implementation Priority
+
+The first build must not start by rewriting `graph.py`. It must establish contracts first.
+
+| Priority | Layer | Why First |
+|---|---|---|
+| P0 | `app/orchestration/runtime_profile.py` | Everything depends on a unified profile |
+| P0 | `app/orchestration/strategy_registry.py` | Prevents if/else sprawl |
+| P0 | `app/rag/agentic/retriever_tool.py` | Makes RAG agent-owned |
+| P0 | `app/context/context_budget.py` + `rerank_policy.py` | Prevents raw chunk dumping |
+| P0 | `app/security_runtime/guardrail_profile.py` | Safety must be universal |
+| P1 | `app/ingestion/orchestrator.py` | Enables multimodal platform use |
+| P1 | `app/embedding/orchestrator.py` | Enables modality-aware embeddings |
+| P1 | `app/evals/runtime_scorecard.py` | Enables self-improvement |
+| P1 | `app/optimization/model_optimizer.py` | Enables cost/latency routing |
+
 ```text
 submit_goal()
   ↓
