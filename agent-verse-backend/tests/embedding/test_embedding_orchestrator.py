@@ -6,6 +6,7 @@ import pytest
 from app.embedding.orchestrator import EmbeddingOrchestrator, EmbeddingSelectionResult
 from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
 from app.embedding.dimension_policy import DimensionPolicy
+from app.embedding.reembedding_policy import ReembeddingPolicy, ReembeddingTrigger
 from app.ingestion.content_classifier import ContentType
 from app.tenancy.context import TenantContext, PlanTier
 
@@ -79,3 +80,27 @@ def test_embedding_selection_result_has_all_fields(orchestrator, tenant_ctx):
     assert hasattr(result, "dimension")
     assert hasattr(result, "modality")
     assert hasattr(result, "cost_class")
+
+
+def test_reembedding_policy_triggers_on_dimension_mismatch():
+    policy = ReembeddingPolicy()
+    trigger = policy.should_reembed(
+        current_model="text-embedding-3-small",
+        new_model="text-embedding-3-small",
+        collection_size=500,
+        old_dim=1536,
+        new_dim=3072,   # dimension changed
+    )
+    assert trigger == ReembeddingTrigger.DIMENSION_MISMATCH
+
+
+def test_reembedding_policy_no_trigger_same_dimensions():
+    policy = ReembeddingPolicy()
+    trigger = policy.should_reembed(
+        current_model="text-embedding-3-small",
+        new_model="text-embedding-3-small",
+        collection_size=100,
+        old_dim=1536,
+        new_dim=1536,
+    )
+    assert trigger == ReembeddingTrigger.NONE
