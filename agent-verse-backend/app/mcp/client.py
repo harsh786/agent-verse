@@ -617,21 +617,21 @@ class MCPClient:
         self,
         cfg: MCPServerConfig,
         server_id: str,
-         tool_name: str,
-         arguments: dict[str, Any],
-         tenant_ctx: TenantContext,
-     ) -> ToolCallResult:
-         """Inner dispatch logic — raises on any error for circuit-breaker accounting."""
-         # 1. Built-in server (Python handler)
-         #
-         # ALWAYS try to restore the builtin handler before dispatch.
-         # The handler is a Python callable that is NOT serialised to Redis.
-         # After a Redis round-trip, cfg.builtin_handler is None even for
-         # connectors like 'builtin-jira' whose URL is set to the Atlassian
-         # remote MCP (https://mcp.atlassian.com/...).  Without restoration,
-         # the client falls through to HTTP dispatch against that remote URL,
-         # which requires OAuth — not the Basic auth stored in auth_config.
-         if cfg.builtin_handler is None:
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> ToolCallResult:
+        """Inner dispatch logic — raises on any error for circuit-breaker accounting."""
+        # 1. Built-in server (Python handler)
+        #
+        # ALWAYS try to restore the builtin handler before dispatch.
+        # The handler is a Python callable that is NOT serialised to Redis.
+        # After a Redis round-trip, cfg.builtin_handler is None even for
+        # connectors like 'builtin-jira' whose URL is set to the Atlassian
+        # remote MCP (https://mcp.atlassian.com/...).  Without restoration,
+        # the client falls through to HTTP dispatch against that remote URL,
+        # which requires OAuth — not the Basic auth stored in auth_config.
+        if cfg.builtin_handler is None:
              try:
                  from app.mcp.registry import MCPRegistry as _MCPReg
                  _restored = _MCPReg.get_builtin_handler(cfg.server_id)
@@ -640,7 +640,7 @@ class MCPClient:
              except Exception:
                  pass
 
-         if cfg.builtin_handler is not None:
+        if cfg.builtin_handler is not None:
              return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
 
         # SSRF guard — validate server URL before any outbound HTTP call
