@@ -630,19 +630,371 @@ KnowledgeRuntimeProfile(
 
 ### 3.6 Mandatory Contract: Implementation Priority
 
+### 3.6 Mandatory Contract: Capability, Trust, Provenance, Sandbox, and Recovery Runtime
+
+A world-class agent platform needs additional core layers beyond model/RAG/guardrail selection. These are required to make the platform generic, safe, explainable, and dynamically adaptable.
+
+#### Capability Registry
+
+**Purpose:** Normalize what every agent, model, tool, skill, retriever, embedder, parser, chunker, guardrail, and workflow can do.
+
+**Target folder ownership:**
+- `app/capabilities/`
+- adapters from `app/tools/`, `app/mcp/`, `app/skills_runtime/`, `app/providers/`, `app/embedding/`, `app/rag/`, `app/multimodal/`
+
+**Target files:**
+- `app/capabilities/registry.py`
+- `app/capabilities/schema.py`
+- `app/capabilities/resolver.py`
+- `app/capabilities/compatibility.py`
+- `app/capabilities/capability_trace.py`
+
+**Runtime contract:**
+```python
+CapabilityProfile(
+    capability_id="tool:postgres.query",
+    kind="tool|model|agent|skill|retriever|embedder|parser|chunker|guardrail",
+    tenant_scope="platform|tenant|agent",
+    input_modalities=["text", "sql"],
+    output_modalities=["json", "table"],
+    risk_level="low|medium|high|critical",
+    cost_class="free|low|medium|high",
+    latency_class="realtime|interactive|batch",
+    reliability_score=0.0,
+    required_permissions=[...],
+)
+```
+
+**Acceptance criteria:** orchestration never selects a tool/model/skill by name alone; it selects by declared capability and compatibility with goal/runtime profile.
+
+#### Runtime Policy Compiler
+
+**Purpose:** Compile tenant policy, org policy, compliance policy, risk policy, and cost policy into executable runtime constraints before graph execution starts.
+
+**Target folder ownership:**
+- `app/policy_runtime/`
+- adapters from `app/governance/`, `app/tenancy/`, `app/security_runtime/`
+
+**Target files:**
+- `app/policy_runtime/compiler.py`
+- `app/policy_runtime/constraint_model.py`
+- `app/policy_runtime/policy_trace.py`
+- `app/policy_runtime/runtime_enforcer.py`
+
+**Runtime contract:**
+```python
+CompiledRuntimePolicy(
+    allowed_capabilities=[...],
+    denied_capabilities=[...],
+    required_approvals=[...],
+    max_cost_usd=...,
+    max_latency_ms=...,
+    data_classes_allowed=[...],
+    audit_level="standard|full|forensic",
+    compliance_constraints=["gdpr", "soc2"],
+)
+```
+
+**Acceptance criteria:** policy compilation happens before pattern/model/tool/RAG selection, and every downstream selector receives the compiled policy.
+
+#### Tool Reliability and Trust Scoring
+
+**Purpose:** Choose tools dynamically based on historical reliability, latency, safety incidents, tenant success rate, and current circuit-breaker state.
+
+**Target folder ownership:**
+- `app/tool_runtime/`
+- adapters from `app/tools/`, `app/mcp/`, `app/reliability/`, `app/observability/`
+
+**Target files:**
+- `app/tool_runtime/tool_score.py`
+- `app/tool_runtime/tool_ranker.py`
+- `app/tool_runtime/tool_trust_store.py`
+- `app/tool_runtime/tool_policy.py`
+- `app/tool_runtime/tool_trace.py`
+
+**Runtime contract:**
+```python
+ToolTrustProfile(
+    tool_name="github_search_issues",
+    success_rate=0.98,
+    p95_latency_ms=430,
+    safety_incidents=0,
+    tenant_success_rate=0.94,
+    circuit_state="closed|open|half_open",
+    trust_score=0.91,
+)
+```
+
+**Acceptance criteria:** `ToolSelector` ranks tools by semantic relevance plus trust/reliability, not relevance alone.
+
+#### Data Classification Layer
+
+**Purpose:** Classify every input, retrieved chunk, tool output, artifact, memory, and final answer by sensitivity and regulatory class.
+
+**Target folder ownership:**
+- `app/data_classification/`
+- adapters from `app/guardrails_v2/`, `app/governance/`, `app/ingestion/`, `app/context/`
+
+**Target files:**
+- `app/data_classification/classifier.py`
+- `app/data_classification/schema.py`
+- `app/data_classification/policy.py`
+- `app/data_classification/redaction.py`
+- `app/data_classification/classification_trace.py`
+
+**Runtime contract:**
+```python
+DataClassification(
+    data_id="chunk:...",
+    classes=["public|internal|confidential|secret|pii|phi|pci|source_code"],
+    detected_entities=[...],
+    retention_policy="default|short|regulated|legal_hold",
+    allowed_sinks=["tenant_user", "audit_log"],
+    blocked_sinks=["external_tool", "webhook"],
+)
+```
+
+**Acceptance criteria:** no retrieved chunk or tool output enters prompt/context building until classified or explicitly marked classification-unavailable with safe fallback.
+
+#### Provenance Ledger
+
+**Purpose:** Make every final claim traceable to source documents, tools, models, prompts, retrieval calls, and agent steps.
+
+**Target folder ownership:**
+- `app/provenance/`
+- adapters from `app/rag/agentic/`, `app/context/`, `app/agent_runtime/`, `app/governance/`
+
+**Target files:**
+- `app/provenance/ledger.py`
+- `app/provenance/claim_trace.py`
+- `app/provenance/source_ref.py`
+- `app/provenance/provenance_verifier.py`
+- `app/provenance/export.py`
+
+**Runtime contract:**
+```python
+ProvenanceRecord(
+    claim_id="...",
+    claim_text="...",
+    supporting_sources=[SourceRef(...)],
+    generated_by_step="step_3",
+    generated_by_model="gpt-5.2",
+    prompt_hash="...",
+    confidence=0.87,
+    verification_status="supported|unsupported|contradicted|unknown",
+)
+```
+
+**Acceptance criteria:** final answers can be exported with a claim-level provenance chain, not just citations.
+
+#### Sandbox Runtime
+
+**Purpose:** Execute code, shell, browser/RPA, file operations, MCP tools, and destructive simulations in isolated, policy-bound environments.
+
+**Target folder ownership:**
+- `app/sandbox_runtime/`
+- adapters from `app/tools/`, `app/rpa/`, `app/enterprise/simulation.py`, `app/reliability/rollback.py`
+
+**Target files:**
+- `app/sandbox_runtime/profile.py`
+- `app/sandbox_runtime/executor.py`
+- `app/sandbox_runtime/network_policy.py`
+- `app/sandbox_runtime/filesystem_policy.py`
+- `app/sandbox_runtime/simulation_runner.py`
+- `app/sandbox_runtime/sandbox_trace.py`
+
+**Runtime contract:**
+```python
+SandboxRuntimeProfile(
+    sandbox_type="none|python|browser|shell|mcp|simulation",
+    network_policy="none|allowlist|tenant_connectors_only",
+    filesystem_policy="read_only|workspace|ephemeral",
+    timeout_seconds=...,
+    requires_dry_run=True,
+    rollback_required=True,
+)
+```
+
+**Acceptance criteria:** high-risk external effects must support sandbox/dry-run/simulation before production execution or require explicit HITL override.
+
+#### Plan Verification Before Execution
+
+**Purpose:** Verify the generated plan before executing any step.
+
+**Target folder ownership:**
+- `app/plan_runtime/`
+- adapters from `app/agent/`, `app/security_runtime/`, `app/evals/`
+
+**Target files:**
+- `app/plan_runtime/plan_verifier.py`
+- `app/plan_runtime/plan_risk_analyzer.py`
+- `app/plan_runtime/plan_cost_estimator.py`
+- `app/plan_runtime/plan_feasibility.py`
+- `app/plan_runtime/plan_trace.py`
+
+**Runtime contract:**
+```python
+PlanVerificationResult(
+    feasible=True,
+    risk_level="low|medium|high|critical",
+    estimated_cost_usd=...,
+    missing_permissions=[...],
+    missing_context=[...],
+    requires_hitl=True,
+    safe_to_execute=True,
+)
+```
+
+**Acceptance criteria:** no high-risk, high-cost, missing-permission, or missing-context plan executes without verification outcome recorded.
+
+#### Failure Taxonomy and Recovery Policy
+
+**Purpose:** Classify failures and select recovery dynamically.
+
+**Target folder ownership:**
+- `app/recovery/`
+- adapters from `app/agent/errors.py`, `app/reliability/`, `app/agent/persistence.py`
+
+**Target files:**
+- `app/recovery/failure_classifier.py`
+- `app/recovery/recovery_policy.py`
+- `app/recovery/retry_strategy_selector.py`
+- `app/recovery/escalation_policy.py`
+- `app/recovery/recovery_trace.py`
+
+**Failure classes:**
+- auth/permission failure
+- missing credential
+- tool unavailable
+- provider unavailable
+- context gap
+- policy rejection
+- rate limit
+- timeout
+- code/test failure
+- user ambiguity
+- safety violation
+
+**Acceptance criteria:** recovery is never generic `retry`; every retry has a classified reason and selected strategy.
+
+#### Human Collaboration Layer
+
+**Purpose:** Go beyond approve/reject HITL. Let the agent ask clarifying questions, request missing credentials, get preference input, and explain tradeoffs.
+
+**Target folder ownership:**
+- `app/collaboration_runtime/`
+- adapters from `app/governance/hitl.py`, `app/collab/`, `app/notifications/`
+
+**Target files:**
+- `app/collaboration_runtime/clarification.py`
+- `app/collaboration_runtime/missing_input_request.py`
+- `app/collaboration_runtime/preference_capture.py`
+- `app/collaboration_runtime/human_decision_trace.py`
+
+**Acceptance criteria:** ambiguous or blocked goals can pause for human clarification instead of failing or hallucinating.
+
+#### Environment Awareness and Readiness Gate
+
+**Purpose:** Detect whether the runtime environment is capable of safely executing the selected profile.
+
+**Target folder ownership:**
+- `app/runtime_readiness/`
+- adapters from `app/observability/health.py`, `app/main_services.py`, `app/scaling/`, `app/providers/`
+
+**Target files:**
+- `app/runtime_readiness/environment_profile.py`
+- `app/runtime_readiness/readiness_gate.py`
+- `app/runtime_readiness/dependency_health.py`
+- `app/runtime_readiness/degraded_mode_policy.py`
+
+**Acceptance criteria:** the platform blocks or downgrades goals when Redis, Postgres, Celery, provider, embedding, or required tool dependencies are unavailable.
+
+#### Workload Scheduler and QoS Layer
+
+**Purpose:** Prioritize execution by tenant plan, SLA, risk, queue depth, cost, retry count, and enterprise isolation.
+
+**Target folder ownership:**
+- `app/qos/`
+- adapters from `app/scaling/`, `app/services/goal_queue.py`, `app/governance/cost.py`
+
+**Target files:**
+- `app/qos/scheduler.py`
+- `app/qos/priority_policy.py`
+- `app/qos/queue_policy.py`
+- `app/qos/backpressure.py`
+- `app/qos/qos_trace.py`
+
+**Acceptance criteria:** enterprise tenants, high-priority goals, and retry storms are handled by explicit queue/backpressure policy.
+
+#### Data Lifecycle and Retention Layer
+
+**Purpose:** Manage retention, deletion, archiving, legal holds, and export for all runtime data.
+
+**Target folder ownership:**
+- `app/lifecycle/`
+- adapters from `app/memory_v2/`, `app/governance/legal_holds.py`, `app/services/result_artifacts.py`, `app/knowledge/`
+
+**Target files:**
+- `app/lifecycle/retention_policy.py`
+- `app/lifecycle/deletion_orchestrator.py`
+- `app/lifecycle/archive_policy.py`
+- `app/lifecycle/legal_hold_policy.py`
+- `app/lifecycle/export_policy.py`
+
+**Acceptance criteria:** audit, traces, artifacts, memory, embeddings, knowledge, screenshots, and videos all have tenant-scoped retention policy.
+
+#### Evaluation Dataset Builder
+
+**Purpose:** Convert important or failed goals into reusable golden tasks.
+
+**Target folder ownership:**
+- `app/evals/dataset_builder.py`
+- adapters from `app/ai_ops/`, `app/intelligence/eval_suite.py`, `app/services/goal_service.py`
+
+**Acceptance criteria:** critical failures automatically create regression candidates with sanitized inputs and expected behaviours.
+
+#### Explainability and Decision UI Layer
+
+**Purpose:** Make dynamic orchestration understandable to users and operators.
+
+**Target folder ownership:**
+- Backend: `app/explainability_runtime/`
+- Frontend: `agent-verse-frontend/src/features/observability/`, `src/features/goals/`
+
+**Target files:**
+- `app/explainability_runtime/decision_explainer.py`
+- `app/explainability_runtime/runtime_profile_explainer.py`
+- `app/explainability_runtime/source_explainer.py`
+- frontend panel: `RuntimeDecisionPanel.tsx`
+
+**Acceptance criteria:** every goal detail page can answer: why this model, why this RAG strategy, why this tool, why this guardrail, why this fallback.
+
+---
+
+### 3.7 Mandatory Contract: Implementation Priority
+
 The first build must not start by rewriting `graph.py`. It must establish contracts first.
 
 | Priority | Layer | Why First |
 |---|---|---|
 | P0 | `app/orchestration/runtime_profile.py` | Everything depends on a unified profile |
 | P0 | `app/orchestration/strategy_registry.py` | Prevents if/else sprawl |
+| P0 | `app/capabilities/registry.py` | Select by declared capability, not hardcoded name |
+| P0 | `app/policy_runtime/compiler.py` | Policy must constrain every downstream decision |
 | P0 | `app/rag/agentic/retriever_tool.py` | Makes RAG agent-owned |
 | P0 | `app/context/context_budget.py` + `rerank_policy.py` | Prevents raw chunk dumping |
 | P0 | `app/security_runtime/guardrail_profile.py` | Safety must be universal |
+| P0 | `app/data_classification/classifier.py` | No unclassified data enters prompts/tools |
+| P0 | `app/plan_runtime/plan_verifier.py` | Plans must be checked before execution |
+| P0 | `app/runtime_readiness/readiness_gate.py` | Blocks unsafe degraded execution |
 | P1 | `app/ingestion/orchestrator.py` | Enables multimodal platform use |
 | P1 | `app/embedding/orchestrator.py` | Enables modality-aware embeddings |
 | P1 | `app/evals/runtime_scorecard.py` | Enables self-improvement |
 | P1 | `app/optimization/model_optimizer.py` | Enables cost/latency routing |
+| P1 | `app/tool_runtime/tool_score.py` | Tool choice uses reliability/trust, not only relevance |
+| P1 | `app/provenance/ledger.py` | Final answers get claim-level traceability |
+| P1 | `app/recovery/failure_classifier.py` | Recovery strategy follows failure type |
+| P1 | `app/qos/scheduler.py` | Queueing and backpressure become explicit |
 
 ```text
 submit_goal()
