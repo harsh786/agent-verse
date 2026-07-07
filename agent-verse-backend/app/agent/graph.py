@@ -648,6 +648,26 @@ class AgentGraph:
                 pass  # fall through — never block execution on retrieval enhancement
 
         rag_context = "\n\n".join(context_parts)
+
+        # ── Web fallback when KB returns nothing ──────────────────────────────
+        if not context_parts and getattr(self, "_web_search_tool", None) is not None:
+            try:
+                web_results = await self._web_search_tool.search(agent_state.goal, num_results=3)
+                if web_results:
+                    web_context = "\n".join(
+                        f"[WEB] {r.get('snippet', r.get('body', r.get('content', '')))[:300]}"
+                        for r in web_results[:3]
+                    )
+                    context_parts.append(
+                        "[Web search — KB empty or returned no results]\n" + web_context
+                    )
+                    agent_state.context["web_search_active"] = True
+                    agent_state.context["web_search_auto"] = True
+                    rag_context = "\n\n".join(context_parts)
+            except Exception:
+                pass
+        # ── end web fallback ──────────────────────────────────────────────────
+
         return {"rag_context": rag_context}
 
     async def _node_rag_prime(self, state: GraphState) -> dict:
@@ -840,6 +860,41 @@ class AgentGraph:
 
         agent_state.status = GoalStatus.PLANNING
         agent_state.iterations = iteration
+
+        # ── ContextPipeline processing ─────────────────────────────────────────
+        try:
+            from app.context.context_pipeline import ContextPipeline
+            from app.context.rerank_policy import RerankStrategy
+            runtime_profile = agent_state.context.get("_runtime_profile")
+            rerank_strategy = RerankStrategy.SCORE
+            if runtime_profile is not None:
+                reranker_name = getattr(runtime_profile.rag_strategy, "reranker", "score")
+                try:
+                    rerank_strategy = RerankStrategy(reranker_name)
+                except ValueError:
+                    pass
+            retrieved_chunks = agent_state.context.get("_retrieved_chunks", [])
+            if not retrieved_chunks and rag_context:
+                retrieved_chunks = [{"content": rag_context, "score": 0.7, "chunk_id": "rag_0"}]
+            if retrieved_chunks:
+                pipeline = ContextPipeline(max_tokens=6000, rerank_strategy=rerank_strategy)
+                reflexion_lessons = agent_state.context.get("_reflexion_lessons", [])
+                pipeline_result = pipeline.run(
+                    chunks=retrieved_chunks,
+                    query=agent_state.goal,
+                    goal_context=agent_state.goal,
+                    reflexion_lessons=reflexion_lessons,
+                )
+                if pipeline_result.planner_context:
+                    rag_context = pipeline_result.planner_context
+                    agent_state.context["_pipeline_citations"] = [
+                        {"index": c.index, "url": c.source_url}
+                        for c in pipeline_result.citations
+                    ]
+        except Exception as _ctx_exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("context_pipeline_failed_in_plan", error=str(_ctx_exc))
+        # ── end ContextPipeline ────────────────────────────────────────────────
 
         # Build planner prompt with RAG context injected
         extra_parts: list[str] = []
@@ -1653,6 +1708,36 @@ class AgentGraph:
             context_parts.append(f"Recent outputs:\n{recent_outputs}")
         if step_context:
             context_parts.append(f"Relevant knowledge:\n{step_context}")
+
+        # ── Search directive parsing ───────────────────────────────────────
+        try:
+            from app.rag.agentic.search_directive_parser import SearchDirectiveParser
+            _directive_parser = SearchDirectiveParser()
+            _directives = _directive_parser.extract(step)
+            if _directives and self._knowledge_store is not None:
+                from app.rag.agentic.retriever_tool import RetrieverTool
+                _retriever = RetrieverTool(knowledge_store=self._knowledge_store)
+                _directive_contexts: list[str] = []
+                for _directive in _directives:
+                    _strategy = _directive_parser.directive_to_strategy(_directive.source_type)
+                    _retrieval = await _retriever.retrieve(
+                        query=_directive.query,
+                        tenant_ctx=tenant_ctx,
+                        strategy=_strategy,
+                        top_k=3,
+                    )
+                    if _retrieval.chunks:
+                        _directive_contexts.append(
+                            f"[{_directive.source_type.upper()} SEARCH: {_directive.query}]\n"
+                            + _retrieval.context_text[:1000]
+                        )
+                if _directive_contexts:
+                    _directive_context_str = "\n\n".join(_directive_contexts)
+                    context_parts.append(_directive_context_str)
+        except Exception:
+            pass
+        # ── end search directives ──────────────────────────────────────────
+
         content = f"Step: {step}"
         if context_parts:
             content += "\n\n" + "\n\n".join(context_parts)
