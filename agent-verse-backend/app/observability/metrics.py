@@ -396,3 +396,41 @@ def record_prompt_tokens_saved(amount: int) -> None:
     import contextlib
     with contextlib.suppress(Exception):
         PROMPT_TOKENS_SAVED_TOTAL.inc(max(0, amount))
+
+
+# ── Dynamic Orchestration metrics ────────────────────────────────────────────
+
+orchestration_profile_built_total = Counter(
+    "agentverse_orchestration_profile_built_total",
+    "Total GoalRuntimeProfiles assembled",
+    ["complexity", "risk", "tenant_plan"],
+    registry=REGISTRY,
+)
+
+orchestration_profile_latency_ms = Histogram(
+    "agentverse_orchestration_profile_latency_ms",
+    "RuntimeProfileBuilder assembly latency in milliseconds",
+    buckets=[0.5, 1, 2, 5, 10, 25, 50, 100],
+    registry=REGISTRY,
+)
+
+orchestration_pattern_selected_total = Counter(
+    "agentverse_orchestration_pattern_selected_total",
+    "Patterns selected by the assembler",
+    ["pattern_id", "category"],
+    registry=REGISTRY,
+)
+
+orchestration_rag_strategy_total = Counter(
+    "agentverse_orchestration_rag_strategy_total",
+    "RAG strategies selected",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+orchestration_readiness_gate_blocked_total = Counter(
+    "agentverse_orchestration_readiness_gate_blocked_total",
+    "Goals blocked by ReadinessGate",
+    ["blocking_dep"],
+    registry=REGISTRY,
+)
