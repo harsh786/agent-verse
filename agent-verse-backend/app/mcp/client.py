@@ -296,8 +296,28 @@ class MCPClient:
             ]
 
         if is_builtin and not cfg.tool_definitions:
-            # Handler found but no tool defs cached — return empty list (not HTTP discovery)
-            return []
+            # Handler found but no tool defs in the DB/Redis config.
+            # Fetch tool definitions directly from the builtin handler module so
+            # the planner gets a complete tool list (not an empty one).
+            try:
+                from app.mcp.servers import registry_wiring as _rw
+                for _bcfg in _rw.get_builtin_server_configs():
+                    if _bcfg.get("server_id") == server_id:
+                        _tool_defs = _bcfg.get("tool_definitions", [])
+                        return [
+                            ToolDefinition(
+                                name=str(t.get("name", "")),
+                                description=str(t.get("description", "")),
+                                input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
+                                server_id=server_id,
+                                server_name=cfg.name,
+                            )
+                            for t in _tool_defs
+                            if t.get("name")
+                        ]
+            except Exception:
+                pass
+            return []  # fallback: no tools known for this builtin
 
         # ── Non-builtin Jira REST connector ───────────────────────────────────
         # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
