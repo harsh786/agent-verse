@@ -54,6 +54,8 @@ class ReadinessGate:
                     warnings.append(f"{dep} unavailable — functionality will be degraded")
             elif status == DepStatus.DEGRADED:
                 warnings.append(f"{dep} is degraded — performance may be affected")
+            elif status == DepStatus.UNKNOWN:
+                warnings.append(f"{dep} health is UNKNOWN — health checks may not have run yet")
         return ReadinessResult(
             ready=len(blocking) == 0,
             degraded=len(optional_down) > 0 or len(warnings) > 0,
