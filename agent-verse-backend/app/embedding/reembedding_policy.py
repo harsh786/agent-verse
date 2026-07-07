@@ -23,9 +23,13 @@ class ReembeddingPolicy:
         drift_score: float = 0.0,
         age_days: int = 0,
         staleness_threshold_days: int = 90,
+        old_dim: int | None = None,
+        new_dim: int | None = None,
     ) -> ReembeddingTrigger:
         if current_model != new_model:
             return ReembeddingTrigger.MODEL_CHANGED
+        if old_dim is not None and new_dim is not None and old_dim != new_dim:
+            return ReembeddingTrigger.DIMENSION_MISMATCH
         if drift_score > _DRIFT_THRESHOLD:
             return ReembeddingTrigger.DRIFT_DETECTED
         if age_days > staleness_threshold_days and collection_size > 100:

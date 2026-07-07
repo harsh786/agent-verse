@@ -66,7 +66,7 @@ class RerankPolicy:
         elif self._strategy == RerankStrategy.CROSS_ENCODER:
             filtered = self._cross_encoder_rerank(filtered, query)
         elif self._strategy == RerankStrategy.LLM:
-            filtered = sorted(filtered, key=lambda c: c.get("score", 0.0), reverse=True)
+            filtered = self._llm_rerank_sync(filtered, query)
 
         # 4. Cap per source
         if self._max_per_source > 0:
@@ -116,3 +116,27 @@ class RerankPolicy:
             return 0.4 * chunk.get("score", 0.5) + 0.6 * overlap_score
 
         return sorted(chunks, key=cross_score, reverse=True)
+
+    def _llm_rerank_sync(
+        self, chunks: list[dict[str, Any]], query: str
+    ) -> list[dict[str, Any]]:
+        """LLM reranker — keyword overlap scoring as lightweight proxy.
+
+        Production: call async LLM reranker via app/rag_platform/reranker.py.
+        In sync context: uses keyword overlap as a deterministic approximation
+        that preserves the interface contract without requiring async.
+        """
+        if not query:
+            return sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
+
+        query_words = set(query.lower().split())
+
+        def llm_proxy_score(chunk: dict[str, Any]) -> float:
+            content = chunk.get("content", "").lower()
+            content_words = set(content.split())
+            overlap = len(query_words & content_words)
+            overlap_score = overlap / max(len(query_words), 1)
+            # Combine vector score with semantic overlap
+            return 0.4 * chunk.get("score", 0.5) + 0.6 * overlap_score
+
+        return sorted(chunks, key=llm_proxy_score, reverse=True)

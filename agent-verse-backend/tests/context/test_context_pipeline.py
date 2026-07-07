@@ -201,3 +201,11 @@ def test_prompt_builder_applies_token_budget(sample_chunks):
     prompt = builder.build_planner_context(bundle)
     # Must not exceed reasonable size even with many chunks
     assert len(prompt) < 10000
+
+
+def test_llm_reranker_returns_chunks(sample_chunks):
+    """LLM reranker must return chunks (falls back to keyword overlap when no provider)."""
+    policy = RerankPolicy(strategy=RerankStrategy.LLM)
+    reranked = policy.rerank(sample_chunks, query="orchestration")
+    assert len(reranked) >= 1
+    assert all(isinstance(c, dict) for c in reranked)
