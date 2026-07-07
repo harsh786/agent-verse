@@ -107,3 +107,19 @@ def test_emitter_creates_chunking_strategy_selected_event():
     )
     assert event["type"] == SSEEventType.CHUNKING_STRATEGY_SELECTED
     assert event["strategy"] == "layout"
+
+
+def test_emitter_creates_embedding_strategy_selected_event():
+    emitter = RuntimeSSEEmitter()
+    event = emitter.embedding_strategy_selected(
+        goal_id="g1",
+        model_id="text-embedding-3-small",
+        modality="text",
+        dimension=1536,
+        cost_class="low",
+        reason="content_type=text modality=text",
+    )
+    assert event["type"] == SSEEventType.EMBEDDING_STRATEGY_SELECTED
+    assert event["model_id"] == "text-embedding-3-small"
+    assert event["dimension"] == 1536
+    assert event["modality"] == "text"

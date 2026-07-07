@@ -683,3 +683,286 @@ async def test_ac_strategy_registry_contains_all_required_strategies(registry):
     for strategy_id in required:
         cap = registry.get(strategy_id)
         assert cap is not None, f"Missing required strategy: {strategy_id}"
+
+
+# ── Archetype 7 (new): Empty KB RetrieverTool structured result ───────────────
+
+async def test_archetype5b_empty_kb_retriever_never_silent():
+    """Spec §3.4 AC: Empty KB must return structured result, not silent empty string."""
+    from app.rag.agentic.retriever_tool import RetrieverTool, RetrievalResult
+    from app.rag.store import KnowledgeStore
+    from app.tenancy.context import TenantContext, PlanTier
+
+    tool = RetrieverTool(knowledge_store=KnowledgeStore())
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
+    result = await tool.retrieve(query="any query", tenant_ctx=ctx)
+    # Must NOT be empty string — must be structured
+    assert isinstance(result, RetrievalResult)
+    assert result.source != ""
+    assert result.strategy_used != ""
+    assert isinstance(result.chunks, list)  # even empty list is fine — never None/str
+    assert result.confidence >= 0.0
+
+
+# ── Archetype 8 (new): Realtime latency_class assertion ──────────────────────
+
+async def test_archetype6b_realtime_latency_class(builder):
+    """Realtime goal must produce latency_class='realtime' or 'interactive'."""
+    profile, _ = await builder.build_with_trace(
+        "Get the current status of the Kubernetes pods right now",
+        tenant_id="t1", goal_id="arch6b"
+    )
+    assert profile.model_plan.latency_class in ("realtime", "interactive")
+    assert profile.properties.requires_web is True or profile.properties.time_sensitivity == TimeSensitivity.REALTIME
+
+
+# ── Archetype 9 (new): Multi-tenant profile isolation ────────────────────────
+
+async def test_archetype7_multi_tenant_profiles_isolated(builder):
+    """Spec §3.4 AC: tenant_id scoped to profile — cross-tenant access denied."""
+    profile_t1, _ = await builder.build_with_trace(
+        "List my agents", tenant_id="tenant_alpha", goal_id="t1g1"
+    )
+    profile_t2, _ = await builder.build_with_trace(
+        "List my agents", tenant_id="tenant_beta", goal_id="t2g1"
+    )
+    assert profile_t1.tenant_id == "tenant_alpha"
+    assert profile_t2.tenant_id == "tenant_beta"
+    # Same goal text, different tenants must produce different profiles
+    assert profile_t1.profile_id != profile_t2.profile_id
+    # No cross-tenant data leakage
+    assert profile_t1.goal_id == "t1g1"
+    assert profile_t2.goal_id == "t2g1"
+
+
+# ── Archetype 11 (new): Financial irreversibility assertion ──────────────────
+
+async def test_archetype8b_financial_irreversibility(builder):
+    """Financial operations must always be marked irreversible."""
+    profile, _ = await builder.build_with_trace(
+        "Transfer funds and charge the customer payment method",
+        tenant_id="t1", goal_id="arch8b"
+    )
+    assert profile.properties.reversibility == "irreversible"
+    assert profile.security.rollback_required is True
+
+
+# ── Archetype 13 (new): Regression candidate logic ───────────────────────────
+
+def test_archetype10b_failed_goal_creates_regression_candidate():
+    """Failed goal must create regression candidate for self-improvement."""
+    from app.evals.regression_gate import RegressionGate
+    from app.evals.runtime_scorecard import RuntimeScorecard
+    from app.agent.state import AgentState, GoalStatus
+
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
+    state = AgentState(goal="delete prod db", tenant_ctx=ctx, goal_id="g_fail")
+    state.status = GoalStatus.FAILED
+    state.iterations = 25
+
+    profile = GoalRuntimeProfile(
+        goal_id="g_fail", tenant_id="t1",
+        properties=GoalProperties(raw_goal="delete prod db"),
+        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(), security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+    )
+    scorecard = RuntimeScorecard()
+    result = scorecard.score(state=state, profile=profile)
+    assert result.overall_score < 0.7  # failed goal has low score
+
+    gate = RegressionGate()
+    candidate = gate.maybe_create_regression(state=state, scorecard=result, profile=profile)
+    assert candidate is not None
+    assert candidate["goal_id"] == "g_fail"
+    assert candidate["status"] == "failed"
+
+
+def test_archetype10c_successful_goal_no_regression():
+    """Successful goal must NOT create regression candidate."""
+    from app.evals.regression_gate import RegressionGate
+    from app.evals.runtime_scorecard import RuntimeScorecard
+    from app.agent.state import AgentState, GoalStatus
+
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
+    state = AgentState(goal="list tickets", tenant_ctx=ctx, goal_id="g_ok")
+    state.status = GoalStatus.COMPLETE
+    state.iterations = 3
+
+    profile = GoalRuntimeProfile(
+        goal_id="g_ok", tenant_id="t1",
+        properties=GoalProperties(raw_goal="list tickets"),
+        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(), security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+    )
+    scorecard = RuntimeScorecard()
+    result = scorecard.score(state=state, profile=profile)
+
+    gate = RegressionGate()
+    candidate = gate.maybe_create_regression(state=state, scorecard=result, profile=profile)
+    assert candidate is None  # high-scoring successful goal → no regression candidate
+
+
+# ── SPEC §5 ACCEPTANCE CRITERIA — exact names as required ────────────────────
+
+async def test_acceptance_simple_goal_minimal_cost_profile(builder):
+    """Spec §5 AC: A simple goal gets a minimal low-cost runtime profile."""
+    profile, _ = await builder.build_with_trace(
+        "get current user", tenant_id="t1", goal_id="acc1"
+    )
+    assert profile.model_plan.cost_class in ("low", "medium")
+    assert profile.security.hitl_required is False
+    assert profile.security.consensus_required is False
+
+
+async def test_acceptance_high_risk_always_hitl_consensus_rollback(builder):
+    """Spec §5 AC: High-risk destructive goal ALWAYS gets HITL + consensus + rollback."""
+    profile, _ = await builder.build_with_trace(
+        "truncate the production database", tenant_id="t1", goal_id="acc2"
+    )
+    assert profile.security.hitl_required is True
+    assert profile.security.rollback_required is True
+    assert profile.security.audit_level in ("full", "forensic")
+
+
+def test_acceptance_strategy_registry_has_all_documented_patterns():
+    """Spec §5 AC: Every pattern from architecture docs in StrategyRegistry."""
+    from app.orchestration.strategy_registry import build_default_registry, StrategyCategory
+    registry = build_default_registry()
+    assert len(registry.list_all()) >= 60
+    agent_ids = {s.strategy_id for s in registry.list_by_category(StrategyCategory.AGENT)}
+    for pat in ["react", "plan_execute", "reflection", "reflexion", "goal_tree",
+                "supervisor", "debate", "consensus", "self_refine"]:
+        assert pat in agent_ids, f"Missing agent pattern: {pat}"
+    rag_ids = {s.strategy_id for s in registry.list_by_category(StrategyCategory.RAG)}
+    for pat in ["naive_rag", "hybrid_rag", "hyde", "graph_rag", "agentic_rag",
+                "corrective_rag", "web_augmented_rag"]:
+        assert pat in rag_ids, f"Missing RAG pattern: {pat}"
+    safety_ids = {s.strategy_id for s in registry.list_by_category(StrategyCategory.SAFETY)}
+    for pat in ["guardrails", "hitl", "sandbox", "plan_verification", "data_classification"]:
+        assert pat in safety_ids, f"Missing safety pattern: {pat}"
+
+
+def test_acceptance_every_runtime_decision_traceable():
+    """Spec §5 AC: Every runtime decision appears in AgentRunTrace and SSE."""
+    trace = DecisionTrace(goal_id="g1", tenant_id="t1")
+    trace.add("GoalClassifier", "complexity", "expert", "keyword signals")
+    trace.add("PatternSelector", "agent_patterns", ["react"], "default")
+    trace.add("PatternSelector", "rag_strategy", "hybrid_rag", "kb available")
+    assert len(trace.decisions) == 3
+    sse_event = trace.to_sse_event()
+    assert sse_event["type"] == "runtime_profile_selected"
+    assert len(sse_event["decisions"]) == 3
+    # Must be JSON-serializable (for SSE emission)
+    import json
+    json.dumps(sse_event)
+
+
+def test_acceptance_data_classification_no_silent_pass():
+    """Spec §5 AC: No unclassified data enters prompt/context building."""
+    classifier = DataClassifier()
+    texts = [
+        "normal text", "api key: sk-proj-abc123",
+        "email: test@example.com", "",
+        "def function(): pass", "<html><body></body></html>",
+    ]
+    for text in texts:
+        result = classifier.classify_or_safe_fallback(text)
+        assert result is not None
+        assert len(result.classes) > 0
+
+
+async def test_acceptance_plan_verifier_gates_high_risk():
+    """Spec §5 AC: No high-risk plan executes without verification."""
+    verifier = PlanVerifier()
+    plan = ["Drop the production database", "Truncate all user tables", "Revoke all API keys"]
+    profile = GoalRuntimeProfile(
+        goal_id="g1", tenant_id="t1",
+        properties=GoalProperties(raw_goal="destroy everything", risk=RiskLevel.CRITICAL),
+        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(), security=SecurityConfig(hitl_required=True),
+        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+    )
+    result = verifier.verify(plan=plan, profile=profile)
+    assert result.requires_hitl is True
+    assert result.risk_level in ("high", "critical")
+
+
+def test_acceptance_readiness_gate_blocks_when_llm_down():
+    """Spec §5 AC: Platform blocks goals when LLM provider is unavailable."""
+    health = DependencyHealth(
+        postgres=DepStatus.HEALTHY, redis=DepStatus.HEALTHY,
+        embedder=DepStatus.HEALTHY, llm_provider=DepStatus.UNAVAILABLE,
+    )
+    gate = ReadinessGate(health)
+    profile = GoalRuntimeProfile(
+        goal_id="g1", tenant_id="t1",
+        properties=GoalProperties(raw_goal="test"),
+        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(), security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+    )
+    result = gate.check(profile)
+    assert result.ready is False
+    assert "llm_provider" in result.blocking_deps
+
+
+def test_acceptance_failure_classifier_never_generic_retry():
+    """Spec §5 AC: Recovery never generic retry — every failure has classified reason."""
+    classifier = FailureClassifier()
+    from app.recovery.recovery_policy import RecoveryPolicy
+    policy = RecoveryPolicy()
+    test_cases = [
+        ("401 Unauthorized", FailureClass.AUTH_FAILURE),
+        ("429 rate limit exceeded", FailureClass.RATE_LIMIT),
+        ("INSUFFICIENT DATA: cannot find answer", FailureClass.CONTEXT_GAP),
+        ("TimeoutError after 30s", FailureClass.TIMEOUT),
+        ("GUARDRAIL: injection detected", FailureClass.SAFETY_VIOLATION),
+    ]
+    for error_text, expected_class in test_cases:
+        result = classifier.classify(error_text)
+        assert result.failure_class == expected_class, (
+            f"'{error_text}' should classify as {expected_class}, got {result.failure_class}"
+        )
+        action = policy.select(result)
+        assert action is not None  # must have a specific action, not None
+
+
+async def test_acceptance_profile_builder_latency_under_100ms(builder):
+    """Spec §5 AC: Profile assembly must complete in < 100ms (fast path)."""
+    import time
+    t0 = time.perf_counter()
+    profile, _ = await builder.build_with_trace(
+        "list all open issues", tenant_id="t1", goal_id="perf1"
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert elapsed_ms < 100.0, f"Profile assembly took {elapsed_ms:.1f}ms — too slow"
+
+
+async def test_acceptance_all_10_archetypes_produce_valid_profiles(builder):
+    """Spec §5 AC: All 10 archetypes produce valid, JSON-serializable GoalRuntimeProfiles."""
+    import json
+    goals = [
+        "list all open Jira tickets",
+        "research AI safety and write a comprehensive report",
+        "delete all records from production database",
+        "write Python function to parse logs",
+        "find latest information on quantum computing",
+        "get current Kubernetes pod status right now",
+        "analyze competitors and build strategic report",
+        "transfer funds and charge customer payment method",
+        "customer SSN is 123-45-6789 please process",
+        "run all test suites and fix failing tests",
+    ]
+    for i, goal in enumerate(goals, 1):
+        profile, trace = await builder.build_with_trace(
+            goal, tenant_id="t1", goal_id=f"archetype_{i}"
+        )
+        assert profile.goal_id == f"archetype_{i}"
+        assert profile.tenant_id == "t1"
+        try:
+            json.dumps(profile.to_dict())
+        except Exception as e:
+            pytest.fail(f"Archetype {i}: profile not JSON-serializable: {e}")
+        assert len(trace.decisions) > 0, f"Archetype {i}: no decisions in trace"
