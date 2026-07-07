@@ -922,6 +922,32 @@ class GoalService:
         except Exception:
             return {}
 
+    async def _build_runtime_profile(
+        self,
+        goal: str,
+        *,
+        goal_id: str,
+        tenant_ctx: Any,
+    ) -> dict:
+        """Build GoalRuntimeProfile if dynamic orchestration is enabled."""
+        from app.core.runtime_flags import get_runtime_flags
+        flags = get_runtime_flags()
+        if not flags.dynamic_orchestration:
+            return {}
+        try:
+            from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
+            builder = RuntimeProfileBuilder()
+            profile, trace = await builder.build_with_trace(
+                goal, tenant_id=tenant_ctx.tenant_id, goal_id=goal_id
+            )
+            return profile.to_dict()
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning(
+                "runtime_profile_build_failed", error=str(exc), goal_id=goal_id
+            )
+            return {}
+
     # ── private helpers ───────────────────────────────────────────────────────
 
     async def _submit_single_goal(
