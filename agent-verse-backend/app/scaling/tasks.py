@@ -874,13 +874,22 @@ def run_goal(
             except Exception:
                 pass
 
-            # Build LLM response cache and semantic cache for the worker
+            # Build LLM response cache and semantic cache for the worker.
+            # Use the Celery broker Redis URL as fallback for REDIS_URL so
+            # the LLM cache uses Redis (durable, shared across processes)
+            # instead of in-process memory (which persists stale responses
+            # across multiple goal runs in the same worker process and causes
+            # the executor/verifier to return stale cached responses).
             _llm_response_cache = None
             _semantic_cache_worker = None
             _redis_for_worker = None
             try:
                 from app.rag.llm_response_cache import LLMResponseCache
-                _redis_url_worker = os.getenv("REDIS_URL", "")
+                _redis_url_worker = (
+                    os.getenv("REDIS_URL", "")
+                    or celery_app.conf.broker_url
+                    or ""
+                )
                 if _redis_url_worker:
                     import redis.asyncio as _aioredis_worker
                     _redis_for_worker = _aioredis_worker.from_url(
