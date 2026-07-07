@@ -123,3 +123,28 @@ def test_emitter_creates_embedding_strategy_selected_event():
     assert event["model_id"] == "text-embedding-3-small"
     assert event["dimension"] == 1536
     assert event["modality"] == "text"
+
+
+def test_rag_trace_emitter():
+    from app.observability.rag_trace import emit_rag_trace
+
+    event = emit_rag_trace("g1", "hybrid", 5, 0.82)
+    assert event["type"] == "rag_trace"
+    assert event["goal_id"] == "g1"
+    assert event["result_count"] == 5
+
+
+def test_pattern_trace_emitter():
+    from app.observability.pattern_trace import emit_pattern_trace
+
+    event = emit_pattern_trace("g1", {"reasoning": ["react", "reflection"]}, 1.5)
+    assert event["type"] == "pattern_trace"
+    assert event["assembly_latency_ms"] == 1.5
+
+
+def test_model_trace_emitter():
+    from app.observability.model_trace import emit_model_trace
+
+    event = emit_model_trace("g1", "gpt-5.2", "gpt-5.2", "gpt-4o-mini", "high")
+    assert event["type"] == "model_trace"
+    assert event["tier"] == "high"
