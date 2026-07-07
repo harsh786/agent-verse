@@ -38,6 +38,7 @@ class TaskType(str, Enum):
     OCR = "ocr"
     SPEECH = "speech"
     VIDEO = "video"
+    TEXT_GENERATION = "text_generation"
 
 
 @dataclass
@@ -76,6 +77,11 @@ class ModelRoutePolicy:
     require_compliance: bool = False
     require_tool_use: bool = False
     require_vision: bool = False
+    tenant_id: str | None = None
+
+
+# Public alias — RoutePolicy is the canonical name for external callers
+RoutePolicy = ModelRoutePolicy
 
 
 @dataclass
