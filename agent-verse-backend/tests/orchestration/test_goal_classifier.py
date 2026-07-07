@@ -11,6 +11,11 @@ from app.orchestration.runtime_profile import (
 )
 
 
+@pytest.fixture()
+def classifier() -> GoalClassifier:
+    return GoalClassifier()
+
+
 # ---------------------------------------------------------------------------
 # Archetype 1: Simple operational task
 # ---------------------------------------------------------------------------
@@ -163,3 +168,36 @@ def test_irreversibility_detected():
     clf = GoalClassifier()
     props = clf.classify_fast("send email to all users about the outage")
     assert props.reversibility == "irreversible"
+
+
+# ---------------------------------------------------------------------------
+# Word-boundary false-positive regression tests (Fix 1)
+# ---------------------------------------------------------------------------
+def test_reproduce_is_not_critical_risk(classifier):
+    """'prod' inside 'reproduce' must not trigger CRITICAL risk."""
+    props = classifier.classify_fast("reproduce the bug in the auth module")
+    assert props.risk == RiskLevel.LOW
+
+
+def test_product_roadmap_is_not_critical_risk(classifier):
+    """'prod' inside 'product' must not trigger CRITICAL risk."""
+    props = classifier.classify_fast("build a product roadmap for Q3")
+    assert props.risk == RiskLevel.LOW
+
+
+def test_productivity_is_not_critical_risk(classifier):
+    """'prod' inside 'productivity' must not trigger CRITICAL risk."""
+    props = classifier.classify_fast("measure team productivity metrics")
+    assert props.risk in (RiskLevel.LOW, RiskLevel.MEDIUM)
+
+
+def test_prod_as_whole_word_is_critical(classifier):
+    """'prod' as a standalone word must remain CRITICAL."""
+    props = classifier.classify_fast("deploy the service to prod")
+    assert props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+
+
+def test_production_as_whole_word_is_critical(classifier):
+    """'production' as a standalone word must remain CRITICAL."""
+    props = classifier.classify_fast("delete all records from the production database")
+    assert props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL)

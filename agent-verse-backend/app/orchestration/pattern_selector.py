@@ -6,6 +6,7 @@ from __future__ import annotations
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     Complexity,
+    Domain,
     EvalConfig,
     GoalProperties,
     KnowledgeState,
@@ -60,7 +61,7 @@ class PatternSelector:
             reasoning = list(dict.fromkeys(reasoning + ["self_refine"]))
             reasons["self_refine"] = "coding tasks benefit from iterative refinement"
 
-        if props.is_generative or props.domain.value == "creative":
+        if props.is_generative or props.domain == Domain.CREATIVE:
             if "self_refine" not in reasoning and self._registry.is_available("self_refine"):
                 reasoning = list(dict.fromkeys(reasoning + ["self_refine"]))
                 reasons["self_refine"] = (

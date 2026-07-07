@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 
@@ -90,19 +91,19 @@ def build_default_registry() -> StrategyRegistry:
     S = StrategyCategory.SAFETY
     M = StrategyCategory.MEMORY
     O = StrategyCategory.OPTIMISATION
-    I = StrategyState.IMPLEMENTED
-    P = StrategyState.PARTIAL
-    PL = StrategyState.PLANNED
+    IMPL = StrategyState.IMPLEMENTED
+    PART = StrategyState.PARTIAL
+    PLAN = StrategyState.PLANNED
 
     entries: list[StrategyCapability] = [
         # ── Agent Patterns (26 from doc-4) ──────────────────────────────────
         StrategyCapability(
-            "react", A, I, "app.agent.graph:AgentGraph", "ReAct loop", [], [], "medium", "interactive", "low"
+            "react", A, IMPL, "app.agent.graph:AgentGraph", "ReAct loop", [], [], "medium", "interactive", "low"
         ),
         StrategyCapability(
             "plan_execute",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "Plan then execute",
             [],
@@ -114,7 +115,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "chain_of_thought",
             A,
-            P,
+            PART,
             "app.agent.graph:AgentGraph",
             "CoT reasoning",
             [],
@@ -124,15 +125,15 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "zero_shot_cot", A, P, "", "Zero-shot CoT", [], [], "low", "interactive", "low"
+            "zero_shot_cot", A, PART, "", "Zero-shot CoT", [], [], "low", "interactive", "low"
         ),
         StrategyCapability(
-            "few_shot_cot", A, PL, "", "Few-shot CoT", [], [], "medium", "interactive", "low"
+            "few_shot_cot", A, PLAN, "", "Few-shot CoT", [], [], "medium", "interactive", "low"
         ),
         StrategyCapability(
             "reflection",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "Post-exec reflection",
             [],
@@ -144,7 +145,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "reflexion",
             A,
-            P,
+            PART,
             "",
             "Persistent failure lessons",
             ["reflexion_store"],
@@ -154,12 +155,12 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "self_refine", A, P, "", "Iterative self-refinement", [], [], "medium", "interactive", "low"
+            "self_refine", A, PART, "", "Iterative self-refinement", [], [], "medium", "interactive", "low"
         ),
         StrategyCapability(
             "self_consistency",
             A,
-            PL,
+            PLAN,
             "",
             "Multiple paths + majority vote",
             [],
@@ -171,7 +172,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "tree_of_thoughts",
             A,
-            PL,
+            PLAN,
             "",
             "Tree search over reasoning",
             [],
@@ -183,7 +184,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "graph_of_thoughts",
             A,
-            PL,
+            PLAN,
             "",
             "Graph-structured thought",
             [],
@@ -195,7 +196,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "least_to_most",
             A,
-            PL,
+            PLAN,
             "",
             "Decompose least to most complex",
             [],
@@ -205,12 +206,12 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "rewoo", A, PL, "", "Reasoning without observation", [], [], "medium", "interactive", "low"
+            "rewoo", A, PLAN, "", "Reasoning without observation", [], [], "medium", "interactive", "low"
         ),
         StrategyCapability(
             "program_of_thought",
             A,
-            PL,
+            PLAN,
             "",
             "Programs to solve tasks",
             [],
@@ -222,7 +223,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "codeact",
             A,
-            PL,
+            PLAN,
             "",
             "Code execution as action",
             ["code_interpreter"],
@@ -234,7 +235,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "goal_tree",
             A,
-            I,
+            IMPL,
             "app.agent.goal_tree:GoalTree",
             "Parallel sub-goals",
             [],
@@ -246,7 +247,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "supervisor",
             A,
-            I,
+            IMPL,
             "app.agent.supervisor:Supervisor",
             "Supervisor orchestration",
             [],
@@ -258,7 +259,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "debate",
             A,
-            I,
+            IMPL,
             "app.agent.debate:DebateCoordinator",
             "Multi-agent debate",
             [],
@@ -270,7 +271,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "mixture_of_agents",
             A,
-            PL,
+            PLAN,
             "",
             "Ensemble of agents",
             [],
@@ -282,7 +283,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "consensus",
             A,
-            I,
+            IMPL,
             "app.agent.consensus:ConsensusVerifier",
             "Consensus verification",
             [],
@@ -292,15 +293,15 @@ def build_default_registry() -> StrategyRegistry:
             "medium",
         ),
         StrategyCapability(
-            "peer_review", A, PL, "", "Peer agent review", [], [], "high", "batch", "low"
+            "peer_review", A, PLAN, "", "Peer agent review", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
-            "camel", A, PL, "", "Communicative agents", [], [], "high", "batch", "low"
+            "camel", A, PLAN, "", "Communicative agents", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
             "babyagi",
             A,
-            PL,
+            PLAN,
             "",
             "Task creation and prioritization",
             [],
@@ -312,7 +313,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "autogpt",
             A,
-            PL,
+            PLAN,
             "",
             "Autonomous long-horizon",
             [],
@@ -322,12 +323,12 @@ def build_default_registry() -> StrategyRegistry:
             "medium",
         ),
         StrategyCapability(
-            "lats", A, PL, "", "LLM Monte Carlo tree search", [], [], "high", "batch", "low"
+            "lats", A, PLAN, "", "LLM Monte Carlo tree search", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
             "llm_compiler",
             A,
-            PL,
+            PLAN,
             "",
             "Parallel task compilation",
             [],
@@ -340,7 +341,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "structured_planning",
             A,
-            I,
+            IMPL,
             "app.agent.structured_plan",
             "Structured plan with depends_on",
             [],
@@ -352,7 +353,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "persistence_strategy",
             A,
-            I,
+            IMPL,
             "app.agent.persistence",
             "Smart retry with strategy rotation",
             [],
@@ -364,7 +365,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "loop_engineering",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "loop_until + wave execution",
             [],
@@ -376,7 +377,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "loop_until",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "Loop step until condition",
             [],
@@ -388,7 +389,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "wave_execution",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "Parallel wave execution",
             [],
@@ -400,7 +401,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "workflow_dag",
             A,
-            I,
+            IMPL,
             "app.agent.workflow_planner:WorkflowPlanner",
             "Static DAG workflow",
             [],
@@ -412,7 +413,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "skill_selector",
             A,
-            I,
+            IMPL,
             "app.agent.skill_selector",
             "Dynamic skill selection",
             [],
@@ -424,7 +425,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "intent_router",
             A,
-            I,
+            IMPL,
             "app.agent.router",
             "Auto-route to best agent",
             [],
@@ -436,7 +437,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "meta_agent_planner",
             A,
-            P,
+            PART,
             "app.intelligence.meta_agent",
             "NL → agent config",
             [],
@@ -448,7 +449,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "scratchpad",
             A,
-            I,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "CoT scratchpad",
             [],
@@ -460,7 +461,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "budget_control",
             O,
-            I,
+            IMPL,
             "app.governance.cost:CostController",
             "Cost circuit breaker",
             [],
@@ -472,7 +473,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "circuit_breaker",
             S,
-            I,
+            IMPL,
             "app.reliability.circuit_breaker:CircuitBreaker",
             "CLOSED→OPEN→HALF_OPEN",
             [],
@@ -484,7 +485,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "grounding_checker",
             S,
-            I,
+            IMPL,
             "app.agent.grounding:GroundingChecker",
             "Hallucination detection",
             [],
@@ -496,7 +497,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "constitutional_ai",
             S,
-            PL,
+            PLAN,
             "",
             "Constitutional AI critique",
             [],
@@ -506,12 +507,12 @@ def build_default_registry() -> StrategyRegistry:
             "medium",
         ),
         StrategyCapability(
-            "voyager", A, PL, "", "Skill-learning agent", [], [], "high", "batch", "low"
+            "voyager", A, PLAN, "", "Skill-learning agent", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
             "generative_agents",
             A,
-            PL,
+            PLAN,
             "",
             "Memory-driven simulation",
             [],
@@ -524,7 +525,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "naive_rag",
             R,
-            I,
+            IMPL,
             "app.rag.store:KnowledgeStore",
             "Simple vector retrieval",
             ["knowledge_store"],
@@ -536,7 +537,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "hybrid_rag",
             R,
-            I,
+            IMPL,
             "app.rag.store:KnowledgeStore",
             "Vector + trigram hybrid",
             ["knowledge_store"],
@@ -548,7 +549,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "hyde",
             R,
-            P,
+            PART,
             "app.rag_platform.retriever:RAGRetriever",
             "Hypothetical doc embeddings",
             ["knowledge_store", "embedder"],
@@ -560,7 +561,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "multi_hop_rag",
             R,
-            P,
+            PART,
             "app.rag_platform.retriever:RAGRetriever",
             "Multi-hop retrieval",
             ["knowledge_store", "embedder"],
@@ -572,7 +573,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "graph_rag",
             R,
-            P,
+            PART,
             "app.rag_platform.retriever:RAGRetriever",
             "KG augmented retrieval",
             ["kg_store"],
@@ -584,7 +585,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "corrective_rag",
             R,
-            P,
+            PART,
             "",
             "Corrective retrieval",
             ["knowledge_store"],
@@ -596,7 +597,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "adaptive_rag",
             R,
-            PL,
+            PLAN,
             "",
             "Adaptive strategy per query",
             ["knowledge_store"],
@@ -608,7 +609,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "modular_rag",
             R,
-            PL,
+            PLAN,
             "",
             "Pluggable RAG modules",
             [],
@@ -620,7 +621,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "speculative_rag",
             R,
-            PL,
+            PLAN,
             "",
             "Speculative retrieval",
             [],
@@ -632,7 +633,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "agentic_rag",
             R,
-            P,
+            PART,
             "app.rag_platform.retriever:RAGRetriever",
             "Agent-owned retrieval",
             ["knowledge_store"],
@@ -644,7 +645,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "web_augmented_rag",
             R,
-            I,
+            IMPL,
             "app.tools.web_search",
             "Web search RAG",
             ["web_search"],
@@ -656,7 +657,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "fusion_rag",
             R,
-            PL,
+            PLAN,
             "",
             "Multi-query RRF fusion",
             [],
@@ -668,7 +669,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "self_rag",
             R,
-            PL,
+            PLAN,
             "",
             "Self-reflective retrieval",
             [],
@@ -680,7 +681,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "flare",
             R,
-            PL,
+            PLAN,
             "",
             "Forward-looking active retrieval",
             [],
@@ -692,7 +693,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "raptor",
             R,
-            PL,
+            PLAN,
             "",
             "Recursive abstractive processing",
             [],
@@ -704,7 +705,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "agentic_chunking",
             R,
-            PL,
+            PLAN,
             "",
             "LLM-driven chunking",
             [],
@@ -716,7 +717,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "colbert_late_interaction",
             R,
-            PL,
+            PLAN,
             "",
             "ColBERT late interaction",
             [],
@@ -726,13 +727,13 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "raft", R, PL, "", "RAG fine-tuning pattern", [], [], "high", "batch", "low"
+            "raft", R, PLAN, "", "RAG fine-tuning pattern", [], [], "high", "batch", "low"
         ),
         # ── Safety Patterns (10 from doc-4 + extras) ────────────────────────
         StrategyCapability(
             "guardrails",
             S,
-            I,
+            IMPL,
             "app.guardrails_v2.engine:guardrails_engine",
             "Input/output scanning",
             [],
@@ -744,7 +745,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "hitl",
             S,
-            I,
+            IMPL,
             "app.governance.hitl:HITLGateway",
             "Human approval gate",
             [],
@@ -756,7 +757,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "consensus_verification",
             S,
-            I,
+            IMPL,
             "app.agent.consensus:ConsensusVerifier",
             "Multi-agent consensus",
             [],
@@ -768,7 +769,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "exfiltration_guard",
             S,
-            I,
+            IMPL,
             "app.agent.exfil_guard",
             "Prevent data exfil",
             [],
@@ -780,7 +781,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "permission_matrix",
             S,
-            I,
+            IMPL,
             "app.governance.permissions:PermissionMatrix",
             "RBAC enforcement",
             [],
@@ -792,7 +793,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "policy_compiler",
             S,
-            PL,
+            PLAN,
             "app.policy_runtime.compiler",
             "Compile policy constraints",
             [],
@@ -804,7 +805,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "sandbox",
             S,
-            PL,
+            PLAN,
             "app.sandbox_runtime.executor",
             "Isolated execution",
             [],
@@ -816,7 +817,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "plan_verification",
             S,
-            PL,
+            PLAN,
             "app.plan_runtime.plan_verifier",
             "Verify plan before exec",
             [],
@@ -828,7 +829,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "data_classification",
             S,
-            PL,
+            PLAN,
             "app.data_classification.classifier",
             "Classify data before prompt",
             [],
@@ -840,7 +841,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "provenance_verification",
             S,
-            PL,
+            PLAN,
             "app.provenance.ledger",
             "Claim-level provenance",
             [],
@@ -852,7 +853,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "rollback",
             S,
-            I,
+            IMPL,
             "app.reliability.rollback:RollbackEngine",
             "LIFO rollback",
             [],
@@ -865,7 +866,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "working_memory",
             M,
-            I,
+            IMPL,
             "app.agent.state:AgentState",
             "In-context working memory",
             [],
@@ -877,7 +878,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "session_memory",
             M,
-            I,
+            IMPL,
             "app.memory.execution:ExecutionMemory",
             "Session execution memory",
             [],
@@ -889,7 +890,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "execution_memory",
             M,
-            I,
+            IMPL,
             "app.memory.execution:ExecutionMemory",
             "Cross-run plan memory",
             [],
@@ -901,7 +902,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "long_term_memory",
             M,
-            I,
+            IMPL,
             "app.memory.long_term:LongTermMemoryStore",
             "Cross-session learnings",
             [],
@@ -913,7 +914,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "semantic_memory",
             M,
-            I,
+            IMPL,
             "app.rag.semantic_cache:SemanticCache",
             "Semantic cache",
             ["embedder"],
@@ -925,7 +926,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "prospective_memory",
             M,
-            PL,
+            PLAN,
             "",
             "Future task scheduling",
             [],
@@ -937,7 +938,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "reflexion_memory",
             M,
-            P,
+            PART,
             "app.state_runtime.reflexion_store",
             "Failure lesson store",
             [],
@@ -949,7 +950,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "knowledge_graph_memory",
             M,
-            P,
+            PART,
             "app.knowledge_graph.store:KnowledgeGraphStore",
             "KG memory",
             [],
@@ -962,7 +963,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "model_routing",
             O,
-            I,
+            IMPL,
             "app.ai_router.router:AIRouter",
             "Dynamic model selection",
             [],
@@ -974,7 +975,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "embedding_routing",
             O,
-            P,
+            PART,
             "",
             "Dynamic embedding selection",
             [],
@@ -986,7 +987,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "token_optimisation",
             O,
-            P,
+            PART,
             "app.agent.prompt_compressor",
             "Prompt compression",
             [],
@@ -998,7 +999,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "cost_optimisation",
             O,
-            P,
+            PART,
             "app.intelligence.cost_optimizer",
             "Cost-aware selection",
             [],
@@ -1010,7 +1011,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "latency_optimisation",
             O,
-            PL,
+            PLAN,
             "",
             "Latency-aware routing",
             [],
@@ -1022,7 +1023,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "semantic_cache",
             O,
-            I,
+            IMPL,
             "app.rag.semantic_cache:SemanticCache",
             "Semantic LLM caching",
             ["embedder"],
@@ -1034,7 +1035,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "llm_response_cache",
             O,
-            I,
+            IMPL,
             "app.rag.llm_response_cache",
             "Deterministic LLM cache",
             [],
@@ -1046,7 +1047,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "prompt_ab_testing",
             O,
-            PL,
+            PLAN,
             "",
             "Prompt A/B testing",
             [],
@@ -1058,7 +1059,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "model_ab_testing",
             O,
-            PL,
+            PLAN,
             "",
             "Model routing A/B testing",
             [],
@@ -1070,7 +1071,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "prompt_compression",
             O,
-            P,
+            PART,
             "app.agent.prompt_compressor",
             "Compress prompts",
             [],
@@ -1082,7 +1083,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "context_budgeting",
             O,
-            PL,
+            PLAN,
             "app.context.context_budget",
             "Context token budgets",
             [],
@@ -1095,11 +1096,7 @@ def build_default_registry() -> StrategyRegistry:
     return StrategyRegistry(entries)
 
 
-_default_registry: StrategyRegistry | None = None
-
-
+@lru_cache(maxsize=1)
 def get_strategy_registry() -> StrategyRegistry:
-    global _default_registry
-    if _default_registry is None:
-        _default_registry = build_default_registry()
-    return _default_registry
+    """Return the default strategy registry, built once at startup."""
+    return build_default_registry()
