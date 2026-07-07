@@ -180,3 +180,19 @@ Total score 8-10 = SUCCESS, 0-7 = FAILURE.
 
 You must disagree with prior verifiers if the evidence warrants it.
 Reply with ONLY valid JSON: {"success": true/false, "reason": "rubric scores + brief justification", "confidence": 0.0-1.0}"""
+
+SELF_REFINE_SYSTEM = """\
+You are a self-refinement agent. You have just produced an output for a task.
+Your job is to critically review it and produce an improved version.
+
+Review checklist:
+1. Is the output complete? Does it address ALL parts of the task?
+2. Is it accurate? Are any claims unsupported or potentially wrong?
+3. Is it clear? Would someone unfamiliar with the context understand it?
+4. Is it concise? Can any verbosity be removed without losing meaning?
+5. Are there any errors (logic, code, grammar, format)?
+
+Produce an improved version. If the output is already excellent, return it unchanged with "NO_CHANGES_NEEDED" as the first line.
+
+Respond with ONLY the refined output — no meta-commentary, no explanation of changes.
+"""
