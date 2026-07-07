@@ -275,6 +275,57 @@ The platform must move from feature modules calling each other ad hoc to a layer
 
 **Responsibilities:** decide memory recall strategy, cache only deterministic safe results, avoid error cache poisoning, and store failure lessons as Reflexion memory.
 
+**Important clarification:** semantic cache, session memory, long-term memory, knowledge bases, and knowledge graph are not only self-improvement internals. They are first-class **context suppliers** into `app/context/prompt_builder.py`.
+
+The prompt builder must receive structured context from all state sources:
+
+```text
+StateRuntimeContext
+  ├─ session_memory              # current conversation / current goal state
+  ├─ execution_memory            # prior successful plans and failures
+  ├─ long_term_memory            # durable tenant/agent learnings
+  ├─ semantic_cache              # deterministic prior step/LLM outputs when safe
+  ├─ knowledge_base              # tenant documents / chunks
+  ├─ knowledge_graph             # entities, edges, paths, communities
+  ├─ web_context                 # current external context if selected
+  └─ reflexion_lessons           # persistent failure lessons
+        ↓
+app/context/context_budget.py
+        ↓
+app/context/rerank_policy.py
+        ↓
+app/context/citation_manager.py
+        ↓
+app/context/prompt_builder.py
+        ↓
+planner / executor / verifier prompts
+```
+
+**Prompt-builder contract:**
+
+```python
+PromptContextBundle(
+    goal_context="...",
+    session_memory=[...],
+    execution_memory=[...],
+    long_term_memory=[...],
+    semantic_cache_hits=[...],
+    knowledge_chunks=[...],
+    graph_facts=[...],
+    web_results=[...],
+    reflexion_lessons=[...],
+    citations=[...],
+    source_inventory={...},
+    degradation_notes=[...],
+)
+```
+
+**Semantic cache rule:** semantic cache may provide context only when the cached value is deterministic, non-error, tenant-scoped, policy-safe, and compatible with the current goal/runtime profile. It must never silently override fresher RAG, memory, or tool evidence.
+
+**Long-term memory rule:** long-term memory contributes context and self-improvement signals. It must be classified, scored, and cited before entering planner/executor/verifier prompts.
+
+**Knowledge base / graph rule:** knowledge base chunks and graph facts are primary grounding sources. They feed prompt building, citation verification, provenance, eval scoring, and self-improvement.
+
 ### Layer 10: Eval, Scoring, and Self-Improvement
 
 **Purpose:** Every goal produces learning signals.
@@ -971,7 +1022,96 @@ PlanVerificationResult(
 
 ---
 
-### 3.7 Mandatory Contract: Implementation Priority
+### 3.7 Mandatory Contract: Complete Pattern Coverage Registry
+
+Every pattern documented in the architecture markdown files must be represented as a selectable strategy in the platform registry, even if the first implementation is a no-op, advisory, or planned adapter. This prevents patterns from being trapped in documentation without a runtime contract.
+
+**Source documents that must be covered:**
+- `docs/architecture/2026-07-07-agentverse-agentic-patterns-catalogue.md`
+- `docs/architecture/2026-07-07-agentverse-agentic-rag-design.md`
+- `docs/architecture/2026-07-07-agentverse-core-patterns-deep-dive.md`
+- `docs/architecture/2026-07-07-agentverse-dynamic-pattern-orchestration.md`
+
+**Target folder ownership:**
+- `app/orchestration/strategy_registry.py` owns the canonical registry.
+- `app/agent/patterns/` owns agent pattern adapters.
+- `app/rag/agentic/` owns RAG pattern adapters.
+- `app/optimization/` owns optimisation/self-improvement pattern adapters.
+- `app/security_runtime/` owns safety/governance pattern adapters.
+
+**Required registry categories:**
+
+```python
+StrategyRegistry(
+    agent_patterns={
+        "react", "plan_execute", "chain_of_thought", "zero_shot_cot",
+        "few_shot_cot", "reflection", "reflexion", "self_refine",
+        "self_consistency", "tree_of_thoughts", "graph_of_thoughts",
+        "least_to_most", "rewoo", "program_of_thought", "codeact",
+        "goal_tree", "supervisor", "debate", "mixture_of_agents",
+        "consensus", "peer_review", "camel", "babyagi", "autogpt",
+        "lats", "llm_compiler",
+    },
+    rag_patterns={
+        "naive_rag", "hybrid_rag", "hyde", "multi_hop_rag",
+        "graph_rag", "corrective_rag", "adaptive_rag", "modular_rag",
+        "speculative_rag", "agentic_rag", "web_augmented_rag",
+        "fusion_rag", "self_rag", "flare", "raptor",
+        "agentic_chunking", "colbert_late_interaction",
+    },
+    safety_patterns={
+        "guardrails", "hitl", "consensus_verification", "exfiltration_guard",
+        "permission_matrix", "policy_compiler", "sandbox", "plan_verification",
+        "data_classification", "provenance_verification",
+    },
+    memory_patterns={
+        "working_memory", "session_memory", "execution_memory",
+        "long_term_memory", "semantic_memory", "prospective_memory",
+        "reflexion_memory", "knowledge_graph_memory",
+    },
+    optimisation_patterns={
+        "model_routing", "embedding_routing", "token_optimisation",
+        "cost_optimisation", "latency_optimisation", "semantic_cache",
+        "llm_response_cache", "prompt_ab_testing", "model_ab_testing",
+        "prompt_compression", "context_budgeting",
+    },
+)
+```
+
+**Pattern state values:**
+
+Every registry item must declare one of:
+- `implemented` — production code exists and is wired.
+- `partial` — code exists but is not fully orchestrated.
+- `planned` — contract exists but runtime adapter not built.
+- `disabled` — not allowed for current tenant/policy/environment.
+
+**Runtime contract:**
+
+```python
+StrategyCapability(
+    strategy_id="agentic_rag",
+    category="rag_patterns",
+    state="implemented|partial|planned|disabled",
+    adapter_path="app.rag.agentic.retriever_tool:RetrieverTool",
+    required_dependencies=["knowledge_store", "embedder"],
+    optional_dependencies=["web_search", "kg_store"],
+    cost_class="low|medium|high",
+    latency_class="realtime|interactive|batch",
+    risk_class="low|medium|high",
+    compatible_goal_properties={...},
+)
+```
+
+**Acceptance criteria:**
+- Every pattern named in the architecture docs has a registry entry.
+- Dynamic orchestration selects from registry entries, not hardcoded booleans only.
+- The goal detail page can show selected patterns, unavailable patterns, and why unavailable patterns were skipped.
+- Missing implementations are visible as `planned`, not silently absent.
+
+---
+
+### 3.8 Mandatory Contract: Implementation Priority
 
 The first build must not start by rewriting `graph.py`. It must establish contracts first.
 
@@ -1062,6 +1202,9 @@ AgentVerse is not considered complete until:
 - PDF/code/audio/video choose different ingestion and chunking strategies.
 - Embedding model is selected by modality and collection policy.
 - Reranking and citation threading reach the verifier.
+- Semantic cache, session memory, long-term memory, knowledge base, and knowledge graph all feed `PromptContextBundle` through `app/context/`, with classification, reranking, token budget, and citations.
+- Semantic cache is used only when deterministic, tenant-scoped, non-error, policy-safe, and compatible with the current runtime profile.
+- Every pattern from the agentic pattern, agentic RAG, core pattern, and dynamic orchestration docs exists in `StrategyRegistry` with state `implemented`, `partial`, `planned`, or `disabled`.
 - Every runtime decision appears in AgentRunTrace and SSE.
 - Evals produce scorecards and drive self-improvement suggestions.
 - Tests cover dynamic strategy selection for at least 10 goal archetypes.
