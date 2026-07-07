@@ -83,6 +83,10 @@ class OpenAICompatibleProvider:
                 }
                 for t in request.tools
             ]
+            # Force the model to use one of the provided tools rather than responding
+            # with plain text. This ensures structured tool_calls are returned when
+            # tools are available, enabling proper tool dispatch in the agent graph.
+            kwargs["tool_choice"] = "required"
         if request.response_schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -111,6 +115,18 @@ class OpenAICompatibleProvider:
                     str(_strict_err)[:200],
                 )
                 kwargs["response_format"] = {"type": "json_object"}
+                response = await self._client.chat.completions.create(**kwargs)
+            elif "tool_choice" in kwargs and (
+                "400" in _err_str or "invalid_request_error" in _err_str
+                or "tool_choice" in _err_str
+            ):
+                # tool_choice="required" rejected — fall back to auto
+                import logging as _log2
+                _log2.getLogger(__name__).warning(
+                    "tool_choice_required_rejected_falling_back_to_auto: %s",
+                    str(_strict_err)[:200],
+                )
+                kwargs["tool_choice"] = "auto"
                 response = await self._client.chat.completions.create(**kwargs)
             else:
                 raise
@@ -199,9 +215,16 @@ class OpenAICompatibleProvider:
     ) -> CompletionResponse:
         """Stream tokens from the OpenAI-compatible API, calling on_token for each delta.
 
-        Falls back to a non-streaming complete() call if the streaming API raises.
+        Falls back to a non-streaming complete() call if the streaming API raises,
+        or when tools are provided (tool calls require non-streaming to parse correctly).
         """
         import logging as _logging
+
+        # When tools are provided, use the non-streaming complete() path which
+        # correctly handles OpenAI function calling / tool_calls responses.
+        # Streaming API returns tool call deltas that are complex to reassemble.
+        if request.tools:
+            return await self.complete(request)
 
         model = request.model or self._default_model
         messages = [{"role": m.role, "content": m.content} for m in request.messages]

@@ -113,7 +113,17 @@ class RedisConnectorSecretStore:
         self._key_prefix = key_prefix
 
     def _redis_key(self, ref: str, tenant_ctx: Any = None) -> str:
-        server_id, key = _connector_secret_ref_parts(ref)
+        # Handle both "vault://connectors/<server>/<key>" and
+        # "secret://connector/<server>/<key>" formats.
+        if ref.startswith("secret://connector/"):
+            remainder = ref[len("secret://connector/"):]
+        elif is_connector_secret_ref(ref):
+            remainder = ref[len(_CONNECTOR_SECRET_PREFIX):]
+        else:
+            raise ValueError(f"Unrecognized secret ref format: {ref!r}")
+        server_id, separator, key = remainder.partition("/")
+        if not server_id or not separator or not key:
+            raise ValueError(f"Invalid secret ref format: {ref!r}")
         tenant_id = getattr(tenant_ctx, "tenant_id", "global") or "global"
         return f"{self._key_prefix}:{tenant_id}:{server_id}:{key}"
 

@@ -356,9 +356,10 @@ async def _run_with_signals(
 
 
 class _WorkerMCPAgentRunner:
-    def __init__(self, runner: Any, context_factory: Any) -> None:
+    def __init__(self, runner: Any, context_factory: Any, system_prompt: str = "") -> None:
         self._runner = runner
         self._context_factory = context_factory
+        self._system_prompt = system_prompt
 
     async def run(
         self,
@@ -371,6 +372,9 @@ class _WorkerMCPAgentRunner:
     ) -> Any:
         redis_client = None
         context = dict(initial_context or {})
+        # Inject agent system prompt so the planner uses it
+        if self._system_prompt:
+            context["system_prompt"] = self._system_prompt
         try:
             redis_client, mcp_client, tool_context = await self._context_factory()
             if mcp_client is not None:
@@ -724,24 +728,26 @@ def run_goal(
     # agents bypass the HITL gate on write_high tool calls.
     _agent_autonomy_mode = "bounded-autonomous"
     _agent_max_iterations: int | None = None   # None = use graph default (100)
+    _agent_system_prompt: str = ""
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_config() -> tuple[str, int | None]:
+            async def _lookup_agent_config() -> tuple[str, int | None, str]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (await _sess.execute(
-                        _sa_text("SELECT autonomy_mode, max_iterations FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
+                        _sa_text("SELECT autonomy_mode, max_iterations, system_prompt FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
                         {"aid": agent_id, "tid": tenant_id},
                     )).fetchone()
                     if row:
                         mode = str(row[0]) if row[0] else "bounded-autonomous"
                         iters = int(row[1]) if row[1] else None
-                        return mode, iters
-                    return "bounded-autonomous", None
+                        sys_prompt = str(row[2]) if row[2] else ""
+                        return mode, iters, sys_prompt
+                    return "bounded-autonomous", None, ""
 
-            _agent_autonomy_mode, _agent_max_iterations = _run_async(_lookup_agent_config())
+            _agent_autonomy_mode, _agent_max_iterations, _agent_system_prompt = _run_async(_lookup_agent_config())
             logger.info("worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
                         goal_id, agent_id, _agent_autonomy_mode, _agent_max_iterations)
         except Exception as _ae:
@@ -1015,7 +1021,8 @@ def run_goal(
             except Exception as _opt_exc:
                 logger.warning("optimizer_wire_failed: %s", _opt_exc)
             _agent_runner = _WorkerMCPAgentRunner(
-                _agent_runner, _build_worker_mcp_context
+                _agent_runner, _build_worker_mcp_context,
+                system_prompt=_agent_system_prompt,
             )
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)

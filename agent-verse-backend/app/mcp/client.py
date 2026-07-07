@@ -439,6 +439,7 @@ class MCPClient:
         server: MCPServerConfig,
         tool_name: str,
         arguments: dict[str, Any],
+        tenant_ctx: TenantContext | None = None,
     ) -> ToolCallResult:
         """Call a built-in server's Python handler directly."""
         handler = server.builtin_handler
@@ -462,26 +463,28 @@ class MCPClient:
         credentials = _extract_credentials_from_server(server)
 
         # Resolve vault secret references so builtin handlers receive plain-text
-        # credentials instead of "secret://connector/..." vault reference strings.
+        # credentials instead of "vault://connectors/..." or "secret://..." vault refs.
         # Without this, jira_server.py receives the vault ref as the API token → 401.
-        if any(
-            isinstance(v, str) and v.startswith("secret://")
+        # Use module-level is_connector_secret_ref (already imported at top of file).
+        _has_secret_ref = any(
+            isinstance(v, str) and (v.startswith("secret://") or is_connector_secret_ref(v))
             for v in credentials.values()
-        ):
+        )
+        if _has_secret_ref:
             try:
-                from app.providers.vault import (
-                    is_connector_secret_ref,
-                    resolve_connector_secret_ref,
-                )
                 resolved: dict[str, str] = {}
                 for k, v in credentials.items():
-                    if isinstance(v, str) and is_connector_secret_ref(v):
-                        # Try in-memory store first, then use secret_resolver if available
+                    # Check for BOTH vault://connectors/ and secret://connector/ formats
+                    if isinstance(v, str) and (v.startswith("secret://") or is_connector_secret_ref(v)):
+                        # Try in-memory store first (vault://connectors/ format)
                         plain = resolve_connector_secret_ref(v)
                         if not plain and self._secret_resolver is not None:
                             try:
-                                import asyncio as _asyncio
-                                plain = await self._secret_resolver(v)
+                                # Pass tenant_ctx if the resolver accepts it
+                                if self._secret_resolver_accepts_tenant and tenant_ctx is not None:
+                                    plain = await self._secret_resolver(v, tenant_ctx)
+                                else:
+                                    plain = await self._secret_resolver(v)
                             except Exception:
                                 pass
                         resolved[k] = plain or v
@@ -709,7 +712,7 @@ class MCPClient:
                 logger.warning("builtin_handler_restore_error: %s", _bh_exc)
 
         if cfg.builtin_handler is not None:
-            return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
+            return await self._dispatch_builtin_tool(cfg, tool_name, arguments, tenant_ctx)
 
         # SSRF guard — validate server URL before any outbound HTTP call
         _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
@@ -835,6 +838,7 @@ class MCPClient:
         Raises:
             CircuitBreakerOpenError: If the circuit breaker for this server is open.
         """
+        logger.info("call_tool_entry server_id=%s tool=%s", server_id, tool_name)
         import time as _time
 
         # Input validation
