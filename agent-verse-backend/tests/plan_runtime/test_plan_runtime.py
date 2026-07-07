@@ -72,3 +72,12 @@ def test_cost_estimator_scales_with_steps() -> None:
     c6 = est.estimate(["a", "b", "c", "d", "e", "f"], model_cost_class="medium")
     assert c6.estimated_cost_usd == pytest.approx(c3.estimated_cost_usd * 2)
     assert c6.estimated_tokens == c3.estimated_tokens * 2
+
+
+def test_plan_trace_records_findings():
+    from app.plan_runtime.plan_trace import PlanTrace
+    trace = PlanTrace(goal_id="g1")
+    trace.record("delete users", "critical", ["CRITICAL: destructive operation"], requires_hitl=True)
+    assert trace.overall_risk == "critical"
+    assert len(trace.entries) == 1
+    import json; json.dumps(trace.to_dict())
