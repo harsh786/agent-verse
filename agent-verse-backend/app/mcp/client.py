@@ -413,6 +413,36 @@ class MCPClient:
                 server_id=server.server_id,
             )
         credentials = _extract_credentials_from_server(server)
+
+        # Resolve vault secret references so builtin handlers receive plain-text
+        # credentials instead of "secret://connector/..." vault reference strings.
+        # Without this, jira_server.py receives the vault ref as the API token → 401.
+        if any(
+            isinstance(v, str) and v.startswith("secret://")
+            for v in credentials.values()
+        ):
+            try:
+                from app.providers.vault import (
+                    is_connector_secret_ref,
+                    resolve_connector_secret_ref,
+                )
+                resolved: dict[str, str] = {}
+                for k, v in credentials.items():
+                    if isinstance(v, str) and is_connector_secret_ref(v):
+                        # Try in-memory store first, then use secret_resolver if available
+                        plain = resolve_connector_secret_ref(v)
+                        if not plain and self._secret_resolver is not None:
+                            try:
+                                import asyncio as _asyncio
+                                plain = await self._secret_resolver(v)
+                            except Exception:
+                                pass
+                        resolved[k] = plain or v
+                    else:
+                        resolved[k] = v
+                credentials = resolved
+            except Exception:
+                pass  # Best-effort: handler may still work with env-var fallbacks
         try:
             # Detect credentials support once via signature to avoid double-invocation
             # and to prevent masking TypeErrors raised inside the handler body.
@@ -587,14 +617,31 @@ class MCPClient:
         self,
         cfg: MCPServerConfig,
         server_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-        tenant_ctx: TenantContext,
-    ) -> ToolCallResult:
-        """Inner dispatch logic — raises on any error for circuit-breaker accounting."""
-        # 1. Built-in server (Python handler)
-        if cfg.builtin_handler is not None:
-            return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
+         tool_name: str,
+         arguments: dict[str, Any],
+         tenant_ctx: TenantContext,
+     ) -> ToolCallResult:
+         """Inner dispatch logic — raises on any error for circuit-breaker accounting."""
+         # 1. Built-in server (Python handler)
+         #
+         # ALWAYS try to restore the builtin handler before dispatch.
+         # The handler is a Python callable that is NOT serialised to Redis.
+         # After a Redis round-trip, cfg.builtin_handler is None even for
+         # connectors like 'builtin-jira' whose URL is set to the Atlassian
+         # remote MCP (https://mcp.atlassian.com/...).  Without restoration,
+         # the client falls through to HTTP dispatch against that remote URL,
+         # which requires OAuth — not the Basic auth stored in auth_config.
+         if cfg.builtin_handler is None:
+             try:
+                 from app.mcp.registry import MCPRegistry as _MCPReg
+                 _restored = _MCPReg.get_builtin_handler(cfg.server_id)
+                 if _restored is not None:
+                     cfg = cfg.model_copy(update={"builtin_handler": _restored})
+             except Exception:
+                 pass
+
+         if cfg.builtin_handler is not None:
+             return await self._dispatch_builtin_tool(cfg, tool_name, arguments)
 
         # SSRF guard — validate server URL before any outbound HTTP call
         _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
