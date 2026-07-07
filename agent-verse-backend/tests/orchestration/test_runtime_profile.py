@@ -3,6 +3,26 @@ from __future__ import annotations
 
 import pytest
 from app.core.runtime_flags import RuntimeFlags, get_runtime_flags
+from app.orchestration.runtime_profile import (
+    Complexity,
+    RiskLevel,
+    Domain,
+    TimeSensitivity,
+    KnowledgeState,
+    GoalProperties,
+    AgentPatternConfig,
+    RAGStrategyConfig,
+    ModelPlanConfig,
+    SecurityConfig,
+    MemoryCacheConfig,
+    EvalConfig,
+    GoalRuntimeProfile,
+    MultimodalRuntimeProfile,
+    SelfImprovementProfile,
+    ContextRuntimeProfile,
+    KnowledgeRuntimeProfile,
+    SecurityRuntimeProfile,
+)
 
 
 def test_flags_default_values():
@@ -28,28 +48,6 @@ def test_get_runtime_flags_singleton():
     f1 = get_runtime_flags()
     f2 = get_runtime_flags()
     assert f1 is f2
-
-
-from app.orchestration.runtime_profile import (
-    Complexity,
-    RiskLevel,
-    Domain,
-    TimeSensitivity,
-    KnowledgeState,
-    GoalProperties,
-    AgentPatternConfig,
-    RAGStrategyConfig,
-    ModelPlanConfig,
-    SecurityConfig,
-    MemoryCacheConfig,
-    EvalConfig,
-    GoalRuntimeProfile,
-    MultimodalRuntimeProfile,
-    SelfImprovementProfile,
-    ContextRuntimeProfile,
-    KnowledgeRuntimeProfile,
-    SecurityRuntimeProfile,
-)
 
 
 def test_goal_properties_defaults():

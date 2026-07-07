@@ -9,7 +9,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 class Complexity(str, enum.Enum):
@@ -58,7 +58,7 @@ class GoalProperties:
     risk: RiskLevel = RiskLevel.LOW
     time_sensitivity: TimeSensitivity = TimeSensitivity.NORMAL
     kb_state: KnowledgeState = KnowledgeState.UNKNOWN
-    reversibility: str = "reversible"
+    reversibility: Literal["reversible", "irreversible"] = "reversible"
     multi_step: bool = True
     is_generative: bool = False
     requires_web: bool = False
@@ -184,8 +184,28 @@ class GoalRuntimeProfile:
 # ── Named spec profile classes (spec §3.1-3.5 requirements) ──────────────────
 
 
+class _ToDictMixin:
+    """Shared serialization mixin for named spec profile dataclasses.
+    Converts enum values to strings (unlike plain dataclasses.asdict).
+    """
+
+    def to_dict(self) -> dict[str, Any]:
+        import dataclasses as _dc
+
+        def _coerce(obj: Any) -> Any:
+            if isinstance(obj, enum.Enum):
+                return obj.value
+            if isinstance(obj, dict):
+                return {k: _coerce(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_coerce(i) for i in obj]
+            return obj
+
+        return _coerce(_dc.asdict(self))  # type: ignore[call-overload]
+
+
 @dataclass
-class MultimodalRuntimeProfile:
+class MultimodalRuntimeProfile(_ToDictMixin):
     """Runtime profile for multimodal content ingestion (spec §3.1)."""
 
     content_type: str = "text"
@@ -195,14 +215,9 @@ class MultimodalRuntimeProfile:
     model_roles: dict[str, str] = field(default_factory=dict)
     provenance_required: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
-        import dataclasses
-
-        return dataclasses.asdict(self)
-
 
 @dataclass
-class SelfImprovementProfile:
+class SelfImprovementProfile(_ToDictMixin):
     """Self-improvement runtime profile (spec §3.2)."""
 
     enabled: bool = True
@@ -213,14 +228,9 @@ class SelfImprovementProfile:
     model_ab_test_enabled: bool = False
     creates_regression_case_on_failure: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
-        import dataclasses
-
-        return dataclasses.asdict(self)
-
 
 @dataclass
-class ContextRuntimeProfile:
+class ContextRuntimeProfile(_ToDictMixin):
     """Context quality runtime profile (spec §3.3)."""
 
     reranker: str = "score"
@@ -230,14 +240,9 @@ class ContextRuntimeProfile:
     citation_required: bool = True
     deduplication_enabled: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
-        import dataclasses
-
-        return dataclasses.asdict(self)
-
 
 @dataclass
-class KnowledgeRuntimeProfile:
+class KnowledgeRuntimeProfile(_ToDictMixin):
     """Knowledge graph + KB runtime profile (spec §3.5)."""
 
     kb_state: str = "unknown"
@@ -251,14 +256,9 @@ class KnowledgeRuntimeProfile:
         if self.kb_state == "empty":
             self.web_fallback_required = True
 
-    def to_dict(self) -> dict[str, Any]:
-        import dataclasses
-
-        return dataclasses.asdict(self)
-
 
 @dataclass
-class SecurityRuntimeProfile:
+class SecurityRuntimeProfile(_ToDictMixin):
     """Security runtime profile with full spec §3.4 contract."""
 
     guardrail_bundle: str = "default"
@@ -269,8 +269,3 @@ class SecurityRuntimeProfile:
     rollback_required: bool = False
     audit_level: str = "standard"
     compliance_tags: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        import dataclasses
-
-        return dataclasses.asdict(self)

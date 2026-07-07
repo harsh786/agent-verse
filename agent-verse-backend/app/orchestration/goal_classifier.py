@@ -167,6 +167,16 @@ _CREATIVE_SIGNALS = frozenset({
 })
 
 
+def _phrase_in(phrase: str, lower: str, tokens: set[str]) -> bool:
+    """Word-boundary-safe phrase membership test.
+    Single-word phrases check the pre-tokenised set (word boundaries enforced).
+    Multi-word phrases use substring (spaces prevent word-boundary collisions).
+    """
+    if " " in phrase:
+        return phrase in lower
+    return phrase in tokens
+
+
 class GoalClassifier:
     def classify_fast(self, goal: str) -> GoalProperties:
         lower = goal.lower()
@@ -175,17 +185,17 @@ class GoalClassifier:
         risk = RiskLevel.LOW
         reversibility = "reversible"
         for phrase in _CRITICAL_RISK:
-            if phrase in lower:
+            if _phrase_in(phrase, lower, tokens):
                 risk = RiskLevel.CRITICAL
                 reversibility = "irreversible"
                 break
         if risk == RiskLevel.LOW:
             for phrase in _HIGH_RISK:
-                if phrase in lower:
+                if _phrase_in(phrase, lower, tokens):
                     risk = RiskLevel.HIGH
                     break
         for phrase in _IRREVERSIBLE:
-            if phrase in lower:
+            if _phrase_in(phrase, lower, tokens):
                 reversibility = "irreversible"
                 break
 
@@ -310,5 +320,7 @@ class GoalClassifier:
                 estimated_steps=int(data.get("estimated_steps", base.estimated_steps)),
                 classifier_confidence=float(data.get("confidence", 0.8)),
             )
-        except Exception:
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("llm_classification_failed", error=str(exc))
             return base

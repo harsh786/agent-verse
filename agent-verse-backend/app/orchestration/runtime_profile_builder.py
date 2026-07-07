@@ -67,7 +67,7 @@ class RuntimeProfileBuilder:
         from app.orchestration.runtime_profile import KnowledgeState
 
         try:
-            props.kb_state = KnowledgeState(kb_state)  # type: ignore[attr-defined]
+            props.kb_state = KnowledgeState(kb_state)
         except ValueError:
             pass
 
@@ -108,7 +108,7 @@ class RuntimeProfileBuilder:
             "PatternSelector",
             "memory_cache",
             f"ltm={mem_cfg.use_long_term_memory}",
-            "",
+            f"kg={mem_cfg.use_knowledge_graph} reflexion={mem_cfg.reflexion_enabled}",
         )
 
         eval_cfg = self._selector.select_eval_config(props)
