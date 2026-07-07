@@ -1,4 +1,4 @@
-"""StateRuntimeContext — unified aggregator of all 8 state sources (spec §Layer 9)."""
+"""StateRuntimeContext — unified aggregator of all 9 state sources (spec §Layer 9)."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -49,6 +49,7 @@ class StateContextBuilder:
         knowledge_store: Any = None,
         kg_store: Any = None,
         semantic_cache: Any = None,
+        session_memory_store: Any = None,   # NEW
     ) -> None:
         self._exec = execution_memory
         self._ltm = ltm_store
@@ -56,6 +57,7 @@ class StateContextBuilder:
         self._kb = knowledge_store
         self._kg = kg_store
         self._cache = semantic_cache
+        self._session = session_memory_store   # NEW
 
     async def build(
         self,
@@ -108,5 +110,32 @@ class StateContextBuilder:
             ctx.knowledge_chunks = retrieval_chunks
         if web_results:
             ctx.web_results = web_results
+
+        # 5. Knowledge graph facts
+        if mc.use_knowledge_graph and self._kg is not None:
+            try:
+                from app.state_runtime.kg_query_engine import KGQueryEngine
+                kg_engine = KGQueryEngine(kg_store=self._kg)
+                strategy = kg_engine.select_strategy(goal)
+                if strategy != "none":
+                    kg_result = await kg_engine.query(goal, tenant_id=tenant_ctx.tenant_id, strategy=strategy)
+                    ctx.graph_facts = kg_result.facts
+            except Exception:
+                ctx.degradation_notes.append("knowledge_graph query failed")
+
+        # 6. Semantic cache hits
+        if mc.use_semantic_cache and self._cache is not None:
+            try:
+                from app.state_runtime.cache_bridge import SemanticCacheBridge
+                bridge = SemanticCacheBridge(semantic_cache=self._cache)
+                hit = await bridge.lookup(step_text=goal, tenant_id=tenant_ctx.tenant_id)
+                if hit and not hit.is_stale:
+                    ctx.semantic_cache_hits = [{"content": hit.content, "score": hit.similarity}]
+            except Exception:
+                ctx.degradation_notes.append("semantic_cache lookup failed")
+
+        # Session memory is populated by graph execution nodes during goal execution,
+        # not by StateContextBuilder (which runs at goal start, before execution)
+        ctx.session_memory = []
 
         return ctx

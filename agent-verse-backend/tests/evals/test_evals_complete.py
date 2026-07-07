@@ -133,3 +133,31 @@ def test_self_improvement_stores_reflexion_on_failure():
     actions = engine.decide_actions(result, _make_profile(), state=state)
     action_types = [a.action_type for a in actions]
     assert ImprovementAction.STORE_REFLEXION_LESSON in action_types
+
+
+def test_self_improvement_blacklist_on_critical_low_tool_rate():
+    """BLACKLIST_TOOL_PATTERN triggered when tool_success_rate < 0.3."""
+    engine = SelfImprovementEngine()
+    result = ScorecardResult(
+        goal_id="g1", overall_score=0.25,
+        scores={"goal_success":0.5,"rag_quality":0.7,"safety":1.0,"latency":0.8,
+                "cost_efficiency":0.9,"grounding":0.8,"citation_quality":0.7,
+                "retrieval_confidence":0.7,"tool_success_rate":0.1},
+    )
+    actions = engine.decide_actions(result, _make_profile())
+    action_types = [a.action_type for a in actions]
+    assert ImprovementAction.BLACKLIST_TOOL_PATTERN in action_types
+
+
+def test_self_improvement_regression_case_on_very_low_score():
+    """CREATE_REGRESSION_CASE triggered when overall_score < 0.4."""
+    engine = SelfImprovementEngine()
+    result = ScorecardResult(
+        goal_id="g1", overall_score=0.2,
+        scores={"goal_success":0.0,"rag_quality":0.3,"safety":1.0,"latency":0.5,
+                "cost_efficiency":0.5,"grounding":0.3,"citation_quality":0.2,
+                "retrieval_confidence":0.3,"tool_success_rate":0.1},
+    )
+    actions = engine.decide_actions(result, _make_profile())
+    action_types = [a.action_type for a in actions]
+    assert ImprovementAction.CREATE_REGRESSION_CASE in action_types
