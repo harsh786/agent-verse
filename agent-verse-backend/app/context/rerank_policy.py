@@ -15,14 +15,11 @@ class RerankStrategy(str, enum.Enum):
 
 
 def rrf_fuse(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
-    """Reciprocal Rank Fusion — combines multiple ranked lists.
-
-    Formula: RRF_score(d) = sum over lists of 1 / (k + rank(d, list))
-    """
+    """Reciprocal Rank Fusion — 1/(k+rank) per Cormack 2009 (1-indexed ranks)."""
     scores: dict[str, float] = defaultdict(float)
     docs: dict[str, dict] = {}
     for ranked_list in ranked_lists:
-        for rank, chunk in enumerate(ranked_list):
+        for rank, chunk in enumerate(ranked_list, start=1):  # 1-indexed
             chunk_id = chunk.get("chunk_id", chunk.get("content", str(rank)))
             scores[chunk_id] += 1.0 / (k + rank)
             docs[chunk_id] = chunk

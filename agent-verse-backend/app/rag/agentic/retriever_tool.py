@@ -220,6 +220,8 @@ class RetrieverTool:
         return RetrievalResult(
             query=query, source="web", strategy_used="web",
             confidence=confidence, chunks=chunks, citations=citations,
+            fallback_used=not bool(chunks),  # mark as fallback when empty
+            fallback_reason="" if chunks else "web search returned no results",
         )
 
     async def _memory_retrieve(
@@ -270,13 +272,19 @@ class RetrieverTool:
             )]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Collect successful results (not exceptions, not failed fallbacks)
         valid = [r for r in results if isinstance(r, RetrievalResult) and not r.fallback_used]
-        return (
-            valid
-            if valid
-            else (
-                [results[0]]
-                if results and isinstance(results[0], RetrievalResult)
-                else []
-            )
-        )
+        if valid:
+            return valid
+
+        # At least return any RetrievalResult we got (even failed ones)
+        any_result = next((r for r in results if isinstance(r, RetrievalResult)), None)
+        if any_result:
+            return [any_result]
+
+        # All tasks threw exceptions — return parametric baseline, never empty list
+        return [RetrievalResult(
+            query=query, source="parametric", strategy_used="parallel",
+            confidence=0.1, chunks=[], citations=[], fallback_used=True,
+            fallback_reason="all parallel retrieval sources failed with exceptions",
+        )]

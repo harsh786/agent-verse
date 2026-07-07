@@ -95,6 +95,41 @@ def test_rrf_fuse_combines_ranked_lists():
     assert b_pos < c_pos
 
 
+def test_rrf_fuse_uses_correct_1indexed_formula():
+    """RRF must use 1/(k+rank) with 1-indexed ranks per Cormack 2009."""
+    single_list = [
+        {"chunk_id": "c1", "content": "First", "score": 0.9},
+        {"chunk_id": "c2", "content": "Second", "score": 0.8},
+    ]
+    fused = rrf_fuse([single_list], k=60)
+    # c1 at rank 1 → 1/(60+1) = 0.016393...
+    c1_score = next(c["rrf_score"] for c in fused if c["chunk_id"] == "c1")
+    c2_score = next(c["rrf_score"] for c in fused if c["chunk_id"] == "c2")
+    assert abs(c1_score - (1.0 / 61)) < 0.0001  # 1/(60+1)
+    assert abs(c2_score - (1.0 / 62)) < 0.0001  # 1/(60+2)
+    assert c1_score > c2_score  # rank 1 scores higher than rank 2
+
+
+def test_rrf_fuse_combines_two_ranked_lists():
+    """RRF must boost chunks ranked highly in multiple lists."""
+    list_a = [
+        {"chunk_id": "c1", "content": "A1", "score": 0.9},
+        {"chunk_id": "c2", "content": "A2", "score": 0.8},
+        {"chunk_id": "c3", "content": "A3", "score": 0.7},
+    ]
+    list_b = [
+        {"chunk_id": "c3", "content": "A3", "score": 0.95},  # c3 ranked 1st in B
+        {"chunk_id": "c1", "content": "A1", "score": 0.85},
+        {"chunk_id": "c2", "content": "A2", "score": 0.60},
+    ]
+    fused = rrf_fuse([list_a, list_b], k=60)
+    assert len(fused) == 3
+    # c1 appears at rank 1 in list_a and rank 2 in list_b → high combined score
+    # c3 appears at rank 3 in list_a and rank 1 in list_b → also high
+    fused_ids = [c["chunk_id"] for c in fused]
+    assert "c1" in fused_ids and "c3" in fused_ids
+
+
 def test_rerank_cross_encoder_strategy_works(sample_chunks):
     policy = RerankPolicy(strategy=RerankStrategy.CROSS_ENCODER)
     reranked = policy.rerank(sample_chunks, query="dynamic orchestration")
