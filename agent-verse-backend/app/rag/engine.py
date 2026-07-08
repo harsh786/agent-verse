@@ -448,13 +448,19 @@ async def retrieve_fusion(
     ef_search: int = 200,
     embedding_dim: int | None = None,
     embedder: Any = None,
+    provider: Any = None,
 ) -> list[RetrievalResult]:
     """Fusion RAG: expand query into N variants, retrieve in parallel, RRF-merge."""
     from app.rag.agentic.query_expander import QueryExpander
     from app.context.rerank_policy import rrf_fuse
 
     expander = QueryExpander()
-    variants: list[str] = expander.expand_for_fusion(query, max_variants=max_variants)
+    if provider is not None and hasattr(expander, "expand_for_fusion_async"):
+        variants = await expander.expand_for_fusion_async(
+            query, max_variants=max_variants, provider=provider
+        )
+    else:
+        variants = expander.expand_for_fusion(query, max_variants=max_variants)
 
     # Use original embedding for all variants (best-effort: embed each if embedder available)
     variant_embeddings: list[list[float] | None] = []
@@ -560,15 +566,24 @@ async def retrieve(
                 collection_id=collection_id, top_k=top_k,
                 embedding_dim=embedding_dim,
                 embedder=provider,
+                provider=provider,
             )
         if strategy == "corrective":
+            # CRAG: run hybrid search, check confidence, web fallback via RetrieverTool
             try:
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
                     retrieval_mode="hybrid", embedding_dim=embedding_dim,
                 )
-                # If confidence is low, try web fallback (handled by RetrieverTool layer)
+                # CRAG correction: if low confidence, the caller (RetrieverTool.retrieve_corrective)
+                # handles web fallback. At engine level, return base results + confidence metadata.
+                avg_conf = sum(r.score for r in base_results) / len(base_results) if base_results else 0.0
+                if base_results and avg_conf < 0.5:
+                    # Tag results as low-confidence for CRAG layer to act on
+                    for r in base_results:
+                        r.source_metadata["corrective_flagged"] = True
+                        r.source_metadata["avg_confidence"] = avg_conf
                 return base_results
             except Exception as exc:
                 logger.warning("corrective_rag_failed", error=str(exc)[:80])
@@ -737,6 +752,70 @@ async def retrieve(
                 ]
             except Exception as exc:
                 logger.warning("colbert_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy == "agentic_chunking":
+            try:
+                from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k * 2, embedding_dim=embedding_dim,
+                )
+                if not base_results or provider is None:
+                    return base_results[:top_k]
+                chunks = [
+                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score}
+                    for r in base_results
+                ]
+                pattern = AgenticChunkingPattern(max_propositions=5)
+                proposition_chunks = await pattern.execute(
+                    chunks=chunks, provider=provider, query=query, top_k=top_k
+                )
+                return [
+                    RetrievalResult(
+                        chunk_id=c.get("chunk_id", f"prop_{i}"),
+                        content=c.get("content", ""),
+                        score=c.get("score", 0.7),
+                        source_metadata={
+                            "strategy": "agentic_chunking",
+                            "source_chunk": c.get("source_chunk_id", ""),
+                        },
+                        retrieval_legs=["agentic_chunking"],
+                    )
+                    for i, c in enumerate(proposition_chunks[:top_k])
+                ]
+            except Exception as exc:
+                logger.warning("agentic_chunking_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy == "parametric":
+            # Skip retrieval entirely — LLM uses its own knowledge
+            return []
+
+        if strategy == "memory":
+            # Memory retrieval — return empty (caller should use LTM directly)
+            # TODO Phase 6: implement LTM semantic recall path
+            return []
+
+        if strategy == "graph":
+            # Graph retrieval via KnowledgeGraphStore
+            try:
+                from app.state_runtime.kg_query_engine import KGQueryEngine  # noqa: F401
+                # KGQueryEngine needs a kg_store — pass provider as proxy if no store available
+                # For now return empty with a log — real wiring needs kg_store injection
+                logger.info("graph_strategy_requested_no_store_fallback", query=query[:60])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+            except Exception as exc:
+                logger.warning("graph_strategy_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
