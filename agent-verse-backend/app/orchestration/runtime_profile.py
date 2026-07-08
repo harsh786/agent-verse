@@ -110,6 +110,8 @@ class ModelPlanConfig:
     classifier: str = "default"
     cost_class: str = "medium"
     latency_class: str = "interactive"
+    # Maximum cost budget for this goal execution (USD); used by ModelScorer.score_cost
+    max_cost_usd: float = 0.10
 
 
 @dataclass

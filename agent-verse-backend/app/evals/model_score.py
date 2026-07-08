@@ -26,7 +26,13 @@ class ModelScorer:
     def score_cost(self, profile: "GoalRuntimeProfile", state: "AgentState") -> float:
         """Score cost efficiency: how much below budget the goal executed."""
         max_cost = getattr(profile.model_plan, "max_cost_usd", 0.10) or 0.10
-        actual_cost = float(getattr(state, "total_cost_usd", 0.0) or 0.0)
+        # N4 fix: cost is stored in state.context["total_cost_usd"], not a direct attribute
+        _cost_ctx = getattr(state, "context", {}) or {}
+        actual_cost = float(
+            _cost_ctx.get("total_cost_usd",
+                          getattr(state, "total_cost_usd", 0.0)  # fallback to attr
+                          ) or 0.0
+        )
         if actual_cost <= 0:
             return 0.8  # no cost data → neutral
         ratio = actual_cost / max_cost
