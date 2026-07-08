@@ -107,6 +107,7 @@ class PatternSelector:
 
          if props.complexity == Complexity.EXPERT:
              # Expert goals use RAPTOR (hierarchical multi-level retrieval)
+             # Override web strategy — RAPTOR subsumes FLARE for expert complexity
              strategy = "raptor"
              sources = list(
                  dict.fromkeys(sources + ["long_term_memory", "knowledge_graph"])
@@ -121,8 +122,9 @@ class PatternSelector:
              sources = list(dict.fromkeys(sources + ["long_term_memory"]))
              reranker = "rrf"
              max_tokens = 7000
-         else:
-             # Simple goals: Corrective RAG (auto-correction on low confidence)
+         elif strategy == "hybrid_rag":
+             # Simple goals with no specific signal: Corrective RAG (auto self-correction)
+             # Don't override if a more specific strategy was already selected (e.g., flare)
              strategy = "corrective_rag"
 
          if props.requires_code:
