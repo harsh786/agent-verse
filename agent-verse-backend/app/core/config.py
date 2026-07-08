@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     # --- feature flags ---
     civilization_enabled: bool = False
 
+    # Advanced RAG pattern feature flags
+    enable_raptor: bool = True
+    enable_flare: bool = True
+    enable_self_rag: bool = True
+    enable_speculative_rag: bool = True
+    enable_colbert: bool = True
+    enable_tree_of_thoughts: bool = True
+    enable_self_consistency: bool = True
+    enable_peer_review: bool = True
+    enable_agentic_chunking: bool = True
+
     # --- Agent Civilization ---
     civilization_max_agents_per_tenant: int = 50
     civilization_max_spawn_depth: int = 5

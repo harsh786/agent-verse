@@ -52,6 +52,7 @@ class FLAREPattern(RAGPattern):
 
     def __init__(self, max_iterations: int = 2) -> None:
         self._max_iter = max_iterations
+        self._circuit_breakers: dict[str, Any] = {}
 
     @property
     def pattern_id(self) -> str:
@@ -70,6 +71,12 @@ class FLAREPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_flare:
+                return False
+        except Exception:
+            pass
         return True
 
     async def execute(
@@ -83,10 +90,28 @@ class FLAREPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Execute FLARE: generate → check uncertainty → retrieve → refine."""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("flare_started", query=query[:60])
+        except Exception:
+            pass
+
         from app.providers.base import CompletionRequest, Message
+
+        # Circuit breaker setup
+        try:
+            from app.reliability.circuit_breaker import CircuitBreaker
+            _cb_key = f"pattern_{self.pattern_id}"
+            if _cb_key not in self._circuit_breakers:
+                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+            cb: Any = self._circuit_breakers[_cb_key]
+        except ImportError:
+            cb = None
 
         # Step 1: Initial generation
         try:
+            if cb is not None and not cb.can_call():
+                return ""
             resp = await provider.complete(CompletionRequest(
                 messages=[
                     Message(role="system", content=system_prompt),
@@ -96,12 +121,21 @@ class FLAREPattern(RAGPattern):
                 max_tokens=max_tokens,
                 temperature=0.3,
             ))
+            if cb is not None:
+                cb.record_success()
             initial = (resp.content or "").strip()
         except Exception:
+            if cb is not None:
+                cb.record_failure()
             return ""
 
         # Step 2: Check for uncertainty
         if not _detect_uncertainty(initial) or retrieve_fn is None:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).info("flare_completed", result_len=len(initial))
+            except Exception:
+                pass
             return initial
 
         # Step 3: Retrieve context for uncertain claim
@@ -117,6 +151,8 @@ class FLAREPattern(RAGPattern):
 
             # Step 4: Re-generate with context
             try:
+                if cb is not None and not cb.can_call():
+                    break
                 refined_resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_FLARE_REFINE_SYSTEM),
@@ -133,13 +169,27 @@ class FLAREPattern(RAGPattern):
                     max_tokens=max_tokens,
                     temperature=0.0,
                 ))
+                if cb is not None:
+                    cb.record_success()
                 refined = (refined_resp.content or "").strip()
                 if refined and not _detect_uncertainty(refined):
+                    try:
+                        from app.observability.logging import get_logger
+                        get_logger(__name__).info("flare_completed", result_len=len(refined))
+                    except Exception:
+                        pass
                     return refined
                 if refined:
                     initial = refined
                     uncertain_claim = _extract_uncertain_claim(refined)
             except Exception:
+                if cb is not None:
+                    cb.record_failure()
                 break
 
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("flare_completed", result_len=len(initial))
+        except Exception:
+            pass
         return initial

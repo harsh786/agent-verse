@@ -106,6 +106,12 @@ class PeerReviewPattern(AgentPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_peer_review:
+                return False
+        except Exception:
+            pass
         return True
 
     async def execute(

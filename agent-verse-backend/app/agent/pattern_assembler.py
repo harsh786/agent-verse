@@ -122,6 +122,69 @@ _RULES: list[Rule] = [
         reason_value="expert analytical multi-step → supervisor",
         priority="MEDIUM",
     ),
+    # NEW: Self-Consistency — high-confidence output needed
+    Rule(
+        condition=lambda p: (
+            p.complexity == Complexity.EXPERT
+            and p.domain == Domain.ANALYTICAL
+        ),
+        add_reasoning=["self_consistency"],
+        reason_key="self_consistency",
+        reason_value="expert analytical — self-consistency improves accuracy",
+        priority="HIGH",
+    ),
+    # NEW: Tree of Thoughts — complex multi-step problems
+    Rule(
+        condition=lambda p: (
+            p.complexity in (Complexity.COMPLEX, Complexity.EXPERT)
+            and p.multi_step
+            and p.domain not in (Domain.CREATIVE, Domain.CONVERSATIONAL)
+        ),
+        add_reasoning=["tree_of_thoughts"],
+        reason_key="tree_of_thoughts",
+        reason_value="complex multi-step — ToT for deliberate search",
+        priority="HIGH",
+    ),
+    # NEW: Peer Review — expert or critical-risk goals
+    Rule(
+        condition=lambda p: p.risk in (RiskLevel.CRITICAL, RiskLevel.HIGH) and p.complexity == Complexity.EXPERT,
+        add_reasoning=["peer_review"],
+        reason_key="peer_review",
+        reason_value="critical/expert goal — peer review before delivery",
+        priority="HIGH",
+    ),
+    # NEW: Fusion RAG for research/analytical goals
+    Rule(
+        condition=lambda p: p.domain == Domain.ANALYTICAL and p.complexity != Complexity.SIMPLE,
+        add_rag=["fusion_rag"],
+        reason_key="fusion_rag",
+        reason_value="analytical domain — fusion RAG for comprehensive coverage",
+        priority="MEDIUM",
+    ),
+    # NEW: FLARE for goals requiring external current knowledge
+    Rule(
+        condition=lambda p: p.requires_web or p.time_sensitivity in ("realtime", "recent"),
+        add_rag=["flare"],
+        reason_key="flare",
+        reason_value="requires_web/realtime — FLARE for uncertainty-driven retrieval",
+        priority="MEDIUM",
+    ),
+    # NEW: RAPTOR for long-document knowledge goals (ANALYTICAL domain)
+    Rule(
+        condition=lambda p: p.domain == Domain.ANALYTICAL and p.complexity in (Complexity.COMPLEX, Complexity.EXPERT),
+        add_rag=["raptor"],
+        reason_key="raptor",
+        reason_value="analytical+complex — RAPTOR hierarchical retrieval",
+        priority="MEDIUM",
+    ),
+    # NEW: Corrective RAG for factual high-accuracy goals
+    Rule(
+        condition=lambda p: p.domain == Domain.ANALYTICAL and p.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL),
+        add_rag=["corrective_rag"],
+        reason_key="corrective_rag",
+        reason_value="high-accuracy factual goal — corrective RAG self-correction",
+        priority="MEDIUM",
+    ),
     # LOW: defaults
     Rule(
         condition=lambda p: True,

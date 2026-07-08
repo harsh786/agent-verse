@@ -81,6 +81,12 @@ class ColBERTPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_colbert:
+                return False
+        except Exception:
+            pass
         return True
 
     def _maxsim_score(self, query: str, document: str) -> float:
@@ -154,7 +160,16 @@ class ColBERTPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Rerank chunks and return combined context string."""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("colbert_late_interaction_started", query=query[:60])
+        except Exception:
+            pass
         reranked = self.rerank(query, chunks, top_k=top_k)
-        if not reranked:
-            return ""
-        return "\n\n".join(c.get("content", "") for c in reranked)
+        result = "\n\n".join(c.get("content", "") for c in reranked) if reranked else ""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("colbert_late_interaction_completed", result_len=len(result))
+        except Exception:
+            pass
+        return result

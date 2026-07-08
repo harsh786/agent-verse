@@ -43,6 +43,7 @@ class SpeculativeRAGPattern(RAGPattern):
     ) -> None:
         self._n = n_candidates
         self._min_score = min_support_score
+        self._circuit_breakers: dict[str, Any] = {}
 
     @property
     def pattern_id(self) -> str:
@@ -61,6 +62,12 @@ class SpeculativeRAGPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_speculative_rag:
+                return False
+        except Exception:
+            pass
         return True
 
     async def execute(
@@ -73,12 +80,30 @@ class SpeculativeRAGPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Generate N candidates, verify each, return best-supported."""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("speculative_rag_started", query=query[:60])
+        except Exception:
+            pass
+
         from app.providers.base import CompletionRequest, Message
+
+        # Circuit breaker setup
+        try:
+            from app.reliability.circuit_breaker import CircuitBreaker
+            _cb_key = f"pattern_{self.pattern_id}"
+            if _cb_key not in self._circuit_breakers:
+                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+            cb: Any = self._circuit_breakers[_cb_key]
+        except ImportError:
+            cb = None
 
         # Step 1: Generate candidates sequentially to ensure deterministic provider ordering
         candidates: list[Candidate] = []
         for _ in range(self._n):
             try:
+                if cb is not None and not cb.can_call():
+                    break
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_CANDIDATE_SYSTEM),
@@ -88,13 +113,21 @@ class SpeculativeRAGPattern(RAGPattern):
                     max_tokens=max_tokens,
                     temperature=0.7,  # diversity
                 ))
+                if cb is not None:
+                    cb.record_success()
                 text = (resp.content or "").strip()
                 if text:
                     candidates.append(Candidate(text=text))
             except Exception:
-                pass
+                if cb is not None:
+                    cb.record_failure()
 
         if not candidates:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("speculative_rag_failed", error="no candidates generated")
+            except Exception:
+                pass
             return ""
 
         # Step 2: Retrieve + verify each candidate sequentially
@@ -114,6 +147,10 @@ class SpeculativeRAGPattern(RAGPattern):
                 continue
 
             try:
+                if cb is not None and not cb.can_call():
+                    candidate.score = 0.3
+                    verified.append(candidate)
+                    continue
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_VERIFY_SYSTEM),
@@ -137,6 +174,8 @@ class SpeculativeRAGPattern(RAGPattern):
                         },
                     },
                 ))
+                if cb is not None:
+                    cb.record_success()
                 raw = (resp.content or "").strip()
                 try:
                     d = json.loads(raw)
@@ -145,6 +184,8 @@ class SpeculativeRAGPattern(RAGPattern):
                 except Exception:
                     candidate.score = 0.3
             except Exception:
+                if cb is not None:
+                    cb.record_failure()
                 candidate.score = 0.3
             verified.append(candidate)
 
@@ -154,4 +195,10 @@ class SpeculativeRAGPattern(RAGPattern):
             best = max(supported, key=lambda c: c.score)
         else:
             best = max(verified, key=lambda c: c.score)
+
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("speculative_rag_completed", result_len=len(best.text))
+        except Exception:
+            pass
         return best.text
