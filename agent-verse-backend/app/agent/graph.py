@@ -1247,10 +1247,10 @@ class AgentGraph:
                                 "cost_downgrade_standard",
                                 original=planning_model,
                                 downgraded=_standard_model,
-                            )
-                             planning_model = _standard_model
-                 except Exception:
-                     pass
+                             )
+                            planning_model = _standard_model
+                except Exception:
+                    pass
 
         # H21: Emit model_route_selected SSE after model selection
         try:
@@ -1839,7 +1839,7 @@ class AgentGraph:
         )
         return step.output  # Return last output
 
-     async def _execute_step(
+    async def _execute_step(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
         """12-step per-step pipeline mirroring AgentLoop._execute."""
