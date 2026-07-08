@@ -48,6 +48,7 @@ from app.db.models.template import GoalTemplate  # noqa: E402
 from app.db.models.skill import Skill  # noqa: E402
 from app.db.models.mfa import TenantMFA  # noqa: E402
 from app.db.models.knowledge_graph import KnowledgeEdge, KnowledgeNode  # noqa: E402
+from app.db.models.memory import EpisodicMemory, ProceduralMemory  # noqa: E402
 
 __all__ = [
     "Base",
@@ -104,4 +105,7 @@ __all__ = [
     # knowledge graph
     "KnowledgeNode",
     "KnowledgeEdge",
+    # episodic + procedural memory
+    "EpisodicMemory",
+    "ProceduralMemory",
 ]

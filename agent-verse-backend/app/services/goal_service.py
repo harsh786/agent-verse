@@ -910,6 +910,8 @@ class GoalService:
             calibration_store=_calibration_store,
             consensus_verifier=_consensus_verifier,
             tool_reliability_store=getattr(app_state, "tool_reliability_store", None),
+            episodic_memory=getattr(app_state, "episodic_memory", None),
+            procedural_memory=getattr(app_state, "procedural_memory", None),
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
