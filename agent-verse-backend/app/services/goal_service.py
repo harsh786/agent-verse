@@ -97,6 +97,11 @@ class GoalRecord:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+try:
+    from langgraph.checkpoint.memory import MemorySaver
+except ImportError:
+    MemorySaver = object  # type: ignore[misc,assignment]
+
 
 def _resolve_checkpointer(app_state: Any) -> Any:
     """Return the best available checkpointer. Logs a WARNING if falling back to MemorySaver.
@@ -109,13 +114,6 @@ def _resolve_checkpointer(app_state: Any) -> Any:
     """
     import logging as _logging
     import os
-
-    from langgraph.checkpoint.memory import MemorySaver
-
-    _std_logger = _logging.getLogger(__name__)
-
-    # If app_state already has a real (non-memory) checkpointer use it —
-    # validate it's a genuine BaseCheckpointSaver (guards against MagicMock in tests).
     cp = getattr(app_state, "langgraph_checkpointer", None)
     if cp is not None and not isinstance(cp, MemorySaver):
         try:
@@ -189,8 +187,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             _msg = (
                 f"redis_saver_unavailable redis_url={redis_url[:30]} "
                 f"error={_e2!s} "
-                "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"
-            )
+                "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"            )
             _svc_logger.warning(
                 "redis_saver_unavailable_falling_back_to_memory",
                 redis_url=redis_url[:30],
@@ -202,14 +199,12 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         _msg2 = (
             "no_redis_url_using_memory_saver "
             "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART "
-            "set REDIS_URL environment variable"
-        )
+            "set REDIS_URL environment variable"        )
         _svc_logger.warning(
             "no_redis_url_using_memory_saver",
             impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",
         )
         _std_logger.warning(_msg2)
-
     return MemorySaver()
 
 
@@ -2417,8 +2412,7 @@ class GoalService:
         if record.task is not None and not record.task.done():
             record.task.cancel()
 
-        # Signal via Redis for cross-process Celery workers
-        redis = getattr(self, "_redis", None)
+        # Signal via Redis for cross-process Celery workers        redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_cancel
             await signal_cancel(goal_id, redis)
@@ -2439,8 +2433,7 @@ class GoalService:
         record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
 
-        # Signal via Redis for cross-process Celery workers
-        redis = getattr(self, "_redis", None)
+        # Signal via Redis for cross-process Celery workers        redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_pause
             await signal_pause(goal_id, redis)
