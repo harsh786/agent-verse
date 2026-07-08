@@ -98,6 +98,21 @@ class RetrieverTool:
                 min_confidence=min_confidence,
                 metadata_filter=metadata_filter,
             )
+            # Sentence window expansion (if chunks have window_context metadata)
+            try:
+                from app.rag.sentence_window import SentenceWindowRetriever
+                _sw_retriever = SentenceWindowRetriever()
+                result.chunks = _sw_retriever.expand(result.chunks)
+                # Rebuild context_text from expanded chunks
+                if any(
+                    c.get("source_metadata", {}).get("window_expanded")
+                    for c in result.chunks
+                ):
+                    result.context_text = "\n\n".join(
+                        c.get("content", "") for c in result.chunks[:5]
+                    )
+            except Exception:
+                pass
             if result.confidence >= min_confidence:
                 return result
 

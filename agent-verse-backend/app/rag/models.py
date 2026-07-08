@@ -39,3 +39,8 @@ class Chunk:
     chunk_index: int
     chunk_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     metadata: dict[str, str] = field(default_factory=dict)
+    # Parent-child retrieval fields
+    parent_chunk_id: str | None = None
+    chunk_level: str = "leaf"  # "parent" | "child" | "leaf"
+    window_start: int | None = None
+    window_end: int | None = None
