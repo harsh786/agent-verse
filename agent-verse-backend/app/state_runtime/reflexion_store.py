@@ -11,9 +11,11 @@ from typing import Any
 
 
 class ReflexionStore:
-    def __init__(self, max_per_tenant: int = 50) -> None:
+    def __init__(self, max_per_tenant: int = 50, db_factory: Any = None) -> None:
         self._lessons: dict[str, deque[dict[str, Any]]] = {}
         self._max = max_per_tenant
+        self._db_factory = db_factory
+        self._hydrated_tenants: set[str] = set()
 
     # ── Sync (in-memory) ──────────────────────────────────────────────────────
 
@@ -35,6 +37,14 @@ class ReflexionStore:
         })
 
     def recall(self, *, tenant_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        # Lazy per-tenant DB hydration
+        if self._db_factory is not None and tenant_id not in self._hydrated_tenants:
+            self._hydrated_tenants.add(tenant_id)
+            try:
+                import asyncio
+                asyncio.ensure_future(self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory))
+            except RuntimeError:
+                pass
         lessons = list(self._lessons.get(tenant_id, []))
         return lessons[-limit:]
 
