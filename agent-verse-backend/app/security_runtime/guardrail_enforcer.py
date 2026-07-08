@@ -59,8 +59,14 @@ class GuardrailEnforcer:
         from app.tenancy.context import TenantContext, PlanTier
 
         selector = GuardrailProfileSelector()
+        # C5 fix: use actual tenant plan from profile, not hardcoded PROFESSIONAL
+        try:
+            plan_str = getattr(profile, "tenant_plan", None) or "professional"
+            plan = PlanTier(plan_str) if plan_str in [p.value for p in PlanTier] else PlanTier.PROFESSIONAL
+        except Exception:
+            plan = PlanTier.PROFESSIONAL
         tenant_ctx = TenantContext(
-            tenant_id=profile.tenant_id, plan=PlanTier.PROFESSIONAL, api_key_id="k1"
+            tenant_id=profile.tenant_id, plan=plan, api_key_id="k1"
         )
         config = selector.select(profile, tenant_ctx=tenant_ctx)
 
@@ -86,8 +92,14 @@ class GuardrailEnforcer:
         from app.tenancy.context import TenantContext, PlanTier
 
         selector = GuardrailProfileSelector()
+        # C5 fix: use actual tenant plan from profile, not hardcoded PROFESSIONAL
+        try:
+            plan_str = getattr(profile, "tenant_plan", None) or "professional"
+            plan = PlanTier(plan_str) if plan_str in [p.value for p in PlanTier] else PlanTier.PROFESSIONAL
+        except Exception:
+            plan = PlanTier.PROFESSIONAL
         tenant_ctx = TenantContext(
-            tenant_id=profile.tenant_id, plan=PlanTier.PROFESSIONAL, api_key_id="k1"
+            tenant_id=profile.tenant_id, plan=plan, api_key_id="k1"
         )
         config = selector.select(profile, tenant_ctx=tenant_ctx)
 

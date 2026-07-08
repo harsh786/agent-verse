@@ -76,8 +76,17 @@ async def hybrid_search(
     Returns:
         Fused and sorted list of RetrievalResult
     """
-    # Determine table name
-    table = f"knowledge_chunks_{embedding_dim}" if embedding_dim else "knowledge_chunks_1536"
+    # Determine table name — query collection's embedding_dim when not provided (C6 fix)
+    if embedding_dim is None:
+        try:
+            row = (await session.execute(
+                text("SELECT embedding_dim FROM knowledge_collections WHERE id = :cid LIMIT 1"),
+                {"cid": collection_id},
+            )).fetchone()
+            embedding_dim = int(row[0]) if row and row[0] else 1536
+        except Exception:
+            embedding_dim = 1536
+    table = f"knowledge_chunks_{embedding_dim}"
 
     # Per-leg result dicts: chunk_id → (content, metadata, rank)
     vector_ranks: dict[str, tuple[str, dict[str, Any], int]] = {}

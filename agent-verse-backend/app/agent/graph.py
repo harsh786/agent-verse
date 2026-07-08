@@ -215,6 +215,11 @@ class AgentGraph:
         # Phase 2 feature flags
         enable_cot: bool = False,
         enable_reflection: bool = False,
+        # C3 fix: pattern flags for RuntimeProfileBuilder reasoning_patterns
+        enable_self_refine: bool = False,
+        enable_self_consistency: bool = False,
+        enable_tree_of_thoughts: bool = False,
+        enable_peer_review: bool = False,
         # Autonomy
         autonomy_mode: str = "bounded-autonomous",
         # Goal-tree decomposition
@@ -261,6 +266,11 @@ class AgentGraph:
         self._embedder: Any = embedder
         self._enable_cot = enable_cot
         self._enable_reflection = enable_reflection
+        # C3 fix: pattern flags
+        self._enable_self_refine = enable_self_refine
+        self._enable_self_consistency = enable_self_consistency
+        self._enable_tree_of_thoughts = enable_tree_of_thoughts
+        self._enable_peer_review = enable_peer_review
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -1674,7 +1684,7 @@ class AgentGraph:
                 _ge = GuardrailEnforcer()
                 _ge_result = _ge.check_tool_args(
                     tool_name=tool_name,
-                    tool_args=tool_args if isinstance(tool_args, dict) else {},
+                    tool_args={},  # C2 fix: tool_args not defined at pre-LLM check stage
                     profile=_runtime_profile,
                 )
                 if _ge_result.blocked:
@@ -3126,14 +3136,6 @@ class AgentGraph:
                         pass
             except Exception:
                 pass
-            try:
-                from app.agent.reflexion_wirer import get_reflexion_wirer
-                _rw = get_reflexion_wirer()
-                import asyncio as _rf_asyncio
-                _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
-            except Exception:
-                pass
-
             # Guardrail check: final_output (Guardrails 2.0)
             if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
                 try:
@@ -3215,6 +3217,15 @@ class AgentGraph:
             if not retry and self._rollback_engine is not None and len(self._rollback_engine) > 0:
                 rolled = await self._rollback_engine.rollback_all_async()
                 self._logger.info("agent_rollback_complete", rolled_back=rolled)
+
+            # Reflexion: store failure lesson (C1 fix — was incorrectly in success branch)
+            try:
+                from app.agent.reflexion_wirer import get_reflexion_wirer
+                _rw = get_reflexion_wirer()
+                import asyncio as _rf_asyncio
+                _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
+            except Exception:
+                pass
 
         # Feed eval result back to PromptOptimizer for A/B learning (BUG 4 fix)
         if scorecard is not None and hasattr(agent_state, "context"):
