@@ -63,12 +63,12 @@ def test_reflection_is_implemented() -> None:
     assert ReflectionPattern().state == PatternState.IMPLEMENTED
 
 
-def test_tree_of_thoughts_is_planned() -> None:
-    assert TreeOfThoughtsPattern().state == PatternState.PLANNED
+def test_tree_of_thoughts_is_implemented() -> None:
+    assert TreeOfThoughtsPattern().state == PatternState.IMPLEMENTED
 
 
-def test_self_consistency_is_planned() -> None:
-    assert SelfConsistencyPattern().state == PatternState.PLANNED
+def test_self_consistency_is_implemented() -> None:
+    assert SelfConsistencyPattern().state == PatternState.IMPLEMENTED
 
 
 def test_all_patterns_has_13_entries() -> None:
