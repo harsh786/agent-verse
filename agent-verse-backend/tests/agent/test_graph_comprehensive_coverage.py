@@ -304,6 +304,7 @@ async def test_execute_step_guardrail_block_returns_violation_message() -> None:
     """GuardrailChecker violations return 'Guardrail blocked' message."""
     mock_guardrail = MagicMock(spec=GuardrailChecker)
     mock_guardrail.check.return_value = ["SQL injection pattern detected"]
+    mock_guardrail.check_goal.return_value = []  # step text passes; only tool check blocks
 
     executor = FakeProvider(responses=["LLM output"])
     graph = _make_graph(executor=executor, guardrail_checker=mock_guardrail)
@@ -322,6 +323,7 @@ async def test_execute_step_guardrail_allows_clean_steps() -> None:
     """When guardrail has no violations, execution proceeds normally."""
     mock_guardrail = MagicMock(spec=GuardrailChecker)
     mock_guardrail.check.return_value = []  # No violations
+    mock_guardrail.check_goal.return_value = []  # Step text passes too
 
     executor = FakeProvider(responses=["completed successfully"])
     graph = _make_graph(executor=executor, guardrail_checker=mock_guardrail)
@@ -470,7 +472,7 @@ def test_route_returns_max_iter_when_iterations_exceeded() -> None:
     agent_state.verification_success = False
     agent_state.context["verification_retry"] = True
 
-    state = {"agent_state": agent_state, "tenant_ctx": T, "iteration": 20}  # > default 15
+    state = {"agent_state": agent_state, "tenant_ctx": T, "iteration": 101}  # > default 100
     result = graph._route(state)
     assert result == "max_iter"
     assert agent_state.status == GoalStatus.FAILED
@@ -697,7 +699,7 @@ async def test_node_execute_plain_string_steps() -> None:
 @pytest.mark.asyncio
 async def test_agent_run_completes_on_first_verify() -> None:
     """A simple goal with a successful verifier runs to completion."""
-    planner = FakeProvider(responses=["Do the thing"])
+    planner = FakeProvider(responses=['{"steps": ["Do the thing"], "reasoning": "test plan"}'])
     executor = FakeProvider(responses=["Thing done"])
     verifier = FakeProvider(responses=['{"success": true, "reason": "complete"}'])
 

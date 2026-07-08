@@ -56,7 +56,7 @@ async def test_execute_step_passes_tools_to_provider() -> None:
 
     # The tool definition must carry the correct name
     first_tool = tools_requests[0].tools[0]
-    assert first_tool.name == "GitHub.list_issues"
+    assert first_tool.name == "list_issues"  # bare name (OpenAI requires valid function names, no dots)
     assert first_tool.description == "List GitHub repository issues"
 
 
