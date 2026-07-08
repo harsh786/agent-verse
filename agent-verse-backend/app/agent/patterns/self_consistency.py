@@ -60,6 +60,12 @@ class SelfConsistencyPattern(AgentPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_self_consistency:
+                return False
+        except Exception:
+            pass
         # Most useful for reasoning/analytical goals, not latency-critical tasks
         return True
 

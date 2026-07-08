@@ -45,6 +45,12 @@ class AgenticChunkingPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_agentic_chunking:
+                return False
+        except Exception:
+            pass
         # Best for knowledge-intensive goals requiring high precision
         return True
 

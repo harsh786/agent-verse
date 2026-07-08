@@ -79,6 +79,12 @@ class TreeOfThoughtsPattern(AgentPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_tree_of_thoughts:
+                return False
+        except Exception:
+            pass
         complexity = getattr(goal_properties, "complexity", None)
         if complexity is not None:
             return str(complexity).lower() in ("complex", "expert", "moderate")

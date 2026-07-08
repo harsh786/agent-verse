@@ -42,6 +42,7 @@ class RAPTORPattern(RAGPattern):
     ) -> None:
         self._cluster_size = cluster_size
         self._max_levels = max_levels
+        self._circuit_breakers: dict[str, Any] = {}
 
     @property
     def pattern_id(self) -> str:
@@ -61,6 +62,12 @@ class RAPTORPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_raptor:
+                return False
+        except Exception:
+            pass
         return True
 
     async def execute(
@@ -73,10 +80,26 @@ class RAPTORPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Build RAPTOR tree from chunks and answer query using all levels."""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("raptor_started", query=query[:60])
+        except Exception:
+            pass
+
         if not chunks:
             return ""
 
         from app.providers.base import CompletionRequest, Message
+
+        # Circuit breaker setup
+        try:
+            from app.reliability.circuit_breaker import CircuitBreaker
+            _cb_key = f"pattern_{self.pattern_id}"
+            if _cb_key not in self._circuit_breakers:
+                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+            cb: Any = self._circuit_breakers[_cb_key]
+        except ImportError:
+            cb = None
 
         # Build leaf nodes from input chunks
         all_nodes: list[TreeNode] = [
@@ -107,20 +130,27 @@ class RAPTORPattern(RAGPattern):
                 combined = "\n\n".join(n.content[:800] for n in group)
                 source_ids = [sid for n in group for sid in n.source_ids]
                 try:
-                    resp = await provider.complete(CompletionRequest(
-                        messages=[
-                            Message(role="system", content=_SUMMARIZE_SYSTEM),
-                            Message(
-                                role="user",
-                                content=f"Chunks to summarize:\n\n{combined[:3000]}",
-                            ),
-                        ],
-                        model="",
-                        max_tokens=max_tokens,
-                        temperature=0.0,
-                    ))
-                    summary = (resp.content or "").strip() or combined[:300]
+                    if cb is not None and not cb.can_call():
+                        summary = combined[:300]
+                    else:
+                        resp = await provider.complete(CompletionRequest(
+                            messages=[
+                                Message(role="system", content=_SUMMARIZE_SYSTEM),
+                                Message(
+                                    role="user",
+                                    content=f"Chunks to summarize:\n\n{combined[:3000]}",
+                                ),
+                            ],
+                            model="",
+                            max_tokens=max_tokens,
+                            temperature=0.0,
+                        ))
+                        if cb is not None:
+                            cb.record_success()
+                        summary = (resp.content or "").strip() or combined[:300]
                 except Exception:
+                    if cb is not None:
+                        cb.record_failure()
                     summary = combined[:300]
                 parent_nodes.append(TreeNode(content=summary, level=level, source_ids=source_ids))
 
@@ -144,24 +174,36 @@ class RAPTORPattern(RAGPattern):
 
         # Answer query using hierarchical context
         try:
-            resp = await provider.complete(CompletionRequest(
-                messages=[
-                    Message(role="system", content=_ANSWER_SYSTEM),
-                    Message(
-                        role="user",
-                        content=(
-                            f"Context:\n{full_context[:4000]}\n\n"
-                            f"Question: {query}"
+            if cb is not None and not cb.can_call():
+                result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
+            else:
+                resp = await provider.complete(CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_ANSWER_SYSTEM),
+                        Message(
+                            role="user",
+                            content=(
+                                f"Context:\n{full_context[:4000]}\n\n"
+                                f"Question: {query}"
+                            ),
                         ),
-                    ),
-                ],
-                model="",
-                max_tokens=max_tokens,
-                temperature=0.0,
-            ))
-            return (resp.content or "").strip()
+                    ],
+                    model="",
+                    max_tokens=max_tokens,
+                    temperature=0.0,
+                ))
+                if cb is not None:
+                    cb.record_success()
+                result = (resp.content or "").strip()
         except Exception:
+            if cb is not None:
+                cb.record_failure()
             # Fallback: return best summary if LLM fails
-            if summary_nodes:
-                return summary_nodes[-1].content
-            return chunks[0].get("content", "") if chunks else ""
+            result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
+
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("raptor_completed", result_len=len(result))
+        except Exception:
+            pass
+        return result

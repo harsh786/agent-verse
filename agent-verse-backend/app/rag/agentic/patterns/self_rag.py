@@ -56,6 +56,7 @@ class SelfRAGPattern(RAGPattern):
 
     def __init__(self, confidence_threshold: float = 0.5) -> None:
         self._threshold = confidence_threshold
+        self._circuit_breakers: dict[str, Any] = {}
 
     @property
     def pattern_id(self) -> str:
@@ -74,6 +75,12 @@ class SelfRAGPattern(RAGPattern):
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        try:
+            from app.core.config import get_settings
+            if not get_settings().enable_self_rag:
+                return False
+        except Exception:
+            pass
         return True
 
     async def execute(
@@ -86,10 +93,20 @@ class SelfRAGPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Execute Self-RAG with critique tokens. Returns answer string."""
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("self_rag_started", query=query[:60])
+        except Exception:
+            pass
         result = await self.execute_with_critique(
             query=query, provider=provider,
             retrieve_fn=retrieve_fn, max_tokens=max_tokens,
         )
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).info("self_rag_completed", result_len=len(result.answer))
+        except Exception:
+            pass
         return result.answer
 
     async def execute_with_critique(
@@ -102,6 +119,16 @@ class SelfRAGPattern(RAGPattern):
     ) -> SelfRAGResult:
         """Execute Self-RAG. Returns SelfRAGResult with full critique metadata."""
         from app.providers.base import CompletionRequest, Message
+
+        # Circuit breaker setup
+        try:
+            from app.reliability.circuit_breaker import CircuitBreaker
+            _cb_key = f"pattern_{self.pattern_id}"
+            if _cb_key not in self._circuit_breakers:
+                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+            cb: Any = self._circuit_breakers[_cb_key]
+        except ImportError:
+            cb = None
 
         # Step 1: Decide if retrieval needed
         should_retrieve = await self._should_retrieve(query, provider)
@@ -126,14 +153,20 @@ class SelfRAGPattern(RAGPattern):
             else:
                 messages = [Message(role="user", content=query)]
 
+            if cb is not None and not cb.can_call():
+                return SelfRAGResult(answer="", retrieved=bool(context))
             resp = await provider.complete(CompletionRequest(
                 messages=messages,
                 model="",
                 max_tokens=max_tokens,
                 temperature=0.0,
             ))
+            if cb is not None:
+                cb.record_success()
             answer = (resp.content or "").strip()
         except Exception:
+            if cb is not None:
+                cb.record_failure()
             return SelfRAGResult(answer="", retrieved=bool(context))
 
         # Step 3: Critique (only if we retrieved)
