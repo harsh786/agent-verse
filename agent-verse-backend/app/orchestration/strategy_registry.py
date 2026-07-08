@@ -145,22 +145,22 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "reflexion",
             A,
-            PART,
+            IMPL,
             "",
             "Persistent failure lessons",
-            ["reflexion_store"],
+            [],
             [],
             "medium",
             "batch",
             "low",
         ),
         StrategyCapability(
-            "self_refine", A, PART, "", "Iterative self-refinement", [], [], "medium", "interactive", "low"
+            "self_refine", A, IMPL, "", "Iterative self-refinement", [], [], "medium", "interactive", "low"
         ),
         StrategyCapability(
             "self_consistency",
             A,
-            PLAN,
+            IMPL,
             "",
             "Multiple paths + majority vote",
             [],
@@ -172,7 +172,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "tree_of_thoughts",
             A,
-            PLAN,
+            IMPL,
             "",
             "Tree search over reasoning",
             [],
@@ -293,7 +293,7 @@ def build_default_registry() -> StrategyRegistry:
             "medium",
         ),
         StrategyCapability(
-            "peer_review", A, PLAN, "", "Peer agent review", [], [], "high", "batch", "low"
+            "peer_review", A, IMPL, "", "Peer agent review", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
             "camel", A, PLAN, "", "Communicative agents", [], [], "high", "batch", "low"
@@ -585,7 +585,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "corrective_rag",
             R,
-            PART,
+            IMPL,
             "",
             "Corrective retrieval",
             ["knowledge_store"],
@@ -597,7 +597,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "adaptive_rag",
             R,
-            PLAN,
+            IMPL,
             "",
             "Adaptive strategy per query",
             ["knowledge_store"],
@@ -621,7 +621,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "speculative_rag",
             R,
-            PLAN,
+            IMPL,
             "",
             "Speculative retrieval",
             [],
@@ -657,7 +657,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "fusion_rag",
             R,
-            PLAN,
+            IMPL,
             "",
             "Multi-query RRF fusion",
             [],
@@ -669,7 +669,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "self_rag",
             R,
-            PLAN,
+            IMPL,
             "",
             "Self-reflective retrieval",
             [],
@@ -681,7 +681,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "flare",
             R,
-            PLAN,
+            IMPL,
             "",
             "Forward-looking active retrieval",
             [],
@@ -693,7 +693,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "raptor",
             R,
-            PLAN,
+            IMPL,
             "",
             "Recursive abstractive processing",
             [],
@@ -717,7 +717,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "colbert_late_interaction",
             R,
-            PLAN,
+            IMPL,
             "",
             "ColBERT late interaction",
             [],
