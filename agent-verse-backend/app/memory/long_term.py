@@ -38,6 +38,9 @@ class LongTermMemoryStore:
     def __init__(self) -> None:
         # tenant_id → list of LongTermMemory
         self._memories: dict[str, list[LongTermMemory]] = {}
+        # Wired at startup by lifespan so async methods can use it without
+        # callers having to pass db explicitly.
+        self._db_factory: Any = None
 
     def store(self, *, memory: LongTermMemory, tenant_ctx: TenantContext) -> str:
         self._memories.setdefault(tenant_ctx.tenant_id, []).append(memory)

@@ -807,6 +807,39 @@ def create_app(
             _exec_memory._db = db_factory
             app.state.exec_memory = _exec_memory
 
+            # Seed execution memory from DB for faster cold-start recall()
+            try:
+                import asyncio as _em_asyncio
+
+                async def _hydrate_exec_memory() -> None:
+                    try:
+                        _em_rows = None
+                        async with db_factory() as _em_sess:
+                            from sqlalchemy import text as _t
+                            _em_rows = (await _em_sess.execute(
+                                _t("SELECT DISTINCT tenant_id FROM execution_memory LIMIT 50")
+                            )).fetchall()
+                        if _em_rows:
+                            for (_em_tid,) in _em_rows:
+                                await _exec_memory.load_from_db(tenant_id=_em_tid, db=db_factory)
+                        logger.info("execution_memory_hydrated", tenant_count=len(_em_rows or []))
+                    except Exception as _em_inner_err:
+                        logger.warning("execution_memory_hydration_failed", error=str(_em_inner_err))
+
+                _em_asyncio.create_task(_hydrate_exec_memory())
+            except Exception as _em_exc:
+                logger.warning("execution_memory_hydration_setup_failed", error=str(_em_exc))
+
+            # Wire DB factory into LongTermMemoryStore
+            try:
+                if hasattr(_long_term_memory, "_db_factory"):
+                    _long_term_memory._db_factory = db_factory
+                elif hasattr(_long_term_memory, "_db"):
+                    _long_term_memory._db = db_factory
+                logger.info("long_term_memory_db_wired")
+            except Exception as _ltm_exc:
+                logger.warning("long_term_memory_db_wire_failed", error=str(_ltm_exc))
+
             # Wire DB into CostTracker for ledger persistence + historical queries
             _cost_tracker._db = db_factory
             app.state.cost_tracker = _cost_tracker
