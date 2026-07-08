@@ -59,6 +59,7 @@ async def hybrid_search(
     ef_search: int = 200,
     retrieval_mode: str = "hybrid",
     embedding_dim: int | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> list[RetrievalResult]:
     """
     Tri-leg retrieval with RRF fusion.
@@ -199,6 +200,13 @@ async def hybrid_search(
         )
         for cid, score, content, meta, legs in fused[:top_k]
     ]
+
+    # Post-filter by metadata if requested
+    if metadata_filter:
+        results = [
+            r for r in results
+            if all(r.source_metadata.get(k) == v for k, v in metadata_filter.items())
+        ]
 
     logger.debug(
         "rrf_retrieval_complete",

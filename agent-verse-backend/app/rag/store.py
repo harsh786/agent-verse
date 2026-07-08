@@ -202,14 +202,22 @@ class KnowledgeStore:
         collection_id: str,
         tenant_ctx: TenantContext,
         top_k: int = 5,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[HybridSearchResult]:
         """In-memory hybrid search (fast path, always available)."""
         store = self._data.get((tenant_ctx.tenant_id, collection_id))
         if store is None:
             return []
 
+        chunks_to_score = list(store.chunks)
+        if metadata_filter:
+            chunks_to_score = [
+                c for c in chunks_to_score
+                if all(c.metadata.get(k) == v for k, v in metadata_filter.items())
+            ]
+
         scored: list[HybridSearchResult] = []
-        for chunk in store.chunks:
+        for chunk in chunks_to_score:
             vec_score = _cosine_similarity(query_embedding, chunk.embedding)
             tri_score = _trigram_score(query, chunk.content)
             hybrid = _VECTOR_WEIGHT * vec_score + _TRIGRAM_WEIGHT * tri_score
@@ -233,6 +241,7 @@ class KnowledgeStore:
         collection_id: str,
         tenant_ctx: TenantContext,
         top_k: int = 5,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[HybridSearchResult]:
         """PostgreSQL hybrid search via the RRF-fused retrieval engine.
 
@@ -245,7 +254,10 @@ class KnowledgeStore:
         if the engine call fails.
         """
         if self._db is None:
-            return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+            return self.hybrid_search(
+                query, query_embedding, collection_id, tenant_ctx, top_k,
+                metadata_filter=metadata_filter,
+            )
 
         try:
             from sqlalchemy import text
@@ -282,6 +294,13 @@ class KnowledgeStore:
                     retrieval_mode="hybrid",
                     embedding_dim=embedding_dim,
                 )
+
+            # Post-filter by metadata (Python-side JSONB subset match)
+            if metadata_filter:
+                engine_results = [
+                    r for r in engine_results
+                    if all(r.source_metadata.get(k) == v for k, v in metadata_filter.items())
+                ]
 
             return [
                 HybridSearchResult(
