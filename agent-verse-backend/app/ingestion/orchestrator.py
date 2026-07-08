@@ -49,21 +49,55 @@ class IngestionOrchestrator:
         except Exception:
             return chunks
 
+    def _chunk(self, content: str, ct: Any) -> list[str]:
+        """Dispatch to appropriate chunker based on content type strategy."""
+        try:
+            from app.ingestion.chunkers import get_chunker_for_strategy
+            strategy = self._chunking_selector.select(ct) if ct is not None else "semantic"
+            chunker = get_chunker_for_strategy(strategy)
+            if chunker is not None:
+                chunks = chunker.chunk(content)
+                result = [
+                    c.content if hasattr(c, "content") else str(c)
+                    for c in chunks
+                    if (c.content if hasattr(c, "content") else str(c)).strip()
+                ]
+                if result:
+                    return result
+        except Exception as _chunk_exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning(
+                    "ingestion_chunker_dispatch_failed",
+                    error=str(_chunk_exc)[:80],
+                )
+            except Exception:
+                pass
+        # Fallback: paragraph split
+        if ct is not None:
+            # Content-type specific fallbacks
+            from app.ingestion.content_classifier import ContentType
+            if ct == ContentType.CODE:
+                import re
+                blocks = re.split(r"(?m)^(?=def |class |function |const |let )", content)
+                return [b.strip() for b in blocks if b.strip()] or [content]
+            if ct in (ContentType.HTML, ContentType.WEB_PAGE):
+                import re
+                text = re.sub(r"<[^>]+>", " ", content).strip()
+                return [text] if text else [content]
+        paras = [p.strip() for p in content.split("\n\n") if p.strip()]
+        return paras or [content]
+
     def _chunk_with_quality_check(self, content: str, ct: Any) -> list[str]:
         """Chunk content and filter out low-quality chunks (public API for tests)."""
-        if ct is not None:
-            try:
-                from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
-                from app.ingestion.content_classifier import ContentType
-                ct_enum = ct if isinstance(ct, ContentType) else ContentType.TEXT
-                chunking_strategy = self._chunking_selector.select(ct_enum)
-                parser = self._parser_registry.get_parser(ct_enum)
-                raw_chunks = parser.parse(content)
-            except Exception:
-                raw_chunks = [content]
-        else:
-            raw_chunks = [content] if content.strip() else []
-        return self._filter_quality(raw_chunks)
+        raw = self._chunk(content, ct)
+        try:
+            from app.ingestion.quality_checks import QualityChecker
+            checker = QualityChecker(min_length=20)
+            filtered = [c for c in raw if checker.check(c).passed]
+            return filtered if filtered else raw
+        except Exception:
+            return raw
 
     async def ingest(
         self,
