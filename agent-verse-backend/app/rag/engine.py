@@ -543,6 +543,9 @@ async def retrieve(
     provider: Any = None,
     embedding_dim: int | None = None,
     retrieval_mode: str = "hybrid",
+    long_term_memory: Any = None,
+    tenant_ctx: Any = None,
+    embedder: Any = None,
 ) -> list[RetrievalResult]:
     """Strategy-dispatching entry point. Selects strategy via RetrievalPlanner if not given."""
     if strategy is None:
@@ -799,8 +802,34 @@ async def retrieve(
             return []
 
         if strategy == "memory":
-            # Memory retrieval — return empty (caller should use LTM directly)
-            # TODO Phase 6: implement LTM semantic recall path
+            # Memory retrieval — LTM semantic recall using pgvector cosine similarity
+            if long_term_memory is not None and tenant_ctx is not None:
+                try:
+                    ltm_results = await long_term_memory.recall_async(
+                        query=query,
+                        tenant_ctx=tenant_ctx,
+                        top_k=top_k,
+                        db=getattr(long_term_memory, "_db_factory", None) or getattr(long_term_memory, "_db", None),
+                        embedder=embedder or provider,
+                    )
+                    if ltm_results:
+                        return [
+                            RetrievalResult(
+                                chunk_id=f"ltm_{getattr(m, 'memory_id', str(i))}",
+                                content=getattr(m, "content", str(m)),
+                                score=float(getattr(m, "confidence", 0.7)),
+                                source_metadata={
+                                    "memory_type": getattr(m, "memory_type", "ltm"),
+                                    "source": "long_term_memory",
+                                    "source_goal_id": getattr(m, "source_goal_id", ""),
+                                },
+                                retrieval_legs=["long_term_memory"],
+                            )
+                            for i, m in enumerate(ltm_results)
+                        ]
+                except Exception as exc:
+                    logger.warning("memory_strategy_recall_failed", error=str(exc)[:80])
+            # Fallback: empty (LTM not available in this context)
             return []
 
         if strategy == "graph":

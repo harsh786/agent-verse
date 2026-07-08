@@ -829,6 +829,9 @@ class AgentGraph:
                         strategy=_advanced_strategy,
                         provider=self._planner,
                         embedding_dim=None,
+                        long_term_memory=self._long_term_memory,
+                        tenant_ctx=agent_state.tenant_ctx,
+                        embedder=self._embedder,
                     )
                 if _adv_results:
                     _adv_context = "\n\n".join(
@@ -1406,6 +1409,20 @@ class AgentGraph:
         # Anthropic → claude-opus-4-8, Fake → "fake", etc.).
         # Never hard-code a vendor-specific model name here.
         planning_model = getattr(self._planner, "_default_model", None) or "gpt-5.2"
+        # Update ModelOrchestratorAdapter with current runtime profile for budget-aware selection
+        try:
+            _runtime_profile_for_router = agent_state.context.get("_runtime_profile")
+            if _runtime_profile_for_router is not None and hasattr(self._model_router, "update_from_profile"):
+                _budget_ratio = (
+                    agent_state.context.get("total_cost_usd", 0.0) /
+                    max(getattr(_runtime_profile_for_router.model_plan, "max_cost_usd", 0.10) or 0.10, 0.001)
+                )
+                self._model_router.update_from_profile(
+                    _runtime_profile_for_router,
+                    budget_spent_ratio=min(1.0, _budget_ratio),
+                )
+        except Exception:
+            pass
         if self._model_router is not None:
             routed = self._model_router.model_for_goal("planning", goal=agent_state.goal)
             if routed:

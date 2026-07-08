@@ -745,7 +745,7 @@ class GoalService:
         # ── Extract RAG/routing/intelligence services from app.state ─────────────
         _embedder = getattr(app_state, "embedder", None) if app_state else None
         _semantic_cache = getattr(app_state, "semantic_cache", None) if app_state else None
-        _model_router = getattr(app_state, "model_router", None) if app_state else None
+        _model_router = None  # built after _agent_config is loaded below
         _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
         _bulkhead_registry = getattr(app_state, "bulkhead_registry", None) if app_state else None
         # Execution memory (H-3: wire from app.state instead of leaving None)
@@ -765,6 +765,21 @@ class GoalService:
                     _svc_logger.warning(
                         "agent_config_load_failed", agent_id=agent_id, error=str(_ae)
                     )
+
+        # Use ModelOrchestrator for rich tier-based model selection with budget downgrade
+        try:
+            from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+            _model_router = ModelOrchestratorAdapter(
+                orchestrator=ModelOrchestrator(),
+                default_tier=_agent_config.get("model_tier", "medium"),
+            )
+        except Exception:
+            # Fallback to simple ModelRouter if orchestrator fails
+            try:
+                from app.agent.model_router import ModelRouter, get_router_for_tenant  # noqa: F401
+                _model_router = get_router_for_tenant(_agent_config)
+            except Exception:
+                _model_router = None
 
         # Extract per-agent execution settings (FIX 4)
         _max_iterations = int(_agent_config.get("max_iterations", 15))
