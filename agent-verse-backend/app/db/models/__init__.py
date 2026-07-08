@@ -29,6 +29,7 @@ from app.db.models.knowledge import (  # noqa: E402
     ExecutionMemory,
     KnowledgeCollection,
     LongTermMemory,
+    MemoryConflict,
 )
 from app.db.models.mcp import MCPCredential, MCPServer, OAuthToken  # noqa: E402
 from app.db.models.scheduling import Policy, Schedule  # noqa: E402
@@ -76,6 +77,7 @@ __all__ = [
     "Document",
     "ExecutionMemory",
     "LongTermMemory",
+    "MemoryConflict",
     # intelligence
     "DecisionTrace",
     "Evaluation",
