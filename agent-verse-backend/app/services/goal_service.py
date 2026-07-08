@@ -144,7 +144,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             _first_node = _sentinel_urls.split(",")[0].strip()
             _sentinel_db = os.getenv("REDIS_SENTINEL_DB", "0")
             redis_url = f"sentinel://{_first_node}/{_sentinel_db}"
-            _std_logger.info(
+            _svc_logger.info(
                 "checkpointer_using_sentinel_url sentinel_node=%s", _first_node
             )
 
@@ -194,7 +194,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
                 error=str(_e2),
                 impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — install langgraph-checkpoint-redis",
             )
-            _std_logger.warning(_msg)
+            _svc_logger.warning(_msg)
     else:
         _msg2 = (
             "no_redis_url_using_memory_saver "
@@ -204,7 +204,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             "no_redis_url_using_memory_saver",
             impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",
         )
-        _std_logger.warning(_msg2)
+        _svc_logger.warning(_msg2)
     return MemorySaver()
 
 
