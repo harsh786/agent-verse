@@ -195,6 +195,12 @@ celery_app.conf.update(
             "schedule": crontab(hour="1", minute="0"),
             "options": {"queue": "maintenance"},
         },
+        # Freshness reindex: mark stale knowledge chunks hourly
+        "reindex-stale-knowledge": {
+            "task": "agentverse.maintenance.reindex_stale_knowledge",
+            "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
     },
 )
 
