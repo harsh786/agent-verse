@@ -23,9 +23,12 @@ def test_resolve_checkpointer_uses_redis_when_available(monkeypatch):
     assert checkpointer is not None
 
 
-def test_resolve_checkpointer_warns_on_memory_saver(monkeypatch, caplog):
-    """When falling back to MemorySaver, a clear WARNING must be logged."""
-    import logging
+def test_resolve_checkpointer_warns_on_memory_saver(monkeypatch, capsys):
+    """When falling back to MemorySaver, a clear WARNING must be logged.
+    
+    Uses capsys instead of caplog because _svc_logger is a structlog PrintLogger
+    that writes to stdout/stderr, not the Python stdlib logging system.
+    """
     monkeypatch.delenv("REDIS_URL", raising=False)
 
     app_state = MagicMock()
@@ -33,16 +36,19 @@ def test_resolve_checkpointer_warns_on_memory_saver(monkeypatch, caplog):
     app_state.settings = None
 
     from app.services.goal_service import _resolve_checkpointer
-    with caplog.at_level(logging.WARNING):
-        checkpointer = _resolve_checkpointer(app_state)
+    checkpointer = _resolve_checkpointer(app_state)
 
-    # Must warn about durability loss
+    # Must return MemorySaver as fallback
     from langgraph.checkpoint.memory import MemorySaver
     assert isinstance(checkpointer, MemorySaver)
-    # Warning should mention REDIS_URL or persistence
-    warning_text = " ".join(caplog.messages).lower()
-    assert any(word in warning_text for word in ["redis", "restart", "lost", "memory"]), \
-        f"Warning must mention persistence risk, got: {caplog.messages}"
+
+    # Warning should be emitted to stdout (structlog PrintLogger)
+    captured = capsys.readouterr()
+    combined = (captured.out + captured.err).lower()
+    # At least one of these persistence-risk keywords must appear
+    persistence_keywords = ["redis", "restart", "lost", "memory", "durability", "persist"]
+    assert any(word in combined for word in persistence_keywords), \
+        f"Warning must mention persistence risk. Got stdout: {captured.out[:200]}"
 
 
 @pytest.mark.asyncio
