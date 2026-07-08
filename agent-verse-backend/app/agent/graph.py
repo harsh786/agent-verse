@@ -1627,9 +1627,16 @@ class AgentGraph:
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
 
-        # 6. Guardrails — validate tool name, check injection/dangerous patterns
-        # Only check the tool_name; do NOT pass the step description as tool_args
-        # since it triggers false positives on benign words like "extract", "format".
+        # 6. Guardrails — validate step text for injection, then tool name
+        # 6a. Check the plan STEP TEXT for injection phrases (e.g. "ignore all previous instructions")
+        # This is important: a compromised tool could return an injection-crafted step description.
+        if self._guardrail_checker is not None:
+            step_issues = self._guardrail_checker.check_goal(step)
+            if step_issues:
+                return f"Guardrail blocked step: {'; '.join(step_issues)}"
+
+        # 6b. Check tool name (only check the name; do NOT pass the step description as tool_args
+        # since it triggers false positives on benign words like "extract", "format").
         if self._guardrail_checker is not None:
             violations = self._guardrail_checker.check(
                 tool_name=tool_name,

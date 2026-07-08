@@ -136,7 +136,7 @@ def test_model_for_empty_task_uses_fallback() -> None:
 
 def test_model_for_openai_planning() -> None:
     router = ModelRouter(provider_name="openai")
-    assert router.model_for("planning") == "gpt-4o"
+    assert router.model_for("planning") == "gpt-5.2"
 
 
 def test_model_for_openai_execution() -> None:
@@ -192,7 +192,7 @@ def test_get_router_for_tenant_default_model_fallback_when_base_empty() -> None:
 
 def test_get_router_for_tenant_no_default_model_uses_base() -> None:
     router = get_router_for_tenant({"provider": "openai"})
-    assert router._config.planning_model == "gpt-4o"
+    assert router._config.planning_model == "gpt-5.2"
 
 
 def test_get_router_for_tenant_missing_provider_defaults_to_anthropic() -> None:

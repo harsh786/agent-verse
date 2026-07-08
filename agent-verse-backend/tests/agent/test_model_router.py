@@ -11,7 +11,7 @@ def test_anthropic_defaults():
 
 def test_openai_defaults():
     router = ModelRouter("openai")
-    assert router.model_for("planning") == "gpt-4o"
+    assert router.model_for("planning") == "gpt-5.2"
     assert router.model_for("execution") == "gpt-4o-mini"
 
 
