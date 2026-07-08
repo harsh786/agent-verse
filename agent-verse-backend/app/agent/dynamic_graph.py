@@ -13,7 +13,7 @@ class DynamicGraphAssembler:
 
     def assemble(
         self,
-        config: "PatternConfig",
+        pattern_config: "PatternConfig",
         *,
         planner: "LLMProvider",
         executor: "LLMProvider",
@@ -22,14 +22,23 @@ class DynamicGraphAssembler:
     ) -> Any:
         from app.agent.graph import AgentGraph
 
+        reasoning = pattern_config.reasoning_patterns if pattern_config else []
+        multi_agent = getattr(pattern_config, "multi_agent_patterns", []) if pattern_config else []
         graph = AgentGraph(
             planner=planner,
             executor=executor,
             verifier=verifier,
-            max_iterations=config.max_iterations,
+            max_iterations=getattr(pattern_config, "max_iterations", 100),
+            enable_cot="chain_of_thought" in reasoning or "cot" in reasoning,
+            enable_reflection="reflection" in reasoning,
+            enable_self_refine="self_refine" in reasoning,
+            enable_self_consistency="self_consistency" in reasoning,
+            enable_tree_of_thoughts="tree_of_thoughts" in reasoning,
+            enable_peer_review="peer_review" in reasoning,
+            enable_goal_tree="goal_tree" in multi_agent,
             **kwargs,
         )
-        graph._pattern_config = config  # type: ignore[attr-defined]
+        graph._pattern_config = pattern_config  # type: ignore[attr-defined]
         return graph
 
     def get_active_nodes(self, config: "PatternConfig") -> list[str]:
