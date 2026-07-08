@@ -239,6 +239,7 @@ class AgentGraph:
         grounding_checker: Any | None = None,
         consensus_verifier: Any | None = None,
         calibration_store: Any | None = None,
+        tool_reliability_store: Any = None,
         **kwargs: Any,
     ) -> None:
         self._planner = planner
@@ -283,6 +284,7 @@ class AgentGraph:
         self._grounding_checker = grounding_checker
         self._consensus_verifier = consensus_verifier
         self._calibration_store = calibration_store
+        self._tool_reliability_store = tool_reliability_store
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -1184,6 +1186,11 @@ class AgentGraph:
                         {"index": c.index, "url": c.source_url}
                         for c in pipeline_result.citations
                     ]
+                # N9: Store executor and verifier contexts for downstream nodes
+                if pipeline_result.executor_context:
+                    agent_state.context["_executor_context"] = pipeline_result.executor_context
+                if pipeline_result.verifier_context:
+                    agent_state.context["_verifier_context"] = pipeline_result.verifier_context
         except Exception as _ctx_exc:
             from app.observability.logging import get_logger
             get_logger(__name__).warning("context_pipeline_failed_in_plan", error=str(_ctx_exc))
@@ -1264,7 +1271,7 @@ class AgentGraph:
         try:
             from app.context.output_contract_builder import OutputContractBuilder
             _ocb = OutputContractBuilder()
-            _contract = _ocb.build()
+            _contract = _ocb.build(goal=agent_state.goal)
             if _contract.instructions:
                 extra_parts.append(f"[Output contract]\n{_contract.instructions}")
         except Exception:
@@ -2160,6 +2167,13 @@ class AgentGraph:
         if context_parts:
             content += "\n\n" + "\n\n".join(context_parts)
 
+        # N9: Prepend executor context from ContextPipeline if available
+        _exec_ctx = state.context.get("_executor_context", "") or ""
+        if _exec_ctx and len(_exec_ctx) > 50:
+            content = (
+                f"[Relevant context for this step]\n{_exec_ctx[:1200]}\n\n{content}"
+            )
+
         # Collect available tools for structured tool calling (Task 1)
         # IMPORTANT: OpenAI function names must match ^[a-zA-Z0-9_-]{1,64}$
         # DO NOT include server_name in the name — "Jira Connector.jira_search_issues"
@@ -2201,6 +2215,28 @@ class AgentGraph:
                 _tool_context = _tpb.build(tools=_defs_as_dicts, step_context=step)
                 if _tool_context:
                     content = f"{content}\n\nAvailable tools:\n{_tool_context}"
+        except Exception:
+            pass
+
+        # N10: Tag unreliable tools (informational — don't hard-block, just log)
+        try:
+            _tr_store = getattr(self, "_tool_reliability_store", None)
+            if _tr_store is not None and _tool_defs:
+                _unreliable = await _tr_store.get_unreliable_tools(
+                    tenant_id=tenant_ctx.tenant_id, threshold=0.3
+                )
+                _unreliable_names = {
+                    t.get("tool_name", "") if isinstance(t, dict) else str(t)
+                    for t in (_unreliable or [])
+                }
+                if _unreliable_names:
+                    state.context["_unreliable_tools"] = list(_unreliable_names)
+                    # Add a hint to the step context
+                    _unreliable_hint = (
+                        f"\n[Note: these tools have had reliability issues: "
+                        f"{', '.join(list(_unreliable_names)[:3])}]"
+                    )
+                    content = content + _unreliable_hint if content else _unreliable_hint
         except Exception:
             pass
 
@@ -3240,6 +3276,12 @@ class AgentGraph:
             summary = _pc.compress(summary)
         except Exception:
             pass
+        # N9: Prepend verifier context from ContextPipeline
+        _verif_ctx = agent_state.context.get("_verifier_context", "") or ""
+        if _verif_ctx and len(_verif_ctx) > 50:
+            summary = (
+                f"[Context for verification]\n{_verif_ctx[:800]}\n\n{summary}"
+            )
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
