@@ -909,6 +909,7 @@ class GoalService:
             answer_synthesizer=_answer_synthesizer,
             calibration_store=_calibration_store,
             consensus_verifier=_consensus_verifier,
+            tool_reliability_store=getattr(app_state, "tool_reliability_store", None),
         )
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
@@ -921,8 +922,6 @@ class GoalService:
         # H-2: Wire app_state and agent_id for SelfOptimizerV2 A/B experiment tracking
         graph._app_state = app_state
         graph._agent_id = agent_id
-        # H27: Wire ToolReliabilityStore
-        graph._tool_reliability_store = getattr(app_state, "tool_reliability_store", None)
         # Phase 25: Wire self-optimizer for automatic improvement on poor performance
         from app.intelligence.self_optimization import SelfOptimizer
         _self_optimizer = getattr(app_state, "self_optimizer", None) if app_state else None
