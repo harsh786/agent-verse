@@ -209,19 +209,29 @@ class RerankPolicy:
     def _cross_encoder_rerank(
         self, chunks: list[dict[str, Any]], query: str
     ) -> list[dict[str, Any]]:
-        """Cross-encoder style reranking — calls LLM reranker if provider available.
-        Falls back to TF-IDF weighted token overlap when no provider configured.
+        """Cross-encoder reranking — TF-IDF fallback (async path via rerank_async).
+
+        Note: In production async context (FastAPI), get_event_loop().is_running() = True
+        so loop.run_until_complete() would raise RuntimeError. Use TF-IDF fallback directly.
+        The async LLM path is available via rerank_policy.rerank_async() instead.
         """
-        # Try async LLM reranker via event loop (production path)
-        try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if not loop.is_running():
-                return loop.run_until_complete(self._async_cross_encoder(chunks, query))
-        except Exception:
-            pass
-        # Fallback: TF-IDF weighted overlap (better than pure set intersection)
         return self._tfidf_rerank(chunks, query)
+
+    async def rerank_async(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        strategy: "RerankStrategy | None" = None,
+        query_embedding: list[float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Async reranking — supports true LLM cross-encoder and vector MMR."""
+        s = strategy or RerankStrategy.SCORE
+        if s == RerankStrategy.CROSS_ENCODER:
+            return await self._async_cross_encoder(chunks, query)
+        if s == RerankStrategy.DIVERSITY:
+            return self._diversity_rerank(chunks, query_embedding=query_embedding)
+        # Fall through to sync rerank for other strategies
+        return self.rerank(chunks, query=query)
 
     async def _async_cross_encoder(
         self, chunks: list[dict[str, Any]], query: str
@@ -286,23 +296,9 @@ class RerankPolicy:
     def _llm_rerank_sync(
         self, chunks: list[dict[str, Any]], query: str
     ) -> list[dict[str, Any]]:
-        """LLM reranker — keyword overlap scoring as lightweight proxy.
+        """TF-IDF reranking (sync fallback for LLM reranking).
 
-        Production: call async LLM reranker via app/rag_platform/reranker.py.
-        In sync context: uses keyword overlap as a deterministic approximation
-        that preserves the interface contract without requiring async.
+        For true LLM reranking, use rerank_async() with strategy=CROSS_ENCODER.
+        This sync version uses TF-IDF weighted scoring as a fast approximation.
         """
-        if not query:
-            return sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
-
-        query_words = set(query.lower().split())
-
-        def llm_proxy_score(chunk: dict[str, Any]) -> float:
-            content = chunk.get("content", "").lower()
-            content_words = set(content.split())
-            overlap = len(query_words & content_words)
-            overlap_score = overlap / max(len(query_words), 1)
-            # Combine vector score with semantic overlap
-            return 0.4 * chunk.get("score", 0.5) + 0.6 * overlap_score
-
-        return sorted(chunks, key=llm_proxy_score, reverse=True)
+        return self._tfidf_rerank(chunks, query)
