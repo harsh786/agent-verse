@@ -207,15 +207,41 @@ class RerankPolicy:
     # ------------------------------------------------------------------
 
     def _cross_encoder_rerank(
-        self, chunks: list[dict[str, Any]], query: str
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
     ) -> list[dict[str, Any]]:
-        """Cross-encoder reranking — TF-IDF fallback (async path via rerank_async).
+        """Real cross-encoder reranking via sentence-transformers.
 
-        Note: In production async context (FastAPI), get_event_loop().is_running() = True
-        so loop.run_until_complete() would raise RuntimeError. Use TF-IDF fallback directly.
-        The async LLM path is available via rerank_policy.rerank_async() instead.
+        Falls back to TF-IDF when model unavailable.
         """
-        return self._tfidf_rerank(chunks, query)
+        if not chunks:
+            return chunks
+        try:
+            from app.rag.cross_encoder import cross_encode
+
+            documents = [c.get("content", "")[:512] for c in chunks]
+            scores = cross_encode(query, documents)
+            # Normalize scores to 0-1 range
+            if scores:
+                min_s, max_s = min(scores), max(scores)
+                span = max_s - min_s or 1.0
+                norm_scores = [(s - min_s) / span for s in scores]
+            else:
+                norm_scores = [0.5] * len(chunks)
+            # Blend cross-encoder score with original retrieval score
+            scored = []
+            for chunk, ce_score, orig_score in zip(
+                chunks,
+                norm_scores,
+                [float(c.get("score", 0.5)) for c in chunks],
+            ):
+                blended = 0.6 * ce_score + 0.4 * orig_score
+                scored.append({**chunk, "score": blended, "ce_score": ce_score})
+            scored.sort(key=lambda c: c["score"], reverse=True)
+            return scored
+        except Exception:
+            return self._tfidf_rerank(chunks, query)
 
     async def rerank_async(
         self,
@@ -224,45 +250,26 @@ class RerankPolicy:
         strategy: "RerankStrategy | None" = None,
         query_embedding: list[float] | None = None,
     ) -> list[dict[str, Any]]:
-        """Async reranking — supports true LLM cross-encoder and vector MMR."""
-        s = strategy or RerankStrategy.SCORE
+        """Async reranking — cross-encoder via thread pool for blocking inference."""
+        import asyncio
+
+        s = strategy or RerankStrategy.CROSS_ENCODER
+
         if s == RerankStrategy.CROSS_ENCODER:
-            return await self._async_cross_encoder(chunks, query)
+            # Run blocking cross-encoder in thread pool
+            loop = asyncio.get_event_loop()
+            try:
+                result = await loop.run_in_executor(
+                    None, self._cross_encoder_rerank, chunks, query
+                )
+                return result
+            except Exception:
+                return self._tfidf_rerank(chunks, query)
+
         if s == RerankStrategy.DIVERSITY:
             return self._diversity_rerank(chunks, query_embedding=query_embedding)
-        # Fall through to sync rerank for other strategies
-        return self.rerank(chunks, query=query)
 
-    async def _async_cross_encoder(
-        self, chunks: list[dict[str, Any]], query: str
-    ) -> list[dict[str, Any]]:
-        """Async cross-encoder using LLM relevance scoring."""
-        try:
-            from app.rag.engine import RetrievalResult, rerank_results
-            # rerank_results expects RetrievalResult objects — adapt chunks
-            results = [
-                RetrievalResult(
-                    chunk_id=c.get("chunk_id", f"c{i}"),
-                    content=c.get("content", ""),
-                    score=float(c.get("score", 0.5)),
-                    source_metadata=c.get("source_metadata", {}),
-                    retrieval_legs=c.get("retrieval_legs", []),
-                )
-                for i, c in enumerate(chunks)
-            ]
-            reranked = await rerank_results(results=results, query=query)
-            # Convert back to dicts
-            return [
-                {
-                    **(chunks[i] if i < len(chunks) else {}),
-                    "chunk_id": r.chunk_id,
-                    "content": r.content,
-                    "score": r.score,
-                }
-                for i, r in enumerate(reranked)
-            ]
-        except Exception:
-            return self._tfidf_rerank(chunks, query)
+        return self.rerank(chunks, query=query)
 
     def _tfidf_rerank(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """TF-IDF weighted token overlap reranking (improved fallback)."""
@@ -296,9 +303,5 @@ class RerankPolicy:
     def _llm_rerank_sync(
         self, chunks: list[dict[str, Any]], query: str
     ) -> list[dict[str, Any]]:
-        """TF-IDF reranking (sync fallback for LLM reranking).
-
-        For true LLM reranking, use rerank_async() with strategy=CROSS_ENCODER.
-        This sync version uses TF-IDF weighted scoring as a fast approximation.
-        """
-        return self._tfidf_rerank(chunks, query)
+        """Cross-encoder reranking (uses sentence-transformers when available, else TF-IDF)."""
+        return self._cross_encoder_rerank(chunks, query)

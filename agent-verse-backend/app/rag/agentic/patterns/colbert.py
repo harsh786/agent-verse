@@ -1,33 +1,46 @@
 """ColBERT — Late Interaction Reranking via MaxSim Token Scoring.
 
-Khattab & Zaharia 2020: 'ColBERT: Efficient and Effective Passage Search via
-Contextualized Late Interaction over BERT'
+Production path: Uses all-MiniLM-L6-v2 from sentence-transformers to generate
+token-level embeddings, then computes MaxSim exactly as in ColBERT.
 
-This implementation provides a ColBERT-inspired reranker using:
-  - TF-weighted token importance (as a proxy for contextualized token embeddings)
-  - MaxSim: for each query token, find maximum similarity with any document token
-  - Final score = sum of MaxSim values / len(query_tokens)
-
-No external model required — uses word-level overlap with IDF-like weighting.
-For production use with a real ColBERT model, override _token_embed().
+Fallback: TF-IDF weighted token overlap (no external model required).
 """
 from __future__ import annotations
+
 import math
 import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 _STOPWORDS = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "shall", "can", "need", "dare",
-    "of", "in", "on", "at", "to", "for", "with", "by", "from", "as",
-    "and", "or", "but", "not", "so", "if", "when", "where", "how", "that",
-    "this", "these", "those", "it", "its", "i", "you", "he", "she", "we",
-    "they", "what", "who", "which",
+    "should", "may", "might", "must", "shall", "can", "of", "in", "on",
+    "at", "to", "for", "with", "by", "from", "as", "and", "or", "but",
+    "not", "so", "if", "when", "where", "how", "that", "this", "these",
+    "those", "it", "its", "i", "you", "he", "she", "we", "they", "what",
+    "who", "which",
 })
+
+_encoder_instance: Any = None
+
+
+def _get_encoder() -> Any | None:
+    """Load sentence-transformers encoder lazily (singleton)."""
+    global _encoder_instance
+    if _encoder_instance is not None:
+        return _encoder_instance
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        # all-MiniLM-L6-v2: 22MB, 384-dim, fast and accurate
+        _encoder_instance = SentenceTransformer("all-MiniLM-L6-v2")
+        return _encoder_instance
+    except Exception:
+        return None
 
 
 def _tokenize(text: str) -> list[str]:
@@ -36,12 +49,28 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
 
 
-def _compute_idf(token: str, all_docs: list[list[str]]) -> float:
-    """Compute IDF weight for a token across a corpus."""
-    df = sum(1 for doc in all_docs if token in doc)
-    if df == 0:
-        return 1.0
-    return math.log((len(all_docs) + 1) / (df + 1)) + 1.0
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two float vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    return dot / (mag_a * mag_b) if mag_a > 0 and mag_b > 0 else 0.0
+
+
+def _maxsim_with_embeddings(
+    query_emb: list[list[float]],
+    doc_emb: list[list[float]],
+) -> float:
+    """True ColBERT MaxSim using token embeddings."""
+    if not query_emb or not doc_emb:
+        return 0.0
+    total = 0.0
+    for q_tok_emb in query_emb:
+        max_sim = max((_cosine(q_tok_emb, d_tok_emb) for d_tok_emb in doc_emb), default=0.0)
+        total += max_sim
+    return total / len(query_emb)
 
 
 @dataclass
@@ -53,7 +82,11 @@ class ColBERTScore:
 
 
 class ColBERTPattern(RAGPattern):
-    """ColBERT MaxSim reranker — token-level late interaction scoring."""
+    """ColBERT late interaction reranking.
+
+    Production: token-level embeddings via all-MiniLM-L6-v2 + MaxSim.
+    Fallback: TF-IDF weighted token overlap.
+    """
 
     def __init__(self, alpha: float = 0.5) -> None:
         """
@@ -73,51 +106,75 @@ class ColBERTPattern(RAGPattern):
 
     @property
     def description(self) -> str:
+        encoder = _get_encoder()
+        backend = (
+            "all-MiniLM-L6-v2 (real token embeddings)"
+            if encoder
+            else "TF-IDF token overlap (fallback)"
+        )
         return (
-            "ColBERT late interaction reranking — MaxSim token-level scoring: "
-            "for each query token, find maximum similarity with any document token "
-            "(Khattab & Zaharia 2020). No external model required: uses TF-IDF "
-            f"weighted token overlap. Alpha={self._alpha} (colbert:original blend)."
+            f"ColBERT late interaction reranking — MaxSim token-level scoring. "
+            f"Backend: {backend}. Alpha={self._alpha}."
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_colbert:
                 return False
         except Exception:
             pass
         return True
 
+    def _embed_tokens(self, text: str) -> list[list[float]] | None:
+        """Embed each token of the text.
+
+        Returns list of per-token embeddings (shape: [n_tokens, dim]) or None
+        when the encoder is unavailable.
+        """
+        encoder = _get_encoder()
+        if encoder is None:
+            return None
+        tokens = _tokenize(text)
+        if not tokens:
+            return None
+        try:
+            embeddings = encoder.encode(tokens, batch_size=64, show_progress_bar=False)
+            return [emb.tolist() for emb in embeddings]
+        except Exception:
+            return None
+
     def _maxsim_score(self, query: str, document: str) -> float:
-        """Compute MaxSim score between query and document."""
+        """Compute MaxSim score — real embeddings or TF-IDF fallback."""
+        # Try real token embeddings first
+        q_emb = self._embed_tokens(query)
+        d_emb = self._embed_tokens(document)
+        if q_emb is not None and d_emb is not None:
+            return _maxsim_with_embeddings(q_emb, d_emb)
+
+        # TF-IDF fallback (original implementation)
         query_tokens = _tokenize(query)
         doc_tokens = _tokenize(document)
-
         if not query_tokens or not doc_tokens:
             return 0.0
-
         doc_token_set = set(doc_tokens)
         doc_freq = Counter(doc_tokens)
         total_doc_tokens = len(doc_tokens)
-
         max_sim_sum = 0.0
         for q_tok in query_tokens:
-            # MaxSim: max similarity of query token with any document token
-            # Use soft matching: exact = 1.0, prefix = 0.7, no match = 0.0
             if q_tok in doc_token_set:
                 tf = doc_freq[q_tok] / total_doc_tokens
-                max_sim = min(1.0, 0.7 + 0.3 * tf * 10)  # TF-boosted exact match
+                max_sim = min(1.0, 0.7 + 0.3 * tf * 10)
             elif any(
                 dt.startswith(q_tok[:4])
                 for dt in doc_token_set
                 if len(dt) >= 4 and len(q_tok) >= 4
             ):
-                max_sim = 0.6  # prefix match
+                max_sim = 0.6
             else:
                 max_sim = 0.0
             max_sim_sum += max_sim
-
         return max_sim_sum / len(query_tokens)
 
     def rerank(
@@ -160,16 +217,29 @@ class ColBERTPattern(RAGPattern):
         **kwargs: Any,
     ) -> str:
         """Rerank chunks and return combined context string."""
+        import asyncio
+
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("colbert_late_interaction_started", query=query[:60])
         except Exception:
             pass
-        reranked = self.rerank(query, chunks, top_k=top_k)
+
+        # Run blocking inference in thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            reranked = await loop.run_in_executor(None, self.rerank, query, chunks, top_k)
+        except Exception:
+            reranked = self.rerank(query, chunks, top_k)
+
         result = "\n\n".join(c.get("content", "") for c in reranked) if reranked else ""
+
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("colbert_late_interaction_completed", result_len=len(result))
         except Exception:
             pass
+
         return result
