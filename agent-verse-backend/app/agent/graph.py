@@ -1410,6 +1410,27 @@ class AgentGraph:
                 struct_step.status = "complete"
                 _completed_steps[struct_step.id] = struct_step
                 await self._emit({"type": "step_complete", "step": step_desc, "output": output})
+                # Persist tool outcome for cross-restart trust scores
+                try:
+                    _orch_persist = (
+                        getattr(self._app_state, "orchestration_persistence", None)
+                        if self._app_state else None
+                    )
+                    if _orch_persist is not None:
+                        _tool_nm = self._extract_tool_name(step_desc) or step_desc[:50]
+                        _step_ok = output and "error" not in output.lower()[:50] and "failed" not in output.lower()[:50]
+                        _step_lat = float(agent_state.context.get("last_step_latency_ms", 200.0))
+                        import asyncio as _tp_asyncio
+                        _tp_asyncio.ensure_future(
+                            _orch_persist.persist_tool_outcome(
+                                tool_name=_tool_nm,
+                                success=bool(_step_ok),
+                                latency_ms=_step_lat,
+                                tenant_id=tenant_ctx.tenant_id,
+                            )
+                        )
+                except Exception:
+                    pass
                 # Invoke step_callback for streaming simulation support
                 if self._step_callback is not None:
                     try:
@@ -3056,6 +3077,34 @@ class AgentGraph:
                     _scorecard = RuntimeScorecard()
                     _scorecard_result = _scorecard.score(state=agent_state, profile=_profile)
                     agent_state.context["scorecard"] = _scorecard_result.to_dict()
+                    # Persist scorecard to eval_scorecards table
+                    try:
+                        _orch_persist = (
+                            getattr(self._app_state, "orchestration_persistence", None)
+                            if self._app_state else None
+                        )
+                        if _orch_persist is not None:
+                            import asyncio as _sc_asyncio
+                            _sc_asyncio.ensure_future(
+                                _orch_persist.persist_scorecard(
+                                    _scorecard_result, profile=_profile
+                                )
+                            )
+                    except Exception:
+                        pass
+                    # RegressionGate: catalogue low-scoring goals as regression cases
+                    try:
+                        from app.evals.regression_gate import RegressionGate
+                        _rg = RegressionGate()
+                        _regression_candidate = _rg.maybe_create_regression(
+                            state=agent_state,
+                            scorecard=_scorecard_result,
+                            profile=_profile,
+                        )
+                        if _regression_candidate:
+                            agent_state.context["regression_candidate"] = _regression_candidate
+                    except Exception:
+                        pass
                     from app.evals.self_improvement_engine import SelfImprovementEngine
                     _engine = SelfImprovementEngine()
                     _actions = _engine.decide_actions(
@@ -3147,14 +3196,16 @@ class AgentGraph:
                                 pass
                     if _eval_score is not None:
                         import asyncio as _asyncio
-                        _v2_task = _asyncio.create_task(_self_opt_v2.record_result(
-                            goal_id=agent_state.goal_id,
-                            agent_id=self._agent_id,
-                            arm_name=_arm,
-                            eval_score=_eval_score,
-                            cost_usd=float(agent_state.context.get("total_cost_usd", 0.0)),
-                            tenant_id=tenant_ctx.tenant_id,
-                        ))
+                        _v2_task = _asyncio.create_task(
+                            _self_opt_v2.on_goal_completed(
+                                tenant_id=tenant_ctx.tenant_id,
+                                agent_id=self._agent_id,
+                                goal_id=agent_state.goal_id,
+                                eval_score=_eval_score,
+                                cost_usd=float(agent_state.context.get("total_cost_usd", 0.0)),
+                                latency_ms=0,
+                            )
+                        )
                         self._background_tasks.add(_v2_task)
                         _v2_task.add_done_callback(self._background_tasks.discard)
         else:
