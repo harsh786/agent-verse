@@ -290,6 +290,38 @@ async def nl_create_schedule(
 # Webhook trigger
 # ---------------------------------------------------------------------------
 
+@webhooks_router.post("/alerts/{trigger_type}")
+async def receive_alert_webhook(
+    trigger_type: str,
+    schedule_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """Receive incoming alert webhooks (Alertmanager / Datadog / PagerDuty).
+
+    Stores the JSON payload in Redis under ``alert_payload:{type}:{schedule_id}``
+    with a 5-minute TTL so ``fire_due_schedules`` picks it up on the next tick.
+    """
+    _require_tenant(request)
+    valid_types = ("alertmanager", "datadog", "pagerduty")
+    if trigger_type not in valid_types:
+        raise HTTPException(400, f"Unknown trigger type. Must be one of: {valid_types}")
+
+    pools = getattr(request.app.state, "pools", None)
+    redis = getattr(pools, "redis", None) if pools else None
+    if redis is None:
+        raise HTTPException(503, "Redis not available for alert ingestion")
+
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {"data": payload}
+        cache_key = f"alert_payload:{trigger_type}:{schedule_id}"
+        await redis.set(cache_key, _json.dumps(payload), ex=300)
+        return {"status": "queued", "trigger_type": trigger_type, "schedule_id": schedule_id}
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to queue alert: {exc}") from exc
+
+
 @webhooks_router.post("/{token}")
 async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
     """Receive an inbound webhook and fire the associated schedule."""
