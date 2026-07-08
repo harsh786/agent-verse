@@ -349,6 +349,57 @@ class KnowledgeStore:
         results.sort(key=lambda r: r["score"], reverse=True)
         return results[:top_k]
 
+    def delete_document(
+        self,
+        document_id: str,
+        *,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+    ) -> int:
+        """Delete all chunks for a document. Returns count deleted."""
+        store = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if store is None:
+            return 0
+        before = len(store.chunks)
+        store.chunks = [
+            c for c in store.chunks if c.document_id != document_id
+        ]
+        deleted = before - len(store.chunks)
+        if deleted > 0:
+            store.collection.document_count = len(
+                {c.document_id for c in store.chunks}
+            )
+        return deleted
+
+    async def delete_document_async(
+        self,
+        document_id: str,
+        *,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        db: Any = None,
+    ) -> int:
+        """Delete document from in-memory store and DB."""
+        count = self.delete_document(
+            document_id, collection_id=collection_id, tenant_ctx=tenant_ctx
+        )
+        _db = db or self._db
+        if _db is not None:
+            try:
+                from sqlalchemy import text
+                async with _db() as session, session.begin():
+                    result = await session.execute(
+                        text(
+                            "DELETE FROM knowledge_chunks_1536 "
+                            "WHERE document_id = :did AND collection_id = :cid"
+                        ),
+                        {"did": document_id, "cid": collection_id},
+                    )
+                    count = max(count, result.rowcount or 0)
+            except Exception as exc:
+                _log.warning("delete_document_async_db_failed: %s", exc)
+        return count
+
     async def ingest_document(
         self,
         *,

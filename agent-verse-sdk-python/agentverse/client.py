@@ -250,9 +250,9 @@ class AgentVerseClient:
     # Agents
     # ------------------------------------------------------------------
 
-    async def create_agent(self, request: AgentCreateRequest) -> dict:
+    async def create_agent(self, request: AgentCreateRequest) -> Agent:
         """Create a new agent configuration."""
-        return await self._request("POST", "/agents", json={
+        resp = await self._request("POST", "/agents", json={
             "name": request.name,
             "goal_template": request.goal_template,
             "autonomy_mode": request.autonomy_mode,
@@ -266,6 +266,9 @@ class AgentVerseClient:
             "max_iterations": request.max_iterations,
             "timeout_seconds": request.timeout_seconds,
         })
+        if isinstance(resp, dict):
+            return Agent.model_validate(resp)
+        return resp
 
     async def get_agent(self, agent_id: str) -> Agent:
         """Fetch an agent by ID."""

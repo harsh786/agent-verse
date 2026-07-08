@@ -125,8 +125,9 @@ async def test_list_goals(client, mock_router):
 # ---- Agents ----
 
 async def test_create_agent(client, mock_router):
+    from agentverse.models import AgentCreateRequest
     mock_router.post("/agents").mock(return_value=httpx.Response(200, json=_AGENT_PAYLOAD))
-    agent = await client.create_agent("ReportBot")
+    agent = await client.create_agent(AgentCreateRequest(name="ReportBot"))
     assert agent.name == "ReportBot"
 
 

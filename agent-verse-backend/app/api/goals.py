@@ -114,6 +114,30 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     svc = _goal_service(request)
 
+    # Idempotency check — prevent duplicate goal submissions
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key:
+        try:
+            from app.reliability.idempotency import IdempotencyStore
+            _idem = getattr(request.app.state, "idempotency_store", None)
+            if _idem is not None:
+                is_new = await _idem.check_and_set(
+                    idempotency_key, tenant.tenant_id, ttl_seconds=3600
+                )
+                if not is_new:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "duplicate_request",
+                            "idempotency_key": idempotency_key,
+                            "message": "A request with this Idempotency-Key was already received.",
+                        },
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Fail open: don't block goal submission on idempotency errors
+
     # Build execution_context with persistence settings when enabled
     exec_ctx: dict[str, Any] = {}
     if body.persistence_mode:

@@ -12,6 +12,15 @@ class RAGStrategy(str, Enum):
     GRAPH = "graph"             # Graph-expanded retrieval
     MULTIMODAL = "multimodal"  # Search across all modalities
     AUTO = "auto"               # Let the system decide
+    # Agentic strategies (Phase 5)
+    FUSION = "fusion_rag"           # Fusion RAG: multiple query variants
+    FLARE = "flare"                 # Forward-Looking Active REtrieval
+    RAPTOR = "raptor"               # Recursive Abstractive Processing for Tree-Organized Retrieval
+    CORRECTIVE = "corrective_rag"   # Corrective RAG with web fallback
+    SELF_RAG = "self_rag"           # Self-RAG with self-reflection tokens
+    SPECULATIVE = "speculative"     # Speculative retrieval with draft-then-verify
+    COLBERT = "colbert"             # ColBERT late-interaction retrieval
+    AGENTIC_CHUNKING = "agentic_chunking"  # Agentic chunking via LLM
 
 
 @dataclass

@@ -41,7 +41,7 @@ class EmbeddingModelRegistry:
                                "openai", "OpenAI small text embedding"),
             EmbeddingModelSpec("text-embedding-3-large", "text", 3072, "medium",
                                "openai", "OpenAI large text embedding"),
-            EmbeddingModelSpec("voyage-3-lite", "text", 1024, "low",
+            EmbeddingModelSpec("voyage-3-lite", "text", 512, "low",
                                "voyage", "Voyage text embedding lite"),
             EmbeddingModelSpec("voyage-code-3", "code", 1024, "low",
                                "voyage", "Voyage code embedding"),

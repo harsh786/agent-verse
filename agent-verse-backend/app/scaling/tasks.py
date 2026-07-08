@@ -1802,6 +1802,23 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 fired += 1
                                 logger.info("Fired once schedule %s", key)
 
+                # ── FILE_DROP trigger ─────────────────────────────────────────
+                elif trigger_type == "file_drop":
+                    logger.info(
+                        "file_drop_trigger_fired_stub",
+                        schedule_id=sched.get("schedule_id", key),
+                    )
+                    # TODO Phase 6: implement file watcher integration
+
+                # ── External alert triggers (Alertmanager / Datadog / PagerDuty) ─
+                elif trigger_type in ("alertmanager", "datadog", "pagerduty"):
+                    logger.info(
+                        "external_alert_trigger_fired_stub",
+                        trigger_type=trigger_type,
+                        schedule_id=sched.get("schedule_id", key),
+                    )
+                    # TODO Phase 6: implement alert ingress webhook
+
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
                 continue
