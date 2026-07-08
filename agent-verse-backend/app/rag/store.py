@@ -232,6 +232,27 @@ class KnowledgeStore:
             )
 
         scored.sort(key=lambda r: r.score, reverse=True)
+
+        # BM25 fourth leg — Okapi BM25 reranking post-sort
+        # Blend: 0.7 * (cosine+trigram score) + 0.3 * normalized_BM25
+        try:
+            from app.rag.bm25 import BM25Retriever
+
+            _bm25 = BM25Retriever()
+            _bm25.index([{"chunk_id": r.chunk_id, "content": r.content} for r in scored])
+            _bm25_hits = {
+                h.chunk_id: h.score
+                for h in _bm25.search(query, top_k=len(scored))
+            }
+            if _bm25_hits:
+                _max_bm25 = max(_bm25_hits.values()) or 1.0
+                for r in scored:
+                    _bm25_s = _bm25_hits.get(r.chunk_id, 0.0) / _max_bm25
+                    r.score = 0.7 * r.score + 0.3 * _bm25_s
+                scored.sort(key=lambda r: r.score, reverse=True)
+        except Exception:
+            pass
+
         return scored[:top_k]
 
     async def hybrid_search_db(

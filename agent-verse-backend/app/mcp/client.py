@@ -714,6 +714,30 @@ class MCPClient:
         if cfg.builtin_handler is not None:
             return await self._dispatch_builtin_tool(cfg, tool_name, arguments, tenant_ctx)
 
+        # 1.5. WebSocket transport — route to MCPWebSocketClient when transport="ws"/"websocket"
+        _transport = cfg.transport or "http"
+        if _transport in ("ws", "websocket") and cfg.ws_url:
+            try:
+                from app.mcp.ws_client import MCPWebSocketClient
+
+                async with MCPWebSocketClient(ws_url=cfg.ws_url) as _ws_client:
+                    _ws_result = await _ws_client.call_tool(
+                        tool_name=tool_name, arguments=arguments
+                    )
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=True,
+                    output=_ws_result,
+                    server_id=server_id,
+                )
+            except Exception as _ws_exc:
+                logger.warning(
+                    "ws_mcp_call_failed tool=%s error=%s",
+                    tool_name,
+                    str(_ws_exc)[:80],
+                )
+                # Fall through to HTTP dispatch
+
         # SSRF guard — validate server URL before any outbound HTTP call
         _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
         if _request_url and not _request_url.startswith("builtin://"):
