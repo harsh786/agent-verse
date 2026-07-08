@@ -187,3 +187,87 @@ class ModelOrchestrator:
                 if p == fallback_provider and "embedding" not in m and "mini" not in m:
                     return m
         return "gpt-4o-mini"
+
+
+class ModelOrchestratorAdapter:
+    """Adapter that wraps ModelOrchestrator to implement the model_for() interface
+    expected by graph.py, with lazy PatternConfig resolution from agent state context.
+
+    This allows ModelOrchestrator to be used as a drop-in replacement for ModelRouter
+    without changing any graph.py call sites.
+    """
+
+    def __init__(
+        self,
+        orchestrator: "ModelOrchestrator | None" = None,
+        *,
+        default_tier: str = "medium",
+    ) -> None:
+        self._orchestrator = orchestrator or ModelOrchestrator()
+        self._default_tier = default_tier
+        self._cached_assignment: "ModelRoleAssignment | None" = None
+        self._last_budget_ratio: float = 0.0
+
+    def update_from_profile(
+        self,
+        runtime_profile: Any,
+        budget_spent_ratio: float = 0.0,
+    ) -> None:
+        """Update model assignment from a GoalRuntimeProfile.
+        Called by _node_plan when dynamic orchestration is active."""
+        try:
+            from app.agent.pattern_config import PatternConfig, GoalProperties  # noqa: F401
+            pattern_config = PatternConfig(
+                goal_properties=runtime_profile.properties,
+                model_planner=getattr(runtime_profile.model_plan, "planner", "") or "",
+                model_executor=getattr(runtime_profile.model_plan, "executor", "") or "",
+                model_verifier=getattr(runtime_profile.model_plan, "verifier", "") or "",
+                model_classifier="",
+            )
+            self._cached_assignment = self._orchestrator.select_models(
+                pattern_config, budget_spent_ratio
+            )
+            self._last_budget_ratio = budget_spent_ratio
+        except Exception:
+            self._cached_assignment = None
+
+    def model_for(
+        self,
+        task_type: str,
+        *,
+        fallback: str = "",
+        goal: str = "",
+    ) -> str:
+        """Return the best model for a task type, using orchestrator's tier selection."""
+        assignment = self._cached_assignment
+        if assignment is None:
+            # No profile yet — use default tier models
+            tier_models = _TIER_MODELS.get(self._default_tier, _TIER_MODELS["medium"])
+            mapping = {
+                "planning": tier_models["planner"],
+                "execution": tier_models["executor"],
+                "verification": tier_models["verifier"],
+                "reflection": tier_models["planner"],
+                "think": tier_models["planner"],
+                "thinking": tier_models["planner"],
+                "classification": tier_models["classifier"],
+                "judge": tier_models["judge"],
+            }
+            return mapping.get(task_type, tier_models["planner"])
+
+        mapping = {
+            "planning": assignment.planner,
+            "execution": assignment.executor,
+            "verification": assignment.verifier,
+            "reflection": assignment.planner,
+            "think": assignment.planner,
+            "thinking": assignment.planner,
+            "classification": assignment.classifier,
+            "judge": assignment.judge,
+        }
+        result = mapping.get(task_type, assignment.planner)
+        return result or fallback or "gpt-4o-mini"
+
+    def model_for_goal(self, task_type: str, *, goal: str = "") -> str:
+        """Alias for model_for() with goal context (unused in orchestrator path)."""
+        return self.model_for(task_type, goal=goal)
