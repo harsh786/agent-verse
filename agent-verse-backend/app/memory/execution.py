@@ -167,6 +167,49 @@ class ExecutionMemory:
             import logging
             logging.getLogger(__name__).warning("failure_persist_failed: %s", exc)
 
+    async def load_from_db(
+        self,
+        *,
+        tenant_id: str,
+        db: Any,
+        limit: int = 100,
+    ) -> int:
+        """Seed in-memory _plans from DB on startup. Returns count loaded."""
+        if db is None:
+            return 0
+        try:
+            import json
+            from sqlalchemy import text
+            async with db() as session:
+                rows = (await session.execute(
+                    text("""
+                        SELECT tenant_id, goal_text, plan
+                        FROM execution_memory
+                        WHERE tenant_id = :tenant_id
+                          AND success = TRUE
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """),
+                    {"tenant_id": tenant_id, "limit": limit},
+                )).fetchall()
+                count = 0
+                for row in reversed(rows):  # oldest first so recent ones are at end
+                    tid, goal, plan_json = str(row[0]), str(row[1]), row[2]
+                    try:
+                        plan = json.loads(plan_json) if isinstance(plan_json, str) else (plan_json or [])
+                        self._plans.setdefault(tid, []).append({"goal": goal, "plan": plan})
+                        count += 1
+                    except Exception:
+                        pass
+                return count
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("execution_memory_load_from_db_failed", error=str(exc))
+            except Exception:
+                pass
+            return 0
+
     async def recall_async(
         self,
         goal_hint: str,
