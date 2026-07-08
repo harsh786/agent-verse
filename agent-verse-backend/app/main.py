@@ -885,25 +885,7 @@ def create_app(
                 from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
                 _kg_store.set_db(db_factory)
                 logger.info("knowledge_graph_db_wired")
-                # Hydrate in-memory KG from DB (so query_nodes/get_edges work after restart)
-                try:
-                    import asyncio as _kg_asyncio
-
-                    async def _hydrate_kg() -> None:
-                        try:
-                            # load_from_db(tenant_id) has no wildcard support;
-                            # passing "*" returns 0 rows harmlessly — real per-tenant
-                            # hydration happens on first KG query per tenant.
-                            await _kg_store.load_from_db("*")
-                            logger.info("knowledge_graph_hydrated_from_db")
-                        except Exception as _kg_load_err:
-                            logger.warning("knowledge_graph_hydration_failed",
-                                           error=str(_kg_load_err))
-
-                    _kg_asyncio.create_task(_hydrate_kg())
-                except Exception as _kg_hydrate_exc:
-                    logger.warning("knowledge_graph_hydrate_task_failed",
-                                   error=str(_kg_hydrate_exc))
+                # Per-tenant hydration is handled lazily in query_nodes() on first miss.
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
 
@@ -912,22 +894,31 @@ def create_app(
                 from app.agent.reflexion_wirer import get_reflexion_wirer as _get_rw
                 _rw = _get_rw(db_factory=db_factory)
                 app.state.reflexion_wirer = _rw
-                # Seed in-memory store from DB for all known tenants.
-                # load_from_db uses WHERE tenant_id = :tenant_id; no wildcard support.
-                # Passing "*" returns 0 rows harmlessly — real hydration is per-tenant.
-                import asyncio as _rw_asyncio
-
-                async def _hydrate_reflexion() -> None:
-                    try:
-                        await _rw._store.load_from_db(tenant_id="*", db_factory=db_factory)
-                        logger.info("reflexion_store_hydrated_from_db")
-                    except Exception as _rw_load_err:
-                        logger.warning("reflexion_store_hydration_failed",
-                                       error=str(_rw_load_err))
-
-                _rw_asyncio.create_task(_hydrate_reflexion())
+                # Make the store itself aware of the factory so lazy recall() hydration works.
+                _rw._store._db_factory = db_factory
+                # Per-tenant hydration is handled lazily in recall() on first miss.
+                logger.info("reflexion_wirer_db_wired")
             except Exception as _rw_exc:
                 logger.warning("reflexion_wirer_db_wire_failed", error=str(_rw_exc))
+
+            # Wire DB into VerifierCalibrationStore for cross-restart calibration
+            try:
+                from app.intelligence.verifier_calibration import _default_calibration_store as _cal_store
+                _cal_store._db = db_factory
+                app.state.calibration_store = _cal_store
+                logger.info("verifier_calibration_store_wired")
+            except Exception as _cal_exc:
+                logger.warning("verifier_calibration_wire_failed", error=str(_cal_exc))
+
+            # Wire DB into ABTestingEngine + hydrate historical results
+            try:
+                from app.optimization.ab_testing import ab_testing_engine as _ab_engine
+                _ab_engine._db_factory = db_factory
+                import asyncio as _ab_asyncio
+                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))
+                logger.info("ab_testing_engine_wired")
+            except Exception as _ab_exc:
+                logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
 
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:

@@ -21,6 +21,7 @@ class KnowledgeGraphStore:
         self._tenant_nodes: dict[str, set[str]] = {}  # tenant_id → {node_ids}
         self._tenant_edges: dict[str, set[str]] = {}  # tenant_id → {edge_ids}
         self._db: Any = None  # set via set_db() in lifespan
+        self._hydrated_tenants: set[str] = set()
 
     # ------------------------------------------------------------------
     # DB wiring
@@ -73,6 +74,14 @@ class KnowledgeGraphStore:
         limit: int = 50,
     ) -> list[GraphNode]:
         """Query nodes by type, search text, and confidence."""
+        # Lazy per-tenant DB hydration (runs once per tenant per process lifetime)
+        if self._db is not None and tenant_id not in self._hydrated_tenants:
+            self._hydrated_tenants.add(tenant_id)  # mark before load to prevent recursion
+            try:
+                import asyncio
+                asyncio.ensure_future(self.load_from_db(tenant_id))
+            except RuntimeError:
+                pass  # no event loop running (e.g. tests)
         node_ids = self._tenant_nodes.get(tenant_id, set())
         nodes = [self._nodes[nid] for nid in node_ids if nid in self._nodes]
 

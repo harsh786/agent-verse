@@ -178,18 +178,31 @@ class OrchestrationPersistence:
             from sqlalchemy import text
 
             async with effective_db() as session:
-                rows = (
-                    await session.execute(
-                        text("""
-                            SELECT tool_name, success, latency_ms
-                            FROM tool_trust_records
-                            WHERE tenant_id = :tenant_id
-                            ORDER BY created_at DESC
-                            LIMIT 1000
-                        """),
-                        {"tenant_id": tenant_id},
-                    )
-                ).fetchall()
+                if tenant_id == "*":
+                    # Load ALL tenants' tool trust history
+                    rows = (
+                        await session.execute(
+                            text("""
+                                SELECT tool_name, success, latency_ms
+                                FROM tool_trust_records
+                                ORDER BY created_at DESC
+                                LIMIT 5000
+                            """)
+                        )
+                    ).fetchall()
+                else:
+                    rows = (
+                        await session.execute(
+                            text("""
+                                SELECT tool_name, success, latency_ms
+                                FROM tool_trust_records
+                                WHERE tenant_id = :tenant_id
+                                ORDER BY created_at DESC
+                                LIMIT 1000
+                            """),
+                            {"tenant_id": tenant_id},
+                        )
+                    ).fetchall()
                 for row in rows:
                     self._tool_trust_store.record_outcome(
                         row[0], success=row[1], latency_ms=row[2]
