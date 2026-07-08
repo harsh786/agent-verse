@@ -56,10 +56,18 @@ class ReadinessGate:
                 warnings.append(f"{dep} is degraded — performance may be affected")
             elif status == DepStatus.UNKNOWN:
                 warnings.append(f"{dep} health is UNKNOWN — health checks may not have run yet")
-        return ReadinessResult(
+        result = ReadinessResult(
             ready=len(blocking) == 0,
             degraded=len(optional_down) > 0 or len(warnings) > 0,
             blocking_deps=blocking,
             degradation_warnings=warnings,
             unavailable_optional=optional_down,
         )
+        if not result.ready:
+            try:
+                from app.observability.metrics import orchestration_readiness_gate_blocked_total
+                for dep in blocking:
+                    orchestration_readiness_gate_blocked_total.labels(blocking_dep=dep).inc()
+            except Exception:
+                pass
+        return result

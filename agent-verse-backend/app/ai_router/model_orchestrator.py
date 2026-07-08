@@ -1,4 +1,17 @@
-"""ModelOrchestrator — selects model per role using PatternConfig + provider health + budget."""
+"""ModelOrchestrator — per-role model selection with budget-ratio downgrade.
+
+STATUS: Implemented but not wired into graph.py production path.
+The graph uses ModelRouter (app/agent/model_router.py) for model selection.
+
+TODO (Phase 6): Wire ModelOrchestrator into goal_service.py graph construction
+as a replacement for the simpler ModelRouter, enabling:
+- Budget-ratio downgrade for high-cost goals
+- Provider failover across OpenAI/Anthropic/Groq
+- Role-specific quality/cost tradeoffs
+
+Until then, AIRouter (app/ai_router/router.py) handles tenant-level
+model policy (health, quotas) separately.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

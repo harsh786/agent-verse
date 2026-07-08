@@ -43,12 +43,10 @@ class RuntimeScorecard:
         goal_s = self._goal_scorer.score(state)
         rag_s = self._rag_scorer.score(retrieval_result)
         safety_s = self._safety_scorer.score(guardrail_violations=guardrail_violations)
-        model_s = self._model_scorer.score(
-            cost_usd=cost_usd,
-            latency_ms=latency_ms if latency_ms > 0 else 5000,
-            budget_usd=1.0 if profile.model_plan.cost_class == "low" else 10.0,
-        )
-        latency_s = model_s
+        cost_s = self._model_scorer.score_cost(profile, state)
+        latency_s = self._model_scorer.score_latency(state)
+        # Preserve blended score for backward-compat callers that still need model_s
+        model_s = cost_s
         grounding_s = self._agent_scorer.score_grounding(state)
         citation_s = self._agent_scorer.score_citation_quality(state)
         retrieval_conf = getattr(retrieval_result, "confidence", 0.5) if retrieval_result else 0.5

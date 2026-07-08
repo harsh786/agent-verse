@@ -807,6 +807,15 @@ def create_app(
             _exec_memory._db = db_factory
             app.state.exec_memory = _exec_memory
 
+            # Wire ToolReliabilityStore for cross-restart tool reliability data
+            try:
+                from app.memory.tool_reliability import ToolReliabilityStore
+                _tool_reliability = ToolReliabilityStore(db_session_factory=db_factory)
+                app.state.tool_reliability_store = _tool_reliability
+                logger.info("tool_reliability_store_wired")
+            except Exception as _tr_exc:
+                logger.warning("tool_reliability_store_wire_failed", error=str(_tr_exc))
+
             # Seed execution memory from DB for faster cold-start recall()
             try:
                 import asyncio as _em_asyncio
