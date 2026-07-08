@@ -134,4 +134,26 @@ class RuntimeProfileBuilder:
             eval_config=eval_cfg,
             assembly_latency_ms=total_ms,
         )
+        # Emit orchestration profile counters
+        try:
+            from app.observability.metrics import (
+                orchestration_profile_built_total,
+                orchestration_rag_strategy_total,
+                orchestration_pattern_selected_total,
+            )
+            orchestration_profile_built_total.labels(
+                complexity=props.complexity.value,
+                risk=props.risk.value,
+                tenant_plan="unknown",
+            ).inc()
+            orchestration_rag_strategy_total.labels(
+                strategy=rag_cfg.strategy,
+            ).inc()
+            for _pattern in agent_cfg.reasoning:
+                orchestration_pattern_selected_total.labels(
+                    pattern_id=_pattern,
+                    category="reasoning",
+                ).inc()
+        except Exception:
+            pass
         return profile, trace

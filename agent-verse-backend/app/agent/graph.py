@@ -325,23 +325,56 @@ class AgentGraph:
         # Add think node before plan when CoT enabled (Fix 2)
         if self._enable_cot:
             g.add_node("think", self._node_think)
+        # H7: Tree of thoughts node — fires before planning
+        if getattr(self, "_enable_tree_of_thoughts", False):
+            g.add_node("tree_of_thoughts", self._node_tree_of_thoughts)
         g.add_node("plan", self._node_plan)
         g.add_node("execute", self._node_execute)
+        # H7: Self-consistency node — fires after execute
+        if getattr(self, "_enable_self_consistency", False):
+            g.add_node("self_consistency", self._node_self_consistency)
         g.add_node("verify", self._node_verify)
         # Add reflect node when reflection enabled (Fix 2)
         if self._enable_reflection:
             g.add_node("reflect", self._node_reflect)
+        # H1: Self-refine node — fires after execute, before verify
+        if getattr(self, "_enable_self_refine", False):
+            g.add_node("refine", self._node_refine)
+        # H7: Peer review node — fires after verify, before routing
+        if getattr(self, "_enable_peer_review", False):
+            g.add_node("peer_review", self._node_peer_review)
+        # H8: Supervisor and debate conditional node stubs
+        if getattr(self, "_enable_supervisor", False):
+            g.add_node("supervisor", self._node_supervisor_check)
+        if getattr(self, "_enable_debate", False):
+            g.add_node("debate", self._node_debate)
 
         g.add_edge(START, "initialize")
         g.add_edge("initialize", "rag_retrieval")
-        # CoT: rag_retrieval → think → plan; otherwise rag_retrieval → plan
-        if self._enable_cot:
+        # H7: CoT + tree_of_thoughts: rag_retrieval → [think] → [tree_of_thoughts] → plan
+        if getattr(self, "_enable_tree_of_thoughts", False):
+            if self._enable_cot:
+                g.add_edge("rag_retrieval", "think")
+                g.add_edge("think", "tree_of_thoughts")
+            else:
+                g.add_edge("rag_retrieval", "tree_of_thoughts")
+            g.add_edge("tree_of_thoughts", "plan")
+        elif self._enable_cot:
             g.add_edge("rag_retrieval", "think")
             g.add_edge("think", "plan")
         else:
             g.add_edge("rag_retrieval", "plan")
         g.add_edge("plan", "execute")
-        g.add_edge("execute", "verify")
+        # H1 + H7: execute → [refine] → [self_consistency] → verify
+        _post_exec_target = "verify"
+        if getattr(self, "_enable_self_consistency", False):
+            _post_exec_target = "self_consistency"
+            g.add_edge("self_consistency", "verify")
+        if getattr(self, "_enable_self_refine", False):
+            g.add_edge("execute", "refine")
+            g.add_edge("refine", _post_exec_target)
+        else:
+            g.add_edge("execute", _post_exec_target)
         # Reflection: reflect → plan edge so re-plan follows reflection
         if self._enable_reflection:
             g.add_edge("reflect", "plan")
@@ -356,7 +389,12 @@ class AgentGraph:
         }
         if self._enable_reflection:
             routing_map["reflect"] = "reflect"
-        g.add_conditional_edges("verify", self._route, routing_map)
+        # H7: Peer review fires after verify, before routing decision
+        if getattr(self, "_enable_peer_review", False):
+            g.add_edge("verify", "peer_review")
+            g.add_conditional_edges("peer_review", self._route, routing_map)
+        else:
+            g.add_conditional_edges("verify", self._route, routing_map)
         return g.compile(checkpointer=self._checkpointer)
 
     def _sanitize_tool_raw_output(self, value: object) -> str:
@@ -453,12 +491,42 @@ class AgentGraph:
                 "runtime_profile_build_in_graph_failed", error=str(_profile_exc)
             )
 
+        # H23-H26: Security profiles — compute per-goal identity + action safety context
+        try:
+            from app.security_runtime.identity_profile import IdentityResolver
+            from app.security_runtime.governance_profile import GovernanceProfileSelector
+            _id_resolver = IdentityResolver()
+            _identity = _id_resolver.resolve(tenant_ctx=agent_state.tenant_ctx)
+            agent_state.context["_identity_scope"] = _identity.identity_scope.value
+
+            _runtime_profile_ctx = agent_state.context.get("_runtime_profile")
+            if _runtime_profile_ctx is not None:
+                _gov_selector = GovernanceProfileSelector()
+                _gov_profile = _gov_selector.select(
+                    _runtime_profile_ctx, tenant_ctx=agent_state.tenant_ctx
+                )
+                agent_state.context["_governance_bundle"] = _gov_profile.name.value
+        except Exception:
+            pass
+
         return {"agent_state": agent_state, "iteration": 0, "rag_context": ""}
 
     async def _node_rag_retrieval(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
         context_parts: list[str] = []
+
+        # H3: Check if a specific RAG strategy was assembled by the orchestration layer
+        _rag_strategy = agent_state.context.get("_rag_strategy_override")
+        if _rag_strategy is None:
+            _runtime_profile = agent_state.context.get("_runtime_profile")
+            if _runtime_profile is not None:
+                _rag_strategy = getattr(
+                    getattr(_runtime_profile, "rag_strategy", None), "strategy", None
+                )
+        # Store for use in retrieval calls
+        if _rag_strategy and _rag_strategy not in ("direct", "hybrid", "auto", None):
+            agent_state.context["_active_rag_strategy"] = _rag_strategy
 
         # Select retrieval strategy using RetrievalPlanner heuristics
         try:
@@ -603,7 +671,10 @@ class AgentGraph:
                 from app.providers.base import EmbedRequest
                 from app.rag.engine import hybrid_search
 
-                _rrf_strategy = agent_state.context.get("retrieval_strategy", "hybrid")
+                _rrf_strategy = (
+                    agent_state.context.get("_active_rag_strategy")
+                    or agent_state.context.get("retrieval_strategy", "hybrid")
+                )
                 # Map RetrievalPlanner strategy to engine retrieval_mode
                 _mode = (
                     _rrf_strategy
@@ -677,6 +748,23 @@ class AgentGraph:
             except Exception:
                 pass
         # ── end web fallback ──────────────────────────────────────────────────
+
+        # H21: Emit rag_strategy_selected SSE
+        try:
+            if self._event_callback is not None:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse = RuntimeSSEEmitter()
+                _strategy = agent_state.context.get("_active_rag_strategy") or agent_state.context.get(
+                    "retrieval_strategy", "hybrid"
+                )
+                await self._emit(_sse.rag_strategy_selected(
+                    goal_id=agent_state.goal_id,
+                    strategy=str(_strategy),
+                    sources=[],
+                    reranker="score",
+                ))
+        except Exception:
+            pass
 
         return {"rag_context": rag_context}
 
@@ -862,6 +950,121 @@ class AgentGraph:
         agent_state.verification_feedback = resp.content
         return {"agent_state": agent_state}
 
+    # ------------------------------------------------------------------
+    # H7: Advanced reasoning pattern nodes
+    # ------------------------------------------------------------------
+
+    async def _node_self_consistency(self, state: GraphState) -> dict[str, Any]:
+        """Self-Consistency: sample N responses, return majority-vote answer."""
+        agent_state: AgentState = state.get("agent_state")
+        if agent_state is None or not agent_state.steps:
+            return {}
+        try:
+            from app.agent.patterns.self_consistency import SelfConsistencyPattern
+            last_step = agent_state.steps[-1]
+            if not last_step.output:
+                return {"agent_state": agent_state}
+            pattern = SelfConsistencyPattern(n_samples=3)
+            refined = await pattern.execute(
+                prompt=f"Goal: {agent_state.goal}\nCurrent answer: {last_step.output}",
+                provider=self._executor,
+            )
+            if refined and refined != last_step.output:
+                last_step.output = refined
+                agent_state.context["self_consistency_applied"] = True
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("node_self_consistency_failed", error=str(exc))
+            except Exception:
+                pass
+        return {"agent_state": agent_state}
+
+    async def _node_tree_of_thoughts(self, state: GraphState) -> dict[str, Any]:
+        """Tree of Thoughts: deliberate reasoning over solution space."""
+        agent_state: AgentState = state.get("agent_state")
+        if agent_state is None:
+            return {}
+        try:
+            from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
+            pattern = TreeOfThoughtsPattern(n_thoughts=3, max_depth=2)
+            answer = await pattern.execute(
+                problem=agent_state.goal,
+                provider=self._planner,
+            )
+            if answer:
+                agent_state.context["tot_answer"] = answer
+                agent_state.context["tree_of_thoughts_applied"] = True
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("node_tree_of_thoughts_failed", error=str(exc))
+            except Exception:
+                pass
+        return {"agent_state": agent_state}
+
+    async def _node_peer_review(self, state: GraphState) -> dict[str, Any]:
+        """Peer Review: independent LLM review of current output quality."""
+        agent_state: AgentState = state.get("agent_state")
+        if agent_state is None or not agent_state.steps:
+            return {}
+        try:
+            from app.agent.patterns.peer_review import PeerReviewPattern
+            last_step = agent_state.steps[-1]
+            if not last_step.output:
+                return {"agent_state": agent_state}
+            pattern = PeerReviewPattern(quality_threshold=0.7)
+            review = await pattern.execute(
+                output=last_step.output,
+                goal=agent_state.goal,
+                provider=self._verifier,
+            )
+            agent_state.context["peer_review_score"] = review.quality_score
+            agent_state.context["peer_review_approved"] = review.approved
+            agent_state.context["peer_review_critique"] = review.critique
+            if not review.approved:
+                agent_state.verification_feedback = (
+                    f"[Peer Review Score: {review.quality_score:.2f}] {review.critique}"
+                )
+                agent_state.verification_success = False
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning("node_peer_review_failed", error=str(exc))
+            except Exception:
+                pass
+        return {"agent_state": agent_state}
+
+    # ------------------------------------------------------------------
+    # H8: Supervisor / debate node stubs
+    # ------------------------------------------------------------------
+
+    async def _node_supervisor_check(self, state: GraphState) -> dict[str, Any]:
+        """Supervisor check stub — delegates to app.agent.supervisor when available."""
+        agent_state: AgentState = state.get("agent_state")
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning(
+                "supervisor_node_stub_invoked",
+                goal_id=getattr(agent_state, "goal_id", None),
+            )
+        except Exception:
+            pass
+        return {"agent_state": agent_state} if agent_state is not None else {}
+
+    async def _node_debate(self, state: GraphState) -> dict[str, Any]:
+        """Debate node stub — delegates to app.agent.debate when available."""
+        agent_state: AgentState = state.get("agent_state")
+        try:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning(
+                "debate_node_stub_invoked",
+                goal_id=getattr(agent_state, "goal_id", None),
+            )
+        except Exception:
+            pass
+        return {"agent_state": agent_state} if agent_state is not None else {}
+
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -1045,9 +1248,28 @@ class AgentGraph:
                                 original=planning_model,
                                 downgraded=_standard_model,
                             )
-                            planning_model = _standard_model
-                except Exception:
-                    pass
+                             planning_model = _standard_model
+                 except Exception:
+                     pass
+
+        # H21: Emit model_route_selected SSE after model selection
+        try:
+            if self._event_callback is not None:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse_mr = RuntimeSSEEmitter()
+                _runtime_prof_mr = agent_state.context.get("_runtime_profile")
+                await self._emit(_sse_mr.model_route_selected(
+                    goal_id=agent_state.goal_id,
+                    planner=planning_model,
+                    executor=getattr(self._executor, "_default_model", "") or "",
+                    verifier=getattr(self._verifier, "_default_model", "") or "",
+                    cost_class=(
+                        _runtime_prof_mr.model_plan.cost_class
+                        if _runtime_prof_mr is not None else "unknown"
+                    ),
+                ))
+        except Exception:
+            pass
 
         # ── Prompt Compression: reduce token count before LLM call ────────────
         try:
@@ -1496,6 +1718,26 @@ class AgentGraph:
                             sr.output = out
                             sr.status = StepStatus.COMPLETE
                         await self._emit({"type": "step_complete", "step": desc, "output": out})
+                        # H4: Persist tool outcome for parallel wave steps
+                        try:
+                            _orch_persist_wave = (
+                                getattr(self._app_state, "orchestration_persistence", None)
+                                if self._app_state else None
+                            )
+                            if _orch_persist_wave is not None:
+                                _tool_nm_wave = self._extract_tool_name(desc) or desc[:50]
+                                _step_ok_wave = bool(out and "error" not in out.lower()[:50])
+                                import asyncio as _wp_asyncio
+                                _wp_asyncio.ensure_future(
+                                    _orch_persist_wave.persist_tool_outcome(
+                                        tool_name=_tool_nm_wave,
+                                        success=_step_ok_wave,
+                                        latency_ms=200.0,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                    )
+                                )
+                        except Exception:
+                            pass
                     except PermissionError as exc:
                         async with _state_lock:
                             agent_state.status = GoalStatus.FAILED
@@ -1597,11 +1839,28 @@ class AgentGraph:
         )
         return step.output  # Return last output
 
-    async def _execute_step(
+     async def _execute_step(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
         """12-step per-step pipeline mirroring AgentLoop._execute."""
         tool_name = self._extract_tool_name(step)
+
+        # H23-H26: Action safety profile — assess per-tool risk
+        try:
+            from app.security_runtime.action_safety_profile import (
+                ActionSafetyProfileSelector, ActionSafetyLevel,
+            )
+            _asp_selector = ActionSafetyProfileSelector()
+            _risk = state.context.get("_risk_level", "low")
+            _asp = _asp_selector.select(
+                tool_name=tool_name,
+                tool_args={},
+                risk_level=str(_risk),
+            )
+            if _asp.safety_level.value == ActionSafetyLevel.BLOCKED.value:
+                return f"Action blocked by safety profile: {_asp.reason}"
+        except Exception:
+            pass
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
 
@@ -3095,11 +3354,14 @@ class AgentGraph:
                         )
                         if _orch_persist is not None:
                             import asyncio as _sc_asyncio
-                            _sc_asyncio.ensure_future(
+                            _sc_task = _sc_asyncio.ensure_future(
                                 _orch_persist.persist_scorecard(
                                     _scorecard_result, profile=_profile
                                 )
                             )
+                            if hasattr(self, "_background_tasks"):
+                                self._background_tasks.add(_sc_task)
+                                _sc_task.add_done_callback(self._background_tasks.discard)
                     except Exception:
                         pass
                     # RegressionGate: catalogue low-scoring goals as regression cases
@@ -3113,6 +3375,21 @@ class AgentGraph:
                         )
                         if _regression_candidate:
                             agent_state.context["regression_candidate"] = _regression_candidate
+                            # Persist regression case
+                            try:
+                                _orch_p = (
+                                    getattr(self._app_state, "orchestration_persistence", None)
+                                    if self._app_state else None
+                                )
+                                if _orch_p is not None and hasattr(_orch_p, "persist_regression_case"):
+                                    import asyncio as _rc_asyncio
+                                    _rc_asyncio.ensure_future(
+                                        _orch_p.persist_regression_case(
+                                            {**_regression_candidate, "tenant_id": tenant_ctx.tenant_id}
+                                        )
+                                    )
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     from app.evals.self_improvement_engine import SelfImprovementEngine
@@ -3123,6 +3400,43 @@ class AgentGraph:
                     agent_state.context["improvement_actions"] = [
                         a.action_type.value for a in _actions
                     ]
+                    # Dispatch improvement actions
+                    try:
+                        for _action in _actions:
+                            _action_type = (
+                                _action.action_type.value
+                                if hasattr(_action, "action_type") else str(_action)
+                            )
+                            if "STORE_REFLEXION_LESSON" in _action_type:
+                                pass  # handled by reflexion_wirer in failure branch
+                            elif "UPDATE_PROMPT_VARIANT" in _action_type:
+                                _po = (
+                                    getattr(self._app_state, "prompt_optimizer", None)
+                                    if self._app_state else None
+                                )
+                                if _po is not None and hasattr(_po, "record_result"):
+                                    _variant_id = agent_state.context.get("planner_variant_id")
+                                    if _variant_id:
+                                        _po.record_result(
+                                            variant_id=_variant_id,
+                                            eval_score=_scorecard_result.overall_score,
+                                        )
+                            elif "SWITCH_MODEL" in _action_type or "UPDATE_MODEL_ROUTING" in _action_type:
+                                from app.observability.logging import get_logger
+                                get_logger(__name__).warning(
+                                    "self_improvement_model_switch_recommended",
+                                    goal_id=agent_state.goal_id,
+                                    score=_scorecard_result.overall_score,
+                                )
+                            elif "BLACKLIST_TOOL_PATTERN" in _action_type:
+                                from app.observability.logging import get_logger
+                                get_logger(__name__).warning(
+                                    "self_improvement_tool_blacklist_recommended",
+                                    goal_id=agent_state.goal_id,
+                                    score=_scorecard_result.overall_score,
+                                )
+                    except Exception:
+                        pass
                     # Emit eval_score_recorded SSE
                     try:
                         from app.observability.runtime_decision_trace import RuntimeSSEEmitter
@@ -3224,6 +3538,20 @@ class AgentGraph:
                 _rw = get_reflexion_wirer()
                 import asyncio as _rf_asyncio
                 _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
+            except Exception:
+                pass
+
+            # H28: Also persist via OrchestrationPersistence (belt-and-suspenders)
+            try:
+                _orch_p = (
+                    getattr(self._app_state, "orchestration_persistence", None)
+                    if self._app_state else None
+                )
+                if _orch_p is not None and hasattr(_orch_p, "persist_reflexion_lesson"):
+                    import asyncio as _rl_asyncio
+                    _rl_asyncio.ensure_future(
+                        _orch_p.persist_reflexion_lesson(agent_state)
+                    )
             except Exception:
                 pass
 
@@ -3424,6 +3752,25 @@ class AgentGraph:
                     seed = AgentState(goal=goal, tenant_ctx=tenant_ctx)
                     seed.goal_id = goal_id
                     input_state["agent_state"] = seed
+
+                # H2: Attempt to resume from checkpoint if available
+                try:
+                    if goal_id:
+                        checkpoint_state = await self._load_checkpoint(goal_id, tenant_ctx)
+                        if checkpoint_state is not None:
+                            saved_state = checkpoint_state.get("agent_state")
+                            if (saved_state is not None
+                                    and hasattr(saved_state, "steps")
+                                    and saved_state.steps):
+                                input_state = checkpoint_state
+                                from app.observability.logging import get_logger
+                                get_logger(__name__).info(
+                                    "goal_resumed_from_checkpoint",
+                                    goal_id=goal_id,
+                                    steps_already_done=len(saved_state.steps),
+                                )
+                except Exception:
+                    pass  # checkpoint load never blocks execution
 
                 try:
                     result: dict[str, Any] = await self._graph.ainvoke(input_state, config=config)

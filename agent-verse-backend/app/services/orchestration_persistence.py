@@ -125,6 +125,45 @@ class OrchestrationPersistence:
                 "reflexion_lesson_persist_failed", error=str(exc)
             )
 
+    async def persist_regression_case(
+        self,
+        regression_candidate: dict,
+        *,
+        db: Any = None,
+    ) -> None:
+        """Persist a regression case candidate for the eval dataset."""
+        effective_db = db or self._db
+        if effective_db is None:
+            return
+        try:
+            import json
+            import uuid as _uuid
+            from sqlalchemy import text
+
+            async with effective_db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO eval_scorecards
+                            (id, goal_id, tenant_id, overall_score, scores,
+                             improvement_suggestions, profile_id, created_at)
+                        VALUES (:id, :goal_id, :tenant_id, :score, :scores::jsonb,
+                                :suggestions::jsonb, :profile_id, NOW())
+                        ON CONFLICT DO NOTHING
+                    """),
+                    {
+                        "id": _uuid.uuid4().hex,
+                        "goal_id": regression_candidate.get("goal_id", ""),
+                        "tenant_id": regression_candidate.get("tenant_id", "unknown"),
+                        "score": regression_candidate.get("score", 0.0),
+                        "scores": json.dumps(regression_candidate.get("scores", {})),
+                        "suggestions": json.dumps(["regression_case"]),
+                        "profile_id": regression_candidate.get("profile_id"),
+                    },
+                )
+        except Exception as exc:
+            from app.observability.logging import get_logger
+            get_logger(__name__).warning("regression_case_persist_failed", error=str(exc))
+
     async def persist_tool_outcome(
         self,
         tool_name: str,
