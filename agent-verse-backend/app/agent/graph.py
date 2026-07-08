@@ -458,7 +458,8 @@ class AgentGraph:
         # Dynamic orchestration: build runtime profile
         try:
             from app.core.runtime_flags import get_runtime_flags
-            if get_runtime_flags().dynamic_orchestration:
+            _init_rf = get_runtime_flags()
+            if _init_rf.dynamic_orchestration or _init_rf.enable_rag_strategy_routing:
                 # Skip if profile was already built by goal_service (present in execution_context)
                 if agent_state.context.get("_runtime_profile") is not None:
                     pass  # Profile already set by goal_service — don't rebuild
@@ -472,7 +473,9 @@ class AgentGraph:
                     )
                     agent_state.context["_runtime_profile"] = profile
                     agent_state.context["_decision_trace"] = trace
-                    if self._event_callback is not None:
+                    if self._event_callback is not None and (
+                        _init_rf.dynamic_orchestration or _init_rf.enable_pattern_sse_events
+                    ):
                         from app.observability.runtime_decision_trace import RuntimeSSEEmitter
                         emitter = RuntimeSSEEmitter()
                         await self._event_callback(emitter.pattern_assembled(
@@ -792,6 +795,60 @@ class AgentGraph:
                                 )
             except Exception:
                 pass  # fall through — never block execution on retrieval enhancement
+
+        # N13: Dispatch advanced RAG strategies when profile selects them
+        _advanced_strategy = agent_state.context.get("_active_rag_strategy")
+        _use_advanced = bool(
+            _advanced_strategy
+            and _advanced_strategy not in ("hybrid", "direct", "lexical", "vector", "auto")
+        )
+        if _use_advanced and self._db_session_factory is not None:
+            try:
+                from app.rag.engine import retrieve as _engine_retrieve
+                # Reuse embedding computed in RRF section when available
+                try:
+                    _adv_embedding: list[float] | None = _rrf_query_embedding
+                except NameError:
+                    _adv_embedding = None
+                # Reuse collection list from RRF section when available
+                try:
+                    _adv_cid = _rrf_collections[0] if _rrf_collections else ""
+                except NameError:
+                    _adv_cid = ""
+                async with self._db_session_factory() as _adv_session:
+                    _adv_results = await _engine_retrieve(
+                        _adv_session,
+                        query=agent_state.goal,
+                        query_embedding=_adv_embedding,
+                        collection_id=_adv_cid,
+                        top_k=8,
+                        strategy=_advanced_strategy,
+                        provider=self._planner,
+                        embedding_dim=None,
+                    )
+                if _adv_results:
+                    _adv_context = "\n\n".join(
+                        r.content[:600] for r in _adv_results[:5] if r.content
+                    )
+                    if _adv_context:
+                        context_parts = [_adv_context]
+                        agent_state.context["_rag_advanced_used"] = True
+                        agent_state.context["_rag_advanced_results"] = len(_adv_results)
+                        from app.observability.logging import get_logger
+                        get_logger(__name__).info(
+                            "advanced_rag_strategy_fired",
+                            strategy=_advanced_strategy,
+                            results=len(_adv_results),
+                            goal_id=agent_state.goal_id,
+                        )
+            except Exception as _adv_exc:
+                from app.observability.logging import get_logger
+                get_logger(__name__).warning(
+                    "advanced_rag_dispatch_failed",
+                    strategy=_advanced_strategy,
+                    error=str(_adv_exc)[:100],
+                )
+                # Fall through to standard hybrid retrieval
 
         rag_context = "\n\n".join(context_parts)
 
@@ -2033,8 +2090,13 @@ class AgentGraph:
         # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
         try:
             from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+            from app.core.runtime_flags import get_runtime_flags as _ge_rtf
+            _ge_flags = _ge_rtf()
             _runtime_profile = state.context.get("_runtime_profile")
-            if _runtime_profile is not None:
+            if (
+                (_ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile)
+                and _runtime_profile is not None
+            ):
                 _ge = GuardrailEnforcer()
                 _ge_result = _ge.check_tool_args(
                     tool_name=tool_name,
@@ -3525,8 +3587,13 @@ class AgentGraph:
             # Dynamic orchestration: scorecard + self-improvement + reflexion
             try:
                 from app.evals.runtime_scorecard import RuntimeScorecard
+                from app.core.runtime_flags import get_runtime_flags as _nv_rtf
+                _nv_flags = _nv_rtf()
                 _profile = agent_state.context.get("_runtime_profile")
-                if _profile is not None:
+                if (
+                    (_nv_flags.dynamic_orchestration or _nv_flags.enable_runtime_scorecard)
+                    and _profile is not None
+                ):
                     _scorecard = RuntimeScorecard()
                     _scorecard_result = _scorecard.score(state=agent_state, profile=_profile)
                     agent_state.context["scorecard"] = _scorecard_result.to_dict()
@@ -3576,11 +3643,17 @@ class AgentGraph:
                                 pass
                     except Exception:
                         pass
-                    from app.evals.self_improvement_engine import SelfImprovementEngine
-                    _engine = SelfImprovementEngine()
-                    _actions = _engine.decide_actions(
-                        _scorecard_result, _profile, state=agent_state
+                    # N12: Gate self-improvement on granular flag
+                    _si_enabled = (
+                        _nv_flags.dynamic_orchestration or _nv_flags.enable_self_improvement
                     )
+                    _actions: list[Any] = []
+                    if _si_enabled:
+                        from app.evals.self_improvement_engine import SelfImprovementEngine
+                        _engine = SelfImprovementEngine()
+                        _actions = _engine.decide_actions(
+                            _scorecard_result, _profile, state=agent_state
+                        )
                     agent_state.context["improvement_actions"] = [
                         a.action_type.value for a in _actions
                     ]
@@ -3680,17 +3753,18 @@ class AgentGraph:
                             ))
                     except Exception:
                         pass
-                    # Emit eval_score_recorded SSE
-                    try:
-                        from app.observability.runtime_decision_trace import RuntimeSSEEmitter
-                        _sse_emitter = RuntimeSSEEmitter()
-                        await self._emit(_sse_emitter.eval_score_recorded(
-                            goal_id=agent_state.goal_id,
-                            overall_score=_scorecard_result.overall_score,
-                            scores=_scorecard_result.scores,
-                        ))
-                    except Exception:
-                        pass
+                    # Emit eval_score_recorded SSE (N12: gated on pattern SSE flag)
+                    if _nv_flags.dynamic_orchestration or _nv_flags.enable_pattern_sse_events:
+                        try:
+                            from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                            _sse_emitter = RuntimeSSEEmitter()
+                            await self._emit(_sse_emitter.eval_score_recorded(
+                                goal_id=agent_state.goal_id,
+                                overall_score=_scorecard_result.overall_score,
+                                scores=_scorecard_result.scores,
+                            ))
+                        except Exception:
+                            pass
             except Exception:
                 pass
             # Guardrail check: final_output (Guardrails 2.0)
