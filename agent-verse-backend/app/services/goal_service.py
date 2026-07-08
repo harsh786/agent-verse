@@ -831,6 +831,37 @@ class GoalService:
         except Exception:
             pass
 
+        # N1: Extract pattern flags from agent_config + execution_context runtime_profile.
+        # These MUST be passed to the constructor — setting them post-construction is a no-op
+        # because _build() runs inside __init__ and compiles the LangGraph statically.
+        _enable_self_refine = bool(_agent_config.get("enable_self_refine", False))
+        _enable_self_consistency = bool(_agent_config.get("enable_self_consistency", False))
+        _enable_tree_of_thoughts = bool(_agent_config.get("enable_tree_of_thoughts", False))
+        _enable_peer_review = bool(_agent_config.get("enable_peer_review", False))
+        _enable_supervisor = bool(_agent_config.get("enable_supervisor", False))
+        _enable_debate = bool(_agent_config.get("enable_debate", False))
+        # Also check execution_context runtime_profile for assembler-selected patterns
+        try:
+            _all_goals = list(self._goals.values())
+            _latest = _all_goals[-1] if _all_goals else None
+            if _latest is not None:
+                _rp = _latest.execution_context.get("runtime_profile", {})
+                _reasoning_str = str(
+                    _rp.get("agent_patterns", {}).get("reasoning", "")
+                )
+                _enable_self_refine = _enable_self_refine or "self_refine" in _reasoning_str
+                _enable_self_consistency = (
+                    _enable_self_consistency or "self_consistency" in _reasoning_str
+                )
+                _enable_tree_of_thoughts = (
+                    _enable_tree_of_thoughts or "tree_of_thoughts" in _reasoning_str
+                )
+                _enable_peer_review = _enable_peer_review or "peer_review" in _reasoning_str
+                _enable_supervisor = _enable_supervisor or "supervisor" in _reasoning_str
+                _enable_debate = _enable_debate or "debate" in _reasoning_str
+        except Exception:
+            pass
+
         graph = AgentGraph(
             planner=provider,
             executor=provider,
@@ -864,6 +895,11 @@ class GoalService:
             enable_reflection=_agent_config.get("enable_reflection", False),
             enable_goal_tree=_agent_config.get("enable_goal_tree", False),
             autonomy_mode=_agent_config.get("autonomy_mode", "bounded-autonomous"),
+            # N1: pattern flags passed at construction so _build() includes them in the graph
+            enable_self_refine=_enable_self_refine,
+            enable_self_consistency=_enable_self_consistency,
+            enable_tree_of_thoughts=_enable_tree_of_thoughts,
+            enable_peer_review=_enable_peer_review,
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
             checkpointer=_resolve_checkpointer(app_state),
             # H-1: real token-cost tracker
@@ -893,33 +929,6 @@ class GoalService:
         if _self_optimizer is None:
             _self_optimizer = SelfOptimizer()
         graph._self_optimizer = _self_optimizer
-
-        # C3 fix: Translate PatternConfig reasoning_patterns into AgentGraph feature flags.
-        # RuntimeProfileBuilder populates agent_patterns.reasoning with patterns like
-        # "self_refine", "self_consistency", "tree_of_thoughts", "peer_review", etc.
-        # Previously these were assembled by RuntimeProfileBuilder but never wired to AgentGraph.
-        try:
-            _record = self._goals.get(list(self._goals.keys())[-1]) if self._goals else None
-            # Use agent_config overrides + execution_context runtime_profile if available
-            _runtime_profile_data = {}
-            if _record is not None:
-                _runtime_profile_data = _record.execution_context.get("runtime_profile", {})
-            _agent_patterns_data = _runtime_profile_data.get("agent_patterns", {})
-            _reasoning = str(_agent_patterns_data.get("reasoning", ""))
-            if "self_refine" in _reasoning or _agent_config.get("enable_self_refine"):
-                graph._enable_self_refine = True
-            if "self_consistency" in _reasoning or _agent_config.get("enable_self_consistency"):
-                graph._enable_self_consistency = True
-            if "tree_of_thoughts" in _reasoning or _agent_config.get("enable_tree_of_thoughts"):
-                graph._enable_tree_of_thoughts = True
-            if "peer_review" in _reasoning or _agent_config.get("enable_peer_review"):
-                graph._enable_peer_review = True
-            if "chain_of_thought" in _reasoning:
-                graph._enable_cot = True
-            if "reflection" in _reasoning:
-                graph._enable_reflection = True
-        except Exception:
-            pass
 
         # Record model selections for observability (AI Router)
         try:
@@ -1696,6 +1705,18 @@ class GoalService:
             _agent_system_prompt = getattr(loop, "_agent_system_prompt", "")
             if _agent_system_prompt:
                 initial_context["system_prompt"] = _agent_system_prompt
+            # N2: Load reflexion lessons to feed back into planning (close the feedback loop).
+            # Lessons written by ReflexionWirer on failure are recalled here for the next goal.
+            try:
+                from app.agent.reflexion_wirer import get_reflexion_wirer
+                _rw_for_ctx = get_reflexion_wirer()
+                _lessons_for_ctx = _rw_for_ctx._store.recall(
+                    tenant_id=tenant_ctx.tenant_id, limit=5
+                )
+                if _lessons_for_ctx:
+                    initial_context["_reflexion_lessons"] = _lessons_for_ctx
+            except Exception:
+                pass
 
             async def callback(event: dict[str, Any]) -> None:
                 await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
