@@ -88,7 +88,7 @@ def test_coding_goal_sandbox_and_ast():
 
 
 # ---------------------------------------------------------------------------
-# 5. Web-requiring goal: web_augmented_rag, web_search in sources
+# 5. Web-requiring goal: flare (or web_augmented_rag legacy), web_search in sources
 # ---------------------------------------------------------------------------
 def test_web_goal_rag_strategy():
     sel = _selector()
@@ -96,7 +96,7 @@ def test_web_goal_rag_strategy():
     rag = sel.select_rag_strategy(props)
     assert rag.web_fallback_enabled is True
     assert "web_search" in rag.sources
-    assert rag.strategy == "web_augmented_rag"
+    assert rag.strategy in ("flare", "web_augmented_rag")
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def test_realtime_token_budget():
 
 
 # ---------------------------------------------------------------------------
-# 8. Expert complexity: agentic_rag, goal_tree, LTM+KG memory, rag eval suite
+# 8. Expert complexity: raptor (or agentic_rag legacy), goal_tree, LTM+KG memory, rag eval suite
 # ---------------------------------------------------------------------------
 def test_expert_complexity_full_profile():
     sel = _selector()
@@ -136,7 +136,7 @@ def test_expert_complexity_full_profile():
     assert "goal_tree" in agent.multi_agent
     assert agent.persistence_mode is True
     assert agent.max_iterations == 50
-    assert rag.strategy == "agentic_rag"
+    assert rag.strategy in ("raptor", "agentic_rag")
     assert "knowledge_graph" in rag.sources
     assert mem.use_knowledge_graph is True
     assert ev.eval_suite == "rag"

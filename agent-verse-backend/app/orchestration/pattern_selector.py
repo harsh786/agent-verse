@@ -84,64 +84,73 @@ class PatternSelector:
         )
 
     def select_rag_strategy(self, props: GoalProperties) -> RAGStrategyConfig:
-        strategy = "hybrid_rag"
-        sources = ["knowledge_base"]
-        chunking = "semantic"
-        embedding = "default"
-        reranker = "score"
-        graph_strategy = "none"
-        web_fallback = False
-        max_tokens = 6000
-        min_relevance = 0.35
+         strategy = "hybrid_rag"
+         sources = ["knowledge_base"]
+         chunking = "semantic"
+         embedding = "default"
+         reranker = "score"
+         graph_strategy = "none"
+         web_fallback = False
+         max_tokens = 6000
+         min_relevance = 0.35
 
-        if props.requires_web or props.time_sensitivity == TimeSensitivity.REALTIME:
-            web_fallback = True
-            sources = list(dict.fromkeys(sources + ["web_search"]))
-            strategy = "web_augmented_rag"
+         if props.requires_web or props.time_sensitivity == TimeSensitivity.REALTIME:
+             web_fallback = True
+             sources = list(dict.fromkeys(sources + ["web_search"]))
+             # FLARE handles uncertainty-driven retrieval for web goals
+             strategy = "flare"
 
-        if props.kb_state in (KnowledgeState.EMPTY, KnowledgeState.SPARSE):
-            web_fallback = True
-            if "web_search" not in sources:
-                sources.append("web_search")
+         if props.kb_state in (KnowledgeState.EMPTY, KnowledgeState.SPARSE):
+             web_fallback = True
+             if "web_search" not in sources:
+                 sources.append("web_search")
 
-        if props.complexity == Complexity.EXPERT:
-            strategy = "agentic_rag"
-            sources = list(
-                dict.fromkeys(sources + ["long_term_memory", "knowledge_graph"])
-            )
-            graph_strategy = "entity"
-            reranker = "rrf"
-            max_tokens = 8000
-            min_relevance = 0.25
-        elif props.complexity == Complexity.COMPLEX:
-            strategy = "hybrid_rag"
-            sources = list(dict.fromkeys(sources + ["long_term_memory"]))
-            reranker = "rrf"
-            max_tokens = 7000
+         if props.complexity == Complexity.EXPERT:
+             # Expert goals use RAPTOR (hierarchical multi-level retrieval)
+             strategy = "raptor"
+             sources = list(
+                 dict.fromkeys(sources + ["long_term_memory", "knowledge_graph"])
+             )
+             graph_strategy = "entity"
+             reranker = "rrf"
+             max_tokens = 8000
+             min_relevance = 0.25
+         elif props.complexity == Complexity.COMPLEX:
+             # Complex goals use Fusion RAG (multi-query parallel retrieval)
+             strategy = "fusion_rag"
+             sources = list(dict.fromkeys(sources + ["long_term_memory"]))
+             reranker = "rrf"
+             max_tokens = 7000
+         else:
+             # Simple goals: Corrective RAG (auto-correction on low confidence)
+             strategy = "corrective_rag"
 
-        if props.requires_code:
-            chunking = "ast"
-            embedding = "code"
+         if props.requires_code:
+             chunking = "ast"
+             embedding = "code"
+             # Code goals benefit from ColBERT late-interaction reranking
+             strategy = "colbert_late_interaction"
 
-        if props.time_sensitivity == TimeSensitivity.REALTIME:
-            max_tokens = 2000
-            if not web_fallback:
-                strategy = "naive_rag"
+         if props.time_sensitivity == TimeSensitivity.REALTIME:
+             max_tokens = 2000
+             if not web_fallback:
+                 # Realtime goals without web: Self-RAG decides what to retrieve
+                 strategy = "self_rag"
 
-        return RAGStrategyConfig(
-            strategy=strategy,
-            sources=sources,
-            chunking_strategy=chunking,
-            embedding_model=embedding,
-            reranker=reranker,
-            max_context_tokens=max_tokens,
-            min_relevance_score=min_relevance,
-            max_chunks_per_source=5,
-            citation_required=True,
-            deduplication_enabled=True,
-            web_fallback_enabled=web_fallback,
-            graph_strategy=graph_strategy,
-        )
+         return RAGStrategyConfig(
+             strategy=strategy,
+             sources=sources,
+             chunking_strategy=chunking,
+             embedding_model=embedding,
+             reranker=reranker,
+             max_context_tokens=max_tokens,
+             min_relevance_score=min_relevance,
+             max_chunks_per_source=5,
+             citation_required=True,
+             deduplication_enabled=True,
+             web_fallback_enabled=web_fallback,
+             graph_strategy=graph_strategy,
+         )
 
     def select_model_plan(self, props: GoalProperties) -> ModelPlanConfig:
         latency = "interactive"

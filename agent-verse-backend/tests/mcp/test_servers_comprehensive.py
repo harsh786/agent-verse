@@ -32,11 +32,11 @@ def _assert_tool_definition(tool: dict, *, module_name: str) -> None:
 
 
 def _collect_server_modules() -> list[str]:
-    """Return all module names under app.mcp.servers (excluding __init__ and registry_wiring)."""
+    """Return all module names under app.mcp.servers (excluding __init__, registry_wiring, and shared utilities)."""
     return [
         info.name
         for info in pkgutil.iter_modules(_servers_pkg.__path__)
-        if info.name not in ("registry_wiring",)
+        if info.name not in ("registry_wiring", "utils")  # utils.py is a shared helper, not a server
     ]
 
 
