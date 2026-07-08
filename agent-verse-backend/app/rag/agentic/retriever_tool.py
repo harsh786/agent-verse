@@ -33,11 +33,18 @@ class RetrievalResult:
     fallback_used: bool = False
     fallback_reason: str = ""
     reformulation_count: int = 0
+    # context_text: stored field; if not supplied, computed from chunks in __post_init__
+    context_text: str = field(default="")
+    # CRAG correction metadata
+    corrected: bool = False
+    correction_reason: str = ""
 
-    @property
-    def context_text(self) -> str:
-        """Concatenated chunk content for prompt injection."""
-        return "\n\n".join(c.get("content", "") for c in self.chunks)
+    def __post_init__(self) -> None:
+        """Compute context_text from chunks when not explicitly supplied."""
+        if not self.context_text:
+            self.context_text = "\n\n".join(
+                c.get("content", "") for c in self.chunks
+            )
 
 
 class RetrieverTool:
@@ -288,3 +295,92 @@ class RetrieverTool:
             confidence=0.1, chunks=[], citations=[], fallback_used=True,
             fallback_reason="all parallel retrieval sources failed with exceptions",
         )]
+
+    async def _retrieve_from_kb(
+        self,
+        query: str,
+        *,
+        tenant_ctx: "TenantContext",
+        collection_ids: list[str] | None,
+        top_k: int,
+        min_confidence: float,
+    ) -> RetrievalResult:
+        """Thin alias for _kb_retrieve — exposed so tests can patch it independently."""
+        return await self._kb_retrieve(
+            query,
+            tenant_ctx=tenant_ctx,
+            collection_ids=collection_ids,
+            top_k=top_k,
+            min_confidence=min_confidence,
+        )
+
+    async def retrieve_corrective(
+        self,
+        query: str,
+        *,
+        tenant_ctx: "TenantContext",
+        collection_ids: list[str] | None = None,
+        top_k: int = 5,
+        confidence_threshold: float = 0.5,
+        strategy: str = "hybrid",
+        allow_web_fallback: bool = True,
+    ) -> RetrievalResult:
+        """Corrective RAG (CRAG): retrieve → score → correct if needed."""
+        from app.rag.agentic.context_gap_detector import ContextGapDetector
+
+        # Step 1: Primary KB retrieval
+        primary = await self._retrieve_from_kb(
+            query=query,
+            tenant_ctx=tenant_ctx,
+            collection_ids=collection_ids,
+            top_k=top_k,
+            min_confidence=0.0,
+        )
+
+        # Step 2: Evaluate quality — low confidence OR gap phrases
+        gap_detector = ContextGapDetector()
+        has_gap = gap_detector.has_gap(primary.context_text or "")
+        low_conf = primary.confidence < confidence_threshold
+        needs_correction = low_conf or has_gap
+
+        if not needs_correction:
+            return primary
+
+        # Step 3: Determine correction reason
+        # Prefer "low_confidence" when both triggers fire so callers can distinguish
+        # a pure confidence problem from a content-gap problem.
+        correction_reason = "low_confidence" if low_conf else "gap_detected"
+
+        # Step 4: Attempt web fallback
+        if allow_web_fallback and self._web_available and self._web_fn is not None:
+            try:
+                web_raw = await self._web_fn(query, top_k=top_k)
+                if web_raw:
+                    web_content = "\n".join(
+                        r.get("content", r.get("snippet", ""))[:500]
+                        for r in web_raw[:top_k]
+                    )
+                    return RetrievalResult(
+                        query=query,
+                        source="web",
+                        strategy_used="web_corrective",
+                        confidence=0.6,
+                        context_text=web_content,
+                        chunks=[
+                            {
+                                "content": r.get("content", ""),
+                                "score": 0.6,
+                                "source_url": r.get("url", ""),
+                            }
+                            for r in web_raw[:top_k]
+                        ],
+                        corrected=True,
+                        correction_reason=correction_reason,
+                    )
+            except Exception:
+                pass
+
+        # Step 5: Return original with correction flag set
+        primary.corrected = True
+        primary.correction_reason = correction_reason
+        return primary
