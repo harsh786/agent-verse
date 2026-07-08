@@ -1265,6 +1265,77 @@ def _dispatch_due_schedule(
     return goal_kwargs
 
 
+async def _build_goal_kwargs_for_alert(
+    sched: dict,
+    trigger_type: str,
+    alert_context: dict,
+    goal_service: Any,
+    tenant_ctx: Any,
+    default_priority: str = "high",
+) -> dict | None:
+    """Build goal submission kwargs for an external alert trigger.
+
+    Returns a dict suitable for dispatching via run_goal.apply_async, or None
+    if a goal cannot be derived from the schedule and alert context.
+    """
+    try:
+        goal_text = sched.get("goal_text") or sched.get("goal") or sched.get("goal_template") or ""
+        if not goal_text:
+            if trigger_type == "alertmanager":
+                alert_name = alert_context.get("alertname", "unknown")
+                severity = alert_context.get("severity", "warning")
+                goal_text = (
+                    f"Investigate and resolve {severity} alert: {alert_name}. "
+                    f"{alert_context.get('description', '')}"
+                )
+            elif trigger_type == "datadog":
+                monitor_name = alert_context.get("monitor_name", "unknown")
+                goal_text = (
+                    f"Investigate Datadog alert: {monitor_name}. "
+                    f"Status: {alert_context.get('status', 'triggered')}"
+                )
+            elif trigger_type == "pagerduty":
+                incident_title = alert_context.get("incident_title", "unknown")
+                goal_text = (
+                    f"Respond to PagerDuty incident: {incident_title}. "
+                    f"Urgency: {alert_context.get('urgency', 'high')}"
+                )
+            else:
+                goal_text = f"Handle {trigger_type} trigger event"
+
+        if not goal_text:
+            return None
+
+        if alert_context:
+            context_str = "\n".join(
+                f"  {k}: {v}" for k, v in list(alert_context.items())[:5]
+            )
+            goal_text = f"{goal_text}\n\nAlert context:\n{context_str}"
+
+        agent_id = sched.get("agent_id")
+        priority = sched.get("priority", default_priority)
+
+        return dict(
+            goal=goal_text[:500],
+            priority=priority,
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            execution_context={
+                "trigger_type": trigger_type,
+                "trigger_source": "automated",
+                "alert_context": alert_context,
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "build_goal_kwargs_for_alert_failed",
+            trigger_type=trigger_type,
+            error=str(exc)[:80],
+        )
+        return None
+
+
 def _schedule_key(tenant_id: str, schedule_id: str) -> str:
     return f"schedule:{tenant_id}:{schedule_id}"
 
@@ -1804,20 +1875,208 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
                 # ── FILE_DROP trigger ─────────────────────────────────────────
                 elif trigger_type == "file_drop":
-                    logger.info(
-                        "file_drop_trigger_fired_stub",
-                        schedule_id=sched.get("schedule_id", key),
-                    )
-                    # TODO Phase 6: implement file watcher integration
+                    # FILE_DROP: scan a configured watch path for new files and
+                    # submit one goal per new file (capped at 5 per cycle).
+                    try:
+                        import fnmatch as _fnmatch
+                        import json as _json_fd
+                        import os as _os_fd
+
+                        watch_path = sched.get("file_watch_path") or sched.get("watch_path", "")
+                        watch_pattern = sched.get("file_pattern", "*")
+                        processed_key = f"processed_files:{key}"
+                        processed: set[str] = set()
+                        new_files: list[str] = []
+
+                        if watch_path:
+                            try:
+                                if _os_fd.path.isdir(watch_path):
+                                    all_files = _os_fd.listdir(watch_path)
+                                    if r is not None:
+                                        _proc_raw = r.get(processed_key)
+                                        if _proc_raw:
+                                            processed = set(_json_fd.loads(_proc_raw))
+                                    new_files = [
+                                        _os_fd.path.join(watch_path, f)
+                                        for f in all_files
+                                        if _fnmatch.fnmatch(f, watch_pattern)
+                                        and f not in processed
+                                    ]
+                            except OSError as _os_err:
+                                logger.warning(
+                                    "file_drop_watch_path_error",
+                                    path=watch_path,
+                                    error=str(_os_err),
+                                )
+
+                        for _file_path in new_files[:5]:  # cap at 5 files per cycle
+                            _file_name = _os_fd.path.basename(_file_path)
+                            _tenant_id_fd = str(sched.get("tenant_id") or "")
+                            if not _tenant_id_fd:
+                                continue
+                            from app.tenancy.context import (
+                                PlanTier as _PT_fd,
+                                TenantContext as _TC_fd,
+                            )
+                            _tenant_ctx_fd = _TC_fd(
+                                tenant_id=_tenant_id_fd,
+                                plan=_PT_fd.PROFESSIONAL,
+                                api_key_id="trigger-file-drop",
+                            )
+                            _file_alert = {
+                                "file_path": _file_path,
+                                "file_name": _file_name,
+                                "watch_path": watch_path,
+                            }
+                            _alert_kw = _run_async(
+                                _build_goal_kwargs_for_alert(
+                                    sched,
+                                    "file_drop",
+                                    _file_alert,
+                                    goal_service=None,
+                                    tenant_ctx=_tenant_ctx_fd,
+                                )
+                            )
+                            if _alert_kw:
+                                _goal_id_fd = _scheduled_goal_id(
+                                    key,
+                                    fire_instance_id=f"filedrop:{_file_name}:{now.isoformat()}",
+                                )
+                                run_goal.apply_async(
+                                    kwargs={
+                                        "goal_id": _goal_id_fd,
+                                        "tenant_id": _tenant_id_fd,
+                                        "goal_text": _alert_kw["goal"],
+                                        "priority": _alert_kw["priority"],
+                                        "agent_id": str(_alert_kw.get("agent_id") or ""),
+                                    },
+                                    queue="schedules",
+                                )
+                                fired += 1
+
+                        if new_files:
+                            if r is not None:
+                                _all_proc = list(
+                                    processed | {_os_fd.path.basename(f) for f in new_files}
+                                )
+                                r.set(
+                                    processed_key,
+                                    _json_fd.dumps(_all_proc[-500:]),
+                                    ex=86400,
+                                )
+                            logger.info(
+                                "file_drop_trigger_fired",
+                                files_found=len(new_files),
+                                schedule_id=sched.get("schedule_id", key),
+                            )
+                        else:
+                            logger.debug(
+                                "file_drop_no_new_files",
+                                watch_path=watch_path,
+                                schedule_id=sched.get("schedule_id", key),
+                            )
+                    except Exception as _fd_exc:
+                        logger.warning(
+                            "file_drop_trigger_error",
+                            error=str(_fd_exc)[:100],
+                            schedule_id=sched.get("schedule_id", key),
+                        )
 
                 # ── External alert triggers (Alertmanager / Datadog / PagerDuty) ─
                 elif trigger_type in ("alertmanager", "datadog", "pagerduty"):
-                    logger.info(
-                        "external_alert_trigger_fired_stub",
-                        trigger_type=trigger_type,
-                        schedule_id=sched.get("schedule_id", key),
-                    )
-                    # TODO Phase 6: implement alert ingress webhook
+                    # External alert triggers: read payload from Redis webhook cache
+                    # (set by POST /webhooks/alerts/{type}), fall back to schedule
+                    # metadata; dispatch a goal with alert context.
+                    try:
+                        import json as _json_alert
+
+                        alert_data: dict[str, Any] = {}
+                        alert_cache_key = (
+                            f"alert_payload:{trigger_type}:{sched.get('schedule_id', key)}"
+                        )
+                        if r is not None:
+                            try:
+                                _cached = r.get(alert_cache_key)
+                                if _cached:
+                                    alert_data = _json_alert.loads(_cached)
+                                    r.delete(alert_cache_key)
+                            except Exception:
+                                pass
+
+                        if not alert_data:
+                            alert_data = {
+                                "trigger_type": trigger_type,
+                                "schedule_id": sched.get("schedule_id", key),
+                                "fired_at": now.isoformat(),
+                                "source": trigger_type,
+                                "status": "firing",
+                            }
+                            if trigger_type == "alertmanager":
+                                alert_data["alertname"] = sched.get("alert_name", "PrometheusAlert")
+                                alert_data["severity"] = sched.get("severity", "warning")
+                            elif trigger_type == "datadog":
+                                alert_data["monitor_name"] = sched.get("monitor_name", "DatadogMonitor")
+                                alert_data["status"] = sched.get("alert_status", "triggered")
+                            elif trigger_type == "pagerduty":
+                                alert_data["incident_title"] = sched.get(
+                                    "incident_title", "PagerDutyIncident"
+                                )
+                                alert_data["urgency"] = sched.get("urgency", "high")
+
+                        _tenant_id_alert = str(sched.get("tenant_id") or "")
+                        if not _tenant_id_alert:
+                            logger.warning(
+                                "alert_trigger_missing_tenant_id",
+                                trigger_type=trigger_type,
+                                key=key,
+                            )
+                        else:
+                            from app.tenancy.context import (
+                                PlanTier as _PT_alert,
+                                TenantContext as _TC_alert,
+                            )
+                            _tenant_ctx_alert = _TC_alert(
+                                tenant_id=_tenant_id_alert,
+                                plan=_PT_alert.PROFESSIONAL,
+                                api_key_id="trigger-alert",
+                            )
+                            _alert_kwargs = _run_async(
+                                _build_goal_kwargs_for_alert(
+                                    sched,
+                                    trigger_type=trigger_type,
+                                    alert_context=alert_data,
+                                    goal_service=None,
+                                    tenant_ctx=_tenant_ctx_alert,
+                                    default_priority="high",
+                                )
+                            )
+                            if _alert_kwargs:
+                                _goal_id_alert = _scheduled_goal_id(
+                                    key,
+                                    fire_instance_id=f"{trigger_type}:{now.isoformat()}",
+                                )
+                                run_goal.apply_async(
+                                    kwargs={
+                                        "goal_id": _goal_id_alert,
+                                        "tenant_id": _tenant_id_alert,
+                                        "goal_text": _alert_kwargs["goal"],
+                                        "priority": _alert_kwargs["priority"],
+                                        "agent_id": str(_alert_kwargs.get("agent_id") or ""),
+                                    },
+                                    queue="schedules",
+                                )
+                                fired += 1
+                                logger.info(
+                                    "external_alert_trigger_fired",
+                                    trigger_type=trigger_type,
+                                    schedule_id=sched.get("schedule_id", key),
+                                )
+                    except Exception as _alert_exc:
+                        logger.warning(
+                            "external_alert_trigger_error",
+                            trigger_type=trigger_type,
+                            error=str(_alert_exc)[:100],
+                        )
 
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
