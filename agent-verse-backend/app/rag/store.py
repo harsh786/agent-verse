@@ -434,6 +434,10 @@ class KnowledgeStore:
         source_doc_id: str = "",
         page_number: int | None = None,
         freshness_ttl_hours: int = 168,
+        parent_chunk_id: str | None = None,
+        chunk_level: str = "leaf",
+        window_start: int | None = None,
+        window_end: int | None = None,
     ) -> str:
         """Ingest a single content chunk with citation metadata.
 
@@ -470,6 +474,10 @@ class KnowledgeStore:
             chunk_index=0,
             chunk_id=chunk_id,
             metadata=merged_metadata,
+            parent_chunk_id=parent_chunk_id,
+            chunk_level=chunk_level,
+            window_start=window_start,
+            window_end=window_end,
         )
 
         # In-memory storage
@@ -496,6 +504,10 @@ class KnowledgeStore:
                         page_number=page_number,
                         freshness_ttl_hours=freshness_ttl_hours,
                         content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                        parent_chunk_id=parent_chunk_id,
+                        chunk_level=chunk_level,
+                        window_start=window_start,
+                        window_end=window_end,
                     )
                 )
             except RuntimeError:
@@ -518,6 +530,10 @@ class KnowledgeStore:
         page_number: int | None,
         freshness_ttl_hours: int,
         content_hash: str,
+        parent_chunk_id: str | None = None,
+        chunk_level: str = "leaf",
+        window_start: int | None = None,
+        window_end: int | None = None,
     ) -> None:
         """Persist a document chunk to the correct ``knowledge_chunks_{dim}`` table.
 
@@ -575,26 +591,55 @@ class KnowledgeStore:
                         pass
 
                     table_name = f"knowledge_chunks_{dim}"
-                    await session.execute(
-                        text(f"""
-                            INSERT INTO {table_name}
-                                (id, collection_id, tenant_id, content, content_hash,
-                                 embedding, chunk_index, metadata)
-                            VALUES
-                                (:id, :cid, :tid, :content, :hash,
-                                 :emb::vector, 0, :meta::jsonb)
-                            ON CONFLICT (id) DO NOTHING
-                        """),
-                        {
-                            "id": chunk_id,
-                            "cid": collection_id,
-                            "tid": tenant_id,
-                            "content": content,
-                            "hash": content_hash,
-                            "emb": emb_str,
-                            "meta": json.dumps(full_metadata),
-                        },
-                    )
+                    try:
+                        await session.execute(
+                            text(f"""
+                                INSERT INTO {table_name}
+                                    (id, collection_id, tenant_id, content, content_hash,
+                                     embedding, chunk_index, metadata,
+                                     parent_chunk_id, chunk_level, window_start, window_end)
+                                VALUES
+                                    (:id, :cid, :tid, :content, :hash,
+                                     :emb::vector, 0, :meta::jsonb,
+                                     :parent_chunk_id, :chunk_level, :window_start, :window_end)
+                                ON CONFLICT (id) DO NOTHING
+                            """),
+                            {
+                                "id": chunk_id,
+                                "cid": collection_id,
+                                "tid": tenant_id,
+                                "content": content,
+                                "hash": content_hash,
+                                "emb": emb_str,
+                                "meta": json.dumps(full_metadata),
+                                "parent_chunk_id": parent_chunk_id,
+                                "chunk_level": chunk_level,
+                                "window_start": window_start,
+                                "window_end": window_end,
+                            },
+                        )
+                    except Exception:
+                        # Fallback: insert without parent/window columns (pre-migration)
+                        await session.execute(
+                            text(f"""
+                                INSERT INTO {table_name}
+                                    (id, collection_id, tenant_id, content, content_hash,
+                                     embedding, chunk_index, metadata)
+                                VALUES
+                                    (:id, :cid, :tid, :content, :hash,
+                                     :emb::vector, 0, :meta::jsonb)
+                                ON CONFLICT (id) DO NOTHING
+                            """),
+                            {
+                                "id": chunk_id,
+                                "cid": collection_id,
+                                "tid": tenant_id,
+                                "content": content,
+                                "hash": content_hash,
+                                "emb": emb_str,
+                                "meta": json.dumps(full_metadata),
+                            },
+                        )
         except Exception as exc:
             _log.warning("DB ingest with citations failed: %s", exc)
 
@@ -687,3 +732,69 @@ class KnowledgeStore:
         except Exception as exc:
             _log.warning("DB knowledge sync failed: %s", exc)
             return 0
+
+    async def expand_to_parents(
+        self,
+        child_chunk_ids: list[str],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        db: Any = None,
+    ) -> list[Any]:
+        """Expand child chunk IDs to their parent chunks for full-context retrieval.
+
+        Fetches the parent chunk for each child chunk ID.  When a child has no
+        parent (chunk_level == 'leaf'), the child itself is returned.  Falls
+        back to an empty list on any DB error.
+        """
+        if not child_chunk_ids:
+            return []
+        _db = db or self._db
+        if _db is None:
+            return []
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with _db() as session, sqlalchemy_rls_context(
+                session, tenant_ctx.tenant_id
+            ):
+                rows = (
+                    await session.execute(
+                        text("""
+                            SELECT c.id, c.content,
+                                   COALESCE(c.metadata->>'source_url', '') AS source_url,
+                                   c.metadata
+                            FROM knowledge_chunks_1536 c
+                            INNER JOIN knowledge_chunks_1536 child
+                                ON child.parent_chunk_id = c.id
+                            WHERE child.id = ANY(:child_ids)
+                              AND c.collection_id = :cid
+                            UNION
+                            SELECT id, content,
+                                   COALESCE(metadata->>'source_url', '') AS source_url,
+                                   metadata
+                            FROM knowledge_chunks_1536
+                            WHERE id = ANY(:child_ids)
+                              AND collection_id = :cid
+                        """),
+                        {
+                            "child_ids": child_chunk_ids,
+                            "cid": collection_id,
+                        },
+                    )
+                ).fetchall()
+
+            return [
+                type("Chunk", (), {
+                    "chunk_id": str(r[0]),
+                    "content": str(r[1]),
+                    "source_url": str(r[2] or ""),
+                    "metadata": r[3] or {},
+                    "score": 0.8,
+                })()
+                for r in rows
+            ]
+        except Exception as exc:
+            _log.warning("expand_to_parents failed: %s", exc)
+            return []
