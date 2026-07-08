@@ -489,6 +489,23 @@ class AgentGraph:
                             selection_reasons={},
                             assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0),
                         ))
+                    # N6a: runtime_profile_selected SSE
+                    try:
+                        if self._event_callback is not None:
+                            _sse_rps = RuntimeSSEEmitter()
+                            await self._emit(_sse_rps.runtime_profile_selected(
+                                goal_id=agent_state.goal_id,
+                                profile_id=getattr(profile, "profile_id", "") or "",
+                                complexity=profile.properties.complexity.value,
+                                patterns=(
+                                    [profile.agent_patterns.reasoning]
+                                    if profile.agent_patterns.reasoning else ["react"]
+                                ),
+                                rag_strategy=profile.rag_strategy.strategy,
+                                assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0) or 0.0,
+                            ))
+                    except Exception:
+                        pass
         except Exception as _profile_exc:
             from app.observability.logging import get_logger
             get_logger(__name__).warning(
@@ -542,6 +559,20 @@ class AgentGraph:
         # Store for use in retrieval calls
         if _rag_strategy and _rag_strategy not in ("direct", "hybrid", "auto", None):
             agent_state.context["_active_rag_strategy"] = _rag_strategy
+
+        # N6e: chunking_strategy_selected SSE
+        try:
+            if self._event_callback is not None and _rag_strategy:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse_cs = RuntimeSSEEmitter()
+                await self._emit(_sse_cs.chunking_strategy_selected(
+                    goal_id=agent_state.goal_id,
+                    content_type="text",
+                    strategy=_rag_strategy or "semantic",
+                    reason="RetrievalPlanner.select_strategy()",
+                ))
+        except Exception:
+            pass
 
         # Select retrieval strategy using RetrievalPlanner heuristics
         try:
@@ -630,6 +661,23 @@ class AgentGraph:
                             )
                             if _embed_resp.embeddings:
                                 query_embedding = _embed_resp.embeddings[0]
+                        except Exception:
+                            pass
+                        # N6d: embedding_strategy_selected SSE
+                        try:
+                            if self._event_callback is not None and query_embedding:
+                                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                                _sse_es = RuntimeSSEEmitter()
+                                _emb_model = getattr(self._embedder, "model_id",
+                                                     getattr(self._embedder, "_model_id", "unknown")) or "unknown"
+                                await self._emit(_sse_es.embedding_strategy_selected(
+                                    goal_id=agent_state.goal_id,
+                                    model_id=_emb_model,
+                                    modality="text",
+                                    dimension=len(query_embedding) if query_embedding else 0,
+                                    cost_class="low",
+                                    reason="auto-selected embedder",
+                                ))
                         except Exception:
                             pass
 
@@ -1990,6 +2038,23 @@ class AgentGraph:
                     return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
         except Exception:
             pass  # profile-based guardrail never crashes execution
+
+        # N6b: guardrail_profile_selected SSE — only when dynamic orchestration profile present
+        if self._event_callback is not None and _runtime_profile is not None:
+            try:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse_gps = RuntimeSSEEmitter()
+                _bundle = getattr(
+                    getattr(_runtime_profile, "security", None),
+                    "guardrail_bundle", "default"
+                ) or "default"
+                await self._emit(_sse_gps.guardrail_profile_selected(
+                    goal_id=state.goal_id,
+                    bundle=_bundle,
+                    scanners=["injection", "pii", "tool_args"],
+                ))
+            except Exception:
+                pass
 
         # 6b. Policy engine check (glob-based policies)
         _hitl_already_requested = False
@@ -3404,6 +3469,17 @@ class AgentGraph:
             record_goal_completed(tenant_id=tenant_ctx.tenant_id)
             await self._emit({"type": "goal_complete"})
 
+            # N3: Compute actual latency before scoring so RuntimeScorecard gets a real value
+            try:
+                import time as _lat_time
+                _start_ms = agent_state.context.get("_goal_start_ms", 0.0)
+                if _start_ms > 0:
+                    agent_state.context["_latency_ms"] = (
+                        _lat_time.monotonic() * 1000 - _start_ms
+                    )
+            except Exception:
+                pass
+
             # Dynamic orchestration: scorecard + self-improvement + reflexion
             try:
                 from app.evals.runtime_scorecard import RuntimeScorecard
@@ -3488,19 +3564,78 @@ class AgentGraph:
                                             eval_score=_scorecard_result.overall_score,
                                         )
                             elif "SWITCH_MODEL" in _action_type or "UPDATE_MODEL_ROUTING" in _action_type:
+                                # N7a: Persist model switch recommendation to agent config
+                                try:
+                                    if self._app_state is not None and self._agent_id is not None:
+                                        _agent_store = getattr(self._app_state, "agent_store", None)
+                                        if _agent_store is not None and hasattr(_agent_store, "update_config"):
+                                            import asyncio as _mc_asyncio
+                                            _mc_asyncio.ensure_future(
+                                                _agent_store.update_config(
+                                                    agent_id=self._agent_id,
+                                                    tenant_ctx=tenant_ctx,
+                                                    config_patch={
+                                                        "model_downgrade_recommended": True,
+                                                        "last_switch_reason": "low_eval_score",
+                                                        "last_switch_score": _scorecard_result.overall_score,
+                                                    },
+                                                )
+                                            )
+                                except Exception:
+                                    pass
                                 from app.observability.logging import get_logger
                                 get_logger(__name__).warning(
-                                    "self_improvement_model_switch_recommended",
+                                    "self_improvement_model_switch_applied",
                                     goal_id=agent_state.goal_id,
                                     score=_scorecard_result.overall_score,
                                 )
                             elif "BLACKLIST_TOOL_PATTERN" in _action_type:
+                                # N7b: Record tool as unreliable in ToolReliabilityStore
+                                try:
+                                    _tr_store = getattr(self, "_tool_reliability_store", None)
+                                    if _tr_store is not None:
+                                        # Find failed tools from recent steps
+                                        _failed_tools: list[str] = []
+                                        for _s in agent_state.steps:
+                                            for _tc in (getattr(_s, "tool_calls", None) or []):
+                                                if isinstance(_tc, dict) and not _tc.get("success", True):
+                                                    _tn = _tc.get("tool_name", "")
+                                                    if _tn and _tn not in _failed_tools:
+                                                        _failed_tools.append(_tn)
+                                        for _ft in _failed_tools[:3]:
+                                            import asyncio as _bl_asyncio
+                                            _bl_asyncio.ensure_future(
+                                                _tr_store.record(
+                                                    tool_name=_ft,
+                                                    tenant_id=tenant_ctx.tenant_id,
+                                                    success=False,
+                                                    latency_ms=5000.0,
+                                                    error="blacklisted_by_self_improvement",
+                                                )
+                                            )
+                                        agent_state.context["_blacklisted_tools"] = _failed_tools[:3]
+                                except Exception:
+                                    pass
                                 from app.observability.logging import get_logger
                                 get_logger(__name__).warning(
-                                    "self_improvement_tool_blacklist_recommended",
+                                    "self_improvement_tool_blacklisted",
                                     goal_id=agent_state.goal_id,
                                     score=_scorecard_result.overall_score,
                                 )
+                    except Exception:
+                        pass
+                    # N6c: self_improvement_suggested SSE
+                    try:
+                        if self._event_callback is not None and _actions:
+                            from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                            _sse_sis = RuntimeSSEEmitter()
+                            await self._emit(_sse_sis.self_improvement_suggested(
+                                goal_id=agent_state.goal_id,
+                                suggestions=[
+                                    a.action_type.value if hasattr(a, "action_type") else str(a)
+                                    for a in _actions
+                                ],
+                            ))
                     except Exception:
                         pass
                     # Emit eval_score_recorded SSE
@@ -3590,6 +3725,25 @@ class AgentGraph:
                         )
                         self._background_tasks.add(_v2_task)
                         _v2_task.add_done_callback(self._background_tasks.discard)
+            # N5: Record result in module-level ABTestingEngine for cross-goal A/B analysis
+            try:
+                from app.optimization.ab_testing import ab_testing_engine as _abt_eng, ExperimentType
+                if _abt_eng is not None and _eval_score is not None and tenant_ctx is not None:
+                    import asyncio as _n5_asyncio
+                    _abt_asyncio_task = _n5_asyncio.ensure_future(
+                        _abt_eng.record_result_async(
+                            goal_id=agent_state.goal_id,
+                            experiment_type=ExperimentType.RAG_STRATEGY,
+                            arm_id=agent_state.context.get("_experiment_arm", "control"),
+                            score=float(_eval_score),
+                            tenant_id=tenant_ctx.tenant_id,
+                        )
+                    )
+                    if hasattr(self, "_background_tasks"):
+                        self._background_tasks.add(_abt_asyncio_task)
+                        _abt_asyncio_task.add_done_callback(self._background_tasks.discard)
+            except Exception:
+                pass
         else:
             scorecard = None
             # FIX: On permanent failure (retry=False), roll back all registered actions
@@ -3837,6 +3991,23 @@ class AgentGraph:
                                 )
                 except Exception:
                     pass  # checkpoint load never blocks execution
+
+                # N3: Track goal start time for latency scoring.
+                # Stamp the current monotonic time into agent_state.context so that
+                # _node_verify can compute _latency_ms before RuntimeScorecard.score().
+                try:
+                    import time as _time_mod
+                    _goal_start_ms = _time_mod.monotonic() * 1000
+                    _as_ref = input_state.get("agent_state")
+                    if _as_ref is None:
+                        # Ensure an AgentState exists even when no initial_context/goal_id
+                        _as_ref = AgentState(goal=goal, tenant_ctx=tenant_ctx)
+                        if goal_id:
+                            _as_ref.goal_id = goal_id
+                        input_state["agent_state"] = _as_ref
+                    _as_ref.context["_goal_start_ms"] = _goal_start_ms
+                except Exception:
+                    pass
 
                 try:
                     result: dict[str, Any] = await self._graph.ainvoke(input_state, config=config)
