@@ -885,6 +885,33 @@ class GoalService:
             _self_optimizer = SelfOptimizer()
         graph._self_optimizer = _self_optimizer
 
+        # C3 fix: Translate PatternConfig reasoning_patterns into AgentGraph feature flags.
+        # RuntimeProfileBuilder populates agent_patterns.reasoning with patterns like
+        # "self_refine", "self_consistency", "tree_of_thoughts", "peer_review", etc.
+        # Previously these were assembled by RuntimeProfileBuilder but never wired to AgentGraph.
+        try:
+            _record = self._goals.get(list(self._goals.keys())[-1]) if self._goals else None
+            # Use agent_config overrides + execution_context runtime_profile if available
+            _runtime_profile_data = {}
+            if _record is not None:
+                _runtime_profile_data = _record.execution_context.get("runtime_profile", {})
+            _agent_patterns_data = _runtime_profile_data.get("agent_patterns", {})
+            _reasoning = str(_agent_patterns_data.get("reasoning", ""))
+            if "self_refine" in _reasoning or _agent_config.get("enable_self_refine"):
+                graph._enable_self_refine = True
+            if "self_consistency" in _reasoning or _agent_config.get("enable_self_consistency"):
+                graph._enable_self_consistency = True
+            if "tree_of_thoughts" in _reasoning or _agent_config.get("enable_tree_of_thoughts"):
+                graph._enable_tree_of_thoughts = True
+            if "peer_review" in _reasoning or _agent_config.get("enable_peer_review"):
+                graph._enable_peer_review = True
+            if "chain_of_thought" in _reasoning:
+                graph._enable_cot = True
+            if "reflection" in _reasoning:
+                graph._enable_reflection = True
+        except Exception:
+            pass
+
         # Record model selections for observability (AI Router)
         try:
             model_selections = self._select_models_for_tenant(tenant_ctx)
@@ -2473,6 +2500,14 @@ class GoalService:
 
                 _asyncio.create_task(_resume_graph())
                 record.status = GoalStatus.EXECUTING
+                # C4 fix: clear Redis pause flag on checkpoint-based resume path too
+                try:
+                    from app.reliability.goal_lifecycle import signal_resume as _signal_resume_cp
+                    _redis_cp = getattr(self, "_redis", None)
+                    if _redis_cp is not None:
+                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))
+                except Exception:
+                    pass
                 await self._dispatch_event(
                     goal_id, {"type": "goal_resumed", "method": "checkpoint"}, tenant_ctx=tenant_ctx
                 )
@@ -2488,6 +2523,15 @@ class GoalService:
         evt = _GOAL_PAUSE_EVENTS.pop(goal_id, None)
         if evt is not None:
             evt.set()
+        # C4 fix: clear Redis pause flag so Celery workers stop polling is_paused_sync()
+        try:
+            from app.reliability.goal_lifecycle import signal_resume as _signal_resume
+            _redis = getattr(self, "_redis", None)
+            if _redis is not None:
+                import asyncio as _c4_asyncio
+                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))
+        except Exception:
+            pass
         await self._dispatch_event(goal_id, {"type": "goal_resumed"}, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": "resumed"}
 

@@ -163,6 +163,8 @@ class GoalRuntimeProfile:
     profile_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     assembly_latency_ms: float = 0.0
     feature_flag_active: bool = True
+    # C5 fix: actual tenant plan so GuardrailEnforcer doesn't hardcode PROFESSIONAL
+    tenant_plan: str = "professional"
 
     def to_dict(self) -> dict[str, Any]:
         import dataclasses

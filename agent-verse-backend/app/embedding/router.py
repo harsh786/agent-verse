@@ -42,8 +42,8 @@ BUILTIN_EMBEDDING_CONFIGS = {
 class EmbeddingRouter:
     """Route embedding requests to the correct provider with fallback."""
 
-    def __init__(self) -> None:
-        self._provider: Any = None  # injected from app state
+    def __init__(self, provider: Any = None) -> None:
+        self._provider: Any = provider  # can be injected at construction or via set_provider()
         self._configs = dict(BUILTIN_EMBEDDING_CONFIGS)
         self._usage: dict[str, int] = {}  # model → total tokens embedded
         self._errors: dict[str, int] = {}  # model → error count
@@ -72,7 +72,11 @@ class EmbeddingRouter:
         model_key = f"{provider}/{model}"
         if self._provider is not None:
             try:
-                embeddings = await self._provider.embed_batch(texts)
+                # C7 fix: use embed(EmbedRequest) — the required Protocol method.
+                # embed_batch() is an optional default that some provider ducks may not have.
+                from app.providers.base import EmbedRequest
+                resp = await self._provider.embed(EmbedRequest(texts=texts))
+                embeddings = resp.embeddings if resp.embeddings else []
                 token_count = sum(len(t.split()) for t in texts)
                 self._usage[model_key] = self._usage.get(model_key, 0) + token_count
                 return embeddings
