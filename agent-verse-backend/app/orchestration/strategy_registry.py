@@ -705,7 +705,7 @@ def build_default_registry() -> StrategyRegistry:
         StrategyCapability(
             "agentic_chunking",
             R,
-            PLAN,
+            IMPL,
             "",
             "LLM-driven chunking",
             [],
