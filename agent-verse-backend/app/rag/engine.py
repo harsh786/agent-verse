@@ -552,6 +552,187 @@ async def retrieve(
                 embedding_dim=embedding_dim,
                 embedder=provider,
             )
+        if strategy == "corrective":
+            try:
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                )
+                # If confidence is low, try web fallback (handled by RetrieverTool layer)
+                return base_results
+            except Exception as exc:
+                logger.warning("corrective_rag_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy in ("flare", "self_rag"):
+            # FLARE and Self-RAG use the provider for generation
+            # When no provider given, fall back to hybrid
+            if provider is None:
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+            try:
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                )
+                if not base_results:
+                    return base_results
+                # Use context from base retrieval as FLARE/Self-RAG context
+                context_text = "\n".join(r.content[:300] for r in base_results[:5])
+                if strategy == "flare":
+                    from app.rag.agentic.patterns.flare import FLAREPattern
+                    pattern = FLAREPattern()
+
+                    async def _flare_retrieve(q: str, **kw: Any) -> str:
+                        extra = await hybrid_search(
+                            session, query=q, query_embedding=query_embedding,
+                            collection_id=collection_id, top_k=3, embedding_dim=embedding_dim,
+                        )
+                        return "\n".join(r.content[:300] for r in extra)
+
+                    refined = await pattern.execute(
+                        query=query, provider=provider, retrieve_fn=_flare_retrieve
+                    )
+                elif strategy == "self_rag":
+                    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+                    pattern = SelfRAGPattern()
+
+                    async def _self_rag_retrieve(q: str, **kw: Any) -> str:
+                        return context_text
+
+                    refined = await pattern.execute(
+                        query=query, provider=provider, retrieve_fn=_self_rag_retrieve
+                    )
+                else:
+                    refined = ""
+                # Return base results enriched with refined answer in first result
+                if refined and base_results:
+                    base_results[0] = RetrievalResult(
+                        chunk_id=base_results[0].chunk_id,
+                        content=refined[:2000] or base_results[0].content,
+                        score=base_results[0].score,
+                        source_metadata={**base_results[0].source_metadata, "strategy": strategy},
+                        retrieval_legs=base_results[0].retrieval_legs + [strategy],
+                    )
+                return base_results
+            except Exception as exc:
+                logger.warning(f"{strategy}_rag_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy == "speculative":
+            try:
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+                if not base_results or provider is None:
+                    return base_results
+
+                async def _spec_retrieve(q: str, **kw: Any) -> str:
+                    r = await hybrid_search(
+                        session, query=q, query_embedding=query_embedding,
+                        collection_id=collection_id, top_k=3, embedding_dim=embedding_dim,
+                    )
+                    return "\n".join(x.content[:300] for x in r)
+
+                from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
+                pattern = SpeculativeRAGPattern(n_candidates=2)
+                best = await pattern.execute(
+                    query=query, provider=provider, retrieve_fn=_spec_retrieve,
+                )
+                if best and base_results:
+                    base_results[0] = RetrievalResult(
+                        chunk_id=base_results[0].chunk_id,
+                        content=best[:2000] or base_results[0].content,
+                        score=0.9,
+                        source_metadata={**base_results[0].source_metadata, "strategy": "speculative"},
+                        retrieval_legs=["speculative"],
+                    )
+                return base_results
+            except Exception as exc:
+                logger.warning("speculative_rag_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy == "raptor":
+            try:
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=min(top_k * 2, 20), embedding_dim=embedding_dim,
+                )
+                if not base_results or provider is None:
+                    return base_results[:top_k]
+                chunks = [
+                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score}
+                    for r in base_results
+                ]
+                from app.rag.agentic.patterns.raptor import RAPTORPattern
+                pattern = RAPTORPattern(cluster_size=4, max_levels=2)
+                answer = await pattern.execute(
+                    query=query, chunks=chunks, provider=provider
+                )
+                if answer and base_results:
+                    summary = RetrievalResult(
+                        chunk_id="raptor_summary",
+                        content=answer[:3000],
+                        score=0.95,
+                        source_metadata={"strategy": "raptor", "source_count": len(base_results)},
+                        retrieval_legs=["raptor"],
+                    )
+                    return [summary] + base_results[:top_k - 1]
+                return base_results[:top_k]
+            except Exception as exc:
+                logger.warning("raptor_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
+        if strategy == "colbert":
+            try:
+                base_results = await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k * 2, embedding_dim=embedding_dim,
+                )
+                if not base_results:
+                    return base_results
+                chunks = [
+                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score,
+                     "source_metadata": r.source_metadata}
+                    for r in base_results
+                ]
+                from app.rag.agentic.patterns.colbert import ColBERTPattern
+                pattern = ColBERTPattern(alpha=0.5)
+                reranked = pattern.rerank(query=query, chunks=chunks, top_k=top_k)
+                return [
+                    RetrievalResult(
+                        chunk_id=c["chunk_id"],
+                        content=c["content"],
+                        score=c["score"],
+                        source_metadata={**c.get("source_metadata", {}), "colbert_score": c.get("colbert_score", 0.0)},
+                        retrieval_legs=["colbert"],
+                    )
+                    for c in reranked
+                ]
+            except Exception as exc:
+                logger.warning("colbert_failed", error=str(exc)[:80])
+                return await hybrid_search(
+                    session, query=query, query_embedding=query_embedding,
+                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                )
+
         mode = "lexical" if strategy == "lexical" else retrieval_mode
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
