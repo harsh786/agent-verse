@@ -51,16 +51,61 @@ class KGQueryEngine:
 
     async def _entity_expansion(self, query: str, tenant_id: str) -> KGQueryResult:
         nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=10)
-        facts = [{"entity": n.name, "type": str(n.node_type), "confidence": getattr(n, "confidence", 0.7)}
+        facts = [{"entity": n.label, "type": str(n.node_type), "confidence": getattr(n, "confidence", 0.7)}
                  for n in (nodes or [])]
         return KGQueryResult(strategy_used="entity", facts=facts,
-                              entities_found=[n.name for n in (nodes or [])],
+                              entities_found=[n.label for n in (nodes or [])],
                               confidence=0.7 if facts else 0.0)
 
     async def _path_traversal(self, query: str, tenant_id: str) -> KGQueryResult:
-        nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=5)
-        facts = [{"from": n.name, "relation": "relates_to", "to": "?"} for n in (nodes or [])[:3]]
-        return KGQueryResult(strategy_used="path", facts=facts, confidence=0.65 if facts else 0.0)
+        """Real edge traversal using get_edges_for_node()."""
+        source_nodes = self._kg.query_nodes(
+            tenant_id=tenant_id, search=query[:100], limit=5
+        ) or []
+
+        if not source_nodes:
+            return KGQueryResult(strategy_used="path", facts=[], confidence=0.0)
+
+        # Cache all discovered nodes by ID for name lookup
+        node_name_cache: dict[str, str] = {n.node_id: n.label for n in source_nodes}
+
+        facts: list[dict[str, Any]] = []
+        for node in source_nodes[:3]:
+            edges = self._kg.get_edges_for_node(
+                node_id=node.node_id, tenant_id=tenant_id
+            ) or []
+            for edge in edges[:5]:
+                # Determine the neighbour (the other end of the edge)
+                neighbour_id = (
+                    edge.target_node_id
+                    if edge.source_node_id == node.node_id
+                    else edge.source_node_id
+                )
+                # Resolve neighbour name (look up in cache or query)
+                if neighbour_id not in node_name_cache:
+                    all_nodes = self._kg.query_nodes(
+                        tenant_id=tenant_id, search="", limit=200
+                    ) or []
+                    node_name_cache.update({n.node_id: n.label for n in all_nodes})
+                neighbour_name = node_name_cache.get(neighbour_id, neighbour_id)
+                edge_type_str = (
+                    edge.edge_type.value
+                    if hasattr(edge.edge_type, "value")
+                    else str(edge.edge_type)
+                )
+                facts.append({
+                    "from": node.label,
+                    "relation": edge_type_str,
+                    "to": neighbour_name,
+                    "confidence": getattr(edge, "confidence", 0.65),
+                })
+
+        return KGQueryResult(
+            strategy_used="path",
+            facts=facts,
+            entities_found=[n.label for n in source_nodes],
+            confidence=0.65 if facts else 0.0,
+        )
 
     async def _neighbourhood(self, query: str, tenant_id: str, strategy: str) -> KGQueryResult:
         nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=8)
