@@ -109,3 +109,27 @@ class LongTermMemory(Base):
     )
 
 
+class MemoryConflict(Base):
+    """Persistent storage for memory conflicts detected in memory_v2."""
+
+    __tablename__ = "memory_conflicts"
+
+    id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    memory_id_a: Mapped[str] = mapped_column(String(32), nullable=False)
+    memory_id_b: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    conflict_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="contradiction"
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
