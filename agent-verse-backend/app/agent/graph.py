@@ -240,6 +240,8 @@ class AgentGraph:
         consensus_verifier: Any | None = None,
         calibration_store: Any | None = None,
         tool_reliability_store: Any = None,
+        episodic_memory: Any = None,
+        procedural_memory: Any = None,
         **kwargs: Any,
     ) -> None:
         self._planner = planner
@@ -285,6 +287,8 @@ class AgentGraph:
         self._consensus_verifier = consensus_verifier
         self._calibration_store = calibration_store
         self._tool_reliability_store = tool_reliability_store
+        self._episodic_memory = episodic_memory
+        self._procedural_memory = procedural_memory
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
@@ -1331,6 +1335,36 @@ class AgentGraph:
             _contract = _ocb.build(goal=agent_state.goal)
             if _contract.instructions:
                 extra_parts.append(f"[Output contract]\n{_contract.instructions}")
+        except Exception:
+            pass
+
+        # Episodic memory recall — similar past experiences
+        try:
+            if self._episodic_memory is not None:
+                _ep_episodes = await self._episodic_memory.recall(
+                    goal=agent_state.goal,
+                    tenant_id=tenant_ctx.tenant_id,
+                    limit=3,
+                )
+                if _ep_episodes:
+                    _ep_ctx = self._episodic_memory.format_for_context(_ep_episodes)
+                    if _ep_ctx:
+                        extra_parts.append(_ep_ctx)
+        except Exception:
+            pass
+
+        # Procedural memory recall — relevant skills
+        try:
+            if self._procedural_memory is not None:
+                _proc_skills = await self._procedural_memory.recall(
+                    goal=agent_state.goal,
+                    tenant_id=tenant_ctx.tenant_id,
+                    limit=2,
+                )
+                if _proc_skills:
+                    _proc_ctx = self._procedural_memory.format_for_context(_proc_skills)
+                    if _proc_ctx:
+                        extra_parts.append(_proc_ctx)
         except Exception:
             pass
 
@@ -3925,6 +3959,43 @@ class AgentGraph:
             )
             self._background_tasks.add(_so_task)
             _so_task.add_done_callback(self._background_tasks.discard)
+
+        # Record episodic experience after goal completion (success or failure)
+        try:
+            if self._episodic_memory is not None and tenant_ctx is not None:
+                _ep_quality = float(
+                    agent_state.context.get("scorecard", {}).get("overall_score", 0.5)
+                    if isinstance(agent_state.context.get("scorecard"), dict)
+                    else 0.5
+                )
+                _ep_task = asyncio.ensure_future(
+                    self._episodic_memory.record(
+                        state=agent_state,
+                        tenant_ctx=tenant_ctx,
+                        quality_score=_ep_quality,
+                    )
+                )
+                if hasattr(self, "_background_tasks"):
+                    self._background_tasks.add(_ep_task)
+                    _ep_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            pass
+
+        # Learn procedural skill after successful goal
+        try:
+            if self._procedural_memory is not None and success and tenant_ctx is not None:
+                _proc_task = asyncio.ensure_future(
+                    self._procedural_memory.learn(
+                        state=agent_state,
+                        tenant_ctx=tenant_ctx,
+                        success=success,
+                    )
+                )
+                if hasattr(self, "_background_tasks"):
+                    self._background_tasks.add(_proc_task)
+                    _proc_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            pass
 
         return {"agent_state": agent_state}
 
