@@ -81,6 +81,7 @@ class RetrieverTool:
         allow_web_fallback: bool = True,
         allow_reformulation: bool = True,
         max_reformulation_attempts: int = 2,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> RetrievalResult:
         """Retrieve with strategy routing and structured degraded paths."""
 
@@ -95,6 +96,7 @@ class RetrieverTool:
                 query, tenant_ctx=tenant_ctx,
                 collection_ids=collection_ids, top_k=top_k,
                 min_confidence=min_confidence,
+                metadata_filter=metadata_filter,
             )
             if result.confidence >= min_confidence:
                 return result
@@ -141,6 +143,7 @@ class RetrieverTool:
         collection_ids: list[str] | None,
         top_k: int,
         min_confidence: float,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> RetrievalResult:
         try:
             # Get embedding
@@ -172,6 +175,7 @@ class RetrieverTool:
                     collection_id=col_id,
                     tenant_ctx=tenant_ctx,
                     top_k=top_k,
+                    metadata_filter=metadata_filter,
                 )
                 all_results.extend(results)
 
@@ -304,6 +308,7 @@ class RetrieverTool:
         collection_ids: list[str] | None,
         top_k: int,
         min_confidence: float,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> RetrievalResult:
         """Thin alias for _kb_retrieve — exposed so tests can patch it independently."""
         return await self._kb_retrieve(
@@ -312,6 +317,7 @@ class RetrieverTool:
             collection_ids=collection_ids,
             top_k=top_k,
             min_confidence=min_confidence,
+            metadata_filter=metadata_filter,
         )
 
     async def retrieve_corrective(
