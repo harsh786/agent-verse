@@ -1130,6 +1130,15 @@ def create_app(
                 except Exception as _ps_exc:
                     logger.warning("policy_pubsub_start_failed", error=str(_ps_exc))
 
+                # ── IdempotencyStore: prevent duplicate goal submissions ────────────
+                try:
+                    from app.reliability.idempotency import IdempotencyStore as _IdempotencyStore
+                    _idem_store = _IdempotencyStore(redis=redis_for_runtime)
+                    app.state.idempotency_store = _idem_store
+                    logger.info("idempotency_store_wired")
+                except Exception as _idem_exc:
+                    logger.warning("idempotency_store_wire_failed", error=str(_idem_exc))
+
                 # ── AgentIdentityService: upgrade Redis for JWKS cache invalidation ──
                 if hasattr(_agent_identity_svc, "set_redis"):
                     _agent_identity_svc.set_redis(redis_for_runtime)

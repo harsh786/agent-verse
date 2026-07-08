@@ -71,6 +71,14 @@ class JSONParser:
             return [content]
 
 
+class VisionParser:
+    """Parser for image content types. Returns alt-text or a placeholder."""
+
+    def parse(self, content: str, **kwargs: object) -> list[str]:
+        """For image content, return the content as-is (alt-text / description)."""
+        return [content] if content.strip() else []
+
+
 class ParserRegistry:
     def __init__(self) -> None:
         self._parsers: dict[ContentType, object] = {
@@ -85,6 +93,7 @@ class ParserRegistry:
             ContentType.AUDIO: AudioTranscriptParser(),
             ContentType.VIDEO: VideoTranscriptParser(),
             ContentType.JSON: JSONParser(),
+            ContentType.IMAGE: VisionParser(),
         }
 
     def get_parser(self, content_type: ContentType) -> TextParser:

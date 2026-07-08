@@ -112,6 +112,14 @@ class SlackIngestRequest(BaseModel):
     max_messages: int = 500
 
 
+class CollectionIngestRequest(BaseModel):
+    """Request body for POST /collections/{collection_id}/documents (IngestionOrchestrator path)."""
+    content: str
+    content_type: str = "auto"
+    source_url: str = ""
+    metadata: dict[str, Any] = {}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1559,6 +1567,54 @@ async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
 # Document browser: list + delete individual documents
 # ---------------------------------------------------------------------------
 
+@router.post("/collections/{collection_id}/documents", status_code=status.HTTP_201_CREATED)
+async def ingest_document_into_collection(
+    collection_id: str,
+    body: CollectionIngestRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Ingest a document into a collection using the IngestionOrchestrator.
+
+    Routes content through content-type detection, chunking strategy selection,
+    quality filtering, and the knowledge store. Supports auto content-type detection.
+    """
+    tenant_ctx = _require_tenant(request)
+    knowledge_store = _knowledge_store(request)
+
+    # Verify collection exists
+    col = knowledge_store.get_collection(collection_id, tenant_ctx=tenant_ctx)
+    if col is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection {collection_id} not found",
+        )
+
+    try:
+        from app.ingestion.orchestrator import IngestionOrchestrator
+        orchestrator = IngestionOrchestrator(
+            knowledge_store=knowledge_store,
+            embedder=getattr(request.app.state, "embedder", None),
+        )
+        result = await orchestrator.ingest(
+            content=body.content,
+            content_type=body.content_type or "auto",
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+            source_url=body.source_url or "",
+            metadata=body.metadata or {},
+        )
+        return {
+            "ingested": result.chunks_created,
+            "chunk_ids": result.chunk_ids,
+            "collection_id": collection_id,
+            "content_type": result.content_type.value,
+            "chunking_strategy": result.chunking_strategy,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 @router.get("/collections/{collection_id}/documents")
 async def list_documents(
     collection_id: str,
@@ -1662,12 +1718,12 @@ async def delete_document(
 
     try:
         if hasattr(knowledge_store, "delete_document"):
-            await knowledge_store.delete_document(
+            count = knowledge_store.delete_document(
                 document_id=document_id,
                 collection_id=collection_id,
                 tenant_ctx=tenant,
             )
-            return {"status": "deleted", "document_id": document_id}
+            return {"status": "deleted", "document_id": document_id, "chunks_deleted": count}
         raise HTTPException(status_code=501, detail="Document deletion not implemented")
     except HTTPException:
         raise

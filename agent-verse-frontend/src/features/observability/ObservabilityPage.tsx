@@ -15,6 +15,7 @@ import {
 import { useAuthStore } from '@/stores/auth';
 import { observabilityApi, logsApi, type LogEntry } from '@/lib/api/client';
 import { TraceExplorer } from './TraceExplorer';
+import { RuntimeDecisionPanel } from './RuntimeDecisionPanel';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
@@ -1130,11 +1131,22 @@ function LogsTab({ since, until }: { since: string; until: string }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+interface SelectedGoalContext {
+  id: string;
+  execution_context?: {
+    runtime_profile?: { properties?: { complexity?: string; risk?: string } };
+    scorecard?: { overall_score?: number };
+  };
+  rag_strategy_used?: string;
+}
+
 export function ObservabilityPage() {
   const apiKey = useAuthStore((s) => s.apiKey);
   const qc = useQueryClient();
   const [tab, setTab] = useState<ObsTab>('overview');
   const [grafanaAvailable, setGrafanaAvailable] = useState<boolean | null>(null);
+  // Selected goal for RuntimeDecisionPanel
+  const [selectedGoal, setSelectedGoal] = useState<SelectedGoalContext | null>(null);
 
   // ── Time range state ────────────────────────────────────────────────────────
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
@@ -1302,6 +1314,15 @@ export function ObservabilityPage() {
             <h3 className="text-sm font-semibold text-foreground mb-2">Goal Execution Traces</h3>
             <TraceExplorer />
           </div>
+          {selectedGoal && (
+            <RuntimeDecisionPanel
+              goalId={selectedGoal.id}
+              complexity={selectedGoal.execution_context?.runtime_profile?.properties?.complexity}
+              risk={selectedGoal.execution_context?.runtime_profile?.properties?.risk}
+              ragStrategy={selectedGoal.rag_strategy_used}
+              overallScore={selectedGoal.execution_context?.scorecard?.overall_score ?? null}
+            />
+          )}
         </div>
       )}
       {tab === 'logs' && (
