@@ -55,6 +55,7 @@ dependencies = [
     "pyotp>=2.10.0",
     "qrcode[pil]>=8.2",
     "razorpay>=2.0.1",
+    "rank-bm25>=0.2.2",
 ]
 
 [project.scripts]

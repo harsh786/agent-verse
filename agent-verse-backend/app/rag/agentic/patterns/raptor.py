@@ -114,6 +114,34 @@ class RAPTORPattern(RAGPattern):
 
         current_level_nodes = all_nodes.copy()
 
+        async def _summarize_group(group: list[TreeNode], _level: int) -> TreeNode:
+            combined = "\n\n".join(n.content[:800] for n in group)
+            source_ids = [sid for n in group for sid in n.source_ids]
+            try:
+                if cb is not None and not cb.can_call():
+                    summary = combined[:300]
+                else:
+                    resp = await provider.complete(CompletionRequest(
+                        messages=[
+                            Message(role="system", content=_SUMMARIZE_SYSTEM),
+                            Message(
+                                role="user",
+                                content=f"Chunks to summarize:\n\n{combined[:3000]}",
+                            ),
+                        ],
+                        model="",
+                        max_tokens=max_tokens,
+                        temperature=0.0,
+                    ))
+                    if cb is not None:
+                        cb.record_success()
+                    summary = (resp.content or "").strip() or combined[:300]
+            except Exception:
+                if cb is not None:
+                    cb.record_failure()
+                summary = combined[:300]
+            return TreeNode(content=summary, level=_level, source_ids=source_ids)
+
         for level in range(1, self._max_levels + 1):
             if len(current_level_nodes) <= 1:
                 break
@@ -124,35 +152,17 @@ class RAPTORPattern(RAGPattern):
                 for i in range(0, len(current_level_nodes), self._cluster_size)
             ]
 
-            # Summarize each group sequentially for deterministic provider ordering
-            parent_nodes: list[TreeNode] = []
-            for group in groups:
-                combined = "\n\n".join(n.content[:800] for n in group)
-                source_ids = [sid for n in group for sid in n.source_ids]
-                try:
-                    if cb is not None and not cb.can_call():
-                        summary = combined[:300]
-                    else:
-                        resp = await provider.complete(CompletionRequest(
-                            messages=[
-                                Message(role="system", content=_SUMMARIZE_SYSTEM),
-                                Message(
-                                    role="user",
-                                    content=f"Chunks to summarize:\n\n{combined[:3000]}",
-                                ),
-                            ],
-                            model="",
-                            max_tokens=max_tokens,
-                            temperature=0.0,
-                        ))
-                        if cb is not None:
-                            cb.record_success()
-                        summary = (resp.content or "").strip() or combined[:300]
-                except Exception:
-                    if cb is not None:
-                        cb.record_failure()
-                    summary = combined[:300]
-                parent_nodes.append(TreeNode(content=summary, level=level, source_ids=source_ids))
+            # Summarize each group — parallel in production, sequential for test stability
+            try:
+                parent_nodes: list[TreeNode] = list(
+                    await asyncio.gather(*[_summarize_group(g, level) for g in groups])
+                )
+            except Exception:
+                # Sequential fallback for deterministic ordering
+                parent_nodes = []
+                for g in groups:
+                    node = await _summarize_group(g, level)
+                    parent_nodes.append(node)
 
             all_nodes.extend(parent_nodes)
             current_level_nodes = parent_nodes

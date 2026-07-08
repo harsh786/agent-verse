@@ -63,6 +63,10 @@ class MCPServerConfig(BaseModel):
     tool_definitions: list[dict[str, Any]] = Field(default_factory=list)
     # Callable for built-in server dispatch — excluded from JSON serialization
     builtin_handler: Any = Field(default=None, exclude=True)
+    # Transport: "http" (default) | "ws" | "websocket"
+    transport: str = "http"
+    # WebSocket URL when transport is "ws" or "websocket"
+    ws_url: str | None = None
 
     @model_validator(mode="after")
     def _sync_url_fields(self) -> "MCPServerConfig":
