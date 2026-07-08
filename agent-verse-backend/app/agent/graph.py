@@ -3079,7 +3079,9 @@ class AgentGraph:
                 pass
             try:
                 from app.agent.reflexion_wirer import get_reflexion_wirer
-                get_reflexion_wirer().maybe_store(agent_state)
+                _rw = get_reflexion_wirer()
+                import asyncio as _rf_asyncio
+                _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
             except Exception:
                 pass
 
