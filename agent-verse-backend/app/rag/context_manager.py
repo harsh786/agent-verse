@@ -1,4 +1,12 @@
-"""ContextBudgetManager — per-step context management: dedup, token cap, relevance re-ranking.
+"""ContextBudgetManager — enhanced token budget with step-relevance reranking.
+
+NOTE: The simpler ContextBudget (app/context/context_budget.py) is used in
+the production ContextPipeline. ContextBudgetManager adds step-query relevance
+ranking on top of token capping. Use ContextBudgetManager when you need
+query-relevance-aware chunk selection during goal execution.
+
+This class is intentionally NOT wired to the default pipeline to avoid
+LLM calls on every context assembly. Enable via runtime flag ENHANCED_CONTEXT_BUDGET=true.
 
 doc-2 §12 explicitly requires this file:
   app/rag/context_manager.py  ← ContextBudgetManager, dedup, token cap

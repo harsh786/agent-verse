@@ -129,11 +129,23 @@ class RetrieverTool:
         )
 
     def _select_strategy(self, query: str, collection_ids: list[str] | None) -> str:
-        if self._kb is None and not self._web_available:
-            return "memory"
-        if self._kb is None:
-            return "web" if self._web_available else "parametric"
-        return "hybrid"
+        """Select retrieval strategy using RetrievalPolicy."""
+        try:
+            from app.rag.agentic.retrieval_policy import RetrievalPolicy
+            policy = RetrievalPolicy()
+            strategy = policy.select(
+                query_type="factual",
+                kb_available=self._kb is not None,
+                web_available=self._web_available,
+                kg_available=self._kg is not None,
+            )
+            return strategy.value  # Returns "hybrid", "web", "graph", etc.
+        except Exception:
+            if self._kb is None and not self._web_available:
+                return "memory"
+            if self._kb is None:
+                return "web" if self._web_available else "parametric"
+            return "hybrid"
 
     async def _kb_retrieve(
         self,
