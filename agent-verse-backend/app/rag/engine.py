@@ -19,6 +19,7 @@ Retrieval modes:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -419,6 +420,95 @@ async def retrieve_multi_hop(
     return all_results[:top_k]
 
 
+async def retrieve_fusion(
+    session: AsyncSession,
+    *,
+    query: str,
+    query_embedding: list[float] | None,
+    collection_id: str,
+    top_k: int = 10,
+    max_variants: int = 3,
+    ef_search: int = 200,
+    embedding_dim: int | None = None,
+    embedder: Any = None,
+) -> list[RetrievalResult]:
+    """Fusion RAG: expand query into N variants, retrieve in parallel, RRF-merge."""
+    from app.rag.agentic.query_expander import QueryExpander
+    from app.context.rerank_policy import rrf_fuse
+
+    expander = QueryExpander()
+    variants: list[str] = expander.expand_for_fusion(query, max_variants=max_variants)
+
+    # Use original embedding for all variants (best-effort: embed each if embedder available)
+    variant_embeddings: list[list[float] | None] = []
+    for v in variants:
+        if embedder is not None and v != query:
+            try:
+                from app.providers.base import EmbedRequest
+                resp = await embedder.embed(EmbedRequest(texts=[v]))
+                variant_embeddings.append(resp.embeddings[0] if resp.embeddings else query_embedding)
+            except Exception:
+                variant_embeddings.append(query_embedding)
+        else:
+            variant_embeddings.append(query_embedding)
+
+    async def _retrieve_one(q: str, emb: list[float] | None) -> list[RetrievalResult]:
+        try:
+            return await hybrid_search(
+                session=session, query=q, query_embedding=emb,
+                collection_id=collection_id, top_k=top_k,
+                ef_search=ef_search, embedding_dim=embedding_dim,
+            )
+        except Exception as exc:
+            logger.warning("fusion_rag_variant_failed", query=q[:60], error=str(exc)[:80])
+            return []
+
+    per_variant_results = await asyncio.gather(
+        *[_retrieve_one(q, emb) for q, emb in zip(variants, variant_embeddings)]
+    )
+
+    # Build ranked lists for rrf_fuse
+    ranked_lists: list[list[dict]] = []
+    for variant_results in per_variant_results:
+        ranked_list = [
+            {
+                "chunk_id": r.chunk_id,
+                "content": r.content,
+                "score": r.score,
+                "source_metadata": r.source_metadata,
+                "retrieval_legs": r.retrieval_legs,
+            }
+            for r in variant_results
+        ]
+        if ranked_list:
+            ranked_lists.append(ranked_list)
+
+    if not ranked_lists:
+        return []
+
+    fused = rrf_fuse(ranked_lists, k=60)
+
+    # Deduplicate by chunk_id
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for item in fused:
+        cid = item.get("chunk_id", "")
+        if cid not in seen:
+            seen.add(cid)
+            deduped.append(item)
+
+    return [
+        RetrievalResult(
+            chunk_id=d["chunk_id"],
+            content=d["content"],
+            score=d.get("score", 0.0),
+            source_metadata=d.get("source_metadata", {}),
+            retrieval_legs=d.get("retrieval_legs", ["fusion"]),
+        )
+        for d in deduped[:top_k]
+    ]
+
+
 async def retrieve(
     session: AsyncSession,
     *,
@@ -446,6 +536,12 @@ async def retrieve(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, provider=provider,
                 top_k=top_k, embedding_dim=embedding_dim,
+            )
+        if strategy == "fusion":
+            return await retrieve_fusion(
+                session, query=query, query_embedding=query_embedding,
+                collection_id=collection_id, top_k=top_k,
+                embedding_dim=embedding_dim,
             )
         mode = "lexical" if strategy == "lexical" else retrieval_mode
         return await hybrid_search(
