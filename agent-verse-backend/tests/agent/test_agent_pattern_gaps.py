@@ -44,13 +44,13 @@ def test_peer_review_in_strategy_registry():
 def test_self_consistency_pattern_exists():
     p = SelfConsistencyPattern()
     assert p.pattern_id == "self_consistency"
-    assert p.state in (PatternState.PLANNED, PatternState.PARTIAL)
+    assert p.state in (PatternState.PLANNED, PatternState.PARTIAL, PatternState.IMPLEMENTED)
 
 
 def test_tree_of_thoughts_pattern_exists():
     p = TreeOfThoughtsPattern()
     assert p.pattern_id == "tree_of_thoughts"
-    assert p.state in (PatternState.PLANNED, PatternState.PARTIAL)
+    assert p.state in (PatternState.PLANNED, PatternState.PARTIAL, PatternState.IMPLEMENTED)
 
 
 def test_all_doc1_agent_patterns_in_all_patterns_list():

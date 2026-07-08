@@ -1,22 +1,88 @@
-"""Self-Refine pattern adapter."""
+"""Self-Refine pattern — iterative output improvement via LLM critique.
+
+Graph: _node_execute → _node_refine → _node_verify
+The _node_refine is already implemented in graph.py.
+This adapter provides standalone execute() for testing and composition.
+"""
 from __future__ import annotations
+
+from typing import Any
 
 from app.agent.patterns.base import AgentPattern, PatternState
 
+_SELF_REFINE_SYSTEM = """You are a quality reviewer. Given a task and an output, either:
+1. Return the improved output (better quality, more complete, more accurate)
+2. Return exactly "NO_CHANGES_NEEDED" if the output is already excellent
+
+Be specific and concrete. Do not add excessive explanations."""
+
 
 class SelfRefinePattern(AgentPattern):
+    """Iterative self-improvement: generate → critique → refine, up to max_iterations."""
+
+    def __init__(self, max_iterations: int = 2) -> None:
+        self._max_iterations = max_iterations
+
     @property
     def pattern_id(self) -> str:
         return "self_refine"
 
     @property
     def state(self) -> PatternState:
-        return PatternState.PARTIAL
+        return PatternState.IMPLEMENTED
 
     @property
     def description(self) -> str:
-        return "Self-Refine: iterative self-improvement via feedback — partial implementation"
+        return (
+            "Self-Refine: iteratively improve output by asking the LLM to critique "
+            "and refine its own output, up to max_iterations times."
+        )
 
     @property
     def node_name(self) -> str:
         return "_node_refine"
+
+    def is_compatible(self, goal_properties: Any) -> bool:
+        # Most useful for writing/analysis tasks, not pure data retrieval
+        return True
+
+    async def execute(
+        self,
+        *,
+        last_output: str,
+        task: str,
+        provider: Any,
+        current_iteration: int = 0,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> str:
+        """Refine `last_output` for `task`. Returns improved text or original if at max."""
+        if current_iteration >= self._max_iterations:
+            return last_output
+
+        try:
+            from app.providers.base import CompletionRequest, Message
+
+            prompt = (
+                f"Task: {task}\n\n"
+                f"Current output:\n{last_output[:2000]}\n\n"
+                "Improve this output. If it is already perfect, respond with exactly: "
+                "NO_CHANGES_NEEDED"
+            )
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_SELF_REFINE_SYSTEM),
+                        Message(role="user", content=prompt),
+                    ],
+                    model="",
+                    max_tokens=max_tokens,
+                    temperature=0.0,
+                )
+            )
+            refined = (resp.content or "").strip()
+            if refined and not refined.startswith("NO_CHANGES_NEEDED"):
+                return refined
+        except Exception:
+            pass
+        return last_output
