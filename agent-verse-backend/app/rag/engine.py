@@ -550,6 +550,7 @@ async def retrieve(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, top_k=top_k,
                 embedding_dim=embedding_dim,
+                embedder=provider,
             )
         mode = "lexical" if strategy == "lexical" else retrieval_mode
         return await hybrid_search(

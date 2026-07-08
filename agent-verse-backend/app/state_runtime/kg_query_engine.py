@@ -109,5 +109,5 @@ class KGQueryEngine:
 
     async def _neighbourhood(self, query: str, tenant_id: str, strategy: str) -> KGQueryResult:
         nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=8)
-        facts = [{"entity": n.name, "strategy": strategy} for n in (nodes or [])]
+        facts = [{"entity": n.label, "strategy": strategy} for n in (nodes or [])]
         return KGQueryResult(strategy_used=strategy, facts=facts, confidence=0.6 if facts else 0.0)
