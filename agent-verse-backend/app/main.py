@@ -885,8 +885,49 @@ def create_app(
                 from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
                 _kg_store.set_db(db_factory)
                 logger.info("knowledge_graph_db_wired")
+                # Hydrate in-memory KG from DB (so query_nodes/get_edges work after restart)
+                try:
+                    import asyncio as _kg_asyncio
+
+                    async def _hydrate_kg() -> None:
+                        try:
+                            # load_from_db(tenant_id) has no wildcard support;
+                            # passing "*" returns 0 rows harmlessly — real per-tenant
+                            # hydration happens on first KG query per tenant.
+                            await _kg_store.load_from_db("*")
+                            logger.info("knowledge_graph_hydrated_from_db")
+                        except Exception as _kg_load_err:
+                            logger.warning("knowledge_graph_hydration_failed",
+                                           error=str(_kg_load_err))
+
+                    _kg_asyncio.create_task(_hydrate_kg())
+                except Exception as _kg_hydrate_exc:
+                    logger.warning("knowledge_graph_hydrate_task_failed",
+                                   error=str(_kg_hydrate_exc))
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
+
+            # Wire DB into reflexion wirer singleton for cross-process persistence
+            try:
+                from app.agent.reflexion_wirer import get_reflexion_wirer as _get_rw
+                _rw = _get_rw(db_factory=db_factory)
+                app.state.reflexion_wirer = _rw
+                # Seed in-memory store from DB for all known tenants.
+                # load_from_db uses WHERE tenant_id = :tenant_id; no wildcard support.
+                # Passing "*" returns 0 rows harmlessly — real hydration is per-tenant.
+                import asyncio as _rw_asyncio
+
+                async def _hydrate_reflexion() -> None:
+                    try:
+                        await _rw._store.load_from_db(tenant_id="*", db_factory=db_factory)
+                        logger.info("reflexion_store_hydrated_from_db")
+                    except Exception as _rw_load_err:
+                        logger.warning("reflexion_store_hydration_failed",
+                                       error=str(_rw_load_err))
+
+                _rw_asyncio.create_task(_hydrate_reflexion())
+            except Exception as _rw_exc:
+                logger.warning("reflexion_wirer_db_wire_failed", error=str(_rw_exc))
 
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
@@ -1187,18 +1228,16 @@ def create_app(
             except Exception as _lhm_exc:
                 logger.warning("legal_hold_manager_wire_failed", error=str(_lhm_exc))
 
-            # Dynamic orchestration: startup hydration of tool trust + reflexion state
+            # Orchestration persistence: hydrate tool trust from DB (always-on, no flag gate)
             try:
-                from app.core.runtime_flags import get_runtime_flags
-                if get_runtime_flags().dynamic_orchestration:
-                    from app.services.orchestration_persistence import OrchestrationPersistence
-                    _orch_persistence = OrchestrationPersistence(db=active.session)
-                    import asyncio as _asyncio
-                    _asyncio.create_task(
-                        _orch_persistence.load_tool_trust_from_db("*", db=active.session)
-                    )
-                    app.state.orchestration_persistence = _orch_persistence
-                    logger.info("orchestration_persistence_hydration_started")
+                from app.services.orchestration_persistence import OrchestrationPersistence
+                _orch_persistence = OrchestrationPersistence(db=db_factory)
+                import asyncio as _asyncio
+                _asyncio.create_task(
+                    _orch_persistence.load_tool_trust_from_db("*", db=db_factory)
+                )
+                app.state.orchestration_persistence = _orch_persistence
+                logger.info("orchestration_persistence_hydration_started")
             except Exception as _orch_exc:
                 logger.warning("orchestration_state_hydration_failed", error=str(_orch_exc))
 
