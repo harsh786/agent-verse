@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from app.embedding.model_registry import EmbeddingModelRegistry
 from app.embedding.dimension_policy import DimensionPolicy
@@ -51,10 +51,15 @@ class EmbeddingOrchestrator:
     def select(
         self,
         content_type: ContentType,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: "Optional[TenantContext]" = None,
+        collection_size: int = 0,
     ) -> EmbeddingSelectionResult:
         modalities = _MODALITY_MAP.get(content_type, ["text"])
-        allowed_costs = _COST_BY_PLAN.get(tenant_ctx.plan.value, ["low"])
+        # Use tenant plan when available; fall back to "free" tier for broad compatibility
+        if tenant_ctx is not None:
+            allowed_costs = _COST_BY_PLAN.get(tenant_ctx.plan.value, ["low"])
+        else:
+            allowed_costs = _COST_BY_PLAN.get("free", ["free", "low"])
 
         # Try each modality in preference order
         for modality in modalities:

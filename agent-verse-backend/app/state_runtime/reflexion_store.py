@@ -37,15 +37,30 @@ class ReflexionStore:
         })
 
     def recall(self, *, tenant_id: str, limit: int = 10) -> list[dict[str, Any]]:
-        # Lazy per-tenant DB hydration
-        if self._db_factory is not None and tenant_id not in self._hydrated_tenants:
-            self._hydrated_tenants.add(tenant_id)
+        """Recall recent failure lessons. Triggers lazy DB hydration on first miss."""
+        lessons = list(self._lessons.get(tenant_id, []))
+
+        # Lazy DB hydration — only if we have a factory and haven't hydrated this tenant
+        if not lessons and self._db_factory is not None and tenant_id not in self._hydrated_tenants:
+            self._hydrated_tenants.add(tenant_id)  # mark immediately to prevent re-entry
             try:
                 import asyncio
-                asyncio.ensure_future(self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory))
-            except RuntimeError:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule hydration asynchronously (best-effort)
+                    asyncio.ensure_future(
+                        self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory)
+                    )
+                else:
+                    # Sync context — load directly
+                    loop.run_until_complete(
+                        self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory)
+                    )
+                # Re-read after sync load
+                lessons = list(self._lessons.get(tenant_id, []))
+            except Exception:
                 pass
-        lessons = list(self._lessons.get(tenant_id, []))
+
         return lessons[-limit:]
 
     # ── Async (in-memory + DB) ────────────────────────────────────────────────

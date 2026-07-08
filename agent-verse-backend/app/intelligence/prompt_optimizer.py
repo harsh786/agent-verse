@@ -388,6 +388,28 @@ class PromptOptimizer:
         tenant_variants = self._variants.get(tenant_id, {})
         return list({v.prompt_key for v in tenant_variants.values()})
 
+    def get_active_variant(self, variant_set_id: str) -> str | None:
+        """Get the currently active prompt variant ID for A/B testing via PromptVariantSelector.
+
+        Uses PromptVariantSelector for deterministic hash-based selection across
+        all registered variants for this prompt key.
+        """
+        try:
+            from app.context.prompt_variant_selector import PromptVariantSelector
+            # Collect all variant IDs registered under this key (across all tenants)
+            pool: list[str] = []
+            for tenant_variants in self._variants.values():
+                for v in tenant_variants.values():
+                    if v.prompt_key == variant_set_id and v.variant_id not in pool:
+                        pool.append(v.variant_id)
+            if not pool:
+                return None
+            selector = PromptVariantSelector()
+            selected = selector.select(goal_id=variant_set_id, variant_pool=pool)
+            return selected.variant_id
+        except Exception:
+            return None
+
 
 # ---------------------------------------------------------------------------
 # Module-level backward-compat aliases (point to the "global" scope of a

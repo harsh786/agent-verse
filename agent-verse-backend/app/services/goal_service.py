@@ -273,6 +273,18 @@ def _fake_provider() -> Any:
     )
 
 
+def _build_dedup_cache(redis: Any) -> "DeduplicationCache | Any":
+    """Build the best available dedup cache: Redis-backed when Redis is available."""
+    from app.reliability.dedup import DeduplicationCache as _DedupCache
+    try:
+        from app.reliability.dedup import RedisDeduplicationCache
+        if redis is not None:
+            return RedisDeduplicationCache(redis=redis)
+    except Exception:
+        pass
+    return _DedupCache()
+
+
 # ── service ───────────────────────────────────────────────────────────────────
 
 
@@ -837,7 +849,7 @@ class GoalService:
             mcp_client=mcp_client,
             eval_runner=eval_runner,
             result_processor=ResultProcessor(),
-            dedup_cache=DeduplicationCache(),
+            dedup_cache=_build_dedup_cache(getattr(self, "_redis", None)),
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             policy_engine=policy_engine,

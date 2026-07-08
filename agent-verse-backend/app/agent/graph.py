@@ -457,34 +457,38 @@ class AgentGraph:
         try:
             from app.core.runtime_flags import get_runtime_flags
             if get_runtime_flags().dynamic_orchestration:
-                from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
-                builder = RuntimeProfileBuilder()
-                profile, trace = await builder.build_with_trace(
-                    agent_state.goal,
-                    tenant_id=agent_state.tenant_ctx.tenant_id,
-                    goal_id=agent_state.goal_id,
-                )
-                agent_state.context["_runtime_profile"] = profile
-                agent_state.context["_decision_trace"] = trace
-                if self._event_callback is not None:
-                    from app.observability.runtime_decision_trace import RuntimeSSEEmitter
-                    emitter = RuntimeSSEEmitter()
-                    await self._event_callback(emitter.pattern_assembled(
+                # Skip if profile was already built by goal_service (present in execution_context)
+                if agent_state.context.get("_runtime_profile") is not None:
+                    pass  # Profile already set by goal_service — don't rebuild
+                else:
+                    from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
+                    builder = RuntimeProfileBuilder()
+                    profile, trace = await builder.build_with_trace(
+                        agent_state.goal,
+                        tenant_id=agent_state.tenant_ctx.tenant_id,
                         goal_id=agent_state.goal_id,
-                        complexity=profile.properties.complexity.value,
-                        risk=profile.properties.risk.value,
-                        patterns_active={
-                            "reasoning": profile.agent_patterns.reasoning,
-                            "rag": profile.rag_strategy.sources,
-                            "safety": (
-                                [profile.security.guardrail_bundle]
-                                if profile.security.guardrail_bundle else []
-                            ),
-                        },
-                        models={"planner": profile.model_plan.planner},
-                        selection_reasons={},
-                        assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0),
-                    ))
+                    )
+                    agent_state.context["_runtime_profile"] = profile
+                    agent_state.context["_decision_trace"] = trace
+                    if self._event_callback is not None:
+                        from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                        emitter = RuntimeSSEEmitter()
+                        await self._event_callback(emitter.pattern_assembled(
+                            goal_id=agent_state.goal_id,
+                            complexity=profile.properties.complexity.value,
+                            risk=profile.properties.risk.value,
+                            patterns_active={
+                                "reasoning": profile.agent_patterns.reasoning,
+                                "rag": profile.rag_strategy.sources,
+                                "safety": (
+                                    [profile.security.guardrail_bundle]
+                                    if profile.security.guardrail_bundle else []
+                                ),
+                            },
+                            models={"planner": profile.model_plan.planner},
+                            selection_reasons={},
+                            assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0),
+                        ))
         except Exception as _profile_exc:
             from app.observability.logging import get_logger
             get_logger(__name__).warning(
@@ -506,6 +510,17 @@ class AgentGraph:
                     _runtime_profile_ctx, tenant_ctx=agent_state.tenant_ctx
                 )
                 agent_state.context["_governance_bundle"] = _gov_profile.name.value
+        except Exception:
+            pass
+
+        # Build source inventory for planner awareness (M1d)
+        try:
+            from app.rag.agentic.source_inventory import SourceInventory
+            _kb = getattr(self, "_knowledge_store", None)
+            if _kb is not None:
+                inventory = SourceInventory(knowledge_store=_kb)
+                sources = inventory.build(tenant_ctx=agent_state.tenant_ctx)
+                agent_state.context["_source_inventory"] = sources.to_dict()
         except Exception:
             pass
 
@@ -729,6 +744,23 @@ class AgentGraph:
                 pass  # fall through — never block execution on retrieval enhancement
 
         rag_context = "\n\n".join(context_parts)
+
+        # ── RAGTrace: record retrieval for observability ───────────────────────
+        try:
+            from app.rag.agentic.rag_trace import RAGTrace
+            _rag_trace = RAGTrace(goal_id=agent_state.goal_id, tenant_id=tenant_ctx.tenant_id)
+            _strategy = agent_state.context.get("_active_rag_strategy", "hybrid")
+            _rag_trace.record_retrieval(
+                strategy=_strategy,
+                query=agent_state.goal[:200],
+                result_count=len(context_parts),
+                confidence=0.7,
+                latency_ms=0,
+            )
+            if self._event_callback is not None:
+                await self._event_callback(_rag_trace.to_sse_event())
+        except Exception:
+            pass
 
         # ── Web fallback when KB returns nothing ──────────────────────────────
         if not context_parts and getattr(self, "_web_search_tool", None) is not None:
@@ -1180,11 +1212,19 @@ class AgentGraph:
         except Exception:
             pass  # skills must never block execution
 
+        # OutputContractBuilder — add output format constraint to planner prompt (M5c)
+        try:
+            from app.context.output_contract_builder import OutputContractBuilder
+            _ocb = OutputContractBuilder()
+            _contract = _ocb.build()
+            if _contract.instructions:
+                extra_parts.append(f"[Output contract]\n{_contract.instructions}")
+        except Exception:
+            pass
+
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
-
-        # Determine system content — prepend agent system_prompt if present
         # Use PromptOptimizer variant when wired (Task 7)
         _plan_optimizer = getattr(self, "_prompt_optimizer", None)
         if _plan_optimizer is not None:
@@ -2083,6 +2123,21 @@ class AgentGraph:
                 _allowed_tools_set = {t.name for t in _tools_list if hasattr(t, "name")}
             except Exception:
                 pass
+
+        # ToolPromptBuilder — enrich content with formatted tool descriptions (M5b)
+        try:
+            from app.context.tool_prompt_builder import ToolPromptBuilder
+            if _tool_defs:
+                _tpb = ToolPromptBuilder()
+                _defs_as_dicts = [
+                    {"name": td.name, "description": td.description}
+                    for td in _tool_defs
+                ]
+                _tool_context = _tpb.build(tools=_defs_as_dicts, step_context=step)
+                if _tool_context:
+                    content = f"{content}\n\nAvailable tools:\n{_tool_context}"
+        except Exception:
+            pass
 
         # Select executor system prompt via PromptOptimizer if wired (Task 7)
         _executor_prompt = EXECUTOR_SYSTEM
@@ -2991,6 +3046,17 @@ class AgentGraph:
         except Exception as exc:
             # Log but don't block execution — fail-open only on grounding check errors
             self._logger.warning("grounding_check_error", error=str(exc)[:80])
+
+        # M12: Update session memory with step output
+        try:
+            _session_mem = getattr(self, "_session_memory", None)
+            if _session_mem is not None and hasattr(_session_mem, "add"):
+                _session_mem.add(
+                    key=f"step_{len(state.steps)}",
+                    value={"description": step, "output": (raw_output or "")[:500]},
+                )
+        except Exception:
+            pass
 
         return raw_output
 

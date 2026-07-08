@@ -67,6 +67,16 @@ class ContextPipeline:
         dedup_removed = original_count - len(reranked)
         budget_result = self._budget.apply(reranked)
         included = budget_result.included_chunks
+
+        # Step: thread citation indices onto chunks before citation extraction
+        try:
+            from app.rag.agentic.citation_threader import CitationThreader
+            threader = CitationThreader()
+            if included:
+                included = threader.thread(included)
+        except Exception:
+            pass
+
         cited_chunks, citations = self._citations_mgr.attach_citations(included)
         bundle = PromptContextBundle(
             goal_context=goal_context,

@@ -45,8 +45,11 @@ class PatternSelector:
             reasons["consensus_verification"] = "critical risk requires consensus"
 
         if props.complexity in (Complexity.COMPLEX, Complexity.EXPERT):
-            reasoning = list(dict.fromkeys(reasoning + ["chain_of_thought", "reflection"]))
-            reasons["chain_of_thought"] = f"complexity={props.complexity.value}"
+            # Add chain_of_thought only when available (not PLANNED in registry)
+            if self._registry.is_available("chain_of_thought"):
+                reasoning = list(dict.fromkeys(reasoning + ["chain_of_thought"]))
+                reasons["chain_of_thought"] = f"complexity={props.complexity.value}"
+            reasoning = list(dict.fromkeys(reasoning + ["reflection"]))
             reasons["reflection"] = "complex goals benefit from reflection"
             max_iter = 25
 
