@@ -1674,9 +1674,59 @@ class GoalService:
         tenant_ctx: TenantContext,
         tool_context: ToolContext | None = None,
     ) -> None:
-        """Background task: run the agent loop for a submitted goal."""
+        """Background task: run the agent loop for a submitted goal.
+
+        When ISOLATED_AGENT_EXECUTION=true the execution is routed through the
+        ExecutionEnvironmentScheduler instead of running in-process.  All core
+        agent behaviour (AgentGraph / AgentLoop logic, guardrails, governance,
+        RAG, memory, HITL, etc.) is unchanged — only the *where* changes.
+        """
         with _tracer.start_as_current_span("goal.execute") as span:
             span.set_attribute("goal_id", goal_id)
+
+            # ── Isolation routing ────────────────────────────────────────────
+            # Flag-off path adds zero overhead.  On flag-check failure, we
+            # check ISOLATED_EXECUTION_REQUIRED to decide whether to fail
+            # closed (required=True) or fall through (required=False).
+            try:
+                from app.core.runtime_flags import get_runtime_flags as _get_flags
+                _flags = _get_flags()
+                if _flags.isolated_agent_execution:
+                    await self._run_agent_loop_isolated(
+                        goal_id=goal_id,
+                        goal_text=goal_text,
+                        tenant_ctx=tenant_ctx,
+                        tool_context=tool_context,
+                    )
+                    return
+            except Exception as _iso_import_exc:
+                _svc_logger.warning(
+                    "isolation_flag_check_failed goal_id=%s error=%s",
+                    goal_id, str(_iso_import_exc)[:120],
+                )
+                # Fail-closed when isolation is required
+                try:
+                    from app.core.runtime_flags import get_runtime_flags as _gf2
+                    if _gf2().isolated_execution_required:
+                        record = self._goals.get(goal_id)
+                        if record is not None:
+                            from app.agent.state import GoalStatus as _GS
+                            record.status = _GS.FAILED
+                            record.error_message = str(_iso_import_exc)
+                        await self._dispatch_event(
+                            goal_id,
+                            {
+                                "type": "goal_failed",
+                                "reason": str(_iso_import_exc),
+                                "_isolation_error": True,
+                                "failure_reason": "internal_error",
+                            },
+                            tenant_ctx=tenant_ctx,
+                        )
+                        return
+                except Exception:
+                    pass
+            # ── End isolation routing ────────────────────────────────────────
 
             record = self._goals.get(goal_id)
             loop = self._make_agent_loop_for_tenant(
@@ -1755,6 +1805,179 @@ class GoalService:
                 if record is not None:
                     failed_event: dict[str, Any] = {"type": "goal_failed", "reason": str(exc)}
                     await self._dispatch_event(goal_id, failed_event, tenant_ctx=tenant_ctx)
+
+    async def _run_agent_loop_isolated(
+        self,
+        goal_id: str,
+        goal_text: str,
+        tenant_ctx: TenantContext,
+        tool_context: ToolContext | None = None,
+    ) -> None:
+        """Route execution through the isolated execution environment.
+
+        This method is called only when ISOLATED_AGENT_EXECUTION=true.
+        It builds an ExecutionEnvelope from the current goal context and
+        dispatches it to the ExecutionEnvironmentScheduler.  All control-plane
+        semantics (status tracking, SSE events, audit, cost) are preserved —
+        only the execution happens in the isolated plane.
+
+        Fail-closed: if the scheduler raises RunnerUnavailableError, the goal
+        is marked failed and a structured error event is emitted.  There is
+        no silent fallback to in-process execution.
+        """
+        import contextlib
+
+        from app.core.runtime_flags import get_runtime_flags as _get_flags
+        from app.execution_environment.envelope import build_envelope
+        from app.execution_environment.models import RunnerType
+        from app.execution_environment.scheduler import (
+            ExecutionEnvironmentScheduler,
+            RunnerUnavailableError,
+        )
+
+        record = self._goals.get(goal_id)
+        flags = _get_flags()
+
+        # Select runner type from flags
+        if flags.isolated_execution_kubernetes_runner:
+            runner_type = RunnerType.KUBERNETES
+        elif flags.isolated_execution_local_runner:
+            runner_type = RunnerType.LOCAL
+        else:
+            runner_type = RunnerType.FAKE
+
+        # Serialise tool_context for the envelope (no raw MCP credentials)
+        tc_dict: dict[str, Any] = {}
+        if tool_context is not None:
+            with contextlib.suppress(Exception):
+                tc_dict = {
+                    "tool_prompt": tool_context.to_prompt_block(),
+                    "tools": [
+                        {"name": t.name, "description": getattr(t, "description", "")}
+                        for t in getattr(tool_context, "tools", [])
+                    ],
+                }
+
+        # Get agent_config for the envelope
+        agent_config: dict[str, Any] = {}
+        if record is not None and record.agent_id:
+            _store = self._get_agent_store()
+            if _store is not None:
+                try:
+                    cfg = _store.get(record.agent_id, tenant_ctx=tenant_ctx)
+                    if isinstance(cfg, dict):
+                        agent_config = cfg
+                except Exception:
+                    pass
+
+        # Resolve scoped LLM key from tenant config store (best-effort)
+        scoped_llm_key = ""
+        try:
+            from app.services.llm_config_store import get_llm_config_store
+            _config_store = get_llm_config_store()
+            if _config_store is not None:
+                _cfg = await _config_store.get_config(tenant_ctx.tenant_id) or {}
+                scoped_llm_key = str(_cfg.get("api_key", ""))
+        except Exception:
+            pass
+
+        # Collect runtime_profile and feature_flags snapshots for the envelope
+        _runtime_profile: dict[str, Any] = {}
+        _feature_flags: dict[str, bool] = {}
+        _hitl_state: dict[str, Any] = {}
+        if record is not None:
+            _runtime_profile = record.execution_context.get("runtime_profile", {})
+            _hitl_state = record.execution_context.get("hitl_state", {})
+        try:
+            from app.core.runtime_flags import RuntimeFlags
+            _rf = flags
+            _feature_flags = {
+                "isolated_agent_execution": _rf.isolated_agent_execution,
+                "isolated_execution_required": _rf.isolated_execution_required,
+                "isolated_execution_local_runner": _rf.isolated_execution_local_runner,
+                "isolated_execution_kubernetes_runner": _rf.isolated_execution_kubernetes_runner,
+                "dynamic_orchestration": _rf.dynamic_orchestration,
+                "agentic_rag": _rf.agentic_rag,
+            }
+        except Exception:
+            pass
+
+        envelope = build_envelope(
+            tenant_id=tenant_ctx.tenant_id,
+            goal_id=goal_id,
+            goal_text=goal_text,
+            agent_id=(record.agent_id or "") if record is not None else "",
+            execution_context=(record.execution_context or {}) if record is not None else {},
+            agent_config=agent_config,
+            tool_context=tc_dict,
+            runtime_profile=_runtime_profile,
+            hitl_state=_hitl_state,
+            feature_flags=_feature_flags,
+            dry_run=(record.dry_run if record is not None else False),
+            workflow_mode=(record.workflow_mode if record is not None else "single_agent"),
+            priority=(record.priority if record is not None else "normal"),
+            runner_type=runner_type,
+            scoped_llm_api_key=scoped_llm_key,
+        )
+
+        # Resolve scheduler from app.state (registered by create_app) or
+        # build a fresh one if not available (e.g. in lightweight test contexts)
+        scheduler: ExecutionEnvironmentScheduler
+        _scheduler_candidate = getattr(self._app_state, "execution_scheduler", None)
+        if _scheduler_candidate is not None:
+            scheduler = _scheduler_candidate
+        else:
+            scheduler = ExecutionEnvironmentScheduler.from_flags(
+                isolated_execution_local_runner=flags.isolated_execution_local_runner,
+                isolated_execution_kubernetes_runner=flags.isolated_execution_kubernetes_runner,
+            )
+
+        async def callback(event: dict[str, Any]) -> None:
+            await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
+
+        try:
+            result = await scheduler.schedule(envelope, event_callback=callback)
+            # Update goal record status to mirror the execution result
+            if record is not None:
+                from app.agent.state import GoalStatus
+                if result.success:
+                    record.status = GoalStatus.COMPLETE
+                else:
+                    record.status = GoalStatus.FAILED
+                    record.error_message = result.error_message
+        except RunnerUnavailableError as exc:
+            _svc_logger.error(
+                "isolated_runner_unavailable goal_id=%s reason=%s",
+                goal_id, str(exc)[:200],
+            )
+            if record is not None:
+                from app.agent.state import GoalStatus
+                record.status = GoalStatus.FAILED
+                record.error_message = str(exc)
+            await self._dispatch_event(
+                goal_id,
+                {
+                    "type": "goal_failed",
+                    "reason": str(exc),
+                    "failure_reason": exc.failure_reason.value,
+                    "_isolation_error": True,
+                },
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as exc:
+            _svc_logger.error(
+                "isolated_execution_unexpected_error goal_id=%s error=%s",
+                goal_id, str(exc)[:200],
+            )
+            if record is not None:
+                from app.agent.state import GoalStatus
+                record.status = GoalStatus.FAILED
+                record.error_message = str(exc)
+            await self._dispatch_event(
+                goal_id,
+                {"type": "goal_failed", "reason": str(exc), "_isolation_error": True},
+                tenant_ctx=tenant_ctx,
+            )
 
     async def _run_workflow(
         self,

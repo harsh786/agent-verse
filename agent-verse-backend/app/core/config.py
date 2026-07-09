@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     # --- feature flags ---
     civilization_enabled: bool = False
 
+    # --- isolated agent execution environment ---
+    # Master switch: route agent execution through the isolated execution plane.
+    # Default off — existing behavior is fully preserved when this is False.
+    isolated_agent_execution: bool = False
+    # Hard requirement: if True AND no runner is available/healthy, fail closed.
+    # If False, fall back to in-process execution when the runner is unavailable.
+    isolated_execution_required: bool = False
+    # Runner back-ends (both default off; at most one should be True at a time)
+    isolated_execution_local_runner: bool = False        # subprocess runner
+    isolated_execution_kubernetes_runner: bool = False   # Kubernetes Job runner
+
     # Advanced RAG pattern feature flags
     enable_raptor: bool = True
     enable_flare: bool = True
