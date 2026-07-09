@@ -1459,6 +1459,33 @@ def create_app(
     # Wire app reference into GoalService for per-tenant LLM provider dispatch.
     _goal_svc._app_state = app
 
+    # ── Isolated Agent Execution Environment ──────────────────────────────────
+    # Always registers a FakeRunner-backed scheduler (default off).  This ensures
+    # getattr(app.state, "execution_scheduler") is never None — callers won't get
+    # an AttributeError even when the isolation flag is off.
+    try:
+        from app.core.runtime_flags import get_runtime_flags as _get_rtflags
+        from app.execution_environment.scheduler import ExecutionEnvironmentScheduler
+        _iso_flags = _get_rtflags()
+        app.state.execution_scheduler = ExecutionEnvironmentScheduler.from_flags(
+            isolated_execution_local_runner=_iso_flags.isolated_execution_local_runner,
+            isolated_execution_kubernetes_runner=_iso_flags.isolated_execution_kubernetes_runner,
+        )
+    except Exception as _iso_init_exc:
+        import logging as _iso_log
+        _iso_log.getLogger(__name__).error(
+            "execution_scheduler_init_failed: %s — using default FakeRunner scheduler",
+            _iso_init_exc,
+        )
+        # Even on failure, register a safe FakeRunner scheduler so
+        # isolated execution attempts fail with a structured RunnerUnavailableError
+        # instead of an AttributeError on None.
+        try:
+            from app.execution_environment.scheduler import ExecutionEnvironmentScheduler as _ESFallback
+            app.state.execution_scheduler = _ESFallback()
+        except Exception:
+            app.state.execution_scheduler = None  # last resort
+
     # ── Error handlers ────────────────────────────────────────────────────────
     _register_error_handlers(app)
 

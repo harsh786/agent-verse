@@ -1088,6 +1088,127 @@ def run_goal(
         ) if hasattr(plan, 'value') else 1800
 
         try:
+            # ── Isolation routing ────────────────────────────────────────────────
+            # Check flag first — zero overhead when ISOLATED_AGENT_EXECUTION=false
+            _use_isolation = False
+            _iso_required = False
+            try:
+                from app.core.runtime_flags import get_runtime_flags as _get_rtflags
+                _rt = _get_rtflags()
+                _use_isolation = _rt.isolated_agent_execution
+                _iso_required = _rt.isolated_execution_required
+            except Exception as _iso_flag_exc:
+                logger.warning("isolation_flag_check_failed: %s", _iso_flag_exc)
+
+            if _use_isolation:
+                # Build and dispatch an ExecutionEnvelope instead of running in-process
+                _RunnerUnavail: type | None = None
+                try:
+                    from app.execution_environment.envelope import build_envelope as _build_env
+                    from app.execution_environment.models import RunnerType as _RT
+                    from app.execution_environment.scheduler import (
+                        ExecutionEnvironmentScheduler as _Scheduler,
+                        RunnerUnavailableError as _RunnerUnavail,
+                    )
+
+                    _iso_flags = _rt  # reuse already-fetched flags (G-44)
+                    if _iso_flags.isolated_execution_kubernetes_runner:
+                        _iso_runner_type = _RT.KUBERNETES
+                    elif _iso_flags.isolated_execution_local_runner:
+                        _iso_runner_type = _RT.LOCAL
+                    else:
+                        _iso_runner_type = _RT.FAKE
+
+                    # Build feature flags snapshot for the envelope (G-28)
+                    _iso_feature_flags = {
+                        "isolated_agent_execution": _iso_flags.isolated_agent_execution,
+                        "isolated_execution_required": _iso_flags.isolated_execution_required,
+                        "isolated_execution_local_runner": _iso_flags.isolated_execution_local_runner,
+                        "isolated_execution_kubernetes_runner": _iso_flags.isolated_execution_kubernetes_runner,
+                        "dynamic_orchestration": _iso_flags.dynamic_orchestration,
+                        "agentic_rag": _iso_flags.agentic_rag,
+                    }
+
+                    # Resolve scoped LLM key (G-28)
+                    _iso_llm_key = ""
+                    try:
+                        _iso_llm_key = _get_llm_api_key_for_tenant(tenant_id)  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+
+                    _iso_envelope = _build_env(
+                        tenant_id=tenant_id,
+                        goal_id=goal_id,
+                        goal_text=effective_goal,
+                        agent_id=agent_id or "",
+                        dry_run=dry_run,
+                        workflow_mode=workflow_mode,
+                        priority=priority,
+                        runner_type=_iso_runner_type,
+                        feature_flags=_iso_feature_flags,
+                        scoped_llm_api_key=_iso_llm_key,
+                    )
+                    _iso_scheduler = _Scheduler.from_flags(
+                        isolated_execution_local_runner=_iso_flags.isolated_execution_local_runner,
+                        isolated_execution_kubernetes_runner=_iso_flags.isolated_execution_kubernetes_runner,
+                    )
+
+                    async def _iso_event_cb(event: dict[str, Any]) -> None:
+                        await append_submitted_goal_event(event)
+
+                    _iso_result = _run_async(
+                        _iso_scheduler.schedule(_iso_envelope, event_callback=_iso_event_cb)
+                    )
+                    _run_async(mark_worker_complete(_iso_result.status, _iso_result.iterations))
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                    return {
+                        "status": _iso_result.status,
+                        "goal_id": goal_id,
+                        "agent_id": agent_id,
+                        "workflow_mode": workflow_mode,
+                        "priority": priority,
+                        "dry_run": dry_run,
+                        "iterations": _iso_result.iterations,
+                        "runner_type": _iso_result.runner_type,
+                        "capsule_id": _iso_result.capsule_id,
+                        "execution_time_ms": _iso_result.execution_time_ms,
+                        "result_scope": "isolated",
+                    }
+                except Exception as _iso_exc:
+                    # Structured handling: RunnerUnavailableError vs generic (G-29)
+                    _is_runner_unavail = (
+                        _RunnerUnavail is not None
+                        and isinstance(_iso_exc, _RunnerUnavail)
+                    )
+                    if _is_runner_unavail:
+                        logger.error(
+                            "isolated_runner_unavailable goal_id=%s reason=%s",
+                            goal_id, str(_iso_exc)[:200],
+                        )
+                        _run_async(mark_worker_failed(_iso_exc))
+                        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                        _fr = getattr(_iso_exc, "failure_reason", None)
+                        return {
+                            "status": "failed",
+                            "goal_id": goal_id,
+                            "reason": str(_iso_exc),
+                            "failure_reason": _fr.value if _fr else "runner_unavailable",
+                            "_isolation_error": True,
+                        }
+                    # Generic error in isolation path
+                    logger.exception(
+                        "isolated_execution_unexpected_error goal_id=%s", goal_id
+                    )
+                    _run_async(mark_worker_failed(_iso_exc))
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                    return {
+                        "status": "failed",
+                        "goal_id": goal_id,
+                        "reason": str(_iso_exc),
+                        "_isolation_error": True,
+                    }
+            # ── End isolation routing ────────────────────────────────────────────
+
             state = _run_async(
                 _asyncio.wait_for(
                     _run_with_signals(
