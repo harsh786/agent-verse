@@ -133,11 +133,6 @@ celery_app.conf.update(
             "schedule": 60.0,  # every 60 seconds
             "options": {"queue": "maintenance"},
         },
-        "drain-goals-dlq-every-5min": {
-            "task": "app.scaling.tasks.run_goal_dlq",
-            "schedule": 300.0,  # every 5 minutes — drain Dead Letter Queue
-            "options": {"queue": "goals_dlq"},
-        },
         # Freshness reindex: mark stale knowledge chunks hourly
         "reindex-stale-knowledge": {
             "task": "agentverse.maintenance.reindex_stale_knowledge",
@@ -235,4 +230,3 @@ if _SENTINEL_URLS:
 
 # Backwards-compatible alias used by some imports
 app = celery_app
-

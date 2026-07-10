@@ -46,8 +46,17 @@ class RuntimeFlags:
     enable_pattern_sse_events: bool = False   # pattern_assembled, eval_score_recorded SSEs
     enable_guardrail_profile: bool = False    # Profile-based GuardrailEnforcer
 
+    # --- Isolated Agent Execution Environment ---
+    # Mirror of config.py Settings fields so the Celery worker (which has no
+    # access to app.state) can read these from env without constructing a full
+    # Settings object.  Default False keeps existing behaviour unchanged.
+    isolated_agent_execution: bool = False
+    isolated_execution_required: bool = False
+    isolated_execution_local_runner: bool = False
+    isolated_execution_kubernetes_runner: bool = False
+
     @classmethod
-    def from_env(cls) -> "RuntimeFlags":
+    def from_env(cls) -> RuntimeFlags:
         return cls(
             dynamic_orchestration=_bool_env("DYNAMIC_ORCHESTRATION"),
             agentic_rag=_bool_env("AGENTIC_RAG"),
@@ -69,6 +78,10 @@ class RuntimeFlags:
             enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING"),
             enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
             enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE"),
+            isolated_agent_execution=_bool_env("ISOLATED_AGENT_EXECUTION"),
+            isolated_execution_required=_bool_env("ISOLATED_EXECUTION_REQUIRED"),
+            isolated_execution_local_runner=_bool_env("ISOLATED_EXECUTION_LOCAL_RUNNER"),
+            isolated_execution_kubernetes_runner=_bool_env("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
         )
 
 
@@ -96,6 +109,10 @@ def get_runtime_flags() -> RuntimeFlags:
         enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING"),
         enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
         enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE"),
+        isolated_agent_execution=_env_bool("ISOLATED_AGENT_EXECUTION"),
+        isolated_execution_required=_env_bool("ISOLATED_EXECUTION_REQUIRED"),
+        isolated_execution_local_runner=_env_bool("ISOLATED_EXECUTION_LOCAL_RUNNER"),
+        isolated_execution_kubernetes_runner=_env_bool("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
     )
     # Master flag enables all granular flags
     if flags.dynamic_orchestration:

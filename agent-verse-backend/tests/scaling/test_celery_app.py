@@ -55,6 +55,18 @@ def test_beat_schedule_records_queue_depths_on_maintenance_queue() -> None:
     assert options["queue"] == "maintenance"
 
 
+def test_beat_schedule_does_not_periodically_invoke_per_goal_dlq_handler() -> None:
+    """Periodic beat entries must not call run_goal_dlq without a goal payload.
+
+    run_goal_dlq is a per-goal dead-letter handler. Celery beat has no goal_id or
+    tenant_id to pass, so scheduling it directly causes runtime SchedulingError.
+    """
+    beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
+    entry = beat_schedule.get("drain-goals-dlq-every-5min")
+
+    assert entry is None or entry.get("task") != "app.scaling.tasks.run_goal_dlq"
+
+
 def test_check_mcp_health_task_name_matches_route() -> None:
     from app.scaling import tasks
 
