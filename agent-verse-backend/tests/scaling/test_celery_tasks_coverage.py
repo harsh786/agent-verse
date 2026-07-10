@@ -1184,6 +1184,18 @@ def test_run_goal_dlq_succeeds_when_db_update_works() -> None:
     assert result["status"] == "dead_lettered"
 
 
+def test_run_goal_dlq_skips_missing_payload_from_stale_beat_entry() -> None:
+    """A stale RedBeat entry may invoke run_goal_dlq without args; it must no-op."""
+    from app.scaling.tasks import run_goal_dlq
+
+    result = run_goal_dlq.run()
+
+    assert result == {
+        "status": "skipped",
+        "reason": "missing_dlq_payload",
+    }
+
+
 # ===========================================================================
 # _update_goal_dlq async function
 # ===========================================================================
