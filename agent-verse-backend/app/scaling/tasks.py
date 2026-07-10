@@ -401,8 +401,8 @@ class _WorkerMCPAgentRunner:
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)
 def run_goal_dlq(
     self: Any,
-    goal_id: str,
-    tenant_id: str,
+    goal_id: str = "",
+    tenant_id: str = "",
     goal_text: str = "",
     reason: str = "",
 ) -> dict[str, Any]:
@@ -410,6 +410,17 @@ def run_goal_dlq(
 
     Marks goal as permanently failed. Operators can inspect and manually re-queue.
     """
+    if not goal_id or not tenant_id:
+        logger.warning(
+            "run_goal_dlq invoked without goal payload; skipping. "
+            "This usually means a stale beat/RedBeat schedule still points at "
+            "the per-goal DLQ handler."
+        )
+        return {
+            "status": "skipped",
+            "reason": "missing_dlq_payload",
+        }
+
     logger.error(
         "Goal %s dead-lettered: %s (tenant: %s)", goal_id, reason, tenant_id
     )
