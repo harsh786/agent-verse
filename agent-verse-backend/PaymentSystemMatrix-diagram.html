@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Ecosystem — Architecture Map v2</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: linear-gradient(145deg, #d6e8f5 0%, #e8f2fb 45%, #d8eaf2 100%);
+      padding: 24px 20px 32px;
+      min-height: 100vh;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    header h1 {
+      color: #1a2840;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+    }
+    header p {
+      color: #5e6f8a;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .btn-bar {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .btn {
+      padding: 8px 18px;
+      border-radius: 8px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s;
+    }
+    .btn:hover { opacity: .82; }
+    .btn-primary { background: #2d6090; color: #fff; }
+    #scroll-container {
+      overflow: auto;
+      background: #f7fafd;
+      border-radius: 20px;
+      box-shadow: 0 16px 60px rgba(0,0,0,0.13), 0 2px 10px rgba(0,0,0,0.07);
+    }
+    #diagram-canvas { position: relative; }
+    .grid-bg {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(160,195,225,0.16) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(160,195,225,0.16) 1px, transparent 1px);
+      background-size: 30px 30px;
+      pointer-events: none; z-index: 0;
+    }
+    svg#svg-lines { position: absolute; top:0; left:0; pointer-events:none; z-index:2; overflow:visible; }
+    .node {
+      position: absolute;
+      display: flex; align-items: center; justify-content: center;
+      text-align: center;
+      border-radius: 11px;
+      font-weight: 600; line-height: 1.35;
+      cursor: default; user-select: none; z-index: 10;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .node:hover { transform: scale(1.06) translateY(-2px); z-index:40; }
+    .legend {
+      display: flex; gap: 16px; justify-content: center;
+      padding: 16px 0 4px; flex-wrap: wrap;
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 11px; color: #4a5568; font-weight: 500;
+    }
+    .legend-swatch {
+      width: 16px; height: 16px; border-radius: 4px;
+      border: 1.5px solid rgba(0,0,0,0.12);
+      box-shadow: 0 2px 5px rgba(0,0,0,0.12);
+    }
+    footer {
+      text-align: center; margin-top: 14px;
+      font-size: 11px; color: #8090a0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>💳 Payment Ecosystem — Architecture Map</h1>
+    <p>End-to-end platform capability diagram &nbsp;·&nbsp; v2.0 &nbsp;·&nbsp; 2026-07-10 &nbsp;·&nbsp; 259 nodes across 10 domains</p>
+    <div class="btn-bar">
+      <button class="btn btn-primary" onclick="downloadDrawio()">⬇ Export as draw.io</button>
+    </div>
+  </header>
+
+  <div id="scroll-container">
+    <div id="diagram-canvas">
+      <div class="grid-bg"></div>
+      <svg id="svg-lines"></svg>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#f9a825,#e87c0a);"></div>Root Platform</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#92d0e8,#5cb4ce);"></div>Domain (L1)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#b8e3a8,#7dcb6a);"></div>Category (L2)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#ccf0c0,#9edda0);"></div>Feature (L3)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#ffe6b4,#ffd274);"></div>Sub-feature (L4)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:linear-gradient(135deg,#ead8f8,#c8a8e8);"></div>Detail (L5)</div>
+  </div>
+  <footer>Hover nodes to highlight &nbsp;·&nbsp; Scroll / zoom (Ctrl+scroll) to explore &nbsp;·&nbsp; Click "Export" for draw.io file</footer>
+
+  <script>
+  // ════════════════════════════════════════════════════════
+  // DATA (imported from Python generator)
+  // ════════════════════════════════════════════════════════
+  const tree = {"id":"root","label":"Payment\nEcosystem","level":0,"children":[{"id":"core","label":"Core\nPayments","level":1,"children":[{"id":"cards","label":"Cards","level":2,"children":[{"id":"guest","label":"Guest Checkout","level":3,"children":[]},{"id":"coft","label":"COFT","level":3,"children":[]},{"id":"tokproc","label":"Token Processing","level":3,"children":[]},{"id":"tokprov","label":"Token\nProvisioning","level":3,"children":[{"id":"tp_visa","label":"VISA","level":4,"children":[]},{"id":"tp_mc","label":"Master Card","level":4,"children":[]},{"id":"tp_rupay","label":"Rupay","level":4,"children":[]},{"id":"tp_diners","label":"Diners","level":4,"children":[]},{"id":"tp_iss","label":"Issuers\n(3 High Txn)","level":4,"children":[]}]},{"id":"cvvless","label":"CVV Less","level":3,"children":[]},{"id":"natotp","label":"Native OTP","level":3,"children":[]},{"id":"passkey","label":"Pass Key","level":3,"children":[{"id":"pk_visa","label":"VISA","level":4,"children":[]},{"id":"pk_mc","label":"Master Card","level":4,"children":[]}]},{"id":"decauth","label":"Decouple\nAuthentication","level":3,"children":[]},{"id":"decauthz","label":"Decouple\nAuthorization","level":3,"children":[]},{"id":"purchmod","label":"Purchase Model","level":3,"children":[]},{"id":"preauthmod","label":"PreAuth Model","level":3,"children":[{"id":"sc","label":"Single Capture","level":4,"children":[]},{"id":"mc_cap","label":"Multi Capture","level":4,"children":[]},{"id":"incr","label":"Incremental\nCapture","level":4,"children":[]}]},{"id":"dcc","label":"Dynamic Currency\nConversion","level":3,"children":[]},{"id":"mcc_conv","label":"Multi Currency\nConversion","level":3,"children":[]},{"id":"multiacq","label":"Multi Acquiring","level":3,"children":[]}]},{"id":"upi","label":"UPI","level":2,"children":[{"id":"acqsw","label":"Acquiring Switch","level":3,"children":[]},{"id":"tpv","label":"TPV","level":3,"children":[]},{"id":"upioffer","label":"Offers on UPI","level":3,"children":[]},{"id":"upifee","label":"Convenience Fees\non UPI","level":3,"children":[]},{"id":"ccupi","label":"Credit Card\non UPI","level":3,"children":[]}]},{"id":"netbank","label":"Netbanking","level":2,"children":[{"id":"nb_issuers","label":"All Top Issuers","level":3,"children":[]},{"id":"nb_tpv","label":"TPV","level":3,"children":[]}]},{"id":"wallet","label":"Wallet","level":2,"children":[{"id":"w_indian","label":"Indian Wallets\nvia Processor","level":3,"children":[]},{"id":"w_apple","label":"Apple Pay","level":3,"children":[]},{"id":"w_google","label":"Google Pay","level":3,"children":[]},{"id":"w_samsung","label":"Samsung Pay","level":3,"children":[]}]},{"id":"emi","label":"EMI /\nAffordability","level":2,"children":[{"id":"emi_cc","label":"Credit Card","level":3,"children":[]},{"id":"emi_dc","label":"Debit Card","level":3,"children":[]},{"id":"emi_cl","label":"Card Less","level":3,"children":[]},{"id":"lending","label":"Lending\n(Top 3 Lenders)","level":3,"children":[{"id":"bankemi","label":"Bank EMI","level":4,"children":[{"id":"be_mf","label":"Merchant\nFunded","level":5,"children":[]},{"id":"be_if","label":"Issuer\nFunded","level":5,"children":[]}]},{"id":"brandemi","label":"Brand EMI","level":4,"children":[{"id":"bre_mf","label":"Merchant\nFunded","level":5,"children":[]},{"id":"bre_bf","label":"Brand\nFunded","level":5,"children":[]},{"id":"bre_if","label":"Issuer\nFunded","level":5,"children":[]}]},{"id":"allemioffs","label":"All EMI Offers","level":4,"children":[{"id":"aeo_nc","label":"No Cost","level":5,"children":[]},{"id":"aeo_lc","label":"Low Cost","level":5,"children":[]},{"id":"aeo_std","label":"Standard","level":5,"children":[]}]},{"id":"fullswipe","label":"Full Swipe\nOffers","level":4,"children":[]},{"id":"instdisc","label":"Instant Discount\nOffers","level":4,"children":[]},{"id":"multiprod","label":"Offers on\nMulti Product","level":4,"children":[]},{"id":"bundled","label":"Bundled Offer","level":4,"children":[]},{"id":"velocity","label":"Brand Level\nVelocity","level":4,"children":[]},{"id":"couponoff","label":"Coupon Based\nOffer","level":4,"children":[]},{"id":"imei","label":"IMEI Validation","level":4,"children":[]}]}]}]},{"id":"altpay","label":"Alternate\nPayments","level":1,"children":[{"id":"qr","label":"QR Payments","level":2,"children":[{"id":"qr_grab","label":"Grab","level":3,"children":[]},{"id":"qr_alipay","label":"Ali Pay","level":3,"children":[]}]},{"id":"subs","label":"Subscription","level":2,"children":[{"id":"subs_od","label":"On Demand","level":3,"children":[]},{"id":"subs_rp","label":"Reserve Pay","level":3,"children":[]},{"id":"subs_rec","label":"Recurring\nPayments","level":3,"children":[{"id":"rec_sched","label":"Scheduled","level":4,"children":[]},{"id":"rec_asp","label":"As Presented","level":4,"children":[]},{"id":"rec_ti","label":"Time Interval","level":4,"children":[]}]},{"id":"subs_cards","label":"Cards\n(Standing Instruction)","level":3,"children":[{"id":"si_rec","label":"Recurring via\nPartner","level":4,"children":[]},{"id":"si_res","label":"Reserve Pay via\nPreAuth Multi Cap","level":4,"children":[]},{"id":"si_od","label":"On Demand via\nPreAuth Single Cap","level":4,"children":[]}]},{"id":"subs_upi","label":"UPI","level":3,"children":[{"id":"upi_npci","label":"Via NPCI","level":4,"children":[]}]},{"id":"subs_nb","label":"Netbanking","level":3,"children":[{"id":"nb_sihub","label":"Via SI HUB\n(Billdesk)","level":4,"children":[]}]}]},{"id":"paylinks","label":"Payment Links","level":2,"children":[]}]},{"id":"platf","label":"Platform\nFeatures","level":1,"children":[{"id":"txntypes","label":"Transaction\nTypes","level":2,"children":[{"id":"tt_purch","label":"Purchase","level":3,"children":[]},{"id":"tt_preauth","label":"PreAuth","level":3,"children":[]},{"id":"tt_refund","label":"Refund","level":3,"children":[{"id":"ref_agg","label":"Aggregator","level":4,"children":[]},{"id":"ref_nonagg","label":"Non Aggregator","level":4,"children":[]}]},{"id":"tt_void","label":"Void","level":3,"children":[]},{"id":"tt_cap","label":"Capture","level":3,"children":[]},{"id":"tt_cancel","label":"Cancel","level":3,"children":[]}]},{"id":"pf_mcp","label":"MCP Server","level":2,"children":[]},{"id":"pf_cust","label":"Customer\nManagement","level":2,"children":[]},{"id":"pf_retry","label":"Retry Payments","level":2,"children":[]},{"id":"pf_lateauth","label":"Late Authorization","level":2,"children":[]},{"id":"pf_iframe","label":"Iframe / Checkout\n/ Seamless","level":2,"children":[]},{"id":"pf_partpay","label":"Part Payments","level":2,"children":[]},{"id":"pf_confee","label":"Convenience Fees\n/ Markup","level":2,"children":[]},{"id":"pf_split","label":"Split Settlement","level":2,"children":[]},{"id":"pf_cross","label":"Cross Borders","level":2,"children":[]},{"id":"pf_mcurr","label":"Multi Currency\nAcceptance","level":2,"children":[]},{"id":"pf_frm","label":"FRM","level":2,"children":[]},{"id":"pf_vel","label":"Velocity Check","level":2,"children":[]},{"id":"pf_webhook","label":"Webhook","level":2,"children":[]},{"id":"pf_fwrecon","label":"Forward Recon","level":2,"children":[]},{"id":"pf_mprrecon","label":"MPR Based Recon","level":2,"children":[]},{"id":"pf_errcode","label":"Error Code\nNormalization","level":2,"children":[]},{"id":"pf_sysobs","label":"System\nObservability","level":2,"children":[{"id":"so_apm","label":"APM","level":3,"children":[]},{"id":"so_trace","label":"Tracing","level":3,"children":[]},{"id":"so_log","label":"Logging","level":3,"children":[]}]},{"id":"pf_prodobs","label":"Product SR/FR\nObservability","level":2,"children":[]}]},{"id":"mde","label":"Merchant Dev /\nExperience","level":1,"children":[{"id":"mde_docs","label":"Developer Doc\nGuide (All flows)","level":2,"children":[]},{"id":"mde_api","label":"Developer API\nIntegration","level":2,"children":[{"id":"api_oas","label":"Open API Specs","level":3,"children":[]},{"id":"api_pm","label":"PostMan\nCollection","level":3,"children":[]}]},{"id":"mde_bot","label":"AI Ask ARG\nChat Bot","level":2,"children":[]},{"id":"mde_mcp","label":"MCP Servers","level":2,"children":[]},{"id":"mde_toolkit","label":"AI Tool Kit","level":2,"children":[{"id":"tk_pkg","label":"npm, pip, yarn","level":3,"children":[]}]},{"id":"mde_registry","label":"GitHub MCP\nRegistry","level":2,"children":[]},{"id":"mde_vscode","label":"VS Code Plugins","level":2,"children":[]},{"id":"mde_uat","label":"UAT Environment\nTesting","level":2,"children":[]},{"id":"mde_ch","label":"Integration\nChannels","level":2,"children":[{"id":"ch_core","label":"Core","level":3,"children":[{"id":"core_co","label":"Checkout","level":4,"children":[]},{"id":"core_if","label":"Iframe","level":4,"children":[]},{"id":"core_sl","label":"Seamless","level":4,"children":[]}]},{"id":"ch_sdk","label":"SDK's","level":3,"children":[{"id":"sdk_server","label":"Server","level":4,"children":[]},{"id":"sdk_native","label":"Native","level":4,"children":[{"id":"nat_android","label":"Android","level":5,"children":[]},{"id":"nat_ios","label":"iOS","level":5,"children":[]},{"id":"nat_flutter","label":"Flutter","level":5,"children":[]},{"id":"nat_rn","label":"React Native","level":5,"children":[]}]},{"id":"sdk_plugins","label":"Plugins","level":4,"children":[{"id":"pl_shopify","label":"Shopify","level":5,"children":[]},{"id":"pl_woo","label":"WooCommerce","level":5,"children":[]},{"id":"pl_opencart","label":"OpenCart","level":5,"children":[]},{"id":"pl_magento","label":"Magento","level":5,"children":[]},{"id":"pl_presto","label":"Presto","level":5,"children":[]}]}]}]}]},{"id":"checkout","label":"Checkout & User\nExperience","level":1,"children":[{"id":"co_allpm","label":"All Payment\nMethods","level":2,"children":[]},{"id":"co_retry","label":"Retry Payment","level":2,"children":[]},{"id":"co_cvvless","label":"CVV Less","level":2,"children":[]},{"id":"co_saved","label":"Saved Card","level":2,"children":[]},{"id":"co_parts","label":"Parts Payments","level":2,"children":[]},{"id":"co_cust","label":"Customer\nManagement","level":2,"children":[{"id":"cm_create","label":"Creation","level":3,"children":[]},{"id":"cm_addr","label":"All Types of\nAddress","level":3,"children":[]},{"id":"cm_pref","label":"Preferences","level":3,"children":[]}]},{"id":"co_iframe","label":"Iframe Support","level":2,"children":[]},{"id":"co_txn","label":"Txn Status\nFetching","level":2,"children":[]}]},{"id":"merch_ob","label":"Merchant\nOnboarding","level":1,"children":[{"id":"mo_pm","label":"Payment Method\nConfiguration","level":2,"children":[]},{"id":"mo_vas","label":"VAS","level":2,"children":[]},{"id":"mo_mdr","label":"MDR\nConfiguration","level":2,"children":[]},{"id":"mo_risk","label":"Risk\nConfiguration","level":2,"children":[]},{"id":"mo_tid","label":"Acquiring TID\nConfiguration","level":2,"children":[]},{"id":"mo_self","label":"Self Serve\nOnboarding","level":2,"children":[]},{"id":"mo_asst","label":"Assisted\nOnboarding","level":2,"children":[]}]},{"id":"risk","label":"Risk &\nCompliance","level":1,"children":[{"id":"rc_proc","label":"Process\nAutomation","level":2,"children":[]},{"id":"rc_pcf","label":"PCF","level":2,"children":[]},{"id":"rc_deploy","label":"Deployment\nAudit","level":2,"children":[]},{"id":"rc_vuln","label":"App Vulnerability\nScanning","level":2,"children":[]},{"id":"rc_infra","label":"Infra Audit","level":2,"children":[]},{"id":"rc_net","label":"Network Audit","level":2,"children":[]},{"id":"rc_aml","label":"Anti-Money\nLaundering (AML)","level":2,"children":[]},{"id":"rc_cb","label":"Charge Back","level":2,"children":[]},{"id":"rc_msh","label":"Merchant\nSettlement Hold","level":2,"children":[]},{"id":"rc_mcc","label":"MCC Verification","level":2,"children":[]}]},{"id":"setl","label":"Settlement &\nReconciliation","level":1,"children":[{"id":"se_mdr","label":"MDR Calculation","level":2,"children":[]},{"id":"se_3way","label":"Three Way\nReconciliation","level":2,"children":[]},{"id":"se_od","label":"On Demand\nPayout","level":2,"children":[]},{"id":"se_sched","label":"Scheduled\nPayout","level":2,"children":[]},{"id":"se_utr","label":"UTR Based\nReporting","level":2,"children":[]}]},{"id":"ai","label":"AI\nInnovations","level":1,"children":[{"id":"ai_devexp","label":"Developer\nExperience","level":2,"children":[{"id":"ai_mcp","label":"MCP Server","level":3,"children":[]},{"id":"ai_toolkit","label":"Agent Tool Kit","level":3,"children":[]},{"id":"ai_reg","label":"MCP Registries","level":3,"children":[]}]},{"id":"ai_docgen","label":"AI Doc\nGeneration","level":2,"children":[]},{"id":"ai_chatbot","label":"AI Ask\nChat Bot","level":2,"children":[]},{"id":"ai_core","label":"Core Payments\n(AI)","level":2,"children":[{"id":"ai_auto","label":"Autonomous\nPayment","level":3,"children":[{"id":"ai_mpp","label":"Machine Payment\nProtocol","level":4,"children":[{"id":"mpp_upi","label":"UPI via NPCI\n(\u2264 \u20b91L)","level":5,"children":[]},{"id":"mpp_card","label":"Card PreAuth\n(> \u20b91L)","level":5,"children":[]}]}]},{"id":"ai_mkt","label":"Marketplace\n(All Domains)","level":3,"children":[]},{"id":"ai_comp","label":"Compliance\nMonitoring Agent","level":3,"children":[]},{"id":"ai_pen","label":"Auto-Penetration\nTesting Agent","level":3,"children":[]},{"id":"ai_secaud","label":"AI-Assisted\nSecurity Audit","level":3,"children":[]},{"id":"ai_prrev","label":"PR Review\nAgent","level":3,"children":[]},{"id":"ai_infraobs","label":"Infra Observability\nAgent","level":3,"children":[]},{"id":"ai_triage","label":"Triage Agent","level":3,"children":[]},{"id":"ai_bugfix","label":"Bug Fix Agent","level":3,"children":[]},{"id":"ai_jira","label":"JIRA Project\nAutomations","level":3,"children":[]},{"id":"ai_alerts","label":"Alerts\nAutomations","level":3,"children":[]},{"id":"ai_offers","label":"Personalized\nOffer Targeting","level":3,"children":[]},{"id":"ai_retry","label":"AI Retry\nOrchestrator","level":3,"children":[]},{"id":"ai_suspref","label":"Suspicious Refund\nDetection","level":3,"children":[]},{"id":"ai_voice","label":"Voice Biometrics\nAuthentication","level":3,"children":[]}]},{"id":"ai_checkout","label":"Checkout (AI)","level":2,"children":[{"id":"ai_rank","label":"Smart Payment\nMethod Ranking","level":3,"children":[]}]},{"id":"ai_dash","label":"Dashboard &\nReporting","level":2,"children":[{"id":"ai_nla","label":"Natural Language\nAnalytics","level":3,"children":[]},{"id":"ai_execsum","label":"AI Executive\nSummary","level":3,"children":[]},{"id":"ai_predsalerts","label":"Predictive\nDashboard Alerts","level":3,"children":[]}]},{"id":"ai_setl","label":"Settlement &\nRecon (AI)","level":2,"children":[{"id":"ai_3way","label":"AI Three-way\nRecon Engine","level":3,"children":[]}]},{"id":"ai_mob","label":"Merchant\nOnboarding (AI)","level":2,"children":[{"id":"mob_mcc","label":"MCC\nAuto-classifier","level":3,"children":[]},{"id":"mob_asst","label":"Self-serve\nOnboarding Asst.","level":3,"children":[]},{"id":"mob_docext","label":"Document\nExtraction AI","level":3,"children":[{"id":"doc_gst","label":"GST","level":4,"children":[]},{"id":"doc_pan","label":"PAN","level":4,"children":[]},{"id":"doc_aadhar","label":"Aadhaar","level":4,"children":[]},{"id":"doc_bank","label":"Bank Details","level":4,"children":[]}]},{"id":"mob_riskob","label":"Risk-based\nOnboarding","level":3,"children":[]},{"id":"mob_esign","label":"eSign Agreement\nWorkflow","level":3,"children":[]},{"id":"mob_docbot","label":"WhatsApp/Email\nDoc Collection Bot","level":3,"children":[]},{"id":"mob_docrem","label":"Document\nReminder Auto.","level":3,"children":[]},{"id":"mob_expiry","label":"Document\nExpiry Checker","level":3,"children":[]},{"id":"mob_resubmit","label":"Re-submission\nWorkflow","level":3,"children":[]},{"id":"mob_tc","label":"T&C Version\nControl Auto.","level":3,"children":[]},{"id":"mob_welcome","label":"Welcome Journey\nAutomation","level":3,"children":[]},{"id":"mob_kyb","label":"Annual Re-KYB\nAutomation","level":3,"children":[]},{"id":"mob_funnel","label":"Funnel Drop-off\nAnalytics","level":3,"children":[]},{"id":"mob_tat","label":"TAT Dashboards","level":3,"children":[]}]},{"id":"ai_support","label":"Customer Support\n& SRE (AI)","level":2,"children":[{"id":"supp_bot","label":"Self Resolution\nBot","level":3,"children":[{"id":"bot_txn","label":"Txn Status\nAuto-lookup","level":4,"children":[]},{"id":"bot_intent","label":"Intent Detection\nEngine","level":4,"children":[]},{"id":"bot_fail","label":"Failed Txn\nExplainer","level":4,"children":[]},{"id":"bot_card","label":"Saved Card\nTroubleshooter","level":4,"children":[]},{"id":"bot_emi","label":"EMI Conversion\nSelf-serve","level":4,"children":[]},{"id":"bot_block","label":"Card Block\nAuto-execute","level":4,"children":[]}]},{"id":"supp_sent","label":"Sentiment-based\nPriority Escalation","level":3,"children":[]},{"id":"supp_urg","label":"Issue Urgency\nScoring","level":3,"children":[]},{"id":"supp_trans","label":"Real-time\nTranscript Analysis","level":3,"children":[]},{"id":"supp_callsum","label":"Auto-call\nSummary Gen.","level":3,"children":[]},{"id":"supp_ticket","label":"Auto-ticket\nCreation","level":3,"children":[]},{"id":"supp_disp","label":"Disposition\nAuto-tagging","level":3,"children":[]},{"id":"supp_chback","label":"Chargeback\nAuto-filing","level":3,"children":[]},{"id":"supp_voice","label":"Voicebot\n(Multi-lang)","level":3,"children":[]},{"id":"supp_faq","label":"AI-generated FAQ\n& KB Auto-maint.","level":3,"children":[]}]}]},{"id":"devops_obs","label":"Platform &\nDevOps Observability","level":1,"children":[{"id":"do_noise","label":"Alert Noise\nReduction Agent","level":2,"children":[]},{"id":"do_autorem","label":"Auto-Remediation\nAgent","level":2,"children":[]},{"id":"do_loganom","label":"Log Anomaly\nInvestigation Agent","level":2,"children":[]},{"id":"do_synmon","label":"Synthetic Monitor\nHealing Agent","level":2,"children":[]},{"id":"do_cert","label":"Certificate\nRenewal Agent","level":2,"children":[]},{"id":"do_srmatrix","label":"Product SR Matrix\n& Anomaly Detection","level":2,"children":[]}]}]};
+
+  // ════════════════════════════════════════════════════════
+  // LAYOUT CONSTANTS
+  // ════════════════════════════════════════════════════════
+  const XL = {0:36, 1:242, 2:478, 3:694, 4:928, 5:1130, 6:1330};
+  const WL = {0:152, 1:176, 2:146, 3:166, 4:130, 5:128, 6:120};
+  const NH = 40, VG = 8, PAD = 48;
+
+  // ════════════════════════════════════════════════════════
+  // LAYOUT ALGORITHM
+  // ════════════════════════════════════════════════════════
+  const pos = {};
+  function sh(node) {
+    if (!node.children.length) return NH;
+    return Math.max(NH, node.children.reduce((a,c)=>a+sh(c)+VG,0)-VG);
+  }
+  function lay(node, sy) {
+    const h = sh(node);
+    pos[node.id] = { x:XL[node.level], y:sy+(h-NH)/2, w:WL[node.level], h:NH, label:node.label, lv:node.level };
+    let cy = sy;
+    node.children.forEach(c=>{ lay(c,cy); cy+=sh(c)+VG; });
+  }
+  lay(tree, PAD);
+
+  // Canvas size
+  let mx=0, my=0;
+  for (const p of Object.values(pos)) { mx=Math.max(mx,p.x+p.w+PAD); my=Math.max(my,p.y+p.h+PAD); }
+  const canvas = document.getElementById('diagram-canvas');
+  canvas.style.width  = mx+'px';
+  canvas.style.height = my+'px';
+  const svg = document.getElementById('svg-lines');
+  svg.setAttribute('width', mx); svg.setAttribute('height', my);
+
+  // ════════════════════════════════════════════════════════
+  // STYLE PALETTE
+  // ════════════════════════════════════════════════════════
+  const ST = {
+    0:{bg:'linear-gradient(135deg,#f9a825,#e87c0a)',fg:'#fff',    sdw:'rgba(220,110,0,0.48)',bdr:'#d07000'},
+    1:{bg:'linear-gradient(135deg,#92d0e8,#5cb4ce)',fg:'#0b2a3c', sdw:'rgba(28,105,165,0.38)',bdr:'#3890b8'},
+    2:{bg:'linear-gradient(135deg,#b8e3a8,#7dcb6a)',fg:'#163a18', sdw:'rgba(45,150,45,0.36)',bdr:'#52a840'},
+    3:{bg:'linear-gradient(135deg,#ccf0c0,#9edda0)',fg:'#163a18', sdw:'rgba(45,150,45,0.26)',bdr:'#64b860'},
+    4:{bg:'linear-gradient(135deg,#ffe6b4,#ffd274)',fg:'#5c3200', sdw:'rgba(190,120,0,0.32)',bdr:'#d4a020'},
+    5:{bg:'linear-gradient(135deg,#ead8f8,#c8a8e8)',fg:'#300040', sdw:'rgba(140,60,180,0.28)',bdr:'#9040b0'},
+    6:{bg:'linear-gradient(135deg,#ffd8e8,#f8a8c0)',fg:'#400020', sdw:'rgba(180,60,100,0.28)',bdr:'#c04070'},
+  };
+  const LS = {
+    '01':{stroke:'#1a3555',sw:2.2}, '12':{stroke:'#1c4870',sw:1.9},
+    '23':{stroke:'#1c5848',sw:1.7}, '34':{stroke:'#2a5042',sw:1.5},
+    '45':{stroke:'#5a3070',sw:1.4}, '56':{stroke:'#803050',sw:1.3},
+  };
+
+  // ════════════════════════════════════════════════════════
+  // RENDER NODES
+  // ════════════════════════════════════════════════════════
+  for (const p of Object.values(pos)) {
+    const s = ST[p.lv]||ST[5];
+    const ml = p.label.includes('\n');
+    const fs = ml ? (p.lv>=4 ? 9 : p.lv>=2 ? 9.5 : 10.5) : (p.lv>=4 ? 10 : 11.5);
+    const d = document.createElement('div');
+    d.className = 'node';
+    d.title = p.label.replace(/\n/g,' ');
+    d.style.cssText = `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;background:${s.bg};color:${s.fg};font-size:${fs}px;box-shadow:0 5px 18px ${s.sdw},0 1px 5px rgba(0,0,0,.12);border:1.5px solid ${s.bdr};`;
+    d.innerHTML = p.label.replace(/\n/g,'<br>');
+    canvas.appendChild(d);
+  }
+
+  // ════════════════════════════════════════════════════════
+  // SVG ARROWS
+  // ════════════════════════════════════════════════════════
+  const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  Object.entries(LS).forEach(([k,ls])=>{
+    const m = document.createElementNS('http://www.w3.org/2000/svg','marker');
+    m.setAttribute('id',`arr_${k}`); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','7');
+    m.setAttribute('refX','5.5'); m.setAttribute('refY','3.5'); m.setAttribute('orient','auto');
+    const poly = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    poly.setAttribute('points','0 0,7 3.5,0 7'); poly.setAttribute('fill',ls.stroke);
+    m.appendChild(poly); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  function collectEdges(node, acc=[]) {
+    node.children.forEach(c=>{ acc.push([node,c]); collectEdges(c,acc); });
+    return acc;
+  }
+  for (const [f,t] of collectEdges(tree)) {
+    const fp=pos[f.id], tp=pos[t.id];
+    const x1=fp.x+fp.w, y1=fp.y+fp.h/2, x2=tp.x-1, y2=tp.y+tp.h/2, cx=(x1+x2)/2;
+    const key=`${f.level}${t.level}`;
+    const ls=LS[key]||{stroke:'#2d4a6a',sw:1.5};
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d',`M ${x1} ${y1} C ${cx} ${y1},${cx} ${y2},${x2} ${y2}`);
+    path.setAttribute('fill','none'); path.setAttribute('stroke',ls.stroke);
+    path.setAttribute('stroke-width',ls.sw); path.setAttribute('stroke-opacity','0.84');
+    path.setAttribute('stroke-linecap','round'); path.setAttribute('marker-end',`url(#arr_${key})`);
+    svg.appendChild(path);
+  }
+
+  // ════════════════════════════════════════════════════════
+  // DRAW.IO EXPORT
+  // ════════════════════════════════════════════════════════
+  const DX_NODE = {
+    0:'rounded=1;whiteSpace=wrap;html=1;fillColor=#f09820;strokeColor=#c07000;fontColor=#ffffff;fontSize=12;fontStyle=1;shadow=1;arcSize=15;',
+    1:'rounded=1;whiteSpace=wrap;html=1;fillColor=#90d0e8;strokeColor=#3890b8;fontColor=#0b2a3c;fontSize=11;fontStyle=1;shadow=1;arcSize=15;',
+    2:'rounded=1;whiteSpace=wrap;html=1;fillColor=#b4e0a5;strokeColor=#50a840;fontColor=#163a18;fontSize=10;fontStyle=1;shadow=1;arcSize=15;',
+    3:'rounded=1;whiteSpace=wrap;html=1;fillColor=#cef0c4;strokeColor=#64b860;fontColor=#163a18;fontSize=9;fontStyle=1;shadow=1;arcSize=15;',
+    4:'rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6b4;strokeColor=#d4a020;fontColor=#5c3200;fontSize=9;fontStyle=1;shadow=1;arcSize=15;',
+    5:'rounded=1;whiteSpace=wrap;html=1;fillColor=#ead8f8;strokeColor=#9040b0;fontColor=#300040;fontSize=8;fontStyle=1;shadow=1;arcSize=15;',
+  };
+  const DX_EDGE = {
+    '01':'curved=1;edgeStyle=elbowEdgeStyle;elbow=orthogonal;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=block;endFill=1;strokeColor=#1a3555;strokeWidth=2;',
+    '12':'curved=1;edgeStyle=elbowEdgeStyle;elbow=orthogonal;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=block;endFill=1;strokeColor=#1c4870;strokeWidth=1.8;',
+    '23':'curved=1;edgeStyle=elbowEdgeStyle;elbow=orthogonal;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=block;endFill=1;strokeColor=#1c5848;strokeWidth=1.6;',
+    '34':'curved=1;edgeStyle=elbowEdgeStyle;elbow=orthogonal;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=block;endFill=1;strokeColor=#2a5042;strokeWidth=1.5;',
+    '45':'curved=1;edgeStyle=elbowEdgeStyle;elbow=orthogonal;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=block;endFill=1;strokeColor=#5a3070;strokeWidth=1.4;',
+  };
+
+  function xmlEsc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/\n/g,'&#xa;');
+  }
+
+  function downloadDrawio() {
+    let cells = '<mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/>\n';
+    for (const [id,p] of Object.entries(pos)) {
+      const style = DX_NODE[p.lv]||DX_NODE[5];
+      cells += `<mxCell id="${id}" value="${xmlEsc(p.label)}" style="${style}" vertex="1" parent="1"><mxGeometry x="${Math.round(p.x)}" y="${Math.round(p.y)}" width="${p.w}" height="${p.h}" as="geometry" /></mxCell>\n`;
+    }
+    let ei=0;
+    for (const [f,t] of collectEdges(tree)) {
+      const key=`${f.level}${t.level}`;
+      const style = DX_EDGE[key]||DX_EDGE['34'];
+      cells += `<mxCell id="e${ei++}" edge="1" source="${f.id}" target="${t.id}" parent="1" style="${style}"><mxGeometry relative="1" as="geometry"/></mxCell>\n`;
+    }
+    const xml = `<mxfile host="app.diagrams.net" modified="${new Date().toISOString()}" version="24.0.0">\n  <diagram id="PaymentEcosystem" name="Payment Ecosystem Architecture">\n    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="${Math.ceil(mx)+200}" pageHeight="${Math.ceil(my)+200}" math="0" shadow="1">\n      <root>\n${cells}      </root>\n    </mxGraphModel>\n  </diagram>\n</mxfile>`;
+    const blob = new Blob([xml], {type:'application/xml'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'PaymentSystemMatrix-diagram.drawio';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
+  </script>
+</body>
+</html>
