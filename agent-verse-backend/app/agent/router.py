@@ -71,8 +71,55 @@ class AgentRouter:
         """Split text into a lowercase word-token set."""
         return {w.lower() for w in re.findall(r"[a-z0-9]+", text.lower())}
 
+    # Systems whose names appear explicitly in goal text — used for anti-affinity.
+    _SYSTEM_NAMES: dict[str, list[str]] = {
+        "jira":       ["jira"],
+        "confluence":  ["confluence"],
+        "github":     ["github"],
+        "gitlab":     ["gitlab"],
+        "slack":      ["slack"],
+        "linear":     ["linear"],
+        "datadog":    ["datadog"],
+        "sentry":     ["sentry"],
+        "stripe":     ["stripe"],
+        "hubspot":    ["hubspot"],
+        "notion":     ["notion"],
+        "postgres":   ["postgres", "postgresql"],
+    }
+
+    def _named_system_in_goal(self, goal_lower: str) -> str | None:
+        """Return the system explicitly named in the goal, or None."""
+        for system, aliases in self._SYSTEM_NAMES.items():
+            if any(alias in goal_lower for alias in aliases):
+                return system
+        return None
+
+    def _agent_primary_system(self, agent: dict[str, Any]) -> str | None:
+        """Return the primary connector system for this agent, or None."""
+        connector_ids: list[str] = agent.get("connector_ids", []) or []
+        agent_name_lower = agent.get("name", "").lower()
+        for system in self._SYSTEM_NAMES:
+            if system in agent_name_lower:
+                return system
+            if any(system in cid.lower().replace("builtin-", "") for cid in connector_ids):
+                return system
+        return None
+
     def _score_by_keywords(self, goal: str, agent: dict[str, Any]) -> float:
-        """Jaccard-style overlap between goal words and agent name + goal_template."""
+        """Jaccard-style overlap between goal words and agent name + goal_template.
+
+        Anti-affinity: when the goal explicitly names a system (e.g. "Jira") and
+        this agent belongs to a *different* system (e.g. GitHub), the keyword
+        score is zeroed out to prevent false positive routing.
+        """
+        goal_lower = goal.lower()
+        named_system = self._named_system_in_goal(goal_lower)
+        if named_system is not None:
+            agent_system = self._agent_primary_system(agent)
+            if agent_system is not None and agent_system != named_system:
+                # Goal explicitly names a different system — hard exclude
+                return 0.0
+
         goal_tokens = self._tokenize(goal)
         agent_text = f"{agent.get('name', '')} {agent.get('goal_template', '')}"
         agent_tokens = self._tokenize(agent_text)

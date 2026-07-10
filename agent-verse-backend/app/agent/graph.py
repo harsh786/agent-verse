@@ -2999,23 +2999,63 @@ class AgentGraph:
                                 time.monotonic() - tool_call_started,
                             )
                         else:
-                            try:
-                                with self._tracer.start_as_current_span("agentverse.tool.call") as span:
-                                    span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
-                                    result = await self._mcp_client.call_tool(
-                                        server_id=tool_ref.server_id,
-                                        tool_name=tool_ref.name,
-                                        arguments=tool_call.arguments,
-                                        tenant_ctx=tenant_ctx,
-                                    )
-                            except Exception:
+                            # V5: Placeholder argument guard — prevent LLM-generated
+                            # placeholder values (e.g. "your_organization/your_repository")
+                            # from reaching real MCP servers.
+                            _PLACEHOLDER_PATTERNS = (
+                                "your_organization", "your_repository",
+                                "your_org", "your_repo", "your_project",
+                                "your_workspace", "your_team", "your_board",
+                                "<organization>", "<repository>", "<repo>",
+                                "{organization}", "{repository}", "{repo}",
+                                "example.com", "placeholder",
+                            )
+                            _ph_hits = [
+                                f"{k}={v!r}"
+                                for k, v in (tool_call.arguments or {}).items()
+                                if isinstance(v, str)
+                                and any(p in v.lower() for p in _PLACEHOLDER_PATTERNS)
+                            ]
+                            if _ph_hits:
+                                _ph_msg = (
+                                    f"[PLACEHOLDER ARGUMENTS DETECTED] Tool '{tool_call.tool}' "
+                                    f"was called with generic placeholder values: "
+                                    f"{', '.join(_ph_hits)}. "
+                                    "Please use real values from the goal context or "
+                                    "user-provided configuration instead of template placeholders."
+                                )
+                                raw_output = self._sanitize_tool_raw_output(_ph_msg)
+                                raw_output_sanitized = True
+                                await self._emit({
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": _ph_msg[:300],
+                                })
                                 record_tool_call(
-                                    tool_ref.name,
-                                    tool_ref.server_id,
-                                    "failed",
+                                    tool_call.tool,
+                                    getattr(tool_ref, "server_id", "unknown"),
+                                    "placeholder_args",
                                     time.monotonic() - tool_call_started,
                                 )
-                                raise
+                            else:
+                                # No placeholders — dispatch to MCP
+                                try:
+                                    with self._tracer.start_as_current_span("agentverse.tool.call") as span:
+                                        span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
+                                        result = await self._mcp_client.call_tool(
+                                            server_id=tool_ref.server_id,
+                                            tool_name=tool_ref.name,
+                                            arguments=tool_call.arguments,
+                                            tenant_ctx=tenant_ctx,
+                                        )
+                                except Exception:
+                                    record_tool_call(
+                                        tool_ref.name,
+                                        tool_ref.server_id,
+                                        "failed",
+                                        time.monotonic() - tool_call_started,
+                                    )
+                                    raise
                             # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
                             raw_output_text = ""
                             if isinstance(result.output, dict):
