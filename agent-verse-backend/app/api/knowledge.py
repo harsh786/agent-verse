@@ -1276,10 +1276,11 @@ async def get_collection_stats(
         raise HTTPException(status_code=404, detail="Collection not found")
 
     # Pull chunks from in-memory store for analytics
-    # The _data dict holds per-collection chunk lists in memory
+    # _data maps (tenant_id, collection_id) → _CollectionStore; extract .chunks
     raw_data = getattr(store, "_data", {})
     cid_key = (tenant_ctx.tenant_id, collection_id)
-    chunk_objs = raw_data.get(cid_key, [])
+    col_store = raw_data.get(cid_key)
+    chunk_objs: list[Any] = col_store.chunks if col_store is not None else []
     doc_count = getattr(col, "document_count", 0)
     chunk_count = len(chunk_objs)
 
