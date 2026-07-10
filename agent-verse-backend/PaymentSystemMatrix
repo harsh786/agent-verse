@@ -1,0 +1,299 @@
+1 Payment Ecosystem
+
+- Core Payments
+   - Cards
+     - Guest Checkout
+     - COFT 
+     - Token Processing
+     - Token Provisioning
+       - VISA
+       - Master Card
+       - Rupay 
+       - Diners
+       - Issuers
+         - 3 High Transaction Issuer
+     - CVV Less 
+     - Native OTP
+     - Pass key
+       - VISA
+       - Master Card
+     - Decouple Authentication
+     - Decouple Authorization
+     - Purchase Model
+     - PreAuth Model
+       - Single Capture
+       - Multi Capture
+       - Incremental Capture
+     - Dynamic Currency Conversion
+     - Multi Currency Conversion
+     - Multi Acquiring
+  
+   - UPI
+     - Acquiring Switch
+     - TPV
+     - Offers on UPI
+     - Convenience Fees on UPI
+     - Credit Card on UPI
+  
+
+   - Netbanking
+     - All Top Issuers
+     - TPV
+  
+   - Wallet
+     - Indian Wallets via Processor
+     - Apple Pay
+     - Google Pay
+     - Samsung Pay
+- 
+   - EMI/Affordability
+     - Credit Card
+     - Debit Card
+     - Card less
+     - Lending(Top 3 lenders)
+       - Bank EMI
+         - Merchant Funded 
+         - Issuer Funded
+       - Brand EMI
+         - Merchant Funded 
+         - Brand Funded
+         - Issuer Funded
+       - All EMI Offers
+         - No Cost
+         - Low Cost
+         - Standard
+       - Full Swipe Offers
+       - Instant Discount Offers
+       - Offers on Multi product
+       - Bundled Offer
+       - Brand level velocity
+     - Coupon Based Offer
+     - IMEI Validation
+
+        
+
+- Alternate Payments
+   - QR payments
+     - Grab
+     - Ali Pay
+   - Subscription
+     - On Demand 
+     - Reserve Pay
+     - Recurring Payments
+       - Scheduled
+       - As Presented
+       - Time Interval
+     - Cards(Standing Instruction)
+       - Recurring Payments via Partner 
+       - Reserve Pay via PreAuth Multi Capture
+       - On Demand via via PreAuth Single Capture
+     - UPI
+       - Via NPCI
+     - Netbanking
+       - via SI HUB by Billdesk
+   - Payment Links
+  
+- Platform Features
+    - Transaction Types
+      - Purchase
+      - PreAuth
+      - Refund
+        - Aggregator
+        - Non Aggregator
+      - Void
+      - Capture
+      - Cancel
+    - MCP Server
+    - Customer Management
+    - Retry payments
+    - Late Authorization
+    - Support for Iframe, checkout and seamless
+    - Part payments
+    - Convenience Fees/ MarkUp
+    - Split Settlement
+    - Cross Borders
+    - Multi Currency Acceptance
+    - FRM 
+    - Velocity Check 
+    - Webhook
+    - Forward Recon
+    - MPR Based Recon
+    - Error code Normalization
+    - System Observability
+      - APM
+      - Tracing
+      - Logging
+    - Product SR|FR Observability
+  
+  
+- Merchant Dev/ Experience
+    - Developer Documentation Guide for All flows
+    - Developer API Integration
+      - Open API Specs
+      - PostMan Collection
+    - AI Ask ARG Chat Bot
+    - MCP Servers
+    - AI Tool KIT
+      - npm, pip, yarn
+    - GitHub MCP Registry
+    - VS Code Plugins
+    - UAT Environment testing
+    - Different integration Channel
+      - Core
+        - Checkout
+        - Iframe
+        - Seamless
+      - SDK's
+        - Server
+        - Native 
+          - Android
+          - IOS
+          - Flutter
+          - React Native
+        - Plugins
+          - Shopify
+          - WooCommerce
+          - Opencart
+          - Magento
+          - Presto
+- Checkout and User Experience
+  - All Payment methods
+  - Retry Payment
+  - CVV Less
+  - Saved Card
+  - Parts Payments
+  - Customer Mgm
+    - Creation
+    - All types of address
+    - Preferences
+  - Iframe Support
+  - Txn Status Fetching
+
+- Merchant Onboarding
+  - Payment Method configuration
+  - VAS
+  - MDR Configuration
+  - Risk Configuration
+  - Acquiring Tid Configuration  
+  - Self Serve Onboarding
+  - Assisted onboarding
+
+  
+  
+- Risk & Compliance
+  - Process Automation 
+  - PCF
+  - Deployment Audit
+  - Application vulnerability scanning
+  - Infra Audit
+  - Network Audit
+  - Anti-Money Laundering (AML)
+  - Charge Back
+  - Merchant Settlement Hold
+  - MCC verification
+
+
+    
+- Settlement and Reconciliation
+    - MDR Calculation 
+    - Three way Reconciliation
+    - On Demand payout
+    - Scheduled payout
+    - UTR Based Reporting
+  
+
+
+- AI Innovations
+  - Developer Experience
+    - MCP Server
+    - Agent Tool Kit
+    - MCP Registries
+  - AI doc generation
+  - AI Ask Chat Bot
+  - Core payments
+      - Autonomous Payment
+      - Machine Payment Protocol/Standard
+        - UPI via NPCI(limit of 1 lakh rs)
+          - On Demand Mandate
+          - Reserve pay
+        - Card PreAuth > 1lakh limit
+          - Single Capture
+          - Multi Capture
+    - Marketplace for all domains
+    - Continuous compliance monitoring agent
+    - Auto-penetration testing agent 
+    - AI-assisted security audit 
+    - PR Review Agent
+    - Infra Observability Agent
+    - Triage Agent
+    - Bug Fix Agent
+    - JIRA Project Automations
+    - Alerts Automations
+    - Personalised offer targeting
+    - AI retry orchestrator 
+    - Suspicious Refund Detection
+    - Voice biometrics authentication
+  
+  
+  - Checkout
+    - Smart payment method ranking
+  
+  - Dashboard and Reporting
+    - Natural language analytics
+    - AI-generated executive summary
+    - Predictive dashboard alerts
+
+  - Settlement and Reconciliation
+    - AI three-way reconciliation engine 
+  
+  - Merchant Onboarding
+    - MCC auto-classifier
+    - Self-serve onboarding assistant
+    - Document extraction AI 
+      - GST
+      - PAN
+      - Aadhaar
+      - Bank Details
+    - Intelligent risk-based onboarding 
+    - eSign agreement workflow
+    - WhatsApp / Email document collection bot
+    - Document reminder automation
+    - Document expiry checker 
+    - Re-submission workflow 
+    - T&C version control automation 
+    - Welcome journey automation
+    - Annual re-KYB automation 
+    - Funnel drop-off analytics 
+    - TAT (Turnaround Time) dashboards
+  
+  - Customer Support and SRE
+    - Self Resolution Bot
+      - Transaction status auto-lookup
+      - Intent detection engine
+      - Failed transaction explainer
+      - Saved card troubleshooter
+      - EMI conversion self-serve
+      - Card block auto-execute 
+    - Sentiment-based priority escalation
+    - issue urgency Scoring
+    - Real-time transcript analysis
+    - Auto-call summary generation
+    - Auto-ticket creation
+    - Disposition auto-tagging 
+    - Chargeback auto-filing
+    - Voicebot for complete resolution in Multi lang
+    - AI-generated FAQ and Knowledge base auto-maintenance
+  
+- Platform and Product and DevOps Observability
+  - Alert Noise Reduction Agent
+  - Auto-Remediation Agent
+  - Log Anomaly Investigation Agent
+  - Synthetic Monitor Healing Agent
+  - Certificate Renewal Agent
+  - Product SR Matrix and Anomaly Detection
+    
+  
+
+
+
+
