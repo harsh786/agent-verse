@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -118,9 +120,6 @@
 /* ══════════════════════════════════════════════════════════════════════════
    LANDING PAGE — world-class animations & visual system
    ══════════════════════════════════════════════════════════════════════════ */
-
-/* Import Syne display font */
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&display=swap');
 
 .font-display { font-family: 'Syne', system-ui, sans-serif; }
 
