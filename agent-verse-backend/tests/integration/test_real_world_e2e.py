@@ -13,10 +13,7 @@ import os
 import pytest
 
 # Set up credentials from environment
-OPENAI_KEY = os.getenv(
-    "OPENAI_API_KEY",
-    "REDACTED_OPENAI_API_KEY",
-)
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")  # must be set via environment variable
 os.environ["OPENAI_API_KEY"] = OPENAI_KEY
 
 pytestmark = pytest.mark.integration
