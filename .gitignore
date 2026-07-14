@@ -3,5 +3,28 @@ agent-verse-frontend/dist/*
 agent-verse-frontend/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json
 agent-verse-frontend/node_modules/.package-lock.json
 agent-verse-frontend/dist/index.html
-agent-verse-frontend/node_modules/.package-lock.json
-agent-verse-frontend/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json
+
+# ── Secrets & credentials ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+**/credentials.json
+
+# ── Build artifacts & compiled files ──────────────────────────────────────
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+agent-verse-sdk-typescript/dist/
+agent-verse-sdk-python/**/__pycache__/
+
+# ── Generated reports ──────────────────────────────────────────────────────
+agent-verse-frontend/playwright-report/
+agent-verse-frontend/test-results/
+
+# ── IDE & OS ───────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/settings.json
+.idea/
