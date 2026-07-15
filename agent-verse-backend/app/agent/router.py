@@ -73,7 +73,8 @@ class AgentRouter:
 
     # Systems whose names appear explicitly in goal text — used for anti-affinity.
     _SYSTEM_NAMES: dict[str, list[str]] = {
-        "jira":       ["jira"],
+        "jira":       ["jira", "ticket", "sprint", "backlog", "epic", "assignee",
+                       "assigned to me", "triage", "story point"],
         "confluence":  ["confluence"],
         "github":     ["github"],
         "gitlab":     ["gitlab"],
@@ -155,7 +156,8 @@ class AgentRouter:
 
         # Domain keyword → connector name mapping for semantic matching
         DOMAIN_KEYWORDS: dict[str, list[str]] = {
-            "jira":       ["jira", "ticket", "issue", "sprint", "project", "backlog", "epic", "story"],
+            "jira":       ["jira", "ticket", "issue", "sprint", "project", "backlog",
+                           "epic", "story", "assignee", "assigned", "triage", "kanban"],
             "confluence": ["confluence", "wiki", "page", "document", "space", "knowledge"],
             "github":     ["github", "git", "repo", "repository", "pr", "pullrequest", "commit", "branch", "code", "file"],
             "gitlab":     ["gitlab", "merge", "pipeline", "ci", "cd"],
