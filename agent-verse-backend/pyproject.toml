@@ -106,6 +106,7 @@ addopts = "-ra --strict-markers --cov=app --cov-report=term-missing -p no:unrais
 markers = [
     "integration: tests requiring real Redis/Postgres (testcontainers)",
     "slow: tests that hit real LLM providers (opt-in)",
+    "real_openai: tests that call the real OpenAI API (requires OPENAI_API_KEY)",
 ]
 filterwarnings = [
     "error",
