@@ -100,12 +100,12 @@ def test_cli_api_key_from_env():
 
 
 def test_celery_app_has_correct_queues():
-    """Celery app declares all 3 task queues."""
+    """Celery routes new goals to the free-plan isolation queue by default."""
     from app.scaling.celery_app import celery_app
 
     routes = celery_app.conf.task_routes
     assert "app.scaling.tasks.run_goal" in routes
-    assert routes["app.scaling.tasks.run_goal"]["queue"] == "goals"
+    assert routes["app.scaling.tasks.run_goal"]["queue"] == "goals.free"
     assert "app.scaling.tasks.run_scheduled_goal" in routes
     assert "app.scaling.tasks.health_check_mcp" in routes
 
@@ -129,12 +129,15 @@ def test_run_goal_task_executes_with_fake_provider(monkeypatch: Any) -> None:
     that would otherwise corrupt the next test's environment.
     """
     # ── Prevent any DB connection attempts inside run_goal ────────────────────
-    # The task wraps get_session_factory in try/except; raising here sets
+    # The task wraps _make_session_factory in try/except; raising here sets
     # goal_bridge = None so every _db_* helper is a safe no-op.
     monkeypatch.setattr(
-        "app.db.session.get_session_factory",
+        "app.db.session._make_session_factory",
         lambda: (_ for _ in ()).throw(RuntimeError("no DB in unit tests")),
     )
+    monkeypatch.setattr("app.scaling.tasks._get_llm_provider", lambda _tenant_id: None)
+    monkeypatch.setattr("app.scaling.tasks._get_sync_redis", lambda: None)
+    monkeypatch.setattr("app.core.config.get_provider_env", lambda _name: None)
 
     from app.scaling.celery_app import celery_app
     from app.scaling.tasks import run_goal
