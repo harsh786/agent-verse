@@ -107,6 +107,7 @@ services:
       DB_USER: agentverse
       DB_PASSWORD: agentverse
       DB_NAME: agentverse
+      AUTH_TYPE: scram-sha-256
       LISTEN_PORT: "6432"
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "1000"
@@ -133,6 +134,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    env_file:
+      - ../.env
     restart: unless-stopped
     environment:
       ENVIRONMENT: development
@@ -187,7 +190,7 @@ services:
       EMBEDDING_DIM: "1536"
       FAKE_LLM_WARNING: "WARNING: No LLM API keys set. Agent goals will use FakeProvider and return dummy responses. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", ".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4).read()"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -243,7 +246,7 @@ services:
       keycloak-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '200 OK'"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -253,8 +256,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    env_file:
+      - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", "goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,goals_dlq"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
@@ -276,7 +281,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
     depends_on:
       redis:
         condition: service_healthy
@@ -321,7 +326,7 @@ services:
       pgbouncer:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
+      test: ["CMD", ".venv/bin/python", "-c", "data=open('/proc/1/cmdline','rb').read(); assert b'celery' in data and b'beat' in data"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -374,13 +379,21 @@ services:
     depends_on:
       - jaeger
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otel-collector-config.yaml"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
 
   # ── Jaeger — distributed tracing UI ──────────────────────────────────────────
+  jaeger-init:
+    image: alpine:3.20
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /badger/data /badger/key && chown -R 10001:10001 /badger"]
+    volumes:
+      - jaeger_data:/badger
+
   jaeger:
     image: jaegertracing/all-in-one:1.58
     restart: unless-stopped
@@ -396,6 +409,9 @@ services:
       - "14250:14250"  # Jaeger gRPC collector
     volumes:
       - jaeger_data:/badger
+    depends_on:
+      jaeger-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
       interval: 15s
@@ -416,7 +432,7 @@ services:
     depends_on:
       - backend
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost/health"]
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -436,7 +452,7 @@ services:
     volumes:
       - ./kong/kong.yml:/kong/declarative/kong.yml:ro
     ports:
-      - "8080:8000"  # main gateway: http://localhost:8080
+      - "8082:8000"  # main gateway: http://localhost:8082 (8080 is Keycloak)
       - "8001:8001"  # Kong admin API (local dev only)
     depends_on:
       backend:

@@ -22,7 +22,7 @@ import {
   ChevronDown, ChevronRight, Pause, Play, Dna, GitCompare,
   Ghost, FlaskConical, RotateCcw, Download, FileJson, FileText,
   Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
-  Clock, AlertTriangle, Bot, Plug, Shield, Layers,
+  Clock, AlertTriangle, Bot, Plug, Layers,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { goalsApi, governanceApi, agentsApi } from "@/lib/api/client";
@@ -38,7 +38,6 @@ import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
-import type { GoalEvent } from "@/lib/api/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -63,14 +62,6 @@ function fmtVal(v: unknown): string | undefined {
   if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
     return String(v);
   return JSON.stringify(v, null, 2);
-}
-
-function timeAgo(iso: string) {
-  const d = Date.now() - new Date(iso).getTime();
-  if (d < 60_000) return "just now";
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
-  return `${Math.floor(d / 86_400_000)}d ago`;
 }
 
 // Download helper
@@ -445,9 +436,8 @@ const TERMINAL_ICONS: Record<string, string> = {
   knowledge_retrieved:  "📚",
 };
 
-function TerminalLine({ event, goalStatus, onRetry, isRetrying }: {
+function TerminalLine({ event, onRetry, isRetrying }: {
   event: StreamGoalEvent;
-  goalStatus: string;
   onRetry?: (d: string) => void;
   isRetrying?: boolean;
 }) {
@@ -511,7 +501,7 @@ function TerminalLine({ event, goalStatus, onRetry, isRetrying }: {
               {typeof event.output === "string" ? event.output : JSON.stringify(event.output, null, 2)}
             </pre>
           )}
-          {event.error && (
+          {event.error != null && (
             <pre className="text-[10px] text-red-400 whitespace-pre-wrap">{String(event.error)}</pre>
           )}
         </div>
@@ -614,7 +604,6 @@ function TerminalPanel({
             <TerminalLine
               key={readStr(ev.event_id) ?? `ev-${i}`}
               event={ev}
-              goalStatus={goalStatus}
               onRetry={onRetry}
               isRetrying={isRetrying}
             />
@@ -687,7 +676,8 @@ export function GoalDetailPage() {
 
   const [streamKey, setStreamKey] = useState(0);
   const { events: sseEvents, connected, streamingToken } = useGoalStream(
-    streamKey > 0 || true ? (goalId ?? "") : ""
+    goalId ?? "",
+    { reconnectKey: streamKey },
   );
 
   // Fetch persisted event log — used to populate Execution tab when SSE has no events

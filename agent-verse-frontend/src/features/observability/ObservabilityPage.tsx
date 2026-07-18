@@ -1146,7 +1146,7 @@ export function ObservabilityPage() {
   const [tab, setTab] = useState<ObsTab>('overview');
   const [grafanaAvailable, setGrafanaAvailable] = useState<boolean | null>(null);
   // Selected goal for RuntimeDecisionPanel
-  const [selectedGoal, setSelectedGoal] = useState<SelectedGoalContext | null>(null);
+  const [selectedGoal] = useState<SelectedGoalContext | null>(null);
 
   // ── Time range state ────────────────────────────────────────────────────────
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');

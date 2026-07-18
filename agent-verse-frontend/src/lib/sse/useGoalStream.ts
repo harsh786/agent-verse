@@ -42,6 +42,7 @@ export interface StreamingToken {
 
 interface UseGoalStreamOptions {
   onEvent?: (event: GoalEvent) => void;
+  reconnectKey?: number;
 }
 
 export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions) {
@@ -57,6 +58,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   // lastEventId on the MessageEvent.  With a fetch-based reader we extract it
   // from the raw frame ("id: " prefix) and store it here.
   const lastEventIdRef = useRef<string>('');
+  const reconnectKey = opts?.reconnectKey;
 
   onEventRef.current = opts?.onEvent;
 
@@ -234,7 +236,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
       setConnected(false);
       setStreamingToken(null);
     };
-  }, [goalId]);
+  }, [goalId, reconnectKey]);
 
   return { events, connected, streamingToken };
 }
