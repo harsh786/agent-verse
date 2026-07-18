@@ -139,7 +139,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps — intentionally runs once on mount
+  }, [apiKey, isAuthenticated, logout, sessionValidated, setSessionValidated, tenantId]);
 
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
   if (isChecking) {
