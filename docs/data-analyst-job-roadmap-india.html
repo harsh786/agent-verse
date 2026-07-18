@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A complete job-first data analyst roadmap for freshers in India.">
+  <title>Data Analyst Roadmap | Fresher to Job-Ready in India</title>
+  <style>
+    :root {
+      --paper: #f3efe5;
+      --paper-deep: #e6decf;
+      --ink: #16221d;
+      --muted: #5b665f;
+      --indigo: #20355f;
+      --indigo-soft: #e5eaf5;
+      --saffron: #cf5a24;
+      --saffron-soft: #f8e2d5;
+      --sage: #3b705b;
+      --sage-soft: #dfede5;
+      --line: #cfc5b4;
+      --white: #fffdf8;
+      --shadow: 0 12px 35px rgb(37 31 18 / 8%);
+      --serif: Georgia, "Times New Roman", serif;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    a { color: inherit; }
+    button { font: inherit; }
+    :focus-visible { outline: 3px solid var(--saffron); outline-offset: 4px; }
+    .skip-link {
+      position: fixed;
+      z-index: 10;
+      top: 0.75rem;
+      left: 0.75rem;
+      padding: 0.65rem 0.85rem;
+      color: var(--white);
+      background: var(--indigo);
+      transform: translateY(-200%);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 32rem;
+      padding: 4.5rem max(1.25rem, calc((100vw - 79rem) / 2));
+      color: var(--white);
+      background: var(--indigo);
+    }
+    .hero::after {
+      position: absolute;
+      right: -8rem;
+      bottom: -12rem;
+      width: 42rem;
+      height: 42rem;
+      content: "";
+      border: 1px solid rgb(255 255 255 / 25%);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3rem rgb(255 255 255 / 5%), 0 0 0 8rem rgb(255 255 255 / 3%);
+    }
+    .hero-inner { position: relative; z-index: 1; max-width: 73rem; }
+    .hero-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .edition, .eyebrow, .tag, .rail-kicker, .phase-label {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.13em;
+      line-height: 1.25;
+      text-transform: uppercase;
+    }
+    .edition { color: #f6ba97; }
+    .hero h1 {
+      max-width: 58rem;
+      margin: 4.4rem 0 1.2rem;
+      font-family: var(--serif);
+      font-size: clamp(3.2rem, 8vw, 7.25rem);
+      font-weight: 400;
+      letter-spacing: -0.065em;
+      line-height: 0.86;
+    }
+    .hero h1 em { color: #f4a979; font-style: italic; }
+    .hero-deck { max-width: 43rem; margin: 0; font-size: clamp(1.05rem, 2vw, 1.32rem); }
+    .tool-strip { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 2.1rem; }
+    .tool-strip span, .tag {
+      display: inline-block;
+      padding: 0.28rem 0.55rem;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font-size: 0.71rem;
+      font-weight: 750;
+      letter-spacing: 0.04em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+    .tool-strip span { color: #fff0e6; }
+    .hero-note { margin: 1.75rem 0 0; color: #c8d2eb; font-size: 0.9rem; }
+
+    .page-shell {
+      display: grid;
+      grid-template-columns: 15.5rem minmax(0, 1fr);
+      gap: clamp(2rem, 5vw, 6rem);
+      max-width: 83rem;
+      margin: 0 auto;
+      padding: 2.5rem max(1.25rem, 3vw) 6rem;
+    }
+    .reading-rail { align-self: start; position: sticky; top: 1rem; }
+    .rail-title { margin: 0; color: var(--indigo); font-family: var(--serif); font-size: 1.55rem; line-height: 1; }
+    .rail-kicker { margin-top: 0.45rem; color: var(--muted); }
+    .reading-rail nav { margin-top: 1.8rem; border-top: 1px solid var(--line); }
+    .reading-rail a {
+      display: block;
+      padding: 0.55rem 0.15rem;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      font-size: 0.86rem;
+      text-decoration: none;
+    }
+    .reading-rail a:hover, .reading-rail a[aria-current="location"] { color: var(--saffron); font-weight: 800; }
+    .print-button {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 0.65rem 0.75rem;
+      color: var(--indigo);
+      background: transparent;
+      border: 1px solid var(--indigo);
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .print-button:hover { color: var(--white); background: var(--indigo); }
+
+    main { min-width: 0; max-width: 68rem; }
+    section { scroll-margin-top: 1rem; padding: 4.8rem 0; border-top: 1px solid var(--line); }
+    section:first-child { padding-top: 1rem; border-top: 0; }
+    .section-head { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: 1.5rem; margin-bottom: 2rem; }
+    .section-number { color: var(--saffron); font-family: var(--serif); font-size: 3.5rem; font-style: italic; letter-spacing: -0.08em; line-height: 0.85; }
+    h2, h3, h4 { color: var(--indigo); font-family: var(--serif); font-weight: 400; letter-spacing: -0.035em; line-height: 1.04; }
+    h2 { margin: 0; font-size: clamp(2.15rem, 4vw, 3.65rem); }
+    h3 { margin: 2.75rem 0 0.85rem; font-size: 1.75rem; }
+    h4 { margin: 1.6rem 0 0.5rem; font-size: 1.2rem; }
+    p { margin: 0.85rem 0; }
+    li { margin: 0.35rem 0; }
+    .lede { max-width: 48rem; color: #334039; font-size: 1.12rem; }
+    .eyebrow { color: var(--saffron); }
+    .muted { color: var(--muted); }
+    .rule-note { padding-left: 1rem; border-left: 4px solid var(--saffron); color: #39433e; }
+
+    .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem 2rem; }
+    .three-col { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .fact-card, .callout, .competency-gate, .project, .mistake-card {
+      background: var(--white);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+    .fact-card { padding: 1.15rem; }
+    .fact-card strong { display: block; color: var(--indigo); font-family: var(--serif); font-size: 1.2rem; font-weight: 400; }
+    .callout { padding: 1.35rem 1.5rem; }
+    .callout.indigo { color: var(--white); background: var(--indigo); border-color: var(--indigo); }
+    .callout.indigo h3 { color: #ffd0b7; margin-top: 0; }
+    .callout.sage { border-left: 5px solid var(--sage); }
+    .competency-gate { margin-top: 2rem; padding: 1.35rem 1.5rem; border-left: 6px solid var(--sage); background: var(--sage-soft); box-shadow: none; }
+    .competency-gate h3 { margin: 0.25rem 0 0.3rem; color: var(--sage); font-size: 1.4rem; }
+    .competency-gate .eyebrow { color: var(--sage); }
+
+    .workflow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 2rem 0; overflow: hidden; border: 1px solid var(--line); }
+    .workflow div { position: relative; min-height: 7rem; padding: 1rem; background: var(--white); border-right: 1px solid var(--line); }
+    .workflow div:last-child { border: 0; background: var(--saffron); color: var(--white); }
+    .workflow strong { display: block; font-family: var(--serif); font-size: 1.12rem; font-weight: 400; }
+    .workflow span { display: block; margin-top: 0.35rem; font-size: 0.76rem; line-height: 1.35; }
+
+    .phase-path { display: grid; gap: 0; margin: 2rem 0; padding: 0; list-style: none; border: 1px solid var(--line); background: var(--white); }
+    .phase-path li { display: grid; grid-template-columns: 5.6rem 1fr auto; gap: 0.8rem; align-items: center; margin: 0; padding: 0.82rem 1rem; border-bottom: 1px solid var(--line); }
+    .phase-path li:last-child { border-bottom: 0; }
+    .phase-label { color: var(--saffron); }
+    .phase-path strong { color: var(--indigo); font-family: var(--serif); font-size: 1.12rem; font-weight: 400; }
+    .phase-path span:last-child { color: var(--muted); font-size: 0.83rem; text-align: right; }
+
+    .table-scroll { overflow-x: auto; margin: 1.5rem 0; border: 1px solid var(--line); background: var(--white); }
+    table { width: 100%; min-width: 38rem; border-collapse: collapse; font-size: 0.9rem; }
+    caption { padding: 0.75rem 1rem; color: var(--muted); caption-side: bottom; font-size: 0.78rem; text-align: left; }
+    th, td { padding: 0.8rem 0.9rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--white); background: var(--indigo); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { color: var(--indigo); font-weight: 750; }
+    code { padding: 0.13rem 0.3rem; background: #e8e2d7; font-family: var(--mono); font-size: 0.88em; }
+    pre { margin: 1.25rem 0; padding: 1.1rem 1.2rem; overflow-x: auto; color: #eff4ee; background: #182b25; border-left: 5px solid var(--saffron); font-family: var(--mono); font-size: 0.82rem; line-height: 1.55; }
+    pre code { padding: 0; background: none; font-size: inherit; }
+
+    .project-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+    .project { position: relative; padding: 1.4rem; overflow: hidden; }
+    .project.featured { grid-column: span 2; background: var(--indigo); border-color: var(--indigo); color: #f3f1ea; }
+    .project-num { color: var(--saffron); font-family: var(--serif); font-size: 3.3rem; font-style: italic; line-height: 0.8; }
+    .project.featured .project-num { color: #f3aa81; }
+    .project h3 { margin: 0.55rem 0; font-size: 1.75rem; }
+    .project.featured h3, .project.featured h4 { color: #fff1e9; }
+    .project .tag { margin-right: 0.22rem; color: var(--sage); }
+    .project.featured .tag { color: #e5c2af; }
+    .project ul { padding-left: 1.15rem; font-size: 0.9rem; }
+    .project .what-strong { margin-top: 1rem; padding-top: 0.85rem; border-top: 1px solid var(--line); color: var(--sage); font-size: 0.87rem; font-weight: 700; }
+    .project.featured .what-strong { border-color: #586b92; color: #f3ba98; }
+
+    .checklist { padding: 0; list-style: none; }
+    .checklist li { position: relative; margin: 0.55rem 0; padding: 0.55rem 0.65rem 0.55rem 2.55rem; background: var(--white); border: 1px solid var(--line); }
+    .checklist li::before { position: absolute; top: 0.63rem; left: 0.7rem; width: 1.1rem; height: 1.1rem; content: ""; border: 2px solid var(--sage); }
+    .mistakes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+    .mistake-card { padding: 1rem 1.1rem; }
+    .mistake-card strong { color: var(--saffron); }
+    .mistake-card p { margin-bottom: 0; font-size: 0.9rem; }
+    .career-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .career-grid article { padding: 1.1rem; background: var(--white); }
+    .career-grid h3 { margin: 0; font-size: 1.3rem; }
+    .career-grid p { color: var(--muted); font-size: 0.88rem; }
+    footer { padding: 2.5rem 1.25rem; color: #d9e0ed; background: #132443; }
+    footer div { max-width: 83rem; margin: auto; }
+    footer p { max-width: 45rem; }
+
+    @media (max-width: 980px) {
+      .hero { min-height: auto; padding-top: 2.4rem; padding-bottom: 3.5rem; }
+      .hero h1 { margin-top: 3rem; }
+      .page-shell { display: block; padding-top: 1.5rem; }
+      .reading-rail { position: static; margin-bottom: 2rem; }
+      .reading-rail nav { display: flex; overflow-x: auto; margin-top: 1rem; }
+      .reading-rail a { flex: 0 0 auto; padding: 0.55rem 0.7rem; border: 0; border-right: 1px solid var(--line); white-space: nowrap; }
+      .print-button { width: auto; }
+      .workflow { grid-template-columns: 1fr; }
+      .workflow div { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .workflow div:last-child { border-bottom: 0; }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 15px; }
+      .hero { padding-right: 1.25rem; padding-left: 1.25rem; }
+      .hero h1 { font-size: 3.35rem; }
+      .page-shell { padding-right: 1rem; padding-left: 1rem; }
+      section { padding: 3.4rem 0; }
+      .section-head { grid-template-columns: 3.4rem 1fr; gap: 0.75rem; }
+      .section-number { font-size: 2.65rem; }
+      .two-col, .three-col, .project-grid, .mistakes, .career-grid { grid-template-columns: 1fr; }
+      .project.featured { grid-column: auto; }
+      .phase-path li { grid-template-columns: 4.7rem 1fr; }
+      .phase-path span:last-child { grid-column: 2; text-align: left; }
+      .callout, .competency-gate, .project { padding: 1.1rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+    }
+    @media print {
+      @page { margin: 1.25cm; }
+      .reading-rail, .print-button, .skip-link { display: none !important; }
+      body { color: #000; background: #fff; font-size: 10pt; }
+      .hero { min-height: auto; padding: 0 0 1rem; color: #000; background: #fff; }
+      .hero::after { display: none; }
+      .edition, .hero h1 em, .eyebrow, .section-number { color: #000; }
+      .hero h1 { margin: 0.5rem 0; font-size: 36pt; }
+      .hero-note { color: #222; }
+      .page-shell { display: block; max-width: none; padding: 0; }
+      section, article, .competency-gate, .callout { break-inside: avoid; box-shadow: none; }
+      section { padding: 1.4rem 0; }
+      .fact-card, .project, .callout, .competency-gate, .checklist li { border-color: #888; box-shadow: none; }
+      .project.featured, .callout.indigo { color: #000; background: #fff; border-color: #888; }
+      .project.featured h3, .project.featured h4, .callout.indigo h3 { color: #000; }
+      th { color: #000; background: #eee; }
+      a { color: inherit; text-decoration: none; }
+      pre { color: #000; background: #f4f4f4; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to roadmap</a>
+
+  <header class="hero" id="top">
+    <div class="hero-inner">
+      <div class="hero-top"><p class="edition">Field Guide / India / Fresher Edition</p><p class="edition">No daily-hour targets</p></div>
+      <h1>From raw data<br>to <em>real decisions.</em></h1>
+      <p class="hero-deck">A job-first data analyst roadmap for freshers in India. Build the technical skill, business judgement, public portfolio, and interview fluency that entry-level roles actually test.</p>
+      <div class="tool-strip" aria-label="Core tools"><span>Excel</span><span>SQL</span><span>Power BI</span><span>Tableau</span><span>Python</span><span>pandas</span><span>Statistics</span><span>GitHub</span></div>
+      <p class="hero-note">Follow the phases in order. Progress when you can demonstrate the competency gate, not when a calendar says you should.</p>
+    </div>
+  </header>
+
+  <div class="page-shell">
+    <aside class="reading-rail" aria-label="Roadmap navigation">
+      <p class="rail-title">The analyst<br>field guide</p>
+      <p class="rail-kicker">A complete path to your first role</p>
+      <nav aria-label="Sections">
+        <a data-nav-link href="#quick-start">Quick start</a>
+        <a data-nav-link href="#mindset">Analyst mindset</a>
+        <a data-nav-link href="#excel">Excel and data quality</a>
+        <a data-nav-link href="#sql">SQL</a>
+        <a data-nav-link href="#bi">Power BI and Tableau</a>
+        <a data-nav-link href="#python">Python and pandas</a>
+        <a data-nav-link href="#statistics">Statistics</a>
+        <a data-nav-link href="#portfolio">Portfolio studio</a>
+        <a data-nav-link href="#hiring">Hiring playbook</a>
+        <a data-nav-link href="#readiness">Readiness audit</a>
+      </nav>
+      <button class="print-button" type="button" data-print>Print or save as PDF</button>
+    </aside>
+
+    <main id="main-content">
+      <section id="quick-start" aria-labelledby="quick-start-title">
+        <div class="section-head"><div class="section-number">00</div><div><p class="eyebrow">The destination</p><h2 id="quick-start-title">What job-ready actually means</h2></div></div>
+        <p class="lede">A data analyst turns an ambiguous business question into a trustworthy recommendation. Charts and code are means, not the final product. Your product is a decision that can be measured.</p>
+        <div class="workflow" aria-label="The analyst workflow">
+          <div><strong>Question</strong><span>What decision needs evidence?</span></div>
+          <div><strong>Definition</strong><span>What metric, grain, and scope apply?</span></div>
+          <div><strong>Evidence</strong><span>Extract, clean, validate, analyse.</span></div>
+          <div><strong>Story</strong><span>Show the driver, risk, and limitation.</span></div>
+          <div><strong>Action</strong><span>Recommend a measurable next move.</span></div>
+        </div>
+        <h3>Target roles</h3>
+        <div class="two-col">
+          <div><ul><li>Data Analyst / Junior Data Analyst</li><li>Business Analyst / Associate Business Analyst</li><li>BI Analyst / Reporting Analyst</li><li>MIS Executive / MIS Analyst</li><li>Operations Analyst</li></ul></div>
+          <div><ul><li>Marketing Analyst / Growth Analyst</li><li>Product Analyst Intern / Associate Product Analyst</li><li>Revenue Analyst / Sales Operations Analyst</li><li>Risk Analyst / Data Operations Analyst</li><li>Analytics internship roles</li></ul></div>
+        </div>
+        <div class="table-scroll"><table><caption>What employers commonly assess in a fresher analyst interview.</caption><thead><tr><th>Area</th><th>Job-ready standard</th></tr></thead><tbody>
+          <tr><td>SQL</td><td>Query multiple tables, join safely, aggregate correctly, use CTEs and window functions, and explain the result.</td></tr>
+          <tr><td>Excel</td><td>Clean data, use formulas and lookups, create pivot-based reports, and build a readable dashboard.</td></tr>
+          <tr><td>Power BI</td><td>Transform data, model relationships, write practical DAX measures, and build an interactive report.</td></tr>
+          <tr><td>Python</td><td>Use pandas to clean, explore, merge, aggregate, and chart tabular data in a reproducible notebook.</td></tr>
+          <tr><td>Statistics</td><td>Interpret distributions, correlation, sampling, confidence intervals, and A/B-test results without overclaiming.</td></tr>
+          <tr><td>Business sense</td><td>Choose useful KPIs and connect findings to revenue, cost, retention, or operations.</td></tr>
+          <tr><td>Communication</td><td>Give a concise walkthrough of assumptions, limitations, insight, and action.</td></tr>
+        </tbody></table></div>
+        <p class="rule-note"><strong>Scope discipline:</strong> do not spend this sprint on deep learning, advanced machine learning, Spark, Kubernetes, or complex cloud architecture. They do not replace SQL, dashboards, business metrics, and communication in a fresher analyst interview.</p>
+
+        <h3>Recommended tool stack</h3>
+        <div class="table-scroll"><table><caption>Use this focused stack. Mastery beats a long list of certificates.</caption><thead><tr><th>Category</th><th>Primary tool</th><th>Minimum standard</th></tr></thead><tbody>
+          <tr><td>Spreadsheet</td><td>Microsoft Excel</td><td>Cleaning, formulas, PivotTables, charts, dashboard.</td></tr>
+          <tr><td>Querying</td><td>PostgreSQL + DBeaver</td><td>Write, save, explain, and validate complex queries.</td></tr>
+          <tr><td>BI</td><td>Power BI Desktop</td><td>Power Query, star schema, DAX, dashboard UX.</td></tr>
+          <tr><td>Secondary BI</td><td>Tableau Public</td><td>Publish one polished public dashboard.</td></tr>
+          <tr><td>Programming</td><td>Python + JupyterLab or VS Code</td><td>pandas, NumPy basics, matplotlib, seaborn.</td></tr>
+          <tr><td>Version control</td><td>Git + GitHub</td><td>Repository, commits, README, and .gitignore.</td></tr>
+          <tr><td>Data sources</td><td>Kaggle, data.gov.in, World Bank, public APIs</td><td>Cite source, license, and limitations.</td></tr>
+        </tbody></table></div>
+        <h3>Set up your workspace</h3>
+        <ol><li>Create a professional GitHub profile and configure Git with your name and email.</li><li>Install PostgreSQL and DBeaver; create a local database named <code>analytics_practice</code>.</li><li>Install Power BI Desktop and create a Tableau Public account.</li><li>Install Python 3 with JupyterLab or VS Code and the Python extension.</li><li>Create a <code>data-analyst-portfolio</code> repository with folders for projects, SQL, Excel, Power BI, and your resume.</li></ol>
+      </section>
+
+      <section id="mindset" aria-labelledby="mindset-title">
+        <div class="section-head"><div class="section-number">01</div><div><p class="eyebrow">Phase 0</p><h2 id="mindset-title">Think like an analyst before using a tool</h2></div></div>
+        <p class="lede">The difference between a report-maker and an analyst is the quality of the question. Start every project by writing an analytical brief.</p>
+        <div class="callout indigo"><h3>The seven-line analytical brief</h3><ol><li><strong>Decision:</strong> What decision should this analysis help someone make?</li><li><strong>Stakeholder:</strong> Who will use the answer?</li><li><strong>Question:</strong> State one precise business question.</li><li><strong>Metric:</strong> Define the primary calculation.</li><li><strong>Grain:</strong> What does one row represent?</li><li><strong>Time:</strong> Which dates are included and why?</li><li><strong>Limitations:</strong> What cannot be concluded from this data?</li></ol></div>
+        <p>Example: A sales manager needs to decide which product categories to promote. Analyse completed orders over four quarters, define revenue as <code>SUM(quantity * unit_price * (1 - discount))</code>, compare category growth, and check whether a small customer group drives the result.</p>
+        <h3>Business metrics you must define correctly</h3>
+        <div class="table-scroll"><table><caption>Know the formula, denominator, and appropriate business use for each metric.</caption><thead><tr><th>Metric</th><th>Definition</th><th>Use</th></tr></thead><tbody>
+          <tr><td>Revenue</td><td>Sum of recognised sales value.</td><td>Commercial performance.</td></tr>
+          <tr><td>Gross profit</td><td>Revenue minus cost of goods sold.</td><td>Profitability.</td></tr>
+          <tr><td>Gross margin</td><td>Gross profit / revenue.</td><td>Product and category economics.</td></tr>
+          <tr><td>Average order value</td><td>Revenue / orders.</td><td>Basket and pricing analysis.</td></tr>
+          <tr><td>Conversion rate</td><td>Conversions / eligible visitors or leads.</td><td>Funnel performance.</td></tr>
+          <tr><td>Retention rate</td><td>Customers active later / starting cohort.</td><td>Customer health.</td></tr>
+          <tr><td>Churn rate</td><td>Customers lost / customers at start.</td><td>Attrition monitoring.</td></tr>
+          <tr><td>Customer acquisition cost</td><td>Marketing and sales spend / acquired customers.</td><td>Acquisition efficiency.</td></tr>
+          <tr><td>On-time delivery</td><td>On-time deliveries / completed deliveries.</td><td>Operations performance.</td></tr>
+        </tbody></table></div>
+        <aside class="competency-gate" aria-labelledby="mindset-gate-title"><p class="eyebrow">Competency gate</p><h3 id="mindset-gate-title">Frame an ambiguous problem</h3><p>Given “sales are declining,” write a one-page brief with stakeholder, precise question, metric, grain, scope, hypotheses, and risks before touching the data.</p></aside>
+      </section>
+
+      <section id="excel" aria-labelledby="excel-title">
+        <div class="section-head"><div class="section-number">02</div><div><p class="eyebrow">Phase 1</p><h2 id="excel-title">Excel and data quality</h2></div></div>
+        <p class="lede">Excel remains central to reporting, ad hoc analysis, and stakeholder work. Treat it as a serious analytical environment, not a beginner tool.</p>
+        <div class="two-col"><div><h3>Data hygiene</h3><ul><li>Find blanks, duplicates, invalid dates, inconsistent category labels, and implausible numeric values.</li><li>Preserve the raw file and transform in a cleaned-data sheet or new columns.</li><li>Use tables, filters, named ranges, data types, sorting, and freeze panes deliberately.</li><li>Clean text with <code>TRIM</code>, <code>CLEAN</code>, <code>LOWER</code>, <code>UPPER</code>, and <code>SUBSTITUTE</code>.</li></ul></div><div><h3>Formulas analysts use</h3><ul><li>Logic: <code>IF</code>, <code>IFS</code>, <code>AND</code>, <code>OR</code>, <code>IFERROR</code>.</li><li>Aggregation: <code>SUMIFS</code>, <code>COUNTIFS</code>, <code>AVERAGEIFS</code>.</li><li>Lookups: <code>XLOOKUP</code>, <code>INDEX</code> + <code>MATCH</code>.</li><li>Dates: <code>DATE</code>, <code>YEAR</code>, <code>MONTH</code>, <code>EOMONTH</code>, <code>NETWORKDAYS</code>.</li><li>Dynamic arrays: <code>FILTER</code>, <code>SORT</code>, <code>UNIQUE</code>.</li></ul></div></div>
+        <h3>Analysis and reporting</h3><ul><li>Create PivotTables and PivotCharts; group dates by month, quarter, and year.</li><li>Use slicers and timelines only when they create a useful analysis path.</li><li>Use lines for trends, bars for comparisons, scatter plots for relationships, and tables for exact values.</li><li>Avoid 3D charts, decorative colours, crowded pie charts, and dashboards without a decision.</li></ul>
+        <div class="callout sage"><p class="eyebrow">Excel portfolio deliverable</p><h3>Retail sales performance dashboard</h3><p>Create <code>Raw_Data</code>, <code>Cleaned_Data</code>, <code>Analysis</code>, <code>Dashboard</code>, and <code>Data_Dictionary</code> sheets. Show monthly trend, category performance, region performance, top products, KPI cards, filters, and a written insight box.</p></div>
+        <aside class="competency-gate" aria-labelledby="excel-gate-title"><p class="eyebrow">Competency gate</p><h3 id="excel-gate-title">Turn a messy file into a decision</h3><p>Given a raw sales file, clean it, calculate revenue, create a PivotTable report, identify the strongest and weakest segments, and explain three actions the business should consider.</p></aside>
+      </section>
+
+      <section id="sql" aria-labelledby="sql-title">
+        <div class="section-head"><div class="section-number">03</div><div><p class="eyebrow">Phase 2 / Highest-value skill</p><h2 id="sql-title">SQL: learn to reason in tables</h2></div></div>
+        <p class="lede">SQL is the most consistently tested technical skill for analyst roles. Learn it as a method for reasoning about grain, relationships, and evidence, not a list of commands.</p>
+        <h3>Relational thinking</h3><div class="three-col"><div class="fact-card"><strong>Fact table</strong><p>Records measurable events: an order, session, payment, or delivery.</p></div><div class="fact-card"><strong>Dimension table</strong><p>Describes events: customer, product, date, category, or region.</p></div><div class="fact-card"><strong>Grain</strong><p>The real-world meaning of one row. State it before every join or aggregation.</p></div></div>
+        <h3>Foundation to fluency</h3><ol><li>Master <code>SELECT</code>, aliases, <code>DISTINCT</code>, <code>WHERE</code>, <code>ORDER BY</code>, <code>LIMIT</code>, and null handling.</li><li>Use <code>IN</code>, <code>BETWEEN</code>, <code>LIKE</code>, <code>CASE WHEN</code>, aggregates, <code>GROUP BY</code>, <code>HAVING</code>, and date functions.</li><li>Learn <code>INNER</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>FULL OUTER</code>, cross, and self joins. Prefer <code>LEFT JOIN</code> when the base population must remain intact.</li><li>Build readable CTEs with <code>WITH</code>; know <code>UNION ALL</code> versus <code>UNION</code>.</li><li>Use <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, <code>LAG</code>, <code>LEAD</code>, and windowed sums or averages.</li></ol>
+        <h3>Validate every join</h3><p>The most common analyst error is an accidental many-to-many join that duplicates values. Check the expected row count and whether the primary key remains unique before believing the result.</p>
+<pre><code>-- Does the order identifier remain unique after this join?
+SELECT
+  COUNT(*) AS rows_after_join,
+  COUNT(DISTINCT order_id) AS distinct_orders
+FROM joined_data;</code></pre>
+        <h3>SQL problem set</h3><div class="two-col"><div><ol><li>Revenue, order count, and AOV by month.</li><li>Top five products by revenue within every category.</li><li>Repeat customers and interval between purchases.</li><li>Monthly revenue with prior-month revenue and percentage growth.</li></ol></div><div><ol start="5"><li>First-purchase cohorts and monthly retention.</li><li>Late orders by state and seller.</li><li>Products with rising revenue but falling margin.</li><li>RFM segments based on recency, frequency, and monetary value.</li></ol></div></div>
+        <div class="callout"><p class="eyebrow">SQL quality checklist</p><ul><li>Does every selected non-aggregated field appear in <code>GROUP BY</code>?</li><li>Did a join multiply rows?</li><li>Does <code>COUNT(*)</code> mean rows, or should it be <code>COUNT(DISTINCT order_id)</code>?</li><li>Are nulls and date boundaries intentional?</li><li>Do totals reconcile with a simple control query?</li><li>Can another analyst read the query structure in one pass?</li></ul></div>
+        <aside class="competency-gate" aria-labelledby="sql-gate-title"><p class="eyebrow">Competency gate</p><h3 id="sql-gate-title">Prove SQL fluency</h3><p>Solve a multi-table business problem with joins, CTEs, date logic, and a window function. Validate output and explain the query in plain English.</p></aside>
+      </section>
+
+      <section id="bi" aria-labelledby="bi-title">
+        <div class="section-head"><div class="section-number">04</div><div><p class="eyebrow">Phase 3</p><h2 id="bi-title">Power BI first. Tableau with purpose.</h2></div></div>
+        <p class="lede">Power BI is the primary BI tool for this roadmap because it appears frequently in Indian analyst, reporting, MIS, and BI roles. Learn Tableau to demonstrate flexibility and publish a public dashboard.</p>
+        <h3>Power Query: prepare data deliberately</h3><ul><li>Connect to CSV, Excel, folders, SQL, and web sources.</li><li>Profile column quality, distribution, and errors; set data types deliberately.</li><li>Filter, replace, split, merge, fill, deduplicate, pivot, unpivot, append, and merge queries.</li><li>Name each transformation step and avoid undocumented manual changes in the report view.</li></ul>
+        <h3>Model first, visualise second</h3><div class="callout"><p><strong>Build a star schema:</strong> dimensions such as Date, Customer, Product, and Region should filter a central FactSales table through one-to-many relationships.</p><ul><li>Create and mark a dedicated date table.</li><li>Prefer single-direction filtering unless a documented reason requires otherwise.</li><li>Hide technical keys from report consumers.</li><li>Avoid one giant flat table when the source can be modelled.</li></ul></div>
+        <h3>DAX measures, not magic numbers</h3><p>A calculated column is stored row by row. A measure is evaluated in the current filter context. Use measures for KPIs and validate each one against a small manual calculation.</p>
+<pre><code>Total Revenue = SUMX(FactSales, FactSales[Quantity] * FactSales[Unit Price])
+
+Total Orders = DISTINCTCOUNT(FactSales[Order ID])
+
+Average Order Value = DIVIDE([Total Revenue], [Total Orders])
+
+Revenue Previous Month =
+CALCULATE([Total Revenue], DATEADD(DimDate[Date], -1, MONTH))
+
+Revenue MoM % =
+DIVIDE([Total Revenue] - [Revenue Previous Month], [Revenue Previous Month])</code></pre>
+        <p>Learn <code>CALCULATE</code>, filter context, row context, <code>FILTER</code>, <code>ALL</code>, <code>REMOVEFILTERS</code>, <code>RELATED</code>, <code>DIVIDE</code>, and basic time intelligence.</p>
+        <h3>Dashboard design rules</h3><div class="two-col"><div><ul><li>Place purpose, date coverage, and KPI definitions in view.</li><li>Use hierarchy: headline KPIs, trend, drivers, then detail.</li><li>Use one visual per question.</li><li>Label currencies, units, percentages, and comparisons.</li></ul></div><div><ul><li>Use accessible contrast and do not depend on colour alone.</li><li>Reserve red and green for negative and positive signals consistently.</li><li>Add drill-through, tooltips, and detail only when they enable a decision.</li><li>End with key findings and actions, not only charts.</li></ul></div></div>
+        <h3>Tableau essentials</h3><p>Learn dimensions versus measures, marks, filters, calculated fields, table calculations, parameters, dashboards, and actions. Build one Tableau Public dashboard with a different question or dataset from your Power BI report.</p>
+        <aside class="competency-gate" aria-labelledby="bi-gate-title"><p class="eyebrow">Competency gate</p><h3 id="bi-gate-title">Deliver a stakeholder-ready report</h3><p>Receive raw multi-table data, transform it, build a star schema, create validated measures, publish an interactive report, and explain the top three business actions it supports.</p></aside>
+      </section>
+
+      <section id="python" aria-labelledby="python-title">
+        <div class="section-head"><div class="section-number">05</div><div><p class="eyebrow">Phase 4</p><h2 id="python-title">Python for repeatable analysis</h2></div></div>
+        <p class="lede">Python makes cleaning and exploration repeatable beyond spreadsheets. For an analyst role, master tabular data workflows before algorithms.</p>
+        <div class="table-scroll"><table><caption>Use libraries for a specific analyst purpose, not because they look good on a resume.</caption><thead><tr><th>Library</th><th>Use</th></tr></thead><tbody><tr><td>pandas</td><td>Tables, cleaning, joins, grouping, dates, exports.</td></tr><tr><td>NumPy</td><td>Numeric arrays and vectorised calculations.</td></tr><tr><td>matplotlib</td><td>Foundational chart control.</td></tr><tr><td>seaborn</td><td>Statistical charts and concise exploratory visuals.</td></tr><tr><td>openpyxl</td><td>Reading or writing Excel workbooks when needed.</td></tr><tr><td>SQLAlchemy / driver</td><td>Connecting Python to a database later.</td></tr></tbody></table></div>
+        <h3>Notebook discipline</h3><ul><li>Use a clear structure: title, business question, imports, loading, cleaning, analysis, visuals, findings, limitations, next steps.</li><li>Restart and run all cells before publishing. A notebook that only works in your session is not reproducible.</li><li>Inspect before modifying: shape, types, missing values, duplicates, distributions, and unique values.</li></ul>
+<pre><code>import pandas as pd
+
+sales = pd.read_csv("data/raw/sales.csv", parse_dates=["order_date"])
+sales.info()
+sales.isna().sum()
+
+sales["revenue"] = sales["quantity"] * sales["unit_price"] * (1 - sales["discount"])
+
+monthly_revenue = (
+    sales.groupby(sales["order_date"].dt.to_period("M"), as_index=False)["revenue"]
+    .sum()
+    .rename(columns={"order_date": "month"})
+)</code></pre>
+        <h3>pandas skills to practise</h3><div class="two-col"><div><ul><li>Load CSV, Excel, JSON, and SQL query results.</li><li>Inspect with <code>head</code>, <code>shape</code>, <code>info</code>, <code>describe</code>, <code>nunique</code>, and <code>value_counts</code>.</li><li>Select with <code>loc</code>, boolean filters, <code>query</code>, and <code>isin</code>.</li><li>Clean with <code>astype</code>, <code>to_datetime</code>, string methods, <code>replace</code>, <code>fillna</code>, and <code>drop_duplicates</code>.</li></ul></div><div><ul><li>Combine with <code>merge</code> and <code>concat</code>; validate merge keys.</li><li>Aggregate with <code>groupby</code>, <code>agg</code>, <code>pivot_table</code>, and <code>transform</code>.</li><li>Reshape with <code>melt</code>, <code>pivot</code>, and stack/unstack when useful.</li><li>Avoid slow row-by-row <code>apply</code> when vectorised operations express the same logic.</li></ul></div></div>
+        <h3>Visualisation</h3><p>Use lines for trends, bars for categories, histograms and box plots for distributions, scatter plots for relationships, and heat maps for cohorts or compact comparison. Every chart needs a descriptive title, meaningful axes, readable labels, and a statement of what it shows.</p>
+        <aside class="competency-gate" aria-labelledby="python-gate-title"><p class="eyebrow">Competency gate</p><h3 id="python-gate-title">Publish reproducible evidence</h3><p>Turn raw public data into a clean analytical table, perform grouped analysis and joins, create three useful charts, and publish a notebook that runs from top to bottom without error.</p></aside>
+      </section>
+
+      <section id="statistics" aria-labelledby="statistics-title">
+        <div class="section-head"><div class="section-number">06</div><div><p class="eyebrow">Phase 5</p><h2 id="statistics-title">Statistics and business analytics</h2></div></div>
+        <p class="lede">Statistics lets you tell signal from noise. The aim is not to recite formulas. It is to make measured recommendations with honest uncertainty.</p>
+        <div class="two-col"><div><h3>Descriptive statistics</h3><ul><li>Population versus sample.</li><li>Mean, median, mode, range, variance, standard deviation, percentiles.</li><li>Skewness, outliers, and when a median represents a typical customer better than an average.</li><li>Distribution shape and why one summary number is rarely enough.</li><li>Correlation, causation, and confounding variables.</li></ul></div><div><h3>Inference</h3><ul><li>Random sampling and sampling bias.</li><li>Confidence intervals as a plausible range under the sample method.</li><li>Null and alternative hypotheses.</li><li>Type I and Type II error.</li><li>p-values as evidence under model assumptions, not probability the null is true.</li><li>Statistical versus practical significance.</li></ul></div></div>
+        <h3>A/B testing, correctly</h3><ol><li>Define the decision, primary metric, guardrails, audience, and duration before launching.</li><li>State the null and alternative hypotheses.</li><li>Check random assignment, sample-ratio mismatch, tracking quality, and novelty effects.</li><li>Compare absolute and relative impact.</li><li>Report a confidence interval and test result.</li><li>Decide using statistical evidence and business impact.</li><li>State limitations: seasonality, multiple testing, incomplete tracking, or sample size.</li></ol>
+        <div class="callout"><p><strong>Good interpretation:</strong> Variant B increased checkout conversion by 0.7 percentage points. Its interval excludes zero, making the effect statistically credible under the assumptions. Before rollout, check that refund rate and AOV did not fall and estimate incremental monthly profit, not only conversion.</p></div>
+        <h3>Patterns every analyst should recognise</h3><div class="three-col"><div class="fact-card"><strong>Funnels</strong><p>Locate the largest absolute and relative drop-off.</p></div><div class="fact-card"><strong>Cohorts</strong><p>Group users by first activity and observe retention over time.</p></div><div class="fact-card"><strong>Segments</strong><p>Compare meaningful groups such as channel, geography, or tenure.</p></div><div class="fact-card"><strong>Pareto</strong><p>Find whether a minority drives most outcomes.</p></div><div class="fact-card"><strong>Variance</strong><p>Explain actual versus target, budget, or prior period.</p></div><div class="fact-card"><strong>Root cause</strong><p>Investigate drivers without claiming causality from description alone.</p></div></div>
+        <aside class="competency-gate" aria-labelledby="statistics-gate-title"><p class="eyebrow">Competency gate</p><h3 id="statistics-gate-title">Recommend with appropriate caution</h3><p>Explain whether a metric change is meaningful, state assumptions behind the conclusion, and translate the result into a cautious business recommendation.</p></aside>
+      </section>
+
+      <section id="portfolio" aria-labelledby="portfolio-title">
+        <div class="section-head"><div class="section-number">07</div><div><p class="eyebrow">Phase 6 / Portfolio studio</p><h2 id="portfolio-title">Five projects that prove you can do the job</h2></div></div>
+        <p class="lede">A portfolio shows analytical thinking, not tool screenshots. Give every project a public GitHub folder, data source, dashboard evidence, clear README, findings, limitations, and recommendation.</p>
+        <div class="callout indigo"><h3>README structure for every project</h3><p><strong>Business problem</strong> -> <strong>dataset</strong> (source, grain, range, license, limitations) -> <strong>questions</strong> -> <strong>method</strong> -> <strong>key findings</strong> -> <strong>recommendations</strong> -> <strong>limitations and next steps</strong> -> <strong>tools</strong>.</p></div>
+        <div class="project-grid">
+          <article class="project featured"><div class="project-num">01</div><p><span class="tag">Excel</span><span class="tag">SQL</span><span class="tag">Power BI</span></p><h3>Retail sales and profitability dashboard</h3><p><strong>Goal:</strong> Help a retail manager grow revenue without harming profitability. Use Sample Superstore, Global Superstore, AdventureWorks, or a public retail dataset.</p><h4>Ask</h4><ul><li>How do revenue, profit, and margin change by month and quarter?</li><li>Which categories, regions, and segments drive profit or loss?</li><li>Which high-revenue products have poor margins?</li><li>Do large discounts correlate with lower profit?</li></ul><h4>Build</h4><ol><li>Write a data dictionary and identify table grain.</li><li>Clean names, dates, nulls, duplicates, discounts, and invalid quantities.</li><li>Calculate revenue, profit, margin, AOV, and discount bands.</li><li>Use SQL for trends, rankings, product profitability, and regional comparison.</li><li>Build Power BI executive, trend, product, and regional drill-through pages.</li><li>Validate report totals against SQL controls; write three prioritised recommendations.</li></ol><p class="what-strong">What makes it strong: reveal the revenue-versus-margin trade-off and recommend a measurable discount guardrail, not only the top-selling category.</p></article>
+          <article class="project"><div class="project-num">02</div><p><span class="tag">SQL</span><span class="tag">Python</span><span class="tag">Cohorts</span></p><h3>Customer retention and cohorts</h3><p><strong>Goal:</strong> Help a subscription or marketplace team understand repeat behaviour. Use Olist, Online Retail, or public subscription data.</p><h4>Build</h4><ol><li>Define active, repeat, and cohort customers.</li><li>Create first-purchase tables with <code>MIN(order_date)</code>.</li><li>Calculate months since cohort and a retention matrix in SQL.</li><li>Use window functions for purchase intervals.</li><li>Create documented RFM segments and validate in pandas.</li></ol><p class="what-strong">What makes it strong: you explain denominator logic. Retention has no meaning without a precise cohort population and period.</p></article>
+          <article class="project"><div class="project-num">03</div><p><span class="tag">Statistics</span><span class="tag">Python</span><span class="tag">BI</span></p><h3>Marketing campaign and A/B test</h3><p><strong>Goal:</strong> Help a growth manager decide what channel or creative to scale. Use public campaign data; label synthetic experiment data honestly.</p><h4>Build</h4><ol><li>Define impressions, clicks, sessions, leads, conversions, revenue, CPA, ROAS, and conversion rate.</li><li>Clean channel naming and duplicates; validate funnel denominators.</li><li>Compare efficiency by channel, device, audience, and campaign.</li><li>Check group balance and tracking gaps, then run a two-proportion comparison.</li><li>Report confidence interval, practical impact, guardrails, and budget test.</li></ol><p class="what-strong">What makes it strong: distinguish high traffic from high business value and make a reversible recommendation.</p></article>
+          <article class="project"><div class="project-num">04</div><p><span class="tag">SQL</span><span class="tag">Power BI</span><span class="tag">Operations</span></p><h3>Operations and delivery performance</h3><p><strong>Goal:</strong> Help an operations leader reduce late deliveries. Use Olist, taxi, airline, or public logistics data.</p><h4>Build</h4><ol><li>Define delivered, late, cancelled, promised date, and on-time rate.</li><li>Join orders, customers, sellers, products, and delivery events safely.</li><li>Calculate processing, estimated transit, actual transit, and delay days.</li><li>Segment by state, seller, category, and time.</li><li>Compare delay rate and delayed-order volume; build a drill-down report.</li></ol><p class="what-strong">What makes it strong: distinguish a high percentage in a tiny segment from the largest absolute source of late orders.</p></article>
+          <article class="project"><div class="project-num">05</div><p><span class="tag">Product analytics</span><span class="tag">SQL</span><span class="tag">Tableau</span></p><h3>Product analytics capstone</h3><p><strong>Goal:</strong> Recommend an improvement to activation or conversion in a digital product. Use event-level public data or transparently labelled synthetic events.</p><h4>Build</h4><ol><li>Create an event taxonomy: event, user, timestamp, session, platform, properties.</li><li>Define ordered funnel steps and a valid time window.</li><li>De-duplicate repeated events and calculate user-level progression.</li><li>Build activation cohorts, retention, and segment analysis.</li><li>Deliver an experiment proposal with hypothesis, primary metric, guardrails, target, and risk.</li></ol><p class="what-strong">What makes it strong: shows the complete analyst workflow, including metric definition and experiment design.</p></article>
+        </div>
+        <h3>Portfolio quality standard</h3><div class="two-col"><div><ul><li>A recruiter can see the business question in under two minutes.</li><li>Every dataset has source, grain, range, and limitations.</li><li>SQL, Python, and dashboard artefacts are organised and reproducible.</li><li>Findings use specific numbers and dashboard evidence.</li></ul></div><div><ul><li>Recommendations state owner, action, expected outcome, and success metric.</li><li>Raw data remains preserved and cleaning is documented.</li><li>Claims separate observation, interpretation, and recommendation.</li><li>Descriptive data never becomes an unsupported causal claim.</li></ul></div></div>
+      </section>
+
+      <section id="hiring" aria-labelledby="hiring-title">
+        <div class="section-head"><div class="section-number">08</div><div><p class="eyebrow">Phase 7</p><h2 id="hiring-title">Hiring playbook for India</h2></div></div>
+        <p class="lede">Your technical work only helps if it is easy for recruiters and interviewers to evaluate. Package projects clearly, practise explanation, and run an organised application system.</p>
+        <h3>Interview preparation</h3><div class="two-col"><div><h4>SQL</h4><ul><li><code>WHERE</code> versus <code>HAVING</code>.</li><li>Join types and duplicate-row diagnosis.</li><li><code>COUNT(*)</code> versus <code>COUNT(column)</code> versus distinct count.</li><li><code>UNION</code> versus <code>UNION ALL</code>.</li><li>CTEs, ranks, running totals, <code>LAG</code>, cohorts, top-N per group.</li></ul><h4>Excel and Power BI</h4><ul><li>Lookups, conditional aggregation, and PivotTables.</li><li>Power Query versus DAX.</li><li>Calculated columns versus measures.</li><li>Star schema, filter direction, context, <code>CALCULATE</code>.</li><li>Dashboard validation and improvement.</li></ul></div><div><h4>Python</h4><ul><li>Series versus DataFrame.</li><li>Merge types and duplicate-key risk.</li><li><code>groupby</code>, <code>agg</code>, <code>transform</code>, <code>pivot_table</code>.</li><li>Missing values, vectorisation, notebook reproducibility.</li></ul><h4>Business case</h4><ol><li>Clarify metric, scope, and comparison.</li><li>Break the outcome into drivers.</li><li>Segment by time, geography, channel, product, and customer.</li><li>Check tracking and seasonality.</li><li>Prioritise the highest-impact driver.</li><li>Recommend an action and monitor.</li></ol></div></div>
+        <div class="callout sage"><p class="eyebrow">Project walkthrough script</p><p><strong>Context:</strong> what decision did this support? <strong>Data:</strong> what was the grain and what joined? <strong>Method:</strong> how did you clean and validate? <strong>Insight:</strong> what specific pattern mattered? <strong>Action:</strong> what should happen next? <strong>Limitation:</strong> what can the data not prove? Keep the first answer under two minutes.</p></div>
+        <h3>Resume and LinkedIn</h3><div class="two-col"><div><p>Keep a fresher resume to one page. Include name, city, professional contacts, LinkedIn, GitHub, and portfolio links; a targeted headline; concise summary; grouped skills; strongest projects; then education.</p><p><strong>Headline:</strong> <code>Aspiring Data Analyst | SQL | Power BI | Excel | Python | Tableau</code></p></div><div><p><strong>Strong bullet formula:</strong> action + tool/method + insight + business purpose.</p><p><strong>Example:</strong> Built a Power BI sales and profitability dashboard from 9,000+ retail transactions using Power Query, star-schema modelling, and DAX; identified loss-making discount bands and proposed category-level guardrails.</p></div></div>
+        <p>Never invent commercial impact. With public data, say “identified” or “recommended,” never “increased company revenue.” Add GitHub, Tableau Public, and dashboard links to LinkedIn Featured. Post short project case studies: question, one visual, insight, action, link.</p>
+        <h3>Application operating system</h3><p>Maintain a tracker with company, role, job link, date applied, requested skills, referral/contact, resume version, status, follow-up date, and notes. Apply through LinkedIn, Naukri, Indeed, Wellfound, Internshala, company career pages, alumni, and referrals. Tailor project ordering and resume keywords only to skills you can defend.</p>
+        <h3>Practice resources</h3><div class="table-scroll"><table><caption>Produce an artefact from every resource: a query, workbook, notebook, dashboard, or documented explanation.</caption><thead><tr><th>Skill</th><th>Practice direction</th></tr></thead><tbody><tr><td>SQL</td><td>SQLBolt fundamentals; DataLemur, StrataScratch, and database interview problems; PostgreSQL documentation for details.</td></tr><tr><td>Excel</td><td>Microsoft Learn and rebuilding reports from public raw data.</td></tr><tr><td>Power BI</td><td>Microsoft Learn, then recreate a decision-focused report without copying click-for-click.</td></tr><tr><td>Tableau</td><td>Tableau Public gallery for critique and dashboard practice.</td></tr><tr><td>Python</td><td>Official Python tutorial, pandas documentation, and notebooks on public datasets.</td></tr><tr><td>Statistics</td><td>Khan Academy, OpenIntro Statistics, and experiment examples solved with data.</td></tr></tbody></table></div>
+        <h3>Common mistakes that block freshers</h3><div class="mistakes"><div class="mistake-card"><strong>Videos without output</strong><p>Rebuild from raw data without following an instructor click by click.</p></div><div class="mistake-card"><strong>Dashboards before validation</strong><p>Reconcile totals with control queries and document cleaning.</p></div><div class="mistake-card"><strong>Generic dashboard clones</strong><p>Frame a unique business question and make evidence-based recommendations.</p></div><div class="mistake-card"><strong>Tool list without proof</strong><p>Show SQL, notebooks, dashboards, and READMEs publicly.</p></div><div class="mistake-card"><strong>Overstated conclusions</strong><p>Separate public-data findings from actual company impact.</p></div><div class="mistake-card"><strong>Machine learning before SQL</strong><p>Prioritise the skills most often tested for analyst roles.</p></div></div>
+      </section>
+
+      <section id="readiness" aria-labelledby="readiness-title">
+        <div class="section-head"><div class="section-number">09</div><div><p class="eyebrow">Final audit</p><h2 id="readiness-title">The job-readiness check</h2></div></div>
+        <p class="lede">Intensify applications when you can complete this list without a tutorial. The goal is demonstrated capability, not perfect confidence.</p>
+        <ul class="checklist"><li>Write multi-table SQL with joins, CTEs, window functions, and validation checks.</li><li>Explain grain, primary keys, foreign keys, and why joins can duplicate results.</li><li>Clean and analyse raw spreadsheet data with formulas, PivotTables, and useful charts.</li><li>Build a Power BI report with Power Query, star schema, validated DAX, and purposeful interactions.</li><li>Publish one polished Tableau Public dashboard.</li><li>Build a reproducible pandas notebook with cleaning, joins, aggregation, and charts.</li><li>Define revenue, conversion, retention, churn, AOV, and an operations KPI correctly.</li><li>Explain confidence intervals, statistical significance, and practical significance in plain language.</li><li>Present five documented projects, including two strong end-to-end case studies.</li><li>Walk through a project with context, method, finding, recommendation, and limitation.</li><li>Have an ATS-friendly resume, complete LinkedIn, GitHub portfolio, and application tracker.</li><li>Complete mock SQL, dashboard, business case, and HR interviews.</li></ul>
+        <h3>Beyond the first role</h3><div class="career-grid"><article><h3>BI analyst</h3><p>Advance into DAX, semantic models, Power BI Service, Tableau calculations, and data governance.</p></article><article><h3>Product analyst</h3><p>Deepen event instrumentation, experimentation, Amplitude or Mixpanel, funnels, cohorts, and retention.</p></article><article><h3>Analytics engineer</h3><p>Learn dbt, warehouses, dimensional modelling, testing, and version-controlled transformations.</p></article><article><h3>Data scientist</h3><p>Build probability, regression, machine learning, model evaluation, and deployment fundamentals.</p></article><article><h3>Data engineer</h3><p>Develop advanced SQL, orchestration, cloud warehouses, pipelines, and distributed systems.</p></article><article><h3>The durable advantage</h3><p>Define the right question, build trustworthy evidence, communicate uncertainty, and help people make better decisions.</p></article></div>
+      </section>
+    </main>
+  </div>
+
+  <footer><div><p class="eyebrow">Data analyst field guide</p><p>This roadmap is a capability path, not a certificate checklist. Build evidence. Validate it. Explain it clearly. Then apply.</p></div></footer>
+
+  <script>
+    const printButton = document.querySelector('[data-print]');
+    printButton?.addEventListener('click', () => window.print());
+
+    const links = [...document.querySelectorAll('[data-nav-link]')];
+    const linkById = new Map(links.map((link) => [link.getAttribute('href')?.slice(1), link]));
+    const sections = [...document.querySelectorAll('main > section[id]')];
+
+    if ('IntersectionObserver' in window) {
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((first, second) => second.intersectionRatio - first.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach((link) => link.removeAttribute('aria-current'));
+        linkById.get(visible.target.id)?.setAttribute('aria-current', 'location');
+      }, { rootMargin: '-18% 0px -70% 0px', threshold: [0, 0.2, 0.5] });
+      sections.forEach((section) => observer.observe(section));
+    }
+  </script>
+</body>
+</html>
