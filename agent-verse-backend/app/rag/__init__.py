@@ -13,6 +13,7 @@ from app.rag.contracts import (
     RAGStrategyTrace,
     UnavailableRAGStrategyError,
     UnknownRAGStrategyError,
+    is_rag_runtime_adapter,
     resolve_rag_strategy,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "RAGStrategyTrace",
     "UnavailableRAGStrategyError",
     "UnknownRAGStrategyError",
+    "is_rag_runtime_adapter",
     "resolve_rag_strategy",
 ]

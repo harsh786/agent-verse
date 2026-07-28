@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
 import pytest
 
 from app.orchestration.strategy_registry import (
@@ -217,9 +219,7 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
 
 def test_registry_derives_implemented_state_from_runtime_capabilities() -> None:
     class HybridRuntimeAdapter:
-        @property
-        def strategy(self) -> RAGStrategy:
-            return RAGStrategy.HYBRID
+        strategy = RAGStrategy.HYBRID
 
         async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
             return RAGExecutionResult(
@@ -239,3 +239,66 @@ def test_registry_derives_implemented_state_from_runtime_capabilities() -> None:
 
     assert implemented_ids == {RAGStrategy.HYBRID.value}
     assert registry.is_available(RAGStrategy.HYBRID.value)
+
+
+class MissingExecuteAdapter:
+    strategy = RAGStrategy.HYBRID
+
+
+class SyncExecuteAdapter:
+    strategy = RAGStrategy.HYBRID
+
+    def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=self.strategy,
+        )
+
+
+@pytest.mark.parametrize("adapter", [MissingExecuteAdapter, SyncExecuteAdapter])
+def test_registry_rejects_runtime_capabilities_without_async_execute(adapter: object) -> None:
+    registry = build_default_registry(
+        rag_runtime_capabilities={RAGStrategy.HYBRID: adapter}  # type: ignore[dict-item]
+    )
+
+    capability = registry.get(RAGStrategy.HYBRID.value)
+    assert capability is not None
+    assert capability.state is StrategyState.PARTIAL
+    assert not registry.is_available(RAGStrategy.HYBRID.value)
+
+
+def test_registry_rejects_runtime_capability_with_mismatched_strategy() -> None:
+    class MismatchedRuntimeAdapter:
+        strategy = RAGStrategy.NAIVE
+
+        async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+            return RAGExecutionResult(
+                requested_strategy_id=request.requested_strategy_id,
+                resolved_strategy_id=self.strategy,
+            )
+
+    registry = build_default_registry(
+        rag_runtime_capabilities={RAGStrategy.HYBRID: MismatchedRuntimeAdapter}
+    )
+
+    capability = registry.get(RAGStrategy.HYBRID.value)
+    assert capability is not None
+    assert capability.state is StrategyState.PARTIAL
+    assert not registry.is_available(RAGStrategy.HYBRID.value)
+
+
+def test_registry_rejects_abstract_runtime_capability() -> None:
+    class AbstractRuntimeAdapter(ABC):
+        strategy = RAGStrategy.HYBRID
+
+        @abstractmethod
+        async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+            raise NotImplementedError
+
+    registry = build_default_registry(
+        rag_runtime_capabilities={RAGStrategy.HYBRID: AbstractRuntimeAdapter}
+    )
+
+    capability = registry.get(RAGStrategy.HYBRID.value)
+    assert capability is not None
+    assert capability.state is StrategyState.PARTIAL

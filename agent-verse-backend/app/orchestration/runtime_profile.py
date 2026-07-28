@@ -9,24 +9,26 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
+
+from app.rag.contracts import RAGStrategy
 
 
-class Complexity(str, enum.Enum):
+class Complexity(str, enum.Enum):  # noqa: UP042
     SIMPLE = "simple"
     MEDIUM = "medium"
     COMPLEX = "complex"
     EXPERT = "expert"
 
 
-class RiskLevel(str, enum.Enum):
+class RiskLevel(str, enum.Enum):  # noqa: UP042
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
 
-class Domain(str, enum.Enum):
+class Domain(str, enum.Enum):  # noqa: UP042
     TECHNICAL = "technical"
     CREATIVE = "creative"
     ANALYTICAL = "analytical"
@@ -34,13 +36,13 @@ class Domain(str, enum.Enum):
     CONVERSATIONAL = "conversational"
 
 
-class TimeSensitivity(str, enum.Enum):
+class TimeSensitivity(str, enum.Enum):  # noqa: UP042
     REALTIME = "realtime"
     NORMAL = "normal"
     BATCH = "batch"
 
 
-class KnowledgeState(str, enum.Enum):
+class KnowledgeState(str, enum.Enum):  # noqa: UP042
     EMPTY = "empty"
     SPARSE = "sparse"
     HEALTHY = "healthy"
@@ -75,7 +77,7 @@ class GoalProperties:
 @dataclass
 class AgentPatternConfig:
     reasoning: list[str] = field(default_factory=lambda: ["react"])
-    rag: list[str] = field(default_factory=lambda: ["hybrid_rag"])
+    rag: list[str] = field(default_factory=lambda: [RAGStrategy.HYBRID.value])
     multi_agent: list[str] = field(default_factory=lambda: ["single_agent"])
     safety: list[str] = field(default_factory=lambda: ["guardrails"])
     max_iterations: int = 15
@@ -87,7 +89,7 @@ class AgentPatternConfig:
 
 @dataclass
 class RAGStrategyConfig:
-    strategy: str = "hybrid_rag"
+    strategy: str = RAGStrategy.HYBRID.value
     sources: list[str] = field(default_factory=lambda: ["knowledge_base"])
     chunking_strategy: str = "semantic"
     embedding_model: str = "default"
@@ -175,14 +177,15 @@ class GoalRuntimeProfile:
             if isinstance(obj, enum.Enum):
                 return obj.value
             if dataclasses.is_dataclass(obj):
-                return {k: _convert(v) for k, v in dataclasses.asdict(obj).items()}
+                values = dataclasses.asdict(obj)  # type: ignore[arg-type]
+                return {k: _convert(v) for k, v in values.items()}
             if isinstance(obj, list):
                 return [_convert(i) for i in obj]
             if isinstance(obj, dict):
                 return {k: _convert(v) for k, v in obj.items()}
             return obj
 
-        return _convert(self)
+        return cast(dict[str, Any], _convert(self))
 
 
 # ── Named spec profile classes (spec §3.1-3.5 requirements) ──────────────────
@@ -205,7 +208,10 @@ class _ToDictMixin:
                 return [_coerce(i) for i in obj]
             return obj
 
-        return _coerce(_dc.asdict(self))  # type: ignore[call-overload]
+        return cast(
+            dict[str, Any],
+            _coerce(_dc.asdict(self)),  # type: ignore[call-overload]
+        )
 
 
 @dataclass

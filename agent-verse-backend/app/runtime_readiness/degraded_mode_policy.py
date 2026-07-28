@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 import dataclasses
 from typing import TYPE_CHECKING
+
+from app.rag.contracts import RAGStrategy
 
 if TYPE_CHECKING:
     from app.orchestration.runtime_profile import GoalRuntimeProfile
@@ -9,12 +12,16 @@ if TYPE_CHECKING:
 class DegradedModePolicy:
     def apply_degraded_rag(
         self,
-        profile: "GoalRuntimeProfile",
+        profile: GoalRuntimeProfile,
         unavailable_deps: set[str],
-    ) -> "GoalRuntimeProfile":
+    ) -> GoalRuntimeProfile:
         rag = profile.rag_strategy
         if "embedder" in unavailable_deps:
-            rag = dataclasses.replace(rag, embedding_model="lexical", strategy="naive_rag")
+            rag = dataclasses.replace(
+                rag,
+                embedding_model="lexical",
+                strategy=RAGStrategy.NAIVE.value,
+            )
         if "kg_store" in unavailable_deps:
             rag = dataclasses.replace(rag, graph_strategy="none")
         if "web_search" in unavailable_deps:

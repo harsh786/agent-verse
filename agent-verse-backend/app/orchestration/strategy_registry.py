@@ -13,6 +13,7 @@ from app.rag.contracts import (
     RAG_RUNTIME_CAPABILITIES,
     RAGRuntimeAdapter,
     RAGStrategy,
+    is_rag_runtime_adapter,
 )
 
 
@@ -1171,7 +1172,8 @@ def build_default_registry(
         if capability.category is not R:
             continue
         strategy = RAGStrategy(capability.strategy_id)
-        if strategy in runtime_capabilities:
+        adapter = runtime_capabilities.get(strategy)
+        if adapter is not None and is_rag_runtime_adapter(strategy, adapter):
             capability.state = IMPL
         elif capability.state not in (PLAN, StrategyState.DISABLED):
             capability.state = PART

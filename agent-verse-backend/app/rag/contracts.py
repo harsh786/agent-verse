@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, TypeGuard, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -143,10 +144,23 @@ class RAGExecutionResult(BaseModel):
 class RAGRuntimeAdapter(Protocol):
     """Common contract required before a strategy can be registered as available."""
 
-    @property
-    def strategy(self) -> RAGStrategy: ...
+    strategy: ClassVar[RAGStrategy]
 
     async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult: ...
+
+
+def is_rag_runtime_adapter(
+    strategy: RAGStrategy,
+    adapter: object,
+) -> TypeGuard[type[RAGRuntimeAdapter]]:
+    """Return whether a registration is a concrete adapter for the keyed strategy."""
+
+    return (
+        isinstance(adapter, type)
+        and not inspect.isabstract(adapter)
+        and getattr(adapter, "strategy", None) is strategy
+        and inspect.iscoroutinefunction(getattr(adapter, "execute", None))
+    )
 
 
 # Task 1 defines the vocabulary only. Strategies are registered here only after a
