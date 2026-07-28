@@ -1,8 +1,11 @@
 # tests/rag/test_strategy_dispatch.py
 """retrieve() must dispatch every strategy string to the correct implementation."""
+
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -12,7 +15,8 @@ def session():
 
 
 async def test_retrieve_dispatches_corrective(session):
-    from app.rag.engine import retrieve, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve
+
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
         RetrievalResult("c1", "content", 0.8, {}, ["vector"])
     ])):
@@ -24,7 +28,8 @@ async def test_retrieve_dispatches_corrective(session):
 
 
 async def test_retrieve_dispatches_colbert(session):
-    from app.rag.engine import retrieve, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve
+
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
         RetrievalResult("c1", "Python programming content", 0.7, {}, ["vector"]),
         RetrievalResult("c2", "cooking recipes content", 0.8, {}, ["vector"]),
@@ -40,7 +45,8 @@ async def test_retrieve_dispatches_colbert(session):
 
 async def test_retrieve_dispatches_raptor_no_provider(session):
     """raptor without provider falls back to hybrid."""
-    from app.rag.engine import retrieve, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve
+
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
         RetrievalResult("c1", "content", 0.8, {}, ["vector"])
     ])):
@@ -54,7 +60,8 @@ async def test_retrieve_dispatches_raptor_no_provider(session):
 
 async def test_retrieve_dispatches_speculative_no_provider(session):
     """speculative without provider falls back to hybrid."""
-    from app.rag.engine import retrieve, RetrievalResult
+    from app.rag.engine import retrieve
+
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[])):
         results = await retrieve(
             session, query="test", query_embedding=[0.1]*10,
@@ -65,7 +72,8 @@ async def test_retrieve_dispatches_speculative_no_provider(session):
 
 async def test_retrieve_dispatches_flare_no_provider(session):
     """flare without provider falls back to hybrid."""
-    from app.rag.engine import retrieve, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve
+
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
         RetrievalResult("c1", "content", 0.8, {}, ["vector"])
     ])):
@@ -78,22 +86,27 @@ async def test_retrieve_dispatches_flare_no_provider(session):
 
 
 def test_strategy_registry_implemented_patterns():
-    """All 13 patterns must be IMPL in registry after this fix."""
-    from app.orchestration.strategy_registry import build_default_registry, StrategyState
+    """Only production-wired agent patterns are certified IMPLEMENTED in this slice."""
+    from app.orchestration.strategy_registry import (
+        StrategyCategory,
+        StrategyState,
+        build_default_registry,
+    )
     reg = build_default_registry()
-    must_be_impl = [
+    agent_patterns = [
         "self_consistency", "tree_of_thoughts", "peer_review",
-        "self_refine", "corrective_rag", "adaptive_rag",
-        "speculative_rag", "fusion_rag", "self_rag",
-        "flare", "raptor", "colbert_late_interaction",
-        "reflexion",
+        "self_refine", "reflexion",
     ]
-    for sid in must_be_impl:
+    for sid in agent_patterns:
         cap = reg.get(sid)
         assert cap is not None, f"Strategy {sid} missing from registry"
         assert cap.state == StrategyState.IMPLEMENTED, \
             f"Strategy {sid} is {cap.state}, expected IMPLEMENTED"
         assert reg.is_available(sid), f"Strategy {sid} is not available"
+
+    rag_patterns = reg.list_by_category(StrategyCategory.RAG)
+    assert all(cap.state is not StrategyState.IMPLEMENTED for cap in rag_patterns)
+    assert all(not reg.is_available(cap.strategy_id) for cap in rag_patterns)
 
 
 def test_agentic_chunking_state():
@@ -104,13 +117,23 @@ def test_agentic_chunking_state():
 
 
 async def test_agentic_chunking_extracts_propositions():
-    from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
     from app.providers.fake import FakeProvider
+    from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
+
     pattern = AgenticChunkingPattern(max_propositions=3)
-    provider = FakeProvider(responses=[
-        "AgentVerse is an AI platform.\nIt supports dynamic orchestration.\nGoals are executed autonomously."
-    ])
-    chunks = [{"content": "AgentVerse is an AI platform that supports dynamic orchestration.", "chunk_id": "c1"}]
+    provider = FakeProvider(
+        responses=[
+            "AgentVerse is an AI platform.\n"
+            "It supports dynamic orchestration.\n"
+            "Goals are executed autonomously."
+        ]
+    )
+    chunks = [
+        {
+            "content": "AgentVerse is an AI platform that supports dynamic orchestration.",
+            "chunk_id": "c1",
+        }
+    ]
     result = await pattern.execute(chunks=chunks, provider=provider, query="AI platform")
     assert isinstance(result, list)
     assert len(result) > 0

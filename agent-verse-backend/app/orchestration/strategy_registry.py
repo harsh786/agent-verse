@@ -4,19 +4,26 @@ Every pattern from the architecture docs must be registered here with its state.
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+from app.rag.contracts import (
+    RAG_RUNTIME_CAPABILITIES,
+    RAGRuntimeAdapter,
+    RAGStrategy,
+)
 
-class StrategyState(str, enum.Enum):
+
+class StrategyState(str, enum.Enum):  # noqa: UP042
     IMPLEMENTED = "implemented"
     PARTIAL = "partial"
     PLANNED = "planned"
     DISABLED = "disabled"
 
 
-class StrategyCategory(str, enum.Enum):
+class StrategyCategory(str, enum.Enum):  # noqa: UP042
     AGENT = "agent_patterns"
     RAG = "rag_patterns"
     SAFETY = "safety_patterns"
@@ -74,31 +81,47 @@ class StrategyRegistry:
     def is_available(
         self, strategy_id: str, *, available_deps: set[str] | None = None
     ) -> bool:
-        cap = self._by_id.get(strategy_id)
+        cap = self.get(strategy_id)
         if cap is None:
+            return False
+        if cap.category is StrategyCategory.RAG and cap.state is not StrategyState.IMPLEMENTED:
             return False
         if cap.state in (StrategyState.PLANNED, StrategyState.DISABLED):
             return False
-        if available_deps is not None:
-            if set(cap.required_deps) - available_deps:
-                return False
-        return True
+        return available_deps is None or not set(cap.required_deps) - available_deps
 
 
-def build_default_registry() -> StrategyRegistry:
-    A = StrategyCategory.AGENT
-    R = StrategyCategory.RAG
-    S = StrategyCategory.SAFETY
-    M = StrategyCategory.MEMORY
-    O = StrategyCategory.OPTIMISATION
-    IMPL = StrategyState.IMPLEMENTED
-    PART = StrategyState.PARTIAL
-    PLAN = StrategyState.PLANNED
+def build_default_registry(
+    *,
+    rag_runtime_capabilities: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] | None = None,
+) -> StrategyRegistry:
+    A = StrategyCategory.AGENT  # noqa: N806
+    R = StrategyCategory.RAG  # noqa: N806
+    S = StrategyCategory.SAFETY  # noqa: N806
+    M = StrategyCategory.MEMORY  # noqa: N806
+    O = StrategyCategory.OPTIMISATION  # noqa: E741, N806
+    IMPL = StrategyState.IMPLEMENTED  # noqa: N806
+    PART = StrategyState.PARTIAL  # noqa: N806
+    PLAN = StrategyState.PLANNED  # noqa: N806
 
+    runtime_capabilities = (
+        RAG_RUNTIME_CAPABILITIES
+        if rag_runtime_capabilities is None
+        else rag_runtime_capabilities
+    )
     entries: list[StrategyCapability] = [
         # ── Agent Patterns (26 from doc-4) ──────────────────────────────────
         StrategyCapability(
-            "react", A, IMPL, "app.agent.graph:AgentGraph", "ReAct loop", [], [], "medium", "interactive", "low"
+            "react",
+            A,
+            IMPL,
+            "app.agent.graph:AgentGraph",
+            "ReAct loop",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
         ),
         StrategyCapability(
             "plan_execute",
@@ -155,7 +178,16 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "self_refine", A, IMPL, "", "Iterative self-refinement", [], [], "medium", "interactive", "low"
+            "self_refine",
+            A,
+            IMPL,
+            "",
+            "Iterative self-refinement",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
         ),
         StrategyCapability(
             "self_consistency",
@@ -206,7 +238,16 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "rewoo", A, PLAN, "", "Reasoning without observation", [], [], "medium", "interactive", "low"
+            "rewoo",
+            A,
+            PLAN,
+            "",
+            "Reasoning without observation",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
         ),
         StrategyCapability(
             "program_of_thought",
@@ -523,9 +564,9 @@ def build_default_registry() -> StrategyRegistry:
         ),
         # ── RAG Patterns (17 from doc-4 + raft) ──────────────────────────────
         StrategyCapability(
-            "naive_rag",
+            RAGStrategy.NAIVE.value,
             R,
-            IMPL,
+            PART,
             "app.rag.store:KnowledgeStore",
             "Simple vector retrieval",
             ["knowledge_store"],
@@ -535,9 +576,9 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "hybrid_rag",
+            RAGStrategy.HYBRID.value,
             R,
-            IMPL,
+            PART,
             "app.rag.store:KnowledgeStore",
             "Vector + trigram hybrid",
             ["knowledge_store"],
@@ -547,7 +588,7 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "hyde",
+            RAGStrategy.HYDE.value,
             R,
             PART,
             "app.rag_platform.retriever:RAGRetriever",
@@ -559,7 +600,7 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "multi_hop_rag",
+            RAGStrategy.MULTI_HOP.value,
             R,
             PART,
             "app.rag_platform.retriever:RAGRetriever",
@@ -571,7 +612,7 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "graph_rag",
+            RAGStrategy.GRAPH.value,
             R,
             PART,
             "app.rag_platform.retriever:RAGRetriever",
@@ -583,10 +624,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "corrective_rag",
+            RAGStrategy.CORRECTIVE.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.corrective:CorrectiveRAGPattern",
             "Corrective retrieval",
             ["knowledge_store"],
             [],
@@ -595,10 +636,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "adaptive_rag",
+            RAGStrategy.ADAPTIVE.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.adaptive:AdaptiveRAGPattern",
             "Adaptive strategy per query",
             ["knowledge_store"],
             [],
@@ -607,7 +648,7 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "modular_rag",
+            RAGStrategy.MODULAR.value,
             R,
             PLAN,
             "",
@@ -619,10 +660,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "speculative_rag",
+            RAGStrategy.SPECULATIVE.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.speculative:SpeculativeRAGPattern",
             "Speculative retrieval",
             [],
             [],
@@ -631,7 +672,7 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "agentic_rag",
+            RAGStrategy.AGENTIC.value,
             R,
             PART,
             "app.rag_platform.retriever:RAGRetriever",
@@ -643,10 +684,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "web_augmented_rag",
+            RAGStrategy.WEB_AUGMENTED.value,
             R,
-            IMPL,
-            "app.tools.web_search",
+            PART,
+            "app.tools.web_search:WebSearchTool",
             "Web search RAG",
             ["web_search"],
             [],
@@ -655,10 +696,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "fusion_rag",
+            RAGStrategy.FUSION.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.fusion:FusionRAGPattern",
             "Multi-query RRF fusion",
             [],
             [],
@@ -667,10 +708,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "self_rag",
+            RAGStrategy.SELF_RAG.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.self_rag:SelfRAGPattern",
             "Self-reflective retrieval",
             [],
             [],
@@ -679,10 +720,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "flare",
+            RAGStrategy.FLARE.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.flare:FLAREPattern",
             "Forward-looking active retrieval",
             [],
             [],
@@ -691,10 +732,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "raptor",
+            RAGStrategy.RAPTOR.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.raptor:RAPTORPattern",
             "Recursive abstractive processing",
             [],
             [],
@@ -703,10 +744,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "agentic_chunking",
+            RAGStrategy.AGENTIC_CHUNKING.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.agentic_chunking:AgenticChunkingPattern",
             "LLM-driven chunking",
             [],
             [],
@@ -715,10 +756,10 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "colbert_late_interaction",
+            RAGStrategy.COLBERT.value,
             R,
-            IMPL,
-            "",
+            PART,
+            "app.rag.agentic.patterns.colbert:ColBERTPattern",
             "ColBERT late interaction",
             [],
             [],
@@ -727,7 +768,16 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
         StrategyCapability(
-            "raft", R, PLAN, "", "RAG fine-tuning pattern", [], [], "high", "batch", "low"
+            RAGStrategy.RAFT.value,
+            R,
+            PLAN,
+            "",
+            "RAG fine-tuning pattern",
+            [],
+            [],
+            "high",
+            "batch",
+            "low",
         ),
         # ── Safety Patterns (10 from doc-4 + extras) ────────────────────────
         StrategyCapability(
@@ -1117,6 +1167,15 @@ def build_default_registry() -> StrategyRegistry:
             "low",
         ),
     ]
+    for capability in entries:
+        if capability.category is not R:
+            continue
+        strategy = RAGStrategy(capability.strategy_id)
+        if strategy in runtime_capabilities:
+            capability.state = IMPL
+        elif capability.state not in (PLAN, StrategyState.DISABLED):
+            capability.state = PART
+
     return StrategyRegistry(entries)
 
 
