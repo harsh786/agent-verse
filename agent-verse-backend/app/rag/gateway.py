@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.rls import sqlalchemy_rls_context
+from app.rag import engine as rag_engine
 from app.rag.contracts import (
     RAGCitation,
     RAGExecutionRequest,
@@ -23,7 +24,6 @@ from app.rag.contracts import (
     resolve_rag_strategy,
 )
 from app.rag.engine import RetrievalResult as EngineRetrievalResult
-from app.rag.engine import retrieve as engine_retrieve
 from app.tenancy.context import TenantContext
 
 T = TypeVar("T")
@@ -58,11 +58,45 @@ class KnowledgeCollectionStore(Protocol):
     ) -> object | None: ...
 
 
+class TenantScopedGraphCapability(Protocol):
+    """Graph persistence boundary available to one authenticated execution."""
+
+    async def run_db_operation(self, operation: DatabaseOperation[T]) -> T: ...
+
+
+class GraphCapabilityAdapter(Protocol):
+    """Bind graph persistence to a tenant-scoped DB operation runner."""
+
+    def bind(
+        self,
+        db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]],
+    ) -> TenantScopedGraphCapability: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundTenantScopedGraphCapability:
+    _db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]]
+
+    async def run_db_operation(self, operation: DatabaseOperation[T]) -> T:
+        result: T = await self._db_operation_runner(operation)
+        return result
+
+
+class TenantScopedGraphCapabilityAdapter:
+    """Create graph capabilities without exposing a store or session factory."""
+
+    def bind(
+        self,
+        db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]],
+    ) -> TenantScopedGraphCapability:
+        return _BoundTenantScopedGraphCapability(db_operation_runner)
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedLLM:
     """Provider and model selected for one tenant-scoped execution."""
 
-    provider: object
+    provider: object | None
     model: str
 
 
@@ -102,7 +136,7 @@ class RetrievalDependencies:
     strategy_capabilities: Mapping[RAGStrategy, RetrievalStrategyCapability]
     embedder: object | None = None
     llm_resolver: LLMResolver | None = None
-    graph_capability: object | None = None
+    graph_capability: GraphCapabilityAdapter | None = None
     search_capability: object | None = None
     policy_services: tuple[object, ...] = ()
 
@@ -113,7 +147,7 @@ class RetrievalRuntimeDependencies:
 
     embedder: object | None
     llm: ResolvedLLM | None
-    graph_capability: object | None
+    graph_capability: TenantScopedGraphCapability | None
     search_capability: object | None
     policy_services: tuple[object, ...]
 
@@ -220,8 +254,37 @@ class RetrievalExecutionContext:
     ) -> list[EngineRetrievalResult]:
         """Execute the legacy engine core with canonical fail-closed semantics."""
 
+        if self.strategy is RAGStrategy.FUSION:
+            async def search_operation(
+                variant_query: str,
+                variant_embedding: list[float] | None,
+            ) -> list[EngineRetrievalResult]:
+                async def search(session: AsyncSession) -> list[EngineRetrievalResult]:
+                    return await rag_engine.hybrid_search(
+                        session,
+                        query=variant_query,
+                        query_embedding=variant_embedding,
+                        collection_id=collection_id,
+                        top_k=top_k,
+                        strict=True,
+                    )
+
+                return await self.run_db_operation(search)
+
+            return await rag_engine.retrieve_fusion(
+                None,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                top_k=top_k,
+                embedder=self.dependencies.embedder,
+                provider=self.llm.provider if self.llm is not None else None,
+                strict=True,
+                search_operation=search_operation,
+            )
+
         async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
-            return await engine_retrieve(
+            return await rag_engine.retrieve(
                 session,
                 query=query,
                 query_embedding=query_embedding,
@@ -286,7 +349,11 @@ class RetrievalGateway:
             dependencies=RetrievalRuntimeDependencies(
                 embedder=self.dependencies.embedder,
                 llm=llm,
-                graph_capability=self.dependencies.graph_capability,
+                graph_capability=(
+                    self.dependencies.graph_capability.bind(runner.run)
+                    if self.dependencies.graph_capability is not None and runner is not None
+                    else None
+                ),
                 search_capability=self.dependencies.search_capability,
                 policy_services=self.dependencies.policy_services,
             ),
@@ -400,7 +467,10 @@ class RetrievalGateway:
             raise UnavailableRAGStrategyError(strategy, "embedding provider is not configured")
         if capability.requires_provider and self.dependencies.llm_resolver is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
-        if capability.requires_graph and self.dependencies.graph_capability is None:
+        if capability.requires_graph and (
+            self.dependencies.graph_capability is None
+            or self.dependencies.session_factory is None
+        ):
             raise UnavailableRAGStrategyError(strategy, "graph capability is not configured")
         if capability.requires_search and self.dependencies.search_capability is None:
             raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
@@ -427,4 +497,10 @@ class RetrievalGateway:
             return None
         if capability.requires_provider and resolved is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
+        if resolved is not None:
+            if resolved.provider is None:
+                raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
+            if not isinstance(resolved.model, str) or not resolved.model.strip():
+                raise UnavailableRAGStrategyError(strategy, "LLM model is not configured")
+            return ResolvedLLM(provider=resolved.provider, model=resolved.model.strip())
         return resolved
