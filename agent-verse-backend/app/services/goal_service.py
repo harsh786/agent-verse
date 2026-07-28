@@ -2672,7 +2672,8 @@ class GoalService:
         if record.task is not None and not record.task.done():
             record.task.cancel()
 
-        # Signal via Redis for cross-process Celery workers        redis = getattr(self, "_redis", None)
+        # Signal via Redis for cross-process Celery workers.
+        redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_cancel
             await signal_cancel(goal_id, redis)
@@ -2693,7 +2694,8 @@ class GoalService:
         record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
 
-        # Signal via Redis for cross-process Celery workers        redis = getattr(self, "_redis", None)
+        # Signal via Redis for cross-process Celery workers.
+        redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_pause
             await signal_pause(goal_id, redis)
