@@ -916,18 +916,6 @@ def create_app(
             app.state.schedule_store = _schedule_store_db
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
-            app.state.retrieval_gateway = RetrievalGateway(
-                RetrievalDependencies(
-                    session_factory=db_factory,
-                    embedder=app.state.embedder,
-                    llm_resolver=_resolve_retrieval_llm,
-                    graph_capability=getattr(app.state, "knowledge_graph_store", None),
-                    search_capability=getattr(app.state, "mcp_client", None),
-                    policy_services=(_policy_engine, _cost, _hitl),
-                    collection_authorizer=SQLCollectionAuthorizer(),
-                    strategy_capabilities={},
-                )
-            )
 
             # Wire DB session factory into WorkflowStore for Postgres-backed persistence
             _workflow_store = getattr(app.state, "workflow_store", None)
@@ -965,13 +953,28 @@ def create_app(
                 logger.warning("mfa_db_store_wire_failed", error=str(_mfa_exc))
 
             # Wire DB into KnowledgeGraphStore for persistent node/edge storage
+            _graph_capability = None
             try:
                 from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
                 _kg_store.set_db(db_factory)
+                _graph_capability = _kg_store
                 logger.info("knowledge_graph_db_wired")
                 # Per-tenant hydration is handled lazily in query_nodes() on first miss.
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
+
+            app.state.retrieval_gateway = RetrievalGateway(
+                RetrievalDependencies(
+                    session_factory=db_factory,
+                    embedder=app.state.embedder,
+                    llm_resolver=_resolve_retrieval_llm,
+                    graph_capability=_graph_capability,
+                    search_capability=getattr(app.state, "mcp_client", None),
+                    policy_services=(_policy_engine, _cost, _hitl),
+                    collection_authorizer=SQLCollectionAuthorizer(),
+                    strategy_capabilities={},
+                )
+            )
 
             # Wire DB into reflexion wirer singleton for cross-process persistence
             try:

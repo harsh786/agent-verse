@@ -45,6 +45,27 @@ class RetrievalResult:
     retrieval_legs: list[str] = field(default_factory=list)  # which legs contributed
 
 
+class RetrievalExecutionError(RuntimeError):
+    """A canonical retrieval operation failed before producing valid evidence."""
+
+
+class RetrievalLegExecutionError(RetrievalExecutionError):
+    """An enabled, required retrieval leg failed."""
+
+    def __init__(self, leg: str) -> None:
+        super().__init__(f"Required retrieval leg failed: {leg}")
+        self.leg = leg
+
+
+class RetrievalStrategyExecutionError(RetrievalExecutionError):
+    """The requested strategy cannot complete without substitution."""
+
+    def __init__(self, strategy: str, reason: str) -> None:
+        super().__init__(f"RAG strategy execution failed: {strategy} ({reason})")
+        self.strategy = strategy
+        self.reason = reason
+
+
 def _rrf_score(ranks: list[int]) -> float:
     """Reciprocal Rank Fusion score from multiple ranked lists."""
     return sum(1.0 / (_RRF_K + r) for r in ranks)
@@ -61,6 +82,7 @@ async def hybrid_search(
     retrieval_mode: str = "hybrid",
     embedding_dim: int | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> list[RetrievalResult]:
     """
     Tri-leg retrieval with RRF fusion.
@@ -85,7 +107,9 @@ async def hybrid_search(
                 {"cid": collection_id},
             )).fetchone()
             embedding_dim = int(row[0]) if row and row[0] else 1536
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RetrievalLegExecutionError("collection_metadata") from exc
             embedding_dim = 1536
     table = f"knowledge_chunks_{embedding_dim}"
 
@@ -117,6 +141,8 @@ async def hybrid_search(
             for i, row in enumerate(rows.fetchall()):
                 vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
         except Exception as e:
+            if strict:
+                raise RetrievalLegExecutionError("vector") from e
             logger.debug("vector_leg_failed", error=str(e)[:80])
 
     # Leg 2: PostgreSQL Full-Text Search (BM25-like)
@@ -140,6 +166,8 @@ async def hybrid_search(
             for i, row in enumerate(rows.fetchall()):
                 fts_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
         except Exception as e:
+            if strict:
+                raise RetrievalLegExecutionError("fts") from e
             logger.debug("fts_leg_failed", error=str(e)[:80])
 
     # Leg 3: pg_trgm fuzzy
@@ -162,6 +190,8 @@ async def hybrid_search(
             for i, row in enumerate(rows.fetchall()):
                 trgm_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
         except Exception as e:
+            if strict:
+                raise RetrievalLegExecutionError("trgm") from e
             logger.debug("trgm_leg_failed", error=str(e)[:80])
 
     # Collect all unique chunk IDs
@@ -349,9 +379,12 @@ async def retrieve_hyde(
     provider: Any = None,
     top_k: int = 10,
     embedding_dim: int | None = None,
+    strict: bool = False,
 ) -> list[RetrievalResult]:
     """HyDE: generate a hypothetical answer, search with it. Falls back to hybrid."""
     if provider is None:
+        if strict:
+            raise RetrievalStrategyExecutionError("hyde", "LLM provider is required")
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
@@ -373,8 +406,11 @@ async def retrieve_hyde(
         return await hybrid_search(
             session, query=hyp_doc, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            strict=strict,
         )
     except Exception as exc:
+        if strict:
+            raise RetrievalStrategyExecutionError("hyde", "algorithm failed") from exc
         logger.warning("hyde_failed_falling_back", error=str(exc)[:80])
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
@@ -391,9 +427,12 @@ async def retrieve_multi_hop(
     provider: Any = None,
     top_k: int = 10,
     embedding_dim: int | None = None,
+    strict: bool = False,
 ) -> list[RetrievalResult]:
     """Multi-hop: decompose query, search each sub-query, merge results."""
     if provider is None:
+        if strict:
+            raise RetrievalStrategyExecutionError("multi_hop", "LLM provider is required")
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
@@ -416,7 +455,9 @@ async def retrieve_multi_hop(
         if not isinstance(sub_queries, list):
             sub_queries = [query]
         sub_queries = [str(q) for q in sub_queries[:3]]
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RetrievalStrategyExecutionError("multi_hop", "decomposition failed") from exc
         sub_queries = [query]
 
     seen: set[str] = set()
@@ -427,12 +468,15 @@ async def retrieve_multi_hop(
             hop = await hybrid_search(
                 session, query=sub_q, query_embedding=query_embedding,
                 collection_id=collection_id, top_k=per_hop, embedding_dim=embedding_dim,
+                strict=strict,
             )
             for r in hop:
                 if r.chunk_id not in seen:
                     seen.add(r.chunk_id)
                     all_results.append(r)
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RetrievalStrategyExecutionError("multi_hop", "retrieval hop failed") from exc
             pass
     all_results.sort(key=lambda r: r.score, reverse=True)
     return all_results[:top_k]
@@ -450,6 +494,7 @@ async def retrieve_fusion(
     embedding_dim: int | None = None,
     embedder: Any = None,
     provider: Any = None,
+    strict: bool = False,
     search_operation: Callable[
         [str, list[float] | None],
         Awaitable[list[RetrievalResult]],
@@ -483,7 +528,11 @@ async def retrieve_fusion(
                 variant_embeddings.append(
                     resp.embeddings[0] if resp.embeddings else query_embedding
                 )
-            except Exception:
+            except Exception as exc:
+                if strict:
+                    raise RetrievalStrategyExecutionError(
+                        "fusion", "variant embedding failed"
+                    ) from exc
                 variant_embeddings.append(query_embedding)
         else:
             variant_embeddings.append(query_embedding)
@@ -495,9 +544,11 @@ async def retrieve_fusion(
             return await hybrid_search(
                 session=session, query=q, query_embedding=emb,
                 collection_id=collection_id, top_k=top_k,
-                ef_search=ef_search, embedding_dim=embedding_dim,
+                ef_search=ef_search, embedding_dim=embedding_dim, strict=strict,
             )
         except Exception as exc:
+            if strict:
+                raise
             logger.warning("fusion_rag_variant_failed", query=q[:60], error=str(exc)[:80])
             return []
 
@@ -569,8 +620,13 @@ async def retrieve(
     long_term_memory: Any = None,
     tenant_ctx: Any = None,
     embedder: Any = None,
+    strict: bool = False,
 ) -> list[RetrievalResult]:
-    """Strategy-dispatching entry point. Selects strategy via RetrievalPlanner if not given."""
+    """Dispatch retrieval, optionally failing closed for canonical gateway calls.
+
+    ``strict=False`` preserves historical product entry points until they are
+    rerouted through the gateway. Canonical adapters use only ``strict=True``.
+    """
     if strategy is None:
         strategy = RetrievalPlanner().select_strategy(query)
     try:
@@ -579,20 +635,23 @@ async def retrieve(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, provider=provider,
                 top_k=top_k, embedding_dim=embedding_dim,
+                strict=strict,
             )
         if strategy == "multi_hop":
             return await retrieve_multi_hop(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, provider=provider,
                 top_k=top_k, embedding_dim=embedding_dim,
+                strict=strict,
             )
         if strategy == "fusion":
             return await retrieve_fusion(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, top_k=top_k,
                 embedding_dim=embedding_dim,
-                embedder=provider,
+                embedder=embedder or provider,
                 provider=provider,
+                strict=strict,
             )
         if strategy == "corrective":
             # CRAG: run hybrid search, check confidence, web fallback via RetrieverTool
@@ -600,7 +659,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim, strict=strict,
                 )
                 # CRAG correction: if low confidence, the caller (RetrieverTool.retrieve_corrective)
                 # handles web fallback. At engine level, return base results + confidence metadata.
@@ -612,6 +671,10 @@ async def retrieve(
                         r.source_metadata["avg_confidence"] = avg_conf
                 return base_results
             except Exception as exc:
+                if strict:
+                    raise RetrievalStrategyExecutionError(
+                        "corrective", "algorithm failed"
+                    ) from exc
                 logger.warning("corrective_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -622,6 +685,10 @@ async def retrieve(
             # FLARE and Self-RAG use the provider for generation
             # When no provider given, fall back to hybrid
             if provider is None:
+                if strict:
+                    raise RetrievalStrategyExecutionError(
+                        strategy, "LLM provider is required"
+                    )
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
@@ -630,7 +697,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim, strict=strict,
                 )
                 if not base_results:
                     return base_results
@@ -643,7 +710,8 @@ async def retrieve(
                     async def _flare_retrieve(q: str, **kw: Any) -> str:
                         extra = await hybrid_search(
                             session, query=q, query_embedding=query_embedding,
-                            collection_id=collection_id, top_k=3, embedding_dim=embedding_dim,
+                            collection_id=collection_id, top_k=3,
+                            embedding_dim=embedding_dim, strict=strict,
                         )
                         return "\n".join(r.content[:300] for r in extra)
 
@@ -673,6 +741,8 @@ async def retrieve(
                     )
                 return base_results
             except Exception as exc:
+                if strict:
+                    raise RetrievalStrategyExecutionError(strategy, "algorithm failed") from exc
                 logger.warning(f"{strategy}_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -681,9 +751,14 @@ async def retrieve(
 
         if strategy == "speculative":
             try:
+                if strict and provider is None:
+                    raise RetrievalStrategyExecutionError(
+                        "speculative", "LLM provider is required"
+                    )
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    collection_id=collection_id, top_k=top_k,
+                    embedding_dim=embedding_dim, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results
@@ -691,7 +766,8 @@ async def retrieve(
                 async def _spec_retrieve(q: str, **kw: Any) -> str:
                     r = await hybrid_search(
                         session, query=q, query_embedding=query_embedding,
-                        collection_id=collection_id, top_k=3, embedding_dim=embedding_dim,
+                        collection_id=collection_id, top_k=3,
+                        embedding_dim=embedding_dim, strict=strict,
                     )
                     return "\n".join(x.content[:300] for x in r)
 
@@ -710,6 +786,12 @@ async def retrieve(
                     )
                 return base_results
             except Exception as exc:
+                if strict:
+                    if isinstance(exc, RetrievalStrategyExecutionError):
+                        raise
+                    raise RetrievalStrategyExecutionError(
+                        "speculative", "algorithm failed"
+                    ) from exc
                 logger.warning("speculative_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -718,9 +800,14 @@ async def retrieve(
 
         if strategy == "raptor":
             try:
+                if strict and provider is None:
+                    raise RetrievalStrategyExecutionError(
+                        "raptor", "LLM provider is required"
+                    )
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=min(top_k * 2, 20), embedding_dim=embedding_dim,
+                    collection_id=collection_id, top_k=min(top_k * 2, 20),
+                    embedding_dim=embedding_dim, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results[:top_k]
@@ -744,6 +831,10 @@ async def retrieve(
                     return [summary] + base_results[:top_k - 1]
                 return base_results[:top_k]
             except Exception as exc:
+                if strict:
+                    if isinstance(exc, RetrievalStrategyExecutionError):
+                        raise
+                    raise RetrievalStrategyExecutionError("raptor", "algorithm failed") from exc
                 logger.warning("raptor_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -754,7 +845,8 @@ async def retrieve(
             try:
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k * 2, embedding_dim=embedding_dim,
+                    collection_id=collection_id, top_k=top_k * 2,
+                    embedding_dim=embedding_dim, strict=strict,
                 )
                 if not base_results:
                     return base_results
@@ -777,6 +869,8 @@ async def retrieve(
                     for c in reranked
                 ]
             except Exception as exc:
+                if strict:
+                    raise RetrievalStrategyExecutionError("colbert", "algorithm failed") from exc
                 logger.warning("colbert_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -785,10 +879,15 @@ async def retrieve(
 
         if strategy == "agentic_chunking":
             try:
+                if strict and provider is None:
+                    raise RetrievalStrategyExecutionError(
+                        "agentic_chunking", "LLM provider is required"
+                    )
                 from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k * 2, embedding_dim=embedding_dim,
+                    collection_id=collection_id, top_k=top_k * 2,
+                    embedding_dim=embedding_dim, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results[:top_k]
@@ -814,6 +913,12 @@ async def retrieve(
                     for i, c in enumerate(proposition_chunks[:top_k])
                 ]
             except Exception as exc:
+                if strict:
+                    if isinstance(exc, RetrievalStrategyExecutionError):
+                        raise
+                    raise RetrievalStrategyExecutionError(
+                        "agentic_chunking", "algorithm failed"
+                    ) from exc
                 logger.warning("agentic_chunking_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
@@ -856,6 +961,10 @@ async def retrieve(
             return []
 
         if strategy == "graph":
+            if strict:
+                raise RetrievalStrategyExecutionError(
+                    "graph", "graph capability is not wired into the legacy engine"
+                )
             # Graph retrieval via KnowledgeGraphStore
             try:
                 from app.state_runtime.kg_query_engine import KGQueryEngine  # noqa: F401
@@ -877,9 +986,11 @@ async def retrieve(
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k,
-            retrieval_mode=mode, embedding_dim=embedding_dim,
+            retrieval_mode=mode, embedding_dim=embedding_dim, strict=strict,
         )
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("retrieve_dispatch_failed", strategy=strategy, error=str(exc)[:80])
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
