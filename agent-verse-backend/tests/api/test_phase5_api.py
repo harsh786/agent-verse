@@ -1,7 +1,16 @@
 # tests/api/test_phase5_api.py
 """Phase 5: API/Infra/Frontend gap fixes (H29-H41)."""
+
 from __future__ import annotations
+
 import pytest
+from fastapi import HTTPException
+
+from app.api.rag_platform import (
+    RAGQueryRequest,
+    _resolve_request_strategy,
+)
+from app.rag.contracts import RAGStrategy
 
 
 def test_knowledge_store_has_delete_document():
@@ -12,9 +21,10 @@ def test_knowledge_store_has_delete_document():
 
 def test_knowledge_store_delete_document_removes_chunks():
     """delete_document() must remove all chunks belonging to the document."""
+    from app.rag.models import Chunk, KnowledgeCollection
     from app.rag.store import KnowledgeStore
-    from app.rag.models import KnowledgeCollection, Chunk
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
+
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     store = KnowledgeStore()
     col = KnowledgeCollection(name="docs", collection_id="col1", embedder="fake")
@@ -41,7 +51,8 @@ def test_knowledge_store_delete_document_removes_chunks():
 def test_knowledge_store_delete_document_unknown_collection():
     """delete_document() must return 0 for unknown collection (no error)."""
     from app.rag.store import KnowledgeStore
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
+
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
     store = KnowledgeStore()
     count = store.delete_document("doc1", collection_id="no-such-col", tenant_ctx=ctx)
@@ -49,29 +60,86 @@ def test_knowledge_store_delete_document_unknown_collection():
 
 
 def test_rag_strategy_enum_has_agentic_strategies():
-    """RAGStrategy enum must include fusion_rag, flare, raptor, corrective_rag, self_rag, speculative, colbert."""
-    try:
-        from app.rag_platform.query_planner import RAGStrategy
-        values = [s.value for s in RAGStrategy]
-        assert "fusion_rag" in values, f"fusion_rag missing from {values}"
-        assert "flare" in values, f"flare missing from {values}"
-        assert "raptor" in values, f"raptor missing from {values}"
-        assert "corrective_rag" in values, f"corrective_rag missing from {values}"
-        assert "self_rag" in values, f"self_rag missing from {values}"
-        assert "speculative" in values, f"speculative missing from {values}"
-        assert "colbert" in values, f"colbert missing from {values}"
-    except ImportError:
-        pytest.skip("rag_platform not available")
+    """The planner must expose canonical agentic strategy IDs."""
+    from app.rag_platform.query_planner import RAGStrategy
+
+    values = {strategy.value for strategy in RAGStrategy}
+    assert {
+        "fusion",
+        "flare",
+        "raptor",
+        "corrective",
+        "self_rag",
+        "speculative",
+        "colbert",
+    }.issubset(values)
 
 
 def test_rag_strategy_enum_has_fusion_attribute():
     """RAGStrategy.FUSION must exist."""
-    try:
-        from app.rag_platform.query_planner import RAGStrategy
-        assert hasattr(RAGStrategy, "FUSION")
-        assert RAGStrategy.FUSION.value == "fusion_rag"
-    except ImportError:
-        pytest.skip("rag_platform not available")
+    from app.rag_platform.query_planner import RAGStrategy
+
+    assert RAGStrategy.FUSION.value == "fusion"
+
+
+@pytest.mark.parametrize(
+    ("requested_id", "resolved_id"),
+    [
+        ("fusion_rag", "fusion"),
+        ("corrective_rag", "corrective"),
+        ("speculative_rag", "speculative"),
+        ("colbert_late_interaction", "colbert"),
+        ("multi_hop_rag", "multi_hop"),
+        ("graph_rag", "graph"),
+    ],
+)
+def test_rag_query_resolves_historical_ids(
+    requested_id: str,
+    resolved_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_strategy = RAGStrategy(resolved_id)
+
+    class BoundaryAdapter:
+        strategy = resolved_strategy
+
+        async def execute(self, request: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.api.rag_platform.RAG_RUNTIME_CAPABILITIES",
+        {resolved_strategy: BoundaryAdapter},
+    )
+
+    assert _resolve_request_strategy(requested_id) is resolved_strategy
+
+
+def test_rag_query_rejects_unknown_strategy() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_request_strategy("unknown-rag")
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "Unknown RAG strategy: unknown-rag"
+
+
+def test_rag_query_default_is_canonical_adaptive() -> None:
+    request = RAGQueryRequest(query="tenant-scoped retrieval")
+
+    assert request.strategy == RAGStrategy.ADAPTIVE.value
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_request_strategy(request.strategy)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "RAG strategy is unavailable: adaptive"
+
+
+@pytest.mark.parametrize("strategy_id", [strategy.value for strategy in RAGStrategy])
+def test_rag_query_rejects_known_but_unavailable_strategies(strategy_id: str) -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_request_strategy(strategy_id)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == f"RAG strategy is unavailable: {strategy_id}"
 
 
 def test_ingestion_orchestrator_has_chunk_with_quality_check():
@@ -94,8 +162,9 @@ def test_ingestion_orchestrator_quality_check_filters_noise():
 
 def test_ingestion_orchestrator_quality_check_keeps_good_content():
     """_chunk_with_quality_check must keep high-quality content."""
-    from app.ingestion.orchestrator import IngestionOrchestrator
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.orchestrator import IngestionOrchestrator
+
     orch = IngestionOrchestrator()
     chunks = orch._chunk_with_quality_check(
         "This is a high-quality document with meaningful words.", ct=ContentType.TEXT
@@ -127,8 +196,9 @@ def test_embedding_model_registry_voyage_dimension_512():
 
 def test_parser_registry_has_vision_parser_for_image():
     """ParserRegistry must map ContentType.IMAGE to VisionParser."""
-    from app.ingestion.parser_registry import ParserRegistry, VisionParser
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.parser_registry import ParserRegistry, VisionParser
+
     registry = ParserRegistry()
     parser = registry.get_parser(ContentType.IMAGE)
     assert isinstance(parser, VisionParser)
@@ -181,7 +251,9 @@ def test_tasks_fire_due_schedules_handles_file_drop():
 def test_invite_member_endpoint_not_todo():
     """invite_member must have a real implementation (not just TODO)."""
     import inspect
+
     from app.api import tenants
+
     source = inspect.getsource(tenants.invite_member)
     assert "TODO" not in source, "invite_member still has TODO placeholder"
     assert "invitation_id" in source

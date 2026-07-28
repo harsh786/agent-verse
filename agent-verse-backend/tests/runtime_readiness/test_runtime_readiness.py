@@ -1,13 +1,20 @@
 """ReadinessGate — blocks unsafe degraded execution."""
 from __future__ import annotations
-import pytest
-from app.runtime_readiness.readiness_gate import ReadinessGate, ReadinessResult
-from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
-from app.runtime_readiness.degraded_mode_policy import DegradedModePolicy
+
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
 )
+from app.rag.contracts import RAGStrategy
+from app.runtime_readiness.degraded_mode_policy import DegradedModePolicy
+from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+from app.runtime_readiness.readiness_gate import ReadinessGate
 
 
 def _make_profile() -> GoalRuntimeProfile:
@@ -74,3 +81,11 @@ def test_degraded_mode_policy_disables_web_fallback() -> None:
     assert profile.rag_strategy.web_fallback_enabled is True
     updated = policy.apply_degraded_rag(profile, unavailable_deps={"web_search"})
     assert updated.rag_strategy.web_fallback_enabled is False
+
+
+def test_degraded_mode_policy_uses_canonical_naive_strategy_without_embedder() -> None:
+    updated = DegradedModePolicy().apply_degraded_rag(
+        _make_profile(), unavailable_deps={"embedder"}
+    )
+
+    assert updated.rag_strategy.strategy == RAGStrategy.NAIVE.value

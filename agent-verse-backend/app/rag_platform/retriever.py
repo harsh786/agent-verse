@@ -1,8 +1,12 @@
 """RAG Retriever - unified retrieval across vector, graph, and multimodal."""
+
 from __future__ import annotations
+
 import logging
 from typing import Any
-from app.rag_platform.query_planner import RAGStrategy, RetrievalLeg, RAGResult, QueryPlanner
+
+from app.rag.contracts import RAGStrategy
+from app.rag_platform.query_planner import QueryPlanner, RAGResult, RetrievalLeg
 
 _log = logging.getLogger(__name__)
 
@@ -31,12 +35,12 @@ class RAGRetriever:
         query: str,
         tenant_id: str,
         collection_id: str | None = None,
-        strategy: RAGStrategy = RAGStrategy.AUTO,
+        strategy: RAGStrategy = RAGStrategy.ADAPTIVE,
         top_k: int = 5,
     ) -> RAGResult:
         """Retrieve relevant content using the specified strategy."""
 
-        if strategy == RAGStrategy.AUTO:
+        if strategy == RAGStrategy.ADAPTIVE:
             strategy = self._planner.select_strategy(query)
 
         result = RAGResult(query=query, strategy_used=strategy)
@@ -56,7 +60,7 @@ class RAGRetriever:
             result.legs.append(hyde_leg)
 
         # 4. Synthesize answer with citations
-        all_chunks: list[dict] = []
+        all_chunks: list[dict[str, Any]] = []
         for leg in result.legs:
             all_chunks.extend(leg.results)
 
@@ -116,7 +120,7 @@ class RAGRetriever:
         import time
 
         start = time.monotonic()
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
 
         if self._knowledge_store and hasattr(self._knowledge_store, "search"):
             try:
@@ -131,7 +135,7 @@ class RAGRetriever:
                 _log.warning("Vector search failed: %s", exc)
 
         return RetrievalLeg(
-            strategy=RAGStrategy.DIRECT,
+            strategy=RAGStrategy.NAIVE,
             query=query,
             results=results,
             score=sum(r.get("score", 0) for r in results) / max(len(results), 1),
@@ -142,13 +146,13 @@ class RAGRetriever:
         self,
         query: str,
         tenant_id: str,
-        seed_results: list[dict],
+        seed_results: list[dict[str, Any]],
     ) -> RetrievalLeg:
         """Expand retrieval using the knowledge graph."""
         import time
 
         start = time.monotonic()
-        expanded: list[dict] = []
+        expanded: list[dict[str, Any]] = []
 
         if self._kg_store:
             try:
@@ -206,7 +210,7 @@ class RAGRetriever:
             _log.warning("HyDE failed: %s", exc)
             return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])
 
-    async def _synthesize(self, query: str, chunks: list[dict]) -> str:
+    async def _synthesize(self, query: str, chunks: list[dict[str, Any]]) -> str:
         """Synthesize an answer from retrieved chunks."""
         if not chunks:
             return "No relevant information found for this query."
@@ -237,7 +241,7 @@ class RAGRetriever:
                     max_tokens=500,
                 )
             )
-            return resp.content
+            return str(resp.content)
         except Exception as exc:
             _log.warning("Synthesis failed: %s", exc)
             return "\n\n".join(c.get("content", "")[:200] for c in chunks[:3])

@@ -1,9 +1,19 @@
 """RAG Platform API - unified retrieval with multiple strategies."""
+
 from __future__ import annotations
+
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from app.rag_platform.query_planner import RAGStrategy
+
+from app.rag.contracts import (
+    RAG_RUNTIME_CAPABILITIES,
+    RAGStrategy,
+    UnavailableRAGStrategyError,
+    UnknownRAGStrategyError,
+    resolve_rag_strategy,
+)
 
 router = APIRouter(prefix="/rag", tags=["rag-platform"])
 
@@ -18,8 +28,21 @@ def _require_tenant(request: Request) -> Any:
 class RAGQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10_000)
     collection_id: str | None = None
-    strategy: str = "auto"
+    strategy: str = RAGStrategy.ADAPTIVE.value
     top_k: int = Field(default=5, ge=1, le=20)
+
+
+def _resolve_request_strategy(strategy_id: str) -> RAGStrategy:
+    """Resolve an API strategy ID and translate contract errors to stable HTTP responses."""
+
+    try:
+        strategy = resolve_rag_strategy(strategy_id)
+    except UnknownRAGStrategyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if strategy not in RAG_RUNTIME_CAPABILITIES:
+        unavailable_error = UnavailableRAGStrategyError(strategy)
+        raise HTTPException(status_code=503, detail=str(unavailable_error)) from unavailable_error
+    return strategy
 
 
 @router.post("/query")
@@ -40,10 +63,7 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     except ImportError:
         rag_retriever.set_dependencies(provider=provider, knowledge_store=knowledge_store)
 
-    try:
-        strategy = RAGStrategy(body.strategy)
-    except ValueError:
-        strategy = RAGStrategy.AUTO
+    strategy = _resolve_request_strategy(body.strategy)
 
     result = await rag_retriever.retrieve(
         query=body.query,
