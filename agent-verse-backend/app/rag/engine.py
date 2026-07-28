@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -438,7 +439,7 @@ async def retrieve_multi_hop(
 
 
 async def retrieve_fusion(
-    session: AsyncSession,
+    session: AsyncSession | None,
     *,
     query: str,
     query_embedding: list[float] | None,
@@ -449,10 +450,20 @@ async def retrieve_fusion(
     embedding_dim: int | None = None,
     embedder: Any = None,
     provider: Any = None,
+    search_operation: Callable[
+        [str, list[float] | None],
+        Awaitable[list[RetrievalResult]],
+    ]
+    | None = None,
 ) -> list[RetrievalResult]:
-    """Fusion RAG: expand query into N variants, retrieve in parallel, RRF-merge."""
-    from app.rag.agentic.query_expander import QueryExpander
+    """Fusion RAG: expand query into N variants, retrieve, and RRF-merge.
+
+    A gateway supplies ``search_operation`` to run variants concurrently with a
+    fresh tenant-scoped session per call. Legacy direct callers are serialized
+    because an ``AsyncSession`` cannot safely be shared by concurrent tasks.
+    """
     from app.context.rerank_policy import rrf_fuse
+    from app.rag.agentic.query_expander import QueryExpander
 
     expander = QueryExpander()
     if provider is not None and hasattr(expander, "expand_for_fusion_async"):
@@ -469,13 +480,17 @@ async def retrieve_fusion(
             try:
                 from app.providers.base import EmbedRequest
                 resp = await embedder.embed(EmbedRequest(texts=[v]))
-                variant_embeddings.append(resp.embeddings[0] if resp.embeddings else query_embedding)
+                variant_embeddings.append(
+                    resp.embeddings[0] if resp.embeddings else query_embedding
+                )
             except Exception:
                 variant_embeddings.append(query_embedding)
         else:
             variant_embeddings.append(query_embedding)
 
-    async def _retrieve_one(q: str, emb: list[float] | None) -> list[RetrievalResult]:
+    async def _retrieve_legacy(q: str, emb: list[float] | None) -> list[RetrievalResult]:
+        if session is None:
+            raise ValueError("session is required when search_operation is not supplied")
         try:
             return await hybrid_search(
                 session=session, query=q, query_embedding=emb,
@@ -486,12 +501,20 @@ async def retrieve_fusion(
             logger.warning("fusion_rag_variant_failed", query=q[:60], error=str(exc)[:80])
             return []
 
-    per_variant_results = await asyncio.gather(
-        *[_retrieve_one(q, emb) for q, emb in zip(variants, variant_embeddings)]
-    )
+    if search_operation is not None:
+        per_variant_results = await asyncio.gather(
+            *[
+                search_operation(q, emb)
+                for q, emb in zip(variants, variant_embeddings, strict=True)
+            ]
+        )
+    else:
+        per_variant_results = []
+        for q, emb in zip(variants, variant_embeddings, strict=True):
+            per_variant_results.append(await _retrieve_legacy(q, emb))
 
     # Build ranked lists for rrf_fuse
-    ranked_lists: list[list[dict]] = []
+    ranked_lists: list[list[dict[str, Any]]] = []
     for variant_results in per_variant_results:
         ranked_list = [
             {
@@ -513,7 +536,7 @@ async def retrieve_fusion(
 
     # Deduplicate by chunk_id
     seen: set[str] = set()
-    deduped: list[dict] = []
+    deduped: list[dict[str, Any]] = []
     for item in fused:
         cid = item.get("chunk_id", "")
         if cid not in seen:
