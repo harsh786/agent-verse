@@ -28,3 +28,6 @@ agent-verse-frontend/test-results/
 .DS_Store
 .vscode/settings.json
 .idea/
+docs/superpowers/specs/2026-07-19-karishma-product-centric-resume-design.md
+.gitignore
+docs/superpowers/plans/2026-07-19-karishma-product-centric-resume.md

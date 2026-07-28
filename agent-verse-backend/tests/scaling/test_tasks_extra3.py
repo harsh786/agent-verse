@@ -682,7 +682,8 @@ class TestRunGoalPaths:
                    side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)), \
              patch("app.scaling.tasks._get_llm_provider", return_value=None), \
              patch("app.scaling.tasks._REAL_AGENT_LOOP_CLASS", None), \
-             patch("app.db.session.get_session_factory", return_value=mock_factory), \
+             patch("app.core.config.get_provider_env", return_value=None), \
+             patch("app.db.session._make_session_factory", return_value=mock_factory), \
              patch("app.providers.vault.get_vault", return_value=fake_vault):
             result = run_goal.run(
                 goal_id="g4",
@@ -691,7 +692,7 @@ class TestRunGoalPaths:
                 dry_run=False,
             )
         # Goal must fail in production when no real LLM provider is configured.
-        assert result["status"] in ("failed", "dead_lettered", "complete"), (
+        assert result["status"] in ("failed", "dead_lettered", "no_llm_provider"), (
             f"Expected failed/dead_lettered status in production without LLM, got: {result}"
         )
 

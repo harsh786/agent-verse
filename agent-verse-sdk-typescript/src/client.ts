@@ -128,7 +128,9 @@ export class AgentVerseClient {
     const deadline = Date.now() + timeout * 1000;
     while (Date.now() < deadline) {
       const goal = await this.getGoal(goalId);
-      const status = goal.status ?? '';
+      // Keep legacy server aliases accepted by the polling fallback even though
+      // the current Goal contract exposes the narrower canonical status union.
+      const status: string = goal.status ?? '';
       if (['complete', 'completed', 'failed', 'error', 'cancelled'].includes(status)) {
         if (status === 'failed' || status === 'error') {
           throw new GoalFailedError(goalId, `Goal ${goalId} failed: ${(goal as any).error_message ?? 'unknown error'}`);

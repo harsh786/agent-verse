@@ -23,8 +23,11 @@ async def redis_client(redis_container):
     """Fresh async Redis client per test — avoids event-loop lifecycle issues."""
     import redis.asyncio as aioredis
 
-    client = aioredis.from_url(
-        redis_container.get_connection_url(),
+    host = redis_container.get_container_host_ip()
+    port = redis_container.get_exposed_port(redis_container.port)
+    client = aioredis.Redis(
+        host=host,
+        port=int(port),
         decode_responses=True,
     )
     yield client

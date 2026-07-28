@@ -83,9 +83,11 @@ def test_production_guard_fake_provider_celery(monkeypatch):
         # Also patch vault.get_vault to avoid vault key requirement in production mode
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr(
-                "app.db.session.get_session_factory",
+                "app.db.session._make_session_factory",
                 lambda: (_ for _ in ()).throw(RuntimeError("no db")),
             )
+            mp.setattr("app.scaling.tasks._get_llm_provider", lambda _tenant_id: None)
+            mp.setattr("app.core.config.get_provider_env", lambda _name: None)
             mp.setattr("app.providers.vault.get_vault", lambda: fake_vault)
             from app.scaling.tasks import run_goal
             result = run_goal.apply(args=["g1", "t1", "test goal"])

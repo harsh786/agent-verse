@@ -4281,6 +4281,7 @@ class AgentGraph:
                     _logging.getLogger(__name__).warning(
                         "agentgraph_run_exception type=%s msg=%r",
                         type(exc).__name__, str(exc)[:200],
+                        exc_info=True,
                     )
                     err_state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
                     err_state.status = GoalStatus.FAILED

@@ -319,6 +319,7 @@ def test_stream_goal_returns_event_stream() -> None:
         yield {"type": "goal_complete"}
 
     svc = AsyncMock()
+    svc.get_goal.return_value = _make_goal()
     svc.subscribe_events = _gen
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     with client.stream("GET", "/goals/gid-1/stream", headers={"X-API-Key": _VALID_KEY}) as resp:
