@@ -6,11 +6,14 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
+from app.api import rag_platform
 from app.api.rag_platform import (
     RAGQueryRequest,
     _resolve_request_strategy,
+    list_strategies,
 )
-from app.rag.contracts import RAGStrategy
+from app.orchestration.strategy_registry import build_default_registry
+from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult, RAGStrategy
 
 
 def test_knowledge_store_has_delete_document():
@@ -103,15 +106,45 @@ def test_rag_query_resolves_historical_ids(
     class BoundaryAdapter:
         strategy = resolved_strategy
 
-        async def execute(self, request: object) -> None:
-            return None
+        async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+            return RAGExecutionResult(
+                requested_strategy_id=request.requested_strategy_id,
+                resolved_strategy_id=self.strategy,
+            )
 
-    monkeypatch.setattr(
-        "app.api.rag_platform.RAG_RUNTIME_CAPABILITIES",
-        {resolved_strategy: BoundaryAdapter},
+    registry = build_default_registry(
+        rag_runtime_capabilities={resolved_strategy: BoundaryAdapter}
     )
+    monkeypatch.setattr(rag_platform, "get_strategy_registry", lambda: registry)
 
     assert _resolve_request_strategy(requested_id) is resolved_strategy
+
+
+def test_rag_query_rejects_malformed_raw_capability_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SyncHybridAdapter:
+        strategy = RAGStrategy.HYBRID
+
+        def execute(self, request: object) -> None:
+            return None
+
+    registry = build_default_registry(
+        rag_runtime_capabilities={RAGStrategy.HYBRID: SyncHybridAdapter}  # type: ignore[dict-item]
+    )
+    monkeypatch.setattr(rag_platform, "get_strategy_registry", lambda: registry)
+    monkeypatch.setattr(
+        rag_platform,
+        "RAG_RUNTIME_CAPABILITIES",
+        {RAGStrategy.HYBRID: SyncHybridAdapter},
+        raising=False,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_request_strategy(RAGStrategy.HYBRID.value)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "RAG strategy is unavailable: hybrid"
 
 
 def test_rag_query_rejects_unknown_strategy() -> None:
@@ -140,6 +173,24 @@ def test_rag_query_rejects_known_but_unavailable_strategies(strategy_id: str) ->
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == f"RAG strategy is unavailable: {strategy_id}"
+
+
+async def test_rag_strategy_discovery_lists_all_canonical_strategies_unavailable() -> None:
+    class RequestState:
+        tenant = object()
+
+    class DiscoveryRequest:
+        state = RequestState()
+
+    payload = await list_strategies(DiscoveryRequest())  # type: ignore[arg-type]
+    strategies = payload["strategies"]
+
+    assert {entry["id"] for entry in strategies} == {
+        strategy.value for strategy in RAGStrategy
+    }
+    assert len(strategies) == 18
+    assert all(entry["available"] is False for entry in strategies)
+    assert "multimodal" not in {entry["id"] for entry in strategies}
 
 
 def test_ingestion_orchestrator_has_chunk_with_quality_check():

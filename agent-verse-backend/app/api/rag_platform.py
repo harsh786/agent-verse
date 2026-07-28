@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.orchestration.strategy_registry import get_strategy_registry
 from app.rag.contracts import (
-    RAG_RUNTIME_CAPABILITIES,
     RAGStrategy,
     UnavailableRAGStrategyError,
     UnknownRAGStrategyError,
@@ -39,7 +39,7 @@ def _resolve_request_strategy(strategy_id: str) -> RAGStrategy:
         strategy = resolve_rag_strategy(strategy_id)
     except UnknownRAGStrategyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if strategy not in RAG_RUNTIME_CAPABILITIES:
+    if not get_strategy_registry().is_available(strategy.value):
         unavailable_error = UnavailableRAGStrategyError(strategy)
         raise HTTPException(status_code=503, detail=str(unavailable_error)) from unavailable_error
     return strategy
@@ -95,33 +95,21 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
 async def list_strategies(request: Request) -> dict[str, Any]:
     """List available RAG strategies."""
     _require_tenant(request)
+    registry = get_strategy_registry()
+    strategies: list[dict[str, Any]] = []
+    for strategy in RAGStrategy:
+        capability = registry.get(strategy.value)
+        if capability is None:
+            raise RuntimeError(f"Canonical RAG strategy is not registered: {strategy.value}")
+        strategies.append(
+            {
+                "id": strategy.value,
+                "name": strategy.value.replace("_", " ").title(),
+                "description": capability.description,
+                "state": capability.state.value,
+                "available": registry.is_available(strategy.value),
+            }
+        )
     return {
-        "strategies": [
-            {"id": "auto", "name": "Auto", "description": "System selects best strategy"},
-            {
-                "id": "direct",
-                "name": "Direct Vector",
-                "description": "Simple embedding similarity search",
-            },
-            {
-                "id": "multi_hop",
-                "name": "Multi-Hop",
-                "description": "Multi-turn retrieval for complex questions",
-            },
-            {
-                "id": "hyde",
-                "name": "HyDE",
-                "description": "Hypothetical Document Embeddings for better recall",
-            },
-            {
-                "id": "graph",
-                "name": "GraphRAG",
-                "description": "Knowledge graph-expanded retrieval",
-            },
-            {
-                "id": "multimodal",
-                "name": "Multimodal",
-                "description": "Search across text, images, PDFs, and audio",
-            },
-        ]
+        "strategies": strategies,
     }

@@ -1,17 +1,52 @@
 """Phase 6+7: GraphRAG/RAG Platform + Agent Runtime 2.0 tests."""
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.api.rag_platform import router as rag_router
-from app.api.agent_runtime import router as runtime_router
-from app.rag_platform.query_planner import QueryPlanner, RAGStrategy
+
 from app.agent_runtime.models import AgentRole, RiskLevel, StepStatus
+from app.api.agent_runtime import router as runtime_router
+from app.api.rag_platform import router as rag_router
+from app.orchestration.strategy_registry import build_default_registry
+from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult
+from app.rag_platform.query_planner import QueryPlanner, RAGStrategy
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-p67", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p67")
 _KEY = "ak_phase67_test_key"
 _HEADERS = {"X-API-Key": _KEY}
+
+
+class _NaiveRuntimeAdapter:
+    strategy = RAGStrategy.NAIVE
+
+    async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=self.strategy,
+        )
+
+
+class _AdaptiveRuntimeAdapter:
+    strategy = RAGStrategy.ADAPTIVE
+
+    async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=self.strategy,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _certified_rag_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = build_default_registry(
+        rag_runtime_capabilities={
+            RAGStrategy.NAIVE: _NaiveRuntimeAdapter,
+            RAGStrategy.ADAPTIVE: _AdaptiveRuntimeAdapter,
+        }
+    )
+    monkeypatch.setattr("app.api.rag_platform.get_strategy_registry", lambda: registry)
 
 
 def _make_app():
@@ -35,7 +70,7 @@ def test_rag_query_returns_answer():
         "/rag/query",
         json={
             "query": "What is an AI agent?",
-            "strategy": "direct",
+            "strategy": RAGStrategy.NAIVE.value,
             "top_k": 3,
         },
         headers=_HEADERS,
@@ -48,7 +83,7 @@ def test_rag_query_returns_answer():
     assert "grounded" in data
 
 
-def test_rag_query_auto_strategy():
+def test_rag_query_adaptive_strategy():
     client = TestClient(_make_app())
     resp = client.post(
         "/rag/query",
@@ -59,16 +94,46 @@ def test_rag_query_auto_strategy():
     assert resp.json()["strategy_used"] in [s.value for s in RAGStrategy]
 
 
+def test_rag_query_rejects_removed_direct_id():
+    client = TestClient(_make_app())
+
+    resp = client.post(
+        "/rag/query",
+        json={"query": "What is an AI agent?", "strategy": "direct"},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Unknown RAG strategy: direct"
+
+
+def test_rag_query_rejects_uncertified_canonical_strategy():
+    client = TestClient(_make_app())
+
+    resp = client.post(
+        "/rag/query",
+        json={"query": "What is connected?", "strategy": RAGStrategy.GRAPH.value},
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "RAG strategy is unavailable: graph"
+
+
 def test_rag_list_strategies():
     client = TestClient(_make_app())
     resp = client.get("/rag/strategies", headers=_HEADERS)
     assert resp.status_code == 200
     strategies = resp.json()["strategies"]
-    assert len(strategies) >= 5
+    assert len(strategies) == len(RAGStrategy)
     ids = {s["id"] for s in strategies}
-    assert "direct" in ids
-    assert "graph" in ids
-    assert "hyde" in ids
+    assert ids == {strategy.value for strategy in RAGStrategy}
+    assert {"auto", "direct", "multimodal"}.isdisjoint(ids)
+    by_id = {strategy["id"]: strategy for strategy in strategies}
+    assert by_id[RAGStrategy.NAIVE.value]["state"] == "implemented"
+    assert by_id[RAGStrategy.NAIVE.value]["available"] is True
+    assert by_id[RAGStrategy.ADAPTIVE.value]["state"] == "implemented"
+    assert by_id[RAGStrategy.GRAPH.value]["available"] is False
 
 
 def test_rag_retrieval_legs_present():
