@@ -1,6 +1,7 @@
 """Tests for Phase 4 — world-class RAG retrieval engine."""
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 
 class TestRRFScore:
@@ -39,7 +40,10 @@ class TestRetrievalPlanner:
     def test_compare_selects_multi_hop(self):
         from app.rag.engine import RetrievalPlanner
         planner = RetrievalPlanner()
-        assert planner.select_strategy("compare all Q2 sprint velocities across teams") == "multi_hop"
+        assert (
+            planner.select_strategy("compare all Q2 sprint velocities across teams")
+            == "multi_hop"
+        )
 
     def test_what_is_selects_hyde(self):
         from app.rag.engine import RetrievalPlanner
@@ -115,3 +119,115 @@ class TestRetrievalResultDataclass:
         )
         assert "vector" in r.retrieval_legs
         assert r.score == 0.8
+
+
+@pytest.mark.asyncio
+async def test_strict_hybrid_search_propagates_required_leg_failure() -> None:
+    from app.rag.engine import RetrievalLegExecutionError, hybrid_search
+
+    session = AsyncMock()
+    session.execute.side_effect = RuntimeError("database unavailable")
+
+    with pytest.raises(RetrievalLegExecutionError, match="fts"):
+        await hybrid_search(
+            session,
+            query="retention policy",
+            query_embedding=None,
+            collection_id="collection-1",
+            retrieval_mode="lexical",
+            embedding_dim=1536,
+            strict=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_strict_hybrid_search_distinguishes_legitimate_zero_results() -> None:
+    from app.rag.engine import hybrid_search
+
+    session = AsyncMock()
+    empty_result = MagicMock()
+    empty_result.fetchall.return_value = []
+    session.execute.return_value = empty_result
+
+    results = await hybrid_search(
+        session,
+        query="no matching evidence",
+        query_embedding=None,
+        collection_id="collection-1",
+        retrieval_mode="lexical",
+        embedding_dim=1536,
+        strict=True,
+    )
+
+    assert results == []
+    assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_strict_graph_strategy_never_substitutes_hybrid() -> None:
+    from app.rag.engine import RetrievalStrategyExecutionError, retrieve
+
+    session = AsyncMock()
+
+    with (
+        patch("app.rag.engine.hybrid_search", AsyncMock()) as hybrid,
+        pytest.raises(RetrievalStrategyExecutionError, match="graph"),
+    ):
+        await retrieve(
+            session,
+            query="connected entities",
+            query_embedding=None,
+            collection_id="collection-1",
+            strategy="graph",
+            strict=True,
+        )
+
+    hybrid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_strict_fusion_propagates_direct_variant_failure() -> None:
+    from app.rag.engine import retrieve_fusion
+
+    session = AsyncMock()
+    with (
+        patch(
+            "app.rag.agentic.query_expander.QueryExpander.expand_for_fusion",
+            return_value=["variant-1"],
+        ),
+        patch(
+            "app.rag.engine.hybrid_search",
+            AsyncMock(side_effect=RuntimeError("required variant failed")),
+        ),
+        pytest.raises(RuntimeError, match="required variant failed"),
+    ):
+        await retrieve_fusion(
+            session,
+            query="retention policy",
+            query_embedding=None,
+            collection_id="collection-1",
+            strict=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_strict_fusion_propagates_variant_embedding_failure() -> None:
+    from app.rag.engine import RetrievalStrategyExecutionError, retrieve_fusion
+
+    embedder = AsyncMock()
+    embedder.embed.side_effect = RuntimeError("embedder unavailable")
+    with (
+        patch(
+            "app.rag.agentic.query_expander.QueryExpander.expand_for_fusion",
+            return_value=["original", "expanded"],
+        ),
+        pytest.raises(RetrievalStrategyExecutionError, match="variant embedding"),
+    ):
+        await retrieve_fusion(
+            AsyncMock(),
+            query="original",
+            query_embedding=[0.1],
+            collection_id="collection-1",
+            embedder=embedder,
+            strict=True,
+        )

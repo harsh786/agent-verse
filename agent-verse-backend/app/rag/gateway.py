@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
@@ -13,12 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.rls import sqlalchemy_rls_context
 from app.rag.contracts import (
+    RAGCitation,
     RAGExecutionRequest,
     RAGExecutionResult,
+    RAGRetrievalLeg,
     RAGStrategy,
+    RAGStrategyTrace,
     UnavailableRAGStrategyError,
     resolve_rag_strategy,
 )
+from app.rag.engine import RetrievalResult as EngineRetrievalResult
+from app.rag.engine import retrieve as engine_retrieve
 from app.tenancy.context import TenantContext
 
 T = TypeVar("T")
@@ -74,7 +79,7 @@ class RetrievalStrategyAdapter(Protocol):
         self,
         request: RAGExecutionRequest,
         context: RetrievalExecutionContext,
-    ) -> RAGExecutionResult: ...
+    ) -> RAGExecutionResult | Sequence[EngineRetrievalResult]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +105,17 @@ class RetrievalDependencies:
     graph_capability: object | None = None
     search_capability: object | None = None
     policy_services: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalRuntimeDependencies:
+    """Non-authoritative capabilities safe to expose to a strategy adapter."""
+
+    embedder: object | None
+    llm: ResolvedLLM | None
+    graph_capability: object | None
+    search_capability: object | None
+    policy_services: tuple[object, ...]
 
 
 class CollectionNotFoundError(LookupError):
@@ -178,16 +194,47 @@ class RetrievalExecutionContext:
     """Dependencies scoped to one authenticated retrieval execution."""
 
     tenant_context: TenantContext
-    dependencies: RetrievalDependencies
-    llm: ResolvedLLM | None
-    _session_runner: _TenantSessionRunner | None
+    strategy: RAGStrategy
+    dependencies: RetrievalRuntimeDependencies
+    _db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]] | None
+
+    @property
+    def llm(self) -> ResolvedLLM | None:
+        return self.dependencies.llm
 
     async def run_db_operation(self, operation: DatabaseOperation[T]) -> T:
         """Run one DB operation in its own session, transaction, and RLS scope."""
 
-        if self._session_runner is None:
+        if self._db_operation_runner is None:
             raise RuntimeError("A database session factory is not configured")
-        return await self._session_runner.run(operation)
+        result: T = await self._db_operation_runner(operation)
+        return result
+
+    async def retrieve_engine(
+        self,
+        *,
+        query: str,
+        query_embedding: list[float] | None,
+        collection_id: str,
+        top_k: int,
+    ) -> list[EngineRetrievalResult]:
+        """Execute the legacy engine core with canonical fail-closed semantics."""
+
+        async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+            return await engine_retrieve(
+                session,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                top_k=top_k,
+                strategy=self.strategy.value,
+                provider=self.llm.provider if self.llm is not None else None,
+                embedder=self.dependencies.embedder,
+                tenant_ctx=self.tenant_context,
+                strict=True,
+            )
+
+        return await self.run_db_operation(operation)
 
 
 class RetrievalGateway:
@@ -235,20 +282,82 @@ class RetrievalGateway:
         )
         context = RetrievalExecutionContext(
             tenant_context=tenant_context,
-            dependencies=self.dependencies,
-            llm=llm,
-            _session_runner=runner,
+            strategy=strategy,
+            dependencies=RetrievalRuntimeDependencies(
+                embedder=self.dependencies.embedder,
+                llm=llm,
+                graph_capability=self.dependencies.graph_capability,
+                search_capability=self.dependencies.search_capability,
+                policy_services=self.dependencies.policy_services,
+            ),
+            _db_operation_runner=runner.run if runner is not None else None,
         )
         result = await capability.adapter.execute(request, context)
-        if not isinstance(result, RAGExecutionResult):
-            raise TypeError("RAG strategy adapter must return RAGExecutionResult")
-        if result.resolved_strategy_id is not strategy:
-            raise ValueError("RAG strategy adapter returned a mismatched strategy ID")
-        return result.model_copy(
-            update={
-                "requested_strategy_id": requested_strategy_id,
-                "resolved_strategy_id": strategy,
-            }
+        if isinstance(result, RAGExecutionResult):
+            if result.resolved_strategy_id is not strategy:
+                raise ValueError("RAG strategy adapter returned a mismatched strategy ID")
+            return result.model_copy(
+                update={
+                    "requested_strategy_id": requested_strategy_id,
+                    "resolved_strategy_id": strategy,
+                }
+            )
+        if isinstance(result, Sequence) and all(
+            isinstance(item, EngineRetrievalResult) for item in result
+        ):
+            return self._normalize_engine_results(request, strategy, list(result))
+        raise TypeError("RAG strategy adapter returned an unsupported result type")
+
+    @staticmethod
+    def _normalize_engine_results(
+        request: RAGExecutionRequest,
+        strategy: RAGStrategy,
+        results: list[EngineRetrievalResult],
+    ) -> RAGExecutionResult:
+        engine_legs = sorted({leg for result in results for leg in result.retrieval_legs})
+        citations = [
+            RAGCitation(
+                citation_id=f"citation-{index}",
+                chunk_id=result.chunk_id,
+                content=result.content,
+                score=result.score,
+                source=str(
+                    result.source_metadata.get("source")
+                    or result.source_metadata.get("source_url")
+                    or result.source_metadata.get("source_doc_id")
+                    or request.collection_id
+                    or "unknown"
+                ),
+                metadata=dict(result.source_metadata),
+            )
+            for index, result in enumerate(results, start=1)
+        ]
+        trace_detail: dict[str, Any] = {
+            "result_count": len(results),
+            "engine_legs": engine_legs,
+        }
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=strategy,
+            citations=citations,
+            retrieval_legs=[
+                RAGRetrievalLeg(
+                    strategy=strategy,
+                    query=request.query,
+                    result_count=len(results),
+                    score=max((result.score for result in results), default=0.0),
+                    metadata={"engine_legs": engine_legs},
+                )
+            ],
+            strategy_trace=[
+                RAGStrategyTrace(
+                    strategy=strategy,
+                    action="engine_retrieval",
+                    status="complete",
+                    detail=trace_detail,
+                )
+            ],
+            grounded=bool(citations),
         )
 
     def _session_runner(

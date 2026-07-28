@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -290,6 +290,39 @@ async def test_each_concurrent_retrieval_leg_owns_a_session_and_rls_context(
 
 
 @pytest.mark.asyncio
+async def test_adapter_context_exposes_runner_but_not_gateway_db_dependencies(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    class BoundaryAdapter(StaticAdapter):
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> RAGExecutionResult:
+            assert not hasattr(context, "_session_runner")
+            assert not hasattr(context.dependencies, "session_factory")
+            assert not hasattr(context.dependencies, "collection_authorizer")
+
+            async def operation(session: Any) -> None:
+                assert session.rls_tenant_id == TENANT.tenant_id
+
+            await context.run_db_operation(operation)
+            return await super().execute(request, context)
+
+    gateway, _, factory = _gateway(adapter=BoundaryAdapter())
+
+    await gateway.execute(
+        TENANT,
+        collection_id="collection-1",
+        query="retention policy",
+        strategy_id="fusion",
+    )
+
+    assert len(factory.sessions) == 2
+    assert record_rls == [(1, TENANT.tenant_id), (2, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
 async def test_fusion_engine_uses_gateway_owned_session_for_each_parallel_variant(
     record_rls: list[tuple[int, str]],
 ) -> None:
@@ -487,6 +520,104 @@ async def test_historical_alias_retains_requested_and_resolved_ids_and_trace(
 
 
 @pytest.mark.asyncio
+async def test_gateway_normalizes_engine_results_into_canonical_evidence(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult
+
+    class EngineResultAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[RetrievalResult]:
+            return [
+                RetrievalResult(
+                    chunk_id="chunk-1",
+                    content="Tenant-scoped evidence",
+                    score=0.9,
+                    source_metadata={"source": "guide.pdf", "page": 4},
+                    retrieval_legs=["vector", "fts"],
+                ),
+                RetrievalResult(
+                    chunk_id="chunk-2",
+                    content="Additional evidence",
+                    score=0.7,
+                    source_metadata={"source_url": "https://example.test/guide"},
+                    retrieval_legs=["trgm"],
+                ),
+            ]
+
+    gateway, _, _ = _gateway(adapter=EngineResultAdapter())
+
+    result = await gateway.execute(
+        TENANT,
+        collection_id="collection-1",
+        query="retention policy",
+        strategy_id="fusion_rag",
+    )
+
+    assert result.requested_strategy_id == "fusion_rag"
+    assert result.resolved_strategy_id is RAGStrategy.FUSION
+    assert [citation.chunk_id for citation in result.citations] == ["chunk-1", "chunk-2"]
+    assert result.citations[0].source == "guide.pdf"
+    assert result.citations[0].metadata == {"source": "guide.pdf", "page": 4}
+    assert result.retrieval_legs == [
+        RAGRetrievalLeg(
+            strategy=RAGStrategy.FUSION,
+            query="retention policy",
+            result_count=2,
+            score=0.9,
+            metadata={"engine_legs": ["fts", "trgm", "vector"]},
+        )
+    ]
+    assert result.strategy_trace == [
+        RAGStrategyTrace(
+            strategy=RAGStrategy.FUSION,
+            action="engine_retrieval",
+            status="complete",
+            detail={
+                "result_count": 2,
+                "engine_legs": ["fts", "trgm", "vector"],
+            },
+        )
+    ]
+    assert result.grounded
+    assert record_rls == [(1, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
+async def test_legitimate_zero_engine_results_are_observable_success(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult
+
+    class EmptyEngineAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[RetrievalResult]:
+            return []
+
+    gateway, _, _ = _gateway(adapter=EmptyEngineAdapter())
+
+    result = await gateway.execute(
+        TENANT,
+        collection_id="collection-1",
+        query="no matching evidence",
+        strategy_id="fusion",
+    )
+
+    assert result.citations == []
+    assert result.retrieval_legs[0].result_count == 0
+    assert result.strategy_trace[0].status == "complete"
+    assert result.strategy_trace[0].detail["result_count"] == 0
+    assert not result.grounded
+    assert record_rls == [(1, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
 async def test_algorithm_failure_propagates_without_empty_success_fallback(
     record_rls: list[tuple[int, str]],
 ) -> None:
@@ -503,6 +634,78 @@ async def test_algorithm_failure_propagates_without_empty_success_fallback(
 
     assert exc_info.value is failure
     assert record_rls == [(1, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
+async def test_gateway_engine_runner_is_always_strict(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
+
+    class GraphAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[RetrievalResult]:
+            return await context.retrieve_engine(
+                query=request.query,
+                query_embedding=None,
+                collection_id=request.collection_id or "",
+                top_k=request.top_k,
+            )
+
+    gateway, _, _ = _gateway(adapter=GraphAdapter(), strategy=RAGStrategy.GRAPH)
+
+    with (
+        patch("app.rag.engine.hybrid_search", AsyncMock()) as hybrid,
+        pytest.raises(RetrievalStrategyExecutionError, match="graph"),
+    ):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="connected entities",
+            strategy_id="graph",
+        )
+
+    hybrid.assert_not_awaited()
+    assert record_rls == [(1, TENANT.tenant_id), (2, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
+async def test_gateway_engine_runner_passes_configured_embedder(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult
+
+    embedder = object()
+
+    class FusionAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[RetrievalResult]:
+            return await context.retrieve_engine(
+                query=request.query,
+                query_embedding=[0.1],
+                collection_id=request.collection_id or "",
+                top_k=request.top_k,
+            )
+
+    gateway, _, _ = _gateway(adapter=FusionAdapter(), embedder=embedder)
+
+    with patch("app.rag.engine.retrieve_fusion", AsyncMock(return_value=[])) as fusion:
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id="fusion",
+        )
+
+    assert fusion.await_args.kwargs["embedder"] is embedder
+    assert fusion.await_args.kwargs["strict"] is True
+    assert record_rls == [(1, TENANT.tenant_id), (2, TENANT.tenant_id)]
 
 
 @pytest.mark.asyncio
@@ -555,3 +758,66 @@ def test_create_app_wires_in_memory_retrieval_gateway() -> None:
 
     assert isinstance(app.state.retrieval_gateway, RetrievalGateway)
     assert app.state.retrieval_gateway.dependencies.session_factory is None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.knowledge_graph.store import kg_store
+    from app.main import create_app
+
+    class FakePools:
+        redis = None
+
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        async def startup(self) -> None:
+            self.started = True
+
+        async def shutdown(self) -> None:
+            self.stopped = True
+
+        def health_checks(self) -> list[object]:
+            return []
+
+    pools = FakePools()
+    db_factory = RecordingSessionFactory()
+    monkeypatch.setattr(kg_store, "_db", None)
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: db_factory)
+    monkeypatch.setattr(
+        "app.services.tenant_service.TenantService.sync_from_db",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "app.services.goal_service.GoalService.sync_from_db",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr("app.api.agents.AgentStore.sync_from_db", AsyncMock(return_value=0))
+    monkeypatch.setattr("app.governance.audit.AuditLog.sync_from_db", AsyncMock(return_value=0))
+    monkeypatch.setattr("app.triggers.store.ScheduleStore.sync_from_db", AsyncMock(return_value=0))
+    monkeypatch.setattr("app.rag.store.KnowledgeStore.sync_from_db", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        "app.services.notification_service.NotificationService.sync_from_db",
+        AsyncMock(return_value=0),
+    )
+
+    app = create_app(
+        settings=Settings(redis_url=""),
+        pools=pools,  # type: ignore[arg-type]
+        manage_pools=True,
+    )
+    in_memory_gateway = app.state.retrieval_gateway
+
+    async with app.router.lifespan_context(app):
+        db_gateway = app.state.retrieval_gateway
+        assert db_gateway is not in_memory_gateway
+        assert db_gateway.dependencies.session_factory is db_factory
+        assert isinstance(db_gateway.dependencies.collection_authorizer, SQLCollectionAuthorizer)
+        assert db_gateway.dependencies.graph_capability is kg_store
+
+    assert pools.started
+    assert pools.stopped
