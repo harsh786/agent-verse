@@ -133,6 +133,14 @@ from app.providers.vault import (
     get_vault,
     resolve_connector_secret_ref_for_tenant,
 )
+from app.rag.contracts import RAGStrategy
+from app.rag.gateway import (
+    KnowledgeStoreCollectionAuthorizer,
+    ResolvedLLM,
+    RetrievalDependencies,
+    RetrievalGateway,
+    SQLCollectionAuthorizer,
+)
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.rpa.artifacts import get_artifact_store
@@ -143,6 +151,7 @@ from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
 from app.services.usage_service import UsageService
 from app.services.tenant_service import TenantService
+from app.tenancy.context import TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
@@ -592,6 +601,27 @@ def create_app(
         _model_router = None
         logger.warning("model_router_init_failed", error=str(_mr_exc))
 
+    def _resolve_retrieval_llm(
+        tenant_context: TenantContext,
+        strategy: RAGStrategy,
+    ) -> ResolvedLLM:
+        del tenant_context, strategy
+        model = _model_router.model_for("execution") if _model_router is not None else ""
+        return ResolvedLLM(provider=_app_provider, model=model)
+
+    _retrieval_gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=None,
+            embedder=_embedder,
+            llm_resolver=_resolve_retrieval_llm,
+            graph_capability=None,
+            search_capability=None,
+            policy_services=(_policy_engine, _cost, _hitl),
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
+            strategy_capabilities={},
+        )
+    )
+
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
 
@@ -886,6 +916,18 @@ def create_app(
             app.state.schedule_store = _schedule_store_db
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
+            app.state.retrieval_gateway = RetrievalGateway(
+                RetrievalDependencies(
+                    session_factory=db_factory,
+                    embedder=app.state.embedder,
+                    llm_resolver=_resolve_retrieval_llm,
+                    graph_capability=getattr(app.state, "knowledge_graph_store", None),
+                    search_capability=getattr(app.state, "mcp_client", None),
+                    policy_services=(_policy_engine, _cost, _hitl),
+                    collection_authorizer=SQLCollectionAuthorizer(),
+                    strategy_capabilities={},
+                )
+            )
 
             # Wire DB session factory into WorkflowStore for Postgres-backed persistence
             _workflow_store = getattr(app.state, "workflow_store", None)
@@ -1380,6 +1422,7 @@ def create_app(
     app.state.nl_scheduler = _nl_sched
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
+    app.state.retrieval_gateway = _retrieval_gateway
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
     # H-3: ExecutionMemory on app.state
