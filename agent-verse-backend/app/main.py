@@ -140,6 +140,7 @@ from app.rag.gateway import (
     RetrievalDependencies,
     RetrievalGateway,
     SQLCollectionAuthorizer,
+    TenantScopedGraphCapabilityAdapter,
 )
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
@@ -604,9 +605,15 @@ def create_app(
     def _resolve_retrieval_llm(
         tenant_context: TenantContext,
         strategy: RAGStrategy,
-    ) -> ResolvedLLM:
+    ) -> ResolvedLLM | None:
         del tenant_context, strategy
         model = _model_router.model_for("execution") if _model_router is not None else ""
+        model = model.strip() or settings.default_model.strip()
+        if not model:
+            provider_default = getattr(_app_provider, "_default_model", "")
+            model = provider_default.strip() if isinstance(provider_default, str) else ""
+        if not model:
+            return None
         return ResolvedLLM(provider=_app_provider, model=model)
 
     _retrieval_gateway = RetrievalGateway(
@@ -957,7 +964,7 @@ def create_app(
             try:
                 from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
                 _kg_store.set_db(db_factory)
-                _graph_capability = _kg_store
+                _graph_capability = TenantScopedGraphCapabilityAdapter()
                 logger.info("knowledge_graph_db_wired")
                 # Per-tenant hydration is handled lazily in query_nodes() on first miss.
             except Exception as _kg_exc:

@@ -466,6 +466,39 @@ async def test_provider_resolver_failure_is_sanitized() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resolved", "reason"),
+    [
+        (ResolvedLLM(provider=None, model="deterministic-model"), "LLM provider"),
+        (ResolvedLLM(provider=object(), model=""), "LLM model"),
+        (ResolvedLLM(provider=object(), model="   "), "LLM model"),
+    ],
+)
+async def test_resolved_llm_rejects_missing_provider_or_unusable_model(
+    resolved: ResolvedLLM,
+    reason: str,
+    record_rls: list[tuple[int, str]],
+) -> None:
+    gateway, authorizer, factory = _gateway(
+        adapter=StaticAdapter(),
+        requires_provider=True,
+        llm_resolver=lambda *_: resolved,
+    )
+
+    with pytest.raises(UnavailableRAGStrategyError) as exc_info:
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id="fusion",
+        )
+
+    assert reason in exc_info.value.reason
+    assert authorizer.calls == []
+    assert factory.sessions == []
+
+
+@pytest.mark.asyncio
 async def test_historical_alias_retains_requested_and_resolved_ids_and_trace(
     record_rls: list[tuple[int, str]],
 ) -> None:
@@ -705,6 +738,121 @@ async def test_gateway_engine_runner_passes_configured_embedder(
 
     assert fusion.await_args.kwargs["embedder"] is embedder
     assert fusion.await_args.kwargs["strict"] is True
+    assert record_rls == [(1, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
+async def test_public_fusion_uses_concurrent_tenant_scoped_session_per_variant(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult
+
+    observed_sessions: list[RecordingSession] = []
+    active_sessions: set[int] = set()
+    max_active = 0
+
+    async def hybrid_variant(session: Any, *, query: str, **_: object) -> list[RetrievalResult]:
+        nonlocal max_active
+        assert session.rls_tenant_id == TENANT.tenant_id
+        observed_sessions.append(session)
+        active_sessions.add(session.session_id)
+        max_active = max(max_active, len(active_sessions))
+        await asyncio.sleep(0)
+        assert session.rls_tenant_id == TENANT.tenant_id
+        active_sessions.remove(session.session_id)
+        return [
+            RetrievalResult(
+                chunk_id=query,
+                content=query,
+                score=0.8,
+                source_metadata={"source": "test"},
+                retrieval_legs=["vector"],
+            )
+        ]
+
+    class FusionAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[RetrievalResult]:
+            return await context.retrieve_engine(
+                query=request.query,
+                query_embedding=[0.1],
+                collection_id=request.collection_id or "",
+                top_k=request.top_k,
+            )
+
+    gateway, _, factory = _gateway(adapter=FusionAdapter(), embedder=None)
+
+    with (
+        patch(
+            "app.rag.agentic.query_expander.QueryExpander.expand_for_fusion",
+            return_value=["variant-1", "variant-2", "variant-3"],
+        ),
+        patch("app.rag.engine.hybrid_search", side_effect=hybrid_variant),
+    ):
+        result = await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id="fusion",
+        )
+
+    assert result.resolved_strategy_id is RAGStrategy.FUSION
+    assert len(observed_sessions) == 3
+    assert len({id(session) for session in observed_sessions}) == 3
+    assert max_active == 3
+    assert len(factory.sessions) == 4  # authorization plus three variants
+    assert record_rls == [
+        (1, TENANT.tenant_id),
+        (2, TENANT.tenant_id),
+        (3, TENANT.tenant_id),
+        (4, TENANT.tenant_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_graph_capability_exposes_only_tenant_scoped_operations(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+
+    graph_adapter = TenantScopedGraphCapabilityAdapter()
+
+    class GraphAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[object]:
+            graph = context.dependencies.graph_capability
+            assert graph is not None
+            assert not hasattr(graph, "_db")
+            assert not hasattr(graph, "session_factory")
+            assert not hasattr(graph, "store")
+
+            async def operation(session: Any) -> None:
+                assert session.rls_tenant_id == TENANT.tenant_id
+
+            await graph.run_db_operation(operation)
+            return []
+
+    gateway, _, factory = _gateway(
+        adapter=GraphAdapter(),
+        strategy=RAGStrategy.GRAPH,
+        graph_capability=graph_adapter,
+        requires_graph=True,
+    )
+
+    await gateway.execute(
+        TENANT,
+        collection_id="collection-1",
+        query="connected entities",
+        strategy_id="graph",
+    )
+
+    assert len(factory.sessions) == 2
     assert record_rls == [(1, TENANT.tenant_id), (2, TENANT.tenant_id)]
 
 
@@ -760,6 +908,20 @@ def test_create_app_wires_in_memory_retrieval_gateway() -> None:
     assert app.state.retrieval_gateway.dependencies.session_factory is None
 
 
+def test_create_app_retrieval_resolver_never_returns_blank_model() -> None:
+    from app.agent.model_router import ModelRouter
+    from app.core.config import Settings
+    from app.main import create_app
+
+    with patch.object(ModelRouter, "model_for", return_value=""):
+        app = create_app(settings=Settings(default_model="fallback-model"))
+        resolver = app.state.retrieval_gateway.dependencies.llm_resolver
+        assert resolver is not None
+        resolved = resolver(TENANT, RAGStrategy.FUSION)
+        assert isinstance(resolved, ResolvedLLM)
+        assert resolved.model == "fallback-model"
+
+
 @pytest.mark.asyncio
 async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     monkeypatch: pytest.MonkeyPatch,
@@ -767,6 +929,7 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     from app.core.config import Settings
     from app.knowledge_graph.store import kg_store
     from app.main import create_app
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
 
     class FakePools:
         redis = None
@@ -817,7 +980,13 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
         assert db_gateway is not in_memory_gateway
         assert db_gateway.dependencies.session_factory is db_factory
         assert isinstance(db_gateway.dependencies.collection_authorizer, SQLCollectionAuthorizer)
-        assert db_gateway.dependencies.graph_capability is kg_store
+        assert isinstance(
+            db_gateway.dependencies.graph_capability,
+            TenantScopedGraphCapabilityAdapter,
+        )
+        assert db_gateway.dependencies.graph_capability is not kg_store
+        assert not hasattr(db_gateway.dependencies.graph_capability, "_db")
+        assert kg_store._db is db_factory
 
     assert pools.started
     assert pools.stopped
