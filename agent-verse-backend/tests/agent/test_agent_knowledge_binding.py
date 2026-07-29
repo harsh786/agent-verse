@@ -99,21 +99,27 @@ async def test_agent_collection_ids_used_in_rag():
 
 
 @pytest.mark.asyncio
-async def test_node_rag_retrieval_calls_knowledge_store():
-    """_node_rag_retrieval must call hybrid_search_db for each bound collection."""
+async def test_node_rag_retrieval_calls_gateway_for_bound_collection():
+    """_node_rag_retrieval must route bound collections through the gateway."""
     from app.agent.graph import AgentGraph, GraphState
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
+    from app.rag.contracts import RAGExecutionResult, RAGStrategy
     from app.tenancy.context import PlanTier, TenantContext
 
-    mock_ks = MagicMock()
-    mock_ks.hybrid_search_db = AsyncMock(return_value=[])
+    gateway = MagicMock()
+    gateway.execute = AsyncMock(
+        return_value=RAGExecutionResult(
+            requested_strategy_id="hybrid",
+            resolved_strategy_id=RAGStrategy.HYBRID,
+        )
+    )
 
     g = AgentGraph(
         planner=FakeProvider(),
         executor=FakeProvider(),
         verifier=FakeProvider(),
-        knowledge_store=mock_ks,
+        retrieval_gateway=gateway,
     )
     g._agent_collection_ids = ["col-abc"]
 
@@ -132,10 +138,10 @@ async def test_node_rag_retrieval_calls_knowledge_store():
 
     await g._node_rag_retrieval(state)
 
-    # KnowledgeStore must have been queried for the bound collection
-    mock_ks.hybrid_search_db.assert_called_once()
-    call_kwargs = mock_ks.hybrid_search_db.call_args
-    # Verify collection_id was passed correctly
-    assert call_kwargs.kwargs.get("collection_id") == "col-abc" or (
-        len(call_kwargs.args) >= 3 and call_kwargs.args[2] == "col-abc"
-    ), "hybrid_search_db must be called with the bound collection_id"
+    gateway.execute.assert_awaited_once()
+    call = gateway.execute.await_args
+    assert call.args[0] is tenant_ctx
+    assert call.kwargs["collection_id"] == "col-abc"
+    assert call.kwargs["strategy_id"] == "hybrid"
+    assert call.kwargs["top_k"] == 3
+    assert call.kwargs["filters"] == {}

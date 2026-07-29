@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import uuid as _uuid
 from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from app.core.config import get_settings
 from app.ingestion.repository_security import (
@@ -22,9 +23,19 @@ from app.ingestion.repository_security import (
     validate_patterns,
 )
 from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.rag.contracts import (
+    RAGCitation,
+    RAGExecutionResult,
+    RAGStrategy,
+    UnavailableRAGStrategyError,
+    UnknownRAGStrategyError,
+    resolve_rag_strategy,
+)
+from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
+from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 
 # Check if Playwright is available at module load time
@@ -151,6 +162,39 @@ def _knowledge_store(request: Request) -> KnowledgeStore:
 
 def _semantic_cache(request: Request) -> SemanticCache:
     return request.app.state.semantic_cache  # type: ignore[no-any-return]
+
+
+def _retrieval_gateway(request: Request) -> Any:
+    gateway = getattr(request.app.state, "retrieval_gateway", None)
+    if gateway is None:
+        raise HTTPException(status_code=503, detail="Retrieval service is unavailable")
+    return gateway
+
+
+def _parse_retrieval_filters(filters: str | None) -> dict[str, Any]:
+    if filters is None or not filters.strip():
+        return {}
+    try:
+        parsed = json.loads(filters)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="filters must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="filters must be a JSON object")
+    return parsed
+
+
+def _raise_retrieval_http_error(exc: Exception) -> None:
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, UnknownRAGStrategyError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, CollectionNotFoundError):
+        raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    if isinstance(exc, UnavailableRAGStrategyError):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(exc, RAGSynthesisError):
+        raise HTTPException(status_code=503, detail="Answer synthesis is unavailable") from exc
+    raise HTTPException(status_code=503, detail="Retrieval service is unavailable") from exc
 
 
 def _cache_stats(request: Request) -> dict[str, dict[str, int]]:
@@ -391,54 +435,56 @@ async def search_knowledge(
     request: Request,
     q: str,
     collection_id: str,
-    top_k: int = 10,
+    top_k: int | None = None,
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=100,
+        deprecated=True,
+        description="Deprecated alias translated to the canonical top_k parameter.",
+    ),
     threshold: float = 0.5,
+    strategy: str = RAGStrategy.HYBRID.value,
+    filters: str | None = Query(default=None, description="JSON object of metadata filters."),
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
-    store = _knowledge_store(request)
-
-    # Input validation: clamp top_k and cap query length
-    top_k = max(1, min(top_k, 100))
+    boundary_limit = limit if isinstance(limit, int) else None
+    boundary_filters = filters if isinstance(filters, str) else None
+    if top_k is not None and boundary_limit is not None:
+        raise HTTPException(status_code=422, detail="Use top_k or limit, not both")
+    effective_top_k = max(
+        1,
+        min(top_k if top_k is not None else boundary_limit or 10, 100),
+    )
     q = q[:10000]
-
-    embedder = getattr(request.app.state, "embedder", None)
-
-    # FIX 5: Fail loudly when no embedder is configured.
-    # Previously: returned empty embeddings silently, corrupting search results.
-    # Now: raises 503 with an actionable message for the operator.
-    if embedder is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "No embedding provider configured. "
-                "Set VOYAGE_API_KEY or OPENAI_API_KEY to enable knowledge base search."
-            ),
+    try:
+        resolve_rag_strategy(strategy)
+        result: RAGExecutionResult = await _retrieval_gateway(request).execute(
+            tenant_ctx,
+            collection_id=collection_id,
+            query=q,
+            strategy_id=strategy,
+            top_k=effective_top_k,
+            filters=_parse_retrieval_filters(boundary_filters),
         )
-
-    from app.providers.base import embed_texts
-    query_embeddings = await embed_texts([q], provider=embedder)
-    query_embedding = query_embeddings[0]
-    if hasattr(store, "hybrid_search_db"):
-        results = await store.hybrid_search_db(
-            q, query_embedding, collection_id, tenant_ctx, top_k=top_k
-        )
-    else:
-        results = store.hybrid_search(q, query_embedding, collection_id, tenant_ctx, top_k=top_k)
+    except Exception as exc:
+        _raise_retrieval_http_error(exc)
     return [
         {
-            "chunk_id": r.chunk_id,
-            "content": r.content,
-            "score": r.score,
-            "vector_score": r.vector_score,
-            "trigram_score": r.trigram_score,
-            # Source citation fields
-            "source_file": getattr(r, "metadata", {}).get("source_file", ""),
-            "source_url": getattr(r, "metadata", {}).get("source_url", ""),
-            "char_offset": getattr(r, "metadata", {}).get("char_offset"),
-            "line_start": getattr(r, "metadata", {}).get("line_start"),
+            "chunk_id": citation.chunk_id,
+            "content": citation.content,
+            "score": citation.score,
+            "vector_score": citation.metadata.get("vector_score", citation.score),
+            "trigram_score": citation.metadata.get("trigram_score", 0.0),
+            "source_file": citation.metadata.get("source_file", citation.source),
+            "source_url": citation.metadata.get("source_url", ""),
+            "char_offset": citation.metadata.get("char_offset"),
+            "line_start": citation.metadata.get("line_start"),
+            "requested_strategy_id": result.requested_strategy_id,
+            "resolved_strategy_id": result.resolved_strategy_id.value,
         }
-        for r in results
-        if r.score >= threshold
+        for citation in result.citations
+        if citation.score >= threshold
     ]
 
 
@@ -1392,18 +1438,12 @@ async def federated_search_endpoint(
 ) -> dict[str, Any]:
     """Search across multiple knowledge collections with score normalization."""
     tenant_ctx: TenantContext = _require_tenant(request)
-    store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
-    if embedder is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No embedding provider configured",
-        )
-
     query: str = body.get("query", "")
     collection_ids: list[str] = body.get("collection_ids", [])
     top_k: int = int(body.get("top_k", 10))
     top_k = max(1, min(100, top_k))
+    strategy = str(body.get("strategy", RAGStrategy.HYBRID.value))
+    filters = body.get("filters", {})
 
     if not query:
         raise HTTPException(
@@ -1415,25 +1455,31 @@ async def federated_search_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="collection_ids is required",
         )
+    if not isinstance(filters, dict):
+        raise HTTPException(status_code=422, detail="filters must be an object")
 
     from app.knowledge.federated_search import federated_search
     try:
+        resolve_rag_strategy(strategy)
         results = await federated_search(
             query=query,
             collection_ids=collection_ids,
-            store=store,
+            gateway=_retrieval_gateway(request),
             top_k=top_k,
             tenant_ctx=tenant_ctx,
+            strategy=strategy,
+            filters=filters,
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Federated knowledge search is unavailable",
-        ) from exc
+        _raise_retrieval_http_error(exc)
     return {
         "results": results,
         "total": len(results),
         "collections_searched": len(collection_ids),
+        "requested_strategy_id": strategy,
+        "resolved_strategy_ids": sorted(
+            {str(result["resolved_strategy_id"]) for result in results}
+        ),
     }
 
 
@@ -1443,9 +1489,11 @@ async def federated_search_endpoint(
 
 class RagChatRequest(BaseModel):
     question: str
-    collection_ids: list[str] = []   # empty = all tenant collections
-    top_k: int = 5
-    max_context_chars: int = 6000    # total context window for retrieved chunks
+    collection_ids: list[str] = Field(default_factory=list)  # empty = all tenant collections
+    strategy: str = RAGStrategy.HYBRID.value
+    top_k: int = Field(default=5, ge=1, le=20)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    max_context_chars: int = Field(default=6000, ge=1, le=100_000)
     stream: bool = False
 
 
@@ -1456,10 +1504,8 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     Retrieves relevant chunks from the knowledge store and asks the LLM
     to answer using only those chunks. Returns the answer plus cited chunks.
     """
-    tenant_ctx = _require_tenant(request)
+    tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
-    provider = getattr(request.app.state, "llm_provider", None)
 
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
@@ -1471,128 +1517,83 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
         collection_ids = [c.collection_id for c in collections]
 
     if not collection_ids:
-        return {
-            "answer": "No knowledge collections found. Ingest some documents first.",
-            "citations": [],
-            "collections_searched": 0,
-            "chunks_retrieved": 0,
-        }
+        raise HTTPException(status_code=404, detail="No knowledge collections found")
 
-    # Retrieve relevant chunks
-    top_k = max(1, min(20, body.top_k))
-    all_results: list[dict[str, Any]] = []
-    query_embedding: list[float] = []
+    from app.knowledge.federated_search import federated_search
 
-    # Embed query once if embedder is available
-    if embedder is not None:
-        try:
-            from app.providers.base import embed_texts
-            vecs = await embed_texts([body.question], provider=embedder)
-            query_embedding = vecs[0]
-        except Exception:
-            pass
+    try:
+        resolved_strategy = resolve_rag_strategy(body.strategy)
+        results = await federated_search(
+            query=body.question,
+            collection_ids=collection_ids[:10],
+            gateway=_retrieval_gateway(request),
+            top_k=body.top_k,
+            tenant_ctx=tenant_ctx,
+            strategy=body.strategy,
+            filters=body.filters,
+            per_collection_k=body.top_k,
+        )
+        canonical_citations = [
+            RAGCitation(
+                citation_id=str(result["citation_id"]),
+                chunk_id=str(result["chunk_id"]),
+                content=str(result["content"]),
+                score=float(result["score"]),
+                source=str(result["source"]),
+                metadata={
+                    **dict(result.get("metadata", {})),
+                    "collection_id": str(result["collection_id"]),
+                },
+            )
+            for result in results
+        ]
+        if not canonical_citations:
+            raise HTTPException(status_code=404, detail="No relevant knowledge found")
+        answer = await RAGRetriever(gateway=_retrieval_gateway(request)).synthesize(
+            query=body.question,
+            tenant_ctx=tenant_ctx,
+            strategy=resolved_strategy,
+            citations=canonical_citations,
+            max_context_chars=body.max_context_chars,
+        )
+    except Exception as exc:
+        _raise_retrieval_http_error(exc)
 
-    for cid in collection_ids[:10]:  # cap at 10 collections
-        try:
-            if query_embedding and hasattr(store, "hybrid_search_db"):
-                hits = await store.hybrid_search_db(
-                    body.question, query_embedding, cid, tenant_ctx, top_k=top_k
-                )
-            else:
-                hits = store.hybrid_search(
-                    body.question, query_embedding or [], cid, tenant_ctx, top_k=top_k
-                )
-            for h in hits:
-                all_results.append({
-                    "collection_id": cid,
-                    "chunk_id": getattr(h, "chunk_id", ""),
-                    "content": getattr(h, "content", ""),
-                    "score": round(getattr(h, "score", 0.0), 4),
-                    "source_url": getattr(h, "source_url", ""),
-                    "source_doc_id": getattr(h, "source_doc_id", ""),
-                    "page_number": getattr(h, "page_number", None),
-                })
-        except Exception:
-            pass
-
-    # Sort by score, deduplicate
-    all_results.sort(key=lambda x: x["score"], reverse=True)
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for r in all_results:
-        key = r["content"][:128]
-        if key not in seen:
-            seen.add(key)
-            deduped.append(r)
-    top_chunks = deduped[:top_k]
-
-    # Build context string, capped at max_context_chars
-    context_parts: list[str] = []
-    context_len = 0
-    used_chunks: list[dict[str, Any]] = []
-    for i, chunk in enumerate(top_chunks):
-        chunk_text = f"[{i+1}] {chunk['content']}"
-        if context_len + len(chunk_text) > body.max_context_chars:
-            break
-        context_parts.append(chunk_text)
-        context_len += len(chunk_text)
-        used_chunks.append(chunk)
-
-    context_str = "\n\n".join(context_parts)
-
-    # Prepare citations
     citations = [
         {
             "index": i + 1,
-            "chunk_id": c["chunk_id"],
-            "collection_id": c["collection_id"],
-            "score": c["score"],
-            "source_url": c["source_url"],
-            "page_number": c["page_number"],
-            "excerpt": c["content"][:300] + ("…" if len(c["content"]) > 300 else ""),
+            "citation_id": citation.citation_id,
+            "chunk_id": citation.chunk_id,
+            "collection_id": citation.metadata.get("collection_id", ""),
+            "score": citation.score,
+            "source": citation.source,
+            "source_url": citation.metadata.get("source_url", ""),
+            "page_number": citation.metadata.get("page_number"),
+            "excerpt": citation.content[:300],
         }
-        for i, c in enumerate(used_chunks)
+        for i, citation in enumerate(canonical_citations)
     ]
-
-    if provider is None:
-        return {
-            "answer": (
-                f"Retrieved {len(used_chunks)} chunks (no LLM available for answer synthesis). "
-                "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY to enable full RAG chat."
-            ),
-            "citations": citations,
-            "collections_searched": len(collection_ids),
-            "chunks_retrieved": len(used_chunks),
-        }
-
-    from app.providers.base import CompletionRequest, Message
-    system_prompt = (
-        "You are a helpful assistant. Answer the user's question using ONLY "
-        "the provided context excerpts. If the context doesn't contain enough "
-        "information, say so. Cite sources using bracket notation [1], [2], etc.\n\n"
-        f"Context:\n{context_str}"
-    )
-    try:
-        resp = await provider.complete(
-            CompletionRequest(
-                messages=[
-                    Message(role="system", content=system_prompt),
-                    Message(role="user", content=body.question),
-                ],
-                model="",
-                max_tokens=1200,
-            )
-        )
-        answer = resp.content.strip()
-    except Exception as e:
-        answer = f"LLM answer generation failed: {e}. See citations for relevant content."
 
     return {
         "answer": answer,
         "citations": citations,
         "collections_searched": len(collection_ids),
-        "chunks_retrieved": len(used_chunks),
+        "chunks_retrieved": len(canonical_citations),
         "question": body.question,
+        "requested_strategy_id": body.strategy,
+        "resolved_strategy_ids": sorted(
+            {str(result["resolved_strategy_id"]) for result in results}
+        ),
+        "retrieval_legs": [
+            leg
+            for result in results
+            for leg in list(result.get("retrieval_legs", []))
+        ],
+        "strategy_trace": [
+            trace
+            for result in results
+            for trace in list(result.get("strategy_trace", []))
+        ],
     }
 
 

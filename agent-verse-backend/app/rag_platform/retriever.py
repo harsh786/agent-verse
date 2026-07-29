@@ -1,257 +1,144 @@
-"""RAG Retriever - unified retrieval across vector, graph, and multimodal."""
+"""Thin synthesis layer over the tenant-aware retrieval gateway."""
 
 from __future__ import annotations
 
-import logging
+import inspect
 from typing import Any
 
-from app.rag.contracts import RAGStrategy
-from app.rag_platform.query_planner import QueryPlanner, RAGResult, RetrievalLeg
+from app.providers.base import CompletionRequest, Message
+from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.rag.gateway import ResolvedLLM, RetrievalGateway
 from app.tenancy.context import TenantContext
 
-_log = logging.getLogger(__name__)
+
+class RAGSynthesisError(RuntimeError):
+    """Raised when retrieved evidence cannot be synthesized safely."""
 
 
 class RAGRetriever:
-    """Unified retrieval across vector search, graph expansion, and multimodal."""
+    """Retrieve through one gateway, then optionally synthesize its citations."""
 
-    def __init__(self) -> None:
-        self._provider: Any = None
-        self._knowledge_store: Any = None
-        self._kg_store: Any = None
-        self._planner = QueryPlanner()
+    def __init__(self, *, gateway: RetrievalGateway | Any | None = None) -> None:
+        self._gateway = gateway
 
-    def set_dependencies(
-        self,
-        provider: Any = None,
-        knowledge_store: Any = None,
-        kg_store: Any = None,
-    ) -> None:
-        self._provider = provider
-        self._knowledge_store = knowledge_store
-        self._kg_store = kg_store
+    def set_gateway(self, gateway: RetrievalGateway | Any) -> None:
+        """Set the injected gateway for application assembly and tests."""
+
+        self._gateway = gateway
 
     async def retrieve(
         self,
         query: str,
         tenant_ctx: TenantContext,
         collection_id: str | None = None,
-        strategy: RAGStrategy = RAGStrategy.ADAPTIVE,
+        strategy: str | RAGStrategy = RAGStrategy.HYBRID,
         top_k: int = 5,
-    ) -> RAGResult:
-        """Retrieve relevant content using the specified strategy."""
+        filters: dict[str, Any] | None = None,
+        *,
+        synthesize: bool = True,
+        max_context_chars: int = 6000,
+    ) -> RAGExecutionResult:
+        """Execute canonical retrieval without alternate or fallback algorithms."""
 
-        if strategy == RAGStrategy.ADAPTIVE:
-            strategy = self._planner.select_strategy(query)
+        if self._gateway is None:
+            raise RuntimeError("Retrieval gateway is not configured")
+        if not collection_id:
+            raise ValueError("collection_id is required")
 
-        result = RAGResult(query=query, strategy_used=strategy)
-
-        # 1. Base vector retrieval
-        vector_leg = await self._vector_search(query, tenant_ctx, collection_id, top_k)
-        result.legs.append(vector_leg)
-
-        # 2. Graph expansion (if GRAPH or MULTI_HOP strategy)
-        if strategy in (RAGStrategy.GRAPH, RAGStrategy.MULTI_HOP) and self._kg_store:
-            graph_leg = await self._graph_expand(query, tenant_ctx, vector_leg.results)
-            result.legs.append(graph_leg)
-
-        # 3. HyDE (if HYDE strategy)
-        if strategy == RAGStrategy.HYDE and self._provider:
-            hyde_leg = await self._hyde_retrieve(query, tenant_ctx, collection_id, top_k)
-            result.legs.append(hyde_leg)
-
-        # 4. Synthesize answer with citations
-        all_chunks: list[dict[str, Any]] = []
-        for leg in result.legs:
-            all_chunks.extend(leg.results)
-
-        # Rerank results
-        if len(all_chunks) > top_k:
-            try:
-                from app.rag_platform.reranker import reranker
-                if self._provider:
-                    reranker.set_provider(self._provider)
-                all_chunks = await reranker.rerank(query, all_chunks, top_k)
-            except Exception:
-                all_chunks = all_chunks[:top_k]
-
-        if all_chunks:
-            result.citations = [
-                {
-                    "index": i + 1,
-                    "content": c.get("content", "")[:300],
-                    "score": c.get("score", 0.0),
-                    "source": c.get("source", ""),
-                    "collection_id": c.get("collection_id", ""),
-                }
-                for i, c in enumerate(all_chunks[:top_k])
-            ]
-            result.confidence = sum(c.get("score", 0) for c in all_chunks[:top_k]) / max(
-                len(all_chunks[:top_k]), 1
-            )
-
-        # 5. Generate answer
-        result.answer = await self._synthesize(query, all_chunks[:top_k])
-        result.grounded = len(result.citations) > 0
-
-        # Verify citations
-        if result.answer and result.citations:
-            try:
-                from app.rag_platform.reranker import citation_verifier
-                if self._provider:
-                    citation_verifier.set_provider(self._provider)
-                verification = await citation_verifier.verify_citations(
-                    result.answer, result.citations
-                )
-                result.grounded = verification.get("grounded", True)
-                result.refused_claims = verification.get("unsupported_claims", [])
-            except Exception:
-                pass
-
-        return result
-
-    async def _vector_search(
-        self,
-        query: str,
-        tenant_ctx: TenantContext,
-        collection_id: str | None,
-        top_k: int,
-    ) -> RetrievalLeg:
-        """Perform vector similarity search."""
-        import time
-
-        start = time.monotonic()
-        results: list[dict[str, Any]] = []
-
-        if self._knowledge_store and hasattr(self._knowledge_store, "search"):
-            search_results = await self._knowledge_store.search(
-                query=query,
-                collection_id=collection_id,
-                tenant_ctx=tenant_ctx,
-                top_k=top_k,
-            )
-            results = search_results if isinstance(search_results, list) else []
-
-        return RetrievalLeg(
-            strategy=RAGStrategy.NAIVE,
+        result = await self._gateway.execute(
+            tenant_ctx,
+            collection_id=collection_id,
             query=query,
-            results=results,
-            score=sum(r.get("score", 0) for r in results) / max(len(results), 1),
-            latency_ms=(time.monotonic() - start) * 1000,
+            strategy_id=strategy,
+            top_k=top_k,
+            filters=filters or {},
         )
+        if not synthesize or result.answer or not result.citations:
+            return result
 
-    async def _graph_expand(
-        self,
-        query: str,
-        tenant_ctx: TenantContext,
-        seed_results: list[dict[str, Any]],
-    ) -> RetrievalLeg:
-        """Expand retrieval using the knowledge graph."""
-        import time
-
-        start = time.monotonic()
-        expanded: list[dict[str, Any]] = []
-
-        if self._kg_store:
-            try:
-                nodes = self._kg_store.query_nodes(
-                    tenant_ctx.tenant_id,
-                    search=query.split()[0] if query else "",
-                    limit=5,
-                )
-                for node in nodes:
-                    edges = self._kg_store.get_edges_for_node(
-                        node.node_id,
-                        tenant_ctx.tenant_id,
-                    )
-                    for edge in edges[:3]:
-                        expanded.append({
-                            "content": f"[Graph] {node.label} {edge.edge_type.value} related node",
-                            "score": node.confidence * 0.8,
-                            "source": "knowledge_graph",
-                            "edge_type": edge.edge_type.value,
-                        })
-            except Exception as exc:
-                _log.warning("Graph expansion failed: %s", exc)
-
-        return RetrievalLeg(
-            strategy=RAGStrategy.GRAPH,
+        answer = await self.synthesize(
             query=query,
-            results=expanded,
-            score=sum(r.get("score", 0) for r in expanded) / max(len(expanded), 1),
-            latency_ms=(time.monotonic() - start) * 1000,
+            tenant_ctx=tenant_ctx,
+            strategy=result.resolved_strategy_id,
+            citations=result.citations,
+            max_context_chars=max_context_chars,
         )
+        return result.model_copy(update={"answer": answer, "grounded": bool(result.citations)})
 
-    async def _hyde_retrieve(
+    async def synthesize(
         self,
+        *,
         query: str,
         tenant_ctx: TenantContext,
-        collection_id: str | None,
-        top_k: int,
-    ) -> RetrievalLeg:
-        """HyDE: generate a hypothetical document, then search for similar real docs."""
-        if self._provider is None:
-            return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])
+        strategy: RAGStrategy,
+        citations: list[RAGCitation],
+        max_context_chars: int = 6000,
+    ) -> str:
+        """Synthesize canonical citations with the tenant's configured provider/model."""
+
+        resolved = await self._resolve_llm(tenant_ctx, strategy)
+        provider: Any = resolved.provider
+        if provider is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        context_parts: list[str] = []
+        context_length = 0
+        for index, citation in enumerate(citations, start=1):
+            part = f"[{index}] {citation.content}"
+            if context_length + len(part) > max_context_chars:
+                break
+            context_parts.append(part)
+            context_length += len(part)
+        if not context_parts:
+            raise RAGSynthesisError("No retrieved evidence fits the synthesis context")
+        context = "\n\n".join(context_parts)
 
         try:
-            from app.providers.base import CompletionRequest, Message
-
-            resp = await self._provider.complete(
-                CompletionRequest(
-                    messages=[
-                        Message(role="user", content=f"Write a detailed answer to: {query}")
-                    ],
-                    model="",
-                    max_tokens=200,
-                )
-            )
-            hypothetical_doc = resp.content
-            return await self._vector_search(
-                hypothetical_doc,
-                tenant_ctx,
-                collection_id,
-                top_k,
-            )
-        except Exception as exc:
-            _log.warning("HyDE failed: %s", exc)
-            return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])
-
-    async def _synthesize(self, query: str, chunks: list[dict[str, Any]]) -> str:
-        """Synthesize an answer from retrieved chunks."""
-        if not chunks:
-            return "No relevant information found for this query."
-
-        if self._provider is None:
-            return "\n\n".join(c.get("content", "")[:200] for c in chunks[:3])
-
-        try:
-            from app.providers.base import CompletionRequest, Message
-
-            context = "\n\n".join(
-                f"[{i+1}] {c.get('content', '')[:300]}" for i, c in enumerate(chunks[:5])
-            )
-            resp = await self._provider.complete(
+            response = await provider.complete(
                 CompletionRequest(
                     messages=[
                         Message(
-                            role="user",
+                            role="system",
                             content=(
-                                "Answer the question using ONLY the provided context. "
-                                "Cite sources using [N] notation. "
-                                "If the context doesn't support an answer, say so.\n\n"
-                                f"Context:\n{context}\n\nQuestion: {query}"
+                                "Answer using only the supplied evidence. Cite supporting "
+                                "evidence with [N]. If the evidence is insufficient, say so.\n\n"
+                                f"Evidence:\n{context}"
                             ),
-                        )
+                        ),
+                        Message(role="user", content=query),
                     ],
-                    model="",
-                    max_tokens=500,
+                    model=resolved.model,
+                    max_tokens=1200,
                 )
             )
-            return str(resp.content)
         except Exception as exc:
-            _log.warning("Synthesis failed: %s", exc)
-            return "\n\n".join(c.get("content", "")[:200] for c in chunks[:3])
+            raise RAGSynthesisError("Answer synthesis failed") from exc
+        answer = str(response.content).strip()
+        if not answer:
+            raise RAGSynthesisError("Answer synthesis returned no content")
+        return answer
+
+    async def _resolve_llm(
+        self,
+        tenant_ctx: TenantContext,
+        strategy: RAGStrategy,
+    ) -> ResolvedLLM:
+        dependencies = getattr(self._gateway, "dependencies", None)
+        resolver = getattr(dependencies, "llm_resolver", None)
+        if resolver is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        try:
+            resolved = resolver(tenant_ctx, strategy)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+        except Exception as exc:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable") from exc
+        if not isinstance(resolved, ResolvedLLM) or not resolved.model.strip():
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        provider = resolved.provider
+        if provider is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        return resolved
 
 
-# Module-level singleton
+# Kept for callers that configure a process-local singleton explicitly.
 rag_retriever = RAGRetriever()
