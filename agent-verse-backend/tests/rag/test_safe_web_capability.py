@@ -89,6 +89,7 @@ async def test_governed_searxng_capability_returns_typed_bounded_provenance() ->
         searxng_url="https://searx.test",
         policy_services=(_Policy(domains=("8.8.8.8",)),),
         transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
     )
 
     assert isinstance(capability, SafeWebSearchCapability)
@@ -157,6 +158,7 @@ async def test_governed_capability_rejects_redirect_to_private_target() -> None:
         searxng_url="https://searx.test",
         policy_services=(_Policy(domains=("8.8.8.8", "127.0.0.1")),),
         transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
     )
     assert capability is not None
 
@@ -186,6 +188,7 @@ async def test_governed_capability_pins_validated_ip_without_dns_reresolution() 
         searxng_url="https://searx.test",
         policy_services=(_Policy(domains=("safe.example",)),),
         transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
     )
     assert capability is not None
 
@@ -226,6 +229,7 @@ async def test_governed_capability_pins_each_redirect_resolved_destination() -> 
         searxng_url="https://searx.test",
         policy_services=(_Policy(domains=("first.example", "second.example")),),
         transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
     )
     assert capability is not None
 
@@ -245,6 +249,72 @@ async def test_governed_capability_pins_each_redirect_resolved_destination() -> 
         "second.example",
     ]
     assert [request.extensions["sni_hostname"] for request in fetch_requests] == [
+        "first.example",
+        "second.example",
+    ]
+    assert evidence[0].url == "https://second.example/final"
+
+
+async def test_same_ip_cross_host_redirect_uses_fresh_closed_transport_and_sni() -> None:
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.requests: list[httpx.Request] = []
+            self.closed = False
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            if request.headers["host"] == "first.example":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://second.example/final"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                content=b"Fresh second-host handshake",
+                request=request,
+            )
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    transports: list[RecordingTransport] = []
+
+    def transport_factory() -> httpx.AsyncBaseTransport:
+        transport = RecordingTransport()
+        transports.append(transport)
+        return transport
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(domains=("first.example", "second.example")),),
+        transport=httpx.MockTransport(
+            lambda request: _searx_response(["https://first.example/start"])
+        ),
+        fetch_transport_factory=transport_factory,
+    )
+    assert capability is not None
+
+    with patch.object(
+        web_augmented,
+        "assert_public_url",
+        side_effect=[["8.8.8.8"], ["8.8.8.8"]],
+    ):
+        evidence = await capability.search(
+            _request(domains=("first.example", "second.example"))
+        )
+
+    assert len(transports) == 2
+    assert transports[0] is not transports[1]
+    assert all(transport.closed for transport in transports)
+    requests = [transport.requests[0] for transport in transports]
+    assert [request.url.host for request in requests] == ["8.8.8.8", "8.8.8.8"]
+    assert [request.headers["host"] for request in requests] == [
+        "first.example",
+        "second.example",
+    ]
+    assert [request.extensions["sni_hostname"] for request in requests] == [
         "first.example",
         "second.example",
     ]
