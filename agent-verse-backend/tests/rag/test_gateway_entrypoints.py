@@ -812,6 +812,137 @@ async def test_irrelevant_evidence_number_uses_provider_not_false_contradiction(
     assert not conservative.grounded
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "grounded"),
+    [
+        ("Cats are allowed [1], dogs are prohibited [2]", True),
+        ("Cats are allowed [2], dogs are prohibited [1]", False),
+        ("Cats are allowed [1]\ndogs are prohibited [2]", True),
+        ("Cats are allowed [2]\ndogs are prohibited [1]", False),
+    ],
+)
+async def test_marker_scope_keeps_comma_and_newline_claims_separate(
+    answer: str,
+    grounded: bool,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        answer,
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content="Cats are allowed",
+                score=0.9, source="cats",
+            ),
+            RAGCitation(
+                citation_id="c2", chunk_id="ch2", content="Dogs are prohibited",
+                score=0.9, source="dogs",
+            ),
+        ],
+    )
+
+    assert result.grounded is grounded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("markers", ["[1][2]", "[1,2]"])
+async def test_consecutive_multi_citations_bind_one_claim(markers: str) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        f"The combined policy applies {markers}",
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content="Policy part one",
+                score=0.9, source="one",
+            ),
+            RAGCitation(
+                citation_id="c2", chunk_id="ch2", content="Policy part two",
+                score=0.9, source="two",
+            ),
+        ],
+    )
+
+    assert result.grounded
+    assert provider.requests[-1].model == "entailment-model"
+
+
+@pytest.mark.asyncio
+async def test_marker_parser_preserves_decimals_abbreviations_and_urls() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    claim = "Version 3.5 is documented by Example Inc. at https://example.com/v3.5"
+    result = await MinimalCitationVerifier().verify(
+        f"{claim} [1]",
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content=claim,
+                score=0.9, source="url",
+            )
+        ],
+    )
+
+    assert result.grounded
+
+
+@pytest.mark.asyncio
+async def test_encryption_contradiction_and_one_marker_compound_fail_closed() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    citation = RAGCitation(
+        citation_id="c1",
+        chunk_id="ch1",
+        content="Encryption is disabled and audit logging is enabled",
+        score=0.9,
+        source="security",
+    )
+    contradiction = await MinimalCitationVerifier().verify(
+        "Encryption is enabled [1]",
+        [citation],
+    )
+    compound = await MinimalCitationVerifier().verify(
+        "Encryption is disabled and audit logging is disabled [1]",
+        [citation],
+    )
+
+    assert not contradiction.grounded
+    assert not compound.grounded
+
+
+@pytest.mark.asyncio
+async def test_every_non_identical_claim_calls_provider_and_no_provider_fails_closed() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    citation = RAGCitation(
+        citation_id="c1", chunk_id="ch1", content="Records last three months",
+        score=0.9, source="records",
+    )
+    supported = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify("Records last one quarter [1]", [citation])
+    conservative = await MinimalCitationVerifier().verify(
+        "Records last one quarter [1]",
+        [citation],
+    )
+
+    assert supported.grounded
+    provider.complete.assert_awaited_once()
+    assert not conservative.grounded
+
+
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
     class DuplicateGateway(RecordingGateway):
         async def execute(
