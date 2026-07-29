@@ -65,7 +65,7 @@ from app.observability.metrics import (
 from app.pipeline.steps import smart_context_fetch
 from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
 from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy
+from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
@@ -572,9 +572,36 @@ class AgentGraph:
                 _rag_strategy = getattr(
                     getattr(_runtime_profile, "rag_strategy", None), "strategy", None
                 )
-        # Store for use in retrieval calls
-        if _rag_strategy is not None:
-            agent_state.context["_active_rag_strategy"] = str(_rag_strategy)
+        requested_strategy_id = str(
+            _rag_strategy
+            if _rag_strategy is not None
+            else agent_state.context.get(
+                "retrieval_strategy",
+                RAGStrategy.HYBRID.value,
+            )
+        )
+        try:
+            resolved_strategy = resolve_rag_strategy(requested_strategy_id)
+        except Exception as exc:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Invalid retrieval strategy"
+            agent_state.context["rag_retrieval_status"] = "failed"
+            failure_event = {
+                "type": "knowledge_retrieval_failed",
+                "collections_searched": list(self._agent_collection_ids[:3]),
+                "requested_strategy_id": requested_strategy_id,
+                "status": "failed",
+                "citations": [],
+                "resolved_strategy_ids": [],
+                "retrieval_legs": [],
+                "strategy_trace": [],
+            }
+            agent_state.events.append(failure_event)
+            await self._emit(failure_event)
+            raise RetrievalEntryPointError("Invalid retrieval strategy") from exc
+        agent_state.context["_requested_rag_strategy_id"] = requested_strategy_id
+        agent_state.context["_active_rag_strategy"] = resolved_strategy.value
+        agent_state.context["retrieval_strategy"] = resolved_strategy.value
 
         # N6e: chunking_strategy_selected SSE
         try:
@@ -589,8 +616,6 @@ class AgentGraph:
                 ))
         except Exception:
             pass
-
-        agent_state.context.setdefault("retrieval_strategy", RAGStrategy.HYBRID.value)
 
         # 1. Execution memory: recall past winning plans (DB-backed async recall, BUG 2 fix)
         if self._exec_memory is not None:
@@ -658,7 +683,7 @@ class AgentGraph:
                 app_state, "retrieval_gateway", None
             )
             requested_strategy = str(
-                agent_state.context.get("_active_rag_strategy")
+                agent_state.context.get("_requested_rag_strategy_id")
                 or agent_state.context.get("retrieval_strategy")
                 or RAGStrategy.HYBRID.value
             )
@@ -676,14 +701,16 @@ class AgentGraph:
                     raise ValueError("Invalid retrieval top_k")
                 if not isinstance(retrieval_filters, dict):
                     raise TypeError("Invalid retrieval filters")
-                canonical_strategy = RAGStrategy(requested_strategy)
+                canonical_strategy = resolve_rag_strategy(requested_strategy)
+                agent_state.context["retrieval_strategy"] = canonical_strategy.value
+                agent_state.context["_active_rag_strategy"] = canonical_strategy.value
                 gateway_results: list[RAGExecutionResult] = []
                 for collection_id in search_collections:
                     gateway_result = await gateway.execute(
                         tenant_ctx,
                         collection_id=collection_id,
                         query=agent_state.goal,
-                        strategy_id=canonical_strategy,
+                        strategy_id=requested_strategy,
                         top_k=raw_top_k,
                         filters=retrieval_filters,
                     )

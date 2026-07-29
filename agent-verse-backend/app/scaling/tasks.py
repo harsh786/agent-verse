@@ -740,25 +740,36 @@ def run_goal(
     _agent_autonomy_mode = "bounded-autonomous"
     _agent_max_iterations: int | None = None   # None = use graph default (100)
     _agent_system_prompt: str = ""
+    _agent_collection_ids: list[str] = []
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_config() -> tuple[str, int | None, str]:
+            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str]]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (await _sess.execute(
-                        _sa_text("SELECT autonomy_mode, max_iterations, system_prompt FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
+                        _sa_text(
+                            "SELECT autonomy_mode, max_iterations, system_prompt, "
+                            "allowed_collection_ids FROM agents "
+                            "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
+                        ),
                         {"aid": agent_id, "tid": tenant_id},
                     )).fetchone()
                     if row:
                         mode = str(row[0]) if row[0] else "bounded-autonomous"
                         iters = int(row[1]) if row[1] else None
                         sys_prompt = str(row[2]) if row[2] else ""
-                        return mode, iters, sys_prompt
-                    return "bounded-autonomous", None, ""
+                        collection_ids = list(row[3] or []) if len(row) > 3 else []
+                        return mode, iters, sys_prompt, collection_ids
+                    return "bounded-autonomous", None, "", []
 
-            _agent_autonomy_mode, _agent_max_iterations, _agent_system_prompt = _run_async(_lookup_agent_config())
+            (
+                _agent_autonomy_mode,
+                _agent_max_iterations,
+                _agent_system_prompt,
+                _agent_collection_ids,
+            ) = _run_async(_lookup_agent_config())
             logger.info("worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
                         goal_id, agent_id, _agent_autonomy_mode, _agent_max_iterations)
         except Exception as _ae:
@@ -986,6 +997,59 @@ def run_goal(
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
 
+            from app.rag.gateway import (
+                KnowledgeStoreCollectionAuthorizer,
+                ResolvedLLM,
+                RetrievalDependencies,
+                RetrievalGateway,
+                SQLCollectionAuthorizer,
+            )
+
+            async def _resolve_worker_retrieval_llm(
+                tenant_context: TenantContext,
+                strategy: Any,
+            ) -> ResolvedLLM | None:
+                del strategy
+                if tenant_context.tenant_id != tenant_id:
+                    return None
+                provider_default = getattr(provider, "_default_model", "")
+                model = (
+                    provider_default.strip()
+                    if isinstance(provider_default, str)
+                    else ""
+                )
+                if not model and isinstance(provider, FakeProvider):
+                    model = "fake-provider"
+                if not model:
+                    return None
+                return ResolvedLLM(
+                    provider=provider,
+                    model=model,
+                    provider_type=str(
+                        getattr(provider, "_agentverse_provider_type", "")
+                    ),
+                )
+
+            collection_authorizer = (
+                SQLCollectionAuthorizer()
+                if db_factory is not None
+                else KnowledgeStoreCollectionAuthorizer(_knowledge_store_worker)
+                if _knowledge_store_worker is not None
+                else SQLCollectionAuthorizer()
+            )
+            _retrieval_gateway_worker = RetrievalGateway(
+                RetrievalDependencies(
+                    session_factory=db_factory,
+                    embedder=_embedder_for_graph,
+                    llm_resolver=_resolve_worker_retrieval_llm,
+                    graph_capability=None,
+                    search_capability=None,
+                    policy_services=(_policy, _cost, _hitl),
+                    collection_authorizer=collection_authorizer,
+                    strategy_capabilities={},
+                )
+            )
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
@@ -1009,6 +1073,7 @@ def run_goal(
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
                 knowledge_store=_knowledge_store_worker,
+                retrieval_gateway=_retrieval_gateway_worker,
                 # Redis-backed checkpointer set by worker_init signal; None → MemorySaver
                 checkpointer=_WORKER_CHECKPOINTER,
                 # Phase 3 services — grounding, consensus, synthesis, calibration
@@ -1019,6 +1084,7 @@ def run_goal(
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
+            _agent_runner._agent_collection_ids = list(_agent_collection_ids)
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:

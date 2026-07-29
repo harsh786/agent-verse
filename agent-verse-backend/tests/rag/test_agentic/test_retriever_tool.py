@@ -118,3 +118,43 @@ async def test_retrieval_passes_filters_and_top_k(tenant_ctx: TenantContext) -> 
     assert gateway.calls[0]["strategy_id"] is RAGStrategy.GRAPH
     assert gateway.calls[0]["top_k"] == 7
     assert gateway.calls[0]["filters"] == {"team": "legal"}
+
+
+@pytest.mark.asyncio
+async def test_repeated_citation_ids_across_collections_preserve_both(
+    tenant_ctx: TenantContext,
+) -> None:
+    class RepeatedIdGateway:
+        async def execute(
+            self, tenant_ctx: TenantContext, **kwargs: Any
+        ) -> RAGExecutionResult:
+            collection_id = str(kwargs["collection_id"])
+            return RAGExecutionResult(
+                requested_strategy_id="hybrid",
+                resolved_strategy_id=RAGStrategy.HYBRID,
+                citations=[
+                    RAGCitation(
+                        citation_id="citation-1",
+                        chunk_id=f"chunk-{collection_id}",
+                        content=f"Evidence {collection_id}",
+                        score=0.8,
+                        source=f"source-{collection_id}",
+                    )
+                ],
+            )
+
+    result = await RetrieverTool(retrieval_gateway=RepeatedIdGateway()).retrieve(
+        "policy",
+        tenant_ctx=tenant_ctx,
+        collection_ids=["collection-1", "collection-2"],
+    )
+
+    assert len(result.citations) == 2
+    assert {citation.collection_id for citation in result.citations} == {
+        "collection-1",
+        "collection-2",
+    }
+    assert {chunk["content"] for chunk in result.chunks} == {
+        "Evidence collection-1",
+        "Evidence collection-2",
+    }

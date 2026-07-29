@@ -388,7 +388,7 @@ async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
         goal="retention policy",
         tenant_ctx=TENANT,
         context={
-            "_rag_strategy_override": "fusion",
+            "_rag_strategy_override": "fusion_rag",
             "retrieval_top_k": 9,
             "retrieval_filters": {"department": "legal"},
         },
@@ -401,12 +401,13 @@ async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
     assert gateway.calls[0][1] == {
         "collection_id": "collection-1",
         "query": "retention policy",
-        "strategy_id": RAGStrategy.FUSION,
+        "strategy_id": "fusion_rag",
         "top_k": 9,
         "filters": {"department": "legal"},
     }
     assert "Evidence from collection-1" in update["rag_context"]
-    assert state.context["rag_requested_strategy_id"] == "fusion"
+    assert state.context["rag_requested_strategy_id"] == "fusion_rag"
+    assert state.context["retrieval_strategy"] == "fusion"
     assert state.context["rag_resolved_strategy_ids"] == ["fusion"]
     assert state.context["rag_citations"][0]["citation_id"] == "citation-collection-1"
     assert state.context["rag_retrieval_legs"][0]["result_count"] == 1

@@ -160,6 +160,84 @@ def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> 
     assert "guardrail_checker" in kwargs, "guardrail_checker must be passed"
 
 
+def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any) -> None:
+    """The eager Celery path calls the canonical worker gateway from AgentGraph."""
+    import asyncio
+
+    import app.agent.graph as _graph_mod
+    import app.rag.gateway as _gateway_mod
+    from app.rag.contracts import RAGExecutionResult, RAGStrategy
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    gateway_calls: list[tuple[Any, dict[str, Any]]] = []
+    gateway_dependencies: list[Any] = []
+
+    class _Gateway:
+        def __init__(self, dependencies: Any) -> None:
+            self.dependencies = dependencies
+            gateway_dependencies.append(dependencies)
+
+        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> RAGExecutionResult:
+            gateway_calls.append((tenant_ctx, kwargs))
+            return RAGExecutionResult(
+                requested_strategy_id=str(kwargs["strategy_id"]),
+                resolved_strategy_id=RAGStrategy.HYBRID,
+            )
+
+    class _Graph:
+        def __init__(self, **kwargs: Any) -> None:
+            self.gateway = kwargs.get("retrieval_gateway")
+            self._agent_collection_ids = []
+
+        async def run(self, *, tenant_ctx: Any, **kwargs: Any) -> _FakeAgentState:
+            assert self.gateway is not None
+            await self.gateway.execute(
+                tenant_ctx,
+                collection_id="collection-worker",
+                query="worker knowledge",
+                strategy_id=RAGStrategy.HYBRID,
+                top_k=3,
+                filters={},
+            )
+            return _FakeAgentState()
+
+    monkeypatch.setattr(_gateway_mod, "RetrievalGateway", _Gateway)
+    monkeypatch.setattr(_graph_mod, "AgentGraph", _Graph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+
+    result = tasks.run_goal.run(
+        "goal-worker-gateway",
+        "tenant-1",
+        "answer from knowledge",
+        "normal",
+        False,
+    )
+
+    assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
+    assert gateway_calls
+    assert gateway_calls[0][0].tenant_id == "tenant-1"
+    assert gateway_dependencies
+    assert gateway_dependencies[0].llm_resolver is not None
+    assert gateway_dependencies[0].collection_authorizer is not None
+    resolver = gateway_dependencies[0].llm_resolver
+    resolved = asyncio.run(
+        resolver(
+            TenantContext("tenant-1", PlanTier.PROFESSIONAL, "worker-key"),
+            RAGStrategy.HYBRID,
+        )
+    )
+    assert resolved is not None
+    assert resolved.model == "fake-provider"
+    denied = asyncio.run(
+        resolver(
+            TenantContext("tenant-other", PlanTier.PROFESSIONAL, "worker-key"),
+            RAGStrategy.HYBRID,
+        )
+    )
+    assert denied is None
+
+
 def test_consolidate_memories_task_is_registered() -> None:
     """consolidate_memories_task must exist and have the correct Celery task name."""
     from app.scaling import tasks

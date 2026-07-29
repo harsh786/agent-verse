@@ -15,6 +15,7 @@ from app.rag.contracts import (
     RAGRetrievalLeg,
     RAGStrategy,
     RAGStrategyTrace,
+    resolve_rag_strategy,
 )
 from app.rag.gateway import (
     ResolvedLLM,
@@ -35,9 +36,10 @@ class RecordingGateway:
     async def execute(self, tenant_context: TenantContext, **kwargs: Any) -> RAGExecutionResult:
         self.calls.append((tenant_context, kwargs))
         collection_id = str(kwargs["collection_id"])
-        strategy = RAGStrategy(str(kwargs["strategy_id"]))
+        requested_strategy_id = str(kwargs["strategy_id"])
+        strategy = resolve_rag_strategy(requested_strategy_id)
         return RAGExecutionResult(
-            requested_strategy_id=strategy.value,
+            requested_strategy_id=requested_strategy_id,
             resolved_strategy_id=strategy,
             citations=[
                 RAGCitation(
@@ -143,6 +145,84 @@ async def test_workflow_rag_node_requires_gateway_and_tenant_context() -> None:
     assert result["resolved_strategy_id"] == "fusion"
     assert result["citations"][0]["citation_id"] == "citation-collection-1"
     assert gateway.calls[0][0] is TENANT
+
+
+@pytest.mark.asyncio
+async def test_workflow_boundary_resolves_alias_and_preserves_requested_id() -> None:
+    from app.agent.workflow_nodes import execute_rag_node
+
+    gateway = RecordingGateway()
+    result = await execute_rag_node(
+        {
+            "collection_id": "collection-1",
+            "query_template": "policy",
+            "strategy": "fusion_rag",
+        },
+        {},
+        retrieval_gateway=gateway,
+        tenant_ctx=TENANT,
+    )
+
+    assert gateway.calls[0][1]["strategy_id"] == "fusion_rag"
+    assert result["requested_strategy_id"] == "fusion_rag"
+    assert result["resolved_strategy_id"] == "fusion"
+
+
+@pytest.mark.asyncio
+async def test_workflow_boundary_rejects_unknown_strategy() -> None:
+    from app.agent.workflow_nodes import execute_rag_node
+
+    with pytest.raises(ValueError, match="Unknown RAG strategy"):
+        await execute_rag_node(
+            {"collection_id": "collection-1", "strategy": "invented"},
+            {},
+            retrieval_gateway=RecordingGateway(),
+            tenant_ctx=TENANT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("requested", "resolved"),
+    [
+        ("fusion_rag", "fusion"),
+        ("corrective_rag", "corrective"),
+        ("speculative_rag", "speculative"),
+        ("colbert_late_interaction", "colbert"),
+        ("multi_hop_rag", "multi_hop"),
+        ("graph_rag", "graph"),
+    ],
+)
+def test_workflow_config_deserialization_canonicalizes_approved_aliases(
+    requested: str,
+    resolved: str,
+) -> None:
+    from app.agent.workflow_planner import WorkflowPlan
+
+    plan = WorkflowPlan.from_dict(
+        {
+            "steps": [
+                {
+                    "id": "rag-1",
+                    "tool": "rag",
+                    "strategy": requested,
+                }
+            ]
+        },
+        goal="policy",
+    )
+
+    assert plan.steps[0].config["strategy"] == resolved
+    assert plan.steps[0].config["requested_strategy_id"] == requested
+
+
+def test_workflow_config_deserialization_rejects_unknown_strategy() -> None:
+    from app.agent.workflow_planner import WorkflowPlan
+
+    with pytest.raises(ValueError, match="Unknown RAG strategy"):
+        WorkflowPlan.from_dict(
+            {"steps": [{"id": "rag-2", "tool": "rag", "strategy": "invented"}]},
+            goal="policy",
+        )
 
 
 def test_production_retrieval_paths_have_no_store_or_engine_search() -> None:
