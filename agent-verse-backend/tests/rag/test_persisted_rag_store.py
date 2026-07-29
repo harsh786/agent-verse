@@ -218,7 +218,7 @@ async def _ingest(
     return collection_id, chunk_id
 
 
-async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
+async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
     postgres_database: _Database,
     tenants: tuple[TenantContext, TenantContext],
 ) -> None:
@@ -263,24 +263,65 @@ async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
     class Provider:
         async def complete(self, request: CompletionRequest) -> CompletionResponse:
             assert request.model == "tenant-model"
-            return CompletionResponse(
-                content="persisted retrieval evidence\ncanonical evidence retrieval",
-                model=request.model,
-            )
+            prompt = " ".join(str(message.content) for message in request.messages)
+            if "hypothetical document" in prompt:
+                content = "Generated canonical persisted retrieval evidence"
+            elif "Decompose" in prompt:
+                content = '["canonical persisted", "retrieval evidence"]'
+            else:
+                content = "persisted retrieval evidence\ncanonical evidence retrieval"
+            return CompletionResponse(content=content, model=request.model)
+
+    class RecordingEmbedder:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            self.texts.extend(request.texts)
+            return EmbedResponse(embeddings=[list(embedding) for _ in request.texts])
+
+    class RecordingSession:
+        def __init__(self, session: AsyncSession) -> None:
+            self._session = session
+
+        def begin(self) -> Any:
+            return self._session.begin()
+
+        async def execute(
+            self,
+            statement: Any,
+            params: dict[str, Any] | None = None,
+        ) -> Any:
+            sql = str(statement)
+            if "set_config('app.tenant_id'" not in sql:
+                current_tenant = (
+                    await self._session.execute(
+                        text("SELECT current_setting('app.tenant_id', true)")
+                    )
+                ).scalar_one()
+                rls_observations.append((id(self), current_tenant, sql))
+            return await self._session.execute(statement, params or {})
 
     active_sessions = 0
     max_active_sessions = 0
     opened_sessions = 0
+    session_identities: list[int] = []
+    session_objects: list[RecordingSession] = []
+    rls_observations: list[tuple[int, str, str]] = []
+    embedder = RecordingEmbedder()
 
     @asynccontextmanager
-    async def tracked_factory() -> AsyncIterator[AsyncSession]:
+    async def tracked_factory() -> AsyncIterator[Any]:
         nonlocal active_sessions, max_active_sessions, opened_sessions
         async with postgres_database.runtime_factory() as session:
+            recording_session = RecordingSession(session)
             opened_sessions += 1
             active_sessions += 1
             max_active_sessions = max(max_active_sessions, active_sessions)
+            session_objects.append(recording_session)
+            session_identities.append(id(recording_session))
             try:
-                yield session
+                yield recording_session
             finally:
                 active_sessions -= 1
 
@@ -289,12 +330,37 @@ async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
             session_factory=tracked_factory,
             collection_authorizer=SQLCollectionAuthorizer(),
             strategy_capabilities=core_strategy_capabilities(),
-            embedder=_Embedder(embedding),
+            embedder=embedder,
             llm_resolver=lambda *_: ResolvedLLM(
                 provider=Provider(), model="tenant-model", provider_type="test"
             ),
         )
     )
+
+    def reset_recording() -> None:
+        nonlocal max_active_sessions, opened_sessions
+        max_active_sessions = 0
+        opened_sessions = 0
+        session_identities.clear()
+        session_objects.clear()
+        rls_observations.clear()
+        embedder.texts.clear()
+
+    naive_result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.NAIVE,
+        top_k=5,
+        filters={"department": "legal"},
+    )
+    assert [leg.metadata["component"] for leg in naive_result.retrieval_legs] == ["vector"]
+    assert embedder.texts == ["Canonical persisted retrieval evidence"]
+    assert opened_sessions == 2
+    assert len(set(session_identities)) == 2
+    assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
+
+    reset_recording()
     hybrid_result = await gateway.execute(
         tenant,
         collection_id=collection_id,
@@ -316,10 +382,46 @@ async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
     )
     assert hybrid_result.strategy_trace[-1].action == "rrf_merge"
     assert hybrid_result.strategy_trace[-1].detail["rrf_scores"]
+    assert opened_sessions == 2
+    assert len(set(session_identities)) == 2
+    assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
 
-    opened_sessions = 0
-    max_active_sessions = 0
-    result = await gateway.execute(
+    reset_recording()
+    hyde_result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.HYDE,
+        top_k=5,
+        filters={"department": "legal"},
+    )
+    assert hyde_result.citations[0].chunk_id == chunk_id
+    assert embedder.texts == ["Generated canonical persisted retrieval evidence"]
+    assert opened_sessions == 2
+    assert len(set(session_identities)) == 2
+    assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
+
+    reset_recording()
+    multi_hop_result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Compare canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.MULTI_HOP,
+        top_k=5,
+        filters={"department": "legal"},
+    )
+    assert embedder.texts == ["canonical persisted", "retrieval evidence"]
+    assert {leg.query for leg in multi_hop_result.retrieval_legs} == {
+        "canonical persisted",
+        "retrieval evidence",
+    }
+    assert opened_sessions == 3
+    assert len(set(session_identities)) == 3
+    assert max_active_sessions == 2
+    assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
+
+    reset_recording()
+    fusion_result = await gateway.execute(
         tenant,
         collection_id=collection_id,
         query="Canonical persisted retrieval evidence",
@@ -328,11 +430,18 @@ async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
         filters={"department": "legal"},
     )
 
-    assert result.citations[0].chunk_id == chunk_id
-    assert result.citations[0].metadata["department"] == "legal"
-    assert len(result.retrieval_legs) == 3
+    assert fusion_result.citations[0].chunk_id == chunk_id
+    assert fusion_result.citations[0].metadata["department"] == "legal"
+    assert embedder.texts == [
+        "Canonical persisted retrieval evidence",
+        "persisted retrieval evidence",
+        "canonical evidence retrieval",
+    ]
+    assert len(fusion_result.retrieval_legs) == 3
     assert max_active_sessions == 3
-    assert opened_sessions == 4  # collection authorization plus one session per variant
+    assert opened_sessions == 4
+    assert len(set(session_identities)) == 4
+    assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
 
 
 async def test_ingest_and_search_share_persisted_contract_after_restart(

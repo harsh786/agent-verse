@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.providers.base import CompletionResponse, EmbedRequest, EmbedResponse
@@ -63,7 +64,21 @@ async def test_fusion_embeds_every_variant_and_retrieves_concurrently() -> None:
         calls.append((query, embedding))
         await asyncio.sleep(0)
         active -= 1
-        return [RetrievalResult("shared", query, 0.8, {"source": query}, ["vector"])]
+        rankings = {
+            "original query": ["a", "b", "c"],
+            "variant two": ["b", "a", "c"],
+            "variant three": ["b", "c", "a"],
+        }
+        return [
+            RetrievalResult(
+                chunk_id,
+                f"content-{chunk_id}",
+                1.0,
+                {"source": query},
+                ["vector"],
+            )
+            for chunk_id in rankings[query]
+        ]
 
     results = await retrieve_fusion(
         None,
@@ -84,6 +99,14 @@ async def test_fusion_embeds_every_variant_and_retrieves_concurrently() -> None:
         ("variant three", [3.0]),
     ]
     assert max_active == 3
+    assert [result.chunk_id for result in results] == ["b", "a", "c"]
+    assert [result.score for result in results] == pytest.approx(
+        [
+            1 / 62 + 1 / 61 + 1 / 61,
+            1 / 61 + 1 / 62 + 1 / 63,
+            1 / 63 + 1 / 63 + 1 / 62,
+        ]
+    )
     assert results[0].source_metadata["fusion_queries"] == [
         "original query",
         "variant two",

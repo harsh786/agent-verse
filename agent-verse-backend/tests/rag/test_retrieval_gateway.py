@@ -38,6 +38,11 @@ TENANT = TenantContext(
 )
 
 
+class _CompleteProvider:
+    async def complete(self, request: object) -> object:
+        return request
+
+
 class _Transaction:
     async def __aenter__(self) -> None:
         return None
@@ -471,8 +476,8 @@ async def test_provider_resolver_failure_is_sanitized() -> None:
     ("resolved", "reason"),
     [
         (ResolvedLLM(provider=None, model="deterministic-model"), "LLM provider"),
-        (ResolvedLLM(provider=object(), model=""), "LLM model"),
-        (ResolvedLLM(provider=object(), model="   "), "LLM model"),
+        (ResolvedLLM(provider=_CompleteProvider(), model=""), "LLM model"),
+        (ResolvedLLM(provider=_CompleteProvider(), model="   "), "LLM model"),
     ],
 )
 async def test_resolved_llm_rejects_missing_provider_or_unusable_model(
@@ -929,7 +934,8 @@ async def test_resolved_provider_and_model_are_passed_to_adapter(
     record_rls: list[tuple[int, str]],
 ) -> None:
     class DeterministicProvider:
-        pass
+        async def complete(self, request: object) -> object:
+            return request
 
     provider = DeterministicProvider()
 
