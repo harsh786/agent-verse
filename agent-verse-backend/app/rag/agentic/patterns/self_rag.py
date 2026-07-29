@@ -134,7 +134,16 @@ class SelfRAGPattern(RAGPattern):
         except ImportError:
             cb = None
 
+        def circuit_allows_call() -> bool:
+            if cb is None or cb.can_call():
+                return True
+            if strict:
+                raise RuntimeError("Self-RAG provider circuit is open")
+            return False
+
         # Step 1: Decide if retrieval needed
+        if not circuit_allows_call():
+            return SelfRAGResult(answer="", retrieved=False)
         should_retrieve = await self._should_retrieve(query, provider, model, strict)
 
         context = ""
@@ -147,6 +156,8 @@ class SelfRAGPattern(RAGPattern):
                 context = ""
 
         # Step 2: Generate response
+        if not circuit_allows_call():
+            return SelfRAGResult(answer="", retrieved=bool(context))
         try:
             if context:
                 messages = [
@@ -159,10 +170,6 @@ class SelfRAGPattern(RAGPattern):
             else:
                 messages = [Message(role="user", content=query)]
 
-            if cb is not None and not cb.can_call():
-                if strict:
-                    raise RuntimeError("Self-RAG provider circuit is open")
-                return SelfRAGResult(answer="", retrieved=bool(context))
             resp = await provider.complete(CompletionRequest(
                 messages=messages,
                 model=model,
@@ -183,6 +190,12 @@ class SelfRAGPattern(RAGPattern):
         is_relevant = is_supported = is_useful = True
         confidence = 0.7
         if context:
+            if not circuit_allows_call():
+                return SelfRAGResult(
+                    answer=answer,
+                    retrieved=True,
+                    context_used=context[:500],
+                )
             critique = await self._critique(query, answer, context, provider, model, strict)
             is_relevant = critique.get("is_relevant", True)
             is_supported = critique.get("is_supported", True)

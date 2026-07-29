@@ -119,27 +119,30 @@ class RAPTORPattern(RAGPattern):
         async def _summarize_group(group: list[TreeNode], _level: int) -> TreeNode:
             combined = "\n\n".join(n.content[:800] for n in group)
             source_ids = [sid for n in group for sid in n.source_ids]
+            if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("RAPTOR provider circuit is open")
+                return TreeNode(
+                    content=combined[:300],
+                    level=_level,
+                    source_ids=source_ids,
+                )
             try:
-                if cb is not None and not cb.can_call():
-                    if strict:
-                        raise RuntimeError("RAPTOR provider circuit is open")
-                    summary = combined[:300]
-                else:
-                    resp = await provider.complete(CompletionRequest(
-                        messages=[
-                            Message(role="system", content=_SUMMARIZE_SYSTEM),
-                            Message(
-                                role="user",
-                                content=f"Chunks to summarize:\n\n{combined[:3000]}",
-                            ),
-                        ],
-                        model=model,
-                        max_tokens=max_tokens,
-                        temperature=0.0,
-                    ))
-                    if cb is not None:
-                        cb.record_success()
-                    summary = (resp.content or "").strip() or combined[:300]
+                resp = await provider.complete(CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_SUMMARIZE_SYSTEM),
+                        Message(
+                            role="user",
+                            content=f"Chunks to summarize:\n\n{combined[:3000]}",
+                        ),
+                    ],
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=0.0,
+                ))
+                if cb is not None:
+                    cb.record_success()
+                summary = (resp.content or "").strip() or combined[:300]
             except Exception:
                 if cb is not None:
                     cb.record_failure()
@@ -191,30 +194,31 @@ class RAPTORPattern(RAGPattern):
         full_context = "\n\n".join(context_parts)
 
         # Answer query using hierarchical context
+        if cb is not None and not cb.can_call():
+            if strict:
+                raise RuntimeError("RAPTOR provider circuit is open")
+            return summary_nodes[-1].content if summary_nodes else (
+                chunks[0].get("content", "") if chunks else ""
+            )
         try:
-            if cb is not None and not cb.can_call():
-                if strict:
-                    raise RuntimeError("RAPTOR provider circuit is open")
-                result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
-            else:
-                resp = await provider.complete(CompletionRequest(
-                    messages=[
-                        Message(role="system", content=_ANSWER_SYSTEM),
-                        Message(
-                            role="user",
-                            content=(
-                                f"Context:\n{full_context[:4000]}\n\n"
-                                f"Question: {query}"
-                            ),
+            resp = await provider.complete(CompletionRequest(
+                messages=[
+                    Message(role="system", content=_ANSWER_SYSTEM),
+                    Message(
+                        role="user",
+                        content=(
+                            f"Context:\n{full_context[:4000]}\n\n"
+                            f"Question: {query}"
                         ),
-                    ],
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=0.0,
-                ))
-                if cb is not None:
-                    cb.record_success()
-                result = (resp.content or "").strip()
+                    ),
+                ],
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.0,
+            ))
+            if cb is not None:
+                cb.record_success()
+            result = (resp.content or "").strip()
         except Exception:
             if cb is not None:
                 cb.record_failure()

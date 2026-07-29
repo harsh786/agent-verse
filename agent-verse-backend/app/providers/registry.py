@@ -21,6 +21,7 @@ from typing import Any
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+_OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 class ProviderConfigurationError(ValueError):
@@ -30,6 +31,16 @@ class ProviderConfigurationError(ValueError):
         super().__init__(f"Invalid {provider_type} provider configuration: {reason}")
         self.provider_type = provider_type
         self.reason = reason
+
+
+def _requires_explicit_openai_model(provider_type: str, base_url: str) -> bool:
+    provider_type = provider_type.strip().lower()
+    if provider_type in {"azure", "together", "openai_compatible"}:
+        return True
+    normalized_url = base_url.strip().rstrip("/").lower()
+    return provider_type == "openai" and bool(normalized_url) and normalized_url != (
+        _OFFICIAL_OPENAI_BASE_URL.lower()
+    )
 
 
 @dataclass
@@ -68,11 +79,17 @@ def _detect_providers() -> list[ProviderConfig]:
         )
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_BASE_URL"):
+        openai_base_url = os.getenv("OPENAI_BASE_URL", _OFFICIAL_OPENAI_BASE_URL)
+        provider_type = (
+            "openai"
+            if openai_base_url.rstrip("/").lower() == _OFFICIAL_OPENAI_BASE_URL.lower()
+            else "openai_compatible"
+        )
         providers.append(
             ProviderConfig(
-                provider_type="openai_compatible",
+                provider_type=provider_type,
                 api_key=os.getenv("OPENAI_API_KEY", ""),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                base_url=openai_base_url,
                 display_name="OpenAI",
             )
         )
@@ -154,12 +171,14 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             default_model=configured_model or "claude-opus-4-8",
         )
 
-    elif ptype in ("openai_compatible", "openai"):
+    elif ptype in ("openai_compatible", "openai", "azure", "together"):
+        if _requires_explicit_openai_model(ptype, cfg.base_url) and not configured_model:
+            raise ProviderConfigurationError(ptype, "explicit deployment/model is required")
         from app.providers.openai_compatible import OpenAICompatibleProvider
 
         return OpenAICompatibleProvider(
             api_key=cfg.api_key,
-            base_url=cfg.base_url or "https://api.openai.com/v1",
+            base_url=cfg.base_url or _OFFICIAL_OPENAI_BASE_URL,
             default_model=configured_model or "gpt-5.2",
         )
 
@@ -210,14 +229,11 @@ def instantiate_configured_provider(
     """Instantiate one tenant-configured provider without global fallback."""
 
     original_type = provider_type.strip().lower()
-    if original_type in {"azure", "together"} and not model.strip():
+    if _requires_explicit_openai_model(original_type, base_url) and not model.strip():
         raise ProviderConfigurationError(original_type, "explicit deployment/model is required")
-    normalized = original_type
-    if normalized in {"openai", "together", "azure"}:
-        normalized = "openai_compatible"
     provider = _instantiate_provider(
         ProviderConfig(
-            provider_type=normalized,
+            provider_type=original_type,
             api_key=api_key,
             base_url=base_url,
             models=[model] if model.strip() else None,

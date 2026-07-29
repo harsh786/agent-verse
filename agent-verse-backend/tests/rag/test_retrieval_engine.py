@@ -328,48 +328,68 @@ async def test_strict_provider_backed_strategies_propagate_provider_failure(
         ),
     ],
 )
+@pytest.mark.parametrize("strict", [False, True])
 async def test_strict_provider_patterns_reject_open_circuit(
     strategy: str,
     class_path: str,
     pattern_factory: object,
     breaker_key: str,
+    strict: bool,
 ) -> None:
+    import time
+    from contextlib import nullcontext
+
     from app.providers.base import CompletionRequest, CompletionResponse
     from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError, retrieve
-
-    class OpenBreaker:
-        def can_call(self) -> bool:
-            return False
+    from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
 
     class Provider:
+        def __init__(self) -> None:
+            self.calls = 0
+
         async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            self.calls += 1
             return CompletionResponse(
                 content='{"should_retrieve": true}',
                 model=request.model,
             )
 
     pattern = pattern_factory()  # type: ignore[operator]
-    pattern._circuit_breakers[breaker_key] = OpenBreaker()
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=10_000)
+    breaker._state = CircuitState.OPEN
+    breaker._failure_count = 3
+    breaker._opened_at = time.monotonic()
+    opened_at = breaker._opened_at
+    pattern._circuit_breakers[breaker_key] = breaker
+    provider = Provider()
     base_results = [
         RetrievalResult("chunk-1", "first evidence", 0.8, {}, ["vector"]),
         RetrievalResult("chunk-2", "second evidence", 0.7, {}, ["fts"]),
     ]
 
-    with (
-        patch(class_path, return_value=pattern),
-        patch("app.rag.engine.hybrid_search", AsyncMock(return_value=base_results)),
-        pytest.raises(RetrievalStrategyExecutionError, match=strategy),
-    ):
+    expected = (
+        pytest.raises(RetrievalStrategyExecutionError, match=strategy)
+        if strict
+        else nullcontext()
+    )
+    with patch(class_path, return_value=pattern), patch(
+        "app.rag.engine.hybrid_search", AsyncMock(return_value=base_results)
+    ), expected:
         await retrieve(
             AsyncMock(),
             query="retention policy",
             query_embedding=[0.1],
             collection_id="collection-1",
             strategy=strategy,
-            provider=Provider(),
+            provider=provider,
             model="tenant-model",
-            strict=True,
+            strict=strict,
         )
+
+    assert provider.calls == 0
+    assert breaker._failure_count == 3
+    assert breaker._opened_at == opened_at
+    assert breaker.state is CircuitState.OPEN
 
 
 @pytest.mark.asyncio

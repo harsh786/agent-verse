@@ -215,8 +215,12 @@ class LLMProviderConfig(BaseModel):
     @classmethod
     def require_custom_provider_model(cls, value: str, info: ValidationInfo) -> str:
         provider = str(info.data.get("provider") or "").strip().lower()
-        if provider in {"azure", "together"} and not value.strip():
-            raise ValueError("Azure and Together require an explicit deployment/model")
+        base_url = str(info.data.get("base_url") or "").strip().rstrip("/").lower()
+        official_openai = "https://api.openai.com/v1"
+        custom_openai = provider == "openai" and bool(base_url) and base_url != official_openai
+        requires_model = provider in {"azure", "together", "openai_compatible"}
+        if (requires_model or custom_openai) and not value.strip():
+            raise ValueError("Custom OpenAI-compatible providers require an explicit model")
         return value.strip()
 
 
