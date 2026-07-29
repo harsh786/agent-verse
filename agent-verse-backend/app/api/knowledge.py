@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-
 import hashlib
 import uuid as _uuid
+from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -18,7 +18,8 @@ from app.tenancy.context import TenantContext
 
 # Check if Playwright is available at module load time
 try:
-    from playwright.async_api import async_playwright as _check_playwright  # noqa: F401
+    import playwright.async_api as _playwright_api  # type: ignore[import-not-found]
+    _check_playwright = _playwright_api.async_playwright
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
@@ -158,6 +159,30 @@ def _fallback_embedding(dim: int = _EMBEDDING_DIM) -> list[float]:
     )
 
 
+async def _persist_chunks_or_http(
+    store: KnowledgeStore,
+    chunks: list[Chunk],
+    *,
+    collection_id: str,
+    tenant_ctx: TenantContext,
+) -> list[str]:
+    try:
+        return await store.ingest_chunks_async(
+            chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid knowledge ingestion payload") from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — collections
 # ---------------------------------------------------------------------------
@@ -190,7 +215,13 @@ async def create_collection(
         description=body.description,
         embedder=body.embedder_type,
     )
-    cid = store.create_collection(collection, tenant_ctx=tenant_ctx)
+    try:
+        cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
     return {
         "collection_id": cid,
         "name": body.name,
@@ -214,7 +245,6 @@ async def delete_collection(request: Request, collection_id: str) -> None:
         )
 
     # H-5: Block deletion if a legal hold is active on this resource
-    from app.governance.legal_holds import LegalHoldManager
     _legal_hold_mgr = getattr(request.app.state, "legal_hold_manager", None)
     if _legal_hold_mgr is not None:
         try:
@@ -257,7 +287,7 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 
     # Remove from in-memory cache
     key = (tenant_ctx.tenant_id, collection_id)
-    store._data.pop(key, None)  # type: ignore[attr-defined]
+    store._data.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -292,33 +322,46 @@ async def ingest_document(
     # Split into token-aware chunks for accurate LLM context window usage.
     from app.knowledge.chunker_v2 import chunk_by_tokens
     _raw_chunks = chunk_by_tokens(body.content, max_tokens=512, overlap_tokens=64)
-    chunks_text = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_chunks]
+    chunks_text = [
+        type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
+        for chunk in _raw_chunks
+    ]
 
     # Fallback: very short content that doesn't meet min_chunk threshold
     if not chunks_text and body.content.strip():
-        chunks_text = [type("_C", (), {"content": body.content.strip(), "start_char": 0, "end_char": len(body.content)})()]
+        chunks_text = [
+            type(
+                "_C",
+                (),
+                {"content": body.content.strip(), "start_char": 0, "end_char": len(body.content)},
+            )()
+        ]
 
-    chunks_created = 0
+    chunks: list[Chunk] = []
     embedder = getattr(request.app.state, "embedder", None)
     from app.providers.base import embed_texts
     for idx, text_chunk in enumerate(chunks_text):
         chunk_text = text_chunk.content
         embeddings = await embed_texts([chunk_text], provider=embedder)
         chunk_embedding = embeddings[0]
-        chunk = Chunk(
+        chunks.append(Chunk(
             document_id=document.document_id,
             content=chunk_text,
             embedding=chunk_embedding,
             chunk_index=idx,
             metadata={**str_metadata, "source_type": body.source_type},
-        )
-        store.ingest_chunk(chunk, collection_id=body.collection_id, tenant_ctx=tenant_ctx)
-        chunks_created += 1
+        ))
+    await _persist_chunks_or_http(
+        store,
+        chunks,
+        collection_id=body.collection_id,
+        tenant_ctx=tenant_ctx,
+    )
 
     return {
         "document_id": document.document_id,
         "collection_id": body.collection_id,
-        "chunks_created": chunks_created,
+        "chunks_created": len(chunks),
         "content_hash": content_hash,
     }
 
@@ -396,10 +439,8 @@ async def get_cache_stats(request: Request) -> dict[str, Any]:
     # Also report current cache size
     size = 0
     if hasattr(cache, "size"):
-        try:
+        with suppress(Exception):
             size = await cache.size(tenant_ctx.tenant_id)
-        except Exception:
-            pass
     return {
         **stats,
         "redis_entries": size,
@@ -424,7 +465,6 @@ async def clear_cache(request: Request) -> dict[str, Any]:
 @router.post("/cache/warm")
 async def warm_cache(request: Request) -> dict[str, Any]:
     """Pre-populate the cache with common step patterns for this tenant."""
-    import json as _json
     tenant_ctx: TenantContext = _require_tenant(request)
     cache = _semantic_cache(request)
     body = await request.json()
@@ -465,7 +505,7 @@ async def ingest_file(
         try:
             import io
 
-            import pypdf
+            import pypdf  # type: ignore[import-not-found]
             reader = pypdf.PdfReader(io.BytesIO(content_bytes))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
         except ImportError:
@@ -474,7 +514,7 @@ async def ingest_file(
         try:
             import io
 
-            import docx
+            import docx  # type: ignore[import-not-found]
             doc = docx.Document(io.BytesIO(content_bytes))
             text = "\n".join(para.text for para in doc.paragraphs)
         except ImportError:
@@ -488,14 +528,23 @@ async def ingest_file(
     # Chunk using token-aware chunker
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
     _raw_file_chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64)
-    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_file_chunks]
+    chunks = [
+        type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
+        for chunk in _raw_file_chunks
+    ]
 
     # Fallback for very short content
     if not chunks and text.strip():
-        chunks = [type("_C", (), {"content": text.strip(), "start_char": 0, "end_char": len(text)})()]
+        chunks = [
+            type(
+                "_C",
+                (),
+                {"content": text.strip(), "start_char": 0, "end_char": len(text)},
+            )()
+        ]
 
-    ingested = 0
     document_id = _uuid.uuid4().hex
+    rag_chunks: list[Chunk] = []
     from app.providers.base import EmbedRequest
     for idx, chunk in enumerate(chunks):
         if not chunk.content.strip():
@@ -507,7 +556,7 @@ async def ingest_file(
                 embedding = resp.embeddings[0] if resp.embeddings else []
             except Exception:
                 embedding = []
-        rag_chunk = Chunk(
+        rag_chunks.append(Chunk(
             document_id=document_id,
             content=chunk.content,
             embedding=embedding,
@@ -518,13 +567,17 @@ async def ingest_file(
                 "char_offset": str(chunk.start_char),
                 "source_type": source_type,
             },
-        )
-        store.ingest_chunk(rag_chunk, collection_id=collection_id, tenant_ctx=tenant)
-        ingested += 1
+        ))
+    await _persist_chunks_or_http(
+        store,
+        rag_chunks,
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    )
 
     return {
         "filename": filename,
-        "chunks_created": ingested,
+        "chunks_created": len(rag_chunks),
         "collection_id": collection_id,
         "file_size_bytes": len(content_bytes),
     }
@@ -589,9 +642,9 @@ async def _ingest_repo_background(
     import shutil
     import tempfile
 
+    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     from app.observability.logging import get_logger
     from app.providers.base import EmbedRequest
-    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     logger = get_logger(__name__)
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
@@ -617,7 +670,6 @@ async def _ingest_repo_background(
             )
             return
 
-        chunker = None  # replaced by chunk_by_tokens below
         files_processed = 0
 
         for pattern in file_patterns:
@@ -633,9 +685,17 @@ async def _ingest_repo_background(
                     ext = filepath.suffix.lstrip(".")
                     src_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
                     _raw = _chunk_by_tokens_repo(text, max_tokens=512, overlap_tokens=64)
-                    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw]
+                    chunks = [
+                        type(
+                            "_C",
+                            (),
+                            {"content": chunk, "start_char": 0, "end_char": len(chunk)},
+                        )()
+                        for chunk in _raw
+                    ]
                     rel_path = str(filepath.relative_to(tmpdir))
                     doc_id = _uuid.uuid4().hex
+                    rag_chunks: list[Chunk] = []
                     for idx, chunk in enumerate(chunks):
                         embedding: list[float] = []
                         if embedder:
@@ -644,7 +704,7 @@ async def _ingest_repo_background(
                                 embedding = resp.embeddings[0] if resp.embeddings else []
                             except Exception:
                                 pass
-                        rag_chunk = Chunk(
+                        rag_chunks.append(Chunk(
                             document_id=doc_id,
                             content=chunk.content,
                             embedding=embedding,
@@ -655,9 +715,12 @@ async def _ingest_repo_background(
                                 "char_offset": str(chunk.start_char),
                                 "source_type": src_type,
                             },
-                        )
-                        store.ingest_chunk(rag_chunk, collection_id=collection_id,
-                                           tenant_ctx=tenant_ctx)
+                        ))
+                    await store.ingest_chunks_async(
+                        rag_chunks,
+                        collection_id=collection_id,
+                        tenant_ctx=tenant_ctx,
+                    )
                     files_processed += 1
                 except Exception as exc:
                     logger.warning("repo_file_ingest_failed",
@@ -688,13 +751,13 @@ async def ingest_openapi(
         try:
             spec = _json.loads(body.content)
         except _json.JSONDecodeError:
-            import yaml as _yaml
+            import yaml as _yaml  # type: ignore[import-untyped]
             spec = _yaml.safe_load(body.content)
     except Exception as exc:
-        raise HTTPException(422, f"Could not parse OpenAPI spec: {exc}")
+        raise HTTPException(422, f"Could not parse OpenAPI spec: {exc}") from exc
 
     paths = spec.get("paths", {})
-    chunks_created = 0
+    rag_chunks: list[Chunk] = []
     from app.providers.base import EmbedRequest
 
     for path, methods in paths.items():
@@ -728,23 +791,26 @@ async def ingest_openapi(
                 except Exception:
                     pass
 
-            rag_chunk = Chunk(
+            rag_chunks.append(Chunk(
                 document_id=_uuid.uuid4().hex,
                 content=chunk_text,
                 embedding=embedding,
-                chunk_index=chunks_created,
+                chunk_index=len(rag_chunks),
                 metadata={
                     "source_url": body.source_url,
                     "source_type": "openapi",
                     "endpoint": f"{method.upper()} {path}",
                 },
-            )
-            store.ingest_chunk(rag_chunk, collection_id=body.collection_id,
-                               tenant_ctx=tenant)
-            chunks_created += 1
+            ))
+    await _persist_chunks_or_http(
+        store,
+        rag_chunks,
+        collection_id=body.collection_id,
+        tenant_ctx=tenant,
+    )
 
     return {
-        "endpoints_ingested": chunks_created,
+        "endpoints_ingested": len(rag_chunks),
         "collection_id": body.collection_id,
         "source_url": body.source_url,
     }
@@ -767,7 +833,10 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     try:
         assert_public_url(body.url, context="/ingest/url")
     except SSRFError as exc:
-        raise HTTPException(status_code=400, detail=f"URL blocked for security reasons: {exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL blocked for security reasons: {exc}",
+        ) from exc
 
     try:
         if body.source_type == "web":
@@ -783,7 +852,9 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
                 metadata["title"] = title_match.group(1) if title_match else body.url
 
         elif body.source_type == "github":
-            raw_url = body.url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+            raw_url = body.url.replace(
+                "github.com", "raw.githubusercontent.com"
+            ).replace("/blob/", "/")
             import httpx
             headers: dict[str, str] = {}
             import os as _os
@@ -796,7 +867,11 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
             metadata["filename"] = body.url.split("/")[-1]
 
         else:
-            raise HTTPException(400, f"Source type '{body.source_type}' not yet supported for URL ingestion. Supported: web, github")
+            raise HTTPException(
+                400,
+                f"Source type '{body.source_type}' not yet supported for URL ingestion. "
+                "Supported: web, github",
+            )
 
     except HTTPException:
         raise
@@ -811,9 +886,18 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     # Chunk and ingest
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_url
     _raw_url_chunks = _chunk_by_tokens_url(content, max_tokens=512, overlap_tokens=64)
-    chunks = [type("_C", (), {"content": c, "start_char": 0, "end_char": len(c)})() for c in _raw_url_chunks]
+    chunks = [
+        type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
+        for chunk in _raw_url_chunks
+    ]
     if not chunks and content.strip():
-        chunks = [type("_C", (), {"content": content.strip(), "start_char": 0, "end_char": len(content)})()]
+        chunks = [
+            type(
+                "_C",
+                (),
+                {"content": content.strip(), "start_char": 0, "end_char": len(content)},
+            )()
+        ]
 
     embedder = getattr(request.app.state, "embedder", None)
     import uuid as _uuid_mod
@@ -822,7 +906,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     from app.rag.models import Chunk as RagChunk
 
     doc_id = _uuid_mod.uuid4().hex
-    doc_count = 0
+    rag_chunks: list[Chunk] = []
     for idx, chunk in enumerate(chunks):
         if not chunk.content.strip():
             continue
@@ -833,24 +917,25 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
                 embedding = embeddings[0]
             except Exception:
                 pass
-        rag_chunk = RagChunk(
+        rag_chunks.append(RagChunk(
             document_id=doc_id,
             content=chunk.content,
             embedding=embedding,
             chunk_index=idx,
             metadata={**{k: str(v) for k, v in metadata.items()}, "source_type": body.source_type},
-        )
-        try:
-            store.ingest_chunk(rag_chunk, collection_id=body.collection_id, tenant_ctx=tenant_ctx)
-            doc_count += 1
-        except Exception:
-            pass
+        ))
+    await _persist_chunks_or_http(
+        store,
+        rag_chunks,
+        collection_id=body.collection_id,
+        tenant_ctx=tenant_ctx,
+    )
 
     return {
         "collection_id": body.collection_id,
         "source_url": body.url,
         "source_type": body.source_type,
-        "chunks_ingested": doc_count,
+        "chunks_ingested": len(rag_chunks),
         "total_chars": len(content),
     }
 
@@ -861,14 +946,14 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
 
 async def _ingest_chunks_from_source(
     store: KnowledgeStore,
-    chunks: list[dict],
+    chunks: list[dict[str, Any]],
     collection_id: str,
     tenant_ctx: Any,
     embedder: Any,
 ) -> int:
     """Embed and ingest a list of chunk dicts returned by an ingestor."""
     from app.providers.base import embed_texts
-    ingested = 0
+    rag_chunks: list[Chunk] = []
     for chunk_data in chunks:
         content = chunk_data.get("content", "")
         if not content.strip():
@@ -880,11 +965,11 @@ async def _ingest_chunks_from_source(
                 embedding = embeddings[0]
             except Exception:
                 pass
-        rag_chunk = Chunk(
+        rag_chunks.append(Chunk(
             document_id=_uuid.uuid4().hex,
             content=content,
             embedding=embedding,
-            chunk_index=ingested,
+            chunk_index=len(rag_chunks),
             metadata={
                 k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()
             } | {
@@ -893,13 +978,14 @@ async def _ingest_chunks_from_source(
                 "source_doc_id": chunk_data.get("source_doc_id", ""),
                 "page_number": str(chunk_data.get("page_number") or ""),
             },
-        )
-        try:
-            store.ingest_chunk(rag_chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
-            ingested += 1
-        except Exception:
-            pass
-    return ingested
+        ))
+    await _persist_chunks_or_http(
+        store,
+        rag_chunks,
+        collection_id=collection_id,
+        tenant_ctx=tenant_ctx,
+    )
+    return len(rag_chunks)
 
 
 @router.post("/ingest/pdf", status_code=201)
@@ -1070,7 +1156,7 @@ async def federated_search_endpoint(
     body: dict[str, Any],
 ) -> dict[str, Any]:
     """Search across multiple knowledge collections with score normalization."""
-    tenant_ctx: TenantContext = _require_tenant(request)
+    _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
     if embedder is None:
@@ -1085,9 +1171,15 @@ async def federated_search_endpoint(
     top_k = max(1, min(100, top_k))
 
     if not query:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="query is required",
+        )
     if not collection_ids:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="collection_ids is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="collection_ids is required",
+        )
 
     from app.knowledge.federated_search import federated_search
     results = await federated_search(
@@ -1124,7 +1216,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = _embedder(request)
+    embedder = getattr(request.app.state, "embedder", None)
     provider = getattr(request.app.state, "llm_provider", None)
 
     if not body.question.strip():
@@ -1152,10 +1244,10 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     # Embed query once if embedder is available
     if embedder is not None:
         try:
-            from app.providers.base import embed_texts  # noqa: PLC0415
+            from app.providers.base import embed_texts
             vecs = await embed_texts([body.question], provider=embedder)
             query_embedding = vecs[0]
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     for cid in collection_ids[:10]:  # cap at 10 collections
@@ -1178,7 +1270,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                     "source_doc_id": getattr(h, "source_doc_id", ""),
                     "page_number": getattr(h, "page_number", None),
                 })
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # Sort by score, deduplicate
@@ -1231,7 +1323,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             "chunks_retrieved": len(used_chunks),
         }
 
-    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    from app.providers.base import CompletionRequest, Message
     system_prompt = (
         "You are a helpful assistant. Answer the user's question using ONLY "
         "the provided context excerpts. If the context doesn't contain enough "
@@ -1245,11 +1337,12 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                     Message(role="system", content=system_prompt),
                     Message(role="user", content=body.question),
                 ],
+                model="",
                 max_tokens=1200,
             )
         )
         answer = resp.content.strip()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         answer = f"LLM answer generation failed: {e}. See citations for relevant content."
 
     return {
@@ -1355,7 +1448,7 @@ async def ingest_from_rpa_url(
     # Use module-level flag and import playwright inside if available
     _playwright_ok = _PLAYWRIGHT_AVAILABLE
     if _playwright_ok:
-        from playwright.async_api import async_playwright as _async_playwright  # noqa: PLC0415
+        from playwright.async_api import async_playwright as _async_playwright
 
     total_chunks = 0
     results: list[dict[str, Any]] = []
@@ -1406,7 +1499,7 @@ async def ingest_from_rpa_url(
 
                     await _browser.close()
                 playwright_used = True
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 import httpx as _httpx
                 try:
                     async with _httpx.AsyncClient(timeout=30.0) as _client:
@@ -1415,7 +1508,7 @@ async def ingest_from_rpa_url(
                         raw = _resp.text
                         content = _re.sub(r"<[^>]+>", " ", raw)
                         content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
-                except Exception:  # noqa: BLE001
+                except Exception:
                     results.append({
                         "url": url, "success": False, "error": str(exc),
                         "chunks_ingested": 0, "playwright_used": False,
@@ -1430,7 +1523,7 @@ async def ingest_from_rpa_url(
                     raw = _resp.text
                     content = _re.sub(r"<[^>]+>", " ", raw)
                     content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 results.append({
                     "url": url, "success": False, "error": str(exc),
                     "chunks_ingested": 0, "playwright_used": False,
@@ -1444,7 +1537,7 @@ async def ingest_from_rpa_url(
             })
             continue
 
-        from app.knowledge.chunker_v2 import chunk_by_tokens  # noqa: PLC0415
+        from app.knowledge.chunker_v2 import chunk_by_tokens
         raw_chunks = chunk_by_tokens(content, max_tokens=512, overlap_tokens=64)
         if not raw_chunks:
             raw_chunks = [content.strip()]
@@ -1524,29 +1617,19 @@ async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
         return {"collections": [], "total_documents": 0, "total_collections": 0}
 
     try:
-        raw = await knowledge_store.list_collections(tenant_ctx=tenant)
-        collections = raw if isinstance(raw, list) else []
+        collections = knowledge_store.list_collections(tenant_ctx=tenant)
         analytics: list[dict[str, Any]] = []
         for col in collections:
-            col_id = col.get("collection_id") or col.get("id", "")
-            try:
-                stats = await knowledge_store.get_stats(col_id, tenant_ctx=tenant)
-            except Exception:
-                stats = {}
             analytics.append(
                 {
-                    "collection_id": col_id,
-                    "name": col.get("name", ""),
-                    "document_count": stats.get(
-                        "document_count", col.get("document_count", 0)
-                    ),
-                    "total_chunks": stats.get("total_chunks", 0),
-                    "last_indexed": stats.get("last_indexed"),
-                    "avg_relevance_score": stats.get("avg_relevance_score", 0.0),
-                    "cache_hit_rate": stats.get("cache_hit_rate", 0.0),
-                    "health_score": min(
-                        100, max(0, int(stats.get("health_score", 75)))
-                    ),
+                    "collection_id": col.collection_id,
+                    "name": col.name,
+                    "document_count": col.document_count,
+                    "total_chunks": 0,
+                    "last_indexed": None,
+                    "avg_relevance_score": 0.0,
+                    "cache_hit_rate": 0.0,
+                    "health_score": 75,
                 }
             )
 
@@ -1623,7 +1706,7 @@ async def list_documents(
     limit: int = Query(default=20, le=100),
     offset: int = Query(default=0),
     search: str | None = Query(default=None),
-) -> dict:
+) -> dict[str, Any]:
     """List documents in a knowledge collection with pagination."""
     tenant = _require_tenant(request)
     knowledge_store = getattr(request.app.state, "knowledge_store", None)
@@ -1654,50 +1737,52 @@ async def list_documents(
 
             from app.db.rls import sqlalchemy_rls_context
 
-            async with db() as session:
-                async with sqlalchemy_rls_context(session, tenant.tenant_id):
-                    q = """
-                        SELECT id, title, source, source_type, chunk_count, created_at,
-                               LEFT(content, 200) as preview
-                        FROM knowledge_documents
-                        WHERE collection_id = :cid AND tenant_id = :tid
-                    """
-                    params: dict = {
-                        "cid": collection_id,
-                        "tid": tenant.tenant_id,
-                    }
-                    if search:
-                        q += " AND (title ILIKE :search OR content ILIKE :search)"
-                        params["search"] = f"%{search}%"
-                    q += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-                    params["limit"] = limit
-                    params["offset"] = offset
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant.tenant_id),
+            ):
+                q = """
+                    SELECT id, title, source, source_type, chunk_count, created_at,
+                           LEFT(content, 200) as preview
+                    FROM knowledge_documents
+                    WHERE collection_id = :cid AND tenant_id = :tid
+                """
+                params: dict[str, Any] = {
+                    "cid": collection_id,
+                    "tid": tenant.tenant_id,
+                }
+                if search:
+                    q += " AND (title ILIKE :search OR content ILIKE :search)"
+                    params["search"] = f"%{search}%"
+                q += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+                params["limit"] = limit
+                params["offset"] = offset
 
-                    rows = (await session.execute(_t(q), params)).fetchall()
-                    count_q = (
-                        "SELECT COUNT(*) FROM knowledge_documents "
-                        "WHERE collection_id = :cid AND tenant_id = :tid"
+                rows = (await session.execute(_t(q), params)).fetchall()
+                count_q = (
+                    "SELECT COUNT(*) FROM knowledge_documents "
+                    "WHERE collection_id = :cid AND tenant_id = :tid"
+                )
+                total = (
+                    await session.execute(
+                        _t(count_q),
+                        {"cid": collection_id, "tid": tenant.tenant_id},
                     )
-                    total = (
-                        await session.execute(
-                            _t(count_q),
-                            {"cid": collection_id, "tid": tenant.tenant_id},
-                        )
-                    ).scalar() or 0
+                ).scalar() or 0
 
-                    documents = [
-                        {
-                            "id": str(r[0]),
-                            "title": r[1],
-                            "source": r[2],
-                            "source_type": r[3],
-                            "chunk_count": r[4] or 0,
-                            "created_at": r[5].isoformat() if r[5] else None,
-                            "preview": r[6],
-                        }
-                        for r in rows
-                    ]
-                    return {"documents": documents, "total": int(total)}
+                documents = [
+                    {
+                        "id": str(r[0]),
+                        "title": r[1],
+                        "source": r[2],
+                        "source_type": r[3],
+                        "chunk_count": r[4] or 0,
+                        "created_at": r[5].isoformat() if r[5] else None,
+                        "preview": r[6],
+                    }
+                    for r in rows
+                ]
+                return {"documents": documents, "total": int(total)}
     except Exception as exc:
         return {"documents": [], "total": 0, "error": str(exc)}
 
@@ -1709,7 +1794,7 @@ async def delete_document(
     collection_id: str,
     document_id: str,
     request: Request,
-) -> dict:
+) -> dict[str, Any]:
     """Delete a document from a knowledge collection."""
     tenant = _require_tenant(request)
     knowledge_store = getattr(request.app.state, "knowledge_store", None)
@@ -1718,8 +1803,8 @@ async def delete_document(
         raise HTTPException(status_code=503, detail="Knowledge store not available")
 
     try:
-        if hasattr(knowledge_store, "delete_document"):
-            count = knowledge_store.delete_document(
+        if hasattr(knowledge_store, "delete_document_async"):
+            count = await knowledge_store.delete_document_async(
                 document_id=document_id,
                 collection_id=collection_id,
                 tenant_ctx=tenant,
@@ -1737,7 +1822,7 @@ async def reingest_document(
     collection_id: str,
     document_id: str,
     request: Request,
-) -> dict:
+) -> dict[str, Any]:
     """Re-ingest a document (re-fetch source URL, re-chunk, re-embed)."""
     tenant = _require_tenant(request)
     knowledge_store = getattr(request.app.state, "knowledge_store", None)
@@ -1763,17 +1848,19 @@ async def reingest_document(
             from sqlalchemy import text as _t
 
             from app.db.rls import sqlalchemy_rls_context
-            async with db() as session:
-                async with sqlalchemy_rls_context(session, tenant.tenant_id):
-                    await session.execute(
-                        _t(
-                            "UPDATE knowledge_documents SET status = 'pending_reingest',"
-                            " updated_at = NOW() WHERE id = :id AND collection_id = :cid"
-                            " AND tenant_id = :tid"
-                        ),
-                        {"id": document_id, "cid": collection_id, "tid": tenant.tenant_id},
-                    )
-                    await session.commit()
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant.tenant_id),
+            ):
+                await session.execute(
+                    _t(
+                        "UPDATE knowledge_documents SET status = 'pending_reingest',"
+                        " updated_at = NOW() WHERE id = :id AND collection_id = :cid"
+                        " AND tenant_id = :tid"
+                    ),
+                    {"id": document_id, "cid": collection_id, "tid": tenant.tenant_id},
+                )
+                await session.commit()
             return {"status": "queued", "document_id": document_id, "message": "Re-ingest queued"}
 
         return {
@@ -1790,7 +1877,7 @@ async def reingest_document(
 async def sync_collection(
     collection_id: str,
     request: Request,
-) -> dict:
+) -> dict[str, Any]:
     """Sync all documents in a collection from their source URLs."""
     tenant = _require_tenant(request)
     knowledge_store = getattr(request.app.state, "knowledge_store", None)

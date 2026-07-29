@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.providers.fake import FakeProvider
 
 
@@ -41,8 +39,9 @@ class TestAdaptiveRAGPattern:
         assert AdaptiveRAGPattern().is_compatible(None) is True
 
     async def test_execute_returns_list(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
         from app.rag.agentic.patterns.adaptive import AdaptiveRAGPattern
-        from unittest.mock import patch, AsyncMock
         p = AdaptiveRAGPattern()
         with patch("app.rag.agentic.patterns.adaptive.retrieve", new=AsyncMock(return_value=[])):
             result = await p.execute(
@@ -55,8 +54,9 @@ class TestAdaptiveRAGPattern:
         assert isinstance(result, list)
 
     async def test_execute_with_force_strategy(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
         from app.rag.agentic.patterns.adaptive import AdaptiveRAGPattern
-        from unittest.mock import patch, AsyncMock
         p = AdaptiveRAGPattern()
         with patch("app.rag.agentic.patterns.adaptive.retrieve", new=AsyncMock(return_value=[])):
             result = await p.execute(
@@ -137,8 +137,8 @@ class TestColBERTPattern:
         assert p._alpha == 0.6
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.colbert import ColBERTPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.colbert import ColBERTPattern
         assert ColBERTPattern().state == RAGPatternState.IMPLEMENTED
 
     def test_rerank_empty_returns_empty(self) -> None:
@@ -194,8 +194,8 @@ class TestCorrectiveRAGPattern:
         assert p.pattern_id == "corrective_rag"
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.corrective import CorrectiveRAGPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.corrective import CorrectiveRAGPattern
         assert CorrectiveRAGPattern().state == RAGPatternState.IMPLEMENTED
 
     async def test_execute_delegates_to_retriever_tool(self) -> None:
@@ -228,8 +228,8 @@ class TestFLAREPattern:
         assert p._max_iter == 3
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.flare import FLAREPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.flare import FLAREPattern
         assert FLAREPattern().state == RAGPatternState.IMPLEMENTED
 
     async def test_execute_no_uncertainty_returns_initial(self) -> None:
@@ -281,8 +281,8 @@ class TestFusionRAGPattern:
         assert p.pattern_id == "fusion_rag"
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.fusion import FusionRAGPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.fusion import FusionRAGPattern
         assert FusionRAGPattern().state == RAGPatternState.IMPLEMENTED
 
     def test_is_compatible_complex(self) -> None:
@@ -298,8 +298,9 @@ class TestFusionRAGPattern:
         assert FusionRAGPattern().is_compatible(props) is True
 
     async def test_execute_returns_list(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
         from app.rag.agentic.patterns.fusion import FusionRAGPattern
-        from unittest.mock import patch, AsyncMock
         p = FusionRAGPattern()
         with patch("app.rag.engine.retrieve_fusion", new=AsyncMock(return_value=[])):
             result = await p.execute(
@@ -323,8 +324,8 @@ class TestRAPTORPattern:
         assert p._cluster_size == 4
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.raptor import RAPTORPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.raptor import RAPTORPattern
         assert RAPTORPattern().state == RAGPatternState.IMPLEMENTED
 
     async def test_execute_empty_chunks_returns_empty(self) -> None:
@@ -368,8 +369,8 @@ class TestSelfRAGPattern:
         assert p._threshold == 0.6
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.self_rag import SelfRAGPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.self_rag import SelfRAGPattern
         assert SelfRAGPattern().state == RAGPatternState.IMPLEMENTED
 
     async def test_execute_returns_string(self) -> None:
@@ -430,8 +431,8 @@ class TestSpeculativeRAGPattern:
         assert p._n == 2
 
     def test_state_is_implemented(self) -> None:
-        from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
         from app.rag.agentic.patterns.base import RAGPatternState
+        from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
         assert SpeculativeRAGPattern().state == RAGPatternState.IMPLEMENTED
 
     async def test_execute_generates_candidates(self) -> None:
@@ -476,15 +477,32 @@ class TestStrategyRegistry:
         registry = build_default_registry()
         assert registry is not None
 
-    def test_new_patterns_are_available(self) -> None:
+    def test_new_patterns_follow_runtime_availability_contract(self) -> None:
         from app.orchestration.strategy_registry import build_default_registry
+        from app.rag.contracts import RAGStrategy
+
         registry = build_default_registry()
-        patterns = ["self_consistency", "tree_of_thoughts", "peer_review",
-                    "fusion_rag", "flare", "raptor", "self_rag",
-                    "speculative_rag", "agentic_chunking", "colbert_late_interaction",
-                    "corrective_rag", "adaptive_rag", "episodic_memory", "procedural_memory"]
-        for pattern_id in patterns:
+        for pattern_id in [
+            "self_consistency",
+            "tree_of_thoughts",
+            "peer_review",
+            "episodic_memory",
+            "procedural_memory",
+        ]:
             assert registry.is_available(pattern_id) is True, f"{pattern_id} not available"
+        for strategy in [
+            RAGStrategy.FUSION,
+            RAGStrategy.FLARE,
+            RAGStrategy.RAPTOR,
+            RAGStrategy.SELF_RAG,
+            RAGStrategy.SPECULATIVE,
+            RAGStrategy.AGENTIC_CHUNKING,
+            RAGStrategy.COLBERT,
+            RAGStrategy.CORRECTIVE,
+            RAGStrategy.ADAPTIVE,
+        ]:
+            assert registry.get(strategy.value) is not None
+            assert not registry.is_available(strategy.value)
 
     def test_planned_patterns_not_available(self) -> None:
         from app.orchestration.strategy_registry import build_default_registry
@@ -504,13 +522,13 @@ class TestStrategyRegistry:
         assert registry.get("nonexistent_pattern") is None
 
     def test_list_by_category(self) -> None:
-        from app.orchestration.strategy_registry import build_default_registry, StrategyCategory
+        from app.orchestration.strategy_registry import StrategyCategory, build_default_registry
         registry = build_default_registry()
         rag_patterns = registry.list_by_category(StrategyCategory.RAG)
         assert len(rag_patterns) > 5
 
     def test_filter_by_state_implemented(self) -> None:
-        from app.orchestration.strategy_registry import build_default_registry, StrategyState
+        from app.orchestration.strategy_registry import StrategyState, build_default_registry
         registry = build_default_registry()
         impl = registry.filter(state=StrategyState.IMPLEMENTED)
         assert len(impl) > 10
@@ -584,7 +602,7 @@ class TestBM25Retriever:
 
 class TestSemanticCache:
     def _make_ctx(self, tenant_id: str = "t1"):  # type: ignore[return]
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.tenancy.context import PlanTier, TenantContext
         return TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="test-key")
 
     def test_init(self) -> None:

@@ -81,7 +81,13 @@ def upgrade() -> None:
         op.execute(
             f"CREATE POLICY {table}_isolation ON {table} "
             "USING (tenant_id = current_setting('app.tenant_id', TRUE)) "
-            "WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE))"
+            "WITH CHECK ("
+            "tenant_id = current_setting('app.tenant_id', TRUE) AND "
+            "EXISTS (SELECT 1 FROM knowledge_collections AS collection "
+            f"WHERE collection.id = {table}.collection_id "
+            f"AND collection.tenant_id = {table}.tenant_id "
+            "AND collection.is_active IS TRUE)"
+            ")"
         )
 
     table = "knowledge_chunks_3072"

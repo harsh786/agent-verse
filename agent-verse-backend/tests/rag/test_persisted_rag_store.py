@@ -16,8 +16,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from testcontainers.postgres import PostgresContainer
+from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.db.rls import sqlalchemy_rls_context
 from app.providers.base import EmbedRequest, EmbedResponse
@@ -187,7 +188,7 @@ async def _ingest(
 ) -> tuple[str, str]:
     collection_id = collection_id or uuid.uuid4().hex
     store = KnowledgeStore(database.runtime_factory)
-    store.create_collection(
+    await store.create_collection_async(
         KnowledgeCollection(name=f"collection-{collection_id}", collection_id=collection_id),
         tenant_ctx=tenant,
     )
@@ -506,3 +507,189 @@ async def test_concurrent_gateway_operations_use_independent_restricted_sessions
 
     assert len({pid for pid, _, _ in observations}) == 3
     assert observations == [(pid, tenant.tenant_id, 1) for pid, _, _ in observations]
+
+
+async def test_atomic_batch_failure_rolls_back_every_chunk(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"atomic-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    chunks = [
+        Chunk("document-1", "valid", _embedding(768), 0),
+        Chunk("document-1", "invalid", [float("nan")] * 768, 1),
+    ]
+
+    with pytest.raises(DBAPIError):
+        await store.ingest_chunks_async(
+            chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant,
+        )
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        chunk_count = (
+            await session.execute(
+                text("SELECT count(*) FROM knowledge_chunks_768 WHERE collection_id = :id"),
+                {"id": collection_id},
+            )
+        ).scalar_one()
+        collection_counts = (
+            await session.execute(
+                text(
+                    "SELECT document_count, chunk_count FROM knowledge_collections "
+                    "WHERE id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).one()
+
+    assert chunk_count == 0
+    assert collection_counts == (0, 0)
+    assert store._data[(tenant.tenant_id, collection_id)].chunks == []
+
+
+@pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)
+async def test_delete_and_parent_expansion_route_to_collection_dimension(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+    dimension: int,
+) -> None:
+    tenant, _ = tenants
+    collection_id, chunk_id = await _ingest(
+        postgres_database,
+        tenant,
+        dimension=dimension,
+    )
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+
+    expanded = await restarted.expand_to_parents([chunk_id], collection_id, tenant)
+    deleted = await restarted.delete_document_async(
+        f"document-{collection_id}",
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    )
+
+    assert [item.chunk_id for item in expanded] == [chunk_id]
+    assert deleted == 1
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        remaining = (
+            await session.execute(
+                text(
+                    f"SELECT count(*) FROM knowledge_chunks_{dimension} "
+                    "WHERE collection_id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).scalar_one()
+    assert remaining == 0
+
+
+async def test_restricted_role_enforces_rls_on_every_chunk_table(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    collections: dict[int, str] = {}
+    for dimension in SUPPORTED_EMBEDDING_DIMENSIONS:
+        collection_id, _ = await _ingest(
+            postgres_database,
+            tenant_a,
+            dimension=dimension,
+        )
+        collections[dimension] = collection_id
+
+    async with postgres_database.runtime_factory() as session, session.begin():
+        role = (
+            await session.execute(
+                text(
+                    "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            )
+        ).one()
+        table_security = (
+            await session.execute(
+                text(
+                    "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+                    "WHERE relname = ANY(:tables) ORDER BY relname"
+                ),
+                {
+                    "tables": [
+                        "knowledge_collections",
+                        *(f"knowledge_chunks_{d}" for d in SUPPORTED_EMBEDDING_DIMENSIONS),
+                    ]
+                },
+            )
+        ).all()
+        policies = (
+            await session.execute(
+                text(
+                    "SELECT tablename, with_check FROM pg_policies "
+                    "WHERE tablename = ANY(:tables)"
+                ),
+                {"tables": [f"knowledge_chunks_{d}" for d in SUPPORTED_EMBEDDING_DIMENSIONS]},
+            )
+        ).all()
+
+    assert role == (False, False)
+    assert len(table_security) == 5
+    assert all(row[1] and row[2] for row in table_security)
+    assert {row[0] for row in policies} == {
+        f"knowledge_chunks_{dimension}" for dimension in SUPPORTED_EMBEDDING_DIMENSIONS
+    }
+    assert all("knowledge_collections" in str(row[1]) for row in policies)
+
+    for dimension, collection_id in collections.items():
+        table = f"knowledge_chunks_{dimension}"
+        async with (
+            postgres_database.runtime_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_b.tenant_id),
+        ):
+            assert (
+                await session.execute(
+                    text(f"SELECT count(*) FROM {table} WHERE collection_id = :id"),
+                    {"id": collection_id},
+                )
+            ).scalar_one() == 0
+
+        with pytest.raises(DBAPIError):
+            async with (
+                postgres_database.runtime_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_b.tenant_id),
+            ):
+                await session.execute(
+                    text(f"""
+                        INSERT INTO {table}
+                            (id, tenant_id, collection_id, document_id, chunk_index,
+                             content, content_hash, embedding)
+                        VALUES
+                            (:id, :tenant_id, :collection_id, :document_id, 0,
+                             'foreign', :hash, CAST(:embedding AS vector))
+                    """),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tenant_id": tenant_b.tenant_id,
+                        "collection_id": collection_id,
+                        "document_id": uuid.uuid4().hex,
+                        "hash": uuid.uuid4().hex,
+                        "embedding": str(_embedding(dimension)),
+                    },
+                )

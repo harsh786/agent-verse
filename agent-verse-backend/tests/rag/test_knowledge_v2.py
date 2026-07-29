@@ -12,13 +12,11 @@ Covers all 8 required fixes:
 """
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
-
 
 # ---------------------------------------------------------------------------
 # Fix 1: Explicit tenant_id in all SQL queries
@@ -61,21 +59,22 @@ async def test_tenant_id_filter_explicit_in_all_queries() -> None:
         async def __aexit__(self, *_: object) -> None:
             pass
 
+    mock_session.begin = MagicMock(return_value=_FakeRLS())
+
     import app.db.rls as rls_mod
     original = getattr(rls_mod, "sqlalchemy_rls_context", None)
     rls_mod.sqlalchemy_rls_context = lambda *a, **kw: _FakeRLS()  # type: ignore[assignment]
 
     try:
         store = KnowledgeStore(db_session_factory=lambda: mock_session)
-        await store.hybrid_search_db(
+        results = await store.hybrid_search_db(
             query="test query",
             query_embedding=[0.1] * 768,
             collection_id=str(uuid4()),
             tenant_ctx=tenant_ctx,
             top_k=5,
         )
-    except Exception:
-        pass  # We only care about query structure, not result processing
+        assert results == []
     finally:
         if original is not None:
             rls_mod.sqlalchemy_rls_context = original
@@ -114,7 +113,7 @@ def test_embed_batch_defined_on_all_providers() -> None:
             f"{cls.__name__} is missing embed_batch(). "
             "Add it to support efficient batch embedding."
         )
-        assert callable(getattr(cls, "embed_batch")), (
+        assert callable(cls.embed_batch), (
             f"{cls.__name__}.embed_batch must be callable."
         )
 
@@ -440,32 +439,22 @@ def test_secret_str_get_secret_value_works() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fix 7: sync_from_db() uses streaming cursor — no hard cap
+# Fix 7: sync_from_db() hydrates compatibility metadata only
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_streaming_cursor_no_hard_cap() -> None:
-    """sync_from_db() must stream all chunks without a LIMIT 100000 (Fix 7)."""
+async def test_sync_from_db_does_not_hydrate_legacy_documents() -> None:
+    """Production reads must never depend on legacy document hydration."""
     import inspect
 
     from app.rag.store import KnowledgeStore
 
     source = inspect.getsource(KnowledgeStore.sync_from_db)
 
-    # The old hard cap must be gone
-    assert "100_000" not in source, (
-        "sync_from_db() still contains LIMIT 100_000 hard cap. "
-        "Remove it and replace with streaming cursor batches."
-    )
-    assert "100000" not in source, (
-        "sync_from_db() still contains LIMIT 100000 hard cap."
-    )
-
-    # Streaming indicators must be present
-    assert "offset" in source.lower() or "batch" in source.lower(), (
-        "sync_from_db() must use offset-based streaming pagination."
-    )
+    assert "documents" not in source
+    assert "chunks.append" not in source
+    assert "collection metadata" in source.lower()
 
 
 @pytest.mark.asyncio
