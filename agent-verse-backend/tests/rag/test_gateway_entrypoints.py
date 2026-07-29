@@ -74,6 +74,11 @@ class RecordingProvider:
 
     async def complete(self, request: Any) -> CompletionResponse:
         self.requests.append(request)
+        if request.response_schema is not None:
+            return CompletionResponse(
+                content='{"supported": true, "reason": "entailed"}',
+                model=request.model,
+            )
         return CompletionResponse(content="Tenant answer [1]", model=request.model)
 
 
@@ -498,10 +503,13 @@ async def test_evidence_verifier_rejects_contradictions_and_invalid_references(
 
 
 @pytest.mark.asyncio
-async def test_evidence_verifier_accepts_valid_paraphrase_without_provider() -> None:
+async def test_evidence_verifier_accepts_valid_paraphrase_with_provider() -> None:
     from app.rag_platform.retriever import MinimalCitationVerifier
 
-    result = await MinimalCitationVerifier().verify(
+    result = await MinimalCitationVerifier(
+        provider=RecordingProvider(),
+        model="entailment-model",
+    ).verify(
         "The policy allows exports [1].",
         [
             RAGCitation(
@@ -576,6 +584,144 @@ async def test_entailment_provider_failure_is_ungrounded_and_sanitized() -> None
     assert not result.grounded
     assert result.reason == "verifier_failure"
     assert "secret" not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        (
+            "Retention is 30 days and exports are permitted [1].",
+            "Retention is 30 days.",
+        ),
+        ("The policy does not prohibit exports [1].", "The policy prohibits exports."),
+        ("Alice approved Bob [1].", "Bob approved Alice."),
+        (
+            "Plan A is 10 days and Plan B is 20 days [1].",
+            "Plan A is 20 days and Plan B is 10 days.",
+        ),
+    ],
+)
+async def test_deterministic_verifier_rejects_overlap_only_adversarial_claims(
+    claim: str,
+    evidence: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        claim,
+        [
+            RAGCitation(
+                citation_id="citation-1",
+                chunk_id="chunk-1",
+                content=evidence,
+                score=0.9,
+                source="guide.pdf",
+            )
+        ],
+    )
+
+    assert not result.grounded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"supported": true, "reason": "not_entailed"}',
+        '{"supported": true, "reason": "contradicted"}',
+        '{"supported": true, "reason": "unknown"}',
+        'prefix {"supported": true, "reason": "entailed"}',
+    ],
+)
+async def test_structured_entailment_rejects_inconsistent_or_malformed_json(
+    payload: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(content=payload, model="entailment-model")
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        "The archival window spans one quarter [1].",
+        [
+            RAGCitation(
+                citation_id="citation-1",
+                chunk_id="chunk-1",
+                content="Records remain archived for three months.",
+                score=0.9,
+                source="guide.pdf",
+            )
+        ],
+    )
+
+    assert not result.grounded
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_status"),
+    [
+        ("The moon is cheese [1].", 422),
+        ("Exports are permitted [1].", 422),
+        ("Evidence from collection-1 [1].", 200),
+    ],
+)
+def test_knowledge_chat_verifies_synthesized_answer(
+    answer: str,
+    expected_status: int,
+) -> None:
+    class AnswerProvider(RecordingProvider):
+        async def complete(self, request: Any) -> CompletionResponse:
+            self.requests.append(request)
+            if request.response_schema is not None:
+                return CompletionResponse(
+                    content='{"supported": false, "reason": "not_entailed"}',
+                    model=request.model,
+                )
+            return CompletionResponse(content=answer, model=request.model)
+
+    client = TestClient(
+        _app(RecordingGateway(provider=AnswerProvider())),
+        raise_server_exceptions=False,
+    )
+    response = client.post(
+        "/knowledge/chat",
+        json={"question": "policy", "collection_ids": ["collection-1"]},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        assert response.json()["grounded"] is True
+    else:
+        assert response.json()["detail"]["code"] == "answer_ungrounded"
+
+
+def test_knowledge_chat_verifier_provider_failure_is_non_2xx() -> None:
+    class BrokenVerificationProvider(RecordingProvider):
+        async def complete(self, request: Any) -> CompletionResponse:
+            if request.response_schema is not None:
+                raise RuntimeError("private verifier secret")
+            return CompletionResponse(
+                content="An unrelated archival statement [1].",
+                model=request.model,
+            )
+
+    response = TestClient(
+        _app(RecordingGateway(provider=BrokenVerificationProvider())),
+        raise_server_exceptions=False,
+    ).post(
+        "/knowledge/chat",
+        json={"question": "policy", "collection_ids": ["collection-1"]},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert "secret" not in response.text
 
 
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
