@@ -546,6 +546,34 @@ async def run_workflow(
                 retrieval_gateway=getattr(request.app.state, "retrieval_gateway", None),
             )
             result = await executor.execute(plan, tenant_ctx=tenant)
+            if result.get("status") == "failed":
+                failed_step_id = str(result.get("failed_step", ""))
+                failed_step = next(
+                    (step for step in plan.steps if step.id == failed_step_id),
+                    None,
+                )
+                if failed_step is not None and failed_step.tool == "rag":
+                    requested_strategy = str(
+                        failed_step.config.get("requested_strategy_id", "")
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "code": "workflow_retrieval_failed",
+                            "reason": "Retrieval service is unavailable",
+                            "requested_strategy_id": requested_strategy,
+                            "strategy_trace": [
+                                {
+                                    "strategy": failed_step.config.get(
+                                        "strategy",
+                                        requested_strategy,
+                                    ),
+                                    "action": "workflow_retrieval",
+                                    "status": "failed",
+                                }
+                            ],
+                        },
+                    )
             return {
                 "run_id": run_id,
                 "status": result.get("status", "complete"),
@@ -560,6 +588,8 @@ async def run_workflow(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+        except HTTPException:
+            raise
         except Exception:
             pass  # Fall through to GoalService
 

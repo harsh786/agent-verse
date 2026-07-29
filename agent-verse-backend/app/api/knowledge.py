@@ -1543,6 +1543,11 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                 metadata={
                     **dict(result.get("metadata", {})),
                     "collection_id": str(result["collection_id"]),
+                    "collection_ids": list(result.get("collection_ids", [])),
+                    "sources": list(result.get("sources", [])),
+                    "citation_refs": list(result.get("citation_refs", [])),
+                    "retrieval_legs": list(result.get("retrieval_legs", [])),
+                    "strategy_trace": list(result.get("strategy_trace", [])),
                 },
             )
             for result in results
@@ -1565,8 +1570,13 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             "citation_id": citation.citation_id,
             "chunk_id": citation.chunk_id,
             "collection_id": citation.metadata.get("collection_id", ""),
+            "collection_ids": citation.metadata.get("collection_ids", []),
             "score": citation.score,
             "source": citation.source,
+            "sources": citation.metadata.get("sources", []),
+            "citation_refs": citation.metadata.get("citation_refs", []),
+            "retrieval_legs": citation.metadata.get("retrieval_legs", []),
+            "strategy_trace": citation.metadata.get("strategy_trace", []),
             "source_url": citation.metadata.get("source_url", ""),
             "page_number": citation.metadata.get("page_number"),
             "excerpt": citation.content[:300],

@@ -126,6 +126,36 @@ def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
     assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
 
 
+def test_retrieval_capable_goal_never_uses_legacy_loop_on_graph_failure(
+    monkeypatch: Any,
+) -> None:
+    """Configured agents fail closed when canonical graph assembly fails."""
+    import uuid
+
+    import app.agent.graph as _graph_mod
+    from app.scaling import tasks
+
+    class BrokenGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            raise RuntimeError("private graph assembly secret")
+
+    monkeypatch.setattr(_graph_mod, "AgentGraph", BrokenGraph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+
+    result = tasks.run_goal.run(
+        f"goal-required-rag-{uuid.uuid4().hex}",
+        "tenant-1",
+        "knowledge-enabled goal",
+        "normal",
+        False,
+        agent_id="configured-agent",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "agentgraph_assembly_failed"
+    assert "secret" not in str(result)
+
+
 def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> None:
     """AgentGraph should be constructed with result_processor, dedup_cache, rollback_engine."""
     import app.agent.graph as _graph_mod

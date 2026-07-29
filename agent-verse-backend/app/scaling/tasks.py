@@ -1046,6 +1046,7 @@ def run_goal(
                     search_capability=None,
                     policy_services=(_policy, _cost, _hitl),
                     collection_authorizer=collection_authorizer,
+                    # Tasks 5-11 populate this only after adapter certification.
                     strategy_capabilities={},
                 )
             )
@@ -1104,8 +1105,21 @@ def run_goal(
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
         except Exception as _ag_exc:
+            retrieval_required = bool(agent_id or _agent_collection_ids)
+            if retrieval_required:
+                sanitized = RuntimeError("Canonical AgentGraph assembly failed")
+                _run_async(mark_worker_failed(sanitized))
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                return {
+                    "status": "failed",
+                    "goal_id": goal_id,
+                    "reason": "agentgraph_assembly_failed",
+                    "message": "Canonical AgentGraph assembly failed",
+                }
             logger.warning(
-                "AgentGraph unavailable, falling back to AgentLoop: %s", _ag_exc
+                "AgentGraph unavailable for non-RAG development goal; "
+                "using legacy AgentLoop (error_type=%s)",
+                type(_ag_exc).__name__,
             )
 
     if _agent_runner is None:

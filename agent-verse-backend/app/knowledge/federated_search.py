@@ -129,7 +129,8 @@ async def federated_search(
         return [
             {
                 "collection_id": cid,
-                "citation_id": citation.citation_id,
+                "citation_id": f"{cid}:{citation.citation_id}",
+                "original_citation_id": citation.citation_id,
                 "chunk_id": citation.chunk_id,
                 "content": citation.content,
                 "score": citation.score,

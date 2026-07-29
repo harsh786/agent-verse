@@ -1629,6 +1629,7 @@ class AgentGraph:
                     autonomy_mode=self._autonomy_mode,
                 )
                 graph._agent_collection_ids = list(self._agent_collection_ids)
+                graph._event_callback = self._event_callback
                 graph._parent_trace_context = otel_context.get_current()
                 return graph
 
@@ -1642,6 +1643,18 @@ class AgentGraph:
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
+                    child_failures = [
+                        sub_goal
+                        for sub_goal in sub_goals
+                        if sub_goal.status is GoalStatus.FAILED
+                    ]
+                    for sub_goal in sub_goals:
+                        agent_state.provenance.extend(sub_goal.provenance)
+                    agent_state.context["child_retrieval_traces"] = [
+                        trace
+                        for sub_goal in sub_goals
+                        for trace in sub_goal.retrieval_trace
+                    ]
                     # Aggregate sub-goal results as steps so the verifier sees them
                     for sg in sub_goals:
                         step = StepResult(
@@ -1650,6 +1663,22 @@ class AgentGraph:
                             status=StepStatus.COMPLETE if not sg.error else StepStatus.FAILED,
                         )
                         agent_state.steps.append(step)
+                    if child_failures:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = "Nested retrieval failed"
+                        await self._emit(
+                            {
+                                "type": "nested_goal_failed",
+                                "failed_sub_goals": [
+                                    sub_goal.sub_goal_id
+                                    for sub_goal in child_failures
+                                ],
+                                "provenance": agent_state.provenance,
+                                "retrieval_trace": agent_state.context[
+                                    "child_retrieval_traces"
+                                ],
+                            }
+                        )
                     return {"agent_state": agent_state}
             except Exception as exc:
                 # Fall through to normal execution if goal-tree fails

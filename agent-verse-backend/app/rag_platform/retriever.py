@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import inspect
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from app.providers.base import CompletionRequest, Message
-from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.rag.contracts import (
+    RAGCitation,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
 from app.rag.gateway import ResolvedLLM, RetrievalGateway
 from app.tenancy.context import TenantContext
 
@@ -15,11 +22,39 @@ class RAGSynthesisError(RuntimeError):
     """Raised when retrieved evidence cannot be synthesized safely."""
 
 
+@dataclass(frozen=True, slots=True)
+class CitationVerification:
+    grounded: bool
+    unsupported_claims: list[str]
+
+
+class MinimalCitationVerifier:
+    """Fail closed unless an answer references only supplied citation indexes."""
+
+    async def verify(
+        self,
+        answer: str,
+        citations: list[RAGCitation],
+    ) -> CitationVerification:
+        references = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
+        valid = bool(references) and all(1 <= value <= len(citations) for value in references)
+        return CitationVerification(
+            grounded=valid,
+            unsupported_claims=[] if valid else ["Answer lacks valid citation support"],
+        )
+
+
 class RAGRetriever:
     """Retrieve through one gateway, then optionally synthesize its citations."""
 
-    def __init__(self, *, gateway: RetrievalGateway | Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        gateway: RetrievalGateway | Any | None = None,
+        citation_verifier: Any | None = None,
+    ) -> None:
         self._gateway = gateway
+        self._citation_verifier = citation_verifier or MinimalCitationVerifier()
 
     def set_gateway(self, gateway: RetrievalGateway | Any) -> None:
         """Set the injected gateway for application assembly and tests."""
@@ -53,17 +88,53 @@ class RAGRetriever:
             top_k=top_k,
             filters=filters or {},
         )
-        if not synthesize or result.answer or not result.citations:
+        if not synthesize:
             return result
-
-        answer = await self.synthesize(
-            query=query,
-            tenant_ctx=tenant_ctx,
-            strategy=result.resolved_strategy_id,
-            citations=result.citations,
-            max_context_chars=max_context_chars,
+        answer = result.answer
+        if not answer and result.citations:
+            answer = await self.synthesize(
+                query=query,
+                tenant_ctx=tenant_ctx,
+                strategy=result.resolved_strategy_id,
+                citations=result.citations,
+                max_context_chars=max_context_chars,
+            )
+        trace = list(result.strategy_trace)
+        try:
+            verification = await self._citation_verifier.verify(
+                answer,
+                result.citations,
+            )
+            trace.append(
+                RAGStrategyTrace(
+                    strategy=result.resolved_strategy_id,
+                    action="citation_verification",
+                    status="complete",
+                    detail={
+                        "unsupported_claims": list(
+                            verification.unsupported_claims
+                        )
+                    },
+                )
+            )
+            grounded = bool(verification.grounded)
+        except Exception:
+            trace.append(
+                RAGStrategyTrace(
+                    strategy=result.resolved_strategy_id,
+                    action="citation_verification",
+                    status="failed",
+                    detail={"reason": "citation_verifier_unavailable"},
+                )
+            )
+            grounded = False
+        return result.model_copy(
+            update={
+                "answer": answer,
+                "grounded": grounded,
+                "strategy_trace": trace,
+            }
         )
-        return result.model_copy(update={"answer": answer, "grounded": bool(result.citations)})
 
     async def synthesize(
         self,

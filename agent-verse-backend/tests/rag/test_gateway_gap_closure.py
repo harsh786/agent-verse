@@ -29,6 +29,15 @@ from app.tenancy.context import PlanTier, TenantContext
 TENANT = TenantContext("tenant-gap", PlanTier.PROFESSIONAL, "key-gap")
 
 
+def test_production_capability_registry_is_intentionally_fail_closed() -> None:
+    """Task 4 wires entrypoints; Tasks 5-11 later certify concrete adapters."""
+    from app.main import create_app
+
+    gateway = create_app(manage_pools=False).state.retrieval_gateway
+
+    assert gateway.dependencies.strategy_capabilities == {}
+
+
 class RecordingGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[TenantContext, dict[str, Any]]] = []
@@ -408,8 +417,8 @@ async def test_federated_deduplication_merges_all_provenance_deterministically()
     assert merged["collection_ids"] == ["collection-1", "collection-2"]
     assert merged["sources"] == ["source-collection-1", "source-collection-2"]
     assert merged["citation_refs"] == [
-        "citation-collection-1",
-        "citation-collection-2",
+        "collection-1:citation-collection-1",
+        "collection-2:citation-collection-2",
     ]
     assert len(merged["retrieval_legs"]) == 2
     assert len(merged["strategy_trace"]) == 2

@@ -80,10 +80,18 @@ async def execute_sub_goal(
                 tenant_ctx=tenant_ctx,
             )
             sub_goal.status = state.status
-            # Aggregate step outputs as the sub-goal result
-            sub_goal.result = "\n".join(
-                f"[{s.description}]: {s.output}" for s in state.steps
+            sub_goal.provenance = list(state.provenance)
+            sub_goal.retrieval_trace = list(
+                state.context.get("rag_strategy_trace", [])
             )
+            sub_goal.events = list(state.events)
+            if state.status is GoalStatus.FAILED:
+                sub_goal.error = state.error_message or "Child goal failed"
+                sub_goal.result = ""
+            else:
+                sub_goal.result = "\n".join(
+                    f"[{s.description}]: {s.output}" for s in state.steps
+                )
         except Exception as exc:
             sub_goal.status = GoalStatus.FAILED
             sub_goal.error = str(exc)
@@ -92,7 +100,7 @@ async def execute_sub_goal(
 
 async def _synthesize_goal_tree_results(
     original_goal: str,
-    sub_results: list[dict],  # [{"goal": str, "result": str, "success": bool}, ...]
+    sub_results: list[dict[str, Any]],
     provider: Any,
 ) -> str:
     """Synthesize sub-goal results into a coherent final answer using LLM.
@@ -126,7 +134,7 @@ async def _synthesize_goal_tree_results(
             model=model,
             max_tokens=2000,
         ))
-        return resp.content
+        return str(resp.content)
     except Exception as exc:
         _logging.getLogger(__name__).warning("goal_tree_synthesis_failed: %s", exc)
         successful = [r["result"] for r in sub_results if r.get("success")]
@@ -190,12 +198,15 @@ async def execute_goal_tree(
             if sg in remaining:
                 remaining.remove(sg)
 
+    if any(sub_goal.status is GoalStatus.FAILED for sub_goal in results):
+        return results
+
     # LLM synthesis step: merge sub-goal results into one coherent answer
     sub_results = [
         {
             "goal": sg.description,
             "result": sg.result or sg.error or "",
-            "success": not bool(sg.error),
+            "success": sg.status is not GoalStatus.FAILED and not bool(sg.error),
         }
         for sg in results
     ]
