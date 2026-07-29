@@ -10,19 +10,24 @@ Inspired by speculative decoding applied to RAG:
   fast speculation → slow verification → confident answer
 """
 from __future__ import annotations
-import asyncio
+
 import json
-from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 _CANDIDATE_SYSTEM = """Generate a concise, direct answer to this question.
 Be specific and factual."""
 
-_VERIFY_SYSTEM = """Given a question, a candidate answer, and supporting context,
-score how well the context supports the answer.
-Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>}
-Score 0.9+ if context directly confirms the answer. Score below 0.5 if context contradicts or doesn't support."""
+_VERIFY_SYSTEM = (
+    "Given a question, a candidate answer, and supporting context,\n"
+    "score how well the context supports the answer.\n"
+    'Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>}\n'
+    "Score 0.9+ if context directly confirms the answer. Score below 0.5 if context "
+    "contradicts or doesn't support."
+)
 
 
 @dataclass
@@ -95,7 +100,10 @@ class SpeculativeRAGPattern(RAGPattern):
             from app.reliability.circuit_breaker import CircuitBreaker
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
-                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+                self._circuit_breakers[_cb_key] = CircuitBreaker(
+                    failure_threshold=5,
+                    cooldown_seconds=30,
+                )
             cb: Any = self._circuit_breakers[_cb_key]
         except ImportError:
             cb = None
@@ -131,7 +139,10 @@ class SpeculativeRAGPattern(RAGPattern):
         if not candidates:
             try:
                 from app.observability.logging import get_logger
-                get_logger(__name__).warning("speculative_rag_failed", error="no candidates generated")
+                get_logger(__name__).warning(
+                    "speculative_rag_failed",
+                    error="no candidates generated",
+                )
             except Exception:
                 pass
             return ""
@@ -190,7 +201,9 @@ class SpeculativeRAGPattern(RAGPattern):
                 try:
                     d = json.loads(raw)
                     candidate.score = max(0.0, min(1.0, float(d.get("score", 0.3))))
-                    candidate.supported = bool(d.get("supported", candidate.score >= self._min_score))
+                    candidate.supported = bool(
+                        d.get("supported", candidate.score >= self._min_score)
+                    )
                 except Exception:
                     candidate.score = 0.3
             except Exception:

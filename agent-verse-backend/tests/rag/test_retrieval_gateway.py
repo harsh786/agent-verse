@@ -1060,6 +1060,21 @@ def test_create_app_wires_in_memory_retrieval_gateway() -> None:
 
     assert isinstance(app.state.retrieval_gateway, RetrievalGateway)
     assert app.state.retrieval_gateway.dependencies.session_factory is None
+    from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+
+    assert isinstance(
+        app.state.retrieval_gateway.dependencies.search_capability,
+        SafeWebSearchCapability,
+    )
+
+
+def test_create_app_marks_web_unavailable_without_safe_backend() -> None:
+    from app.core.config import Settings
+    from app.main import create_app
+
+    app = create_app(settings=Settings(searxng_url=""), manage_pools=False)
+
+    assert app.state.retrieval_gateway.dependencies.search_capability is None
 
 
 @pytest.mark.asyncio
@@ -1290,6 +1305,12 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
         assert isinstance(
             db_gateway.dependencies.graph_capability,
             TenantScopedGraphCapabilityAdapter,
+        )
+        from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+
+        assert isinstance(
+            db_gateway.dependencies.search_capability,
+            SafeWebSearchCapability,
         )
         assert db_gateway.dependencies.graph_capability is not kg_store
         assert not hasattr(db_gateway.dependencies.graph_capability, "_db")

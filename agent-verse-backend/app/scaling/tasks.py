@@ -999,6 +999,11 @@ def run_goal(
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
 
+            from app.core.config import get_settings
+            from app.rag.agentic.patterns.web_augmented import (
+                build_safe_web_search_capability,
+                parse_allowed_domains,
+            )
             from app.rag.gateway import (
                 KnowledgeStoreCollectionAuthorizer,
                 ResolvedLLM,
@@ -1040,13 +1045,21 @@ def run_goal(
                 if _knowledge_store_worker is not None
                 else SQLCollectionAuthorizer()
             )
+            worker_settings = get_settings()
+            worker_web_search = build_safe_web_search_capability(
+                searxng_url=worker_settings.searxng_url,
+                policy_services=(_policy, _cost, _hitl),
+                allowed_domains=parse_allowed_domains(
+                    worker_settings.web_search_allowed_domains
+                ),
+            )
             _retrieval_gateway_worker = RetrievalGateway(
                 RetrievalDependencies(
                     session_factory=db_factory,
                     embedder=_embedder_for_graph,
                     llm_resolver=_resolve_worker_retrieval_llm,
                     graph_capability=None,
-                    search_capability=None,
+                    search_capability=worker_web_search,
                     policy_services=(_policy, _cost, _hitl),
                     collection_authorizer=collection_authorizer,
                     strategy_capabilities=core_strategy_capabilities(),

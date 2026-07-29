@@ -141,7 +141,8 @@ class Settings(BaseSettings):
     repo_ingest_ca_bundle: str = ""
 
     # --- search ---
-    searxng_url: str = "http://searxng:8081"
+    searxng_url: str = "http://searxng:8080"
+    web_search_allowed_domains: str = ""
 
     # --- SAML 2.0 ---
     saml_enabled: bool = False

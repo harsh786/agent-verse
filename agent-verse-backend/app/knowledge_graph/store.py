@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
 
 _log = logging.getLogger(__name__)
@@ -79,7 +80,13 @@ class KnowledgeGraphStore:
             self._hydrated_tenants.add(tenant_id)  # mark before load to prevent recursion
             try:
                 import asyncio
-                asyncio.ensure_future(self.load_from_db(tenant_id))
+
+                task = asyncio.ensure_future(self.load_from_db(tenant_id))
+                task.add_done_callback(
+                    lambda completed: completed.exception()
+                    if not completed.cancelled()
+                    else None
+                )
             except RuntimeError:
                 pass  # no event loop running (e.g. tests)
         node_ids = self._tenant_nodes.get(tenant_id, set())
@@ -212,7 +219,11 @@ class KnowledgeGraphStore:
             from sqlalchemy import text as _t
 
             now = datetime.now(UTC)
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, node.tenant_id),
+            ):
                 await session.execute(
                     _t(
                         """
@@ -253,7 +264,11 @@ class KnowledgeGraphStore:
             from sqlalchemy import text as _t
 
             now = datetime.now(UTC)
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, edge.tenant_id),
+            ):
                 await session.execute(
                     _t(
                         """
@@ -293,7 +308,11 @@ class KnowledgeGraphStore:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 # Load nodes
                 node_rows = (
                     await session.execute(

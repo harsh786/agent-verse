@@ -13,23 +13,45 @@ Uncertainty signals: "I think", "I'm not sure", "might be", "could be",
 "possibly", "I believe", "[UNCERTAIN]", "I don't know", "unclear"
 """
 from __future__ import annotations
+
 import re
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
-_UNCERTAINTY_SIGNALS = frozenset({
-    "i think", "i'm not sure", "i am not sure", "might be", "could be",
-    "possibly", "i believe", "unclear", "uncertain", "not certain",
-    "may be", "perhaps", "i don't know", "i do not know", "[uncertain]",
-    "i'm unsure", "hard to say", "not clear",
-})
+_UNCERTAINTY_SIGNALS = frozenset(
+    {
+        "i think",
+        "i'm not sure",
+        "i am not sure",
+        "might be",
+        "could be",
+        "possibly",
+        "i believe",
+        "unclear",
+        "uncertain",
+        "not certain",
+        "may be",
+        "perhaps",
+        "i don't know",
+        "i do not know",
+        "[uncertain]",
+        "i'm unsure",
+        "hard to say",
+        "not clear",
+    }
+)
 
 _FLARE_GENERATE_SYSTEM = """Answer the question as accurately as possible.
 If you are uncertain about any part, indicate uncertainty explicitly with phrases like
 'I'm not sure' or '[UNCERTAIN]'. Be honest about what you don't know."""
 
-_FLARE_REFINE_SYSTEM = """Using the provided context, answer the question accurately and confidently.
-Base your answer on the context. Do not express uncertainty about information given in the context."""
+_FLARE_REFINE_SYSTEM = (
+    "Using the provided context, answer the question accurately and confidently.\n"
+    "Base your answer on the context. Do not express uncertainty about information "
+    "given in the context."
+)
 
 
 def _detect_uncertainty(text: str) -> bool:
@@ -40,7 +62,7 @@ def _detect_uncertainty(text: str) -> bool:
 
 def _extract_uncertain_claim(text: str) -> str:
     """Extract the uncertain portion of text for targeted retrieval."""
-    sentences = re.split(r'[.!?]', text)
+    sentences = re.split(r"[.!?]", text)
     for sentence in sentences:
         if _detect_uncertainty(sentence) and sentence.strip():
             return sentence.strip()
@@ -105,7 +127,10 @@ class FLAREPattern(RAGPattern):
             from app.reliability.circuit_breaker import CircuitBreaker
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
-                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+                self._circuit_breakers[_cb_key] = CircuitBreaker(
+                    failure_threshold=5,
+                    cooldown_seconds=30,
+                )
             cb: Any = self._circuit_breakers[_cb_key]
         except ImportError:
             cb = None

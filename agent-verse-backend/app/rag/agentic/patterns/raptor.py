@@ -13,16 +13,20 @@ This implementation uses LLM-based summarization without true embedding-based cl
 (no external clustering library required).
 """
 from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 _SUMMARIZE_SYSTEM = """Summarize these text chunks into a single coherent paragraph.
 Preserve key facts, entities, and relationships. Be concise but complete."""
 
-_ANSWER_SYSTEM = """Using the provided hierarchical context (from detailed chunks to high-level summaries),
-answer the question as accurately as possible."""
+_ANSWER_SYSTEM = (
+    "Using the provided hierarchical context (from detailed chunks to high-level "
+    "summaries),\nanswer the question as accurately as possible."
+)
 
 
 @dataclass
@@ -98,7 +102,10 @@ class RAPTORPattern(RAGPattern):
             from app.reliability.circuit_breaker import CircuitBreaker
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
-                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+                self._circuit_breakers[_cb_key] = CircuitBreaker(
+                    failure_threshold=5,
+                    cooldown_seconds=30,
+                )
             cb: Any = self._circuit_breakers[_cb_key]
         except ImportError:
             cb = None
@@ -225,7 +232,9 @@ class RAPTORPattern(RAGPattern):
             if strict:
                 raise
             # Fallback: return best summary if LLM fails
-            result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
+            result = summary_nodes[-1].content if summary_nodes else (
+                chunks[0].get("content", "") if chunks else ""
+            )
 
         try:
             from app.observability.logging import get_logger

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -214,7 +215,17 @@ async def query_graph_evidence(
     return evidence
 
 
-def graph_results(evidence: list[GraphEvidence]) -> list[RetrievalResult]:
+def sanitized_tenant_id(tenant_id: str) -> str:
+    digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:16]
+    return f"sha256:{digest}"
+
+
+def graph_results(
+    evidence: list[GraphEvidence],
+    *,
+    tenant_id: str,
+) -> list[RetrievalResult]:
+    stable_tenant_id = sanitized_tenant_id(tenant_id)
     return [
         RetrievalResult(
             chunk_id=f"graph:{item.evidence_type}:{item.evidence_id}",
@@ -223,6 +234,7 @@ def graph_results(evidence: list[GraphEvidence]) -> list[RetrievalResult]:
             source_metadata={
                 "source_type": "graph",
                 "source": "knowledge_graph",
+                "tenant_id": stable_tenant_id,
                 "graph_evidence_type": item.evidence_type,
                 "provenance": item.provenance,
             },

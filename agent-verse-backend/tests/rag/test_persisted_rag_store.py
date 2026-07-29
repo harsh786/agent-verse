@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.db.rls import sqlalchemy_rls_context
+from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
+from app.knowledge_graph.store import KnowledgeGraphStore
 from app.providers.base import CompletionRequest, CompletionResponse, EmbedRequest, EmbedResponse
 from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult, RAGStrategy
 from app.rag.engine import hybrid_search
@@ -34,6 +36,7 @@ from app.rag.gateway import (
     RetrievalGateway,
     RetrievalStrategyCapability,
     SQLCollectionAuthorizer,
+    TenantScopedGraphCapabilityAdapter,
     core_strategy_capabilities,
 )
 from app.rag.models import KnowledgeCollection
@@ -167,6 +170,14 @@ async def tenants(
             )
     yield tenant_a, tenant_b
     async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text("DELETE FROM knowledge_edges WHERE tenant_id IN (:a, :b)"),
+            {"a": tenant_a.tenant_id, "b": tenant_b.tenant_id},
+        )
+        await session.execute(
+            text("DELETE FROM knowledge_nodes WHERE tenant_id IN (:a, :b)"),
+            {"a": tenant_a.tenant_id, "b": tenant_b.tenant_id},
+        )
         for dimension in SUPPORTED_EMBEDDING_DIMENSIONS:
             await session.execute(
                 text(f"DELETE FROM knowledge_chunks_{dimension} WHERE tenant_id IN (:a, :b)"),
@@ -260,6 +271,7 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
     ]
     assert all(leg["result_count"] >= 1 for leg in evidence)
     assert results[0].source_metadata["department"] == "legal"
+
 
     class Provider:
         async def complete(self, request: CompletionRequest) -> CompletionResponse:
@@ -466,6 +478,177 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
     assert opened_sessions == 4
     assert len(set(session_identities)) == 4
     assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
+
+
+async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    embedding = _embedding(768)
+    collection_id, chunk_id = await _ingest(
+        postgres_database,
+        tenant_a,
+        metadata={"department": "legal"},
+        embedding=embedding,
+    )
+    _, excluded_chunk_id = await _ingest(
+        postgres_database,
+        tenant_a,
+        metadata={"department": "engineering"},
+        embedding=embedding,
+    )
+    graph_rows = [
+        ("a-legal-1", tenant_a.tenant_id, "entity", "Retention", chunk_id, "legal"),
+        ("a-legal-2", tenant_a.tenant_id, "entity", "Legal Hold", chunk_id, "legal"),
+        (
+            "a-engineering",
+            tenant_a.tenant_id,
+            "entity",
+            "Engineering Retention",
+            excluded_chunk_id,
+            "engineering",
+        ),
+        ("b-foreign-1", tenant_b.tenant_id, "entity", "Foreign Retention", chunk_id, "legal"),
+        ("b-foreign-2", tenant_b.tenant_id, "entity", "Foreign Hold", chunk_id, "legal"),
+    ]
+    async with postgres_database.admin_factory() as session, session.begin():
+        for node_id, tenant_id, node_type, label, source_id, department in graph_rows:
+            await session.execute(
+                text(
+                    "INSERT INTO knowledge_nodes "
+                    "(id, tenant_id, node_type, label, content, source_id, confidence, "
+                    " extra_metadata) VALUES "
+                    "(:id, :tenant_id, :node_type, :label, :content, :source_id, 0.9, "
+                    " CAST(:metadata AS json))"
+                ),
+                {
+                    "id": node_id,
+                    "tenant_id": tenant_id,
+                    "node_type": node_type,
+                    "label": label,
+                    "content": f"{label} evidence",
+                    "source_id": source_id,
+                    "metadata": f'{{"department":"{department}"}}',
+                },
+            )
+        for edge_id, tenant_id, source_id, target_id in (
+            ("a-edge", tenant_a.tenant_id, "a-legal-1", "a-legal-2"),
+            ("b-edge", tenant_b.tenant_id, "b-foreign-1", "b-foreign-2"),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO knowledge_edges "
+                    "(id, tenant_id, source_node_id, target_node_id, edge_type, label, "
+                    " confidence, evidence, provenance, extra_metadata) VALUES "
+                    "(:id, :tenant_id, :source_id, :target_id, 'depends_on', 'depends', "
+                    " 0.8, 'relationship evidence', 'policy.pdf', CAST(:metadata AS json))"
+                ),
+                {
+                    "id": edge_id,
+                    "tenant_id": tenant_id,
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "metadata": '{"department":"legal"}',
+                },
+            )
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=postgres_database.runtime_factory,
+            collection_authorizer=SQLCollectionAuthorizer(),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(embedding),
+            graph_capability=TenantScopedGraphCapabilityAdapter(),
+        )
+    )
+    result = await gateway.execute(
+        tenant_a,
+        collection_id=collection_id,
+        query="Retention Legal Hold",
+        strategy_id=RAGStrategy.GRAPH,
+        top_k=8,
+        filters={"department": "legal"},
+    )
+
+    graph_citations = [
+        citation for citation in result.citations if citation.metadata["source_type"] == "graph"
+    ]
+    assert {citation.metadata["graph_evidence_type"] for citation in graph_citations} == {
+        "entity",
+        "path",
+        "community",
+    }
+    assert all("Foreign" not in citation.content for citation in graph_citations)
+    assert all("Engineering" not in citation.content for citation in graph_citations)
+    assert all(citation.metadata["tenant_id"].startswith("sha256:") for citation in graph_citations)
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_a.tenant_id),
+    ):
+        foreign_nodes = (
+            await session.execute(
+                text("SELECT id FROM knowledge_nodes WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_b.tenant_id},
+            )
+        ).all()
+        foreign_edges = (
+            await session.execute(
+                text("SELECT id FROM knowledge_edges WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_b.tenant_id},
+            )
+        ).all()
+    assert foreign_nodes == []
+    assert foreign_edges == []
+
+
+async def test_graph_store_persists_and_loads_inside_restricted_rls_scope(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    node_a = GraphNode(
+        node_id="store-node-a",
+        tenant_id=tenant.tenant_id,
+        node_type=NodeType.ENTITY,
+        label="Stored A",
+        content="Stored graph node A",
+    )
+    node_b = GraphNode(
+        node_id="store-node-b",
+        tenant_id=tenant.tenant_id,
+        node_type=NodeType.CONCEPT,
+        label="Stored B",
+        content="Stored graph node B",
+    )
+    edge = GraphEdge(
+        edge_id="store-edge",
+        tenant_id=tenant.tenant_id,
+        source_node_id=node_a.node_id,
+        target_node_id=node_b.node_id,
+        edge_type=EdgeType.DEPENDS_ON,
+        evidence="Stored relationship",
+    )
+    store = KnowledgeGraphStore()
+    store.set_db(postgres_database.runtime_factory)
+
+    await store._persist_node_to_db(node_a)
+    await store._persist_node_to_db(node_b)
+    await store._persist_edge_to_db(edge)
+
+    restarted = KnowledgeGraphStore()
+    restarted.set_db(postgres_database.runtime_factory)
+    assert await restarted.load_from_db(tenant.tenant_id) == 2
+    loaded_node = restarted.get_node(node_a.node_id, tenant.tenant_id)
+    assert loaded_node is not None
+    assert loaded_node.tenant_id == tenant.tenant_id
+    assert loaded_node.label == node_a.label
+    loaded_edges = restarted.get_edges_for_node(node_a.node_id, tenant.tenant_id)
+    assert len(loaded_edges) == 1
+    assert loaded_edges[0].edge_id == edge.edge_id
+    assert loaded_edges[0].tenant_id == tenant.tenant_id
 
 
 async def test_ingest_and_search_share_persisted_contract_after_restart(
