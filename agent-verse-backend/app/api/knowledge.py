@@ -291,33 +291,18 @@ async def delete_collection(request: Request, collection_id: str) -> None:
         except Exception:
             pass  # Legal hold check failure is non-fatal; allow deletion
 
-    # Delete from DB: chunks first (FK constraint), then the collection row
-    db = getattr(store, "_db", None)
-    if db is not None:
-        try:
-            from sqlalchemy import text
-            async with db() as session, session.begin():
-                await session.execute(
-                    text(
-                        "DELETE FROM documents "
-                        "WHERE collection_id = :cid AND tenant_id = :tid"
-                    ),
-                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
-                )
-                await session.execute(
-                    text(
-                        "DELETE FROM knowledge_collections "
-                        "WHERE id = :cid AND tenant_id = :tid"
-                    ),
-                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
-                )
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("delete_collection_db_failed: %s", exc)
-
-    # Remove from in-memory cache
-    key = (tenant_ctx.tenant_id, collection_id)
-    store._data.pop(key, None)
+    try:
+        deleted = await store.delete_collection_async(
+            collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found")
 
 
 # ---------------------------------------------------------------------------
@@ -682,6 +667,7 @@ async def ingest_repository(
                 max_file_bytes=settings.repo_ingest_max_file_bytes,
                 max_total_bytes=settings.repo_ingest_max_total_bytes,
                 max_repository_bytes=settings.repo_ingest_max_repository_bytes,
+                max_repository_files=settings.repo_ingest_max_repository_files,
             ),
             clone_timeout_seconds=settings.repo_ingest_clone_timeout_seconds,
             curl_resolve=repository_source.curl_resolve,
@@ -763,6 +749,7 @@ async def _ingest_repo_background(
             max_file_bytes=settings.repo_ingest_max_file_bytes,
             max_total_bytes=settings.repo_ingest_max_total_bytes,
             max_repository_bytes=settings.repo_ingest_max_repository_bytes,
+            max_repository_files=settings.repo_ingest_max_repository_files,
         )
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")

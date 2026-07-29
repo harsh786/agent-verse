@@ -230,10 +230,14 @@ def read_repository_files(
             raise RepositorySecurityError("Repository file changed while reading")
         if b"\x00" in raw:
             raise RepositorySecurityError("Repository binary content is not allowed")
+        try:
+            content = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise RepositorySecurityError("Repository file is not strict UTF-8 text") from exc
         files.append(
             RepositoryFile(
                 relative_path=path.relative_to(root).as_posix(),
-                content=raw.decode("utf-8", errors="replace"),
+                content=content,
             )
         )
     return files
