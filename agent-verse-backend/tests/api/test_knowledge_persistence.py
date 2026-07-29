@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -116,6 +117,34 @@ class _AwaitedStore(KnowledgeStore):
         tenant_ctx: TenantContext,
     ) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
+
+    async def reconcile_stale_ingestion_jobs_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        stale_after_seconds: int,
+    ) -> int:
+        return 0
+
+    async def ingest_repository_chunks_async(
+        self,
+        chunks: list[Chunk],
+        *,
+        job_id: str,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+    ) -> list[str]:
+        chunk_ids = await self.ingest_chunks_async(
+            chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+        self.jobs[job_id].update(
+            status="completed",
+            chunk_count=len(chunks),
+            error_message=None,
+        )
+        return chunk_ids
 
     def create_collection(
         self,
@@ -396,6 +425,65 @@ def test_repo_ingest_validates_collection_before_scheduling() -> None:
     assert store.jobs == {}
 
 
+@pytest.mark.parametrize(
+    "repo_url",
+    [
+        "/tmp/repository",
+        "file:///tmp/repository",
+        "ssh://git@example.com/repository",
+        "git@example.com:organization/repository.git",
+        "https://user:secret@example.com/repository",
+        "https://127.0.0.1/repository",
+    ],
+)
+def test_repo_ingest_rejects_unsafe_urls_before_job_creation(repo_url: str) -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="repository", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/ingest/repo",
+        json={"collection_id": "collection-1", "repo_url": repo_url},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 400
+    assert store.jobs == {}
+
+
+def test_repo_ingest_rejects_unsafe_patterns_and_file_count_before_job() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="repository", collection_id="collection-1")
+    )
+    client = TestClient(_app(store), raise_server_exceptions=False)
+
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]):
+        traversal = client.post(
+            "/knowledge/ingest/repo",
+            json={
+                "collection_id": "collection-1",
+                "repo_url": "https://example.com/repository",
+                "file_patterns": ["../*.py"],
+            },
+            headers={"X-API-Key": API_KEY},
+        )
+        invalid_count = client.post(
+            "/knowledge/ingest/repo",
+            json={
+                "collection_id": "collection-1",
+                "repo_url": "https://example.com/repository",
+                "max_files": 0,
+            },
+            headers={"X-API-Key": API_KEY},
+        )
+
+    assert traversal.status_code == 400
+    assert invalid_count.status_code == 400
+    assert store.jobs == {}
+
+
 def test_repo_ingest_requires_usable_embedder_before_scheduling() -> None:
     class _FailingEmbedder:
         async def embed(self, request: EmbedRequest) -> EmbedResponse:
@@ -580,3 +668,48 @@ async def test_repo_background_provider_failure_is_durable_and_atomic(tmp_path: 
     assert store.jobs["job-1"]["error_message"] == "Repository ingestion failed"
     assert "private provider outage" not in str(store.jobs["job-1"])
     assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
+
+
+async def test_repo_background_cancellation_records_failure_and_reraises() -> None:
+    from app.api.knowledge import _ingest_repo_background
+
+    store = _AwaitedStore()
+    store.jobs["job-1"] = {
+        "job_id": "job-1",
+        "collection_id": "collection-1",
+        "status": "queued",
+        "chunk_count": 0,
+        "error_message": None,
+        "source_url": "https://github.com/example/repository",
+    }
+    process = AsyncMock()
+    process.returncode = None
+    process.communicate = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=process) as create_process,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _ingest_repo_background(
+            job_id="job-1",
+            repo_url="https://github.com/example/repository",
+            collection_id="collection-1",
+            branch="main",
+            file_patterns=["**/*.py"],
+            max_files=10,
+            store=store,
+            embedder=FakeProvider(embed_dim=768),
+            tenant_ctx=TENANT,
+        )
+
+    argv = create_process.call_args.args
+    assert argv[:7] == (
+        "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+        "-c", "credential.helper=",
+    )
+    assert "--no-tags" in argv
+    assert "--single-branch" in argv
+    assert create_process.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    process.kill.assert_called_once()
+    assert store.jobs["job-1"]["status"] == "failed"
+    assert store.jobs["job-1"]["error_message"] == "Repository ingestion cancelled"

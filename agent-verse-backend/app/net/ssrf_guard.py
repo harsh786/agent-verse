@@ -65,6 +65,8 @@ def _is_blocked_ip(ip_str: str) -> bool:
     """Return True if the IP address is in a blocked range."""
     try:
         addr = ipaddress.ip_address(ip_str)
+        if not addr.is_global or addr.is_multicast or addr.is_reserved:
+            return True
         if isinstance(addr, ipaddress.IPv4Address):
             return any(addr in net for net in _BLOCKED_V4)
         return any(addr in net for net in _BLOCKED_V6)
@@ -133,21 +135,22 @@ def assert_public_url(
     # Try to parse hostname as a literal IP
     try:
         addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass  # not a literal IP; proceed to DNS resolution
+    else:
         if _is_blocked_ip(str(addr)):
             raise SSRFError(
                 f"SSRF guard [{context}]: IP address '{hostname}' is in a blocked range"
             )
         return  # literal IP and it's public — allow
-    except ValueError:
-        pass  # not a literal IP; proceed to DNS resolution
 
     # DNS resolution — anti-rebinding: resolve and check ALL addresses
     try:
         ips = _resolve_host(hostname)
-    except Exception:
+    except Exception as exc:
         raise SSRFError(
             f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"
-        )
+        ) from exc
     if not ips:
         raise SSRFError(
             f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"

@@ -939,6 +939,174 @@ async def test_repository_ingestion_job_status_survives_restart_and_is_tenant_sc
     assert await restarted.get_ingestion_job_async(job_id, tenant_ctx=tenant_b) is None
 
 
+async def test_repository_completion_status_failure_rolls_back_chunks_and_counters(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"atomic-job-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url="https://github.com/example/repository",
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    await store.update_ingestion_job_async(
+        job_id,
+        status="failed",
+        chunk_count=0,
+        error_message="forced completion conflict",
+        tenant_ctx=tenant,
+    )
+    chunks = [Chunk("doc-a", "repository chunk", _embedding(768), 0)]
+
+    with pytest.raises(KeyError, match="job"):
+        await store.ingest_repository_chunks_async(
+            chunks,
+            job_id=job_id,
+            collection_id=collection_id,
+            tenant_ctx=tenant,
+        )
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        chunk_count = (
+            await session.execute(
+                text("SELECT count(*) FROM knowledge_chunks_768 WHERE collection_id = :id"),
+                {"id": collection_id},
+            )
+        ).scalar_one()
+        counters = (
+            await session.execute(
+                text(
+                    "SELECT document_count, chunk_count FROM knowledge_collections "
+                    "WHERE id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).one()
+    assert chunk_count == 0
+    assert counters == (0, 0)
+
+
+async def test_repository_chunks_are_associated_with_job_and_complete_atomically(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"associated-job-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url="https://github.com/example/repository",
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    await store.update_ingestion_job_async(
+        job_id,
+        status="running",
+        chunk_count=0,
+        error_message=None,
+        tenant_ctx=tenant,
+    )
+    chunks = [
+        Chunk("doc-a", "first repository chunk", _embedding(768), 0),
+        Chunk("doc-b", "second repository chunk", _embedding(768), 0),
+    ]
+
+    await store.ingest_repository_chunks_async(
+        chunks,
+        job_id=job_id,
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    )
+
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert status["status"] == "completed"
+    assert status["chunk_count"] == 2
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        associations = (
+            await session.execute(
+                text(
+                    "SELECT strategy_metadata->>'ingestion_job_id' "
+                    "FROM knowledge_chunks_768 WHERE collection_id = :id ORDER BY id"
+                ),
+                {"id": collection_id},
+            )
+        ).scalars().all()
+    assert associations == [job_id, job_id]
+
+
+async def test_stale_running_repository_job_is_reconciled_after_restart(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"stale-job-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url="https://github.com/example/repository",
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    await store.update_ingestion_job_async(
+        job_id,
+        status="running",
+        chunk_count=0,
+        error_message=None,
+        tenant_ctx=tenant,
+    )
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_documents SET indexed_at = now() - interval '1 day' "
+                "WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+    reconciled = await restarted.reconcile_stale_ingestion_jobs_async(
+        tenant_ctx=tenant,
+        stale_after_seconds=60,
+    )
+    status = await restarted.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+
+    assert reconciled == 1
+    assert status is not None
+    assert status["status"] == "failed"
+    assert status["error_message"] == "Repository ingestion interrupted"
+
+
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)
 async def test_delete_and_parent_expansion_route_to_collection_dimension(
     postgres_database: _Database,
