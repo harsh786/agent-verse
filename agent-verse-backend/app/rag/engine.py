@@ -25,6 +25,7 @@ import hashlib
 import heapq
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -198,6 +199,7 @@ async def hybrid_search(
         raise RetrievalLegExecutionError("vector")
 
     # Leg 1: pgvector ANN
+    vector_started = time.perf_counter()
     if query_embedding and retrieval_mode in ("hybrid", "vector"):
         try:
             await session.execute(
@@ -228,9 +230,15 @@ async def hybrid_search(
             logger.debug("vector_leg_failed", error=str(e)[:80])
 
     if retrieval_mode in ("hybrid", "vector"):
-        _record_leg_evidence(evidence, "vector", vector_ranks)
+        _record_leg_evidence(
+            evidence,
+            "vector",
+            vector_ranks,
+            detail={"latency_ms": (time.perf_counter() - vector_started) * 1000},
+        )
 
     # Leg 2: PostgreSQL Full-Text Search
+    fts_started = time.perf_counter()
     if retrieval_mode in ("hybrid", "lexical"):
         try:
             fts_sql = text(f"""
@@ -257,8 +265,10 @@ async def hybrid_search(
             if strict:
                 raise RetrievalLegExecutionError("fts") from e
             logger.debug("fts_leg_failed", error=str(e)[:80])
+    fts_latency_ms = (time.perf_counter() - fts_started) * 1000
 
     # Leg 3: pg_trgm fuzzy
+    trgm_started = time.perf_counter()
     if retrieval_mode in ("hybrid", "lexical"):
         try:
             trgm_sql = text(f"""
@@ -284,13 +294,25 @@ async def hybrid_search(
             if strict:
                 raise RetrievalLegExecutionError("trgm") from e
             logger.debug("trgm_leg_failed", error=str(e)[:80])
+    trgm_latency_ms = (time.perf_counter() - trgm_started) * 1000
 
     if retrieval_mode in ("hybrid", "lexical"):
-        _record_leg_evidence(evidence, "fts", fts_ranks)
-        _record_leg_evidence(evidence, "trigram", trgm_ranks)
+        _record_leg_evidence(
+            evidence,
+            "fts",
+            fts_ranks,
+            detail={"latency_ms": fts_latency_ms},
+        )
+        _record_leg_evidence(
+            evidence,
+            "trigram",
+            trgm_ranks,
+            detail={"latency_ms": trgm_latency_ms},
+        )
 
     # Leg 4: bounded application-side Okapi BM25 over the persisted corpus.
     if retrieval_mode == "hybrid":
+        bm25_started = time.perf_counter()
         try:
             bm25_hits, bm25_trace = await _bm25_search_persisted(
                 session,
@@ -318,7 +340,15 @@ async def hybrid_search(
                 "pages_scanned": 0,
                 "scoring_mode": "application_okapi_bm25_two_pass_keyset",
             }
-        _record_leg_evidence(evidence, "bm25", bm25_ranks, detail=bm25_trace)
+        _record_leg_evidence(
+            evidence,
+            "bm25",
+            bm25_ranks,
+            detail={
+                **bm25_trace,
+                "latency_ms": (time.perf_counter() - bm25_started) * 1000,
+            },
+        )
 
     # Collect all unique chunk IDs
     all_ids = set(vector_ranks) | set(fts_ranks) | set(trgm_ranks) | set(bm25_ranks)

@@ -40,7 +40,9 @@ class KnowledgeCollection(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedder: Mapped[str] = mapped_column(Text, nullable=False, default="voyage-2")
+    embedder: Mapped[str] = mapped_column(
+        Text, nullable=False, default="voyage-4-large"
+    )
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
     chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, default=512)
     chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, default=64)

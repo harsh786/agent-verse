@@ -107,10 +107,18 @@ async def test_naive_is_one_persisted_vector_leg_only() -> None:
     calls: list[dict[str, Any]] = []
 
     async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
-        return await operation(object())
+        return await operation(_AuthorizedSession())
 
     async def search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
         calls.append(kwargs)
+        kwargs["evidence"].append(
+            {
+                "component": "vector",
+                "result_count": 1,
+                "component_scores": {"chunk-1": 0.91},
+                "latency_ms": 1.0,
+            }
+        )
         return [
             RetrievalResult(
                 "chunk-1",
@@ -148,6 +156,16 @@ class _Rows:
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return self._rows
+
+
+class _AuthorizedResult:
+    def scalar_one_or_none(self) -> str:
+        return "collection-1"
+
+
+class _AuthorizedSession:
+    async def execute(self, statement: object, params: object = None) -> _AuthorizedResult:
+        return _AuthorizedResult()
 
 
 class _HybridSession:
@@ -244,6 +262,7 @@ async def test_hybrid_executes_four_real_legs_and_records_scores() -> None:
 
     assert [item["component"] for item in evidence] == ["vector", "fts", "trigram", "bm25"]
     assert all("result_count" in item for item in evidence)
+    assert all(item["latency_ms"] > 0 for item in evidence)
     assert {leg for result in results for leg in result.retrieval_legs} == {
         "vector",
         "fts",
@@ -403,7 +422,7 @@ async def test_hyde_embeds_generated_document_and_hashes_provenance() -> None:
     embedder = _Embedder()
 
     async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
-        return await operation(object())
+        return await operation(_AuthorizedSession())
 
     async def search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
         assert kwargs["query_embedding"] == [1.0, 0.25]
@@ -436,7 +455,7 @@ async def test_multi_hop_embeds_each_decomposition_and_dedupes_with_provenance()
     sessions: list[object] = []
 
     async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
-        session = object()
+        session = _AuthorizedSession()
         sessions.append(session)
         return await operation(session)
 
@@ -745,7 +764,24 @@ async def test_readiness_rejects_missing_persisted_schema_with_safe_probe() -> N
     assert not readiness.available
     assert readiness.reason == "persistence_unavailable"
     assert any("SELECT 1" in sql for sql in scalar_sql)
-    assert any("to_regclass" in sql and "pg_extension" in sql for sql in scalar_sql)
+    capability_sql = next(sql for sql in scalar_sql if "to_regclass" in sql)
+    assert "pg_extension" in capability_sql
+    assert "pg_trgm" in capability_sql
+    assert "information_schema.columns" in capability_sql
+    assert "pg_indexes" in capability_sql
+    for column in (
+        "embedding_dim",
+        "expires_at",
+        "metadata",
+        "parent_chunk_id",
+        "chunk_level",
+        "window_id",
+        "hierarchy_level",
+        "is_proposition",
+        "strategy_metadata",
+        "ingestion_job_id",
+    ):
+        assert column in capability_sql
 
 
 async def test_readiness_sanitizes_disconnected_probe() -> None:

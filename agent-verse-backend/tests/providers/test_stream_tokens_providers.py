@@ -7,17 +7,15 @@ Covers:
   - LLMProvider.embed_batch default implementation (base.py 132-136)
   - embed_texts standalone function (base.py 155-163)
 
-google-generativeai and voyageai are NOT installed in this environment;
-all tests mock via sys.modules (same pattern as test_gemini_provider_comprehensive.py
-and test_voyage_provider_comprehensive.py).
+Provider clients are mocked so these tests never perform network calls.
 """
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── OpenAICompatibleProvider.stream_tokens ────────────────────────────────────
 
@@ -157,7 +155,7 @@ async def test_openai_stream_tokens_no_choices_chunk() -> None:
     provider._client = mock_client
 
     req = CompletionRequest(messages=[Message(role="user", content="x")], model="")
-    resp = await provider.stream_tokens(req, collect)
+    await provider.stream_tokens(req, collect)
 
     assert received == []
 
@@ -169,9 +167,21 @@ def _make_gemini_provider(mock_genai: MagicMock):
     """Build a GeminiProvider instance without calling __init__ (no SDK needed)."""
     from app.providers.gemini_provider import GeminiProvider
     provider = GeminiProvider.__new__(GeminiProvider)
-    provider._genai = mock_genai
-    provider._default_model = "gemini-1.5-pro"
-    provider._embed_model = "models/embedding-001"
+    mock_model = mock_genai.GenerativeModel.return_value
+
+    class Models:
+        async def generate_content_stream(self, **kwargs: object) -> object:
+            return mock_model.generate_content_async(kwargs["contents"], stream=True)
+
+    class Types:
+        class GenerateContentConfig:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+    provider._client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    provider._types = Types
+    provider._default_model = "gemini-2.5-pro"
+    provider._embed_model = "gemini-embedding-001"
     return provider
 
 
@@ -230,7 +240,7 @@ async def test_gemini_stream_tokens_fallback_on_error() -> None:
         received.append(chunk)
 
     provider = _make_gemini_provider(mock_genai)
-    fallback = CompletionResponse(content="fallback", model="gemini-1.5-pro")
+    fallback = CompletionResponse(content="fallback", model="gemini-2.5-pro")
     with patch.object(provider, "complete", AsyncMock(return_value=fallback)):
         req = CompletionRequest(messages=[Message(role="user", content="hi")], model="")
         resp = await provider.stream_tokens(req, collect)
@@ -547,7 +557,7 @@ async def test_anthropic_stream_tokens_with_image_data() -> None:
         messages=[Message(role="user", content="What's in this image?", image_data="base64data")],
         model="claude-3-haiku-20240307",
     )
-    resp = await provider.stream_tokens(req, collect)
+    await provider.stream_tokens(req, collect)
     assert "Vision answer" in received
     # Verify the message was formatted with image content blocks
     assert len(captured_kwargs) == 1
@@ -592,14 +602,18 @@ async def test_anthropic_stream_tokens_with_system_and_tools() -> None:
     mock_client.messages.stream = MagicMock(side_effect=_capture_stream)
     provider._client = mock_client
 
-    tool = ToolDefinition(name="search", description="Search the web", input_schema={"type": "object"})
+    tool = ToolDefinition(
+        name="search",
+        description="Search the web",
+        input_schema={"type": "object"},
+    )
     req = CompletionRequest(
         messages=[Message(role="user", content="Search for something")],
         model="claude-3-haiku-20240307",
         system="You use tools when needed",
         tools=[tool],
     )
-    resp = await provider.stream_tokens(req, collect)
+    await provider.stream_tokens(req, collect)
     assert "Tool answer" in received
     assert "system" in captured_kwargs[0]
     assert "tools" in captured_kwargs[0]

@@ -401,8 +401,11 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
         for trace in hybrid_result.strategy_trace
         if trace.action == "retrieval_leg"
     )
-    assert hybrid_result.strategy_trace[-1].action == "rrf_merge"
-    assert hybrid_result.strategy_trace[-1].detail["rrf_scores"]
+    rrf_trace = next(
+        trace for trace in hybrid_result.strategy_trace if trace.action == "rrf_merge"
+    )
+    assert rrf_trace.detail["rrf_scores"]
+    assert hybrid_result.strategy_trace[-1].action == "strategy_complete"
     assert opened_sessions == 2
     assert len(set(session_identities)) == 2
     assert all(observation[1] == tenant.tenant_id for observation in rls_observations)
@@ -793,6 +796,104 @@ async def test_gateway_hybrid_uses_repeatable_read_across_bm25_passes(
     assert concurrent_chunk not in bm25_leg.metadata["component_scores"]
     assert any("REPEATABLE READ" in sql for sql in transaction_controls)
     assert any("statement_timeout" in sql for sql in transaction_controls)
+
+
+async def test_each_retrieval_session_revalidates_collection_after_deactivation(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant)
+    initially_authorized = asyncio.Event()
+    deactivated = asyncio.Event()
+
+    class BarrierAuthorizer:
+        async def authorize(
+            self,
+            session: AsyncSession | None,
+            tenant_context: TenantContext,
+            requested_collection_id: str,
+        ) -> bool:
+            allowed = await SQLCollectionAuthorizer().authorize(
+                session,
+                tenant_context,
+                requested_collection_id,
+            )
+            initially_authorized.set()
+            await deactivated.wait()
+            return allowed
+
+    async def deactivate() -> None:
+        await initially_authorized.wait()
+        async with postgres_database.admin_factory() as session, session.begin():
+            await session.execute(
+                text("UPDATE knowledge_collections SET is_active = false WHERE id = :id"),
+                {"id": collection_id},
+            )
+        deactivated.set()
+
+    class Embedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            return EmbedResponse(
+                embeddings=[_embedding(768) for _ in request.texts]
+            )
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=postgres_database.runtime_factory,
+            collection_authorizer=BarrierAuthorizer(),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=Embedder(),
+        )
+    )
+    mutation = asyncio.create_task(deactivate())
+    with pytest.raises(CollectionNotFoundError, match=collection_id):
+        await gateway.execute(
+            tenant,
+            collection_id=collection_id,
+            query="Canonical persisted retrieval evidence",
+            strategy_id=RAGStrategy.HYBRID,
+        )
+    await mutation
+
+
+async def test_readiness_matches_current_rag_migration_capabilities(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+
+    class Embedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            return EmbedResponse(embeddings=[_embedding(768) for _ in request.texts])
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=postgres_database.runtime_factory,
+            collection_authorizer=SQLCollectionAuthorizer(),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=Embedder(),
+        )
+    )
+    readiness = await gateway.readiness(tenant, strategy_id=RAGStrategy.NAIVE)
+    async with postgres_database.admin_factory() as session:
+        migration = (
+            await session.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one()
+        embedding_default = (
+            await session.execute(
+                text(
+                    "SELECT column_default FROM information_schema.columns "
+                    "WHERE table_schema = 'public' "
+                    "AND table_name = 'knowledge_collections' "
+                    "AND column_name = 'embedder'"
+                )
+            )
+        ).scalar_one()
+
+    assert migration == "0093_current_embedding_defaults"
+    assert "voyage-4-large" in embedding_default
+    assert readiness.available
 
 
 async def test_jsonb_filter_is_parameterized_and_applied_before_top_k(
