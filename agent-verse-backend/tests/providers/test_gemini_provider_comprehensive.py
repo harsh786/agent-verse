@@ -15,7 +15,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -58,7 +57,8 @@ def _make_genai_mocks(
 
     # mock_google = the 'google' namespace package
     mock_google = MagicMock()
-    mock_google.generativeai = mock_genai  # Critical: makes `import google.generativeai as genai` work
+    # Makes ``import google.generativeai as genai`` resolve the mocked module.
+    mock_google.generativeai = mock_genai
 
     return mock_google, mock_genai, mock_model, mock_response
 
@@ -76,7 +76,10 @@ def _patch_with_text(text: str) -> tuple[MagicMock, MagicMock, MagicMock, MagicM
     return g, gai, model, resp, modules
 
 
-def _patch_with_usage(prompt: int, cands: int) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock, dict]:
+def _patch_with_usage(
+    prompt: int,
+    cands: int,
+) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock, dict]:
     g, gai, model, resp = _make_genai_mocks(usage_prompt=prompt, usage_candidates=cands)
     modules = {"google": g, "google.generativeai": gai}
     return g, gai, model, resp, modules
@@ -117,9 +120,7 @@ def test_constructor_stores_default_and_embed_models() -> None:
 
 def test_constructor_raises_import_error_when_genai_missing() -> None:
     from unittest.mock import patch as _patch_fn
-    import importlib
 
-    import app.providers.gemini_provider as _mod
     # Save the current module so we can restore it
     saved_mod = sys.modules.get("app.providers.gemini_provider")
 
@@ -149,7 +150,7 @@ def test_constructor_raises_import_error_when_genai_missing() -> None:
 @pytest.mark.asyncio
 async def test_complete_returns_text_response() -> None:
     from unittest.mock import patch as _patch_fn
-    _, mock_genai, mock_model, mock_response, modules = _patch_with_usage(12, 30)
+    _, _, _, _, modules = _patch_with_usage(12, 30)
 
     with _patch_fn.dict(sys.modules, modules):
         from app.providers.gemini_provider import GeminiProvider
@@ -186,7 +187,7 @@ async def test_complete_uses_default_model_when_empty() -> None:
 async def test_complete_with_system_kwarg() -> None:
     """request.system is prepended as [System]: prefix."""
     from unittest.mock import patch as _patch_fn
-    _, mock_genai, mock_model, _, modules = _patch()
+    _, _, mock_model, _, modules = _patch()
     captured_prompts: list[str] = []
     original_gc = mock_model.generate_content.return_value
 
@@ -212,7 +213,7 @@ async def test_complete_with_system_kwarg() -> None:
 @pytest.mark.asyncio
 async def test_complete_extracts_system_from_messages_list() -> None:
     from unittest.mock import patch as _patch_fn
-    _, mock_genai, mock_model, _, modules = _patch()
+    _, _, mock_model, _, modules = _patch()
     captured_prompts: list[str] = []
     original_gc = mock_model.generate_content.return_value
 
@@ -240,7 +241,7 @@ async def test_complete_extracts_system_from_messages_list() -> None:
 @pytest.mark.asyncio
 async def test_complete_builds_conversation_from_multiple_messages() -> None:
     from unittest.mock import patch as _patch_fn
-    _, mock_genai, mock_model, _, modules = _patch()
+    _, _, mock_model, _, modules = _patch()
     captured_prompts: list[str] = []
     original_gc = mock_model.generate_content.return_value
 
@@ -288,7 +289,7 @@ async def test_complete_zero_tokens_when_no_usage_metadata() -> None:
 async def test_complete_response_without_text_attribute() -> None:
     """If response has no .text, content defaults to empty string."""
     from unittest.mock import patch as _patch_fn
-    _, mock_genai, mock_model, mock_response, modules = _patch()
+    _, _, _, mock_response, modules = _patch()
     del mock_response.text  # remove attribute so hasattr returns False
 
     with _patch_fn.dict(sys.modules, modules):
@@ -354,6 +355,27 @@ async def test_embed_uses_configured_embed_model_and_task_type() -> None:
 
     assert captured[0]["model"] == "models/embedding-001"
     assert captured[0]["task_type"] == "retrieval_document"
+
+
+@pytest.mark.asyncio
+async def test_embed_maps_query_input_to_retrieval_query() -> None:
+    from unittest.mock import patch as _patch_fn
+
+    _, mock_genai, _, _, modules = _patch()
+    captured: list[dict] = []
+
+    def _capture(**kw: object) -> dict:
+        captured.append(dict(kw))
+        return {"embedding": [[0.0]]}
+
+    mock_genai.embed_content = _capture
+    with _patch_fn.dict(sys.modules, modules):
+        from app.providers.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider(api_key="key")
+        await provider.embed(EmbedRequest(texts=["search terms"], input_type="query"))
+
+    assert captured[0]["task_type"] == "retrieval_query"
 
 
 # ---------------------------------------------------------------------------

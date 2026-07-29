@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from app.rag.gateway import (
     RetrievalExecutionContext,
     RetrievalGateway,
     RetrievalRuntimeDependencies,
+    SQLCollectionAuthorizer,
     core_strategy_capabilities,
 )
 from app.tenancy.context import TenantContext
@@ -40,9 +42,11 @@ from app.tenancy.context import TenantContext
 class _Embedder:
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.input_types: list[str] = []
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         self.texts.extend(request.texts)
+        self.input_types.append(request.input_type)
         return EmbedResponse(
             embeddings=[[float(len(self.texts)), 0.25] for _ in request.texts],
             model="embed-model",
@@ -126,6 +130,7 @@ async def test_naive_is_one_persisted_vector_leg_only() -> None:
         )
 
     assert embedder.texts == ["private retention policy"]
+    assert embedder.input_types == ["query"]
     assert len(calls) == 1
     assert calls[0]["retrieval_mode"] == "vector"
     assert calls[0]["strict"] is True
@@ -251,6 +256,49 @@ async def test_hybrid_executes_four_real_legs_and_records_scores() -> None:
     assert "BM25" not in next(sql for sql in session.sql if "ts_rank_cd" in sql)
 
 
+async def test_every_persisted_leg_filters_expired_chunks_in_sql() -> None:
+    session = _HybridSession()
+    await hybrid_search(
+        session,  # type: ignore[arg-type]
+        query="private retention policy",
+        query_embedding=[0.1] * 1536,
+        collection_id="collection-1",
+        top_k=4,
+        metadata_filter={"department": "legal"},
+        strict=True,
+        evidence=[],
+    )
+
+    retrieval_sql = [sql for sql in session.sql if "FROM knowledge_chunks_" in sql]
+    assert len(retrieval_sql) == 5
+    assert all(
+        "expires_at IS NULL OR expires_at > now()" in sql for sql in retrieval_sql
+    )
+
+
+async def test_collection_authorizer_requires_active_collection() -> None:
+    class Result:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    class Session:
+        sql = ""
+
+        async def execute(self, statement: object, params: object) -> Result:
+            self.sql = str(statement)
+            return Result()
+
+    session = Session()
+    authorized = await SQLCollectionAuthorizer().authorize(
+        session,  # type: ignore[arg-type]
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        "collection-1",
+    )
+
+    assert not authorized
+    assert "collection.is_active IS TRUE" in session.sql
+
+
 async def test_hybrid_strict_mode_fails_when_bm25_corpus_leg_fails() -> None:
     with pytest.raises(RetrievalLegExecutionError, match="bm25"):
         await hybrid_search(
@@ -312,6 +360,43 @@ async def test_bm25_high_cardinality_stats_and_heap_are_query_bounded() -> None:
     assert bm25_evidence["max_heap_size"] == 3
 
 
+async def test_full_corpus_bm25_scan_propagates_cancellation() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class SlowCorpusSession(_HybridSession):
+        async def execute(
+            self,
+            statement: Any,
+            params: dict[str, Any] | None = None,
+        ) -> _Rows:
+            if "SELECT id, content" in str(statement):
+                started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+            return await super().execute(statement, params)
+
+    task = asyncio.create_task(
+        hybrid_search(
+            SlowCorpusSession(),  # type: ignore[arg-type]
+            query="needle",
+            query_embedding=[0.1] * 1536,
+            collection_id="collection-1",
+            strict=True,
+            evidence=[],
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
+
+
 async def test_hyde_embeds_generated_document_and_hashes_provenance() -> None:
     sensitive_document = "Confidential hypothetical answer with account 12345"
     provider = _Provider([sensitive_document])
@@ -338,6 +423,7 @@ async def test_hyde_embeds_generated_document_and_hashes_provenance() -> None:
         )
 
     assert embedder.texts == [sensitive_document]
+    assert embedder.input_types == ["document"]
     assert provider.requests[0].model == "tenant-rag-model"
     detail = result.strategy_trace[0].detail
     assert len(detail["generated_text_sha256"]) == 64
@@ -389,6 +475,7 @@ async def test_multi_hop_embeds_each_decomposition_and_dedupes_with_provenance()
         )
 
     assert embedder.texts == ["policy duration", "policy exceptions"]
+    assert embedder.input_types == ["query", "query"]
     assert len(sessions) == 2
     assert len({id(session) for session in sessions}) == 2
     assert [citation.chunk_id for citation in result.citations] == [
@@ -445,11 +532,11 @@ class _ProbeSession:
     def begin(self) -> _ProbeTransaction:
         return _ProbeTransaction()
 
-    async def execute(self, statement: object) -> object:
+    async def execute(self, statement: object, params: object = None) -> object:
         return statement
 
     async def scalar(self, statement: object) -> object:
-        return statement
+        return True if "to_regclass" in str(statement) else 1
 
 
 @asynccontextmanager
@@ -628,6 +715,63 @@ async def test_readiness_rejects_invalid_object_yielded_by_async_context() -> No
 
     assert not readiness.available
     assert readiness.reason == "session_factory_unavailable"
+
+
+async def test_readiness_rejects_missing_persisted_schema_with_safe_probe() -> None:
+    scalar_sql: list[str] = []
+
+    class Session(_ProbeSession):
+        async def scalar(self, statement: object) -> object:
+            scalar_sql.append(str(statement))
+            return False if "to_regclass" in str(statement) else 1
+
+    @asynccontextmanager
+    async def factory() -> Any:
+        yield Session()
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=factory,
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+        )
+    )
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "persistence_unavailable"
+    assert any("SELECT 1" in sql for sql in scalar_sql)
+    assert any("to_regclass" in sql and "pg_extension" in sql for sql in scalar_sql)
+
+
+async def test_readiness_sanitizes_disconnected_probe() -> None:
+    class DisconnectedContext:
+        async def __aenter__(self) -> object:
+            raise OSError("postgresql://user:secret@private-host")
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=lambda: DisconnectedContext(),  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+        )
+    )
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "persistence_unavailable"
+    assert "private-host" not in readiness.reason
 
 
 async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:

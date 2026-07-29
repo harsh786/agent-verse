@@ -202,6 +202,18 @@ def test_runtime_adapter_contract_requires_tenant_scoped_requests() -> None:
     assert hasattr(RAGRuntimeAdapter, "execute")
 
 
+@pytest.mark.parametrize("top_k", [0, 21])
+def test_execution_request_rejects_out_of_bounds_top_k(top_k: int) -> None:
+    with pytest.raises(ValueError):
+        RAGExecutionRequest(
+            tenant_id="tenant-1",
+            query="query",
+            requested_strategy_id="naive",
+            collection_id="collection-1",
+            top_k=top_k,
+        )
+
+
 def test_registry_only_marks_registered_runtime_capabilities_implemented() -> None:
     registry = build_default_registry()
     rag_capabilities = registry.list_by_category(StrategyCategory.RAG)

@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -293,7 +294,14 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
             params: dict[str, Any] | None = None,
         ) -> Any:
             sql = str(statement)
-            if "set_config('app.tenant_id'" not in sql:
+            if not any(
+                control in sql
+                for control in (
+                    "set_config('app.tenant_id'",
+                    "statement_timeout",
+                    "ISOLATION LEVEL",
+                )
+            ):
                 current_tenant = (
                     await self._session.execute(
                         text("SELECT current_setting('app.tenant_id', true)")
@@ -578,6 +586,27 @@ async def test_restricted_role_rls_and_gateway_reject_foreign_collection(
             },
         )
     )
+    owner_result = await gateway.execute(
+        tenant_a,
+        collection_id=collection_id,
+        query="persisted evidence",
+        strategy_id=RAGStrategy.HYBRID,
+    )
+    assert owner_result.resolved_strategy_id is RAGStrategy.HYBRID
+
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text("UPDATE knowledge_collections SET is_active = false WHERE id = :id"),
+            {"id": collection_id},
+        )
+    with pytest.raises(CollectionNotFoundError, match=collection_id):
+        await gateway.execute(
+            tenant_a,
+            collection_id=collection_id,
+            query="persisted evidence",
+            strategy_id=RAGStrategy.HYBRID,
+        )
+
     with pytest.raises(CollectionNotFoundError, match=collection_id):
         await gateway.execute(
             tenant_b,
@@ -585,6 +614,185 @@ async def test_restricted_role_rls_and_gateway_reject_foreign_collection(
             query="persisted evidence",
             strategy_id=RAGStrategy.HYBRID,
         )
+
+
+async def test_retrieval_excludes_expired_chunks_and_applies_nested_filter_before_limit(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    _, expired_chunk = await _ingest(
+        postgres_database,
+        tenant,
+        collection_id=collection_id,
+        metadata={"access": {"department": "legal", "level": "internal"}},
+        embedding=_embedding(768),
+    )
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    wrong_high_score = await store.ingest_document(
+        collection_id=collection_id,
+        content="Canonical persisted retrieval evidence",
+        metadata={"access": {"department": "finance", "level": "internal"}},
+        tenant_ctx=tenant,
+        embedder=_Embedder(_embedding(768)),
+        source_doc_id=f"wrong-{uuid.uuid4().hex}",
+    )
+    matching_chunk = await store.ingest_document(
+        collection_id=collection_id,
+        content="Canonical persisted retrieval evidence",
+        metadata={"access": {"department": "legal", "level": "internal"}},
+        tenant_ctx=tenant,
+        embedder=_Embedder(_embedding(768, second=1.0)),
+        source_doc_id=f"matching-{uuid.uuid4().hex}",
+    )
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_chunks_768 SET expires_at = :expired "
+                "WHERE id = :chunk_id"
+            ),
+            {
+                "expired": datetime.now(UTC) - timedelta(minutes=1),
+                "chunk_id": expired_chunk,
+            },
+        )
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        filtered = await hybrid_search(
+            session,
+            query="Canonical persisted retrieval evidence",
+            query_embedding=_embedding(768),
+            collection_id=collection_id,
+            top_k=1,
+            embedding_dim=768,
+            metadata_filter={"access": {"department": "legal"}},
+            strict=True,
+            evidence=[],
+        )
+        unfiltered = await hybrid_search(
+            session,
+            query="Canonical persisted retrieval evidence",
+            query_embedding=_embedding(768),
+            collection_id=collection_id,
+            top_k=10,
+            embedding_dim=768,
+            strict=True,
+            evidence=[],
+        )
+
+    assert [result.chunk_id for result in filtered] == [matching_chunk]
+    assert expired_chunk not in {result.chunk_id for result in unfiltered}
+    assert wrong_high_score in {result.chunk_id for result in unfiltered}
+
+
+async def test_gateway_hybrid_uses_repeatable_read_across_bm25_passes(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    embedding = _embedding(768)
+    collection_id, original_chunk = await _ingest(
+        postgres_database,
+        tenant,
+        embedding=embedding,
+    )
+    first_pass_complete = asyncio.Event()
+    mutation_complete = asyncio.Event()
+    transaction_controls: list[str] = []
+
+    class SnapshotSession:
+        def __init__(self, session: AsyncSession) -> None:
+            self._session = session
+
+        def begin(self) -> Any:
+            return self._session.begin()
+
+        async def execute(
+            self,
+            statement: Any,
+            params: dict[str, Any] | None = None,
+        ) -> Any:
+            result = await self._session.execute(statement, params or {})
+            sql = str(statement)
+            if "ISOLATION LEVEL" in sql or "statement_timeout" in sql:
+                transaction_controls.append(sql)
+            if "SELECT id, content" in sql and "metadata" not in sql:
+                first_pass_complete.set()
+                await mutation_complete.wait()
+            return result
+
+        async def scalar(
+            self,
+            statement: Any,
+            params: dict[str, Any] | None = None,
+        ) -> Any:
+            return await self._session.scalar(statement, params or {})
+
+    @asynccontextmanager
+    async def snapshot_factory() -> AsyncIterator[Any]:
+        async with postgres_database.runtime_factory() as session:
+            yield SnapshotSession(session)
+
+    async def mutate_between_passes() -> str:
+        await first_pass_complete.wait()
+        chunk_id = uuid.uuid4().hex
+        async with postgres_database.admin_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO knowledge_chunks_768 "
+                    "(id, tenant_id, collection_id, document_id, chunk_index, content, "
+                    "content_hash, embedding, metadata, domain_metadata) VALUES "
+                    "(:id, :tenant_id, :collection_id, :document_id, 99, :content, "
+                    ":content_hash, CAST(:embedding AS vector), '{}'::jsonb, '{}'::jsonb)"
+                ),
+                {
+                    "id": chunk_id,
+                    "tenant_id": tenant.tenant_id,
+                    "collection_id": collection_id,
+                    "document_id": f"concurrent-{chunk_id}",
+                    "content": "Canonical persisted retrieval evidence concurrent",
+                    "content_hash": chunk_id,
+                    "embedding": str(embedding),
+                },
+            )
+        mutation_complete.set()
+        return chunk_id
+
+    class Embedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            return EmbedResponse(embeddings=[embedding for _ in request.texts])
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=snapshot_factory,
+            collection_authorizer=SQLCollectionAuthorizer(),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=Embedder(),
+        )
+    )
+    mutation = asyncio.create_task(mutate_between_passes())
+    result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.HYBRID,
+        top_k=10,
+    )
+    concurrent_chunk = await mutation
+
+    bm25_leg = next(
+        leg for leg in result.retrieval_legs if leg.metadata["component"] == "bm25"
+    )
+    assert bm25_leg.metadata["corpus_size"] == 1
+    assert {citation.chunk_id for citation in result.citations} == {original_chunk}
+    assert concurrent_chunk not in bm25_leg.metadata["component_scores"]
+    assert any("REPEATABLE READ" in sql for sql in transaction_controls)
+    assert any("statement_timeout" in sql for sql in transaction_controls)
 
 
 async def test_jsonb_filter_is_parameterized_and_applied_before_top_k(

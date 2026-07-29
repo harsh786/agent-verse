@@ -1,6 +1,7 @@
 """Test HyDE, multi-hop, rerank retrieval strategies."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -92,6 +93,7 @@ async def test_strict_hyde_requires_generated_document_embedding() -> None:
         )
 
     assert embedder.embed.await_args.args[0].texts == ["generated hypothetical document"]
+    assert embedder.embed.await_args.args[0].input_type == "document"
     assert search.await_args.kwargs["query_embedding"] == [0.7, 0.8]
     assert search.await_args.kwargs["retrieval_mode"] == "vector"
     assert provider.complete.await_args.args[0].model == "tenant-model"
@@ -155,3 +157,62 @@ async def test_strict_multi_hop_rejects_original_query_relabel() -> None:
         )
 
     embedder.embed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_multi_hop_cancels_and_awaits_slow_sibling() -> None:
+    provider = AsyncMock()
+    provider.complete.return_value = CompletionResponse(
+        content='["fast failure", "slow sibling"]', model="model"
+    )
+    embedder = AsyncMock()
+    embedder.embed.return_value = EmbedResponse(embeddings=[[0.1]])
+    slow_started = asyncio.Event()
+    slow_cancelled = asyncio.Event()
+    slow_closed = asyncio.Event()
+
+    async def search(query: str, _embedding: list[float] | None) -> list[object]:
+        if query == "slow sibling":
+            slow_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+            finally:
+                slow_closed.set()
+        await slow_started.wait()
+        raise RuntimeError("hop failed")
+
+    with pytest.raises(RetrievalStrategyExecutionError, match="retrieval hop failed"):
+        await retrieve_multi_hop(
+            None,
+            query="original",
+            query_embedding=None,
+            collection_id="collection-1",
+            provider=provider,
+            model="model",
+            embedder=embedder,
+            strict=True,
+            search_operation=search,  # type: ignore[arg-type]
+        )
+
+    assert slow_cancelled.is_set()
+    assert slow_closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_multi_hop_rejects_unbounded_hop_count() -> None:
+    with pytest.raises(RetrievalStrategyExecutionError, match="max_hops"):
+        await retrieve_multi_hop(
+            None,
+            query="query",
+            query_embedding=None,
+            collection_id="collection-1",
+            provider=AsyncMock(),
+            model="model",
+            embedder=AsyncMock(),
+            strict=True,
+            max_hops=6,
+            search_operation=AsyncMock(),
+        )
