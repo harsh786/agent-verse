@@ -724,6 +724,94 @@ def test_knowledge_chat_verifier_provider_failure_is_non_2xx() -> None:
     assert "secret" not in response.text
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "grounded"),
+    [
+        ("Cats are allowed [1]; dogs are prohibited [2].", True),
+        ("Cats are allowed [2]; dogs are prohibited [1].", False),
+        ("Cats are allowed [1] and dogs are prohibited [2].", True),
+        ("Cats are allowed [2] and dogs are prohibited [1].", False),
+    ],
+)
+async def test_verifier_binds_each_atomic_claim_to_its_local_citation(
+    answer: str,
+    grounded: bool,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        answer,
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content="Cats are allowed.",
+                score=0.9, source="cats",
+            ),
+            RAGCitation(
+                citation_id="c2", chunk_id="ch2", content="Dogs are prohibited.",
+                score=0.9, source="dogs",
+            ),
+        ],
+    )
+
+    assert result.grounded is grounded
+
+
+@pytest.mark.asyncio
+async def test_exact_phrase_inside_negated_retraction_is_not_fast_path_supported() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        "Exports are permitted [1].",
+        [
+            RAGCitation(
+                citation_id="c1",
+                chunk_id="ch1",
+                content=(
+                    "Exports are permitted only in examples, but actual exports "
+                    "are not permitted."
+                ),
+                score=0.9,
+                source="policy",
+            )
+        ],
+    )
+
+    assert not result.grounded
+
+
+@pytest.mark.asyncio
+async def test_irrelevant_evidence_number_uses_provider_not_false_contradiction() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    citation = RAGCitation(
+        citation_id="c1",
+        chunk_id="ch1",
+        content="Retention is 30 days. Appendix 5 describes examples.",
+        score=0.9,
+        source="policy",
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify("Retention is 30 days [1].", [citation])
+
+    assert result.grounded
+    provider.complete.assert_awaited_once()
+    conservative = await MinimalCitationVerifier().verify(
+        "Retention is 30 days [1].",
+        [citation],
+    )
+    assert not conservative.grounded
+
+
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
     class DuplicateGateway(RecordingGateway):
         async def execute(
