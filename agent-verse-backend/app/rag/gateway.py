@@ -174,6 +174,26 @@ def core_strategy_capabilities() -> Mapping[RAGStrategy, RetrievalStrategyCapabi
     }
 
 
+def _has_async_method(dependency: object | None, method_name: str) -> bool:
+    method = getattr(dependency, method_name, None)
+    return callable(method) and inspect.iscoroutinefunction(method)
+
+
+def _has_async_context_factory(factory: object | None) -> bool:
+    if not callable(factory):
+        return False
+    try:
+        context = factory()
+    except Exception:
+        return False
+    if inspect.iscoroutine(context):
+        context.close()
+        return False
+    return _has_async_method(context, "__aenter__") and _has_async_method(
+        context, "__aexit__"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RAGStrategyReadiness:
     """Sanitized tenant-specific strategy readiness without retrieval execution."""
@@ -685,9 +705,13 @@ class RetrievalGateway:
         execute = getattr(capability.adapter, "execute", None)
         if not inspect.iscoroutinefunction(execute) or inspect.isabstract(capability.adapter):
             return RAGStrategyReadiness(strategy, False, "invalid_adapter")
-        if capability.requires_embedder and self.dependencies.embedder is None:
+        if capability.requires_embedder and not _has_async_method(
+            self.dependencies.embedder, "embed"
+        ):
             return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
-        if capability.requires_database and self.dependencies.session_factory is None:
+        if capability.requires_database and not _has_async_context_factory(
+            self.dependencies.session_factory
+        ):
             return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")
         if capability.requires_graph and (
             self.dependencies.graph_capability is None
@@ -884,9 +908,13 @@ class RetrievalGateway:
         strategy: RAGStrategy,
         capability: RetrievalStrategyCapability,
     ) -> None:
-        if capability.requires_embedder and self.dependencies.embedder is None:
+        if capability.requires_embedder and not _has_async_method(
+            self.dependencies.embedder, "embed"
+        ):
             raise UnavailableRAGStrategyError(strategy, "embedding provider is not configured")
-        if capability.requires_database and self.dependencies.session_factory is None:
+        if capability.requires_database and not _has_async_context_factory(
+            self.dependencies.session_factory
+        ):
             raise UnavailableRAGStrategyError(
                 strategy, "database session factory is not configured"
             )
@@ -923,7 +951,7 @@ class RetrievalGateway:
         if capability.requires_provider and resolved is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
         if resolved is not None:
-            if resolved.provider is None:
+            if not _has_async_method(resolved.provider, "complete"):
                 raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
             if not isinstance(resolved.model, str) or not resolved.model.strip():
                 raise UnavailableRAGStrategyError(strategy, "LLM model is not configured")

@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import heapq
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -33,12 +34,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.observability.logging import get_logger
+from app.rag.bm25 import BM25CorpusScorer, BM25Hit
 
 logger = get_logger(__name__)
 
 # RRF constant (standard: 60)
 _RRF_K = 60
 _SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 3072})
+_BM25_PAGE_SIZE = 500
 
 
 @dataclass
@@ -50,6 +53,19 @@ class RetrievalResult:
     retrieval_legs: list[str] = field(default_factory=list)  # which legs contributed
     component_scores: dict[str, float] = field(default_factory=dict)
     rrf_score: float = 0.0
+
+
+@dataclass(slots=True)
+class _BM25HeapEntry:
+    score: float
+    chunk_id: str
+    content: str
+    source_metadata: dict[str, Any]
+
+    def __lt__(self, other: _BM25HeapEntry) -> bool:
+        if self.score != other.score:
+            return self.score < other.score
+        return self.chunk_id > other.chunk_id
 
 
 class RetrievalExecutionError(RuntimeError):
@@ -241,33 +257,16 @@ async def hybrid_search(
     # Leg 4: bounded application-side Okapi BM25 over the persisted corpus.
     if retrieval_mode == "hybrid":
         try:
-            from app.rag.bm25 import BM25Retriever
-
-            corpus_limit = min(max(top_k * 50, 200), 5000)
-            corpus_sql = text(f"""
-                SELECT id, content, metadata
-                FROM {table}
-                WHERE collection_id = :cid
-                  {metadata_clause}
-                ORDER BY id ASC
-                LIMIT :corpus_limit
-            """)
-            rows = await session.execute(
-                corpus_sql,
-                {"cid": collection_id, "corpus_limit": corpus_limit, **metadata_params},
+            bm25_hits, bm25_trace = await _bm25_search_persisted(
+                session,
+                table=table,
+                query=query,
+                collection_id=collection_id,
+                result_limit=top_k * 3,
+                metadata_clause=metadata_clause,
+                metadata_params=metadata_params,
             )
-            retriever = BM25Retriever()
-            retriever.index(
-                [
-                    {
-                        "chunk_id": row[0],
-                        "content": row[1],
-                        "source_metadata": row[2] or {},
-                    }
-                    for row in rows.fetchall()
-                ]
-            )
-            for rank, hit in enumerate(retriever.search(query, top_k=top_k * 3), start=1):
+            for rank, hit in enumerate(bm25_hits, start=1):
                 bm25_ranks[hit.chunk_id] = (
                     hit.content,
                     hit.source_metadata,
@@ -278,7 +277,12 @@ async def hybrid_search(
             if strict:
                 raise RetrievalLegExecutionError("bm25") from exc
             logger.debug("bm25_leg_failed", error=str(exc)[:80])
-        _record_leg_evidence(evidence, "bm25", bm25_ranks)
+            bm25_trace = {
+                "corpus_size": 0,
+                "pages_scanned": 0,
+                "scoring_mode": "application_okapi_bm25_two_pass_keyset",
+            }
+        _record_leg_evidence(evidence, "bm25", bm25_ranks, detail=bm25_trace)
 
     # Collect all unique chunk IDs
     all_ids = set(vector_ranks) | set(fts_ranks) | set(trgm_ranks) | set(bm25_ranks)
@@ -368,6 +372,8 @@ def _record_leg_evidence(
     evidence: list[dict[str, Any]] | None,
     component: str,
     ranks: dict[str, tuple[str, dict[str, Any], int, float]],
+    *,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     if evidence is None:
         return
@@ -378,7 +384,94 @@ def _record_leg_evidence(
             "component_scores": {
                 chunk_id: item[3] for chunk_id, item in sorted(ranks.items())
             },
+            **(detail or {}),
         }
+    )
+
+
+async def _bm25_search_persisted(
+    session: AsyncSession,
+    *,
+    table: str,
+    query: str,
+    collection_id: str,
+    result_limit: int,
+    metadata_clause: str,
+    metadata_params: dict[str, Any],
+) -> tuple[list[BM25Hit], dict[str, Any]]:
+    scorer = BM25CorpusScorer()
+    pages_scanned = 0
+
+    async def read_pages(*, include_metadata: bool) -> AsyncIterator[list[Any]]:
+        nonlocal pages_scanned
+        after_id: Any = None
+        columns = "id, content, metadata" if include_metadata else "id, content"
+        while True:
+            after_clause = " AND id > :after_id" if after_id is not None else ""
+            page_sql = text(f"""
+                SELECT {columns}
+                FROM {table}
+                WHERE collection_id = :cid
+                  {metadata_clause}
+                  {after_clause}
+                ORDER BY id ASC
+                LIMIT :page_size
+            """)
+            params = {
+                "cid": collection_id,
+                "page_size": _BM25_PAGE_SIZE,
+                **metadata_params,
+            }
+            if after_id is not None:
+                params["after_id"] = after_id
+            rows = (await session.execute(page_sql, params)).fetchall()
+            if not rows:
+                break
+            pages_scanned += 1
+            yield list(rows)
+            after_id = rows[-1][0]
+            if len(rows) < _BM25_PAGE_SIZE:
+                break
+
+    async for page in read_pages(include_metadata=False):
+        for row in page:
+            scorer.observe(str(row[1] or ""))
+
+    heap: list[_BM25HeapEntry] = []
+    if result_limit > 0:
+        async for page in read_pages(include_metadata=True):
+            for row in page:
+                score = scorer.score(query, str(row[1] or ""))
+                if score <= 0:
+                    continue
+                candidate = _BM25HeapEntry(
+                    score=score,
+                    chunk_id=str(row[0]),
+                    content=str(row[1] or ""),
+                    source_metadata=dict(row[2] or {}),
+                )
+                if len(heap) < result_limit:
+                    heapq.heappush(heap, candidate)
+                elif heap[0] < candidate:
+                    heapq.heapreplace(heap, candidate)
+
+    ranked = sorted(heap, key=lambda item: (-item.score, item.chunk_id))
+    return (
+        [
+            BM25Hit(
+                chunk_id=item.chunk_id,
+                content=item.content,
+                score=item.score,
+                source_metadata=item.source_metadata,
+            )
+            for item in ranked
+        ],
+        {
+            "corpus_size": scorer.document_count,
+            "pages_scanned": pages_scanned,
+            "page_size": _BM25_PAGE_SIZE,
+            "scoring_mode": "application_okapi_bm25_two_pass_keyset",
+        },
     )
 
 
@@ -1019,7 +1112,7 @@ async def retrieve(
                 context_text = "\n".join(r.content[:300] for r in base_results[:5])
                 if strategy == "flare":
                     from app.rag.agentic.patterns.flare import FLAREPattern
-                    pattern = FLAREPattern()
+                    flare_pattern = FLAREPattern()
 
                     async def _flare_retrieve(q: str, **kw: Any) -> str:
                         extra = await hybrid_search(
@@ -1030,7 +1123,7 @@ async def retrieve(
                         )
                         return "\n".join(r.content[:300] for r in extra)
 
-                    refined = await pattern.execute(
+                    refined = await flare_pattern.execute(
                         query=query,
                         provider=provider,
                         retrieve_fn=_flare_retrieve,
@@ -1039,12 +1132,12 @@ async def retrieve(
                     )
                 elif strategy == "self_rag":
                     from app.rag.agentic.patterns.self_rag import SelfRAGPattern
-                    pattern = SelfRAGPattern()
+                    self_rag_pattern = SelfRAGPattern()
 
                     async def _self_rag_retrieve(q: str, **kw: Any) -> str:
                         return context_text
 
-                    refined = await pattern.execute(
+                    refined = await self_rag_pattern.execute(
                         query=query,
                         provider=provider,
                         retrieve_fn=_self_rag_retrieve,
@@ -1097,8 +1190,8 @@ async def retrieve(
                     return "\n".join(x.content[:300] for x in r)
 
                 from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
-                pattern = SpeculativeRAGPattern(n_candidates=2)
-                best = await pattern.execute(
+                speculative_pattern = SpeculativeRAGPattern(n_candidates=2)
+                best = await speculative_pattern.execute(
                     query=query,
                     provider=provider,
                     retrieve_fn=_spec_retrieve,
@@ -1149,8 +1242,8 @@ async def retrieve(
                     for r in base_results
                 ]
                 from app.rag.agentic.patterns.raptor import RAPTORPattern
-                pattern = RAPTORPattern(cluster_size=4, max_levels=2)
-                answer = await pattern.execute(
+                raptor_pattern = RAPTORPattern(cluster_size=4, max_levels=2)
+                answer = await raptor_pattern.execute(
                     query=query,
                     chunks=chunks,
                     provider=provider,
@@ -1194,8 +1287,8 @@ async def retrieve(
                     for r in base_results
                 ]
                 from app.rag.agentic.patterns.colbert import ColBERTPattern
-                pattern = ColBERTPattern(alpha=0.5)
-                reranked = pattern.rerank(query=query, chunks=chunks, top_k=top_k)
+                colbert_pattern = ColBERTPattern(alpha=0.5)
+                reranked = colbert_pattern.rerank(query=query, chunks=chunks, top_k=top_k)
                 return [
                     RetrievalResult(
                         chunk_id=c["chunk_id"],
@@ -1237,8 +1330,8 @@ async def retrieve(
                     {"content": r.content, "chunk_id": r.chunk_id, "score": r.score}
                     for r in base_results
                 ]
-                pattern = AgenticChunkingPattern(max_propositions=5)
-                proposition_chunks = await pattern.execute(
+                chunking_pattern = AgenticChunkingPattern(max_propositions=5)
+                proposition_chunks = await chunking_pattern.execute(
                     chunks=chunks,
                     provider=provider,
                     query=query,

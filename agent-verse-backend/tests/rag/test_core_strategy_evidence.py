@@ -184,6 +184,34 @@ class _HybridSession:
         raise AssertionError(sql)
 
 
+class _PaginatedCorpusSession(_HybridSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.corpus = [
+            (f"chunk-{index:04d}", f"ordinary document {index}", {"department": "legal"})
+            for index in range(501)
+        ]
+        self.corpus[-1] = (
+            "chunk-0500",
+            "needle only appears after the first corpus page",
+            {"department": "legal"},
+        )
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Rows:
+        sql = str(statement)
+        if any(component in sql for component in ("<=>", "ts_rank_cd", "similarity(content")):
+            self.sql.append(sql)
+            return _Rows([])
+        if "ORDER BY id ASC" not in sql or "SELECT id, content" not in sql:
+            return await super().execute(statement, params)
+        self.sql.append(sql)
+        parameters = params or {}
+        after_id = parameters.get("after_id")
+        page_size = int(parameters.get("page_size", parameters.get("corpus_limit", 200)))
+        rows = [row for row in self.corpus if after_id is None or row[0] > after_id]
+        return _Rows(rows[:page_size])
+
+
 async def test_hybrid_executes_four_real_legs_and_records_scores() -> None:
     session = _HybridSession()
     evidence: list[dict[str, Any]] = []
@@ -223,6 +251,29 @@ async def test_hybrid_strict_mode_fails_when_bm25_corpus_leg_fails() -> None:
             strict=True,
             evidence=[],
         )
+
+
+async def test_bm25_scores_complete_collection_without_hidden_cap() -> None:
+    session = _PaginatedCorpusSession()
+    evidence: list[dict[str, Any]] = []
+
+    results = await hybrid_search(
+        session,  # type: ignore[arg-type]
+        query="needle",
+        query_embedding=[0.1] * 1536,
+        collection_id="collection-1",
+        top_k=1,
+        metadata_filter={"department": "legal"},
+        strict=True,
+        evidence=evidence,
+    )
+
+    bm25_evidence = next(item for item in evidence if item["component"] == "bm25")
+    assert results[0].chunk_id == "chunk-0500"
+    assert bm25_evidence["corpus_size"] == 501
+    assert bm25_evidence["scoring_mode"] == "application_okapi_bm25_two_pass_keyset"
+    assert bm25_evidence["pages_scanned"] == 4
+    assert all("corpus_limit" not in sql for sql in session.sql)
 
 
 async def test_hyde_embeds_generated_document_and_hashes_provenance() -> None:
@@ -268,14 +319,25 @@ async def test_multi_hop_embeds_each_decomposition_and_dedupes_with_provenance()
         return await operation(session)
 
     async def search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
+        chunk_id = {
+            "policy duration": "duration-chunk",
+            "policy exceptions": "exceptions-chunk",
+        }[kwargs["query"]]
         return [
             RetrievalResult(
-                "shared",
-                "shared evidence",
+                chunk_id,
+                f"evidence for {kwargs['query']}",
                 0.7,
                 {"source": "policy.pdf"},
                 ["vector"],
-            )
+            ),
+            RetrievalResult(
+                "shared-chunk",
+                "evidence shared by both hops",
+                0.6,
+                {"source": "shared.pdf"},
+                ["vector"],
+            ),
         ]
 
     adapter = core_strategy_capabilities()[RAGStrategy.MULTI_HOP].adapter
@@ -293,10 +355,15 @@ async def test_multi_hop_embeds_each_decomposition_and_dedupes_with_provenance()
     assert embedder.texts == ["policy duration", "policy exceptions"]
     assert len(sessions) == 2
     assert len({id(session) for session in sessions}) == 2
-    assert len(result.citations) == 1
-    assert result.citations[0].metadata["hop_queries"] == [
-        "policy duration",
-        "policy exceptions",
+    assert [citation.chunk_id for citation in result.citations] == [
+        "duration-chunk",
+        "exceptions-chunk",
+        "shared-chunk",
+    ]
+    assert [citation.metadata["hop_queries"] for citation in result.citations] == [
+        ["policy duration"],
+        ["policy exceptions"],
+        ["policy duration", "policy exceptions"],
     ]
     assert [leg.query for leg in result.retrieval_legs] == [
         "policy duration",
@@ -367,6 +434,122 @@ async def test_readiness_reflects_core_dependencies() -> None:
         for strategy in RAG_RUNTIME_CAPABILITIES
     }
     assert all(not status.available for status in statuses.values())
+
+
+@pytest.mark.parametrize(
+    ("strategy", "embedder", "resolver", "reason"),
+    [
+        (RAGStrategy.NAIVE, object(), None, "embedder_unavailable"),
+        (
+            RAGStrategy.HYBRID,
+            SimpleNamespace(embed=lambda _: None),
+            None,
+            "embedder_unavailable",
+        ),
+        (
+            RAGStrategy.HYDE,
+            _Embedder(),
+            lambda *_: ResolvedLLM(provider=object(), model="model"),
+            "llm_provider_unavailable",
+        ),
+        (
+            RAGStrategy.FUSION,
+            _Embedder(),
+            lambda *_: ResolvedLLM(
+                provider=SimpleNamespace(complete=lambda _: None), model="model"
+            ),
+            "llm_provider_unavailable",
+        ),
+        (
+            RAGStrategy.MULTI_HOP,
+            _Embedder(),
+            lambda *_: ResolvedLLM(provider=_Provider(["unused"]), model=" "),
+            "llm_provider_unavailable",
+        ),
+    ],
+)
+async def test_readiness_rejects_malformed_core_dependencies(
+    strategy: RAGStrategy,
+    embedder: object,
+    resolver: Any,
+    reason: str,
+) -> None:
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=embedder,
+            llm_resolver=resolver,
+        )
+    )
+
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=strategy,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == reason
+
+
+async def test_readiness_rejects_non_callable_session_factory() -> None:
+    dependencies = RetrievalDependencies(
+        session_factory=object(),  # type: ignore[arg-type]
+        collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+        strategy_capabilities=core_strategy_capabilities(),
+        embedder=_Embedder(),
+    )
+    gateway = RetrievalGateway(dependencies)
+
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "session_factory_unavailable"
+
+
+async def test_readiness_rejects_callable_without_async_session_context() -> None:
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=lambda: object(),  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+        )
+    )
+
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "session_factory_unavailable"
+
+
+async def test_readiness_rejects_async_function_instead_of_context_factory() -> None:
+    async def invalid_factory() -> object:
+        return object()
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=invalid_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+        )
+    )
+
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "session_factory_unavailable"
 
 
 async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:

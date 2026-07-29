@@ -327,13 +327,17 @@ async def test_gateway_readiness_validates_adapter_and_collection_authorization(
 async def test_gateway_readiness_validates_tenant_provider_and_model() -> None:
     tenants: list[TenantContext] = []
 
+    class Provider:
+        async def complete(self, request: object) -> object:
+            return request
+
     async def resolve_llm(
         tenant_ctx: TenantContext,
         strategy: RAGStrategy,
     ) -> ResolvedLLM:
         tenants.append(tenant_ctx)
         assert strategy is RAGStrategy.HYBRID
-        return ResolvedLLM(provider=object(), model="tenant-model")
+        return ResolvedLLM(provider=Provider(), model="tenant-model")
 
     readiness = await _gateway_for_readiness(
         requires_provider=True,
