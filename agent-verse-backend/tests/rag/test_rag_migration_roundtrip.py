@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 from collections.abc import Iterator
@@ -12,6 +13,7 @@ from typing import TypedDict
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
@@ -109,6 +111,12 @@ async def _schema_state(database_url: str) -> _SchemaState:
 
 @pytest.fixture(scope="module")
 def isolated_postgres() -> Iterator[str]:
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as postgres:
+        yield postgres.get_connection_url()
+
+
+@pytest.fixture
+def owner_migration_postgres() -> Iterator[str]:
     with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as postgres:
         yield postgres.get_connection_url()
 
@@ -301,3 +309,357 @@ def test_0092_documents_downgrade_association_warning_and_restore_path() -> None
     assert "chunk.metadata->>'repo_url' = job.source_url" in migration
     assert "job.source_type = 'repository'" in migration
     assert "indisvalid" in migration
+
+
+_OWNER_ROLE = "repository_migration_owner"
+_OWNER_PASSWORD = "repository-migration-password"
+_AFFECTED_TABLES = ("knowledge_documents", *(f"knowledge_chunks_{d}" for d in DIMENSIONS))
+
+
+def _owner_url(admin_url: str) -> str:
+    return make_url(admin_url).set(
+        username=_OWNER_ROLE,
+        password=_OWNER_PASSWORD,
+    ).render_as_string(hide_password=False)
+
+
+def _run_alembic(database_url: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["alembic", *arguments],
+        cwd=BACKEND_ROOT,
+        env={**os.environ, "DATABASE_URL": database_url},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+async def _seed_owner_migration_case(database_url: str, *, invalid_job: bool = False) -> None:
+    engine = create_async_engine(database_url)
+    async with engine.begin() as connection:
+        database_name = (
+            await connection.execute(text("SELECT quote_ident(current_database())"))
+        ).scalar_one()
+        await connection.execute(
+            text(
+                f"CREATE ROLE {_OWNER_ROLE} LOGIN PASSWORD '{_OWNER_PASSWORD}' "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+            )
+        )
+        await connection.execute(text(f"GRANT CREATE ON DATABASE {database_name} TO {_OWNER_ROLE}"))
+
+        tenant_rows = (
+            ("owner-tenant-a", "owner-a@example.test", "owner-collection-a"),
+            ("owner-tenant-b", "owner-b@example.test", "owner-collection-b"),
+        )
+        for tenant_id, email, collection_id in tenant_rows:
+            await connection.execute(
+                text(
+                    "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                    "VALUES (:id, :id, :email, 'free', true)"
+                ),
+                {"id": tenant_id, "email": email},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO knowledge_collections (id, tenant_id, name) "
+                    "VALUES (:id, :tenant_id, :id)"
+                ),
+                {"id": collection_id, "tenant_id": tenant_id},
+            )
+
+        jobs = (
+            (
+                "owner-job-a",
+                "owner-tenant-a",
+                "owner-collection-a",
+                None if invalid_job else "https://github.com/example/owner-a",
+                "queued",
+            ),
+            (
+                "owner-job-b",
+                "owner-tenant-b",
+                "owner-collection-b",
+                "https://github.com/example/owner-b",
+                "running",
+            ),
+        )
+        for job_id, tenant_id, collection_id, source_url, status in jobs:
+            await connection.execute(
+                text("""
+                    INSERT INTO knowledge_documents
+                        (id, tenant_id, collection_id, title, source_url, source_type,
+                         content_hash, status, domain_metadata)
+                    VALUES
+                        (:id, :tenant_id, :collection_id, :id, :source_url, 'repository',
+                         'legacy-hash', :status, '{"record_type":"ingestion_job"}'::jsonb)
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_id,
+                    "collection_id": collection_id,
+                    "source_url": source_url,
+                    "status": status,
+                },
+            )
+
+        if not invalid_job:
+            chunks = (
+                (
+                    768,
+                    "owner-chunk-a",
+                    "owner-job-a",
+                    "owner-tenant-a",
+                    "owner-collection-a",
+                    "https://github.com/example/owner-a",
+                ),
+                (
+                    1024,
+                    "owner-chunk-b",
+                    "owner-job-b",
+                    "owner-tenant-b",
+                    "owner-collection-b",
+                    "https://github.com/example/owner-b",
+                ),
+            )
+            for dimension, chunk_id, job_id, tenant_id, collection_id, source_url in chunks:
+                await connection.execute(
+                    text(f"""
+                        INSERT INTO knowledge_chunks_{dimension}
+                            (id, tenant_id, collection_id, document_id, chunk_index,
+                             content, content_hash, embedding, metadata, strategy_metadata)
+                        VALUES
+                            (:id, :tenant_id, :collection_id, :job_id, 0,
+                             'legacy chunk', 'legacy-hash',
+                             CAST(array_fill(0::real, ARRAY[{dimension}]) AS vector),
+                             CAST(:metadata AS jsonb), CAST(:strategy AS jsonb))
+                    """),
+                    {
+                        "id": chunk_id,
+                        "tenant_id": tenant_id,
+                        "collection_id": collection_id,
+                        "job_id": job_id,
+                        "metadata": json.dumps({"repo_url": source_url}),
+                        "strategy": json.dumps({"ingestion_job_id": job_id}),
+                    },
+                )
+
+        await connection.execute(text(f"ALTER SCHEMA public OWNER TO {_OWNER_ROLE}"))
+        await connection.execute(text(f"ALTER TABLE alembic_version OWNER TO {_OWNER_ROLE}"))
+        for table in _AFFECTED_TABLES:
+            await connection.execute(text(f"ALTER TABLE {table} OWNER TO {_OWNER_ROLE}"))
+        await connection.execute(
+            text(f"GRANT SELECT ON knowledge_collections TO {_OWNER_ROLE}")
+        )
+    await engine.dispose()
+
+
+async def _owner_migration_state(
+    admin_url: str,
+    owner_url: str,
+) -> dict[str, object]:
+    admin_engine = create_async_engine(admin_url)
+    async with admin_engine.connect() as connection:
+        jobs = (
+            await connection.execute(
+                text(
+                    "SELECT id, status, job_source_hash FROM knowledge_documents "
+                    "WHERE id IN ('owner-job-a', 'owner-job-b') ORDER BY id"
+                )
+            )
+        ).all()
+        associations = (
+            await connection.execute(
+                text(
+                    "SELECT id, ingestion_job_id FROM knowledge_chunks_768 "
+                    "WHERE id = 'owner-chunk-a' UNION ALL "
+                    "SELECT id, ingestion_job_id FROM knowledge_chunks_1024 "
+                    "WHERE id = 'owner-chunk-b' ORDER BY id"
+                )
+            )
+        ).all()
+        flags = {
+            str(row[0]): (bool(row[1]), bool(row[2]))
+            for row in (
+                await connection.execute(
+                    text(
+                        "SELECT relname, relrowsecurity, relforcerowsecurity "
+                        "FROM pg_class WHERE relname = ANY(:tables)"
+                    ),
+                    {"tables": list(_AFFECTED_TABLES)},
+                )
+            ).all()
+        }
+        owners = dict(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT relname, pg_get_userbyid(relowner) "
+                        "FROM pg_class WHERE relname = ANY(:tables)"
+                    ),
+                    {"tables": list(_AFFECTED_TABLES)},
+                )
+            ).all()
+        )
+        schema_owner = (
+            await connection.execute(
+                text(
+                    "SELECT pg_get_userbyid(nspowner) FROM pg_namespace "
+                    "WHERE nspname = 'public'"
+                )
+            )
+        ).scalar_one()
+        constraints = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint "
+                        "WHERE conname = 'ck_repository_ingestion_job_state' "
+                        "OR conname LIKE 'fk_knowledge_chunks_%_ingestion_job_scope'"
+                    )
+                )
+            ).scalars()
+        )
+        role_flags = (
+            await connection.execute(
+                text(
+                    "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                    "WHERE rolname = :role"
+                ),
+                {"role": _OWNER_ROLE},
+            )
+        ).one()
+    await admin_engine.dispose()
+
+    owner_engine = create_async_engine(owner_url)
+    visible: dict[str, tuple[int, int]] = {}
+    async with owner_engine.begin() as connection:
+        for tenant_id in ("owner-tenant-a", "owner-tenant-b"):
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": tenant_id},
+            )
+            documents = (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM knowledge_documents "
+                        "WHERE id IN ('owner-job-a', 'owner-job-b')"
+                    )
+                )
+            ).scalar_one()
+            chunks = (
+                await connection.execute(
+                    text(
+                        "SELECT (SELECT count(*) FROM knowledge_chunks_768 "
+                        "WHERE id IN ('owner-chunk-a', 'owner-chunk-b')) + "
+                        "(SELECT count(*) FROM knowledge_chunks_1024 "
+                        "WHERE id IN ('owner-chunk-a', 'owner-chunk-b'))"
+                    )
+                )
+            ).scalar_one()
+            visible[tenant_id] = (int(documents), int(chunks))
+    await owner_engine.dispose()
+
+    return {
+        "jobs": [(str(row[0]), str(row[1]), str(row[2])) for row in jobs],
+        "associations": [(str(row[0]), str(row[1])) for row in associations],
+        "flags": flags,
+        "owners": {str(table): str(owner) for table, owner in owners.items()},
+        "schema_owner": str(schema_owner),
+        "constraints": constraints,
+        "role_flags": tuple(role_flags),
+        "visible": visible,
+    }
+
+
+def test_0092_owner_migrator_backfills_all_tenants_and_restores_force_rls(
+    owner_migration_postgres: str,
+) -> None:
+    _alembic(owner_migration_postgres, "upgrade", "0091_rag_ingestion_structures")
+    asyncio.run(_seed_owner_migration_case(owner_migration_postgres))
+    owner_url = _owner_url(owner_migration_postgres)
+
+    result = _run_alembic(owner_url, "upgrade", "0092_repository_ingestion_leases")
+
+    assert result.returncode == 0, result.stderr
+    state = asyncio.run(_owner_migration_state(owner_migration_postgres, owner_url))
+    assert state["jobs"] == [
+        (
+            "owner-job-a",
+            "queued",
+            hashlib.sha256(b"https://github.com/example/owner-a").hexdigest(),
+        ),
+        (
+            "owner-job-b",
+            "failed",
+            hashlib.sha256(b"https://github.com/example/owner-b").hexdigest(),
+        ),
+    ]
+    assert state["associations"] == [
+        ("owner-chunk-a", "owner-job-a"),
+        ("owner-chunk-b", "owner-job-b"),
+    ]
+    assert state["flags"] == dict.fromkeys(_AFFECTED_TABLES, (True, True))
+    assert state["owners"] == dict.fromkeys(_AFFECTED_TABLES, _OWNER_ROLE)
+    assert state["schema_owner"] == _OWNER_ROLE
+    assert state["constraints"] == {
+        "ck_repository_ingestion_job_state",
+        *(f"fk_knowledge_chunks_{d}_ingestion_job_scope" for d in DIMENSIONS),
+    }
+    assert state["role_flags"] == (False, False)
+    assert state["visible"] == {
+        "owner-tenant-a": (1, 1),
+        "owner-tenant-b": (1, 1),
+    }
+
+
+async def _failed_owner_migration_state(database_url: str) -> tuple[str, bool, bool, int]:
+    engine = create_async_engine(database_url)
+    async with engine.connect() as connection:
+        version = (
+            await connection.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one()
+        flags = (
+            await connection.execute(
+                text(
+                    "SELECT bool_and(relrowsecurity), bool_and(relforcerowsecurity) "
+                    "FROM pg_class WHERE relname = ANY(:tables)"
+                ),
+                {"tables": list(_AFFECTED_TABLES)},
+            )
+        ).one()
+        lease_columns = (
+            await connection.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_name = 'knowledge_documents' "
+                    "AND column_name IN "
+                    "('job_source_hash', 'lease_owner', 'lease_expires_at', 'heartbeat_at')"
+                )
+            )
+        ).scalar_one()
+    await engine.dispose()
+    return str(version), bool(flags[0]), bool(flags[1]), int(lease_columns)
+
+
+def test_0092_owner_migrator_failure_rolls_back_force_rls(
+    owner_migration_postgres: str,
+) -> None:
+    _alembic(owner_migration_postgres, "upgrade", "0091_rag_ingestion_structures")
+    asyncio.run(
+        _seed_owner_migration_case(owner_migration_postgres, invalid_job=True)
+    )
+
+    result = _run_alembic(
+        _owner_url(owner_migration_postgres),
+        "upgrade",
+        "0092_repository_ingestion_leases",
+    )
+
+    assert result.returncode != 0
+    assert asyncio.run(_failed_owner_migration_state(owner_migration_postgres)) == (
+        "0091_rag_ingestion_structures",
+        True,
+        True,
+        0,
+    )
