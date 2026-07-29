@@ -44,10 +44,20 @@ async def query_graph_evidence(
         else ""
     )
     path_metadata_clause = (
-        "AND ("
+        "AND "
         "CAST(source_node.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb) "
-        "OR CAST(target_node.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb)"
-        ")"
+        "AND CAST(target_node.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb) "
+        "AND CAST(edge.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb)"
+        if request.filters
+        else ""
+    )
+    traversal_edge_metadata_clause = (
+        "AND CAST(edge.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb)"
+        if request.filters
+        else ""
+    )
+    traversal_node_metadata_clause = (
+        "AND CAST(next_node.extra_metadata AS jsonb) @> CAST(:metadata_filter AS jsonb)"
         if request.filters
         else ""
     )
@@ -136,12 +146,7 @@ async def query_graph_evidence(
                 ), community_nodes(root_id, node_id, depth) AS (
                     SELECT seed.id, seed.id, 0 FROM seed_nodes AS seed
                     UNION
-                    SELECT community.root_id,
-                           CASE
-                             WHEN edge.source_node_id = community.node_id
-                             THEN edge.target_node_id
-                             ELSE edge.source_node_id
-                           END,
+                    SELECT community.root_id, next_node.id,
                            community.depth + 1
                     FROM community_nodes AS community
                     JOIN knowledge_edges AS edge
@@ -150,6 +155,15 @@ async def query_graph_evidence(
                        edge.source_node_id = community.node_id
                        OR edge.target_node_id = community.node_id
                      )
+                     {traversal_edge_metadata_clause}
+                    JOIN knowledge_nodes AS next_node
+                      ON next_node.id = CASE
+                           WHEN edge.source_node_id = community.node_id
+                           THEN edge.target_node_id
+                           ELSE edge.source_node_id
+                         END
+                     AND next_node.tenant_id = :tenant_id
+                     {traversal_node_metadata_clause}
                     WHERE community.depth < 2
                 )
                 SELECT community.root_id::text AS community_id,

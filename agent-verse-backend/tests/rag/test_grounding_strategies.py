@@ -18,6 +18,7 @@ from app.providers.base import (
     EmbedRequest,
     EmbedResponse,
 )
+from app.rag.agentic.patterns import web_augmented
 from app.rag.agentic.patterns.web_augmented import (
     SafeWebSearchCapability,
     WebEvidence,
@@ -28,7 +29,7 @@ from app.rag.contracts import (
     RAGExecutionRequest,
     RAGStrategy,
 )
-from app.rag.engine import RetrievalResult
+from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
     ResolvedLLM,
@@ -187,6 +188,20 @@ class _WebCapability:
                 freshness_seconds=0.0,
             ),
         ]
+
+
+class _OutageWebCapability:
+    configured = True
+
+    async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
+        raise web_augmented.WebSearchCapabilityError("backend_outage")
+
+
+class _EmptyWebCapability:
+    configured = True
+
+    async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
+        return []
 
 
 class _AllowWebPolicy:
@@ -655,6 +670,104 @@ async def test_web_augmented_bounds_safe_results_and_preserves_freshness() -> No
     assert request.max_results <= 2
     assert request.max_bytes <= 65_536
     assert request.timeout_seconds <= 10.0
+
+
+async def test_web_augmented_propagates_backend_outage_as_execution_error() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("persisted", "persisted", 0.8, {}, ["vector"])]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.WEB_AUGMENTED].adapter
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="backend_outage"),
+    ):
+        await adapter.execute(
+            _request(RAGStrategy.WEB_AUGMENTED),
+            _context(
+                RAGStrategy.WEB_AUGMENTED,
+                embedder=_Embedder(),
+                web=_OutageWebCapability(),
+                policies=(_AllowWebPolicy(),),
+                runner=runner,
+            ),
+        )
+
+
+async def test_web_augmented_traces_successful_empty_search_distinctly() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("persisted", "persisted", 0.8, {}, ["vector"])]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.WEB_AUGMENTED].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            _request(RAGStrategy.WEB_AUGMENTED),
+            _context(
+                RAGStrategy.WEB_AUGMENTED,
+                embedder=_Embedder(),
+                web=_EmptyWebCapability(),
+                policies=(_AllowWebPolicy(),),
+                runner=runner,
+            ),
+        )
+
+    assert result.strategy_trace[-1].detail["stop_reason"] == "web_search_empty"
+    assert result.strategy_trace[-1].detail["web_status"] == "empty"
+
+
+async def test_corrective_web_fallback_propagates_backend_outage() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("low", "low", 0.1, {}, ["vector"])]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CORRECTIVE].adapter
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="backend_outage"),
+    ):
+        await adapter.execute(
+            _request(RAGStrategy.CORRECTIVE),
+            _context(
+                RAGStrategy.CORRECTIVE,
+                embedder=_Embedder(),
+                provider=_CorrectiveProvider(),
+                web=_OutageWebCapability(),
+                policies=(_AllowWebPolicy(),),
+                runner=runner,
+            ),
+        )
+
+
+async def test_corrective_web_fallback_traces_successful_empty_search() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("low", "low", 0.1, {}, ["vector"])]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CORRECTIVE].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            _request(RAGStrategy.CORRECTIVE),
+            _context(
+                RAGStrategy.CORRECTIVE,
+                embedder=_Embedder(),
+                provider=_CorrectiveProvider(),
+                web=_EmptyWebCapability(),
+                policies=(_AllowWebPolicy(),),
+                runner=runner,
+            ),
+        )
+
+    assert result.strategy_trace[-1].detail["stop_reason"] == "web_fallback_empty"
+    assert result.strategy_trace[-1].detail["web_status"] == "empty"
 
 
 @pytest.mark.parametrize(

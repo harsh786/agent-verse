@@ -63,6 +63,23 @@ class WebPolicyDecision:
     allowed_domains: tuple[str, ...] = ()
 
 
+class WebSearchCapabilityError(RuntimeError):
+    """A configured web capability failed instead of returning search results."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Web search capability failed: {reason}")
+        self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedWebTarget:
+    original_url: str
+    pinned_url: str
+    hostname: str
+    host_header: str
+    domain: str
+
+
 async def resolve_web_policy(
     policy_services: tuple[object, ...],
     tenant_context: TenantContext,
@@ -152,12 +169,36 @@ class GovernedWebSearchCapability:
         )
         self._transport = transport
 
-    async def _validate_url(self, url: str, allowed_domains: tuple[str, ...]) -> str:
-        domain = (urlparse(url).hostname or "").lower().strip(".")
+    async def _validate_url(
+        self,
+        url: str,
+        allowed_domains: tuple[str, ...],
+    ) -> _ValidatedWebTarget:
+        parsed = urlparse(url)
+        domain = (parsed.hostname or "").lower().strip(".")
         if not _domain_allowed(domain, allowed_domains):
             raise ValueError("URL domain is not allowlisted")
-        await asyncio.to_thread(assert_public_url, url, context="rag_web_fetch")
-        return domain
+        resolved_ips = await asyncio.to_thread(
+            assert_public_url,
+            url,
+            context="rag_web_fetch",
+        )
+        if not resolved_ips:
+            raise ValueError("URL validation returned no public address")
+        hostname = parsed.hostname or ""
+        port = parsed.port
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        host_header = f"[{hostname}]" if ":" in hostname else hostname
+        if port is not None and port != default_port:
+            host_header = f"{host_header}:{port}"
+        pinned_url = str(httpx.URL(url).copy_with(host=resolved_ips[0]))
+        return _ValidatedWebTarget(
+            original_url=url,
+            pinned_url=pinned_url,
+            hostname=hostname,
+            host_header=host_header,
+            domain=domain,
+        )
 
     async def _fetch_result(
         self,
@@ -172,12 +213,18 @@ class GovernedWebSearchCapability:
             timeout=max(0.1, deadline - asyncio.get_running_loop().time()),
             follow_redirects=False,
             transport=self._transport,
+            trust_env=False,
             headers={"User-Agent": "AgentVerse-RAG/1.0"},
         ) as client:
             for redirect_count in range(self._MAX_REDIRECTS + 1):
                 async with asyncio.timeout_at(deadline):
-                    domain = await self._validate_url(current_url, allowed_domains)
-                    async with client.stream("GET", current_url) as response:
+                    target = await self._validate_url(current_url, allowed_domains)
+                    async with client.stream(
+                        "GET",
+                        target.pinned_url,
+                        headers={"Host": target.host_header},
+                        extensions={"sni_hostname": target.hostname},
+                    ) as response:
                         if response.is_redirect:
                             if redirect_count >= self._MAX_REDIRECTS:
                                 raise ValueError("Web result exceeded redirect limit")
@@ -209,7 +256,7 @@ class GovernedWebSearchCapability:
                     content=content,
                     fetched_at=fetched_at,
                     source=result.source or "searxng",
-                    domain=domain,
+                    domain=target.domain,
                     freshness_seconds=0.0,
                 )
         raise ValueError("Web result fetch did not complete")
@@ -236,13 +283,16 @@ class GovernedWebSearchCapability:
         max_bytes = max(1, min(request.max_bytes, _MAX_WEB_BYTES))
         timeout_seconds = max(0.1, min(request.timeout_seconds, _MAX_WEB_TIMEOUT_SECONDS))
         deadline = asyncio.get_running_loop().time() + timeout_seconds
-        async with asyncio.timeout_at(deadline):
-            search_result = await self._backend.search(
-                request.query,
-                num_results=max_results,
-            )
+        try:
+            async with asyncio.timeout_at(deadline):
+                search_result = await self._backend.search(
+                    request.query,
+                    num_results=max_results,
+                )
+        except TimeoutError as exc:
+            raise WebSearchCapabilityError("backend_timeout") from exc
         if search_result.error:
-            return []
+            raise WebSearchCapabilityError(search_result.error_code or "backend_error")
 
         evidence: list[WebEvidence] = []
         remaining_bytes = max_bytes
@@ -256,8 +306,12 @@ class GovernedWebSearchCapability:
                     max_bytes=remaining_bytes,
                     deadline=deadline,
                 )
-            except (httpx.HTTPError, TimeoutError, ValueError):
+            except ValueError:
                 continue
+            except (httpx.TimeoutException, TimeoutError) as exc:
+                raise WebSearchCapabilityError("fetch_timeout") from exc
+            except httpx.HTTPError as exc:
+                raise WebSearchCapabilityError("fetch_error") from exc
             item_size = len(item.content.encode("utf-8"))
             if item_size == 0:
                 continue

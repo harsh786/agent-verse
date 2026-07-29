@@ -502,6 +502,14 @@ async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
         ("a-legal-1", tenant_a.tenant_id, "entity", "Retention", chunk_id, "legal"),
         ("a-legal-2", tenant_a.tenant_id, "entity", "Legal Hold", chunk_id, "legal"),
         (
+            "a-legal-beyond",
+            tenant_a.tenant_id,
+            "entity",
+            "Beyond Node",
+            excluded_chunk_id,
+            "legal",
+        ),
+        (
             "a-engineering",
             tenant_a.tenant_id,
             "entity",
@@ -534,6 +542,19 @@ async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
             )
         for edge_id, tenant_id, source_id, target_id in (
             ("a-edge", tenant_a.tenant_id, "a-legal-1", "a-legal-2"),
+            ("a-mixed-edge", tenant_a.tenant_id, "a-legal-1", "a-engineering"),
+            (
+                "a-crossing-edge",
+                tenant_a.tenant_id,
+                "a-engineering",
+                "a-legal-beyond",
+            ),
+            (
+                "a-disallowed-edge",
+                tenant_a.tenant_id,
+                "a-legal-1",
+                "a-legal-beyond",
+            ),
             ("b-edge", tenant_b.tenant_id, "b-foreign-1", "b-foreign-2"),
         ):
             await session.execute(
@@ -542,14 +563,25 @@ async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
                     "(id, tenant_id, source_node_id, target_node_id, edge_type, label, "
                     " confidence, evidence, provenance, extra_metadata) VALUES "
                     "(:id, :tenant_id, :source_id, :target_id, 'depends_on', 'depends', "
-                    " 0.8, 'relationship evidence', 'policy.pdf', CAST(:metadata AS json))"
+                    " 0.8, :evidence, 'policy.pdf', CAST(:metadata AS json))"
                 ),
                 {
                     "id": edge_id,
                     "tenant_id": tenant_id,
                     "source_id": source_id,
                     "target_id": target_id,
-                    "metadata": '{"department":"legal"}',
+                    "evidence": (
+                        "mixed path evidence"
+                        if edge_id
+                        in {"a-mixed-edge", "a-crossing-edge", "a-disallowed-edge"}
+                        else "relationship evidence"
+                    ),
+                    "metadata": (
+                        '{"department":"engineering"}'
+                        if edge_id
+                        in {"a-mixed-edge", "a-crossing-edge", "a-disallowed-edge"}
+                        else '{"department":"legal"}'
+                    ),
                 },
             )
 
@@ -581,6 +613,8 @@ async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
     }
     assert all("Foreign" not in citation.content for citation in graph_citations)
     assert all("Engineering" not in citation.content for citation in graph_citations)
+    assert all("mixed path" not in citation.content for citation in graph_citations)
+    assert all("Beyond Node" not in citation.content for citation in graph_citations)
     assert all(citation.metadata["tenant_id"].startswith("sha256:") for citation in graph_citations)
 
     async with (

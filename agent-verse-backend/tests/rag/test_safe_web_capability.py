@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -166,6 +167,118 @@ async def test_governed_capability_rejects_redirect_to_private_target() -> None:
         "https://searx.test/search?q=current+retention+guidance&format=json&pageno=1",
         "https://8.8.8.8/start",
     ]
+
+
+async def test_governed_capability_pins_validated_ip_without_dns_reresolution() -> None:
+    fetch_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "searx.test":
+            return _searx_response(["https://safe.example/guidance"])
+        fetch_requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b"Pinned public guidance",
+        )
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(domains=("safe.example",)),),
+        transport=httpx.MockTransport(handler),
+    )
+    assert capability is not None
+
+    with patch.object(
+        web_augmented,
+        "assert_public_url",
+        side_effect=[["8.8.8.8"], ["127.0.0.1"]],
+    ) as resolver:
+        evidence = await capability.search(_request(domains=("safe.example",)))
+
+    assert len(evidence) == 1
+    assert resolver.call_count == 1
+    assert fetch_requests[0].url.host == "8.8.8.8"
+    assert fetch_requests[0].headers["host"] == "safe.example"
+    assert fetch_requests[0].extensions["sni_hostname"] == "safe.example"
+    assert evidence[0].url == "https://safe.example/guidance"
+
+
+async def test_governed_capability_pins_each_redirect_resolved_destination() -> None:
+    fetch_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "searx.test":
+            return _searx_response(["https://first.example/start"])
+        fetch_requests.append(request)
+        if request.url.host == "8.8.8.8":
+            return httpx.Response(
+                302,
+                headers={"location": "https://second.example/final"},
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b"Redirected pinned guidance",
+        )
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(domains=("first.example", "second.example")),),
+        transport=httpx.MockTransport(handler),
+    )
+    assert capability is not None
+
+    with patch.object(
+        web_augmented,
+        "assert_public_url",
+        side_effect=[["8.8.8.8"], ["8.8.4.4"]],
+    ) as resolver:
+        evidence = await capability.search(
+            _request(domains=("first.example", "second.example"))
+        )
+
+    assert resolver.call_count == 2
+    assert [request.url.host for request in fetch_requests] == ["8.8.8.8", "8.8.4.4"]
+    assert [request.headers["host"] for request in fetch_requests] == [
+        "first.example",
+        "second.example",
+    ]
+    assert [request.extensions["sni_hostname"] for request in fetch_requests] == [
+        "first.example",
+        "second.example",
+    ]
+    assert evidence[0].url == "https://second.example/final"
+
+
+@pytest.mark.parametrize("failure", ["outage", "timeout"])
+async def test_governed_capability_raises_typed_backend_failure(failure: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
+        raise httpx.ConnectError("offline", request=request)
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(),),
+        transport=httpx.MockTransport(handler),
+    )
+    assert capability is not None
+
+    with pytest.raises(web_augmented.WebSearchCapabilityError) as exc_info:
+        await capability.search(_request(domains=()))
+    assert exc_info.value.reason == f"backend_{failure}"
+
+
+async def test_governed_capability_preserves_successful_empty_backend_result() -> None:
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(),),
+        transport=httpx.MockTransport(lambda request: _searx_response([])),
+    )
+    assert capability is not None
+
+    assert await capability.search(_request(domains=())) == []
 
 
 async def test_governed_capability_enforces_policy_before_search() -> None:
