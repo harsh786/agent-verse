@@ -88,7 +88,7 @@ def assert_public_url(
     *,
     allowed_domains: list[str] | None = None,
     context: str = "",
-) -> None:
+) -> list[str]:
     """Assert that a URL is safe to fetch (public, non-metadata, correct scheme).
 
     Raises SSRFError if the URL should be blocked.
@@ -124,7 +124,7 @@ def assert_public_url(
     if allowed_domains:
         for domain in allowed_domains:
             if hostname == domain.lower() or hostname.endswith("." + domain.lower()):
-                return  # explicitly allowed
+                return []  # explicitly allowed; repository pinning never uses this bypass
 
     # Metadata hostname block
     if hostname in _METADATA_HOSTNAMES:
@@ -142,7 +142,7 @@ def assert_public_url(
             raise SSRFError(
                 f"SSRF guard [{context}]: IP address '{hostname}' is in a blocked range"
             )
-        return  # literal IP and it's public — allow
+        return [str(addr)]  # literal IP and it's public — allow
 
     # DNS resolution — anti-rebinding: resolve and check ALL addresses
     try:
@@ -164,6 +164,7 @@ def assert_public_url(
             )
 
     logger.debug("ssrf_guard_passed", hostname=hostname, context=context)
+    return ips
 
 
 def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool:

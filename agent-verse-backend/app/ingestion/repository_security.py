@@ -32,6 +32,15 @@ class RepositoryLimits:
     max_file_bytes: int
     max_total_bytes: int
     max_repository_bytes: int
+    max_repository_files: int = 10_000
+
+
+@dataclass(frozen=True, slots=True)
+class RepositorySource:
+    url: str
+    hostname: str
+    pinned_ip: str
+    curl_resolve: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +49,28 @@ class RepositoryFile:
     content: str
 
 
-def validate_repository_url(url: str) -> str:
-    """Return a credential/query-free HTTPS URL after public DNS validation."""
+def repository_usage(root: Path) -> tuple[int, int]:
+    """Return no-follow file count and bytes for clone-time quota monitoring."""
+    file_count = 0
+    total_bytes = 0
+    if not root.exists():
+        return 0, 0
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        base = Path(directory)
+        for name in directory_names:
+            if (base / name).is_symlink():
+                raise RepositorySecurityError("Repository symlink content is not allowed")
+        for name in file_names:
+            child = base / name
+            if child.is_symlink():
+                raise RepositorySecurityError("Repository symlink content is not allowed")
+            file_count += 1
+            total_bytes += child.stat(follow_symlinks=False).st_size
+    return file_count, total_bytes
+
+
+def resolve_repository_source(url: str) -> RepositorySource:
+    """Resolve once, validate all addresses, and return a pinned HTTPS source."""
     try:
         parsed = urlsplit(url)
     except Exception as exc:
@@ -53,7 +82,7 @@ def validate_repository_url(url: str) -> str:
     if any(ord(char) < 32 for char in url):
         raise RepositorySecurityError("Repository URL contains control characters")
     try:
-        assert_public_url(url, context="repository ingestion")
+        validated_ips = assert_public_url(url, context="repository ingestion")
     except (SSRFError, ValueError) as exc:
         raise RepositorySecurityError("Repository URL is not public") from exc
     host = parsed.hostname.lower().rstrip(".")
@@ -61,10 +90,25 @@ def validate_repository_url(url: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise RepositorySecurityError("Repository URL has an invalid port") from exc
-    if port is not None:
-        host = f"{host}:{port}"
+    if port not in (None, 443):
+        raise RepositorySecurityError("Alternate repository ports are not allowed")
+    ipv4_addresses = [ip for ip in validated_ips if ":" not in ip]
+    if not ipv4_addresses:
+        raise RepositorySecurityError("Repository DNS pin cannot be represented safely")
+    pinned_ip = sorted(ipv4_addresses)[0]
     path = parsed.path or "/"
-    return urlunsplit(("https", host, path, "", ""))
+    sanitized_url = urlunsplit(("https", host, path, "", ""))
+    return RepositorySource(
+        url=sanitized_url,
+        hostname=host,
+        pinned_ip=pinned_ip,
+        curl_resolve=f"{host}:443:{pinned_ip}",
+    )
+
+
+def validate_repository_url(url: str) -> str:
+    """Compatibility wrapper returning the sanitized pinned-source URL."""
+    return resolve_repository_source(url).url
 
 
 def validate_branch(branch: str) -> str:
@@ -98,11 +142,14 @@ def validate_patterns(patterns: list[str]) -> list[str]:
     return validated
 
 
-def _is_secret_or_disallowed(path: Path) -> bool:
-    lower_name = path.name.lower()
+def _is_secret_or_disallowed(path: PurePosixPath) -> bool:
     return (
         path.suffix.lower() not in _ALLOWED_SUFFIXES
-        or any(secret in lower_name for secret in _SECRET_NAME_PARTS)
+        or any(
+            secret in part.lower()
+            for part in path.parts
+            for secret in _SECRET_NAME_PARTS
+        )
     )
 
 
@@ -123,20 +170,11 @@ def read_repository_files(
     """Safely select and decode bounded allowlisted files without following links."""
     validated_patterns = validate_patterns(patterns)
     root = clone_root.resolve(strict=True)
-    repository_bytes = 0
-    for directory, directory_names, file_names in os.walk(root, followlinks=False):
-        base = Path(directory)
-        for name in list(directory_names):
-            child = base / name
-            if child.is_symlink():
-                raise RepositorySecurityError("Repository symlink content is not allowed")
-        for name in file_names:
-            child = base / name
-            if child.is_symlink():
-                raise RepositorySecurityError("Repository symlink content is not allowed")
-            repository_bytes += child.stat(follow_symlinks=False).st_size
-            if repository_bytes > limits.max_repository_bytes:
-                raise RepositorySecurityError("Repository byte limit exceeded")
+    repository_file_count, repository_bytes = repository_usage(root)
+    if repository_file_count > limits.max_repository_files:
+        raise RepositorySecurityError("Repository clone file count limit exceeded")
+    if repository_bytes > limits.max_repository_bytes:
+        raise RepositorySecurityError("Repository byte limit exceeded")
 
     selected: dict[Path, None] = {}
     for pattern in validated_patterns:
@@ -152,7 +190,7 @@ def read_repository_files(
             if (
                 not resolved.is_file()
                 or ".git" in relative.parts
-                or _is_secret_or_disallowed(resolved)
+                or _is_secret_or_disallowed(PurePosixPath(relative.as_posix()))
             ):
                 continue
             selected[resolved] = None

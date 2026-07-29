@@ -961,9 +961,9 @@ async def test_repository_completion_status_failure_rolls_back_chunks_and_counte
     )
     await store.update_ingestion_job_async(
         job_id,
-        status="failed",
+        status="running",
         chunk_count=0,
-        error_message="forced completion conflict",
+        error_message=None,
         tenant_ctx=tenant,
     )
     chunks = [Chunk("doc-a", "repository chunk", _embedding(768), 0)]
@@ -973,6 +973,8 @@ async def test_repository_completion_status_failure_rolls_back_chunks_and_counte
             chunks,
             job_id=job_id,
             collection_id=collection_id,
+            source_url="https://github.com/example/repository",
+            lease_owner="wrong-completion-owner",
             tenant_ctx=tenant,
         )
 
@@ -1036,6 +1038,8 @@ async def test_repository_chunks_are_associated_with_job_and_complete_atomically
         chunks,
         job_id=job_id,
         collection_id=collection_id,
+        source_url="https://github.com/example/repository",
+        lease_owner=f"legacy-{job_id}",
         tenant_ctx=tenant,
     )
 
@@ -1088,7 +1092,7 @@ async def test_stale_running_repository_job_is_reconciled_after_restart(
     async with postgres_database.admin_factory() as session, session.begin():
         await session.execute(
             text(
-                "UPDATE knowledge_documents SET indexed_at = now() - interval '1 day' "
+                "UPDATE knowledge_documents SET lease_expires_at = now() - interval '1 day' "
                 "WHERE id = :id"
             ),
             {"id": job_id},
@@ -1105,6 +1109,174 @@ async def test_stale_running_repository_job_is_reconciled_after_restart(
     assert status is not None
     assert status["status"] == "failed"
     assert status["error_message"] == "Repository ingestion interrupted"
+
+
+async def test_repository_job_rejects_collection_and_source_mismatch(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_a = uuid.uuid4().hex
+    collection_b = uuid.uuid4().hex
+    for collection_id in (collection_a, collection_b):
+        await store.create_collection_async(
+            KnowledgeCollection(name=f"scope-{collection_id}", collection_id=collection_id),
+            tenant_ctx=tenant,
+        )
+    source_url = "https://github.com/example/repository"
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_a,
+        source_url=source_url,
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    lease_owner = "scope-worker"
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_a,
+        source_url=source_url,
+        lease_owner=lease_owner,
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    chunks = [Chunk("doc-a", "scoped chunk", _embedding(768), 0)]
+
+    with pytest.raises(DBAPIError):
+        await store.ingest_repository_chunks_async(
+            chunks,
+            job_id=job_id,
+            collection_id=collection_b,
+            source_url=source_url,
+            lease_owner=lease_owner,
+            tenant_ctx=tenant,
+        )
+    with pytest.raises(KeyError, match="job"):
+        await store.ingest_repository_chunks_async(
+            chunks,
+            job_id=job_id,
+            collection_id=collection_a,
+            source_url="https://github.com/example/other",
+            lease_owner=lease_owner,
+            tenant_ctx=tenant,
+        )
+
+
+async def test_concurrent_repository_completion_and_cancel_preserve_one_terminal_state(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/repository"
+    lease_owner = "race-worker"
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"race-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner=lease_owner,
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+
+    completion, cancellation = await asyncio.gather(
+        store.ingest_repository_chunks_async(
+            [Chunk("doc-a", "race chunk", _embedding(768), 0)],
+            job_id=job_id,
+            collection_id=collection_id,
+            source_url=source_url,
+            lease_owner=lease_owner,
+            tenant_ctx=tenant,
+        ),
+        store.fail_ingestion_job_async(
+            job_id,
+            lease_owner=lease_owner,
+            error_message="Repository ingestion cancelled",
+            tenant_ctx=tenant,
+        ),
+        return_exceptions=True,
+    )
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert status["status"] in {"completed", "failed"}
+    if status["status"] == "completed":
+        assert status["chunk_count"] == 1
+        assert cancellation == "completed"
+    else:
+        assert status["chunk_count"] == 0
+        assert isinstance(completion, Exception)
+
+
+async def test_reconciliation_preserves_live_lease_and_fails_stale_queue(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/repository"
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"live-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    live_job = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="live",
+        tenant_ctx=tenant,
+    )
+    queued_job = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url="https://github.com/example/queued",
+        source_type="repository",
+        title="queued",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        live_job,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="live-worker",
+        lease_seconds=300,
+        tenant_ctx=tenant,
+    )
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_documents SET created_at = now() - interval '1 day' "
+                "WHERE id = :id"
+            ),
+            {"id": queued_job},
+        )
+
+    reconciled = await store.reconcile_stale_ingestion_jobs_async(
+        tenant_ctx=tenant,
+        stale_after_seconds=60,
+    )
+    live_status = await store.get_ingestion_job_async(live_job, tenant_ctx=tenant)
+    queued_status = await store.get_ingestion_job_async(queued_job, tenant_ctx=tenant)
+
+    assert reconciled == 1
+    assert live_status is not None and live_status["status"] == "running"
+    assert queued_status is not None and queued_status["status"] == "failed"
 
 
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)

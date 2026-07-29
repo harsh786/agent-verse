@@ -28,6 +28,12 @@ class _SchemaState(TypedDict):
     index_definitions: dict[str, str]
 
 
+class _RepositoryJobSchema(TypedDict):
+    columns: set[str]
+    chunk_job_columns: dict[int, int]
+    triggers: set[str]
+
+
 def _alembic(database_url: str, *arguments: str) -> None:
     subprocess.run(
         ["alembic", *arguments],
@@ -156,3 +162,63 @@ def test_0091_uses_retry_safe_concurrent_index_ddl() -> None:
     assert "DROP INDEX CONCURRENTLY IF EXISTS" in source
     assert "CREATE INDEX IF NOT EXISTS" not in source
     assert "indisvalid" in source
+
+
+async def _repository_job_schema(database_url: str) -> _RepositoryJobSchema:
+    engine = create_async_engine(database_url)
+    async with engine.connect() as connection:
+        columns = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'knowledge_documents'"
+                    )
+                )
+            ).scalars()
+        )
+        chunk_job_columns = {
+            dimension: (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM information_schema.columns "
+                        "WHERE table_name = :table AND column_name = 'ingestion_job_id'"
+                    ),
+                    {"table": f"knowledge_chunks_{dimension}"},
+                )
+            ).scalar_one()
+            for dimension in DIMENSIONS
+        }
+        triggers = set(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT trigger_name FROM information_schema.triggers "
+                        "WHERE event_object_table = 'knowledge_documents'"
+                    )
+                )
+            ).scalars()
+        )
+    await engine.dispose()
+    return {"columns": columns, "chunk_job_columns": chunk_job_columns, "triggers": triggers}
+
+
+def test_0092_upgrade_downgrade_upgrade_round_trip(isolated_postgres: str) -> None:
+    _alembic(isolated_postgres, "upgrade", "0091_rag_ingestion_structures")
+    before = asyncio.run(_repository_job_schema(isolated_postgres))
+    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+    upgraded = asyncio.run(_repository_job_schema(isolated_postgres))
+    _alembic(isolated_postgres, "downgrade", "0091_rag_ingestion_structures")
+    downgraded = asyncio.run(_repository_job_schema(isolated_postgres))
+    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+    reupgraded = asyncio.run(_repository_job_schema(isolated_postgres))
+
+    lease_columns = {"job_source_hash", "lease_owner", "lease_expires_at", "heartbeat_at"}
+    assert lease_columns.isdisjoint(before["columns"])
+    assert upgraded["columns"] >= lease_columns
+    assert lease_columns.isdisjoint(downgraded["columns"])
+    assert reupgraded["columns"] >= lease_columns
+    assert all(value == 1 for value in upgraded["chunk_job_columns"].values())
+    assert all(value == 0 for value in downgraded["chunk_job_columns"].values())
+    assert "trg_repository_ingestion_job_transition" in upgraded["triggers"]
+    assert "trg_repository_ingestion_job_transition" in reupgraded["triggers"]

@@ -45,11 +45,36 @@ def test_repository_url_rejects_unsafe_sources(url: str) -> None:
 
 
 def test_repository_url_is_sanitized_to_public_host_and_path() -> None:
-    from app.ingestion.repository_security import validate_repository_url
+    from app.ingestion.repository_security import resolve_repository_source
 
-    assert validate_repository_url(
+    source = resolve_repository_source(
         "https://github.com/example/repository.git?token=secret#fragment"
-    ) == "https://github.com/example/repository.git"
+    )
+    assert source.url == "https://github.com/example/repository.git"
+    assert source.hostname == "github.com"
+    assert source.pinned_ip == "93.184.216.34"
+    assert source.curl_resolve == "github.com:443:93.184.216.34"
+
+
+def test_repository_source_resolves_once_and_pins_validated_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ingestion.repository_security import resolve_repository_source
+
+    calls = 0
+
+    def resolve(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    source = resolve_repository_source("https://example.com/repository")
+
+    assert calls == 1
+    assert source.curl_resolve == "example.com:443:93.184.216.34"
 
 
 @pytest.mark.parametrize("branch", ["", "--upload-pack=evil", "main\nnext"])
@@ -160,6 +185,8 @@ def test_repository_file_selection_excludes_git_and_likely_secrets(tmp_path: Pat
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config.py").write_text("secret")
     (tmp_path / "credentials.py").write_text("TOKEN = 'secret'")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "nested.py").write_text("TOKEN = 'nested secret'")
     (tmp_path / "service.py").write_text("def service(): return True")
 
     files = read_repository_files(
