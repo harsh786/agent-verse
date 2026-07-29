@@ -29,18 +29,46 @@ class CitationVerification:
 
 
 class MinimalCitationVerifier:
-    """Fail closed unless an answer references only supplied citation indexes."""
+    """Verify each cited claim has deterministic lexical support in its evidence."""
+
+    _STOP_WORDS = frozenset(
+        {"a", "an", "and", "are", "as", "at", "be", "is", "of", "or", "the", "to"}
+    )
 
     async def verify(
         self,
         answer: str,
         citations: list[RAGCitation],
     ) -> CitationVerification:
-        references = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
-        valid = bool(references) and all(1 <= value <= len(citations) for value in references)
+        unsupported: list[str] = []
+        checked = 0
+        for sentence in re.split(r"(?<=[.!?])\s+", answer.strip()):
+            references = [int(value) for value in re.findall(r"\[(\d+)\]", sentence)]
+            claim = re.sub(r"\[\d+\]", "", sentence).strip(" .")
+            claim_tokens = {
+                token
+                for token in re.findall(r"[a-z0-9]+", claim.lower())
+                if len(token) > 2 and token not in self._STOP_WORDS
+            }
+            if not claim_tokens:
+                continue
+            checked += 1
+            if not references or any(
+                reference < 1 or reference > len(citations)
+                for reference in references
+            ):
+                unsupported.append(claim)
+                continue
+            evidence = " ".join(citations[index - 1].content for index in references)
+            evidence_tokens = set(re.findall(r"[a-z0-9]+", evidence.lower()))
+            support = len(claim_tokens & evidence_tokens) / len(claim_tokens)
+            if support < 0.6:
+                unsupported.append(claim)
         return CitationVerification(
-            grounded=valid,
-            unsupported_claims=[] if valid else ["Answer lacks valid citation support"],
+            grounded=checked > 0 and not unsupported,
+            unsupported_claims=(
+                unsupported if unsupported else [] if checked > 0 else ["No claims verified"]
+            ),
         )
 
 
