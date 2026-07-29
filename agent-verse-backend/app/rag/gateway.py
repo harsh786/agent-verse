@@ -228,12 +228,88 @@ async def _probe_session_factory(factory: object | None, tenant_id: str) -> str 
                     return "persistence_unavailable"
                 persisted_capabilities = await session.scalar(
                     text(
-                        "SELECT to_regclass('public.knowledge_collections') IS NOT NULL "
+                        "SELECT "
+                        "to_regclass('public.knowledge_collections') IS NOT NULL "
                         "AND to_regclass('public.knowledge_chunks_768') IS NOT NULL "
                         "AND to_regclass('public.knowledge_chunks_1024') IS NOT NULL "
                         "AND to_regclass('public.knowledge_chunks_1536') IS NOT NULL "
                         "AND to_regclass('public.knowledge_chunks_3072') IS NOT NULL "
-                        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+                        "AND "
+                        "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') "
+                        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') "
+                        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '<=>') "
+                        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '%') "
+                        "AND EXISTS (SELECT 1 FROM alembic_version) "
+                        "AND NOT EXISTS ("
+                        "  SELECT required.table_name, required.column_name FROM (VALUES "
+                        "  ('knowledge_collections', 'tenant_id'), "
+                        "  ('knowledge_collections', 'is_active'), "
+                        "  ('knowledge_collections', 'embedding_dim'), "
+                        "  ('knowledge_chunks_768', 'metadata'), "
+                        "  ('knowledge_chunks_768', 'embedding'), "
+                        "  ('knowledge_chunks_768', 'expires_at'), "
+                        "  ('knowledge_chunks_768', 'parent_chunk_id'), "
+                        "  ('knowledge_chunks_768', 'chunk_level'), "
+                        "  ('knowledge_chunks_768', 'window_start'), "
+                        "  ('knowledge_chunks_768', 'window_end'), "
+                        "  ('knowledge_chunks_768', 'window_id'), "
+                        "  ('knowledge_chunks_768', 'hierarchy_level'), "
+                        "  ('knowledge_chunks_768', 'is_proposition'), "
+                        "  ('knowledge_chunks_768', 'strategy_metadata'), "
+                        "  ('knowledge_chunks_768', 'ingestion_job_id'), "
+                        "  ('knowledge_chunks_1024', 'metadata'), "
+                        "  ('knowledge_chunks_1024', 'embedding'), "
+                        "  ('knowledge_chunks_1024', 'expires_at'), "
+                        "  ('knowledge_chunks_1024', 'parent_chunk_id'), "
+                        "  ('knowledge_chunks_1024', 'chunk_level'), "
+                        "  ('knowledge_chunks_1024', 'window_start'), "
+                        "  ('knowledge_chunks_1024', 'window_end'), "
+                        "  ('knowledge_chunks_1024', 'window_id'), "
+                        "  ('knowledge_chunks_1024', 'hierarchy_level'), "
+                        "  ('knowledge_chunks_1024', 'is_proposition'), "
+                        "  ('knowledge_chunks_1024', 'strategy_metadata'), "
+                        "  ('knowledge_chunks_1024', 'ingestion_job_id'), "
+                        "  ('knowledge_chunks_1536', 'metadata'), "
+                        "  ('knowledge_chunks_1536', 'embedding'), "
+                        "  ('knowledge_chunks_1536', 'expires_at'), "
+                        "  ('knowledge_chunks_1536', 'parent_chunk_id'), "
+                        "  ('knowledge_chunks_1536', 'chunk_level'), "
+                        "  ('knowledge_chunks_1536', 'window_start'), "
+                        "  ('knowledge_chunks_1536', 'window_end'), "
+                        "  ('knowledge_chunks_1536', 'window_id'), "
+                        "  ('knowledge_chunks_1536', 'hierarchy_level'), "
+                        "  ('knowledge_chunks_1536', 'is_proposition'), "
+                        "  ('knowledge_chunks_1536', 'strategy_metadata'), "
+                        "  ('knowledge_chunks_1536', 'ingestion_job_id'), "
+                        "  ('knowledge_chunks_3072', 'metadata'), "
+                        "  ('knowledge_chunks_3072', 'embedding'), "
+                        "  ('knowledge_chunks_3072', 'expires_at'), "
+                        "  ('knowledge_chunks_3072', 'parent_chunk_id'), "
+                        "  ('knowledge_chunks_3072', 'chunk_level'), "
+                        "  ('knowledge_chunks_3072', 'window_start'), "
+                        "  ('knowledge_chunks_3072', 'window_end'), "
+                        "  ('knowledge_chunks_3072', 'window_id'), "
+                        "  ('knowledge_chunks_3072', 'hierarchy_level'), "
+                        "  ('knowledge_chunks_3072', 'is_proposition'), "
+                        "  ('knowledge_chunks_3072', 'strategy_metadata'), "
+                        "  ('knowledge_chunks_3072', 'ingestion_job_id')"
+                        "  ) AS required(table_name, column_name) "
+                        "  EXCEPT SELECT table_name, column_name "
+                        "  FROM information_schema.columns WHERE table_schema = 'public'"
+                        ") "
+                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+                        "     AND indexdef ILIKE '%hnsw%' "
+                        "     AND indexdef ILIKE '%cosine_ops%') = 4 "
+                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+                        "     AND indexdef ILIKE '%gin_trgm_ops%') = 4 "
+                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+                        "     AND indexdef ILIKE '%to_tsvector%') = 4"
+                        " AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+                        "      WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+                        "      AND indexdef ILIKE '%metadata jsonb_path_ops%') = 4"
                     )
                 )
                 return None if persisted_capabilities is True else "persistence_unavailable"
@@ -311,6 +387,19 @@ class SQLCollectionAuthorizer:
             },
         )
         return result.scalar_one_or_none() is not None
+
+
+async def _require_active_collection(
+    session: AsyncSession,
+    tenant_context: TenantContext,
+    collection_id: str,
+) -> None:
+    if not await SQLCollectionAuthorizer().authorize(
+        session,
+        tenant_context,
+        collection_id,
+    ):
+        raise CollectionNotFoundError(collection_id)
 
 
 class KnowledgeStoreCollectionAuthorizer:
@@ -413,6 +502,9 @@ class RetrievalExecutionContext:
                 variant_embedding: list[float] | None,
             ) -> list[EngineRetrievalResult]:
                 async def search(session: AsyncSession) -> list[EngineRetrievalResult]:
+                    await _require_active_collection(
+                        session, self.tenant_context, collection_id
+                    )
                     return await rag_engine.hybrid_search(
                         session,
                         query=variant_query,
@@ -440,6 +532,7 @@ class RetrievalExecutionContext:
             )
 
         async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+            await _require_active_collection(session, self.tenant_context, collection_id)
             return await rag_engine.retrieve(
                 session,
                 query=query,
@@ -471,24 +564,17 @@ async def execute_core_strategy(
 
     if strategy is RAGStrategy.NAIVE:
         embedding = await _embed_text(context, request.query, strategy)
+        evidence: list[dict[str, Any]] = []
         results = await _search_persisted(
             context,
             request,
             query=request.query,
             embedding=embedding,
             retrieval_mode="vector",
+            evidence=evidence,
         )
-        evidence = [
-            {
-                "component": "vector",
-                "query": request.query,
-                "result_count": len(results),
-                "component_scores": {
-                    result.chunk_id: result.component_scores.get("vector", result.score)
-                    for result in results
-                },
-            }
-        ]
+        for item in evidence:
+            item["query"] = request.query
         return _canonical_result(request, strategy, results, evidence)
 
     if strategy is RAGStrategy.HYBRID:
@@ -510,8 +596,12 @@ async def execute_core_strategy(
 
     if strategy is RAGStrategy.HYDE:
         generated_evidence: dict[str, Any] = {}
+        hyde_started = time.perf_counter()
 
         async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+            await _require_active_collection(
+                session, context.tenant_context, collection_id
+            )
             return await rag_engine.retrieve_hyde(
                 session,
                 query=request.query,
@@ -537,6 +627,7 @@ async def execute_core_strategy(
                     result.chunk_id: result.component_scores.get("vector", result.score)
                     for result in results
                 },
+                "latency_ms": (time.perf_counter() - hyde_started) * 1000,
             }
         ]
         return _canonical_result(
@@ -548,18 +639,25 @@ async def execute_core_strategy(
         )
 
     strategy_evidence: list[dict[str, Any]] = []
+    search_latencies: dict[str, float] = {}
 
     async def search_operation(
         variant_query: str,
         variant_embedding: list[float] | None,
     ) -> list[EngineRetrievalResult]:
-        return await _search_persisted(
-            context,
-            request,
-            query=variant_query,
-            embedding=variant_embedding,
-            retrieval_mode="hybrid",
-        )
+        search_started = time.perf_counter()
+        try:
+            return await _search_persisted(
+                context,
+                request,
+                query=variant_query,
+                embedding=variant_embedding,
+                retrieval_mode="hybrid",
+            )
+        finally:
+            search_latencies[variant_query] = (
+                time.perf_counter() - search_started
+            ) * 1000
 
     if strategy is RAGStrategy.MULTI_HOP:
         results = await rag_engine.retrieve_multi_hop(
@@ -576,6 +674,8 @@ async def execute_core_strategy(
             search_operation=search_operation,
             strategy_evidence=strategy_evidence,
         )
+        for item in strategy_evidence:
+            item["latency_ms"] = search_latencies.get(str(item.get("query")), 0.0)
         return _canonical_result(
             request,
             strategy,
@@ -606,6 +706,8 @@ async def execute_core_strategy(
             search_operation=search_operation,
             strategy_evidence=strategy_evidence,
         )
+        for item in strategy_evidence:
+            item["latency_ms"] = search_latencies.get(str(item.get("query")), 0.0)
         return _canonical_result(
             request,
             strategy,
@@ -657,6 +759,11 @@ async def _search_persisted(
     evidence: list[dict[str, Any]] | None = None,
 ) -> list[EngineRetrievalResult]:
     async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+        await _require_active_collection(
+            session,
+            context.tenant_context,
+            request.collection_id or "",
+        )
         return await rag_engine.hybrid_search(
             session,
             query=query,
@@ -714,6 +821,7 @@ def _canonical_result(
                 (float(score) for score in item.get("component_scores", {}).values()),
                 default=0.0,
             ),
+            latency_ms=float(item.get("latency_ms", 0.0)),
             metadata=dict(item),
         )
         for item in evidence
@@ -923,20 +1031,41 @@ class RetrievalGateway:
         if isinstance(result, RAGExecutionResult):
             if result.resolved_strategy_id is not strategy:
                 raise ValueError("RAG strategy adapter returned a mismatched strategy ID")
-            return result.model_copy(
+            normalized = result.model_copy(
                 update={
                     "requested_strategy_id": requested_strategy_id,
                     "resolved_strategy_id": strategy,
                 }
             )
-        if (
+        elif (
             isinstance(result, (list, tuple))
             and all(
             isinstance(item, EngineRetrievalResult) for item in result
             )
         ):
-            return self._normalize_engine_results(request, strategy, list(result))
-        raise TypeError("RAG strategy adapter returned an unsupported result type")
+            normalized = self._normalize_engine_results(request, strategy, list(result))
+        else:
+            raise TypeError("RAG strategy adapter returned an unsupported result type")
+
+        total_latency_ms = (time.monotonic() - started) * 1000
+        logger.info(
+            "rag_strategy_complete",
+            strategy=strategy.value,
+            latency_ms=round(total_latency_ms, 2),
+        )
+        return normalized.model_copy(
+            update={
+                "strategy_trace": [
+                    *normalized.strategy_trace,
+                    RAGStrategyTrace(
+                        strategy=strategy,
+                        action="strategy_complete",
+                        status="complete",
+                        detail={"total_latency_ms": total_latency_ms},
+                    ),
+                ]
+            }
+        )
 
     @staticmethod
     def _normalize_engine_results(

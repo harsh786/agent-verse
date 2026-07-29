@@ -64,8 +64,8 @@ agentverse = "app.cli.main:app"
 
 [project.optional-dependencies]
 # LLM providers (install as needed)
-voyage = ["voyageai>=0.2.0"]
-gemini = ["google-generativeai>=0.8.0"]
+voyage = []
+gemini = ["google-genai>=1.33.0"]
 local-embed = ["sentence-transformers>=3.0.0"]
 browser = ["playwright>=1.40.0"]
 artifacts = ["aioboto3>=13.0"]

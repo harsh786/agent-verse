@@ -518,23 +518,23 @@ async def test_smart_context_fetch_with_knowledge_store():
 # ── 7. Providers ──────────────────────────────────────────────────────────────
 
 
-def test_gemini_provider_raises_import_error_when_not_installed():
-    """GeminiProvider raises ImportError if google-generativeai not installed."""
-    try:
-        from app.providers.gemini_provider import GeminiProvider
-        GeminiProvider()
-        # If google-generativeai is installed, the provider works
-    except ImportError as e:
-        assert "google-generativeai" in str(e)
+@pytest.mark.asyncio
+async def test_gemini_provider_uses_current_defaults():
+    from app.providers.gemini_provider import GeminiProvider
+
+    provider = GeminiProvider(api_key="test")
+    assert provider._default_model == "gemini-2.5-pro"
+    assert provider._embed_model == "gemini-embedding-001"
+    await provider.aclose()
 
 
-def test_voyage_provider_raises_import_error_when_not_installed():
-    """VoyageProvider raises ImportError if voyageai not installed."""
-    try:
-        from app.providers.voyage_provider import VoyageProvider
-        VoyageProvider()
-    except ImportError as e:
-        assert "voyageai" in str(e)
+@pytest.mark.asyncio
+async def test_voyage_provider_uses_current_default():
+    from app.providers.voyage_provider import VoyageProvider
+
+    provider = VoyageProvider(api_key="test")
+    assert provider._model == "voyage-4-large"
+    await provider.aclose()
 
 
 def test_openai_compatible_provider_raises_import_error():

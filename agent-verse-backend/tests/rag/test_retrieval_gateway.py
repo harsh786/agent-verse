@@ -7,6 +7,7 @@ import inspect
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -68,7 +69,7 @@ class RecordingSession:
         return _Transaction()
 
     async def execute(self, statement: object, params: object = None) -> object:
-        return statement
+        return SimpleNamespace(scalar_one_or_none=lambda: "collection-1")
 
     async def scalar(self, statement: object, params: object = None) -> object:
         return True if "to_regclass" in str(statement) else 1
@@ -557,7 +558,8 @@ async def test_historical_alias_retains_requested_and_resolved_ids_and_trace(
     assert result.resolved_strategy_id is RAGStrategy.FUSION
     assert result.citations == [citation]
     assert result.retrieval_legs == [leg]
-    assert result.strategy_trace == [trace]
+    assert result.strategy_trace[0] == trace
+    assert result.strategy_trace[-1].action == "strategy_complete"
     request, _ = adapter.calls[0]
     assert request.tenant_id == TENANT.tenant_id
     assert request.top_k == 7
@@ -617,7 +619,7 @@ async def test_gateway_normalizes_engine_results_into_canonical_evidence(
             metadata={"engine_legs": ["fts", "trgm", "vector"]},
         )
     ]
-    assert result.strategy_trace == [
+    assert result.strategy_trace[0] == (
         RAGStrategyTrace(
             strategy=RAGStrategy.FUSION,
             action="engine_retrieval",
@@ -627,7 +629,8 @@ async def test_gateway_normalizes_engine_results_into_canonical_evidence(
                 "engine_legs": ["fts", "trgm", "vector"],
             },
         )
-    ]
+    )
+    assert result.strategy_trace[-1].action == "strategy_complete"
     assert result.grounded
     assert record_rls == [(1, TENANT.tenant_id)]
 
@@ -728,6 +731,28 @@ async def test_strategy_deadline_cancels_adapter_without_leaking_query(
     assert warning.call_args.kwargs["failure_type"] == "deadline_exceeded"
     assert "latency_ms" in warning.call_args.kwargs
     assert "query" not in warning.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_success_records_total_latency_without_query_content(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    gateway, _, _ = _gateway(adapter=StaticAdapter())
+
+    with patch("app.rag.gateway.logger.info") as info:
+        result = await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="secret query must not leak",
+            strategy_id="fusion",
+        )
+
+    success_trace = result.strategy_trace[-1]
+    assert success_trace.action == "strategy_complete"
+    assert success_trace.detail["total_latency_ms"] > 0
+    assert "query" not in success_trace.detail
+    assert info.call_args.kwargs["strategy"] == "fusion"
+    assert "query" not in info.call_args.kwargs
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,8 @@
-"""Google Gemini provider implementation.
-
-Supports the Gemini generative models via the google-generativeai SDK.
-Falls back gracefully if the SDK is not installed.
-"""
+"""Google Gemini provider using the current async Google Gen AI SDK."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import cast
 
 from app.providers.base import (
     CompletionRequest,
@@ -19,73 +14,53 @@ from app.providers.base import (
 
 
 class GeminiProvider:
-    """Google Gemini provider.
-
-    Args:
-        api_key: Google AI Studio API key. Reads from env GOOGLE_API_KEY if not given.
-        default_model: Model to use when the request does not specify one.
-        embed_model: Embedding model (e.g. "models/embedding-001").
-    """
+    """Cancellable Gemini generation and embedding through ``google-genai``."""
 
     def __init__(
         self,
         api_key: str | None = None,
         *,
-        default_model: str = "gemini-1.5-pro",
-        embed_model: str = "models/embedding-001",
+        default_model: str = "gemini-2.5-pro",
+        embed_model: str = "gemini-embedding-001",
+        request_timeout_ms: int = 30_000,
     ) -> None:
         try:
-            import google.generativeai as genai  # type: ignore[import-untyped]
+            import google.genai as genai
         except ImportError as exc:
-            raise ImportError(
-                "Install 'google-generativeai' to use GeminiProvider"
-            ) from exc
+            raise ImportError("Install 'google-genai' to use GeminiProvider") from exc
 
-        if api_key:
-            genai.configure(api_key=api_key)
-
-        self._genai = genai
+        self._types = genai.types
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=self._types.HttpOptions(timeout=request_timeout_ms),
+        )
         self._default_model = default_model
         self._embed_model = embed_model
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        import asyncio
-
         model_name = request.model or self._default_model
-        model = self._genai.GenerativeModel(model_name)
-
-        # Build content list (system prompt is prepended as a user message)
-        parts: list[str] = []
-        system = request.system or next(
-            (m.content for m in request.messages if m.role == "system"), None
+        prompt = self._prompt(request)
+        config = self._types.GenerateContentConfig(
+            max_output_tokens=request.max_tokens,
+            temperature=request.temperature,
         )
-        if system:
-            parts.append(f"[System]: {system}")
-
-        conversation = [m for m in request.messages if m.role != "system"]
-        for msg in conversation:
-            parts.append(f"[{msg.role.capitalize()}]: {msg.content}")
-
-        prompt = "\n".join(parts)
-
-        # Run synchronously in a thread pool to keep the async interface
-        response = await asyncio.get_event_loop().run_in_executor(
-            None, model.generate_content, prompt
-        )
-
-        text = response.text if hasattr(response, "text") else ""
-        _usage_meta = getattr(response, "usage_metadata", None)
-        _prompt_toks = getattr(_usage_meta, "prompt_token_count", 0) if _usage_meta else 0
-        _cand_toks = getattr(_usage_meta, "candidates_token_count", 0) if _usage_meta else 0
-        return CompletionResponse(
-            content=text,
+        response = await self._client.aio.models.generate_content(
             model=model_name,
-            input_tokens=_prompt_toks,
-            output_tokens=_cand_toks,
+            contents=prompt,
+            config=config,
+        )
+        usage = getattr(response, "usage_metadata", None)
+        prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+        output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+        return CompletionResponse(
+            content=str(getattr(response, "text", "") or ""),
+            model=model_name,
+            input_tokens=prompt_tokens,
+            output_tokens=output_tokens,
             usage=TokenUsage(
-                prompt_tokens=_prompt_toks,
-                completion_tokens=_cand_toks,
-                total_tokens=_prompt_toks + _cand_toks,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=prompt_tokens + output_tokens,
             ),
         )
 
@@ -94,61 +69,62 @@ class GeminiProvider:
         request: CompletionRequest,
         on_token: Callable[[str], Awaitable[None]],
     ) -> CompletionResponse:
-        """Stream tokens from Gemini via generate_content_async with stream=True.
-
-        Falls back to complete() if streaming raises.
-        """
         model_name = request.model or self._default_model
-        model = self._genai.GenerativeModel(model_name)
+        content = ""
+        try:
+            stream = await self._client.aio.models.generate_content_stream(
+                model=model_name,
+                contents=self._prompt(request),
+                config=self._types.GenerateContentConfig(
+                    max_output_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                ),
+            )
+            async for chunk in stream:
+                token = str(getattr(chunk, "text", "") or "")
+                if token:
+                    content += token
+                    await on_token(token)
+        except Exception:
+            return await self.complete(request)
+        return CompletionResponse(content=content, model=model_name)
 
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        task_type = (
+            "RETRIEVAL_QUERY"
+            if request.input_type == "query"
+            else "RETRIEVAL_DOCUMENT"
+        )
+        response = await self._client.aio.models.embed_content(
+            model=self._embed_model,
+            contents=request.texts,  # type: ignore[arg-type]
+            config=self._types.EmbedContentConfig(task_type=task_type),
+        )
+        embeddings = [
+            list(getattr(item, "values", None) or [])
+            for item in (getattr(response, "embeddings", None) or [])
+        ]
+        return EmbedResponse(embeddings=embeddings, model=self._embed_model)
+
+    async def aclose(self) -> None:
+        await self._client.aio.aclose()
+
+    @staticmethod
+    def _prompt(request: CompletionRequest) -> str:
         parts: list[str] = []
         system = request.system or next(
-            (m.content for m in request.messages if m.role == "system"), None
+            (message.content for message in request.messages if message.role == "system"),
+            None,
         )
         if system:
             parts.append(f"[System]: {system}")
-        for msg in [m for m in request.messages if m.role != "system"]:
-            parts.append(f"[{msg.role.capitalize()}]: {msg.content}")
-        prompt = "\n".join(parts)
-
-        full_text = ""
-        try:
-            async for chunk in model.generate_content_async(prompt, stream=True):
-                text = getattr(chunk, "text", "") or ""
-                if text:
-                    full_text += text
-                    await on_token(text)
-        except Exception:
-            return await self.complete(request)
-
-        return CompletionResponse(content=full_text, model=model_name)
-
-    async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        import asyncio
-
-        task_type = (
-            "retrieval_query" if request.input_type == "query" else "retrieval_document"
-        )
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: self._genai.embed_content(
-                model=self._embed_model,
-                content=request.texts,
-                task_type=task_type,
-            ),
-        )
-        embedding_data = cast(
-            list[float] | list[list[float]], result.get("embedding", [[]])
-        )
-        if embedding_data and isinstance(embedding_data[0], float):
-            # Single text returns flat list
-            embeddings = [embedding_data]
-        else:
-            embeddings = cast(list[list[float]], embedding_data)
-        return EmbedResponse(embeddings=embeddings)
+        for message in request.messages:
+            if message.role != "system":
+                parts.append(f"[{message.role.capitalize()}]: {message.content}")
+        return "\n".join(parts)
 
     def supports_vision(self) -> bool:
-        return "vision" in self._default_model or "gemini" in self._default_model
+        return "gemini" in self._default_model
 
     def supports_tool_use(self) -> bool:
         return True

@@ -190,7 +190,7 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
 
             return GeminiProvider(
                 api_key=cfg.api_key,
-                default_model=configured_model or "gemini-1.5-pro",
+                default_model=configured_model or "gemini-2.5-pro",
             )
         except ImportError:
             return None
