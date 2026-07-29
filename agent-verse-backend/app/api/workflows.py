@@ -31,6 +31,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.rag.contracts import UnknownRAGStrategyError
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -554,6 +555,11 @@ async def run_workflow(
                 "waves": result.get("waves", 0),
                 "summary": result.get("summary", ""),
             }
+        except UnknownRAGStrategyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
         except Exception:
             pass  # Fall through to GoalService
 
