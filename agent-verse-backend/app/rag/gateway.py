@@ -752,6 +752,7 @@ async def execute_core_strategy(
 
     if strategy is RAGStrategy.WEB_AUGMENTED:
         from app.rag.agentic.patterns.web_augmented import (
+            WebSearchCapabilityError,
             resolve_web_policy,
             retrieve_web_results,
         )
@@ -776,13 +777,16 @@ async def execute_core_strategy(
             evidence=evidence,
         )
         _mark_source_type(persisted, "persisted")
-        web_results, web_evidence = await retrieve_web_results(
-            web_capability,
-            tenant_context=context.tenant_context,
-            query=request.query,
-            top_k=request.top_k,
-            policy=policy,
-        )
+        try:
+            web_results, web_evidence = await retrieve_web_results(
+                web_capability,
+                tenant_context=context.tenant_context,
+                query=request.query,
+                top_k=request.top_k,
+                policy=policy,
+            )
+        except WebSearchCapabilityError as exc:
+            raise RetrievalStrategyExecutionError(strategy.value, exc.reason) from exc
         evidence.append(web_evidence)
         results = rag_engine.merge_grounding_results(
             [persisted, web_results],
@@ -798,7 +802,10 @@ async def execute_core_strategy(
                 detail={
                     "persisted_count": len(persisted),
                     "web_count": len(web_results),
-                    "stop_reason": "web_persisted_merge_complete",
+                    "stop_reason": (
+                        "web_search_empty" if not web_results else "web_persisted_merge_complete"
+                    ),
+                    "web_status": "empty" if not web_results else "complete",
                 },
             ),
         )
@@ -854,6 +861,7 @@ async def execute_core_strategy(
             reformulate_query,
         )
         from app.rag.agentic.patterns.web_augmented import (
+            WebSearchCapabilityError,
             resolve_web_policy,
             retrieve_web_results,
         )
@@ -952,25 +960,40 @@ async def execute_core_strategy(
             )
             stop_reason = policy.reason
             if policy.allowed:
-                web_results, web_evidence = await retrieve_web_results(
-                    web_capability,
-                    tenant_context=context.tenant_context,
-                    query=current_query,
-                    top_k=request.top_k,
-                    policy=policy,
-                )
+                try:
+                    web_results, web_evidence = await retrieve_web_results(
+                        web_capability,
+                        tenant_context=context.tenant_context,
+                        query=current_query,
+                        top_k=request.top_k,
+                        policy=policy,
+                    )
+                except WebSearchCapabilityError as exc:
+                    raise RetrievalStrategyExecutionError(strategy.value, exc.reason) from exc
                 corrective_evidence.append(web_evidence)
                 retained = rag_engine.merge_grounding_results(
                     [retained, web_results],
                     top_k=request.top_k,
                 )
-                stop_reason = "web_fallback_complete"
+                stop_reason = (
+                    "web_fallback_empty" if not web_results else "web_fallback_complete"
+                )
         trace.append(
             RAGStrategyTrace(
                 strategy=strategy,
                 action="corrective_stop",
                 status="complete",
-                detail={"stop_reason": stop_reason, "attempts": MAX_CORRECTIVE_RETRIES + 1},
+                detail={
+                    "stop_reason": stop_reason,
+                    "attempts": MAX_CORRECTIVE_RETRIES + 1,
+                    "web_status": (
+                        "empty"
+                        if stop_reason == "web_fallback_empty"
+                        else "complete"
+                        if stop_reason == "web_fallback_complete"
+                        else "not_attempted"
+                    ),
+                },
             )
         )
         result = _canonical_result(request, strategy, retained, corrective_evidence)

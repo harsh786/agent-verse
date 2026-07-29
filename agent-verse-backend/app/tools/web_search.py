@@ -29,6 +29,7 @@ class WebSearchResult:
     query: str
     results: list[SearchResult] = field(default_factory=list)
     error: str | None = None
+    error_code: str | None = None
     source: str = "searxng"
 
 
@@ -78,6 +79,7 @@ class WebSearchTool:
                 timeout=self._timeout,
                 follow_redirects=False,
                 transport=self._transport,
+                trust_env=False,
             ) as client,
             client.stream("GET", url, params=params) as response,
         ):
@@ -118,7 +120,19 @@ class WebSearchTool:
             logger.warning("searxng_search_failed", query=query, error=str(exc))
             if self._fallback_to_duckduckgo:
                 return await self._search_duckduckgo(query, num_results=num_results)
-            return WebSearchResult(query=query, results=[], error="search_backend_unavailable")
+            error_code = (
+                "backend_timeout"
+                if isinstance(exc, (httpx.TimeoutException, TimeoutError))
+                else "backend_outage"
+                if isinstance(exc, httpx.TransportError)
+                else "backend_error"
+            )
+            return WebSearchResult(
+                query=query,
+                results=[],
+                error=error_code,
+                error_code=error_code,
+            )
 
     async def _search_duckduckgo(self, query: str, *, num_results: int) -> WebSearchResult:
         """DuckDuckGo Instant Answer API — no key required."""
