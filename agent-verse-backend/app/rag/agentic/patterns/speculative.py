@@ -103,11 +103,11 @@ class SpeculativeRAGPattern(RAGPattern):
         # Step 1: Generate candidates sequentially to ensure deterministic provider ordering
         candidates: list[Candidate] = []
         for _ in range(self._n):
+            if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("Speculative RAG provider circuit is open")
+                break
             try:
-                if cb is not None and not cb.can_call():
-                    if strict:
-                        raise RuntimeError("Speculative RAG provider circuit is open")
-                    break
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_CANDIDATE_SYSTEM),
@@ -154,13 +154,13 @@ class SpeculativeRAGPattern(RAGPattern):
                 verified.append(candidate)
                 continue
 
+            if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("Speculative RAG provider circuit is open")
+                candidate.score = 0.3
+                verified.append(candidate)
+                continue
             try:
-                if cb is not None and not cb.can_call():
-                    if strict:
-                        raise RuntimeError("Speculative RAG provider circuit is open")
-                    candidate.score = 0.3
-                    verified.append(candidate)
-                    continue
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_VERIFY_SYSTEM),

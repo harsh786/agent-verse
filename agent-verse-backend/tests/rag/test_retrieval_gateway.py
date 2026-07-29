@@ -1099,8 +1099,19 @@ async def test_app_resolver_preserves_azure_and_together_identity() -> None:
     assert "together-secret" not in repr(together.provider)
 
 
-@pytest.mark.parametrize("provider_type", ["azure", "together"])
-def test_custom_openai_provider_rejects_blank_model(provider_type: str) -> None:
+@pytest.mark.parametrize(
+    ("provider_type", "base_url"),
+    [
+        ("azure", "https://example.openai.azure.com"),
+        ("together", "https://api.together.xyz/v1"),
+        ("openai_compatible", "https://custom.example/v1"),
+        ("openai", "https://custom.example/v1"),
+    ],
+)
+def test_custom_openai_provider_rejects_blank_model(
+    provider_type: str,
+    base_url: str,
+) -> None:
     from app.providers.registry import ProviderConfigurationError, instantiate_configured_provider
 
     with pytest.raises(ProviderConfigurationError) as exc_info:
@@ -1108,11 +1119,26 @@ def test_custom_openai_provider_rejects_blank_model(provider_type: str) -> None:
             provider_type,
             api_key="secret-value",
             model="",
-            base_url="https://example.test/v1",
+            base_url=base_url,
         )
 
     assert provider_type in str(exc_info.value)
     assert "secret-value" not in str(exc_info.value)
+
+
+def test_official_openai_provider_keeps_safe_default_model() -> None:
+    from app.providers.registry import instantiate_configured_provider
+
+    provider = instantiate_configured_provider(
+        "openai",
+        api_key="secret-value",
+        model="",
+        base_url="https://api.openai.com/v1",
+    )
+
+    assert provider is not None
+    assert provider._default_model == "gpt-5.2"
+    assert provider._agentverse_provider_type == "openai"
 
 
 @pytest.mark.asyncio
