@@ -280,11 +280,17 @@ class KnowledgeStore:
                     text("""
                         INSERT INTO knowledge_documents
                             (id, tenant_id, collection_id, title, source_url, source_type,
-                             content_hash, status, chunk_count, domain_metadata)
-                        VALUES
-                            (:id, :tenant_id, :collection_id, :title, :source_url,
-                             :source_type, :content_hash, 'queued', 0,
-                             CAST(:metadata AS jsonb))
+                             content_hash, status, chunk_count, domain_metadata,
+                             job_source_hash)
+                        SELECT :id, :tenant_id, collection.id, :title, :source_url,
+                               :source_type, :content_hash, 'queued', 0,
+                               CAST(:metadata AS jsonb), :source_hash
+                        FROM knowledge_collections AS collection
+                        JOIN tenants AS tenant ON tenant.id = collection.tenant_id
+                        WHERE collection.id = :collection_id
+                          AND collection.tenant_id = :tenant_id
+                          AND collection.is_active IS TRUE
+                          AND tenant.is_active IS TRUE
                         RETURNING id
                     """),
                     {
@@ -295,6 +301,7 @@ class KnowledgeStore:
                         "source_url": source_url,
                         "source_type": source_type,
                         "content_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "source_hash": hashlib.sha256(source_url.encode()).hexdigest(),
                         "metadata": json.dumps({"record_type": "ingestion_job"}),
                     },
                 )
@@ -311,12 +318,98 @@ class KnowledgeStore:
         chunk_count: int,
         error_message: str | None,
         tenant_ctx: TenantContext,
+        lease_owner: str | None = None,
     ) -> None:
         """Persist a sanitized terminal or progress state for one ingestion job."""
         if self._db is None:
             raise RuntimeError("Durable ingestion jobs require a database")
         if status not in {"queued", "running", "completed", "failed"}:
             raise ValueError(f"Unsupported ingestion job status: {status}")
+        if status == "running":
+            job = await self.get_ingestion_job_async(job_id, tenant_ctx=tenant_ctx)
+            if job is None:
+                raise KeyError(f"Ingestion job not found: {job_id}")
+            claimed = await self.claim_ingestion_job_async(
+                job_id,
+                collection_id=str(job["collection_id"]),
+                source_url=str(job["source_url"]),
+                lease_owner=lease_owner or f"legacy-{job_id}",
+                lease_seconds=900,
+                tenant_ctx=tenant_ctx,
+            )
+            if not claimed:
+                raise RuntimeError(f"Ingestion job could not be claimed: {job_id}")
+            return
+        if status == "failed":
+            await self.fail_ingestion_job_async(
+                job_id,
+                lease_owner=lease_owner,
+                error_message=error_message or "Repository ingestion failed",
+                tenant_ctx=tenant_ctx,
+            )
+            return
+        if status == "queued":
+            return
+        raise RuntimeError("Repository completion must use the atomic chunk transaction")
+
+    async def claim_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        source_url: str,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        source_hash = hashlib.sha256(source_url.encode()).hexdigest()
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'running', lease_owner = :lease_owner,
+                        heartbeat_at = now(),
+                        lease_expires_at = now() + make_interval(secs => :lease_seconds),
+                        indexed_at = now(), error_message = NULL
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND collection_id = :collection_id
+                      AND source_type = 'repository'
+                      AND source_url = :source_url AND job_source_hash = :source_hash
+                      AND status = 'queued'
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "collection_id": collection_id,
+                    "source_url": source_url,
+                    "source_hash": source_hash,
+                    "lease_owner": lease_owner,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+        return bool(result.rowcount == 1)
+
+    async def heartbeat_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -329,26 +422,69 @@ class KnowledgeStore:
             result = await session.execute(
                 text("""
                     UPDATE knowledge_documents
-                    SET status = :status,
-                        chunk_count = :chunk_count,
-                        error_message = :error_message,
-                        indexed_at = CASE
-                            WHEN :status IN ('running', 'completed') THEN now()
-                            ELSE indexed_at
-                        END
+                    SET heartbeat_at = now(),
+                        lease_expires_at = now() + make_interval(secs => :lease_seconds)
                     WHERE id = :id AND tenant_id = :tenant_id
+                      AND status = 'running' AND lease_owner = :lease_owner
                       AND domain_metadata->>'record_type' = 'ingestion_job'
                 """),
                 {
                     "id": job_id,
                     "tenant_id": tenant_ctx.tenant_id,
-                    "status": status,
-                    "chunk_count": chunk_count,
+                    "lease_owner": lease_owner,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+        return bool(result.rowcount == 1)
+
+    async def fail_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str | None,
+        error_message: str,
+        tenant_ctx: TenantContext,
+    ) -> str | None:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'failed', error_message = :error_message,
+                        lease_owner = NULL, lease_expires_at = NULL
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                      AND (
+                          status = 'queued'
+                          OR (status = 'running' AND lease_owner = :lease_owner)
+                      )
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "lease_owner": lease_owner,
                     "error_message": error_message,
                 },
             )
-            if not result.rowcount:
-                raise KeyError(f"Ingestion job not found: {job_id}")
+            status = (
+                await session.execute(
+                    text(
+                        "SELECT status FROM knowledge_documents "
+                        "WHERE id = :id AND tenant_id = :tenant_id"
+                    ),
+                    {"id": job_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+        return str(status) if status is not None else None
 
     async def get_ingestion_job_async(
         self,
@@ -415,13 +551,17 @@ class KnowledgeStore:
                 text("""
                     UPDATE knowledge_documents
                     SET status = 'failed',
-                        error_message = 'Repository ingestion interrupted'
+                        error_message = 'Repository ingestion interrupted',
+                        lease_owner = NULL, lease_expires_at = NULL
                     WHERE tenant_id = :tenant_id
                       AND source_type = 'repository'
-                      AND status = 'running'
                       AND domain_metadata->>'record_type' = 'ingestion_job'
-                      AND COALESCE(indexed_at, created_at)
-                          < now() - make_interval(secs => :stale_after_seconds)
+                      AND (
+                          (status = 'queued' AND created_at
+                              < now() - make_interval(secs => :stale_after_seconds))
+                          OR
+                          (status = 'running' AND lease_expires_at < now())
+                      )
                 """),
                 {
                     "tenant_id": tenant_ctx.tenant_id,
@@ -898,6 +1038,8 @@ class KnowledgeStore:
         *,
         job_id: str,
         collection_id: str,
+        source_url: str,
+        lease_owner: str,
         tenant_ctx: TenantContext,
     ) -> list[str]:
         """Commit repository chunks, counters, association, and completion atomically."""
@@ -920,7 +1062,12 @@ class KnowledgeStore:
                             error_message = NULL, indexed_at = now()
                         WHERE job.id = :job_id AND job.tenant_id = :tenant_id
                           AND job.collection_id = :collection_id
+                          AND job.source_type = 'repository'
+                          AND job.source_url = :source_url
+                          AND job.job_source_hash = :source_hash
                           AND job.status = 'running'
+                          AND job.lease_owner = :lease_owner
+                          AND job.lease_expires_at > now()
                           AND job.domain_metadata->>'record_type' = 'ingestion_job'
                           AND EXISTS (
                               SELECT 1 FROM knowledge_collections AS collection
@@ -933,6 +1080,9 @@ class KnowledgeStore:
                         "job_id": job_id,
                         "tenant_id": tenant_ctx.tenant_id,
                         "collection_id": collection_id,
+                        "source_url": source_url,
+                        "source_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "lease_owner": lease_owner,
                     },
                 )
                 if completed.rowcount != 1:
@@ -963,6 +1113,8 @@ class KnowledgeStore:
             collection_id=collection_id,
             tenant_id=tenant_ctx.tenant_id,
             completion_job_id=job_id,
+            completion_source_hash=hashlib.sha256(source_url.encode()).hexdigest(),
+            completion_lease_owner=lease_owner,
         )
         cached = self._data.get((tenant_ctx.tenant_id, collection_id))
         if cached is not None:
@@ -1024,6 +1176,8 @@ class KnowledgeStore:
         collection_id: str,
         tenant_id: str,
         completion_job_id: str | None = None,
+        completion_source_hash: str | None = None,
+        completion_lease_owner: str | None = None,
     ) -> None:
         if self._db is None:
             return
@@ -1058,6 +1212,7 @@ class KnowledgeStore:
                     "hierarchy_level": record["hierarchy_level"],
                     "is_proposition": record["is_proposition"],
                     "strategy_metadata": json.dumps(record["strategy_metadata"]),
+                    "ingestion_job_id": completion_job_id,
                     "freshness_ttl_hours": record["freshness_ttl_hours"],
                 }
             )
@@ -1106,7 +1261,7 @@ class KnowledgeStore:
                          content_hash, embedding, chunk_index, metadata,
                          parent_chunk_id, chunk_level, window_start, window_end,
                          window_id, hierarchy_level, is_proposition, strategy_metadata,
-                         expires_at)
+                         expires_at, ingestion_job_id)
                     VALUES
                         (:id, :collection_id, :tenant_id, :document_id, :content,
                          :content_hash, CAST(:embedding AS vector), :chunk_index,
@@ -1116,7 +1271,7 @@ class KnowledgeStore:
                          CASE WHEN CAST(:freshness_ttl_hours AS integer) IS NULL THEN NULL
                               ELSE now() + (
                                   CAST(:freshness_ttl_hours AS integer) * interval '1 hour'
-                              ) END)
+                              ) END, :ingestion_job_id)
                 """),
                 parameters,
             )
@@ -1147,14 +1302,23 @@ class KnowledgeStore:
                         SET status = 'completed',
                             chunk_count = :chunk_count,
                             error_message = NULL,
-                            indexed_at = now()
+                            indexed_at = now(), heartbeat_at = now(),
+                            lease_owner = NULL, lease_expires_at = NULL
                         WHERE id = :job_id AND tenant_id = :tenant_id
+                          AND collection_id = :collection_id
+                          AND source_type = 'repository'
+                          AND job_source_hash = :source_hash
                           AND status = 'running'
+                          AND lease_owner = :lease_owner
+                          AND lease_expires_at > now()
                           AND domain_metadata->>'record_type' = 'ingestion_job'
                     """),
                     {
                         "job_id": completion_job_id,
                         "tenant_id": tenant_id,
+                        "collection_id": collection_id,
+                        "source_hash": completion_source_hash,
+                        "lease_owner": completion_lease_owner,
                         "chunk_count": len(records),
                     },
                 )

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, patch
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -103,6 +103,7 @@ class _AwaitedStore(KnowledgeStore):
         chunk_count: int,
         error_message: str | None,
         tenant_ctx: TenantContext,
+        lease_owner: str | None = None,
     ) -> None:
         self.jobs[job_id].update(
             status=status,
@@ -126,12 +127,66 @@ class _AwaitedStore(KnowledgeStore):
     ) -> int:
         return 0
 
+    async def claim_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        source_url: str,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job["status"] != "queued":
+            return False
+        job.update(status="running", lease_owner=lease_owner)
+        return True
+
+    async def heartbeat_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        job = self.jobs.get(job_id)
+        return bool(
+            job
+            and job["status"] == "running"
+            and job.get("lease_owner") == lease_owner
+        )
+
+    async def fail_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str | None,
+        error_message: str,
+        tenant_ctx: TenantContext,
+    ) -> str | None:
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        if job["status"] == "queued" or (
+            job["status"] == "running" and job.get("lease_owner") == lease_owner
+        ):
+            job.update(
+                status="failed",
+                error_message=error_message,
+                lease_owner=None,
+            )
+        return str(job["status"])
+
     async def ingest_repository_chunks_async(
         self,
         chunks: list[Chunk],
         *,
         job_id: str,
         collection_id: str,
+        source_url: str,
+        lease_owner: str,
         tenant_ctx: TenantContext,
     ) -> list[str]:
         chunk_ids = await self.ingest_chunks_async(
@@ -139,10 +194,14 @@ class _AwaitedStore(KnowledgeStore):
             collection_id=collection_id,
             tenant_ctx=tenant_ctx,
         )
-        self.jobs[job_id].update(
+        job = self.jobs[job_id]
+        if job["status"] != "running" or job.get("lease_owner") != lease_owner:
+            raise RuntimeError("job lease lost")
+        job.update(
             status="completed",
             chunk_count=len(chunks),
             error_message=None,
+            lease_owner=None,
         )
         return chunk_ids
 
@@ -520,7 +579,7 @@ def test_repo_ingest_creates_queryable_job_before_scheduling() -> None:
 
     def schedule(coroutine: Any) -> object:
         coroutine.close()
-        return object()
+        return MagicMock()
 
     with patch("asyncio.create_task", side_effect=schedule):
         client = TestClient(_app(store), raise_server_exceptions=False)
@@ -541,6 +600,7 @@ def test_repo_ingest_creates_queryable_job_before_scheduling() -> None:
     assert response.json()["job_id"] == "job-1"
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "queued"
+    assert len(cast(Any, client.app).state.repository_ingestion_tasks) == 1
 
 
 async def test_repo_background_failure_records_sanitized_durable_status() -> None:
@@ -670,6 +730,51 @@ async def test_repo_background_provider_failure_is_durable_and_atomic(tmp_path: 
     assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
 
 
+async def test_repo_background_secret_scanner_blocks_before_embedding(tmp_path: Path) -> None:
+    from app.api.knowledge import _ingest_repo_background
+
+    (tmp_path / "service.py").write_text("AWS_KEY = 'AKIAABCDEFGHIJKLMNOP'")
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="repository", collection_id="collection-1")
+    )
+    store.jobs["job-1"] = {
+        "job_id": "job-1",
+        "collection_id": "collection-1",
+        "status": "queued",
+        "chunk_count": 0,
+        "error_message": None,
+        "source_url": "https://github.com/example/repository",
+    }
+    process = AsyncMock()
+    process.returncode = 0
+    process.communicate = AsyncMock(return_value=(b"", b""))
+    embedder = AsyncMock()
+
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=process),
+        patch("tempfile.mkdtemp", side_effect=[str(tmp_path), str(tmp_path / "config")]),
+        patch("shutil.rmtree"),
+    ):
+        (tmp_path / "config").mkdir()
+        await _ingest_repo_background(
+            job_id="job-1",
+            repo_url="https://github.com/example/repository",
+            collection_id="collection-1",
+            branch="main",
+            file_patterns=["**/*.py"],
+            max_files=10,
+            store=store,
+            embedder=embedder,
+            tenant_ctx=TENANT,
+            curl_resolve="github.com:443:93.184.216.34",
+        )
+
+    embedder.embed.assert_not_awaited()
+    assert store.jobs["job-1"]["status"] == "failed"
+    assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
+
+
 async def test_repo_background_cancellation_records_failure_and_reraises() -> None:
     from app.api.knowledge import _ingest_repo_background
 
@@ -703,13 +808,138 @@ async def test_repo_background_cancellation_records_failure_and_reraises() -> No
         )
 
     argv = create_process.call_args.args
-    assert argv[:7] == (
-        "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
-        "-c", "credential.helper=",
-    )
+    assert argv[0] == "git"
+    assert "protocol.allow=never" in argv
+    assert "protocol.https.allow=always" in argv
+    assert "credential.helper=" in argv
     assert "--no-tags" in argv
     assert "--single-branch" in argv
+    assert "http.followRedirects=false" in argv
+    assert "http.curloptResolve=github.com:443:" in " ".join(argv)
     assert create_process.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert set(create_process.call_args.kwargs["env"]) == {
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_TERMINAL_PROMPT",
+        "GIT_ALLOW_PROTOCOL",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_LFS_SKIP_SMUDGE",
+        "GCM_INTERACTIVE",
+        "LC_ALL",
+        "PATH",
+    }
     process.kill.assert_called_once()
     assert store.jobs["job-1"]["status"] == "failed"
     assert store.jobs["job-1"]["error_message"] == "Repository ingestion cancelled"
+
+
+async def test_repo_worker_ignores_malicious_inherited_git_proxy_and_ssh_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.knowledge import _ingest_repo_background
+
+    for name in (
+        "GIT_CONFIG_GLOBAL",
+        "GIT_SSH_COMMAND",
+        "SSH_AUTH_SOCK",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "GIT_PROXY_COMMAND",
+    ):
+        monkeypatch.setenv(name, "malicious-value")
+    store = _AwaitedStore()
+    store.jobs["job-1"] = {
+        "job_id": "job-1",
+        "collection_id": "collection-1",
+        "status": "queued",
+        "chunk_count": 0,
+        "error_message": None,
+        "source_url": "https://github.com/example/repository",
+    }
+    process = AsyncMock()
+    process.returncode = 1
+    process.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=process) as create_process:
+        await _ingest_repo_background(
+            job_id="job-1",
+            repo_url="https://github.com/example/repository",
+            collection_id="collection-1",
+            branch="main",
+            file_patterns=["**/*.py"],
+            max_files=10,
+            store=store,
+            embedder=FakeProvider(embed_dim=768),
+            tenant_ctx=TENANT,
+        )
+
+    environment = create_process.call_args.kwargs["env"]
+    assert "GIT_SSH_COMMAND" not in environment
+    assert "SSH_AUTH_SOCK" not in environment
+    assert "HTTPS_PROXY" not in environment
+    assert "ALL_PROXY" not in environment
+    assert environment["GIT_CONFIG_GLOBAL"] != "malicious-value"
+
+
+async def test_repo_clone_quota_kills_and_reaps_process(tmp_path: Path) -> None:
+    from app.api.knowledge import _ingest_repo_background
+    from app.ingestion.repository_security import RepositoryLimits
+
+    store = _AwaitedStore()
+    store.jobs["job-1"] = {
+        "job_id": "job-1",
+        "collection_id": "collection-1",
+        "status": "queued",
+        "chunk_count": 0,
+        "error_message": None,
+        "source_url": "https://github.com/example/repository",
+    }
+    stopped = asyncio.Event()
+    process = MagicMock()
+    process.returncode = None
+
+    async def communicate() -> tuple[bytes, bytes]:
+        (tmp_path / "oversized.pack").write_bytes(b"x" * 32)
+        await stopped.wait()
+        return b"", b""
+
+    def kill() -> None:
+        process.returncode = -9
+        stopped.set()
+
+    process.communicate = communicate
+    process.kill = MagicMock(side_effect=kill)
+    process.wait = AsyncMock(return_value=-9)
+
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=process),
+        patch("tempfile.mkdtemp", side_effect=[str(tmp_path), str(tmp_path / "config")]),
+        patch("shutil.rmtree"),
+    ):
+        (tmp_path / "config").mkdir()
+        await _ingest_repo_background(
+            job_id="job-1",
+            repo_url="https://github.com/example/repository",
+            collection_id="collection-1",
+            branch="main",
+            file_patterns=["**/*.py"],
+            max_files=10,
+            store=store,
+            embedder=FakeProvider(embed_dim=768),
+            tenant_ctx=TENANT,
+            limits=RepositoryLimits(
+                max_files=10,
+                max_file_bytes=16,
+                max_total_bytes=16,
+                max_repository_bytes=16,
+                max_repository_files=10,
+            ),
+            clone_timeout_seconds=5,
+            curl_resolve="github.com:443:93.184.216.34",
+        )
+
+    process.kill.assert_called_once()
+    process.wait.assert_awaited()
+    assert store.jobs["job-1"]["status"] == "failed"

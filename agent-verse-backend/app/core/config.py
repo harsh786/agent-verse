@@ -133,8 +133,12 @@ class Settings(BaseSettings):
     repo_ingest_max_file_bytes: int = Field(default=1_048_576, ge=1024)
     repo_ingest_max_total_bytes: int = Field(default=20_971_520, ge=1024)
     repo_ingest_max_repository_bytes: int = Field(default=104_857_600, ge=1024)
+    repo_ingest_max_repository_files: int = Field(default=10_000, ge=1)
     repo_ingest_clone_timeout_seconds: int = Field(default=120, ge=1, le=600)
     repo_ingest_stale_job_seconds: int = Field(default=900, ge=60)
+    repo_ingest_lease_seconds: int = Field(default=60, ge=10, le=600)
+    repo_ingest_heartbeat_seconds: int = Field(default=5, ge=1, le=60)
+    repo_ingest_ca_bundle: str = ""
 
     # --- search ---
     searxng_url: str = "http://searxng:8081"

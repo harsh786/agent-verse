@@ -16,9 +16,10 @@ from app.ingestion.repository_security import (
     RepositoryLimits,
     RepositorySecurityError,
     read_repository_files,
+    repository_usage,
+    resolve_repository_source,
     validate_branch,
     validate_patterns,
-    validate_repository_url,
 )
 from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.rag.models import Chunk, Document, KnowledgeCollection
@@ -631,7 +632,8 @@ async def ingest_repository(
     try:
         if body.max_files < 1:
             raise RepositorySecurityError("Repository max_files must be positive")
-        repository_url = validate_repository_url(body.repo_url)
+        repository_source = resolve_repository_source(body.repo_url)
+        repository_url = repository_source.url
         branch = validate_branch(body.branch)
         file_patterns = validate_patterns(body.file_patterns)
     except RepositorySecurityError as exc:
@@ -682,10 +684,17 @@ async def ingest_repository(
                 max_repository_bytes=settings.repo_ingest_max_repository_bytes,
             ),
             clone_timeout_seconds=settings.repo_ingest_clone_timeout_seconds,
+            curl_resolve=repository_source.curl_resolve,
+            lease_seconds=settings.repo_ingest_lease_seconds,
+            heartbeat_seconds=settings.repo_ingest_heartbeat_seconds,
         )
     )
-    # Don't await — return immediately
-    _ = task  # Task runs in background
+    tasks = getattr(request.app.state, "repository_ingestion_tasks", None)
+    if tasks is None:
+        tasks = set()
+        request.app.state.repository_ingestion_tasks = tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
     return {
         "status": "ingestion_started",
@@ -729,7 +738,16 @@ async def _ingest_repo_background(
     tenant_ctx: Any,
     limits: RepositoryLimits | None = None,
     clone_timeout_seconds: int = 120,
+    curl_resolve: str | None = None,
+    lease_seconds: int = 60,
+    heartbeat_seconds: int = 5,
 ) -> None:
+    """Clone and atomically ingest under a disk/file quota and durable lease.
+
+    Git/libcurl does not expose reliable aggregate network-byte accounting here.
+    The worker therefore fails closed on continuously monitored clone disk bytes,
+    clone file count, wall-clock timeout, selected bytes, and selected file count.
+    """
     import asyncio
     import pathlib
     import shutil
@@ -748,18 +766,27 @@ async def _ingest_repo_background(
         )
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
+    config_dir = tempfile.mkdtemp(prefix="agentverse_git_config_")
     proc: Any = None
+    communicate_task: asyncio.Task[Any] | None = None
+    lease_owner = _uuid.uuid4().hex
     try:
-        repo_url = validate_repository_url(repo_url)
+        if curl_resolve is None:
+            repository_source = resolve_repository_source(repo_url)
+            repo_url = repository_source.url
+            curl_resolve = repository_source.curl_resolve
         branch = validate_branch(branch)
         file_patterns = validate_patterns(file_patterns)
-        await store.update_ingestion_job_async(
+        claimed = await store.claim_ingestion_job_async(
             job_id,
-            status="running",
-            chunk_count=0,
-            error_message=None,
+            collection_id=collection_id,
+            source_url=repo_url,
+            lease_owner=lease_owner,
+            lease_seconds=lease_seconds,
             tenant_ctx=tenant_ctx,
         )
+        if not claimed:
+            raise RuntimeError("Repository ingestion job lease could not be claimed")
         # Clone using git — non-blocking async subprocess
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -767,6 +794,10 @@ async def _ingest_repo_background(
             "protocol.allow=never",
             "-c",
             "protocol.https.allow=always",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            f"http.curloptResolve={curl_resolve}",
             "-c",
             "credential.helper=",
             "-c",
@@ -780,24 +811,67 @@ async def _ingest_repo_background(
             "--",
             repo_url,
             tmpdir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
             env={
-                **os.environ,
+                "PATH": os.defpath,
+                "HOME": config_dir,
+                "XDG_CONFIG_HOME": config_dir,
                 "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ALLOW_PROTOCOL": "https",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_LFS_SKIP_SMUDGE": "1",
                 "GCM_INTERACTIVE": "never",
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_GLOBAL": "/dev/null",
+                "LC_ALL": "C.UTF-8",
+                **(
+                    {"GIT_SSL_CAINFO": get_settings().repo_ingest_ca_bundle}
+                    if get_settings().repo_ingest_ca_bundle
+                    else {}
+                ),
             },
         )
-        try:
-            _stdout, _stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=clone_timeout_seconds,
-            )
-        except TimeoutError:
-            proc.kill()
-            raise RuntimeError("Repository clone timed out") from None
+        communicate_task = asyncio.create_task(proc.communicate())
+        deadline = asyncio.get_running_loop().time() + clone_timeout_seconds
+        next_heartbeat = 0.0
+        while not communicate_task.done():
+            now = asyncio.get_running_loop().time()
+            if now >= deadline:
+                proc.kill()
+                communicate_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await communicate_task
+                await asyncio.shield(proc.wait())
+                raise RuntimeError("Repository clone timed out")
+            file_count, disk_bytes = repository_usage(pathlib.Path(tmpdir))
+            if (
+                file_count > limits.max_repository_files
+                or disk_bytes > limits.max_repository_bytes
+            ):
+                proc.kill()
+                communicate_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await communicate_task
+                await asyncio.shield(proc.wait())
+                raise RepositorySecurityError("Repository clone quota exceeded")
+            if now >= next_heartbeat:
+                heartbeat = await store.heartbeat_ingestion_job_async(
+                    job_id,
+                    lease_owner=lease_owner,
+                    lease_seconds=lease_seconds,
+                    tenant_ctx=tenant_ctx,
+                )
+                if not heartbeat:
+                    proc.kill()
+                    communicate_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await communicate_task
+                    await asyncio.shield(proc.wait())
+                    raise RuntimeError("Repository ingestion lease was lost")
+                next_heartbeat = now + heartbeat_seconds
+            await asyncio.sleep(0.05)
+        await communicate_task
 
         if proc.returncode != 0:
             raise RuntimeError("Repository clone failed")
@@ -809,6 +883,23 @@ async def _ingest_repo_background(
             limits,
         )
         for repository_file in repository_files:
+            heartbeat = await store.heartbeat_ingestion_job_async(
+                job_id,
+                lease_owner=lease_owner,
+                lease_seconds=lease_seconds,
+                tenant_ctx=tenant_ctx,
+            )
+            if not heartbeat:
+                raise RuntimeError("Repository ingestion lease was lost")
+            from app.agent.exfil_guard import check_tool_args_for_exfil
+
+            blocked, _reason = check_tool_args_for_exfil(
+                "write_file",
+                {"content": repository_file.content},
+                tenant_id=tenant_ctx.tenant_id,
+            )
+            if blocked:
+                raise RepositorySecurityError("Repository content failed secret scan")
             suffix = pathlib.PurePosixPath(repository_file.relative_path).suffix.lstrip(".")
             source_type = "code" if suffix in {"py", "ts", "js"} else "text"
             raw_chunks = _chunk_by_tokens_repo(
@@ -820,6 +911,14 @@ async def _ingest_repo_background(
                 f"{repo_url}:{repository_file.relative_path}".encode()
             ).hexdigest()[:32]
             embeddings = await _embed_texts_or_http(raw_chunks, embedder)
+            heartbeat = await store.heartbeat_ingestion_job_async(
+                job_id,
+                lease_owner=lease_owner,
+                lease_seconds=lease_seconds,
+                tenant_ctx=tenant_ctx,
+            )
+            if not heartbeat:
+                raise RuntimeError("Repository ingestion lease was lost")
             prepared_chunks.extend(
                 Chunk(
                     document_id=document_id,
@@ -836,10 +935,20 @@ async def _ingest_repo_background(
                 for index, chunk_content in enumerate(raw_chunks)
             )
 
+        heartbeat = await store.heartbeat_ingestion_job_async(
+            job_id,
+            lease_owner=lease_owner,
+            lease_seconds=lease_seconds,
+            tenant_ctx=tenant_ctx,
+        )
+        if not heartbeat:
+            raise RuntimeError("Repository ingestion lease was lost")
         await store.ingest_repository_chunks_async(
             prepared_chunks,
             job_id=job_id,
             collection_id=collection_id,
+            source_url=repo_url,
+            lease_owner=lease_owner,
             tenant_ctx=tenant_ctx,
         )
         logger.info(
@@ -850,13 +959,16 @@ async def _ingest_repo_background(
     except asyncio.CancelledError:
         if proc is not None and proc.returncode is None:
             proc.kill()
+            if communicate_task is not None:
+                communicate_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await communicate_task
             with suppress(Exception):
-                await proc.wait()
+                await asyncio.shield(proc.wait())
         await asyncio.shield(
-            store.update_ingestion_job_async(
+            store.fail_ingestion_job_async(
                 job_id,
-                status="failed",
-                chunk_count=0,
+                lease_owner=lease_owner,
                 error_message="Repository ingestion cancelled",
                 tenant_ctx=tenant_ctx,
             )
@@ -865,10 +977,9 @@ async def _ingest_repo_background(
     except Exception as exc:
         logger.warning("repo_ingest_failed", repo=repo_url, error=type(exc).__name__)
         try:
-            await store.update_ingestion_job_async(
+            await store.fail_ingestion_job_async(
                 job_id,
-                status="failed",
-                chunk_count=0,
+                lease_owner=lease_owner,
                 error_message="Repository ingestion failed",
                 tenant_ctx=tenant_ctx,
             )
@@ -880,6 +991,7 @@ async def _ingest_repo_background(
             )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(config_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

@@ -1413,6 +1413,15 @@ def create_app(
             try:
                 yield
             finally:
+                _repo_tasks = list(
+                    getattr(app.state, "repository_ingestion_tasks", set())
+                )
+                for _repo_task in _repo_tasks:
+                    _repo_task.cancel()
+                if _repo_tasks:
+                    import asyncio as _repo_asyncio
+
+                    await _repo_asyncio.gather(*_repo_tasks, return_exceptions=True)
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
                     import contextlib
@@ -1492,6 +1501,7 @@ def create_app(
     app.state.nl_scheduler = _nl_sched
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
+    app.state.repository_ingestion_tasks = set()
     app.state.retrieval_gateway = _retrieval_gateway
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
