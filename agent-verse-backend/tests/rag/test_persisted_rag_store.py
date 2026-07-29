@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,15 +22,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.db.rls import sqlalchemy_rls_context
-from app.providers.base import EmbedRequest, EmbedResponse
+from app.providers.base import CompletionRequest, CompletionResponse, EmbedRequest, EmbedResponse
 from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult, RAGStrategy
+from app.rag.engine import hybrid_search
 from app.rag.gateway import (
     CollectionNotFoundError,
+    ResolvedLLM,
     RetrievalDependencies,
     RetrievalExecutionContext,
     RetrievalGateway,
     RetrievalStrategyCapability,
     SQLCollectionAuthorizer,
+    core_strategy_capabilities,
 )
 from app.rag.models import KnowledgeCollection
 from app.rag.store import KnowledgeStore
@@ -212,6 +216,123 @@ async def _ingest(
         strategy_metadata={"strategy": "sentence-window", "version": 1},
     )
     return collection_id, chunk_id
+
+
+async def test_restricted_hybrid_and_fusion_execute_verified_persisted_legs(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    embedding = _embedding(768)
+    collection_id, chunk_id = await _ingest(
+        postgres_database,
+        tenant,
+        dimension=768,
+        metadata={"department": "legal", "classification": "internal"},
+        embedding=embedding,
+    )
+    evidence: list[dict[str, Any]] = []
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        results = await hybrid_search(
+            session,
+            query="Canonical persisted retrieval evidence",
+            query_embedding=embedding,
+            collection_id=collection_id,
+            top_k=5,
+            embedding_dim=768,
+            metadata_filter={"department": "legal"},
+            strict=True,
+            evidence=evidence,
+        )
+
+    assert results[0].chunk_id == chunk_id
+    assert [leg["component"] for leg in evidence] == [
+        "vector",
+        "fts",
+        "trigram",
+        "bm25",
+    ]
+    assert all(leg["result_count"] >= 1 for leg in evidence)
+    assert results[0].source_metadata["department"] == "legal"
+
+    class Provider:
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            assert request.model == "tenant-model"
+            return CompletionResponse(
+                content="persisted retrieval evidence\ncanonical evidence retrieval",
+                model=request.model,
+            )
+
+    active_sessions = 0
+    max_active_sessions = 0
+    opened_sessions = 0
+
+    @asynccontextmanager
+    async def tracked_factory() -> AsyncIterator[AsyncSession]:
+        nonlocal active_sessions, max_active_sessions, opened_sessions
+        async with postgres_database.runtime_factory() as session:
+            opened_sessions += 1
+            active_sessions += 1
+            max_active_sessions = max(max_active_sessions, active_sessions)
+            try:
+                yield session
+            finally:
+                active_sessions -= 1
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=tracked_factory,
+            collection_authorizer=SQLCollectionAuthorizer(),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(embedding),
+            llm_resolver=lambda *_: ResolvedLLM(
+                provider=Provider(), model="tenant-model", provider_type="test"
+            ),
+        )
+    )
+    hybrid_result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.HYBRID,
+        top_k=5,
+        filters={"department": "legal"},
+    )
+    assert [leg.metadata["component"] for leg in hybrid_result.retrieval_legs] == [
+        "vector",
+        "fts",
+        "trigram",
+        "bm25",
+    ]
+    assert all(
+        "component_scores" in trace.detail
+        for trace in hybrid_result.strategy_trace
+        if trace.action == "retrieval_leg"
+    )
+    assert hybrid_result.strategy_trace[-1].action == "rrf_merge"
+    assert hybrid_result.strategy_trace[-1].detail["rrf_scores"]
+
+    opened_sessions = 0
+    max_active_sessions = 0
+    result = await gateway.execute(
+        tenant,
+        collection_id=collection_id,
+        query="Canonical persisted retrieval evidence",
+        strategy_id=RAGStrategy.FUSION,
+        top_k=5,
+        filters={"department": "legal"},
+    )
+
+    assert result.citations[0].chunk_id == chunk_id
+    assert result.citations[0].metadata["department"] == "legal"
+    assert len(result.retrieval_legs) == 3
+    assert max_active_sessions == 3
+    assert opened_sessions == 4  # collection authorization plus one session per variant
 
 
 async def test_ingest_and_search_share_persisted_contract_after_restart(

@@ -105,8 +105,17 @@ def test_strategy_registry_implemented_patterns():
         assert reg.is_available(sid), f"Strategy {sid} is not available"
 
     rag_patterns = reg.list_by_category(StrategyCategory.RAG)
-    assert all(cap.state is not StrategyState.IMPLEMENTED for cap in rag_patterns)
-    assert all(not reg.is_available(cap.strategy_id) for cap in rag_patterns)
+    implemented = {
+        cap.strategy_id
+        for cap in rag_patterns
+        if cap.state is StrategyState.IMPLEMENTED
+    }
+    assert implemented == {"naive", "hybrid", "hyde", "multi_hop", "fusion"}
+    assert all(
+        reg.is_available(cap.strategy_id)
+        == (cap.strategy_id in implemented)
+        for cap in rag_patterns
+    )
 
 
 def test_agentic_chunking_state():

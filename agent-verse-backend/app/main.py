@@ -141,6 +141,7 @@ from app.rag.gateway import (
     RetrievalGateway,
     SQLCollectionAuthorizer,
     TenantScopedGraphCapabilityAdapter,
+    core_strategy_capabilities,
 )
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
@@ -682,8 +683,7 @@ def create_app(
             search_capability=None,
             policy_services=(_policy_engine, _cost, _hitl),
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
-            # Transitional fail-closed state: Tasks 5-11 register only certified adapters.
-            strategy_capabilities={},
+            strategy_capabilities=core_strategy_capabilities(),
         )
     )
 
@@ -1040,8 +1040,7 @@ def create_app(
                         _hitl,
                     ),
                     collection_authorizer=SQLCollectionAuthorizer(),
-                    # Transitional fail-closed state until Tasks 5-11 certify adapters.
-                    strategy_capabilities={},
+                    strategy_capabilities=core_strategy_capabilities(),
                 )
             )
 

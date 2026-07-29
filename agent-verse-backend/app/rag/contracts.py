@@ -146,7 +146,50 @@ class RAGRuntimeAdapter(Protocol):
 
     strategy: ClassVar[RAGStrategy]
 
-    async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult: ...
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult: ...
+
+
+class _CoreRAGRuntimeAdapter(RAGRuntimeAdapter):
+    """Concrete canonical adapter delegated to the tenant-scoped gateway runtime."""
+
+    strategy: ClassVar[RAGStrategy]
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.gateway import execute_core_strategy
+
+        if context is None:
+            raise UnavailableRAGStrategyError(
+                self.strategy, "tenant-scoped gateway context is required"
+            )
+        return await execute_core_strategy(self.strategy, request, context)
+
+
+class NaiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.NAIVE
+
+
+class HybridRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.HYBRID
+
+
+class HyDERAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.HYDE
+
+
+class MultiHopRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.MULTI_HOP
+
+
+class FusionRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.FUSION
 
 
 def is_rag_runtime_adapter(
@@ -163,8 +206,12 @@ def is_rag_runtime_adapter(
     )
 
 
-# Task 1 defines the vocabulary only. Strategies are registered here only after a
-# tenant-scoped gateway adapter implements the shared runtime contract.
 RAG_RUNTIME_CAPABILITIES: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] = MappingProxyType(
-    {}
+    {
+        RAGStrategy.NAIVE: NaiveRAGRuntimeAdapter,
+        RAGStrategy.HYBRID: HybridRAGRuntimeAdapter,
+        RAGStrategy.HYDE: HyDERAGRuntimeAdapter,
+        RAGStrategy.MULTI_HOP: MultiHopRAGRuntimeAdapter,
+        RAGStrategy.FUSION: FusionRAGRuntimeAdapter,
+    }
 )
