@@ -439,14 +439,19 @@ async def test_sync_from_db_hydrates_only_compatibility_collection_metadata(
 ) -> None:
     tenant, _ = tenants
     collection_id, chunk_id = await _ingest(postgres_database, tenant)
-    compatibility_store = KnowledgeStore(postgres_database.admin_factory)
+    compatibility_store = KnowledgeStore(postgres_database.runtime_factory)
 
     loaded_chunks = await compatibility_store.sync_from_db()
 
-    collection = compatibility_store.get_collection(collection_id, tenant_ctx=tenant)
     assert loaded_chunks == 0
+    assert compatibility_store._data == {}
+    collection = await compatibility_store.get_collection_async(
+        collection_id,
+        tenant_ctx=tenant,
+    )
     assert collection is not None
-    assert compatibility_store._data[(tenant.tenant_id, collection_id)].chunks == []
+    listed = await compatibility_store.list_collections_async(tenant_ctx=tenant)
+    assert [item.collection_id for item in listed] == [collection_id]
     results = await KnowledgeStore(postgres_database.runtime_factory).search(
         "persisted retrieval evidence",
         collection_id,
@@ -454,6 +459,138 @@ async def test_sync_from_db_hydrates_only_compatibility_collection_metadata(
         tenant_ctx=tenant,
     )
     assert [result["chunk_id"] for result in results] == [chunk_id]
+
+
+async def test_restricted_restart_lookup_does_not_expose_foreign_collection(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant_a)
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+
+    assert await restarted.get_collection_async(collection_id, tenant_ctx=tenant_b) is None
+    assert await restarted.list_collections_async(tenant_ctx=tenant_b) == []
+
+
+async def test_missing_or_failing_embedder_leaves_persisted_collection_empty(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.store import EmbeddingProviderUnavailableError
+
+    class _FailingEmbedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            raise RuntimeError("private provider failure")
+
+    tenant, _ = tenants
+    for embedder in (None, _FailingEmbedder()):
+        collection_id = uuid.uuid4().hex
+        store = KnowledgeStore(postgres_database.runtime_factory)
+        await store.create_collection_async(
+            KnowledgeCollection(name=f"embedder-{collection_id}", collection_id=collection_id),
+            tenant_ctx=tenant,
+        )
+        with pytest.raises(EmbeddingProviderUnavailableError):
+            await store.ingest_document(
+                collection_id=collection_id,
+                content="must not be written",
+                tenant_ctx=tenant,
+                embedder=embedder,
+            )
+        async with (
+            postgres_database.runtime_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant.tenant_id),
+        ):
+            assert (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM knowledge_chunks_768 "
+                        "WHERE collection_id = :id"
+                    ),
+                    {"id": collection_id},
+                )
+            ).scalar_one() == 0
+
+
+async def test_empty_batch_still_authorizes_collection_ownership(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant_a)
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+
+    assert await restarted.ingest_chunks_async(
+        [], collection_id=collection_id, tenant_ctx=tenant_a
+    ) == []
+    with pytest.raises(KeyError, match="not found"):
+        await restarted.ingest_chunks_async(
+            [], collection_id=collection_id, tenant_ctx=tenant_b
+        )
+    with pytest.raises(KeyError, match="not found"):
+        await restarted.ingest_chunks_async(
+            [], collection_id=uuid.uuid4().hex, tenant_ctx=tenant_a
+        )
+
+
+async def test_3072_vector_query_uses_halfvec_hnsw_index(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id, chunk_id = await _ingest(
+        postgres_database,
+        tenant,
+        dimension=3072,
+    )
+    store = KnowledgeStore(postgres_database.runtime_factory)
+
+    results = await store.hybrid_search_db(
+        "Canonical persisted retrieval evidence",
+        _embedding(3072),
+        collection_id,
+        tenant,
+        top_k=1,
+    )
+    assert [result.chunk_id for result in results] == [chunk_id]
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        await session.execute(text("SET LOCAL enable_seqscan = off"))
+        plan = "\n".join(
+            (
+                await session.execute(
+                    text("""
+                        EXPLAIN SELECT id FROM knowledge_chunks_3072
+                        WHERE collection_id = :collection_id
+                        ORDER BY embedding::halfvec(3072)
+                                 <=> CAST(:embedding AS halfvec(3072))
+                        LIMIT 1
+                    """),
+                    {
+                        "collection_id": collection_id,
+                        "embedding": str(_embedding(3072)),
+                    },
+                )
+                ).scalars()
+        )
+        index_valid = (
+            await session.execute(
+                text("""
+                    SELECT index.indisvalid
+                    FROM pg_index AS index
+                    JOIN pg_class AS relation ON relation.oid = index.indexrelid
+                    WHERE relation.relname = 'idx_knowledge_chunks_3072_vector_halfvec'
+                """)
+            )
+        ).scalar_one()
+    assert "halfvec(3072)" in plan
+    assert index_valid is True
 
 
 async def test_concurrent_gateway_operations_use_independent_restricted_sessions(
@@ -612,6 +749,68 @@ async def test_orchestrated_batch_failure_rolls_back_without_ids(
         ).scalar_one()
     assert rows == 0
     assert store._data[(tenant.tenant_id, collection_id)].chunks == []
+
+
+async def test_orchestrated_chunks_share_document_count_and_delete_together(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.ingestion.orchestrator import IngestionOrchestrator
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(
+            name=f"orchestrated-document-{collection_id}",
+            collection_id=collection_id,
+        ),
+        tenant_ctx=tenant,
+    )
+    result = await IngestionOrchestrator(
+        knowledge_store=store,
+        embedder=_Embedder(_embedding(768)),
+    ).ingest(
+        "First sufficiently long paragraph for one document.\n\n"
+        "Second sufficiently long paragraph for the same document.",
+        content_type="text",
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    )
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT document_id, chunk_index FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :id ORDER BY chunk_index"
+                ),
+                {"id": collection_id},
+            )
+        ).all()
+        counts = (
+            await session.execute(
+                text(
+                    "SELECT document_count, chunk_count FROM knowledge_collections "
+                    "WHERE id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).one()
+
+    assert result.chunks_created == 2
+    assert len({row[0] for row in rows}) == 1
+    assert [row[1] for row in rows] == [0, 1]
+    assert counts == (1, 2)
+    assert await store.delete_document_async(
+        rows[0][0],
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    ) == 2
 
 
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)

@@ -23,6 +23,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -119,6 +120,14 @@ async def hybrid_search(
         logger.warning("unsupported_embedding_dimension", embedding_dim=embedding_dim)
         return []
     table = f"knowledge_chunks_{embedding_dim}"
+    vector_expression = (
+        "embedding::halfvec(3072)" if embedding_dim == 3072 else "embedding"
+    )
+    query_vector_expression = (
+        "CAST(:emb AS halfvec(3072))"
+        if embedding_dim == 3072
+        else "CAST(:emb AS vector)"
+    )
     metadata_clause = (
         " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
     )
@@ -140,11 +149,11 @@ async def hybrid_search(
             )
             vec_sql = text(f"""
                 SELECT id, content, metadata,
-                       1 - (embedding <=> CAST(:emb AS vector)) AS score
+                       1 - ({vector_expression} <=> {query_vector_expression}) AS score
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
-                ORDER BY embedding <=> CAST(:emb AS vector)
+                ORDER BY {vector_expression} <=> {query_vector_expression}
                 LIMIT :limit
             """)
             rows = await session.execute(vec_sql, {
@@ -357,8 +366,9 @@ async def rerank_results(
         return results[:top_k] if top_k else results
 
     try:
-        from app.providers.base import CompletionRequest, Message
         import json as _json
+
+        from app.providers.base import CompletionRequest, Message
 
         # Build a batch relevance scoring prompt
         passages_text = "\n".join(
@@ -379,10 +389,8 @@ async def rerank_results(
         scores = _json.loads(resp.content.strip())
         if isinstance(scores, list) and len(scores) == len(candidates):
             for i, r in enumerate(candidates):
-                try:
+                with suppress(TypeError, ValueError, IndexError):
                     r.score = float(scores[i]) / 10.0
-                except (TypeError, ValueError, IndexError):
-                    pass
             candidates.sort(key=lambda r: r.score, reverse=True)
     except Exception as exc:
         logger.debug("rerank_failed_falling_back", error=str(exc)[:80])
@@ -469,6 +477,7 @@ async def retrieve_multi_hop(
         )
     try:
         import json as _json
+
         from app.providers.base import CompletionRequest, Message
         req = CompletionRequest(
             messages=[
@@ -716,7 +725,11 @@ async def retrieve(
                 )
                 # CRAG correction: if low confidence, the caller (RetrieverTool.retrieve_corrective)
                 # handles web fallback. At engine level, return base results + confidence metadata.
-                avg_conf = sum(r.score for r in base_results) / len(base_results) if base_results else 0.0
+                avg_conf = (
+                    sum(r.score for r in base_results) / len(base_results)
+                    if base_results
+                    else 0.0
+                )
                 if base_results and avg_conf < 0.5:
                     # Tag results as low-confidence for CRAG layer to act on
                     for r in base_results:
@@ -802,7 +815,7 @@ async def retrieve(
                         content=refined[:2000] or base_results[0].content,
                         score=base_results[0].score,
                         source_metadata={**base_results[0].source_metadata, "strategy": strategy},
-                        retrieval_legs=base_results[0].retrieval_legs + [strategy],
+                        retrieval_legs=[*base_results[0].retrieval_legs, strategy],
                     )
                 return base_results
             except Exception as exc:
@@ -852,7 +865,10 @@ async def retrieve(
                         chunk_id=base_results[0].chunk_id,
                         content=best[:2000] or base_results[0].content,
                         score=0.9,
-                        source_metadata={**base_results[0].source_metadata, "strategy": "speculative"},
+                        source_metadata={
+                            **base_results[0].source_metadata,
+                            "strategy": "speculative",
+                        },
                         retrieval_legs=["speculative"],
                     )
                 return base_results
@@ -904,7 +920,7 @@ async def retrieve(
                         source_metadata={"strategy": "raptor", "source_count": len(base_results)},
                         retrieval_legs=["raptor"],
                     )
-                    return [summary] + base_results[:top_k - 1]
+                    return [summary, *base_results[:top_k - 1]]
                 return base_results[:top_k]
             except Exception as exc:
                 if strict:
@@ -940,7 +956,10 @@ async def retrieve(
                         chunk_id=c["chunk_id"],
                         content=c["content"],
                         score=c["score"],
-                        source_metadata={**c.get("source_metadata", {}), "colbert_score": c.get("colbert_score", 0.0)},
+                        source_metadata={
+                            **c.get("source_metadata", {}),
+                            "colbert_score": c.get("colbert_score", 0.0),
+                        },
                         retrieval_legs=["colbert"],
                     )
                     for c in reranked
@@ -1021,7 +1040,10 @@ async def retrieve(
                         query=query,
                         tenant_ctx=tenant_ctx,
                         top_k=top_k,
-                        db=getattr(long_term_memory, "_db_factory", None) or getattr(long_term_memory, "_db", None),
+                        db=(
+                            getattr(long_term_memory, "_db_factory", None)
+                            or getattr(long_term_memory, "_db", None)
+                        ),
                         embedder=embedder or provider,
                     )
                     if ltm_results:

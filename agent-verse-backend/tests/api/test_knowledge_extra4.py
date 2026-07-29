@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
@@ -760,7 +760,7 @@ def test_ingest_chunks_from_source_helper() -> None:
 
 
 def test_ingest_chunks_from_source_embedder_exception() -> None:
-    """Lines 807-831: Embedder exception per chunk is swallowed."""
+    """A structured source embedder failure is fail-closed."""
     import asyncio
     from app.api.knowledge import _ingest_chunks_from_source
 
@@ -778,12 +778,14 @@ def test_ingest_chunks_from_source_embedder_exception() -> None:
         count = await _ingest_chunks_from_source(store, chunks, "coll-exc", _CTX, embedder)
         return count
 
-    count = asyncio.run(_run())
-    assert count >= 0  # swallowed, may succeed with empty embedding
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.status_code == 503
+    assert store._data[(_CTX.tenant_id, "coll-exc")].chunks == []
 
 
 def test_ingest_chunks_no_embedder() -> None:
-    """Lines 803-831: No embedder → empty embeddings, still ingests."""
+    """A structured source without an embedder is fail-closed."""
     import asyncio
     from app.api.knowledge import _ingest_chunks_from_source
 
@@ -799,8 +801,10 @@ def test_ingest_chunks_no_embedder() -> None:
         count = await _ingest_chunks_from_source(store, chunks, "coll-noemb", _CTX, None)
         return count
 
-    count = asyncio.run(_run())
-    assert count >= 0
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.status_code == 503
+    assert store._data[(_CTX.tenant_id, "coll-noemb")].chunks == []
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +948,11 @@ def test_federated_search_with_embedder() -> None:
     coll2 = _create_collection(client, "FedColl2")
 
     mock_results: list = []
-    with patch("app.knowledge.federated_search.federated_search", new_callable=AsyncMock, return_value=mock_results):
+    with patch(
+        "app.knowledge.federated_search.federated_search",
+        new_callable=AsyncMock,
+        return_value=mock_results,
+    ) as search:
         resp = client.post(
             "/knowledge/search/federated",
             json={"query": "test query", "collection_ids": [coll1, coll2], "top_k": 5},
@@ -954,6 +962,26 @@ def test_federated_search_with_embedder() -> None:
     body = resp.json()
     assert "results" in body
     assert "total" in body
+    assert search.await_args.kwargs["tenant_ctx"].tenant_id == _CTX.tenant_id
+
+
+def test_federated_search_failure_is_structured_non_2xx() -> None:
+    embedder = _make_embedder()
+    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+
+    with patch(
+        "app.knowledge.federated_search.federated_search",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("private collection failure"),
+    ):
+        resp = client.post(
+            "/knowledge/search/federated",
+            json={"query": "test", "collection_ids": ["c1"]},
+            headers=H,
+        )
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Federated knowledge search is unavailable"}
 
 
 def test_federated_search_no_embedder_503() -> None:

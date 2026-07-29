@@ -50,6 +50,10 @@ class HybridSearchResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class EmbeddingProviderUnavailableError(RuntimeError):
+    """A vector ingestion request has no usable embedding provider."""
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     mag_a = math.sqrt(sum(x * x for x in a))
@@ -165,6 +169,88 @@ class KnowledgeStore:
             v.collection
             for (tid, _), v in self._data.items()
             if tid == tenant_ctx.tenant_id
+        ]
+
+    async def get_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> KnowledgeCollection | None:
+        """Read one active collection in the authenticated tenant scope."""
+        if self._db is None:
+            return self.get_collection(collection_id, tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT collection.id, collection.name, collection.description, "
+                        "collection.document_count, collection.embedder "
+                        "FROM knowledge_collections AS collection "
+                        "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
+                        "WHERE collection.id = :id AND collection.tenant_id = :tid "
+                        "AND collection.is_active IS TRUE AND tenant.is_active IS TRUE"
+                    ),
+                    {"id": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return KnowledgeCollection(
+            name=str(row[1]),
+            description=str(row[2] or ""),
+            collection_id=str(row[0]),
+            document_count=int(row[3] or 0),
+            embedder=str(row[4] or "voyage"),
+        )
+
+    async def list_collections_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[KnowledgeCollection]:
+        """List active collections without cross-tenant startup hydration."""
+        if self._db is None:
+            return self.list_collections(tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT collection.id, collection.name, collection.description, "
+                        "collection.document_count, collection.embedder "
+                        "FROM knowledge_collections AS collection "
+                        "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
+                        "WHERE collection.tenant_id = :tid AND collection.is_active IS TRUE "
+                        "AND tenant.is_active IS TRUE ORDER BY collection.created_at"
+                    ),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
+        return [
+            KnowledgeCollection(
+                name=str(row[1]),
+                description=str(row[2] or ""),
+                collection_id=str(row[0]),
+                document_count=int(row[3] or 0),
+                embedder=str(row[4] or "voyage"),
+            )
+            for row in rows
         ]
 
     def ingest_chunk(
@@ -338,13 +424,11 @@ class KnowledgeStore:
         collection_id: str,
         top_k: int = 10,
         *,
-        tenant_ctx: TenantContext | None = None,
+        tenant_ctx: TenantContext,
         metadata_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return plain-dict results from the configured source of truth."""
         if self._db is not None:
-            if tenant_ctx is None:
-                raise TypeError("tenant_ctx is required for persisted knowledge search")
             persisted = await self.hybrid_search_db(
                 query,
                 [],
@@ -367,7 +451,7 @@ class KnowledgeStore:
         for (stored_tenant_id, cid), store in self._data.items():
             if cid != collection_id:
                 continue
-            if tenant_ctx is not None and stored_tenant_id != tenant_ctx.tenant_id:
+            if stored_tenant_id != tenant_ctx.tenant_id:
                 continue
             for chunk in store.chunks:
                 if metadata_filter and not all(
@@ -506,6 +590,8 @@ class KnowledgeStore:
         """Embed and transactionally persist one canonical retrieval chunk."""
         chunk_id = _uuid.uuid4().hex
         embedding: list[float] = []
+        if self._db is not None and embedder is None:
+            raise EmbeddingProviderUnavailableError("Embedding provider is unavailable")
         if embedder is not None:
             from app.providers.base import embed_texts
 
@@ -514,8 +600,12 @@ class KnowledgeStore:
                 embedding = embeddings[0]
             except Exception as exc:
                 if self._db is not None:
-                    raise
+                    raise EmbeddingProviderUnavailableError(
+                        "Embedding provider is unavailable"
+                    ) from exc
                 _log.warning("ingest_document_embed_failed: %s", exc)
+        if self._db is not None and not embedding:
+            raise EmbeddingProviderUnavailableError("Embedding provider is unavailable")
 
         document_id = source_doc_id or chunk_id
         merged_metadata = dict(metadata or {})
@@ -577,6 +667,14 @@ class KnowledgeStore:
     ) -> list[str]:
         """Persist all chunks for one ingestion unit in a single transaction."""
         if not chunks:
+            collection = await self.get_collection_async(
+                collection_id,
+                tenant_ctx=tenant_ctx,
+            )
+            if collection is None:
+                raise KeyError(
+                    f"Collection {collection_id} not found for tenant {tenant_ctx.tenant_id}"
+                )
             return []
         if self._db is None:
             for chunk in chunks:
@@ -837,46 +935,8 @@ class KnowledgeStore:
         )
 
     async def sync_from_db(self) -> int:
-        """Load compatibility collection metadata without hydrating chunk text."""
-        if self._db is None:
-            return 0
-        try:
-            from sqlalchemy import text
-
-            from app.rag.models import KnowledgeCollection
-
-            async with self._db() as session:
-                rows = (
-                    await session.execute(
-                        text(
-                            "SELECT collection.id, collection.tenant_id, collection.name, "
-                            "collection.description, collection.document_count, "
-                            "collection.embedder FROM knowledge_collections AS collection "
-                            "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
-                            "WHERE tenant.is_active IS TRUE AND collection.is_active IS TRUE "
-                            "ORDER BY collection.id LIMIT 10000"
-                        )
-                    )
-                ).fetchall()
-                for row in rows:
-                    key = (str(row[1]), str(row[0]))
-                    if key in self._data:
-                        continue
-                    self._data[key] = _CollectionStore(
-                        collection=KnowledgeCollection(
-                            name=str(row[2]),
-                            description=str(row[3] or ""),
-                            collection_id=str(row[0]),
-                            document_count=int(row[4] or 0),
-                            embedder=str(row[5] or "voyage"),
-                        )
-                    )
-
-            _log.info("Synced %d collection metadata records into KnowledgeStore", len(rows))
-            return 0
-        except Exception as exc:
-            _log.warning("DB knowledge sync failed: %s", exc)
-            return 0
+        """Compatibility no-op; persisted metadata is read per tenant on demand."""
+        return 0
 
     async def expand_to_parents(
         self,

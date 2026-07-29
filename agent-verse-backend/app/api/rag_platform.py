@@ -67,7 +67,7 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
 
     result = await rag_retriever.retrieve(
         query=body.query,
-        tenant_id=tenant.tenant_id,
+        tenant_ctx=tenant,
         collection_id=body.collection_id,
         strategy=strategy,
         top_k=body.top_k,

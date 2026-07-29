@@ -974,7 +974,6 @@ def create_app(
 
             await _audit_log_db.sync_from_db()
             await _schedule_store_db.sync_from_db()
-            await _knowledge_store_db.sync_from_db()
 
             app.state.audit_log = _audit_log_db
             app.state.schedule_store = _schedule_store_db

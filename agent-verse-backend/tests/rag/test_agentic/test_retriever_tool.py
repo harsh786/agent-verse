@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from app.rag.agentic.retriever_tool import RetrieverTool, RetrievalResult
+
+from app.rag.agentic.retriever_tool import RetrievalResult, RetrieverTool
 from app.rag.agentic.source_inventory import SourceInventory, SourceInventoryResult
-from app.tenancy.context import TenantContext, PlanTier
+from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.store import KnowledgeStore
-from app.rag.models import KnowledgeCollection, Chunk
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -89,24 +90,24 @@ async def test_retrieval_respects_min_confidence(tenant_ctx, loaded_store):
 
 # ── SourceInventory ───────────────────────────────────────────────────────────
 
-def test_source_inventory_empty_kb(tenant_ctx, empty_store):
+async def test_source_inventory_empty_kb(tenant_ctx, empty_store):
     inventory = SourceInventory(knowledge_store=empty_store)
-    result = inventory.build(tenant_ctx=tenant_ctx)
+    result = await inventory.build(tenant_ctx=tenant_ctx)
     assert isinstance(result, SourceInventoryResult)
     assert result.kb_collections == 0
     assert result.kb_state == "empty"
 
 
-def test_source_inventory_with_data(tenant_ctx, loaded_store):
+async def test_source_inventory_with_data(tenant_ctx, loaded_store):
     inventory = SourceInventory(knowledge_store=loaded_store)
-    result = inventory.build(tenant_ctx=tenant_ctx)
+    result = await inventory.build(tenant_ctx=tenant_ctx)
     assert result.kb_collections >= 1
     assert result.kb_state in ("sparse", "healthy")
 
 
-def test_source_inventory_knows_web_available(tenant_ctx, empty_store):
+async def test_source_inventory_knows_web_available(tenant_ctx, empty_store):
     inventory = SourceInventory(knowledge_store=empty_store, web_search_available=True)
-    result = inventory.build(tenant_ctx=tenant_ctx)
+    result = await inventory.build(tenant_ctx=tenant_ctx)
     assert result.web_available is True
 
 
@@ -126,9 +127,9 @@ async def test_strategy_auto_selects_web_when_kb_empty(tenant_ctx, empty_store):
 
 # ── Extra coverage ────────────────────────────────────────────────────────────
 
-def test_source_inventory_to_dict(tenant_ctx, empty_store):
+async def test_source_inventory_to_dict(tenant_ctx, empty_store):
     inventory = SourceInventory(knowledge_store=empty_store, web_search_available=True)
-    result = inventory.build(tenant_ctx=tenant_ctx)
+    result = await inventory.build(tenant_ctx=tenant_ctx)
     d = result.to_dict()
     assert isinstance(d, dict)
     assert "kb_collections" in d

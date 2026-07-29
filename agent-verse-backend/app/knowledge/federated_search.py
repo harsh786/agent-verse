@@ -21,9 +21,7 @@ import asyncio
 import hashlib
 from typing import Any
 
-from app.observability.logging import get_logger
-
-_log = get_logger(__name__)
+from app.tenancy.context import TenantContext
 
 __all__ = ["federated_search"]
 
@@ -63,6 +61,7 @@ async def federated_search(
     store: Any,
     top_k: int = 10,
     *,
+    tenant_ctx: TenantContext,
     per_collection_k: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search *query* across every collection in *collection_ids* in parallel.
@@ -96,15 +95,15 @@ async def federated_search(
     # Parallel fetch — one coroutine per collection                       #
     # ------------------------------------------------------------------ #
     async def _search_one(cid: str) -> list[dict[str, Any]]:
-        try:
-            return await store.search(query, cid, top_k=fetch_k)
-        except Exception as exc:
-            _log.warning(
-                "federated_search_collection_error",
-                collection_id=cid,
-                error=str(exc),
-            )
-            return []
+        result = await store.search(
+            query,
+            cid,
+            top_k=fetch_k,
+            tenant_ctx=tenant_ctx,
+        )
+        if not isinstance(result, list):
+            raise TypeError("Knowledge store search must return a list")
+        return result
 
     per_collection: list[list[dict[str, Any]]] = list(
         await asyncio.gather(*[_search_one(cid) for cid in collection_ids])

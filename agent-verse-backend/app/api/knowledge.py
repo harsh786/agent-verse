@@ -185,6 +185,23 @@ async def _persist_chunks_or_http(
         ) from exc
 
 
+async def _embed_texts_or_http(texts: list[str], embedder: Any) -> list[list[float]]:
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
+    from app.providers.base import embed_texts
+
+    try:
+        embeddings = await embed_texts(texts, provider=embedder)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding provider is unavailable",
+        ) from exc
+    if len(embeddings) != len(texts) or any(not embedding for embedding in embeddings):
+        raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
+    return embeddings
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — collections
 # ---------------------------------------------------------------------------
@@ -193,7 +210,7 @@ async def _persist_chunks_or_http(
 async def list_collections(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
-    collections = store.list_collections(tenant_ctx=tenant_ctx)
+    collections = await store.list_collections_async(tenant_ctx=tenant_ctx)
     return [
         {
             "collection_id": c.collection_id,
@@ -239,7 +256,7 @@ async def delete_collection(request: Request, collection_id: str) -> None:
     store = _knowledge_store(request)
 
     # Verify collection exists and belongs to this tenant
-    collection = store.get_collection(collection_id, tenant_ctx=tenant_ctx)
+    collection = await store.get_collection_async(collection_id, tenant_ctx=tenant_ctx)
     if collection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -304,7 +321,7 @@ async def ingest_document(
     store = _knowledge_store(request)
 
     # Verify collection exists.
-    collection = store.get_collection(body.collection_id, tenant_ctx=tenant_ctx)
+    collection = await store.get_collection_async(body.collection_id, tenant_ctx=tenant_ctx)
     if collection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -341,15 +358,16 @@ async def ingest_document(
 
     chunks: list[Chunk] = []
     embedder = getattr(request.app.state, "embedder", None)
-    from app.providers.base import embed_texts
+    embeddings = await _embed_texts_or_http(
+        [text_chunk.content for text_chunk in chunks_text],
+        embedder,
+    )
     for idx, text_chunk in enumerate(chunks_text):
         chunk_text = text_chunk.content
-        embeddings = await embed_texts([chunk_text], provider=embedder)
-        chunk_embedding = embeddings[0]
         chunks.append(Chunk(
             document_id=document.document_id,
             content=chunk_text,
-            embedding=chunk_embedding,
+            embedding=embeddings[idx],
             chunk_index=idx,
             metadata={**str_metadata, "source_type": body.source_type},
         ))
@@ -547,17 +565,14 @@ async def ingest_file(
 
     document_id = _uuid.uuid4().hex
     rag_chunks: list[Chunk] = []
-    from app.providers.base import EmbedRequest
-    for idx, chunk in enumerate(chunks):
-        if not chunk.content.strip():
-            continue
-        embedding: list[float] = []
-        if embedder:
-            try:
-                resp = await embedder.embed(EmbedRequest(texts=[chunk.content]))
-                embedding = resp.embeddings[0] if resp.embeddings else []
-            except Exception:
-                embedding = []
+    non_empty_chunks = [chunk for chunk in chunks if chunk.content.strip()]
+    embeddings = await _embed_texts_or_http(
+        [chunk.content for chunk in non_empty_chunks],
+        embedder,
+    )
+    for idx, (chunk, embedding) in enumerate(
+        zip(non_empty_chunks, embeddings, strict=True)
+    ):
         rag_chunks.append(Chunk(
             document_id=document_id,
             content=chunk.content,
@@ -760,8 +775,7 @@ async def ingest_openapi(
 
     paths = spec.get("paths", {})
     rag_chunks: list[Chunk] = []
-    from app.providers.base import EmbedRequest
-
+    source_doc_id = _uuid.uuid4().hex
     for path, methods in paths.items():
         if not isinstance(methods, dict):
             continue
@@ -785,22 +799,17 @@ async def ingest_openapi(
             if not chunk_text:
                 continue
 
-            embedding: list[float] = []
-            if embedder:
-                try:
-                    resp = await embedder.embed(EmbedRequest(texts=[chunk_text]))
-                    embedding = resp.embeddings[0] if resp.embeddings else []
-                except Exception:
-                    pass
+            embedding = (await _embed_texts_or_http([chunk_text], embedder))[0]
 
             rag_chunks.append(Chunk(
-                document_id=_uuid.uuid4().hex,
+                document_id=source_doc_id,
                 content=chunk_text,
                 embedding=embedding,
                 chunk_index=len(rag_chunks),
                 metadata={
                     "source_url": body.source_url,
                     "source_type": "openapi",
+                    "source_doc_id": source_doc_id,
                     "endpoint": f"{method.upper()} {path}",
                 },
             ))
@@ -904,7 +913,6 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     embedder = getattr(request.app.state, "embedder", None)
     import uuid as _uuid_mod
 
-    from app.providers.base import embed_texts
     from app.rag.models import Chunk as RagChunk
 
     doc_id = _uuid_mod.uuid4().hex
@@ -912,13 +920,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     for idx, chunk in enumerate(chunks):
         if not chunk.content.strip():
             continue
-        embedding: list[float] = []
-        if embedder:
-            try:
-                embeddings = await embed_texts([chunk.content], provider=embedder)
-                embedding = embeddings[0]
-            except Exception:
-                pass
+        embedding = (await _embed_texts_or_http([chunk.content], embedder))[0]
         rag_chunks.append(RagChunk(
             document_id=doc_id,
             content=chunk.content,
@@ -954,21 +956,24 @@ async def _ingest_chunks_from_source(
     embedder: Any,
 ) -> int:
     """Embed and ingest a list of chunk dicts returned by an ingestor."""
-    from app.providers.base import embed_texts
+    source_chunks = [chunk for chunk in chunks if str(chunk.get("content", "")).strip()]
+    embeddings = await _embed_texts_or_http(
+        [str(chunk["content"]) for chunk in source_chunks],
+        embedder,
+    )
+    source_doc_id = next(
+        (
+            str(chunk.get("source_doc_id"))
+            for chunk in source_chunks
+            if chunk.get("source_doc_id")
+        ),
+        _uuid.uuid4().hex,
+    )
     rag_chunks: list[Chunk] = []
-    for chunk_data in chunks:
+    for chunk_data, embedding in zip(source_chunks, embeddings, strict=True):
         content = chunk_data.get("content", "")
-        if not content.strip():
-            continue
-        embedding: list[float] = []
-        if embedder:
-            try:
-                embeddings = await embed_texts([content], provider=embedder)
-                embedding = embeddings[0]
-            except Exception:
-                pass
         rag_chunks.append(Chunk(
-            document_id=_uuid.uuid4().hex,
+            document_id=source_doc_id,
             content=content,
             embedding=embedding,
             chunk_index=len(rag_chunks),
@@ -977,7 +982,7 @@ async def _ingest_chunks_from_source(
             } | {
                 "source_url": chunk_data.get("source_url", ""),
                 "source_type": chunk_data.get("source_type", ""),
-                "source_doc_id": chunk_data.get("source_doc_id", ""),
+                "source_doc_id": source_doc_id,
                 "page_number": str(chunk_data.get("page_number") or ""),
             },
         ))
@@ -1158,7 +1163,7 @@ async def federated_search_endpoint(
     body: dict[str, Any],
 ) -> dict[str, Any]:
     """Search across multiple knowledge collections with score normalization."""
-    _require_tenant(request)
+    tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
     if embedder is None:
@@ -1184,12 +1189,19 @@ async def federated_search_endpoint(
         )
 
     from app.knowledge.federated_search import federated_search
-    results = await federated_search(
-        query=query,
-        collection_ids=collection_ids,
-        store=store,
-        top_k=top_k,
-    )
+    try:
+        results = await federated_search(
+            query=query,
+            collection_ids=collection_ids,
+            store=store,
+            top_k=top_k,
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Federated knowledge search is unavailable",
+        ) from exc
     return {
         "results": results,
         "total": len(results),
@@ -1227,7 +1239,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     # Resolve collection IDs (default = all tenant collections)
     collection_ids = body.collection_ids
     if not collection_ids:
-        collections = store.list_collections(tenant_ctx=tenant_ctx)
+        collections = await store.list_collections_async(tenant_ctx=tenant_ctx)
         collection_ids = [c.collection_id for c in collections]
 
     if not collection_ids:
@@ -1365,7 +1377,7 @@ async def get_collection_stats(
     store = _knowledge_store(request)
 
     # Verify collection exists
-    collections = store.list_collections(tenant_ctx=tenant_ctx)
+    collections = await store.list_collections_async(tenant_ctx=tenant_ctx)
     col = next((c for c in collections if c.collection_id == collection_id), None)
     if col is None:
         raise HTTPException(status_code=404, detail="Collection not found")
@@ -1619,7 +1631,7 @@ async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
         return {"collections": [], "total_documents": 0, "total_collections": 0}
 
     try:
-        collections = knowledge_store.list_collections(tenant_ctx=tenant)
+        collections = await knowledge_store.list_collections_async(tenant_ctx=tenant)
         analytics: list[dict[str, Any]] = []
         for col in collections:
             analytics.append(
@@ -1668,7 +1680,7 @@ async def ingest_document_into_collection(
     knowledge_store = _knowledge_store(request)
 
     # Verify collection exists
-    col = knowledge_store.get_collection(collection_id, tenant_ctx=tenant_ctx)
+    col = await knowledge_store.get_collection_async(collection_id, tenant_ctx=tenant_ctx)
     if col is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

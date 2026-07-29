@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
+from app.providers.base import EmbedRequest, EmbedResponse
 from app.providers.fake import FakeProvider
 from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
@@ -45,6 +46,29 @@ class _AwaitedStore(KnowledgeStore):
         self._db = None
         KnowledgeStore.create_collection(self, collection, tenant_ctx=TENANT)
         self._db = database
+
+    async def get_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> KnowledgeCollection | None:
+        database = self._db
+        self._db = None
+        collection = self.get_collection(collection_id, tenant_ctx=tenant_ctx)
+        self._db = database
+        return collection
+
+    async def list_collections_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[KnowledgeCollection]:
+        database = self._db
+        self._db = None
+        collections = self.list_collections(tenant_ctx=tenant_ctx)
+        self._db = database
+        return collections
 
     def create_collection(
         self,
@@ -231,3 +255,77 @@ def test_orchestrated_dry_run_is_explicitly_non_persisted() -> None:
     assert response.json()["ingested"] == 0
     assert response.json()["chunk_ids"] == []
     assert response.json()["chunks_prepared"] >= 1
+
+
+def test_vector_ingest_without_embedder_returns_sanitized_503() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="missing-embedder", collection_id="collection-1")
+    )
+    app = _app(store)
+    app.state.embedder = None
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/knowledge/ingest",
+        json={"collection_id": "collection-1", "content": "must not persist"},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Embedding provider is unavailable"}
+    assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
+
+
+def test_vector_ingest_with_failing_embedder_returns_sanitized_503() -> None:
+    class _FailingEmbedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            raise RuntimeError("private provider failure")
+
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="failing-embedder", collection_id="collection-1")
+    )
+    app = _app(store)
+    app.state.embedder = _FailingEmbedder()
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/knowledge/ingest",
+        json={"collection_id": "collection-1", "content": "must not persist"},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Embedding provider is unavailable"}
+    assert "private provider failure" not in response.text
+    assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
+
+
+async def test_structured_source_chunks_share_document_identity_and_delete_together() -> None:
+    from app.api.knowledge import _ingest_chunks_from_source
+
+    store = KnowledgeStore()
+    collection = KnowledgeCollection(name="structured", collection_id="collection-1")
+    store.create_collection(collection, tenant_ctx=TENANT)
+
+    count = await _ingest_chunks_from_source(
+        store,
+        [
+            {"content": "First structured source chunk.", "source_doc_id": "source-1"},
+            {"content": "Second structured source chunk.", "source_doc_id": "source-1"},
+        ],
+        collection.collection_id,
+        TENANT,
+        FakeProvider(embed_dim=768),
+    )
+
+    chunks = store._data[(TENANT.tenant_id, collection.collection_id)].chunks
+    assert count == 2
+    assert {chunk.document_id for chunk in chunks} == {"source-1"}
+    assert [chunk.chunk_index for chunk in chunks] == [0, 1]
+    assert collection.document_count == 1
+    assert store.delete_document(
+        "source-1",
+        collection_id=collection.collection_id,
+        tenant_ctx=TENANT,
+    ) == 2
+    assert store._data[(TENANT.tenant_id, collection.collection_id)].chunks == []

@@ -6,7 +6,7 @@ RetrievalResult with source="none_available" and confidence=0.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
@@ -27,7 +27,7 @@ class RetrievalResult:
     query: str
     source: str                  # knowledge_base|web|memory|graph|parametric|none_available
     strategy_used: str           # auto|hybrid|vector|graph|hyde|web|memory
-    confidence: float            # 0.0–1.0
+    confidence: float            # 0.0-1.0
     chunks: list[dict[str, Any]] = field(default_factory=list)
     citations: list[CitationRef] = field(default_factory=list)
     fallback_used: bool = False
@@ -73,7 +73,7 @@ class RetrieverTool:
         self,
         query: str,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         strategy: str = "auto",
         collection_ids: list[str] | None = None,
         top_k: int = 5,
@@ -166,7 +166,7 @@ class RetrieverTool:
         self,
         query: str,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         collection_ids: list[str] | None,
         top_k: int,
         min_confidence: float,
@@ -184,7 +184,7 @@ class RetrieverTool:
             if collection_ids:
                 search_cols = collection_ids
             else:
-                cols = self._kb.list_collections(tenant_ctx=tenant_ctx)
+                cols = await self._kb.list_collections_async(tenant_ctx=tenant_ctx)
                 search_cols = [c.collection_id for c in cols]
 
             if not search_cols:
@@ -196,7 +196,7 @@ class RetrieverTool:
 
             all_results = []
             for col_id in search_cols[:3]:  # cap at 3 collections
-                results = self._kb.hybrid_search(
+                results = await self._kb.hybrid_search_db(
                     query=query,
                     query_embedding=embedding,
                     collection_id=col_id,
@@ -263,7 +263,7 @@ class RetrieverTool:
         )
 
     async def _memory_retrieve(
-        self, query: str, *, tenant_ctx: "TenantContext", top_k: int
+        self, query: str, *, tenant_ctx: TenantContext, top_k: int
     ) -> RetrievalResult:
         chunks = []
         if self._ltm is not None:
@@ -282,7 +282,7 @@ class RetrieverTool:
         self,
         query: str,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         sources: list[str] | None = None,
         top_k: int = 5,
         min_confidence: float = 0.3,
@@ -331,7 +331,7 @@ class RetrieverTool:
         self,
         query: str,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         collection_ids: list[str] | None,
         top_k: int,
         min_confidence: float,
@@ -351,7 +351,7 @@ class RetrieverTool:
         self,
         query: str,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         collection_ids: list[str] | None = None,
         top_k: int = 5,
         confidence_threshold: float = 0.5,

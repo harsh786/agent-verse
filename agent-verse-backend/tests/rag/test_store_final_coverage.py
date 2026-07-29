@@ -139,8 +139,8 @@ class TestHybridSearchDBTableSelection:
 
 class TestSyncFromDBWithData:
     @pytest.mark.asyncio
-    async def test_sync_from_db_loads_collections_and_documents(self):
-        """Lines 535-582: sync_from_db with collections and documents."""
+    async def test_sync_from_db_does_not_load_cross_tenant_metadata(self):
+        """Compatibility startup sync never performs a cross-tenant query."""
         from app.rag.store import KnowledgeStore
 
         db = _TrackerDB()
@@ -151,7 +151,8 @@ class TestSyncFromDBWithData:
         store = KnowledgeStore(db_session_factory=db)
         loaded = await store.sync_from_db()
         assert loaded == 0
-        assert store._data[("fcov-t1", "col-sync-1")].chunks == []
+        assert store._data == {}
+        assert db.session._call_idx == 0
 
     @pytest.mark.asyncio
     async def test_sync_from_db_already_loaded_collection_not_duplicated(self):
