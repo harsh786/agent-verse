@@ -460,6 +460,124 @@ async def test_default_citation_verifier_checks_claim_support(
     assert result.grounded is grounded
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        ("The policy permits exports [1].", "The policy prohibits exports."),
+        ("Approval is required [1].", "Approval is not required."),
+        ("Retention is 30 days [1].", "Retention is 60 days."),
+        (
+            "Retention is 30 days [1]. Exports are permitted [2].",
+            "Retention is 30 days. | Exports are prohibited.",
+        ),
+        ("Retention is 30 days [2].", "Retention is 30 days."),
+    ],
+)
+async def test_evidence_verifier_rejects_contradictions_and_invalid_references(
+    claim: str,
+    evidence: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    citations = [
+        RAGCitation(
+            citation_id="citation-1",
+            chunk_id="chunk-1",
+            content=part,
+            score=0.9,
+            source="guide.pdf",
+        )
+        for part in evidence.split(" | ")
+    ]
+
+    result = await MinimalCitationVerifier().verify(claim, citations)
+
+    assert not result.grounded
+    assert result.reason in {"contradiction", "unsupported", "invalid_citation"}
+
+
+@pytest.mark.asyncio
+async def test_evidence_verifier_accepts_valid_paraphrase_without_provider() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        "The policy allows exports [1].",
+        [
+            RAGCitation(
+                citation_id="citation-1",
+                chunk_id="chunk-1",
+                content="Exports are permitted by the policy.",
+                score=0.9,
+                source="guide.pdf",
+            )
+        ],
+    )
+
+    assert result.grounded
+    assert result.reason == "supported"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_entailment_uses_configured_model_and_strict_json() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        "The archival window spans one quarter [1].",
+        [
+            RAGCitation(
+                citation_id="citation-1",
+                chunk_id="chunk-1",
+                content="Records remain archived for three months.",
+                score=0.9,
+                source="guide.pdf",
+            )
+        ],
+    )
+
+    assert result.grounded
+    request = provider.complete.await_args.args[0]
+    assert request.model == "entailment-model"
+    assert request.response_schema is not None
+
+
+@pytest.mark.asyncio
+async def test_entailment_provider_failure_is_ungrounded_and_sanitized() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(side_effect=RuntimeError("private provider secret"))
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        "The archival window spans one quarter [1].",
+        [
+            RAGCitation(
+                citation_id="citation-1",
+                chunk_id="chunk-1",
+                content="Records remain archived for three months.",
+                score=0.9,
+                source="guide.pdf",
+            )
+        ],
+    )
+
+    assert not result.grounded
+    assert result.reason == "verifier_failure"
+    assert "secret" not in repr(result)
+
+
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
     class DuplicateGateway(RecordingGateway):
         async def execute(
