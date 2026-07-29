@@ -219,3 +219,32 @@ def test_repository_file_selection_rejects_binary_content_with_text_suffix(
             RepositoryLimits(max_files=10, max_file_bytes=1024, max_total_bytes=4096,
                              max_repository_bytes=8192),
         )
+
+
+def test_repository_file_selection_rejects_invalid_utf8(tmp_path: Path) -> None:
+    from app.ingestion.repository_security import (
+        RepositoryLimits,
+        RepositorySecurityError,
+        read_repository_files,
+    )
+
+    (tmp_path / "payload.py").write_bytes(b"valid-prefix\xffinvalid")
+
+    with pytest.raises(RepositorySecurityError, match="UTF-8"):
+        read_repository_files(
+            tmp_path,
+            ["**/*.py"],
+            RepositoryLimits(max_files=10, max_file_bytes=1024, max_total_bytes=4096,
+                             max_repository_bytes=8192),
+        )
+
+
+def test_repository_heartbeat_setting_requires_safe_lease_margin() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(repo_ingest_lease_seconds=30, repo_ingest_heartbeat_seconds=15)
+    settings = Settings(repo_ingest_lease_seconds=30, repo_ingest_heartbeat_seconds=5)
+    assert settings.repo_ingest_heartbeat_seconds == 5

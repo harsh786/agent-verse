@@ -11,7 +11,7 @@ import os
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Environment = Literal["development", "staging", "production"]
@@ -203,6 +203,14 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _validate_repository_lease_margin(self) -> Settings:
+        if self.repo_ingest_heartbeat_seconds * 3 > self.repo_ingest_lease_seconds:
+            raise ValueError(
+                "repo_ingest_heartbeat_seconds must be at most one-third of lease duration"
+            )
+        return self
 
     @property
     def is_production(self) -> bool:

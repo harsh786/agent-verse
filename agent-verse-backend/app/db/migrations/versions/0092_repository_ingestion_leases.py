@@ -7,6 +7,7 @@ Create Date: 2026-07-29
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0092_repository_ingestion_leases"
@@ -17,7 +18,22 @@ depends_on = None
 _DIMENSIONS = (768, 1024, 1536, 3072)
 
 
+def _create_index_concurrently(index_name: str, statement: str) -> None:
+    is_valid = op.get_bind().execute(
+        sa.text(
+            "SELECT index.indisvalid FROM pg_index AS index "
+            "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
+            "WHERE relation.relname = :index_name"
+        ),
+        {"index_name": index_name},
+    ).scalar_one_or_none()
+    if is_valid is False:
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
+    op.execute(statement)
+
+
 def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     op.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS job_source_hash TEXT")
     op.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS lease_owner TEXT")
     op.execute(
@@ -28,7 +44,7 @@ def upgrade() -> None:
     )
     op.execute("""
         UPDATE knowledge_documents
-        SET job_source_hash = md5(source_url)
+        SET job_source_hash = encode(digest(convert_to(source_url, 'UTF8'), 'sha256'), 'hex')
         WHERE domain_metadata->>'record_type' = 'ingestion_job'
           AND job_source_hash IS NULL
     """)
@@ -101,6 +117,10 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION enforce_repository_chunk_job_integrity()
         RETURNS trigger AS $$
         BEGIN
+            IF TG_OP = 'UPDATE' AND OLD.ingestion_job_id IS NOT NULL
+               AND NEW.ingestion_job_id IS DISTINCT FROM OLD.ingestion_job_id THEN
+                RAISE EXCEPTION 'repository ingestion job association is immutable';
+            END IF;
             IF NEW.ingestion_job_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1 FROM knowledge_documents AS job
                 WHERE job.id = NEW.ingestion_job_id
@@ -109,6 +129,8 @@ def upgrade() -> None:
                   AND job.source_type = 'repository'
                   AND job.status = 'running'
                   AND job.domain_metadata->>'record_type' = 'ingestion_job'
+                  AND NEW.metadata->>'repo_url' = job.source_url
+                  AND NEW.strategy_metadata->>'ingestion_job_id' = job.id
             ) THEN
                 RAISE EXCEPTION 'invalid repository ingestion job association';
             END IF;
@@ -119,6 +141,19 @@ def upgrade() -> None:
     for dimension in _DIMENSIONS:
         table = f"knowledge_chunks_{dimension}"
         op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ingestion_job_id TEXT")
+        op.execute(
+            f"UPDATE {table} AS chunk SET ingestion_job_id = "
+            "chunk.strategy_metadata->>'ingestion_job_id' "
+            "WHERE chunk.ingestion_job_id IS NULL "
+            "AND chunk.strategy_metadata ? 'ingestion_job_id' "
+            "AND EXISTS (SELECT 1 FROM knowledge_documents AS job "
+            "WHERE job.id = chunk.strategy_metadata->>'ingestion_job_id' "
+            "AND job.tenant_id = chunk.tenant_id "
+            "AND job.collection_id = chunk.collection_id "
+            "AND job.source_type = 'repository' "
+            "AND job.domain_metadata->>'record_type' = 'ingestion_job' "
+            "AND chunk.metadata->>'repo_url' = job.source_url)"
+        )
         op.execute(
             f"ALTER TABLE {table} "
             f"DROP CONSTRAINT IF EXISTS fk_{table}_ingestion_job_scope"
@@ -135,21 +170,25 @@ def upgrade() -> None:
         )
 
     with op.get_context().autocommit_block():
-        op.execute(
+        _create_index_concurrently(
+            "idx_knowledge_documents_job_lease",
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_knowledge_documents_job_lease "
             "ON knowledge_documents(tenant_id, status, lease_expires_at) "
-            "WHERE domain_metadata->>'record_type' = 'ingestion_job'"
+            "WHERE domain_metadata->>'record_type' = 'ingestion_job'",
         )
         for dimension in _DIMENSIONS:
-            op.execute(
+            _create_index_concurrently(
+                f"idx_knowledge_chunks_{dimension}_ingestion_job",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
                 f"idx_knowledge_chunks_{dimension}_ingestion_job "
                 f"ON knowledge_chunks_{dimension}(tenant_id, ingestion_job_id) "
-                "WHERE ingestion_job_id IS NOT NULL"
+                "WHERE ingestion_job_id IS NOT NULL",
             )
 
 
 def downgrade() -> None:
+    # WARNING: associations survive only in strategy_metadata while the typed
+    # ingestion_job_id columns are removed. Re-upgrade restores valid links.
     with op.get_context().autocommit_block():
         for dimension in _DIMENSIONS:
             op.execute(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 from collections.abc import Iterator
@@ -222,3 +223,81 @@ def test_0092_upgrade_downgrade_upgrade_round_trip(isolated_postgres: str) -> No
     assert all(value == 0 for value in downgraded["chunk_job_columns"].values())
     assert "trg_repository_ingestion_job_transition" in upgraded["triggers"]
     assert "trg_repository_ingestion_job_transition" in reupgraded["triggers"]
+
+
+async def _seed_preexisting_repository_jobs(database_url: str) -> None:
+    engine = create_async_engine(database_url)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                "VALUES ('migration-tenant', 'Migration', 'migration@example.test', 'free', true) "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+        )
+        await connection.execute(
+            text("""
+                INSERT INTO knowledge_collections (id, tenant_id, name)
+                VALUES ('migration-collection', 'migration-tenant', 'Migration Collection')
+                ON CONFLICT (id) DO NOTHING
+            """)
+        )
+        for job_id, status in (("migration-queued", "queued"), ("migration-running", "running")):
+            await connection.execute(
+                text("""
+                    INSERT INTO knowledge_documents
+                        (id, tenant_id, collection_id, title, source_url, source_type,
+                         content_hash, status, domain_metadata)
+                    VALUES
+                        (:id, 'migration-tenant', 'migration-collection', :id,
+                         'https://github.com/example/repository', 'repository',
+                         'hash', :status, '{"record_type":"ingestion_job"}'::jsonb)
+                    ON CONFLICT (id) DO NOTHING
+                """),
+                {"id": job_id, "status": status},
+            )
+    await engine.dispose()
+
+
+async def _read_preexisting_repository_jobs(database_url: str) -> list[tuple[str, str, str]]:
+    engine = create_async_engine(database_url)
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                text("""
+                    SELECT id, status, job_source_hash FROM knowledge_documents
+                    WHERE id IN ('migration-queued', 'migration-running') ORDER BY id
+                """)
+            )
+        ).all()
+    await engine.dispose()
+    return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+
+def test_0092_backfills_sha256_and_interrupts_preexisting_running_job(
+    isolated_postgres: str,
+) -> None:
+    _alembic(isolated_postgres, "downgrade", "0091_rag_ingestion_structures")
+    asyncio.run(_seed_preexisting_repository_jobs(isolated_postgres))
+    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+
+    rows = asyncio.run(_read_preexisting_repository_jobs(isolated_postgres))
+    expected_hash = hashlib.sha256(
+        b"https://github.com/example/repository"
+    ).hexdigest()
+    assert rows == [
+        ("migration-queued", "queued", expected_hash),
+        ("migration-running", "failed", expected_hash),
+    ]
+
+
+def test_0092_documents_downgrade_association_warning_and_restore_path() -> None:
+    migration = (
+        BACKEND_ROOT / "app/db/migrations/versions/0092_repository_ingestion_leases.py"
+    ).read_text()
+
+    assert "WARNING: associations survive only in strategy_metadata" in migration
+    assert "strategy_metadata->>'ingestion_job_id'" in migration
+    assert "chunk.metadata->>'repo_url' = job.source_url" in migration
+    assert "job.source_type = 'repository'" in migration
+    assert "indisvalid" in migration

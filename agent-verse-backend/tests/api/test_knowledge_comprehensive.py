@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -162,10 +161,8 @@ def test_ingest_no_embedder_returns_503() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    # Without embedder, embed_texts returns empty vectors and ingest succeeds (201).
-    # The 503 guard only applies to the /search endpoint (where empty embeddings
-    # would silently corrupt retrieval results).
-    assert resp.status_code == 201
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Embedding provider is unavailable"}
 
 
 def test_ingest_with_embedder(monkeypatch) -> None:

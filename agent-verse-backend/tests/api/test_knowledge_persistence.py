@@ -75,6 +75,22 @@ class _AwaitedStore(KnowledgeStore):
         self._db = database
         return collections
 
+    async def delete_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        database = self._db
+        self._db = None
+        deleted = await KnowledgeStore.delete_collection_async(
+            self,
+            collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+        self._db = database
+        return deleted
+
     async def create_ingestion_job_async(
         self,
         *,
@@ -482,6 +498,44 @@ def test_repo_ingest_validates_collection_before_scheduling() -> None:
     assert response.status_code == 404
     create_task.assert_not_called()
     assert store.jobs == {}
+
+
+def test_collection_delete_returns_204_only_after_awaited_persistence() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="delete", collection_id="collection-1")
+    )
+    response = TestClient(_app(store), raise_server_exceptions=False).delete(
+        "/knowledge/collections/collection-1",
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 204
+    assert store.get_collection("collection-1", tenant_ctx=TENANT) is None
+
+
+def test_collection_delete_persistence_failure_returns_503_without_cache_mutation() -> None:
+    class _DeleteFailingStore(_AwaitedStore):
+        async def delete_collection_async(
+            self,
+            collection_id: str,
+            *,
+            tenant_ctx: TenantContext,
+        ) -> bool:
+            raise RuntimeError("private delete failure")
+
+    store = _DeleteFailingStore()
+    store.seed_collection(
+        KnowledgeCollection(name="delete", collection_id="collection-1")
+    )
+    response = TestClient(_app(store), raise_server_exceptions=False).delete(
+        "/knowledge/collections/collection-1",
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Knowledge persistence is unavailable"}
+    assert store.get_collection("collection-1", tenant_ctx=TENANT) is not None
 
 
 @pytest.mark.parametrize(

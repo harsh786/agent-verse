@@ -966,7 +966,15 @@ async def test_repository_completion_status_failure_rolls_back_chunks_and_counte
         error_message=None,
         tenant_ctx=tenant,
     )
-    chunks = [Chunk("doc-a", "repository chunk", _embedding(768), 0)]
+    chunks = [
+        Chunk(
+            "doc-a",
+            "repository chunk",
+            _embedding(768),
+            0,
+            metadata={"repo_url": "https://github.com/example/repository"},
+        )
+    ]
 
     with pytest.raises(KeyError, match="job"):
         await store.ingest_repository_chunks_async(
@@ -1030,8 +1038,14 @@ async def test_repository_chunks_are_associated_with_job_and_complete_atomically
         tenant_ctx=tenant,
     )
     chunks = [
-        Chunk("doc-a", "first repository chunk", _embedding(768), 0),
-        Chunk("doc-b", "second repository chunk", _embedding(768), 0),
+        Chunk(
+            "doc-a", "first repository chunk", _embedding(768), 0,
+            metadata={"repo_url": "https://github.com/example/repository"},
+        ),
+        Chunk(
+            "doc-b", "second repository chunk", _embedding(768), 0,
+            metadata={"repo_url": "https://github.com/example/repository"},
+        ),
     ]
 
     await store.ingest_repository_chunks_async(
@@ -1143,8 +1157,40 @@ async def test_repository_job_rejects_collection_and_source_mismatch(
         lease_seconds=60,
         tenant_ctx=tenant,
     )
-    chunks = [Chunk("doc-a", "scoped chunk", _embedding(768), 0)]
+    chunks = [
+        Chunk(
+            "doc-a", "scoped chunk", _embedding(768), 0,
+            metadata={"repo_url": source_url},
+        )
+    ]
 
+    with pytest.raises(DBAPIError):
+        async with (
+            postgres_database.runtime_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                    INSERT INTO knowledge_chunks_768
+                        (id, tenant_id, collection_id, document_id, chunk_index,
+                         content, content_hash, embedding, metadata,
+                         strategy_metadata, ingestion_job_id)
+                    VALUES
+                        (:id, :tenant_id, :collection_id, 'doc-tamper', 0,
+                         'tamper', 'hash', CAST(:embedding AS vector),
+                         CAST(:metadata AS jsonb), CAST(:strategy AS jsonb), :job_id)
+                """),
+                {
+                    "id": uuid.uuid4().hex,
+                    "tenant_id": tenant.tenant_id,
+                    "collection_id": collection_a,
+                    "embedding": str(_embedding(768)),
+                    "metadata": '{"repo_url":"https://github.com/example/other"}',
+                    "strategy": f'{{"ingestion_job_id":"{job_id}"}}',
+                    "job_id": job_id,
+                },
+            )
     with pytest.raises(DBAPIError):
         await store.ingest_repository_chunks_async(
             chunks,
@@ -1198,7 +1244,12 @@ async def test_concurrent_repository_completion_and_cancel_preserve_one_terminal
 
     completion, cancellation = await asyncio.gather(
         store.ingest_repository_chunks_async(
-            [Chunk("doc-a", "race chunk", _embedding(768), 0)],
+            [
+                Chunk(
+                    "doc-a", "race chunk", _embedding(768), 0,
+                    metadata={"repo_url": source_url},
+                )
+            ],
             job_id=job_id,
             collection_id=collection_id,
             source_url=source_url,
@@ -1277,6 +1328,194 @@ async def test_reconciliation_preserves_live_lease_and_fails_stale_queue(
     assert reconciled == 1
     assert live_status is not None and live_status["status"] == "running"
     assert queued_status is not None and queued_status["status"] == "failed"
+
+
+async def test_repository_chunk_job_association_is_immutable_against_direct_sql(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/repository"
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"immutable-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="immutable-worker",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    chunk = Chunk(
+        "doc-a",
+        "immutable association",
+        _embedding(768),
+        0,
+        metadata={"repo_url": source_url},
+    )
+    await store.ingest_repository_chunks_async(
+        [chunk],
+        job_id=job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="immutable-worker",
+        tenant_ctx=tenant,
+    )
+
+    for new_value in (None, uuid.uuid4().hex):
+        with pytest.raises(DBAPIError):
+            async with (
+                postgres_database.runtime_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant.tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        "UPDATE knowledge_chunks_768 SET ingestion_job_id = :job_id "
+                        "WHERE id = :chunk_id"
+                    ),
+                    {"job_id": new_value, "chunk_id": chunk.chunk_id},
+                )
+
+
+async def test_expired_repository_lease_cannot_be_heartbeated_or_resurrected(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/repository"
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"expired-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="expired-worker",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_documents SET lease_expires_at = now() - interval '1 second' "
+                "WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+
+    assert not await store.heartbeat_ingestion_job_async(
+        job_id,
+        lease_owner="expired-worker",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    assert await store.reconcile_stale_ingestion_jobs_async(
+        tenant_ctx=tenant,
+        stale_after_seconds=60,
+    ) == 1
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None and status["status"] == "failed"
+
+
+async def test_zero_chunk_repository_completion_clears_all_lease_fields(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/empty"
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"empty-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="empty",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="empty-worker",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    assert await store.ingest_repository_chunks_async(
+        [],
+        job_id=job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="empty-worker",
+        tenant_ctx=tenant,
+    ) == []
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        row = (
+            await session.execute(
+                text(
+                    "SELECT status, lease_owner, lease_expires_at, heartbeat_at "
+                    "FROM knowledge_documents WHERE id = :id"
+                ),
+                {"id": job_id},
+            )
+        ).one()
+    assert tuple(row) == ("completed", None, None, None)
+
+
+async def test_collection_delete_is_tenant_scoped_and_persisted(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_id, _ = await _ingest(postgres_database, tenant_a)
+
+    assert not await store.delete_collection_async(collection_id, tenant_ctx=tenant_b)
+    assert await store.get_collection_async(collection_id, tenant_ctx=tenant_a) is not None
+    assert await store.delete_collection_async(collection_id, tenant_ctx=tenant_a)
+    assert await store.get_collection_async(collection_id, tenant_ctx=tenant_a) is None
+    async with postgres_database.admin_factory() as session:
+        persisted = (
+            await session.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM knowledge_collections WHERE id = :id), "
+                    "(SELECT count(*) FROM knowledge_chunks_768 WHERE collection_id = :id)"
+                ),
+                {"id": collection_id},
+            )
+        ).one()
+    assert tuple(persisted) == (0, 0)
 
 
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)

@@ -253,6 +253,39 @@ class KnowledgeStore:
             for row in rows
         ]
 
+    async def delete_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        """Delete one owned collection and its cascaded persisted resources."""
+        key = (tenant_ctx.tenant_id, collection_id)
+        if self._db is None:
+            return self._data.pop(key, None) is not None
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            deleted = (
+                await session.execute(
+                    text(
+                        "DELETE FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tenant_id RETURNING id"
+                    ),
+                    {"id": collection_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+        if deleted is None:
+            return False
+        self._data.pop(key, None)
+        return True
+
     async def create_ingestion_job_async(
         self,
         *,
@@ -426,6 +459,7 @@ class KnowledgeStore:
                         lease_expires_at = now() + make_interval(secs => :lease_seconds)
                     WHERE id = :id AND tenant_id = :tenant_id
                       AND status = 'running' AND lease_owner = :lease_owner
+                      AND lease_expires_at > now()
                       AND domain_metadata->>'record_type' = 'ingestion_job'
                 """),
                 {
@@ -1059,7 +1093,8 @@ class KnowledgeStore:
                     text("""
                         UPDATE knowledge_documents AS job
                         SET status = 'completed', chunk_count = 0,
-                            error_message = NULL, indexed_at = now()
+                            error_message = NULL, indexed_at = now(), heartbeat_at = NULL,
+                            lease_owner = NULL, lease_expires_at = NULL
                         WHERE job.id = :job_id AND job.tenant_id = :tenant_id
                           AND job.collection_id = :collection_id
                           AND job.source_type = 'repository'
@@ -1302,7 +1337,7 @@ class KnowledgeStore:
                         SET status = 'completed',
                             chunk_count = :chunk_count,
                             error_message = NULL,
-                            indexed_at = now(), heartbeat_at = now(),
+                            indexed_at = now(), heartbeat_at = NULL,
                             lease_owner = NULL, lease_expires_at = NULL
                         WHERE id = :job_id AND tenant_id = :tenant_id
                           AND collection_id = :collection_id
