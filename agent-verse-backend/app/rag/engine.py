@@ -399,8 +399,9 @@ async def _bm25_search_persisted(
     metadata_clause: str,
     metadata_params: dict[str, Any],
 ) -> tuple[list[BM25Hit], dict[str, Any]]:
-    scorer = BM25CorpusScorer()
+    scorer = BM25CorpusScorer(query)
     pages_scanned = 0
+    max_heap_size = 0
 
     async def read_pages(*, include_metadata: bool) -> AsyncIterator[list[Any]]:
         nonlocal pages_scanned
@@ -441,7 +442,7 @@ async def _bm25_search_persisted(
     if result_limit > 0:
         async for page in read_pages(include_metadata=True):
             for row in page:
-                score = scorer.score(query, str(row[1] or ""))
+                score = scorer.score(str(row[1] or ""))
                 if score <= 0:
                     continue
                 candidate = _BM25HeapEntry(
@@ -454,6 +455,7 @@ async def _bm25_search_persisted(
                     heapq.heappush(heap, candidate)
                 elif heap[0] < candidate:
                     heapq.heapreplace(heap, candidate)
+                max_heap_size = max(max_heap_size, len(heap))
 
     ranked = sorted(heap, key=lambda item: (-item.score, item.chunk_id))
     return (
@@ -470,6 +472,9 @@ async def _bm25_search_persisted(
             "corpus_size": scorer.document_count,
             "pages_scanned": pages_scanned,
             "page_size": _BM25_PAGE_SIZE,
+            "tracked_term_count": scorer.tracked_term_count,
+            "heap_capacity": max(result_limit, 0),
+            "max_heap_size": max_heap_size,
             "scoring_mode": "application_okapi_bm25_two_pass_keyset",
         },
     )

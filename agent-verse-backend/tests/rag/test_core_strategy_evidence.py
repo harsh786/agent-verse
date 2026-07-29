@@ -22,6 +22,7 @@ from app.providers.base import (
     EmbedRequest,
     EmbedResponse,
 )
+from app.rag.bm25 import BM25CorpusScorer
 from app.rag.contracts import RAG_RUNTIME_CAPABILITIES, RAGExecutionRequest, RAGStrategy
 from app.rag.engine import RetrievalLegExecutionError, RetrievalResult, hybrid_search
 from app.rag.gateway import (
@@ -185,17 +186,26 @@ class _HybridSession:
 
 
 class _PaginatedCorpusSession(_HybridSession):
-    def __init__(self) -> None:
+    def __init__(self, *, every_document_matches: bool = False) -> None:
         super().__init__()
         self.corpus = [
-            (f"chunk-{index:04d}", f"ordinary document {index}", {"department": "legal"})
+            (
+                f"chunk-{index:04d}",
+                (
+                    f"needle unique_token_{index}"
+                    if every_document_matches
+                    else f"ordinary unique_token_{index}"
+                ),
+                {"department": "legal"},
+            )
             for index in range(501)
         ]
-        self.corpus[-1] = (
-            "chunk-0500",
-            "needle only appears after the first corpus page",
-            {"department": "legal"},
-        )
+        if not every_document_matches:
+            self.corpus[-1] = (
+                "chunk-0500",
+                "needle only appears after the first corpus page",
+                {"department": "legal"},
+            )
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Rows:
         sql = str(statement)
@@ -274,6 +284,32 @@ async def test_bm25_scores_complete_collection_without_hidden_cap() -> None:
     assert bm25_evidence["scoring_mode"] == "application_okapi_bm25_two_pass_keyset"
     assert bm25_evidence["pages_scanned"] == 4
     assert all("corpus_limit" not in sql for sql in session.sql)
+
+
+async def test_bm25_high_cardinality_stats_and_heap_are_query_bounded() -> None:
+    scorer = BM25CorpusScorer(query="needle second")
+    for index in range(10_000):
+        scorer.observe(f"needle corpus_unique_{index}")
+
+    assert scorer.tracked_term_count == 2
+    assert scorer.document_frequency_terms == frozenset({"needle", "second"})
+
+    evidence: list[dict[str, Any]] = []
+    await hybrid_search(
+        _PaginatedCorpusSession(every_document_matches=True),  # type: ignore[arg-type]
+        query="needle",
+        query_embedding=[0.1] * 1536,
+        collection_id="collection-1",
+        top_k=1,
+        metadata_filter={"department": "legal"},
+        strict=True,
+        evidence=evidence,
+    )
+
+    bm25_evidence = next(item for item in evidence if item["component"] == "bm25")
+    assert bm25_evidence["tracked_term_count"] == 1
+    assert bm25_evidence["heap_capacity"] == 3
+    assert bm25_evidence["max_heap_size"] == 3
 
 
 async def test_hyde_embeds_generated_document_and_hashes_provenance() -> None:
@@ -397,9 +433,28 @@ class _CollectionStore:
         return object()
 
 
+class _ProbeTransaction:
+    async def __aenter__(self) -> _ProbeTransaction:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _ProbeSession:
+    def begin(self) -> _ProbeTransaction:
+        return _ProbeTransaction()
+
+    async def execute(self, statement: object) -> object:
+        return statement
+
+    async def scalar(self, statement: object) -> object:
+        return statement
+
+
 @asynccontextmanager
 async def _session_factory() -> Any:
-    yield object()
+    yield _ProbeSession()
 
 
 async def test_readiness_reflects_core_dependencies() -> None:
@@ -537,6 +592,29 @@ async def test_readiness_rejects_async_function_instead_of_context_factory() -> 
     gateway = RetrievalGateway(
         RetrievalDependencies(
             session_factory=invalid_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+        )
+    )
+
+    readiness = await gateway.readiness(
+        TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"),
+        strategy_id=RAGStrategy.NAIVE,
+    )
+
+    assert not readiness.available
+    assert readiness.reason == "session_factory_unavailable"
+
+
+async def test_readiness_rejects_invalid_object_yielded_by_async_context() -> None:
+    @asynccontextmanager
+    async def invalid_factory() -> Any:
+        yield object()
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=invalid_factory,
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
             strategy_capabilities=core_strategy_capabilities(),
             embedder=_Embedder(),

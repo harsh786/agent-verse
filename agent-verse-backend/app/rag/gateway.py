@@ -194,6 +194,34 @@ def _has_async_context_factory(factory: object | None) -> bool:
     )
 
 
+async def _probe_session_factory(factory: object | None) -> bool:
+    if not callable(factory):
+        return False
+    try:
+        context = factory()
+        if inspect.iscoroutine(context):
+            context.close()
+            return False
+        if not (
+            _has_async_method(context, "__aenter__")
+            and _has_async_method(context, "__aexit__")
+        ):
+            return False
+        async with context as session:
+            begin = getattr(session, "begin", None)
+            if not callable(begin):
+                return False
+            transaction = begin()
+            return (
+                _has_async_method(transaction, "__aenter__")
+                and _has_async_method(transaction, "__aexit__")
+                and _has_async_method(session, "execute")
+                and _has_async_method(session, "scalar")
+            )
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class RAGStrategyReadiness:
     """Sanitized tenant-specific strategy readiness without retrieval execution."""
@@ -709,7 +737,7 @@ class RetrievalGateway:
             self.dependencies.embedder, "embed"
         ):
             return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
-        if capability.requires_database and not _has_async_context_factory(
+        if capability.requires_database and not await _probe_session_factory(
             self.dependencies.session_factory
         ):
             return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")

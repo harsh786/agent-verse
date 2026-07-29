@@ -25,12 +25,24 @@ class BM25Hit:
 class BM25CorpusScorer:
     """Accumulate corpus statistics, then score documents without retaining them."""
 
-    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
+    def __init__(self, query: str, k1: float = 1.5, b: float = 0.75) -> None:
         self._k1 = k1
         self._b = b
-        self._document_frequency: Counter[str] = Counter()
+        self._query_tokens = _tokenize(query)
+        self._query_terms = frozenset(self._query_tokens)
+        self._document_frequency: Counter[str] = Counter(
+            dict.fromkeys(self._query_terms, 0)
+        )
         self._total_document_length = 0
         self.document_count = 0
+
+    @property
+    def tracked_term_count(self) -> int:
+        return len(self._document_frequency)
+
+    @property
+    def document_frequency_terms(self) -> frozenset[str]:
+        return frozenset(self._document_frequency)
 
     @property
     def average_document_length(self) -> float:
@@ -44,18 +56,25 @@ class BM25CorpusScorer:
         tokens = _tokenize(content)
         self.document_count += 1
         self._total_document_length += len(tokens)
-        self._document_frequency.update(set(tokens))
+        observed_query_terms: set[str] = set()
+        for token in tokens:
+            if token in self._query_terms:
+                observed_query_terms.add(token)
+        self._document_frequency.update(observed_query_terms)
 
-    def score(self, query: str, content: str) -> float:
-        return self.score_tokens(_tokenize(query), _tokenize(content))
+    def score(self, content: str) -> float:
+        return self.score_tokens(_tokenize(content))
 
-    def score_tokens(self, query_tokens: list[str], document: list[str]) -> float:
-        if not query_tokens or not document or not self.document_count:
+    def score_tokens(self, document: list[str]) -> float:
+        if not self._query_tokens or not document or not self.document_count:
             return 0.0
-        frequencies = Counter(document)
+        frequencies: Counter[str] = Counter()
+        for token in document:
+            if token in self._query_terms:
+                frequencies[token] += 1
         average_length = self.average_document_length or 1.0
         score = 0.0
-        for token in query_tokens:
+        for token in self._query_tokens:
             frequency = frequencies[token]
             if not frequency:
                 continue
@@ -88,15 +107,11 @@ class BM25Retriever:
         self._b = b
         self._chunks: list[dict[str, Any]] = []
         self._corpus: list[list[str]] = []
-        self._scorer = BM25CorpusScorer(k1=k1, b=b)
 
     def index(self, chunks: list[dict[str, Any]]) -> None:
         """Index a list of chunk dicts (must have 'content' and 'chunk_id')."""
         self._chunks = [c for c in chunks if c.get("content")]
         self._corpus = [_tokenize(str(c["content"])) for c in self._chunks]
-        self._scorer = BM25CorpusScorer(k1=self._k1, b=self._b)
-        for chunk in self._chunks:
-            self._scorer.observe(str(chunk["content"]))
 
     def search(self, query: str, top_k: int = 10) -> list[BM25Hit]:
         """Search indexed chunks using BM25 scoring.
@@ -110,8 +125,11 @@ class BM25Retriever:
         if not query_tokens:
             return []
 
+        scorer = BM25CorpusScorer(query, k1=self._k1, b=self._b)
+        for chunk in self._chunks:
+            scorer.observe(str(chunk["content"]))
         scores = [
-            self._scorer.score_tokens(query_tokens, document)
+            scorer.score_tokens(document)
             for document in self._corpus
         ]
 
