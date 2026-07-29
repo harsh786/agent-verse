@@ -12,7 +12,7 @@ import pytest
 
 from app.providers.fake import FakeProvider
 from app.rag.models import Chunk, KnowledgeCollection
-from app.rag.store import HybridSearchResult, KnowledgeStore
+from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
 
 pytestmark = pytest.mark.integration
@@ -41,7 +41,12 @@ def _collection(name: str = "test-col") -> KnowledgeCollection:
     return KnowledgeCollection(name=name, description=f"Test collection: {name}")
 
 
-def _chunk(content: str, document_id: str, embedding: list[float] | None = None, idx: int = 0) -> Chunk:
+def _chunk(
+    content: str,
+    document_id: str,
+    embedding: list[float] | None = None,
+    idx: int = 0,
+) -> Chunk:
     return Chunk(
         document_id=document_id,
         content=content,
@@ -66,7 +71,11 @@ async def test_ingest_text_chunks_stored() -> None:
     doc_id = uuid.uuid4().hex
     content = "Python asyncio event loop fundamentals"
     emb = _fake_embedding(16, seed=1.5)
-    store.ingest_chunk(_chunk(content, doc_id, emb, 0), collection_id=col.collection_id, tenant_ctx=tenant)
+    store.ingest_chunk(
+        _chunk(content, doc_id, emb, 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
 
     results = store.hybrid_search(
         query="asyncio event loop",
@@ -409,7 +418,12 @@ async def test_semantic_cache_l1_hit() -> None:
     assert hit is None
 
     # Store a response using the correct async API
-    await cache.store_async(embedding, "asyncio event loop", "Event loop handles coroutines.", tenant_id)
+    await cache.store_async(
+        embedding,
+        "asyncio event loop",
+        "Event loop handles coroutines.",
+        tenant_id,
+    )
 
     # Hit with identical embedding
     hit2 = await cache.get_similar(embedding, tenant_id)
@@ -475,14 +489,21 @@ async def test_ingestion_orchestrator_chunks_text() -> None:
     store.create_collection(col, tenant_ctx=tenant)
 
     orchestrator = IngestionOrchestrator(knowledge_store=store)
-    content = "Paragraph one about Python.\n\nParagraph two about asyncio.\n\nParagraph three about FastAPI."
+    content = (
+        "Paragraph one about Python.\n\nParagraph two about asyncio.\n\n"
+        "Paragraph three about FastAPI."
+    )
     result = await orchestrator.ingest(
         content,
         collection_id=col.collection_id,
         tenant_ctx=tenant,
         metadata={"source": "test"},
+        in_memory_only=True,
     )
-    assert result.chunks_created >= 1
+    assert result.chunks_prepared >= 1
+    assert result.chunks_created == 0
+    assert not result.persisted
+    assert store._data[(tenant.tenant_id, col.collection_id)].chunks
     assert result.collection_id == col.collection_id
     assert result.tenant_id == tenant.tenant_id
 
@@ -503,10 +524,22 @@ async def test_collection_document_count_increments() -> None:
 
     doc1 = uuid.uuid4().hex
     doc2 = uuid.uuid4().hex
-    store.ingest_chunk(_chunk("doc1 content", doc1, _fake_embedding(16, 1.0), 0), collection_id=col.collection_id, tenant_ctx=tenant)
-    store.ingest_chunk(_chunk("doc2 content", doc2, _fake_embedding(16, 2.0), 0), collection_id=col.collection_id, tenant_ctx=tenant)
+    store.ingest_chunk(
+        _chunk("doc1 content", doc1, _fake_embedding(16, 1.0), 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
+    store.ingest_chunk(
+        _chunk("doc2 content", doc2, _fake_embedding(16, 2.0), 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
     # Same doc1: adds a chunk but document_count should remain 2
-    store.ingest_chunk(_chunk("doc1 more", doc1, _fake_embedding(16, 3.0), 1), collection_id=col.collection_id, tenant_ctx=tenant)
+    store.ingest_chunk(
+        _chunk("doc1 more", doc1, _fake_embedding(16, 3.0), 1),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
 
     fetched = store.get_collection(col.collection_id, tenant_ctx=tenant)
     assert fetched is not None
@@ -549,7 +582,11 @@ async def test_hybrid_search_db_fallback_to_in_memory() -> None:
 
     doc_id = uuid.uuid4().hex
     emb = _fake_embedding(16, seed=2.5)
-    store.ingest_chunk(_chunk("database fallback test", doc_id, emb, 0), collection_id=col.collection_id, tenant_ctx=tenant)
+    store.ingest_chunk(
+        _chunk("database fallback test", doc_id, emb, 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
 
     results = await store.hybrid_search_db(
         query="database fallback",
@@ -576,8 +613,16 @@ async def test_delete_one_document_leaves_others() -> None:
 
     doc_a = uuid.uuid4().hex
     doc_b = uuid.uuid4().hex
-    store.ingest_chunk(_chunk("doc A data", doc_a, _fake_embedding(16, 1.0), 0), collection_id=col.collection_id, tenant_ctx=tenant)
-    store.ingest_chunk(_chunk("doc B data", doc_b, _fake_embedding(16, 2.0), 0), collection_id=col.collection_id, tenant_ctx=tenant)
+    store.ingest_chunk(
+        _chunk("doc A data", doc_a, _fake_embedding(16, 1.0), 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
+    store.ingest_chunk(
+        _chunk("doc B data", doc_b, _fake_embedding(16, 2.0), 0),
+        collection_id=col.collection_id,
+        tenant_ctx=tenant,
+    )
 
     store.delete_document(doc_a, collection_id=col.collection_id, tenant_ctx=tenant)
 

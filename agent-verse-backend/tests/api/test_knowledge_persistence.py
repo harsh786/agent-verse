@@ -36,8 +36,15 @@ def _app(store: KnowledgeStore) -> FastAPI:
 class _AwaitedStore(KnowledgeStore):
     def __init__(self) -> None:
         super().__init__()
+        self._db = object()
         self.collection_committed = False
         self.chunks_committed = False
+
+    def seed_collection(self, collection: KnowledgeCollection) -> None:
+        database = self._db
+        self._db = None
+        KnowledgeStore.create_collection(self, collection, tenant_ctx=TENANT)
+        self._db = database
 
     def create_collection(
         self,
@@ -54,11 +61,14 @@ class _AwaitedStore(KnowledgeStore):
         tenant_ctx: TenantContext,
     ) -> str:
         await asyncio.sleep(0)
+        database = self._db
+        self._db = None
         collection_id = KnowledgeStore.create_collection(
             self,
             collection,
             tenant_ctx=tenant_ctx,
         )
+        self._db = database
         self.collection_committed = True
         return collection_id
 
@@ -79,6 +89,8 @@ class _AwaitedStore(KnowledgeStore):
         tenant_ctx: TenantContext,
     ) -> list[str]:
         await asyncio.sleep(0)
+        database = self._db
+        self._db = None
         for chunk in chunks:
             KnowledgeStore.ingest_chunk(
                 self,
@@ -86,6 +98,7 @@ class _AwaitedStore(KnowledgeStore):
                 collection_id=collection_id,
                 tenant_ctx=tenant_ctx,
             )
+        self._db = database
         self.chunks_committed = True
         return [chunk.chunk_id for chunk in chunks]
 
@@ -107,7 +120,7 @@ def test_collection_response_waits_for_async_commit() -> None:
 def test_ingest_response_waits_for_atomic_chunk_commit() -> None:
     store = _AwaitedStore()
     collection = KnowledgeCollection(name="awaited-ingest", collection_id="collection-1")
-    KnowledgeStore.create_collection(store, collection, tenant_ctx=TENANT)
+    store.seed_collection(collection)
     client = TestClient(_app(store), raise_server_exceptions=False)
 
     response = client.post(
@@ -156,11 +169,7 @@ def test_collection_persistence_failure_returns_structured_non_2xx() -> None:
 
 def test_ingest_persistence_failure_returns_structured_non_2xx() -> None:
     store = _FailingStore()
-    KnowledgeStore.create_collection(
-        store,
-        KnowledgeCollection(name="fails", collection_id="collection-1"),
-        tenant_ctx=TENANT,
-    )
+    store.seed_collection(KnowledgeCollection(name="fails", collection_id="collection-1"))
     response = TestClient(_app(store), raise_server_exceptions=False).post(
         "/knowledge/ingest",
         json={"collection_id": "collection-1", "content": "must roll back"},
@@ -170,3 +179,55 @@ def test_ingest_persistence_failure_returns_structured_non_2xx() -> None:
     assert response.status_code == 503
     assert response.json() == {"detail": "Knowledge persistence is unavailable"}
     assert "private details" not in response.text
+
+
+def test_orchestrated_document_ingest_returns_only_committed_ids() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="orchestrated", collection_id="collection-1")
+    )
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={"content": "Persist this orchestrated document atomically."},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 201
+    assert store.chunks_committed
+    assert response.json()["ingested"] == len(response.json()["chunk_ids"])
+    assert response.json()["ingested"] > 0
+
+
+def test_orchestrated_document_failure_returns_sanitized_non_2xx() -> None:
+    store = _FailingStore()
+    store.seed_collection(
+        KnowledgeCollection(name="orchestrated", collection_id="collection-1")
+    )
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={"content": "This transaction must fail."},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Knowledge persistence is unavailable"}
+    assert store._data[(TENANT.tenant_id, "collection-1")].chunks == []
+
+
+def test_orchestrated_dry_run_is_explicitly_non_persisted() -> None:
+    store = KnowledgeStore()
+    store.create_collection(
+        KnowledgeCollection(name="dry-run", collection_id="collection-1"),
+        tenant_ctx=TENANT,
+    )
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={"content": "Prepare but do not persist this document.", "dry_run": True},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["persisted"] is False
+    assert response.json()["ingested"] == 0
+    assert response.json()["chunk_ids"] == []
+    assert response.json()["chunks_prepared"] >= 1
