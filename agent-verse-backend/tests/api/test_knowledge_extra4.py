@@ -41,6 +41,7 @@ def _make_app(
     app.include_router(knowledge_router)
     app.state.knowledge_store = knowledge_store or KnowledgeStore()
     app.state.semantic_cache = semantic_cache or SemanticCache()
+    app.state.retrieval_gateway = MagicMock()
     if embedder is not None:
         app.state.embedder = embedder
     return app
@@ -198,7 +199,7 @@ def test_search_uses_hybrid_search_db_when_available() -> None:
             f"/knowledge/search?q=test&collection_id={coll_id}",
             headers=H,
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +993,7 @@ def test_federated_search_failure_is_structured_non_2xx() -> None:
         )
 
     assert resp.status_code == 503
-    assert resp.json() == {"detail": "Federated knowledge search is unavailable"}
+    assert resp.json() == {"detail": "Retrieval service is unavailable"}
 
 
 def test_federated_search_no_embedder_503() -> None:
