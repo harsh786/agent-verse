@@ -133,6 +133,10 @@ from app.providers.vault import (
     get_vault,
     resolve_connector_secret_ref_for_tenant,
 )
+from app.rag.agentic.patterns.web_augmented import (
+    build_safe_web_search_capability,
+    parse_allowed_domains,
+)
 from app.rag.contracts import RAGStrategy
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
@@ -674,13 +678,18 @@ def create_app(
             ),
         )
 
+    _web_search_capability = build_safe_web_search_capability(
+        searxng_url=settings.searxng_url,
+        policy_services=(_policy_engine, _cost, _hitl),
+        allowed_domains=parse_allowed_domains(settings.web_search_allowed_domains),
+    )
     _retrieval_gateway = RetrievalGateway(
         RetrievalDependencies(
             session_factory=None,
             embedder=_embedder,
             llm_resolver=_resolve_retrieval_llm,
             graph_capability=None,
-            search_capability=None,
+            search_capability=_web_search_capability,
             policy_services=(_policy_engine, _cost, _hitl),
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
             strategy_capabilities=core_strategy_capabilities(),
@@ -1033,7 +1042,7 @@ def create_app(
                     embedder=app.state.embedder,
                     llm_resolver=_resolve_retrieval_llm,
                     graph_capability=_graph_capability,
-                    search_capability=getattr(app.state, "mcp_client", None),
+                    search_capability=_web_search_capability,
                     policy_services=(
                         _policy_engine,
                         getattr(app.state, "redis_cost_controller", _cost),
@@ -1504,6 +1513,7 @@ def create_app(
     app.state.knowledge_store = _knowledge_store
     app.state.repository_ingestion_tasks = set()
     app.state.retrieval_gateway = _retrieval_gateway
+    app.state.safe_web_search_capability = _web_search_capability
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
     # H-3: ExecutionMemory on app.state

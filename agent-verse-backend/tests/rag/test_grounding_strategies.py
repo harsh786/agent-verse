@@ -18,6 +18,11 @@ from app.providers.base import (
     EmbedRequest,
     EmbedResponse,
 )
+from app.rag.agentic.patterns.web_augmented import (
+    SafeWebSearchCapability,
+    WebEvidence,
+    WebSearchRequest,
+)
 from app.rag.contracts import (
     RAG_RUNTIME_CAPABILITIES,
     RAGExecutionRequest,
@@ -61,6 +66,24 @@ class _CorrectiveProvider:
             content = f"reformulated policy query {self.reformulations}"
         else:
             content = '{"relevance": [0.1]}'
+        return CompletionResponse(content=content, model=request.model)
+
+
+class _MixedCorrectiveProvider:
+    def __init__(self) -> None:
+        self.grades = iter(
+            [
+                '{"relevance": [0.9, 0.2]}',
+                '{"relevance": [0.85, 0.8]}',
+            ]
+        )
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        content = (
+            "focused retention query"
+            if request.messages[0].content.startswith("Reformulate")
+            else next(self.grades)
+        )
         return CompletionResponse(content=content, model=request.model)
 
 
@@ -137,12 +160,12 @@ class _GraphSession:
 
 
 class _WebCapability:
+    configured = True
+
     def __init__(self) -> None:
-        self.requests: list[Any] = []
+        self.requests: list[WebSearchRequest] = []
 
-    async def search(self, request: Any) -> list[Any]:
-        from app.rag.agentic.patterns.web_augmented import WebEvidence
-
+    async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
         self.requests.append(request)
         return [
             WebEvidence(
@@ -151,6 +174,8 @@ class _WebCapability:
                 content="Current external retention guidance.",
                 fetched_at=datetime(2026, 7, 30, tzinfo=UTC),
                 source="safe-search",
+                domain="8.8.8.8",
+                freshness_seconds=0.0,
             ),
             WebEvidence(
                 title="Result beyond requested bound",
@@ -158,6 +183,8 @@ class _WebCapability:
                 content="This result must be bounded.",
                 fetched_at=datetime(2026, 7, 30, tzinfo=UTC),
                 source="safe-search",
+                domain="8.8.4.4",
+                freshness_seconds=0.0,
             ),
         ]
 
@@ -224,7 +251,7 @@ def _context(
     embedder: object | None = None,
     provider: object | None = None,
     graph: object | None = None,
-    web: object | None = None,
+    web: SafeWebSearchCapability | None = None,
     policies: tuple[object, ...] = (),
     available: tuple[RAGStrategy, ...] = (),
     runner: Callable[[Callable[[Any], Awaitable[Any]]], Awaitable[Any]] | None = None,
@@ -303,6 +330,28 @@ async def test_graph_merges_vector_entity_path_and_community_provenance() -> Non
         for citation in result.citations
         if citation.metadata["source_type"] == "graph"
     )
+    graph_citations = [
+        citation for citation in result.citations if citation.metadata["source_type"] == "graph"
+    ]
+    assert all(
+        citation.metadata["tenant_id"].startswith("sha256:")
+        for citation in result.citations
+    )
+    assert all(citation.metadata["tenant_id"] != TENANT.tenant_id for citation in result.citations)
+    graph_trace = next(
+        trace for trace in result.strategy_trace if trace.action == "graph_evidence_merge"
+    )
+    assert graph_trace.detail["tenant_id"] == graph_citations[0].metadata["tenant_id"]
+    graph_leg_traces = [
+        trace
+        for trace in result.strategy_trace
+        if trace.action == "retrieval_leg"
+        and str(trace.detail.get("component", "")).startswith("graph_")
+    ]
+    assert all(
+        trace.detail["tenant_id"] == graph_citations[0].metadata["tenant_id"]
+        for trace in graph_leg_traces
+    )
     assert all("tenant_id" in params for _, params in graph_session.calls)
     graph_sql = [sql for sql, _ in graph_session.calls if "graph_" in sql]
     assert all("metadata_filter" in sql for sql in graph_sql)
@@ -373,6 +422,50 @@ async def test_corrective_grades_reformulates_bounded_retries_then_uses_web() ->
     assert len(web.requests) == 1
 
 
+async def test_corrective_filters_mixed_grades_and_retries_until_evidence_is_sufficient() -> None:
+    provider = _MixedCorrectiveProvider()
+    searched_queries: list[str] = []
+
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
+        searched_queries.append(kwargs["query"])
+        if len(searched_queries) == 1:
+            return [
+                RetrievalResult("keep-initial", "relevant", 0.8, {}, ["vector"]),
+                RetrievalResult("drop-initial", "irrelevant", 0.7, {}, ["vector"]),
+            ]
+        return [
+            RetrievalResult("keep-retry-1", "relevant retry", 0.75, {}, ["vector"]),
+            RetrievalResult("keep-retry-2", "supporting retry", 0.7, {}, ["vector"]),
+        ]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CORRECTIVE].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            _request(RAGStrategy.CORRECTIVE, top_k=3),
+            _context(
+                RAGStrategy.CORRECTIVE,
+                embedder=_Embedder(),
+                provider=provider,
+                runner=runner,
+            ),
+        )
+
+    assert searched_queries == [
+        "current retention policy relationships",
+        "focused retention query",
+    ]
+    assert {citation.chunk_id for citation in result.citations} == {
+        "keep-initial",
+        "keep-retry-1",
+        "keep-retry-2",
+    }
+    assert "drop-initial" not in {citation.chunk_id for citation in result.citations}
+    assert result.strategy_trace[-1].detail["stop_reason"] == "persisted_evidence_sufficient"
+
+
 @pytest.mark.parametrize(
     ("web", "policies", "stop_reason"),
     [
@@ -382,7 +475,7 @@ async def test_corrective_grades_reformulates_bounded_retries_then_uses_web() ->
     ],
 )
 async def test_corrective_never_uses_web_without_capability_and_allow_policy(
-    web: object | None,
+    web: SafeWebSearchCapability | None,
     policies: tuple[object, ...],
     stop_reason: str,
 ) -> None:
@@ -573,7 +666,7 @@ async def test_web_augmented_bounds_safe_results_and_preserves_freshness() -> No
     ],
 )
 async def test_web_readiness_is_explicit_without_capability_or_allow_policy(
-    web: object | None,
+    web: SafeWebSearchCapability | None,
     policies: tuple[object, ...],
     reason: str,
 ) -> None:

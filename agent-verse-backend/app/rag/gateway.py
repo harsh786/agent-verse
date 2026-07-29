@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, TypeVar
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +46,7 @@ from app.tenancy.context import TenantContext
 
 if TYPE_CHECKING:
     from app.rag.agentic.patterns.graph import GraphEvidence, GraphEvidenceQuery
+    from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
 
 T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
@@ -235,6 +236,18 @@ def _has_async_method(dependency: object | None, method_name: str) -> bool:
     return callable(method) and inspect.iscoroutinefunction(method)
 
 
+def _is_safe_web_capability(
+    capability: SafeWebSearchCapability | None,
+) -> TypeGuard[SafeWebSearchCapability]:
+    from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+
+    return (
+        isinstance(capability, SafeWebSearchCapability)
+        and capability.configured
+        and inspect.iscoroutinefunction(capability.search)
+    )
+
+
 def _has_async_context_factory(factory: object | None) -> bool:
     if not callable(factory):
         return False
@@ -388,7 +401,7 @@ class RetrievalDependencies:
     embedder: object | None = None
     llm_resolver: LLMResolver | None = None
     graph_capability: GraphCapabilityAdapter | None = None
-    search_capability: object | None = None
+    search_capability: SafeWebSearchCapability | None = None
     policy_services: tuple[object, ...] = ()
     strategy_timeout_seconds: float = 30.0
     statement_timeout_ms: int = 30_000
@@ -401,7 +414,7 @@ class RetrievalRuntimeDependencies:
     embedder: object | None
     llm: ResolvedLLM | None
     graph_capability: TenantScopedGraphCapability | None
-    search_capability: object | None
+    search_capability: SafeWebSearchCapability | None
     policy_services: tuple[object, ...]
     available_strategies: tuple[RAGStrategy, ...] = ()
     strategy_llms: Mapping[RAGStrategy, ResolvedLLM] = field(default_factory=dict)
@@ -649,6 +662,7 @@ async def execute_core_strategy(
             GraphEvidence,
             GraphEvidenceQuery,
             graph_results,
+            sanitized_tenant_id,
         )
 
         graph_capability = context.dependencies.graph_capability
@@ -664,7 +678,12 @@ async def execute_core_strategy(
             retrieval_mode="vector",
             evidence=evidence,
         )
+        stable_tenant_id = sanitized_tenant_id(context.tenant_context.tenant_id)
         _mark_source_type(seeds, "persisted")
+        for seed in seeds:
+            seed.source_metadata["tenant_id"] = stable_tenant_id
+        for item in evidence:
+            item["tenant_id"] = stable_tenant_id
         seed_identifiers = tuple(
             dict.fromkeys(
                 identifier
@@ -692,7 +711,10 @@ async def execute_core_strategy(
         typed_graph_evidence = [
             item for item in raw_graph_evidence if isinstance(item, GraphEvidence)
         ]
-        graph_items = graph_results(typed_graph_evidence)
+        graph_items = graph_results(
+            typed_graph_evidence,
+            tenant_id=context.tenant_context.tenant_id,
+        )
         for evidence_type in ("entity", "path", "community"):
             typed_items = [
                 item for item in typed_graph_evidence if item.evidence_type == evidence_type
@@ -701,6 +723,7 @@ async def execute_core_strategy(
                 {
                     "component": f"graph_{evidence_type}",
                     "query": request.query,
+                    "tenant_id": stable_tenant_id,
                     "result_count": len(typed_items),
                     "component_scores": {
                         item.evidence_id: item.score for item in typed_items
@@ -722,6 +745,7 @@ async def execute_core_strategy(
                     "seed_count": len(seeds),
                     "graph_evidence_count": len(graph_items),
                     "result_count": len(results),
+                    "tenant_id": stable_tenant_id,
                 },
             ),
         )
@@ -733,7 +757,7 @@ async def execute_core_strategy(
         )
 
         web_capability = context.dependencies.search_capability
-        if web_capability is None or not _has_async_method(web_capability, "search"):
+        if not _is_safe_web_capability(web_capability):
             raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
         policy = await resolve_web_policy(
             context.dependencies.policy_services,
@@ -868,6 +892,8 @@ async def execute_core_strategy(
                 [retained, filtered],
                 top_k=request.top_k,
             )
+            required_relevant = min(2, request.top_k)
+            sufficient = len(retained) >= required_relevant
             trace.append(
                 RAGStrategyTrace(
                     strategy=strategy,
@@ -877,12 +903,14 @@ async def execute_core_strategy(
                         "attempt": attempt,
                         "candidate_count": len(candidates),
                         "retained_count": len(filtered),
+                        "total_retained_count": len(retained),
+                        "required_relevant_count": required_relevant,
                         "scores": scores,
-                        "decision": "sufficient" if filtered else "reformulate_or_fallback",
+                        "decision": "sufficient" if sufficient else "reformulate_or_fallback",
                     },
                 )
             )
-            if filtered:
+            if sufficient:
                 trace.append(
                     RAGStrategyTrace(
                         strategy=strategy,
@@ -915,7 +943,7 @@ async def execute_core_strategy(
                 )
 
         web_capability = context.dependencies.search_capability
-        if web_capability is None or not _has_async_method(web_capability, "search"):
+        if not _is_safe_web_capability(web_capability):
             stop_reason = "web_capability_unavailable"
         else:
             policy = await resolve_web_policy(
@@ -1281,8 +1309,8 @@ class RetrievalGateway:
                 return RAGStrategyReadiness(strategy, False, persistence_reason)
         if capability.requires_graph and not self._has_graph_capability():
             return RAGStrategyReadiness(strategy, False, "graph_capability_unavailable")
-        if capability.requires_search and not _has_async_method(
-            self.dependencies.search_capability, "search"
+        if capability.requires_search and not _is_safe_web_capability(
+            self.dependencies.search_capability
         ):
             return RAGStrategyReadiness(strategy, False, "search_capability_unavailable")
         if capability.requires_web_policy:
@@ -1562,8 +1590,8 @@ class RetrievalGateway:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
         if capability.requires_graph and not self._has_graph_capability():
             raise UnavailableRAGStrategyError(strategy, "graph capability is not configured")
-        if capability.requires_search and not _has_async_method(
-            self.dependencies.search_capability, "search"
+        if capability.requires_search and not _is_safe_web_capability(
+            self.dependencies.search_capability
         ):
             raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
         if capability.requires_web_policy:
@@ -1623,8 +1651,8 @@ class RetrievalGateway:
                 strategy_llms[strategy] = candidate_llm
             if capability.requires_graph and not self._has_graph_capability():
                 continue
-            if capability.requires_search and not _has_async_method(
-                self.dependencies.search_capability, "search"
+            if capability.requires_search and not _is_safe_web_capability(
+                self.dependencies.search_capability
             ):
                 continue
             if capability.requires_web_policy:

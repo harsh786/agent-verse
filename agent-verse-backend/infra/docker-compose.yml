@@ -269,6 +269,7 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
+      SEARXNG_URL: http://searxng:8080
       # ── LLM providers — set at least one for real goal execution ──
       # ANTHROPIC_API_KEY: sk-ant-...
       # OPENAI_API_KEY: sk-...

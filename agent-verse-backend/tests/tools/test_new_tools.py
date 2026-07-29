@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -23,24 +24,21 @@ async def test_web_search_duckduckgo_fallback():
     from app.tools.web_search import WebSearchTool
 
     os.environ.pop("SEARXNG_URL", None)
-    tool = WebSearchTool()
+    tool = WebSearchTool(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "AbstractText": "Python is a language",
+                    "Heading": "Python",
+                    "AbstractURL": "https://python.org",
+                    "RelatedTopics": [],
+                },
+            )
+        )
+    )
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
-        "AbstractText": "Python is a language",
-        "Heading": "Python",
-        "AbstractURL": "https://python.org",
-        "RelatedTopics": [],
-    }
-    mock_resp.raise_for_status = lambda: None
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_resp)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        result = await tool.execute(query="Python programming")
+    result = await tool.execute(query="Python programming")
 
     assert "results" in result
     assert isinstance(result["results"], list)
@@ -53,23 +51,25 @@ async def test_web_search_uses_searxng_when_configured():
 
     os.environ["SEARXNG_URL"] = "http://searxng:8080"
     try:
-        tool = WebSearchTool()
+        tool = WebSearchTool(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "title": "Result 1",
+                                "url": "https://example.com",
+                                "content": "Snippet",
+                                "engine": "google",
+                            },
+                        ]
+                    },
+                )
+            )
+        )
 
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "results": [
-                {"title": "Result 1", "url": "https://example.com", "content": "Snippet", "engine": "google"},
-            ]
-        }
-        mock_resp.raise_for_status = lambda: None
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=mock_resp)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await tool.execute(query="test query", num_results=3)
+        result = await tool.execute(query="test query", num_results=3)
 
         assert result["source"] == "searxng"
         assert len(result["results"]) == 1
@@ -84,17 +84,12 @@ async def test_web_search_error_returns_error_dict():
     from app.tools.web_search import WebSearchTool
 
     os.environ.pop("SEARXNG_URL", None)
-    tool = WebSearchTool()
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
 
-    import httpx
+    tool = WebSearchTool(transport=httpx.MockTransport(fail))
 
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        result = await tool.execute(query="test")
+    result = await tool.execute(query="test")
 
     assert "error" in result
 

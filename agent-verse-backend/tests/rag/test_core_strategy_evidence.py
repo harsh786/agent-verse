@@ -545,6 +545,8 @@ class _CollectionStore:
 
 
 class _SearchCapability:
+    configured = True
+
     async def search(self, request: object) -> list[object]:
         return []
 

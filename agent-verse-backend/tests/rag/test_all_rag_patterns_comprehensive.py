@@ -492,14 +492,20 @@ class TestStrategyRegistry:
             assert registry.is_available(pattern_id) is True, f"{pattern_id} not available"
         for strategy in [
             RAGStrategy.FUSION,
+            RAGStrategy.GRAPH,
+            RAGStrategy.CORRECTIVE,
+            RAGStrategy.ADAPTIVE,
+            RAGStrategy.WEB_AUGMENTED,
+        ]:
+            assert registry.get(strategy.value) is not None
+            assert registry.is_available(strategy.value)
+        for strategy in [
             RAGStrategy.FLARE,
             RAGStrategy.RAPTOR,
             RAGStrategy.SELF_RAG,
             RAGStrategy.SPECULATIVE,
             RAGStrategy.AGENTIC_CHUNKING,
             RAGStrategy.COLBERT,
-            RAGStrategy.CORRECTIVE,
-            RAGStrategy.ADAPTIVE,
         ]:
             assert registry.get(strategy.value) is not None
             assert not registry.is_available(strategy.value)

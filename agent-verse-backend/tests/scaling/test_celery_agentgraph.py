@@ -281,6 +281,9 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
     assert gateway_dependencies
     assert gateway_dependencies[0].llm_resolver is not None
     assert gateway_dependencies[0].collection_authorizer is not None
+    from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+
+    assert isinstance(gateway_dependencies[0].search_capability, SafeWebSearchCapability)
     resolver = gateway_dependencies[0].llm_resolver
     resolved = asyncio.run(
         resolver(
