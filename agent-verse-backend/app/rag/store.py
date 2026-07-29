@@ -253,6 +253,141 @@ class KnowledgeStore:
             for row in rows
         ]
 
+    async def create_ingestion_job_async(
+        self,
+        *,
+        collection_id: str,
+        source_url: str,
+        source_type: str,
+        title: str,
+        tenant_ctx: TenantContext,
+    ) -> str:
+        """Create a durable ingestion job in the existing document-status table."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        job_id = _uuid.uuid4().hex
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            created = (
+                await session.execute(
+                    text("""
+                        INSERT INTO knowledge_documents
+                            (id, tenant_id, collection_id, title, source_url, source_type,
+                             content_hash, status, chunk_count, domain_metadata)
+                        VALUES
+                            (:id, :tenant_id, :collection_id, :title, :source_url,
+                             :source_type, :content_hash, 'queued', 0,
+                             CAST(:metadata AS jsonb))
+                        RETURNING id
+                    """),
+                    {
+                        "id": job_id,
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "collection_id": collection_id,
+                        "title": title,
+                        "source_url": source_url,
+                        "source_type": source_type,
+                        "content_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "metadata": json.dumps({"record_type": "ingestion_job"}),
+                    },
+                )
+            ).scalar_one_or_none()
+            if created is None:
+                raise KeyError(f"Collection {collection_id} not found")
+        return job_id
+
+    async def update_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        chunk_count: int,
+        error_message: str | None,
+        tenant_ctx: TenantContext,
+    ) -> None:
+        """Persist a sanitized terminal or progress state for one ingestion job."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        if status not in {"queued", "running", "completed", "failed"}:
+            raise ValueError(f"Unsupported ingestion job status: {status}")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = :status,
+                        chunk_count = :chunk_count,
+                        error_message = :error_message,
+                        indexed_at = CASE WHEN :status = 'completed' THEN now() ELSE indexed_at END
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "status": status,
+                    "chunk_count": chunk_count,
+                    "error_message": error_message,
+                },
+            )
+            if not result.rowcount:
+                raise KeyError(f"Ingestion job not found: {job_id}")
+
+    async def get_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> dict[str, Any] | None:
+        """Read one durable ingestion job in the active tenant scope."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text("""
+                        SELECT id, collection_id, status, chunk_count,
+                               error_message, source_url
+                        FROM knowledge_documents
+                        WHERE id = :id AND tenant_id = :tenant_id
+                          AND domain_metadata->>'record_type' = 'ingestion_job'
+                    """),
+                    {"id": job_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": str(row[0]),
+            "collection_id": str(row[1]),
+            "status": str(row[2]),
+            "chunk_count": int(row[3] or 0),
+            "error_message": str(row[4]) if row[4] else None,
+            "source_url": str(row[5] or ""),
+        }
+
     def ingest_chunk(
         self,
         chunk: Chunk,

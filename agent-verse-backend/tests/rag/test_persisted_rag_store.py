@@ -813,6 +813,132 @@ async def test_orchestrated_chunks_share_document_count_and_delete_together(
     ) == 2
 
 
+async def test_mixed_structured_documents_preserve_identity_across_restart_and_delete(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.api.knowledge import _ingest_chunks_from_source
+    from app.providers.fake import FakeProvider
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(
+            name=f"mixed-documents-{collection_id}",
+            collection_id=collection_id,
+        ),
+        tenant_ctx=tenant,
+    )
+    await _ingest_chunks_from_source(
+        store,
+        [
+            {"content": "Document A first chunk", "source_doc_id": "doc-a"},
+            {"content": "Document B first chunk", "source_doc_id": "doc-b"},
+            {"content": "Document A second chunk", "source_doc_id": "doc-a"},
+            {"content": "Document B second chunk", "source_doc_id": "doc-b"},
+        ],
+        collection_id,
+        tenant,
+        FakeProvider(embed_dim=768),
+    )
+
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+    collection = await restarted.get_collection_async(collection_id, tenant_ctx=tenant)
+    assert collection is not None
+    assert collection.document_count == 2
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT document_id, chunk_index FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :id ORDER BY document_id, chunk_index"
+                ),
+                {"id": collection_id},
+            )
+        ).all()
+    assert [tuple(row) for row in rows] == [
+        ("doc-a", 0),
+        ("doc-a", 1),
+        ("doc-b", 0),
+        ("doc-b", 1),
+    ]
+
+    assert await restarted.delete_document_async(
+        "doc-a",
+        collection_id=collection_id,
+        tenant_ctx=tenant,
+    ) == 2
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        remaining = (
+            await session.execute(
+                text(
+                    "SELECT document_id, chunk_index FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :id ORDER BY chunk_index"
+                ),
+                {"id": collection_id},
+            )
+        ).all()
+        counts = (
+            await session.execute(
+                text(
+                    "SELECT document_count, chunk_count FROM knowledge_collections "
+                    "WHERE id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).one()
+    assert [tuple(row) for row in remaining] == [("doc-b", 0), ("doc-b", 1)]
+    assert counts == (1, 2)
+
+
+async def test_repository_ingestion_job_status_survives_restart_and_is_tenant_scoped(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant_a, tenant_b = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"jobs-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant_a,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url="https://github.com/example/repository",
+        source_type="repository",
+        title="example/repository",
+        tenant_ctx=tenant_a,
+    )
+    await store.update_ingestion_job_async(
+        job_id,
+        status="failed",
+        chunk_count=0,
+        error_message="Repository ingestion failed",
+        tenant_ctx=tenant_a,
+    )
+
+    restarted = KnowledgeStore(postgres_database.runtime_factory)
+    status = await restarted.get_ingestion_job_async(job_id, tenant_ctx=tenant_a)
+    assert status == {
+        "job_id": job_id,
+        "collection_id": collection_id,
+        "status": "failed",
+        "chunk_count": 0,
+        "error_message": "Repository ingestion failed",
+        "source_url": "https://github.com/example/repository",
+    }
+    assert await restarted.get_ingestion_job_async(job_id, tenant_ctx=tenant_b) is None
+
+
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)
 async def test_delete_and_parent_expansion_route_to_collection_dimension(
     postgres_database: _Database,
