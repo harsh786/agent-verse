@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from app.observability.logging import get_logger
-from app.rag.contracts import RAGStrategy
+from app.rag.contracts import RAGStrategy, resolve_rag_strategy
 from app.tenancy.context import TenantContext
 
 logger = get_logger(__name__)
@@ -196,7 +196,13 @@ async def execute_rag_node(
     collection_id = node.get("collection_id", "")
     query_template = node.get("query_template", "{{goal}}")
     top_k = min(int(node.get("top_k", 5)), 20)
-    strategy = RAGStrategy(str(node.get("strategy", RAGStrategy.HYBRID.value)))
+    requested_strategy_id = str(
+        node.get(
+            "requested_strategy_id",
+            node.get("strategy", RAGStrategy.HYBRID.value),
+        )
+    )
+    resolve_rag_strategy(requested_strategy_id)
     filters = node.get("filters", {})
     if not isinstance(filters, dict):
         raise TypeError("RAG workflow filters must be an object")
@@ -215,7 +221,7 @@ async def execute_rag_node(
         tenant_ctx,
         collection_id=str(collection_id),
         query=query,
-        strategy_id=strategy,
+        strategy_id=requested_strategy_id,
         top_k=top_k,
         filters=filters,
     )

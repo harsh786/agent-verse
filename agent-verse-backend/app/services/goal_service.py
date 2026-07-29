@@ -737,6 +737,15 @@ class GoalService:
         ) if app_state else None
         hitl_gateway = getattr(app_state, "hitl_gateway", None) if app_state else self._hitl
         knowledge_store = getattr(app_state, "knowledge_store", None) if app_state else None
+        retrieval_gateway = None
+        if app_state is not None:
+            retrieval_gateway = getattr(app_state, "retrieval_gateway", None)
+            if retrieval_gateway is None:
+                retrieval_gateway = getattr(
+                    getattr(app_state, "state", None),
+                    "retrieval_gateway",
+                    None,
+                )
         long_term_memory = getattr(app_state, "long_term_memory", None) if app_state else None
         eval_runner = getattr(app_state, "eval_runner", None) if app_state else None
         policy_engine = getattr(app_state, "policy_engine", None) if app_state else None
@@ -886,6 +895,7 @@ class GoalService:
             cost_controller=cost_controller,
             hitl_gateway=hitl_gateway,
             knowledge_store=knowledge_store,
+            retrieval_gateway=retrieval_gateway,
             long_term_memory=long_term_memory,
             mcp_client=mcp_client,
             eval_runner=eval_runner,

@@ -46,7 +46,7 @@ class TestWorkflowExecutorDispatch:
         assert result["status"] == "complete"
         assert calls[0][0] is tenant
         assert calls[0][1]["collection_id"] == "collection-1"
-        assert calls[0][1]["strategy_id"] is RAGStrategy.FUSION
+        assert calls[0][1]["strategy_id"] == "fusion"
         assert calls[0][1]["top_k"] == 7
         assert calls[0][1]["filters"] == {"team": "legal"}
 

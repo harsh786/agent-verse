@@ -94,7 +94,10 @@ class RetrieverTool:
             )
 
         citations_by_id = {
-            citation.citation_id: (collection_id, citation)
+            (collection_id, citation.source, citation.citation_id): (
+                collection_id,
+                citation,
+            )
             for collection_id, result in zip(collection_ids, gateway_results, strict=True)
             for citation in result.citations
             if citation.score >= min_confidence
