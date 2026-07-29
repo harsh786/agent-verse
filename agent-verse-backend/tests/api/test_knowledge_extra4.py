@@ -363,8 +363,8 @@ def test_ingest_file_short_content_fallback_chunk() -> None:
 # ingest/repo — background task (lines 546-609)
 # ---------------------------------------------------------------------------
 
-def test_ingest_repo_returns_202_immediately() -> None:
-    """Lines 475-512: Repo ingest returns 202 without blocking."""
+def test_ingest_repo_requires_durable_job_backend() -> None:
+    """Repository ingestion never schedules without durable job storage."""
     embedder = _make_embedder()
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
     coll_id = _create_collection(client)
@@ -378,9 +378,7 @@ def test_ingest_repo_returns_202_immediately() -> None:
         },
         headers=H,
     )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["status"] == "ingestion_started"
+    assert resp.status_code == 503
 
 
 def test_ingest_repo_background_clone_failure() -> None:
@@ -389,7 +387,8 @@ def test_ingest_repo_background_clone_failure() -> None:
 
     async def _run():
         from app.api.knowledge import _ingest_repo_background
-        store = KnowledgeStore()
+        store = MagicMock()
+        store.update_ingestion_job_async = AsyncMock()
         # Using a URL that will fail to clone (no real git)
         with patch("asyncio.create_subprocess_exec") as mock_proc:
             proc = AsyncMock()
@@ -397,6 +396,7 @@ def test_ingest_repo_background_clone_failure() -> None:
             proc.communicate = AsyncMock(return_value=(b"", b"fatal: not found"))
             mock_proc.return_value = proc
             await _ingest_repo_background(
+                job_id="job-clone-failure",
                 repo_url="https://github.com/notexist/repo",
                 collection_id="coll-x",
                 branch="main",
@@ -417,7 +417,8 @@ def test_ingest_repo_background_timeout() -> None:
 
     async def _run():
         from app.api.knowledge import _ingest_repo_background
-        store = KnowledgeStore()
+        store = MagicMock()
+        store.update_ingestion_job_async = AsyncMock()
         with patch("asyncio.create_subprocess_exec") as mock_proc:
             proc = AsyncMock()
             proc.returncode = 0
@@ -425,6 +426,7 @@ def test_ingest_repo_background_timeout() -> None:
             proc.communicate = AsyncMock(side_effect=TimeoutError())
             mock_proc.return_value = proc
             await _ingest_repo_background(
+                job_id="job-timeout",
                 repo_url="https://github.com/slow/repo",
                 collection_id="coll-x",
                 branch="main",
@@ -487,8 +489,12 @@ def test_ingest_openapi_valid_spec() -> None:
 
 
 def test_ingest_openapi_no_embedder() -> None:
-    """Lines 628-688: OpenAPI ingest without embedder (empty embeddings)."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    """OpenAPI ingestion without an embedder is fail-closed."""
+    store = KnowledgeStore()
+    client = TestClient(
+        _make_app(knowledge_store=store),
+        raise_server_exceptions=False,
+    )
     coll_id = _create_collection(client)
 
     import json
@@ -498,7 +504,8 @@ def test_ingest_openapi_no_embedder() -> None:
         json={"collection_id": coll_id, "content": json.dumps(spec)},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
+    assert resp.status_code == 503
+    assert store._data[(_CTX.tenant_id, coll_id)].chunks == []
 
 
 def test_ingest_openapi_yaml_format() -> None:
@@ -548,12 +555,15 @@ def test_ingest_openapi_empty_paths() -> None:
         assert resp.json()["endpoints_ingested"] == 0
 
 
-def test_ingest_openapi_embedder_exception_swallowed() -> None:
-    """Lines 663-667: Embedder exception is swallowed per-chunk."""
-    from app.providers.base import EmbedResponse
+def test_ingest_openapi_embedder_exception_is_fail_closed() -> None:
+    """OpenAPI embedder failures return 503 without writes."""
     embedder = AsyncMock()
     embedder.embed = AsyncMock(side_effect=Exception("Embed fail"))
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+    store = KnowledgeStore()
+    client = TestClient(
+        _make_app(knowledge_store=store, embedder=embedder),
+        raise_server_exceptions=False,
+    )
     coll_id = _create_collection(client)
 
     import json
@@ -563,7 +573,8 @@ def test_ingest_openapi_embedder_exception_swallowed() -> None:
         json={"collection_id": coll_id, "content": json.dumps(spec)},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
+    assert resp.status_code == 503
+    assert store._data[(_CTX.tenant_id, coll_id)].chunks == []
 
 
 # ---------------------------------------------------------------------------

@@ -233,7 +233,7 @@ def test_ingest_repo_collection_not_found() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (202, 404, 503)
+    assert resp.status_code == 404
 
 
 def test_ingest_repo_queued() -> None:
@@ -255,7 +255,7 @@ def test_ingest_repo_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +395,7 @@ def test_ingest_slack_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    assert resp.status_code in (200, 202, 500, 503)
 
 
 # ---------------------------------------------------------------------------

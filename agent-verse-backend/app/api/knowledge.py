@@ -617,10 +617,32 @@ async def ingest_repository(
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
+    collection = await store.get_collection_async(
+        body.collection_id,
+        tenant_ctx=tenant,
+    )
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found")
+    await _embed_texts_or_http(["Repository ingestion readiness check"], embedder)
+    try:
+        job_id = await store.create_ingestion_job_async(
+            collection_id=body.collection_id,
+            source_url=body.repo_url,
+            source_type="repository",
+            title=body.repo_url.rstrip("/").rsplit("/", 2)[-1],
+            tenant_ctx=tenant,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
+
     import asyncio
     # Run in background task
     task = asyncio.create_task(
         _ingest_repo_background(
+            job_id=job_id,
             repo_url=body.repo_url,
             collection_id=body.collection_id,
             branch=body.branch,
@@ -636,15 +658,32 @@ async def ingest_repository(
 
     return {
         "status": "ingestion_started",
+        "job_id": job_id,
         "repo_url": body.repo_url,
         "collection_id": body.collection_id,
         "branch": body.branch,
-        "message": "Repository ingestion started in background. "
-                   "Check /knowledge/collections for progress.",
+        "message": "Repository ingestion started in background.",
     }
 
 
+@router.get("/ingest/jobs/{job_id}")
+async def get_ingestion_job(request: Request, job_id: str) -> dict[str, Any]:
+    tenant = _require_tenant(request)
+    store = _knowledge_store(request)
+    try:
+        job = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Ingestion job not found")
+    return job
+
+
 async def _ingest_repo_background(
+    job_id: str,
     repo_url: str,
     collection_id: str,
     branch: str,
@@ -661,11 +700,17 @@ async def _ingest_repo_background(
 
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     from app.observability.logging import get_logger
-    from app.providers.base import EmbedRequest
     logger = get_logger(__name__)
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
     try:
+        await store.update_ingestion_job_async(
+            job_id,
+            status="running",
+            chunk_count=0,
+            error_message=None,
+            tenant_ctx=tenant_ctx,
+        )
         # Clone using git — non-blocking async subprocess
         proc = await asyncio.create_subprocess_exec(
             "git", "clone", "--depth=1", "--branch", branch, repo_url, tmpdir,
@@ -673,79 +718,86 @@ async def _ingest_repo_background(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            _stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         except TimeoutError:
             proc.kill()
-            logger.warning("repo_clone_timeout", repo=repo_url)
-            return
+            raise RuntimeError("Repository clone timed out") from None
 
         if proc.returncode != 0:
-            logger.warning(
-                "repo_clone_failed",
-                repo=repo_url,
-                error=(stderr or b"").decode("utf-8", errors="replace")[:200],
-            )
-            return
+            raise RuntimeError("Repository clone failed")
 
         files_processed = 0
+        prepared_chunks: list[Chunk] = []
+        seen_files: set[pathlib.Path] = set()
 
         for pattern in file_patterns:
-            for filepath in pathlib.Path(tmpdir).rglob(pattern.lstrip("*/")):
+            for filepath in pathlib.Path(tmpdir).glob(pattern):
                 if files_processed >= max_files:
                     break
-                if not filepath.is_file():
+                if not filepath.is_file() or filepath in seen_files:
                     continue
-                try:
-                    text = filepath.read_text(encoding="utf-8", errors="replace")
-                    if not text.strip():
-                        continue
-                    ext = filepath.suffix.lstrip(".")
-                    src_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
-                    _raw = _chunk_by_tokens_repo(text, max_tokens=512, overlap_tokens=64)
-                    chunks = [
-                        type(
-                            "_C",
-                            (),
-                            {"content": chunk, "start_char": 0, "end_char": len(chunk)},
-                        )()
-                        for chunk in _raw
-                    ]
-                    rel_path = str(filepath.relative_to(tmpdir))
-                    doc_id = _uuid.uuid4().hex
-                    rag_chunks: list[Chunk] = []
-                    for idx, chunk in enumerate(chunks):
-                        embedding: list[float] = []
-                        if embedder:
-                            try:
-                                resp = await embedder.embed(EmbedRequest(texts=[chunk.content]))
-                                embedding = resp.embeddings[0] if resp.embeddings else []
-                            except Exception:
-                                pass
-                        rag_chunks.append(Chunk(
-                            document_id=doc_id,
-                            content=chunk.content,
-                            embedding=embedding,
-                            chunk_index=idx,
-                            metadata={
-                                "source_file": rel_path,
-                                "repo_url": repo_url,
-                                "char_offset": str(chunk.start_char),
-                                "source_type": src_type,
-                            },
-                        ))
-                    await store.ingest_chunks_async(
-                        rag_chunks,
-                        collection_id=collection_id,
-                        tenant_ctx=tenant_ctx,
+                seen_files.add(filepath)
+                text_content = filepath.read_text(encoding="utf-8", errors="replace")
+                if not text_content.strip():
+                    continue
+                ext = filepath.suffix.lstrip(".")
+                src_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
+                raw_chunks = _chunk_by_tokens_repo(
+                    text_content,
+                    max_tokens=512,
+                    overlap_tokens=64,
+                )
+                rel_path = str(filepath.relative_to(tmpdir))
+                document_id = hashlib.sha256(
+                    f"{repo_url}:{rel_path}".encode()
+                ).hexdigest()[:32]
+                embeddings = await _embed_texts_or_http(raw_chunks, embedder)
+                prepared_chunks.extend(
+                    Chunk(
+                        document_id=document_id,
+                        content=chunk_content,
+                        embedding=embeddings[index],
+                        chunk_index=index,
+                        metadata={
+                            "source_file": rel_path,
+                            "repo_url": repo_url,
+                            "source_type": src_type,
+                            "source_doc_id": document_id,
+                        },
                     )
-                    files_processed += 1
-                except Exception as exc:
-                    logger.warning("repo_file_ingest_failed",
-                                   file=str(filepath), error=str(exc))
+                    for index, chunk_content in enumerate(raw_chunks)
+                )
+                files_processed += 1
 
+        await store.ingest_chunks_async(
+            prepared_chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+        await store.update_ingestion_job_async(
+            job_id,
+            status="completed",
+            chunk_count=len(prepared_chunks),
+            error_message=None,
+            tenant_ctx=tenant_ctx,
+        )
         logger.info("repo_ingest_complete", repo=repo_url, files=files_processed)
     except Exception as exc:
-        logger.warning("repo_ingest_failed", repo=repo_url, error=str(exc))
+        logger.warning("repo_ingest_failed", repo=repo_url, error=type(exc).__name__)
+        try:
+            await store.update_ingestion_job_async(
+                job_id,
+                status="failed",
+                chunk_count=0,
+                error_message="Repository ingestion failed",
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as status_exc:
+            logger.error(
+                "repo_ingest_status_update_failed",
+                job_id=job_id,
+                error=type(status_exc).__name__,
+            )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -961,22 +1013,19 @@ async def _ingest_chunks_from_source(
         [str(chunk["content"]) for chunk in source_chunks],
         embedder,
     )
-    source_doc_id = next(
-        (
-            str(chunk.get("source_doc_id"))
-            for chunk in source_chunks
-            if chunk.get("source_doc_id")
-        ),
-        _uuid.uuid4().hex,
-    )
+    fallback_source_doc_id = _uuid.uuid4().hex
+    document_chunk_indexes: dict[str, int] = {}
     rag_chunks: list[Chunk] = []
     for chunk_data, embedding in zip(source_chunks, embeddings, strict=True):
         content = chunk_data.get("content", "")
+        source_doc_id = str(chunk_data.get("source_doc_id") or fallback_source_doc_id)
+        chunk_index = document_chunk_indexes.get(source_doc_id, 0)
+        document_chunk_indexes[source_doc_id] = chunk_index + 1
         rag_chunks.append(Chunk(
             document_id=source_doc_id,
             content=content,
             embedding=embedding,
-            chunk_index=len(rag_chunks),
+            chunk_index=chunk_index,
             metadata={
                 k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()
             } | {
@@ -1767,6 +1816,7 @@ async def list_documents(
                            LEFT(content, 200) as preview
                     FROM knowledge_documents
                     WHERE collection_id = :cid AND tenant_id = :tid
+                      AND COALESCE(domain_metadata->>'record_type', '') <> 'ingestion_job'
                 """
                 params: dict[str, Any] = {
                     "cid": collection_id,
@@ -1782,7 +1832,8 @@ async def list_documents(
                 rows = (await session.execute(_t(q), params)).fetchall()
                 count_q = (
                     "SELECT COUNT(*) FROM knowledge_documents "
-                    "WHERE collection_id = :cid AND tenant_id = :tid"
+                    "WHERE collection_id = :cid AND tenant_id = :tid "
+                    "AND COALESCE(domain_metadata->>'record_type', '') <> 'ingestion_job'"
                 )
                 total = (
                     await session.execute(
