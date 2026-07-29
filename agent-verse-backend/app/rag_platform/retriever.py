@@ -34,7 +34,10 @@ class CitationVerification:
 class MinimalCitationVerifier:
     """Verify citation-marker-scoped claims conservatively."""
 
-    _MARKER_GROUP = re.compile(r"(?:\[(?:\d+(?:\s*,\s*\d+)*)\]\s*)+")
+    _MARKER_GROUP = re.compile(
+        r"\[(?:\d+(?:\s*,\s*\d+)*)\]"
+        r"(?:\s*(?:,\s*)?\[(?:\d+(?:\s*,\s*\d+)*)\])*"
+    )
 
     def __init__(self, *, provider: Any = None, model: str = "") -> None:
         self.provider = provider
@@ -45,13 +48,6 @@ class MinimalCitationVerifier:
         normalized = unicodedata.normalize("NFKC", text)
         normalized = re.sub(r"\[(?:\d+(?:\s*,\s*\d+)*)\]", "", normalized)
         normalized = " ".join(normalized.split()).strip()
-        segments = re.split(r"(https?://\S+)", normalized, flags=re.IGNORECASE)
-        normalized = "".join(
-            segment
-            if re.fullmatch(r"https?://\S+", segment, flags=re.IGNORECASE)
-            else segment.casefold()
-            for segment in segments
-        )
         if not re.search(r"https?://\S+$", normalized, flags=re.IGNORECASE):
             normalized = normalized.rstrip(".!?").rstrip()
         return normalized

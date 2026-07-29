@@ -747,8 +747,8 @@ async def test_verifier_binds_each_atomic_claim_to_its_local_citation(
                 citation_id="c1", chunk_id="ch1", content="Cats are allowed.",
                 score=0.9, source="cats",
             ),
-            RAGCitation(
-                citation_id="c2", chunk_id="ch2", content="Dogs are prohibited.",
+                RAGCitation(
+                    citation_id="c2", chunk_id="ch2", content="dogs are prohibited.",
                 score=0.9, source="dogs",
             ),
         ],
@@ -835,8 +835,8 @@ async def test_marker_scope_keeps_comma_and_newline_claims_separate(
                 citation_id="c1", chunk_id="ch1", content="Cats are allowed",
                 score=0.9, source="cats",
             ),
-            RAGCitation(
-                citation_id="c2", chunk_id="ch2", content="Dogs are prohibited",
+                RAGCitation(
+                    citation_id="c2", chunk_id="ch2", content="dogs are prohibited",
                 score=0.9, source="dogs",
             ),
         ],
@@ -1029,6 +1029,109 @@ async def test_non_identical_comma_prose_is_one_provider_verified_claim() -> Non
 
     assert result.grounded
     provider.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        ("Call parseJSON [1]", "Call parseJson"),
+        ("Read /srv/Admin/config [1]", "Read /srv/admin/config"),
+    ],
+)
+async def test_case_only_identifier_and_path_differences_are_not_exact(
+    claim: str,
+    evidence: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    citation = RAGCitation(
+        citation_id="c1", chunk_id="ch1", content=evidence,
+        score=0.9, source="code",
+    )
+    conservative = await MinimalCitationVerifier().verify(claim, [citation])
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    entailed = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(claim, [citation])
+
+    assert not conservative.grounded
+    assert entailed.grounded
+    provider.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("markers", ["[1][2]", "[1] [2]", "[1], [2]", "[1,2]"])
+async def test_common_grouped_citation_forms_include_all_evidence(markers: str) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        f"Combined requirement {markers}",
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content="Evidence one",
+                score=0.9, source="one",
+            ),
+            RAGCitation(
+                citation_id="c2", chunk_id="ch2", content="Evidence two",
+                score=0.9, source="two",
+            ),
+        ],
+    )
+
+    assert result.grounded
+    prompt = str(provider.complete.await_args.args[0].messages[0].content)
+    assert "Evidence one Evidence two" in prompt
+
+
+@pytest.mark.asyncio
+async def test_grouped_citations_do_not_steal_following_claim_reference() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        "Combined requirement [1], [2]; separate rule [3]",
+        [
+            RAGCitation(
+                citation_id=f"c{index}", chunk_id=f"ch{index}",
+                content=f"Evidence {index}", score=0.9, source=str(index),
+            )
+            for index in range(1, 4)
+        ],
+    )
+
+    assert result.grounded
+    assert provider.complete.await_count == 2
+    prompts = [str(call.args[0].messages[0].content) for call in provider.complete.await_args_list]
+    assert "Evidence 1 Evidence 2" in prompts[0]
+    assert "Evidence 3" not in prompts[0]
+    assert "Evidence 3" in prompts[1]
 
 
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
