@@ -508,3 +508,48 @@ def test_run_workflow_operational_error_still_uses_goal_service_fallback() -> No
     assert response.json()["run_id"] == "goal-fallback"
     assert "secret" not in response.text
     goal_service.submit_goal.assert_awaited_once()
+
+
+def test_saved_rag_workflow_failure_is_non_2xx_and_never_falls_back() -> None:
+    from app.rag.contracts import RAGStrategy, UnavailableRAGStrategyError
+
+    class Gateway:
+        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> Any:
+            raise UnavailableRAGStrategyError(RAGStrategy.HYBRID)
+
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(
+        return_value={"id": "must-not-run", "status": "planning"}
+    )
+    app = _make_app(goal_service=goal_service)
+    app.state.retrieval_gateway = Gateway()
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post(
+        "/workflows",
+        json={
+            "name": "Unavailable RAG",
+            "definition": {
+                "steps": [
+                    {
+                        "id": "rag-1",
+                        "tool": "rag",
+                        "collection_id": "collection-1",
+                        "strategy": "hybrid",
+                    }
+                ]
+            },
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()
+
+    response = client.post(
+        f"/workflows/{created['id']}/run",
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "workflow_retrieval_failed"
+    assert detail["reason"] == "Retrieval service is unavailable"
+    assert detail["strategy_trace"]
+    goal_service.submit_goal.assert_not_awaited()

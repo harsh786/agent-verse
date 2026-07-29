@@ -373,6 +373,119 @@ async def test_rag_retriever_is_thin_gateway_synthesis_layer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rag_retriever_marks_unsupported_claim_ungrounded() -> None:
+    from app.rag_platform.retriever import RAGRetriever
+
+    class Verifier:
+        async def verify(self, answer: str, citations: list[Any]) -> Any:
+            return SimpleNamespace(
+                grounded=False,
+                unsupported_claims=["Unsupported claim"],
+            )
+
+    gateway = RecordingGateway(provider=RecordingProvider())
+    result = await RAGRetriever(
+        gateway=gateway,
+        citation_verifier=Verifier(),
+    ).retrieve(
+        query="retention policy",
+        tenant_ctx=TENANT,
+        collection_id="collection-1",
+        strategy="hybrid",
+    )
+
+    assert not result.grounded
+    assert result.citations
+    assert result.strategy_trace[-1].action == "citation_verification"
+    assert result.strategy_trace[-1].detail["unsupported_claims"] == [
+        "Unsupported claim"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rag_retriever_verifier_failure_is_explicitly_ungrounded() -> None:
+    from app.rag_platform.retriever import RAGRetriever
+
+    class BrokenVerifier:
+        async def verify(self, answer: str, citations: list[Any]) -> Any:
+            raise RuntimeError("private verifier secret")
+
+    result = await RAGRetriever(
+        gateway=RecordingGateway(provider=RecordingProvider()),
+        citation_verifier=BrokenVerifier(),
+    ).retrieve(
+        query="retention policy",
+        tenant_ctx=TENANT,
+        collection_id="collection-1",
+        strategy="hybrid",
+    )
+
+    assert not result.grounded
+    assert result.strategy_trace[-1].status == "failed"
+    assert "secret" not in str(result.strategy_trace[-1].detail)
+
+
+def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
+    class DuplicateGateway(RecordingGateway):
+        async def execute(
+            self, tenant_context: TenantContext, **kwargs: Any
+        ) -> RAGExecutionResult:
+            collection_id = str(kwargs["collection_id"])
+            return RAGExecutionResult(
+                requested_strategy_id="hybrid",
+                resolved_strategy_id=RAGStrategy.HYBRID,
+                citations=[
+                    RAGCitation(
+                        citation_id="citation-1",
+                        chunk_id=f"chunk-{collection_id}",
+                        content="Shared evidence",
+                        score=0.9,
+                        source=f"source-{collection_id}",
+                        metadata={"content_hash": "shared"},
+                    )
+                ],
+                retrieval_legs=[
+                    RAGRetrievalLeg(
+                        strategy=RAGStrategy.HYBRID,
+                        query="policy",
+                        result_count=1,
+                        metadata={"collection_id": collection_id},
+                    )
+                ],
+                strategy_trace=[
+                    RAGStrategyTrace(
+                        strategy=RAGStrategy.HYBRID,
+                        action="search",
+                        status="complete",
+                        detail={"collection_id": collection_id},
+                    )
+                ],
+            )
+
+    gateway = DuplicateGateway(provider=RecordingProvider())
+    client = TestClient(_app(gateway), raise_server_exceptions=False)
+    response = client.post(
+        "/knowledge/chat",
+        json={
+            "question": "policy",
+            "collection_ids": ["collection-1", "collection-2"],
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    citation = response.json()["citations"][0]
+    assert citation["collection_ids"] == ["collection-1", "collection-2"]
+    assert citation["sources"] == ["source-collection-1", "source-collection-2"]
+    assert citation["citation_refs"] == [
+        "collection-1:citation-1",
+        "collection-2:citation-1",
+    ]
+    assert len(citation["retrieval_legs"]) == 2
+    assert len(citation["strategy_trace"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
     from app.agent.graph import AgentGraph, RetrievalEntryPointError
 
