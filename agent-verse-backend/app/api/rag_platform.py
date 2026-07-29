@@ -62,24 +62,6 @@ def _raise_retrieval_http_error(exc: Exception) -> None:
     raise HTTPException(status_code=503, detail="Retrieval service is unavailable") from exc
 
 
-def _gateway_capability_available(gateway: Any, strategy: RAGStrategy) -> bool:
-    dependencies = getattr(gateway, "dependencies", None)
-    capability = getattr(dependencies, "strategy_capabilities", {}).get(strategy)
-    if capability is None:
-        return False
-    required = (
-        ("requires_embedder", "embedder"),
-        ("requires_provider", "llm_resolver"),
-        ("requires_graph", "graph_capability"),
-        ("requires_search", "search_capability"),
-    )
-    return all(
-        not getattr(capability, requirement, False)
-        or getattr(dependencies, dependency, None) is not None
-        for requirement, dependency in required
-    )
-
-
 @router.post("/query")
 async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     """Execute a RAG query with the specified strategy."""
@@ -118,7 +100,7 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
 @router.get("/strategies")
 async def list_strategies(request: Request) -> dict[str, Any]:
     """List available RAG strategies."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     registry = get_strategy_registry()
     gateway = getattr(request.app.state, "retrieval_gateway", None)
     strategies: list[dict[str, Any]] = []
@@ -127,7 +109,17 @@ async def list_strategies(request: Request) -> dict[str, Any]:
         if capability is None:
             raise RuntimeError(f"Canonical RAG strategy is not registered: {strategy.value}")
         registry_available = registry.is_available(strategy.value)
-        capability_available = _gateway_capability_available(gateway, strategy)
+        readiness = None
+        if gateway is not None and hasattr(gateway, "readiness"):
+            readiness = await gateway.readiness(tenant, strategy_id=strategy)
+        capability_available = bool(readiness is not None and readiness.available)
+        unavailable_reason = (
+            "registry_not_certified"
+            if not registry_available
+            else readiness.reason
+            if readiness is not None
+            else "gateway_unavailable"
+        )
         strategies.append(
             {
                 "id": strategy.value,
@@ -137,6 +129,9 @@ async def list_strategies(request: Request) -> dict[str, Any]:
                 "registry_available": registry_available,
                 "capability_available": capability_available,
                 "available": registry_available and capability_available,
+                "unavailable_reason": (
+                    None if registry_available and capability_available else unavailable_reason
+                ),
             }
         )
     return {

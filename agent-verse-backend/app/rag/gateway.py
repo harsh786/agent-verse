@@ -129,6 +129,15 @@ class RetrievalStrategyCapability:
 
 
 @dataclass(frozen=True, slots=True)
+class RAGStrategyReadiness:
+    """Sanitized tenant-specific strategy readiness without retrieval execution."""
+
+    strategy: RAGStrategy
+    available: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalDependencies:
     """Typed process dependencies used by the tenant-aware retrieval gateway."""
 
@@ -312,6 +321,60 @@ class RetrievalGateway:
 
     def __init__(self, dependencies: RetrievalDependencies) -> None:
         self.dependencies = dependencies
+
+    async def readiness(
+        self,
+        tenant_context: TenantContext,
+        *,
+        strategy_id: str | RAGStrategy,
+        collection_id: str | None = None,
+    ) -> RAGStrategyReadiness:
+        """Validate adapter and tenant capabilities without retrieving evidence."""
+
+        if not isinstance(tenant_context, TenantContext):
+            raise TypeError("tenant_context must be a TenantContext")
+        strategy = resolve_rag_strategy(strategy_id)
+        capability = self.dependencies.strategy_capabilities.get(strategy)
+        if capability is None:
+            return RAGStrategyReadiness(strategy, False, "adapter_not_registered")
+        execute = getattr(capability.adapter, "execute", None)
+        if not inspect.iscoroutinefunction(execute) or inspect.isabstract(capability.adapter):
+            return RAGStrategyReadiness(strategy, False, "invalid_adapter")
+        if capability.requires_embedder and self.dependencies.embedder is None:
+            return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
+        if capability.requires_graph and (
+            self.dependencies.graph_capability is None
+            or self.dependencies.session_factory is None
+        ):
+            return RAGStrategyReadiness(strategy, False, "graph_capability_unavailable")
+        if capability.requires_search and self.dependencies.search_capability is None:
+            return RAGStrategyReadiness(strategy, False, "search_capability_unavailable")
+        if (
+            isinstance(self.dependencies.collection_authorizer, SQLCollectionAuthorizer)
+            and self.dependencies.session_factory is None
+        ):
+            return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")
+        if capability.requires_provider:
+            try:
+                await self._resolve_llm(strategy, capability, tenant_context)
+            except UnavailableRAGStrategyError:
+                return RAGStrategyReadiness(strategy, False, "llm_provider_unavailable")
+        if collection_id is not None:
+            try:
+                await self._authorize_collection(
+                    self._session_runner(tenant_context),
+                    tenant_context,
+                    collection_id,
+                )
+            except CollectionNotFoundError:
+                return RAGStrategyReadiness(strategy, False, "collection_not_authorized")
+            except Exception:
+                return RAGStrategyReadiness(
+                    strategy,
+                    False,
+                    "collection_authorization_unavailable",
+                )
+        return RAGStrategyReadiness(strategy, True, "ready")
 
     async def execute(
         self,

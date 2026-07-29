@@ -16,6 +16,7 @@ from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix
 from app.memory.execution import ExecutionMemory
+from app.rag.contracts import RAGStrategy
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
 from app.reliability.result_processor import ResultProcessor
@@ -136,7 +137,7 @@ async def exec_memory_lookup(
     """Return relevant past execution memories (winning plans)."""
     if memory is None:
         return []
-    return memory.recall(goal_hint=goal, tenant_ctx=tenant_ctx)  # type: ignore[return-value]
+    return memory.recall(goal_hint=goal, tenant_ctx=tenant_ctx)
 
 
 async def record_rollback_point(
@@ -178,80 +179,35 @@ async def smart_context_fetch(
     goal: str = "",
     step: str,
     tenant_ctx: TenantContext,
-    knowledge_store: Any = None,
-    query_embedding: list[float] | None = None,
-    context: dict[str, Any] | None = None,
-    agent_store: Any = None,
+    retrieval_gateway: Any = None,
+    collection_ids: list[str] | None = None,
+    strategy: RAGStrategy = RAGStrategy.HYBRID,
+    top_k: int = 3,
+    filters: dict[str, Any] | None = None,
 ) -> str:
-    """Fetch and rank relevant context from RAG store for a specific step.
+    """Fetch per-step context only through the tenant-aware retrieval gateway."""
 
-    Returns formatted context string or empty string if nothing relevant found.
-    Filters to agent's allowed_collection_ids when agent_id is present in context.
-    Requires a real embedder (query_embedding must be provided); returns empty
-    string when no embedding is available rather than generating random noise.
-    """
-    if knowledge_store is None:
+    if not collection_ids:
         return ""
+    if retrieval_gateway is None:
+        raise RuntimeError("Retrieval gateway is not configured")
+    if not isinstance(strategy, RAGStrategy):
+        raise TypeError("strategy must be a canonical RAGStrategy")
 
-    # Skip RAG when no query embedding is available — random vectors corrupt results
-    if query_embedding is None:
-        from app.observability.logging import get_logger as _get_logger
-        _get_logger(__name__).debug(
-            "rag_skipped_no_embedder",
-            message=(
-                "smart_context_fetch skipped: no embedder configured. "
-                "Set VOYAGE_API_KEY or OPENAI_API_KEY for RAG support."
-            )
+    citations = []
+    query_text = step or goal
+    for collection_id in collection_ids[:3]:
+        result = await retrieval_gateway.execute(
+            tenant_ctx,
+            collection_id=collection_id,
+            query=query_text,
+            strategy_id=strategy,
+            top_k=top_k,
+            filters=filters or {},
         )
-        return ""
-
-    try:
-        # Determine allowed collections from agent binding
-        allowed_collections: list[str] | None = None
-        agent_id = context.get("agent_id") if context else None
-        if agent_id and agent_store:
-            agent = agent_store.get(agent_id, tenant_ctx=tenant_ctx)
-            if agent:
-                allowed = agent.get("allowed_collection_ids", [])
-                if allowed:
-                    allowed_collections = list(allowed)
-
-        # Enumerate collections via the public API (works with DB-loaded knowledge)
-        try:
-            collections = await knowledge_store.list_collections_async(tenant_ctx=tenant_ctx)
-            collection_ids = [c.collection_id for c in collections]
-        except Exception:
-            collection_ids = []
-
-        # Search collections for this tenant (filtered if agent has bindings)
-        all_results = []
-        query_text = step or goal
-        for collection_id in collection_ids[:3]:  # cap at 3 collections
-            if allowed_collections is not None and collection_id not in allowed_collections:
-                continue
-            try:
-                results = await knowledge_store.hybrid_search_db(
-                    query_text,
-                    query_embedding,
-                    collection_id,
-                    tenant_ctx,
-                    top_k=3,
-                )
-                all_results.extend(results)
-            except Exception:
-                continue
-
-        if not all_results:
-            return ""
-
-        # Sort by score and take top 3
-        all_results.sort(key=lambda r: r.score, reverse=True)
-        top = all_results[:3]
-
-        # Format as context
-        return "\n".join(
-            f"[Context {i + 1} (score={r.score:.2f})]: {r.content[:300]}"
-            for i, r in enumerate(top)
-        )
-    except Exception:
-        return ""
+        citations.extend(result.citations)
+    citations.sort(key=lambda citation: (-citation.score, citation.citation_id))
+    return "\n".join(
+        f"[Context {index} (score={citation.score:.2f})]: {citation.content[:300]}"
+        for index, citation in enumerate(citations[:top_k], start=1)
+    )

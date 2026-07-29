@@ -542,6 +542,7 @@ async def run_workflow(
             executor = WorkflowExecutor(
                 provider=getattr(request.app.state, "_app_provider", None),
                 mcp_client=getattr(request.app.state, "mcp_client", None),
+                retrieval_gateway=getattr(request.app.state, "retrieval_gateway", None),
             )
             result = await executor.execute(plan, tenant_ctx=tenant)
             return {
