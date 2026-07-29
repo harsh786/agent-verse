@@ -560,6 +560,60 @@ async def test_atomic_batch_failure_rolls_back_every_chunk(
     assert store._data[(tenant.tenant_id, collection_id)].chunks == []
 
 
+async def test_orchestrated_batch_failure_rolls_back_without_ids(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    from app.ingestion.orchestrator import IngestionOrchestrator
+
+    class _PartiallyInvalidEmbedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            return EmbedResponse(
+                embeddings=[_embedding(768), [float("nan")] * 768]
+            )
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(
+            name=f"orchestrated-atomic-{collection_id}",
+            collection_id=collection_id,
+        ),
+        tenant_ctx=tenant,
+    )
+    orchestrator = IngestionOrchestrator(
+        knowledge_store=store,
+        embedder=_PartiallyInvalidEmbedder(),
+    )
+
+    with pytest.raises(DBAPIError):
+        await orchestrator.ingest(
+            "First sufficiently long paragraph for atomic ingestion.\n\n"
+            "Second sufficiently long paragraph for atomic ingestion.",
+            content_type="text",
+            collection_id=collection_id,
+            tenant_ctx=tenant,
+        )
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :id"
+                ),
+                {"id": collection_id},
+            )
+        ).scalar_one()
+    assert rows == 0
+    assert store._data[(tenant.tenant_id, collection_id)].chunks == []
+
+
 @pytest.mark.parametrize("dimension", SUPPORTED_EMBEDDING_DIMENSIONS)
 async def test_delete_and_parent_expansion_route_to_collection_dimension(
     postgres_database: _Database,

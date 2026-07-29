@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from app.ingestion.content_classifier import ContentClassifier, ContentType
 from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
+from app.ingestion.content_classifier import ContentClassifier, ContentType
 from app.ingestion.parser_registry import ParserRegistry
+from app.rag.models import Chunk
 
 if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
@@ -23,6 +24,8 @@ class IngestionResult:
     chunks_created: int
     source_url: str = ""
     chunk_ids: list[str] = field(default_factory=list)
+    chunks_prepared: int = 0
+    persisted: bool = False
 
 
 class IngestionOrchestrator:
@@ -105,9 +108,11 @@ class IngestionOrchestrator:
         *,
         content_type: str = "auto",
         collection_id: str,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         source_url: str = "",
         metadata: dict[str, Any] | None = None,
+        dry_run: bool = False,
+        in_memory_only: bool = False,
     ) -> IngestionResult:
         # 1. Detect content type
         if content_type in ("auto", "unknown"):
@@ -138,31 +143,74 @@ class IngestionOrchestrator:
         raw_texts = parser.parse(content)
         chunks_text = self._filter_quality(raw_texts)
 
-        # 4. Store chunks (in-memory or real KB)
-        chunk_ids: list[str] = []
-        for chunk_text in chunks_text:
-            if self._kb is not None:
-                try:
-                    # Let the store generate the canonical chunk_id
-                    stored_id = await self._kb.ingest_document(
-                        collection_id=collection_id,
-                        content=chunk_text,
-                        metadata={
-                            **(metadata or {}),
-                            "content_type": detected.value,
-                            "chunking_strategy": chunking_strategy,
-                        },
-                        tenant_ctx=tenant_ctx,
-                        embedder=self._embedder,
-                        source_url=source_url,
-                        source_type=detected.value,
-                    )
-                    # Use store-generated ID if returned (str), else generate local one
-                    chunk_ids.append(str(stored_id) if stored_id else uuid.uuid4().hex)
-                except Exception:
-                    chunk_ids.append(uuid.uuid4().hex)
-            else:
-                chunk_ids.append(uuid.uuid4().hex)
+        chunks_prepared = len(chunks_text)
+        if dry_run:
+            return IngestionResult(
+                ingestion_id=uuid.uuid4().hex,
+                tenant_id=tenant_ctx.tenant_id,
+                collection_id=collection_id,
+                content_type=detected,
+                chunking_strategy=chunking_strategy,
+                chunks_created=0,
+                source_url=source_url,
+                chunk_ids=[],
+                chunks_prepared=chunks_prepared,
+                persisted=False,
+            )
+        if self._kb is None:
+            raise RuntimeError("A knowledge store is required unless dry_run=True")
+
+        store_is_in_memory = getattr(self._kb, "_db", None) is None
+        if store_is_in_memory and not in_memory_only:
+            raise RuntimeError(
+                "An in-memory knowledge store requires in_memory_only=True"
+            )
+
+        from app.providers.base import embed_texts
+
+        embeddings = await embed_texts(chunks_text, provider=self._embedder)
+        if len(embeddings) != chunks_prepared:
+            raise RuntimeError("Embedding provider returned an incomplete batch")
+
+        document_id = uuid.uuid4().hex
+        chunks = [
+            Chunk(
+                document_id=document_id,
+                content=chunk_text,
+                embedding=embeddings[index],
+                chunk_index=index,
+                metadata={
+                    **(metadata or {}),
+                    "content_type": detected.value,
+                    "chunking_strategy": chunking_strategy,
+                    "source_url": source_url,
+                    "source_type": detected.value,
+                },
+            )
+            for index, chunk_text in enumerate(chunks_text)
+        ]
+        stored_ids = await self._kb.ingest_chunks_async(
+            chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+        expected_ids = [chunk.chunk_id for chunk in chunks]
+        if list(stored_ids) != expected_ids:
+            raise RuntimeError("Knowledge store did not commit every prepared chunk")
+
+        if in_memory_only:
+            return IngestionResult(
+                ingestion_id=uuid.uuid4().hex,
+                tenant_id=tenant_ctx.tenant_id,
+                collection_id=collection_id,
+                content_type=detected,
+                chunking_strategy=chunking_strategy,
+                chunks_created=0,
+                source_url=source_url,
+                chunk_ids=[],
+                chunks_prepared=chunks_prepared,
+                persisted=False,
+            )
 
         return IngestionResult(
             ingestion_id=uuid.uuid4().hex,
@@ -170,7 +218,9 @@ class IngestionOrchestrator:
             collection_id=collection_id,
             content_type=detected,
             chunking_strategy=chunking_strategy,
-            chunks_created=len(chunk_ids),
+            chunks_created=len(stored_ids),
             source_url=source_url,
-            chunk_ids=chunk_ids,
+            chunk_ids=list(stored_ids),
+            chunks_prepared=chunks_prepared,
+            persisted=True,
         )

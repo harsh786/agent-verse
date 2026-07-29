@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.ingestion.content_classifier import ContentClassifier, ContentType
+
 from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
-from app.ingestion.parser_registry import ParserRegistry
+from app.ingestion.content_classifier import ContentClassifier, ContentType
 from app.ingestion.orchestrator import IngestionOrchestrator, IngestionResult
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -103,9 +103,12 @@ async def test_ingest_text_returns_chunks(orchestrator, tenant_ctx):
         content_type="text",
         collection_id="col1",
         tenant_ctx=tenant_ctx,
+        dry_run=True,
     )
     assert isinstance(result, IngestionResult)
-    assert result.chunks_created >= 1
+    assert result.chunks_prepared >= 1
+    assert result.chunks_created == 0
+    assert not result.persisted
     assert result.content_type == ContentType.TEXT
     assert result.chunking_strategy == "semantic"
 
@@ -117,8 +120,9 @@ async def test_ingest_code_returns_chunks(orchestrator, tenant_ctx):
         content_type="code",
         collection_id="col2",
         tenant_ctx=tenant_ctx,
+        dry_run=True,
     )
-    assert result.chunks_created >= 1
+    assert result.chunks_prepared >= 1
     assert result.chunking_strategy == "ast"
 
 
@@ -129,6 +133,7 @@ async def test_ingest_attaches_provenance(orchestrator, tenant_ctx):
         collection_id="col3",
         tenant_ctx=tenant_ctx,
         source_url="https://source.example.com/doc1",
+        dry_run=True,
     )
     assert result.source_url == "https://source.example.com/doc1"
     assert result.tenant_id == tenant_ctx.tenant_id
@@ -140,8 +145,9 @@ async def test_ingest_unknown_type_defaults_to_text(orchestrator, tenant_ctx):
         content_type="unknown",
         collection_id="col4",
         tenant_ctx=tenant_ctx,
+        dry_run=True,
     )
-    assert result.chunks_created >= 1
+    assert result.chunks_prepared >= 1
 
 
 def test_chunking_strategy_selector_all_types():
@@ -168,8 +174,11 @@ async def test_orchestrator_auto_detects_type(orchestrator, tenant_ctx):
     html = "<html><body><p>Hello World</p></body></html>"
     from app.ingestion.content_classifier import ContentType
     result = await orchestrator.ingest(
-        content=html, content_type="auto",
-        collection_id="col1", tenant_ctx=tenant_ctx,
+        content=html,
+        content_type="auto",
+        collection_id="col1",
+        tenant_ctx=tenant_ctx,
+        dry_run=True,
     )
     assert result.content_type == ContentType.HTML
 
@@ -189,6 +198,7 @@ async def test_orchestrator_ingests_pdf_bytes(orchestrator, tenant_ctx):
         collection_id="col1",
         tenant_ctx=tenant_ctx,
         source_url="https://example.com/report.pdf",
+        dry_run=True,
     )
-    assert result.chunks_created >= 1
+    assert result.chunks_prepared >= 1
     assert result.chunking_strategy == "layout"

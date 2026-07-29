@@ -119,6 +119,8 @@ class CollectionIngestRequest(BaseModel):
     content_type: str = "auto"
     source_url: str = ""
     metadata: dict[str, Any] = {}
+    dry_run: bool = False
+    in_memory_only: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1686,10 +1688,14 @@ async def ingest_document_into_collection(
             tenant_ctx=tenant_ctx,
             source_url=body.source_url or "",
             metadata=body.metadata or {},
+            dry_run=body.dry_run,
+            in_memory_only=body.in_memory_only,
         )
         return {
             "ingested": result.chunks_created,
             "chunk_ids": result.chunk_ids,
+            "chunks_prepared": result.chunks_prepared,
+            "persisted": result.persisted,
             "collection_id": collection_id,
             "content_type": result.content_type.value,
             "chunking_strategy": result.chunking_strategy,
@@ -1697,7 +1703,10 @@ async def ingest_document_into_collection(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
 
 @router.get("/collections/{collection_id}/documents")
 async def list_documents(
