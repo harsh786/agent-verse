@@ -42,9 +42,11 @@ async def test_fusion_embeds_every_variant_and_retrieves_concurrently() -> None:
     class Embedder:
         def __init__(self) -> None:
             self.texts: list[str] = []
+            self.input_types: list[str] = []
 
         async def embed(self, request: EmbedRequest) -> EmbedResponse:
             self.texts.extend(request.texts)
+            self.input_types.append(request.input_type)
             return EmbedResponse(embeddings=[[float(len(self.texts))]])
 
     provider = AsyncMock()
@@ -93,6 +95,7 @@ async def test_fusion_embeds_every_variant_and_retrieves_concurrently() -> None:
     )
 
     assert embedder.texts == ["original query", "variant two", "variant three"]
+    assert embedder.input_types == ["query", "query", "query"]
     assert calls == [
         ("original query", [1.0]),
         ("variant two", [2.0]),
@@ -114,3 +117,66 @@ async def test_fusion_embeds_every_variant_and_retrieves_concurrently() -> None:
     ]
     assert results[0].rrf_score > 0
     assert provider.complete.await_args.args[0].model == "tenant-model"
+
+
+async def test_fusion_cancels_and_awaits_slow_variant() -> None:
+    provider = AsyncMock()
+    provider.complete.return_value = CompletionResponse(
+        content="fast failure\nslow sibling",
+        model="tenant-model",
+    )
+
+    class Embedder:
+        async def embed(self, request: EmbedRequest) -> EmbedResponse:
+            return EmbedResponse(embeddings=[[0.1] for _ in request.texts])
+
+    slow_started = asyncio.Event()
+    slow_cancelled = asyncio.Event()
+    slow_closed = asyncio.Event()
+
+    async def search(query: str, _embedding: list[float] | None) -> list[RetrievalResult]:
+        if query == "slow sibling":
+            slow_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+            finally:
+                slow_closed.set()
+        if query == "fast failure":
+            await slow_started.wait()
+            raise RuntimeError("variant failed")
+        return []
+
+    with pytest.raises(RuntimeError, match="variant failed"):
+        await retrieve_fusion(
+            None,
+            query="original query",
+            query_embedding=None,
+            collection_id="collection-1",
+            provider=provider,
+            model="tenant-model",
+            embedder=Embedder(),
+            strict=True,
+            search_operation=search,
+        )
+
+    assert slow_cancelled.is_set()
+    assert slow_closed.is_set()
+
+
+async def test_fusion_rejects_unbounded_variant_count() -> None:
+    with pytest.raises(Exception, match="max_variants"):
+        await retrieve_fusion(
+            None,
+            query="query",
+            query_embedding=None,
+            collection_id="collection-1",
+            provider=AsyncMock(),
+            model="model",
+            embedder=AsyncMock(),
+            strict=True,
+            max_variants=6,
+            search_operation=AsyncMock(),
+        )

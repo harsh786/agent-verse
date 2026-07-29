@@ -231,6 +231,22 @@ def test_rag_retrieval_legs_present():
     assert len(legs) >= 1
 
 
+def test_rag_query_rejects_top_k_above_public_limit() -> None:
+    client = TestClient(_make_app())
+    response = client.post(
+        "/rag/query",
+        json={
+            "query": "test query",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.NAIVE.value,
+            "top_k": 21,
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
 def test_rag_confidence_score():
     client = TestClient(_make_app())
     resp = client.post(

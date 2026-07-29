@@ -42,6 +42,8 @@ logger = get_logger(__name__)
 _RRF_K = 60
 _SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 3072})
 _BM25_PAGE_SIZE = 500
+_MAX_HOPS = 5
+_MAX_VARIANTS = 5
 
 
 @dataclass
@@ -87,6 +89,35 @@ class RetrievalStrategyExecutionError(RetrievalExecutionError):
         super().__init__(f"RAG strategy execution failed: {strategy} ({reason})")
         self.strategy = strategy
         self.reason = reason
+
+
+def _first_group_exception(group: BaseExceptionGroup[BaseException]) -> BaseException:
+    first = group.exceptions[0]
+    return _first_group_exception(first) if isinstance(first, BaseExceptionGroup) else first
+
+
+async def _run_parallel_searches(
+    requests: list[tuple[str, list[float] | None]],
+    operation: Callable[[str, list[float] | None], Awaitable[list[RetrievalResult]]],
+) -> list[list[RetrievalResult]]:
+    """Run searches with sibling cancellation and deterministic result ordering."""
+
+    results: list[list[RetrievalResult] | None] = [None] * len(requests)
+
+    async def run_one(
+        index: int,
+        query: str,
+        embedding: list[float] | None,
+    ) -> None:
+        results[index] = await operation(query, embedding)
+
+    try:
+        async with asyncio.TaskGroup() as group:
+            for index, (query, embedding) in enumerate(requests):
+                group.create_task(run_one(index, query, embedding))
+    except BaseExceptionGroup as exc:
+        raise _first_group_exception(exc) from None
+    return [result if result is not None else [] for result in results]
 
 
 def _rrf_score(ranks: list[int]) -> float:
@@ -152,6 +183,7 @@ async def hybrid_search(
     metadata_clause = (
         " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
     )
+    live_chunk_clause = " AND (expires_at IS NULL OR expires_at > now())"
     metadata_params = (
         {"metadata_filter": json.dumps(metadata_filter)} if metadata_filter else {}
     )
@@ -178,6 +210,7 @@ async def hybrid_search(
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
+                  {live_chunk_clause}
                  ORDER BY {vector_expression} <=> {query_vector_expression}, id ASC
                 LIMIT :limit
             """)
@@ -207,6 +240,7 @@ async def hybrid_search(
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
+                  {live_chunk_clause}
                   AND to_tsvector('english', content) @@ plainto_tsquery('english', :q)
                  ORDER BY score DESC, id ASC
                 LIMIT :limit
@@ -233,6 +267,7 @@ async def hybrid_search(
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
+                  {live_chunk_clause}
                   AND content % :q
                  ORDER BY score DESC, id ASC
                 LIMIT :limit
@@ -264,6 +299,7 @@ async def hybrid_search(
                 collection_id=collection_id,
                 result_limit=top_k * 3,
                 metadata_clause=metadata_clause,
+                live_chunk_clause=live_chunk_clause,
                 metadata_params=metadata_params,
             )
             for rank, hit in enumerate(bm25_hits, start=1):
@@ -346,13 +382,6 @@ async def hybrid_search(
         for cid, score, content, meta, legs, component_scores in fused[:top_k]
     ]
 
-    # Post-filter by metadata if requested
-    if metadata_filter:
-        results = [
-            r for r in results
-            if all(r.source_metadata.get(k) == v for k, v in metadata_filter.items())
-        ]
-
     logger.debug(
         "rrf_retrieval_complete",
         collection_id=collection_id,
@@ -397,6 +426,7 @@ async def _bm25_search_persisted(
     collection_id: str,
     result_limit: int,
     metadata_clause: str,
+    live_chunk_clause: str,
     metadata_params: dict[str, Any],
 ) -> tuple[list[BM25Hit], dict[str, Any]]:
     scorer = BM25CorpusScorer(query)
@@ -414,6 +444,7 @@ async def _bm25_search_persisted(
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
+                  {live_chunk_clause}
                   {after_clause}
                 ORDER BY id ASC
                 LIMIT :page_size
@@ -706,6 +737,10 @@ async def retrieve_multi_hop(
     strategy_evidence: list[dict[str, Any]] | None = None,
 ) -> list[RetrievalResult]:
     """Multi-hop: decompose query, search each sub-query, merge results."""
+    if not 1 <= max_hops <= _MAX_HOPS:
+        raise RetrievalStrategyExecutionError(
+            "multi_hop", f"max_hops must be between 1 and {_MAX_HOPS}"
+        )
     if provider is None:
         if strict:
             raise RetrievalStrategyExecutionError("multi_hop", "LLM provider is required")
@@ -739,10 +774,9 @@ async def retrieve_multi_hop(
         sub_queries: list[str] = _json.loads(resp.content.strip())
         if not isinstance(sub_queries, list):
             raise ValueError("decomposition was not a list")
-        bounded_hops = min(max(max_hops, 1), 5)
         sub_queries = list(
             dict.fromkeys(str(item).strip() for item in sub_queries if str(item).strip())
-        )[:bounded_hops]
+        )[:max_hops]
         if not sub_queries or all(item == query for item in sub_queries):
             raise ValueError("decomposition did not produce an independent hop")
     except Exception as exc:
@@ -792,13 +826,9 @@ async def retrieve_multi_hop(
 
     if search_operation is not None:
         try:
-            per_hop_results = await asyncio.gather(
-                *[
-                    search(sub_query, embedding)
-                    for sub_query, embedding in zip(
-                        sub_queries, hop_embeddings, strict=True
-                    )
-                ]
+            per_hop_results = await _run_parallel_searches(
+                list(zip(sub_queries, hop_embeddings, strict=True)),
+                search,
             )
         except Exception as exc:
             if strict:
@@ -882,6 +912,10 @@ async def retrieve_fusion(
     """
     from app.rag.agentic.query_expander import QueryExpander
 
+    if not 2 <= max_variants <= _MAX_VARIANTS:
+        raise RetrievalStrategyExecutionError(
+            "fusion", f"max_variants must be between 2 and {_MAX_VARIANTS}"
+        )
     if strict and provider is not None and not model.strip():
         raise RetrievalStrategyExecutionError("fusion", "LLM model is required")
     if strict and embedder is None and query_embedding is None:
@@ -947,11 +981,9 @@ async def retrieve_fusion(
             return []
 
     if search_operation is not None:
-        per_variant_results = await asyncio.gather(
-            *[
-                search_operation(q, emb)
-                for q, emb in zip(variants, variant_embeddings, strict=True)
-            ]
+        per_variant_results = await _run_parallel_searches(
+            list(zip(variants, variant_embeddings, strict=True)),
+            search_operation,
         )
     else:
         per_variant_results = []

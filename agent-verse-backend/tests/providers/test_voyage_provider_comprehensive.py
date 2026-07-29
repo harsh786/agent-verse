@@ -5,19 +5,19 @@ voyageai and sentence-transformers are NOT installed; all tests mock via sys.mod
 from __future__ import annotations
 
 import sys
-from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_voyageai_module(embeddings: list[list[float]] | None = None) -> tuple[MagicMock, MagicMock]:
+def _make_voyageai_module(
+    embeddings: list[list[float]] | None = None,
+) -> tuple[MagicMock, MagicMock]:
     """Return (mock_voyageai_module, mock_voyage_client)."""
     mock_client = MagicMock()
     result = MagicMock()
@@ -57,7 +57,7 @@ class TestVoyageProvider:
     # -----------------------------------------------------------------------
 
     def test_constructor_creates_client_with_api_key(self) -> None:
-        mock_voyage, mock_client_factory = _make_voyageai_module()
+        mock_voyage, _ = _make_voyageai_module()
         with patch.dict(sys.modules, {"voyageai": mock_voyage}):
             from app.providers.voyage_provider import VoyageProvider
             p = VoyageProvider(api_key="vk-test", model="voyage-2")
@@ -74,11 +74,13 @@ class TestVoyageProvider:
     def test_constructor_raises_import_error_when_voyageai_missing(self) -> None:
         with patch.dict(sys.modules, {"voyageai": None}):  # type: ignore[dict-item]
             import importlib
+
             import app.providers.voyage_provider as _mod
             importlib.reload(_mod)
             with pytest.raises(ImportError, match="voyageai"):
                 _mod.VoyageProvider(api_key="key")
         import importlib
+
         import app.providers.voyage_provider as _mod2
         importlib.reload(_mod2)
 
@@ -94,7 +96,10 @@ class TestVoyageProvider:
             provider = VoyageProvider(api_key="key")
             with pytest.raises(NotImplementedError, match="embedding"):
                 await provider.complete(
-                    CompletionRequest(messages=[Message(role="user", content="hi")], model="voyage-2")
+                    CompletionRequest(
+                        messages=[Message(role="user", content="hi")],
+                        model="voyage-2",
+                    )
                 )
 
     # -----------------------------------------------------------------------
@@ -104,7 +109,7 @@ class TestVoyageProvider:
     @pytest.mark.asyncio
     async def test_embed_returns_vectors(self) -> None:
         vecs = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        mock_voyage, mock_client = _make_voyageai_module(vecs)
+        mock_voyage, _ = _make_voyageai_module(vecs)
 
         with patch.dict(sys.modules, {"voyageai": mock_voyage}):
             from app.providers.voyage_provider import VoyageProvider
@@ -122,7 +127,23 @@ class TestVoyageProvider:
             provider = VoyageProvider(api_key="key", model="voyage-2")
             await provider.embed(EmbedRequest(texts=["hello world"]))
 
-        mock_client.embed.assert_called_once_with(["hello world"], model="voyage-2")
+        mock_client.embed.assert_called_once_with(
+            ["hello world"], model="voyage-2", input_type="document"
+        )
+
+    @pytest.mark.asyncio
+    async def test_embed_forwards_query_input_type(self) -> None:
+        mock_voyage, mock_client = _make_voyageai_module()
+
+        with patch.dict(sys.modules, {"voyageai": mock_voyage}):
+            from app.providers.voyage_provider import VoyageProvider
+
+            provider = VoyageProvider(api_key="key", model="voyage-2")
+            await provider.embed(EmbedRequest(texts=["search terms"], input_type="query"))
+
+        mock_client.embed.assert_called_once_with(
+            ["search terms"], model="voyage-2", input_type="query"
+        )
 
     # -----------------------------------------------------------------------
     # embed_batch()
@@ -153,14 +174,18 @@ class TestVoyageProvider:
 
         assert len(result) == 50
         mock_client.embed.assert_called_once()
+        assert mock_client.embed.call_args.kwargs["input_type"] == "document"
 
     @pytest.mark.asyncio
     async def test_embed_batch_splits_at_96(self) -> None:
         """embed_batch() makes two calls when texts > 96."""
         call_count = 0
 
-        def _fake_embed(batch: list[str], model: str) -> MagicMock:
+        def _fake_embed(
+            batch: list[str], model: str, input_type: str
+        ) -> MagicMock:
             nonlocal call_count
+            assert input_type == "document"
             call_count += 1
             result = MagicMock()
             result.embeddings = [[float(i)] for i in range(len(batch))]
@@ -186,7 +211,10 @@ class TestVoyageProvider:
         texts = [f"text_{i}" for i in range(96)]
         call_args: list = []
 
-        def _fake_embed(batch: list[str], model: str) -> MagicMock:
+        def _fake_embed(
+            batch: list[str], model: str, input_type: str
+        ) -> MagicMock:
+            assert input_type == "document"
             call_args.append(batch)
             result = MagicMock()
             result.embeddings = [[0.0] for _ in batch]
@@ -233,11 +261,13 @@ class TestLocalEmbedProvider:
     def test_constructor_raises_import_error_when_sentence_transformers_missing(self) -> None:
         with patch.dict(sys.modules, {"sentence_transformers": None}):  # type: ignore[dict-item]
             import importlib
+
             import app.providers.voyage_provider as _mod
             importlib.reload(_mod)
             with pytest.raises(ImportError, match="sentence-transformers"):
                 _mod.LocalEmbedProvider()
         import importlib
+
         import app.providers.voyage_provider as _mod2
         importlib.reload(_mod2)
 
@@ -245,7 +275,7 @@ class TestLocalEmbedProvider:
         mock_st, _ = _make_sentence_transformer_module()
         with patch.dict(sys.modules, {"sentence_transformers": mock_st}):
             from app.providers.voyage_provider import LocalEmbedProvider
-            p = LocalEmbedProvider("all-MiniLM-L6-v2")
+            LocalEmbedProvider("all-MiniLM-L6-v2")
         mock_st.SentenceTransformer.assert_called_once_with("all-MiniLM-L6-v2")
 
     @pytest.mark.asyncio
@@ -262,7 +292,7 @@ class TestLocalEmbedProvider:
     @pytest.mark.asyncio
     async def test_embed_returns_vectors(self) -> None:
         vecs = [[0.1, 0.2], [0.3, 0.4]]
-        mock_st, mock_model = _make_sentence_transformer_module(vecs)
+        mock_st, _ = _make_sentence_transformer_module(vecs)
         with patch.dict(sys.modules, {"sentence_transformers": mock_st}):
             from app.providers.voyage_provider import LocalEmbedProvider
             p = LocalEmbedProvider()
@@ -290,7 +320,7 @@ class TestLocalEmbedProvider:
     @pytest.mark.asyncio
     async def test_embed_batch_returns_vectors_for_texts(self) -> None:
         vecs = [[0.1], [0.2], [0.3]]
-        mock_st, mock_model = _make_sentence_transformer_module(vecs)
+        mock_st, _ = _make_sentence_transformer_module(vecs)
         with patch.dict(sys.modules, {"sentence_transformers": mock_st}):
             from app.providers.voyage_provider import LocalEmbedProvider
             p = LocalEmbedProvider()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.rls import sqlalchemy_rls_context
+from app.observability.logging import get_logger
 from app.rag import engine as rag_engine
 from app.rag.contracts import (
     FusionRAGRuntimeAdapter,
@@ -38,6 +41,7 @@ from app.tenancy.context import TenantContext
 
 T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
+logger = get_logger(__name__)
 
 
 class AsyncSessionFactory(Protocol):
@@ -194,32 +198,47 @@ def _has_async_context_factory(factory: object | None) -> bool:
     )
 
 
-async def _probe_session_factory(factory: object | None) -> bool:
+async def _probe_session_factory(factory: object | None, tenant_id: str) -> str | None:
     if not callable(factory):
-        return False
+        return "session_factory_unavailable"
     try:
         context = factory()
         if inspect.iscoroutine(context):
             context.close()
-            return False
+            return "session_factory_unavailable"
         if not (
             _has_async_method(context, "__aenter__")
             and _has_async_method(context, "__aexit__")
         ):
-            return False
+            return "session_factory_unavailable"
         async with context as session:
             begin = getattr(session, "begin", None)
             if not callable(begin):
-                return False
+                return "session_factory_unavailable"
             transaction = begin()
-            return (
+            if not (
                 _has_async_method(transaction, "__aenter__")
                 and _has_async_method(transaction, "__aexit__")
                 and _has_async_method(session, "execute")
                 and _has_async_method(session, "scalar")
-            )
+            ):
+                return "session_factory_unavailable"
+            async with transaction, sqlalchemy_rls_context(session, tenant_id):
+                if await session.scalar(text("SELECT 1")) != 1:
+                    return "persistence_unavailable"
+                persisted_capabilities = await session.scalar(
+                    text(
+                        "SELECT to_regclass('public.knowledge_collections') IS NOT NULL "
+                        "AND to_regclass('public.knowledge_chunks_768') IS NOT NULL "
+                        "AND to_regclass('public.knowledge_chunks_1024') IS NOT NULL "
+                        "AND to_regclass('public.knowledge_chunks_1536') IS NOT NULL "
+                        "AND to_regclass('public.knowledge_chunks_3072') IS NOT NULL "
+                        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+                    )
+                )
+                return None if persisted_capabilities is True else "persistence_unavailable"
     except Exception:
-        return False
+        return "persistence_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +262,8 @@ class RetrievalDependencies:
     graph_capability: GraphCapabilityAdapter | None = None
     search_capability: object | None = None
     policy_services: tuple[object, ...] = ()
+    strategy_timeout_seconds: float = 30.0
+    statement_timeout_ms: int = 30_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +302,7 @@ class SQLCollectionAuthorizer:
                 "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
                 "WHERE collection.id = :collection_id "
                 "AND collection.tenant_id = :tenant_id "
+                "AND collection.is_active IS TRUE "
                 "AND tenant.is_active IS TRUE LIMIT 1"
             ),
             {
@@ -317,14 +339,23 @@ class KnowledgeStoreCollectionAuthorizer:
 class _TenantSessionRunner:
     session_factory: AsyncSessionFactory
     tenant_context: TenantContext
+    statement_timeout_ms: int
 
-    async def run(self, operation: DatabaseOperation[T]) -> T:
-        async with (
-            self.session_factory() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, self.tenant_context.tenant_id),
-        ):
-            return await operation(session)
+    async def run(
+        self,
+        operation: DatabaseOperation[T],
+        *,
+        repeatable_read: bool = False,
+    ) -> T:
+        async with self.session_factory() as session, session.begin():
+            if repeatable_read:
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+            await session.execute(
+                text("SELECT set_config('statement_timeout', :timeout, true)"),
+                {"timeout": f"{self.statement_timeout_ms}ms"},
+            )
+            async with sqlalchemy_rls_context(session, self.tenant_context.tenant_id):
+                return await operation(session)
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,17 +367,34 @@ class RetrievalExecutionContext:
     filters: dict[str, Any]
     dependencies: RetrievalRuntimeDependencies
     _db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]] | None
+    _repeatable_read_db_operation_runner: (
+        Callable[[DatabaseOperation[Any]], Awaitable[Any]] | None
+    ) = None
 
     @property
     def llm(self) -> ResolvedLLM | None:
         return self.dependencies.llm
 
-    async def run_db_operation(self, operation: DatabaseOperation[T]) -> T:
+    async def run_db_operation(
+        self,
+        operation: DatabaseOperation[T],
+        *,
+        repeatable_read: bool = False,
+    ) -> T:
         """Run one DB operation in its own session, transaction, and RLS scope."""
 
         if self._db_operation_runner is None:
             raise RuntimeError("A database session factory is not configured")
-        result: T = await self._db_operation_runner(operation)
+        runner = (
+            self._repeatable_read_db_operation_runner
+            if repeatable_read
+            else self._db_operation_runner
+        )
+        if runner is None and repeatable_read:
+            runner = self._db_operation_runner
+        if runner is None:
+            raise RuntimeError("A repeatable-read database runner is not configured")
+        result: T = await runner(operation)
         return result
 
     async def retrieve_engine(
@@ -375,7 +423,7 @@ class RetrievalExecutionContext:
                         strict=True,
                     )
 
-                return await self.run_db_operation(search)
+                return await self.run_db_operation(search, repeatable_read=True)
 
             return await rag_engine.retrieve_fusion(
                 None,
@@ -621,7 +669,10 @@ async def _search_persisted(
             evidence=evidence,
         )
 
-    return await context.run_db_operation(operation)
+    return await context.run_db_operation(
+        operation,
+        repeatable_read=retrieval_mode == "hybrid",
+    )
 
 
 def _canonical_result(
@@ -737,10 +788,13 @@ class RetrievalGateway:
             self.dependencies.embedder, "embed"
         ):
             return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
-        if capability.requires_database and not await _probe_session_factory(
-            self.dependencies.session_factory
-        ):
-            return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")
+        if capability.requires_database:
+            persistence_reason = await _probe_session_factory(
+                self.dependencies.session_factory,
+                tenant_context.tenant_id,
+            )
+            if persistence_reason is not None:
+                return RAGStrategyReadiness(strategy, False, persistence_reason)
         if capability.requires_graph and (
             self.dependencies.graph_capability is None
             or self.dependencies.session_factory is None
@@ -799,11 +853,6 @@ class RetrievalGateway:
                 "no runtime adapter is configured",
             )
 
-        self._validate_capabilities(strategy, capability)
-        llm = await self._resolve_llm(strategy, capability, tenant_context)
-        runner = self._session_runner(tenant_context)
-        await self._authorize_collection(runner, tenant_context, collection_id)
-
         request = RAGExecutionRequest(
             tenant_id=tenant_context.tenant_id,
             collection_id=collection_id,
@@ -812,6 +861,16 @@ class RetrievalGateway:
             top_k=top_k,
             filters=filters or {},
         )
+        self._validate_capabilities(strategy, capability)
+        llm = await self._resolve_llm(strategy, capability, tenant_context)
+        runner = self._session_runner(tenant_context)
+        await self._authorize_collection(runner, tenant_context, collection_id)
+
+        async def run_repeatable_read(operation: DatabaseOperation[Any]) -> Any:
+            if runner is None:
+                raise RuntimeError("A database session factory is not configured")
+            return await runner.run(operation, repeatable_read=True)
+
         context = RetrievalExecutionContext(
             tenant_context=tenant_context,
             strategy=strategy,
@@ -828,8 +887,39 @@ class RetrievalGateway:
                 policy_services=self.dependencies.policy_services,
             ),
             _db_operation_runner=runner.run if runner is not None else None,
+            _repeatable_read_db_operation_runner=(
+                run_repeatable_read if runner is not None else None
+            ),
         )
-        result = await capability.adapter.execute(request, context)
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(self.dependencies.strategy_timeout_seconds):
+                result = await capability.adapter.execute(request, context)
+        except TimeoutError as exc:
+            logger.warning(
+                "rag_strategy_failed",
+                strategy=strategy.value,
+                failure_type="deadline_exceeded",
+                latency_ms=round((time.monotonic() - started) * 1000, 2),
+            )
+            raise RetrievalStrategyExecutionError(
+                strategy.value, "strategy deadline exceeded"
+            ) from exc
+        except asyncio.CancelledError:
+            logger.info(
+                "rag_strategy_cancelled",
+                strategy=strategy.value,
+                latency_ms=round((time.monotonic() - started) * 1000, 2),
+            )
+            raise
+        except Exception as exc:
+            logger.warning(
+                "rag_strategy_failed",
+                strategy=strategy.value,
+                failure_type=type(exc).__name__,
+                latency_ms=round((time.monotonic() - started) * 1000, 2),
+            )
+            raise
         if isinstance(result, RAGExecutionResult):
             if result.resolved_strategy_id is not strategy:
                 raise ValueError("RAG strategy adapter returned a mismatched strategy ID")
@@ -906,7 +996,11 @@ class RetrievalGateway:
     ) -> _TenantSessionRunner | None:
         if self.dependencies.session_factory is None:
             return None
-        return _TenantSessionRunner(self.dependencies.session_factory, tenant_context)
+        return _TenantSessionRunner(
+            self.dependencies.session_factory,
+            tenant_context,
+            self.dependencies.statement_timeout_ms,
+        )
 
     async def _authorize_collection(
         self,

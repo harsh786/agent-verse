@@ -6,6 +6,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -65,6 +66,12 @@ class RecordingSession:
 
     def begin(self) -> _Transaction:
         return _Transaction()
+
+    async def execute(self, statement: object, params: object = None) -> object:
+        return statement
+
+    async def scalar(self, statement: object, params: object = None) -> object:
+        return True if "to_regclass" in str(statement) else 1
 
 
 class RecordingSessionFactory:
@@ -673,6 +680,54 @@ async def test_algorithm_failure_propagates_without_empty_success_fallback(
 
     assert exc_info.value is failure
     assert record_rls == [(1, TENANT.tenant_id)]
+
+
+@pytest.mark.asyncio
+async def test_strategy_deadline_cancels_adapter_without_leaking_query(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    cancelled = asyncio.Event()
+
+    class SlowAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> RAGExecutionResult:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return RAGExecutionResult(
+                requested_strategy_id=request.requested_strategy_id,
+                resolved_strategy_id=context.strategy,
+            )
+
+    gateway, authorizer, factory = _gateway(adapter=SlowAdapter())
+    gateway.dependencies = replace(  # type: ignore[misc]
+        gateway.dependencies,
+        strategy_timeout_seconds=0.01,
+    )
+
+    with (
+        patch("app.rag.gateway.logger.warning") as warning,
+        pytest.raises(Exception, match="deadline") as exc_info,
+    ):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="secret query must not leak",
+            strategy_id="fusion",
+        )
+
+    assert cancelled.is_set()
+    assert "secret query" not in str(exc_info.value)
+    assert authorizer.calls
+    assert all(session.closed for session in factory.sessions)
+    assert warning.call_args.kwargs["failure_type"] == "deadline_exceeded"
+    assert "latency_ms" in warning.call_args.kwargs
+    assert "query" not in warning.call_args.kwargs
 
 
 @pytest.mark.asyncio

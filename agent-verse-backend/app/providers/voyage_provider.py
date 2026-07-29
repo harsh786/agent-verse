@@ -7,6 +7,8 @@ Falls back to a sentence-transformers local model if voyageai is not available.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import cast
 
 from app.providers.base import (
     CompletionRequest,
@@ -31,7 +33,7 @@ class VoyageProvider:
         model: str = "voyage-2",
     ) -> None:
         try:
-            import voyageai  # type: ignore[import]
+            import voyageai  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
                 "Install 'voyageai' to use VoyageProvider"
@@ -62,7 +64,11 @@ class VoyageProvider:
 
         result = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: self._client.embed(request.texts, model=self._model),
+            lambda: self._client.embed(
+                request.texts,
+                model=self._model,
+                input_type=request.input_type,
+            ),
         )
         embeddings: list[list[float]] = result.embeddings
         return EmbedResponse(embeddings=embeddings)
@@ -84,7 +90,12 @@ class VoyageProvider:
             batch = texts[i : i + batch_size]
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda b=batch: self._client.embed(b, model=self._model),
+                partial(
+                    self._client.embed,
+                    batch,
+                    model=self._model,
+                    input_type="document",
+                ),
             )
             all_embeddings.extend(result.embeddings)
 
@@ -108,13 +119,13 @@ class LocalEmbedProvider:
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import]
+            from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise ImportError(
                 "Install 'sentence-transformers' to use LocalEmbedProvider"
             ) from exc
 
-        from sentence_transformers import SentenceTransformer  # type: ignore[import]
+        from sentence_transformers import SentenceTransformer
         self._model = SentenceTransformer(model_name)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
@@ -143,7 +154,7 @@ class LocalEmbedProvider:
             None,
             lambda: self._model.encode(texts).tolist(),
         )
-        return embeddings
+        return cast(list[list[float]], embeddings)
 
     def supports_vision(self) -> bool:
         return False

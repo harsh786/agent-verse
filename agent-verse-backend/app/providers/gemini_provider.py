@@ -7,6 +7,7 @@ Falls back gracefully if the SDK is not installed.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import cast
 
 from app.providers.base import (
     CompletionRequest,
@@ -34,7 +35,7 @@ class GeminiProvider:
         embed_model: str = "models/embedding-001",
     ) -> None:
         try:
-            import google.generativeai as genai  # type: ignore[import]
+            import google.generativeai as genai  # type: ignore[import-untyped]
         except ImportError as exc:
             raise ImportError(
                 "Install 'google-generativeai' to use GeminiProvider"
@@ -125,18 +126,25 @@ class GeminiProvider:
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         import asyncio
 
+        task_type = (
+            "retrieval_query" if request.input_type == "query" else "retrieval_document"
+        )
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: self._genai.embed_content(
                 model=self._embed_model,
                 content=request.texts,
-                task_type="retrieval_document",
+                task_type=task_type,
             ),
         )
-        embeddings: list[list[float]] = result.get("embedding", [[]])
-        if embeddings and isinstance(embeddings[0], float):
+        embedding_data = cast(
+            list[float] | list[list[float]], result.get("embedding", [[]])
+        )
+        if embedding_data and isinstance(embedding_data[0], float):
             # Single text returns flat list
-            embeddings = [embeddings]  # type: ignore[assignment]
+            embeddings = [embedding_data]
+        else:
+            embeddings = cast(list[list[float]], embedding_data)
         return EmbedResponse(embeddings=embeddings)
 
     def supports_vision(self) -> bool:
