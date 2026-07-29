@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -426,3 +426,85 @@ def test_run_workflow_goal_service_run_id_fallback() -> None:
     assert resp.status_code == 202
     body = resp.json()
     assert body["run_id"].startswith("wf-")
+
+
+def test_run_workflow_unknown_rag_strategy_returns_422_without_goal_fallback() -> None:
+    """Invalid RAG configuration is a client error, not an operational fallback."""
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(
+        return_value={"id": "must-not-run", "status": "planning"}
+    )
+    client = TestClient(
+        _make_app(goal_service=goal_service),
+        raise_server_exceptions=False,
+    )
+    created = client.post(
+        "/workflows",
+        json={
+            "name": "Invalid RAG",
+            "definition": {
+                "steps": [
+                    {
+                        "id": "rag-1",
+                        "tool": "rag",
+                        "collection_id": "collection-1",
+                        "strategy": "invented",
+                    }
+                ]
+            },
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()
+
+    response = client.post(
+        f"/workflows/{created['id']}/run",
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Unknown RAG strategy: invented"}
+    goal_service.submit_goal.assert_not_awaited()
+
+
+def test_run_workflow_operational_error_still_uses_goal_service_fallback() -> None:
+    """Unrelated executor failures retain the established GoalService fallback."""
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(
+        return_value={"id": "goal-fallback", "status": "planning"}
+    )
+    client = TestClient(
+        _make_app(goal_service=goal_service),
+        raise_server_exceptions=False,
+    )
+    created = client.post(
+        "/workflows",
+        json={
+            "name": "Operational fallback",
+            "definition": {
+                "steps": [
+                    {
+                        "id": "rag-1",
+                        "tool": "rag",
+                        "collection_id": "collection-1",
+                        "strategy": "hybrid",
+                    }
+                ]
+            },
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()
+
+    with patch(
+        "app.agent.workflow_executor.WorkflowExecutor.execute",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("private operational secret"),
+    ):
+        response = client.post(
+            f"/workflows/{created['id']}/run",
+            headers={"X-API-Key": _VALID_KEY},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["run_id"] == "goal-fallback"
+    assert "secret" not in response.text
+    goal_service.submit_goal.assert_awaited_once()
