@@ -7,8 +7,8 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,11 @@ from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 from app.rag import engine as rag_engine
 from app.rag.contracts import (
+    RAG_RUNTIME_CAPABILITIES,
+    AdaptiveRAGRuntimeAdapter,
+    CorrectiveRAGRuntimeAdapter,
     FusionRAGRuntimeAdapter,
+    GraphRAGRuntimeAdapter,
     HybridRAGRuntimeAdapter,
     HyDERAGRuntimeAdapter,
     MultiHopRAGRuntimeAdapter,
@@ -29,6 +33,7 @@ from app.rag.contracts import (
     RAGStrategy,
     RAGStrategyTrace,
     UnavailableRAGStrategyError,
+    WebAugmentedRAGRuntimeAdapter,
     resolve_rag_strategy,
 )
 from app.rag.engine import (
@@ -38,6 +43,9 @@ from app.rag.engine import (
     RetrievalStrategyExecutionError,
 )
 from app.tenancy.context import TenantContext
+
+if TYPE_CHECKING:
+    from app.rag.agentic.patterns.graph import GraphEvidence, GraphEvidenceQuery
 
 T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
@@ -77,6 +85,11 @@ class TenantScopedGraphCapability(Protocol):
 
     async def run_db_operation(self, operation: DatabaseOperation[T]) -> T: ...
 
+    async def retrieve_evidence(
+        self,
+        request: GraphEvidenceQuery,
+    ) -> list[GraphEvidence]: ...
+
 
 class GraphCapabilityAdapter(Protocol):
     """Bind graph persistence to a tenant-scoped DB operation runner."""
@@ -94,6 +107,20 @@ class _BoundTenantScopedGraphCapability:
     async def run_db_operation(self, operation: DatabaseOperation[T]) -> T:
         result: T = await self._db_operation_runner(operation)
         return result
+
+    async def retrieve_evidence(
+        self,
+        request: GraphEvidenceQuery,
+    ) -> list[GraphEvidence]:
+        from app.rag.agentic.patterns.graph import GraphEvidenceQuery, query_graph_evidence
+
+        if not isinstance(request, GraphEvidenceQuery):
+            raise TypeError("Graph evidence request has an invalid type")
+
+        async def operation(session: AsyncSession) -> list[GraphEvidence]:
+            return await query_graph_evidence(session, request)
+
+        return await self.run_db_operation(operation)
 
 
 class TenantScopedGraphCapabilityAdapter:
@@ -141,6 +168,7 @@ class RetrievalStrategyCapability:
     requires_graph: bool = False
     requires_search: bool = False
     requires_database: bool = False
+    requires_web_policy: bool = False
 
 
 def core_strategy_capabilities() -> Mapping[RAGStrategy, RetrievalStrategyCapability]:
@@ -174,6 +202,30 @@ def core_strategy_capabilities() -> Mapping[RAGStrategy, RetrievalStrategyCapabi
             requires_embedder=True,
             requires_provider=True,
             requires_database=True,
+        ),
+        RAGStrategy.GRAPH: RetrievalStrategyCapability(
+            GraphRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_graph=True,
+            requires_database=True,
+        ),
+        RAGStrategy.CORRECTIVE: RetrievalStrategyCapability(
+            CorrectiveRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_provider=True,
+            requires_database=True,
+        ),
+        RAGStrategy.ADAPTIVE: RetrievalStrategyCapability(
+            AdaptiveRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_database=True,
+        ),
+        RAGStrategy.WEB_AUGMENTED: RetrievalStrategyCapability(
+            WebAugmentedRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_search=True,
+            requires_database=True,
+            requires_web_policy=True,
         ),
     }
 
@@ -351,6 +403,8 @@ class RetrievalRuntimeDependencies:
     graph_capability: TenantScopedGraphCapability | None
     search_capability: object | None
     policy_services: tuple[object, ...]
+    available_strategies: tuple[RAGStrategy, ...] = ()
+    strategy_llms: Mapping[RAGStrategy, ResolvedLLM] = field(default_factory=dict)
 
 
 class CollectionNotFoundError(LookupError):
@@ -590,9 +644,309 @@ async def execute_core_strategy(
         )
         return _canonical_result(request, strategy, results, evidence, rrf=True)
 
+    if strategy is RAGStrategy.GRAPH:
+        from app.rag.agentic.patterns.graph import (
+            GraphEvidence,
+            GraphEvidenceQuery,
+            graph_results,
+        )
+
+        graph_capability = context.dependencies.graph_capability
+        if graph_capability is None:
+            raise UnavailableRAGStrategyError(strategy, "graph capability is not configured")
+        embedding = await _embed_text(context, request.query, strategy)
+        evidence = []
+        seeds = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="vector",
+            evidence=evidence,
+        )
+        _mark_source_type(seeds, "persisted")
+        seed_identifiers = tuple(
+            dict.fromkeys(
+                identifier
+                for result in seeds
+                for identifier in (
+                    result.chunk_id,
+                    str(result.source_metadata.get("source_id") or ""),
+                    str(result.source_metadata.get("source_doc_id") or ""),
+                    str(result.source_metadata.get("document_id") or ""),
+                )
+                if identifier
+            )
+        )
+        raw_graph_evidence = await graph_capability.retrieve_evidence(
+            GraphEvidenceQuery(
+                tenant_id=context.tenant_context.tenant_id,
+                query=request.query,
+                seed_chunk_ids=seed_identifiers,
+                filters=request.filters,
+                max_per_type=min(request.top_k, 8),
+            )
+        )
+        if not all(isinstance(item, GraphEvidence) for item in raw_graph_evidence):
+            raise RetrievalStrategyExecutionError(strategy.value, "invalid graph evidence")
+        typed_graph_evidence = [
+            item for item in raw_graph_evidence if isinstance(item, GraphEvidence)
+        ]
+        graph_items = graph_results(typed_graph_evidence)
+        for evidence_type in ("entity", "path", "community"):
+            typed_items = [
+                item for item in typed_graph_evidence if item.evidence_type == evidence_type
+            ]
+            evidence.append(
+                {
+                    "component": f"graph_{evidence_type}",
+                    "query": request.query,
+                    "result_count": len(typed_items),
+                    "component_scores": {
+                        item.evidence_id: item.score for item in typed_items
+                    },
+                }
+            )
+        results = rag_engine.merge_grounding_results(
+            [seeds, graph_items],
+            top_k=request.top_k,
+        )
+        result = _canonical_result(request, strategy, results, evidence)
+        return _append_trace(
+            result,
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="graph_evidence_merge",
+                status="complete",
+                detail={
+                    "seed_count": len(seeds),
+                    "graph_evidence_count": len(graph_items),
+                    "result_count": len(results),
+                },
+            ),
+        )
+
+    if strategy is RAGStrategy.WEB_AUGMENTED:
+        from app.rag.agentic.patterns.web_augmented import (
+            resolve_web_policy,
+            retrieve_web_results,
+        )
+
+        web_capability = context.dependencies.search_capability
+        if web_capability is None or not _has_async_method(web_capability, "search"):
+            raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
+        policy = await resolve_web_policy(
+            context.dependencies.policy_services,
+            context.tenant_context,
+        )
+        if not policy.allowed:
+            raise UnavailableRAGStrategyError(strategy, policy.reason)
+        embedding = await _embed_text(context, request.query, strategy)
+        evidence = []
+        persisted = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+        )
+        _mark_source_type(persisted, "persisted")
+        web_results, web_evidence = await retrieve_web_results(
+            web_capability,
+            tenant_context=context.tenant_context,
+            query=request.query,
+            top_k=request.top_k,
+            policy=policy,
+        )
+        evidence.append(web_evidence)
+        results = rag_engine.merge_grounding_results(
+            [persisted, web_results],
+            top_k=request.top_k,
+        )
+        result = _canonical_result(request, strategy, results, evidence)
+        return _append_trace(
+            result,
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="web_persisted_merge",
+                status="complete",
+                detail={
+                    "persisted_count": len(persisted),
+                    "web_count": len(web_results),
+                    "stop_reason": "web_persisted_merge_complete",
+                },
+            ),
+        )
+
+    if strategy is RAGStrategy.ADAPTIVE:
+        from dataclasses import replace
+
+        from app.rag.agentic.patterns.adaptive import select_adaptive_strategy
+
+        try:
+            decision = select_adaptive_strategy(
+                request.query,
+                context.dependencies.available_strategies,
+            )
+        except ValueError as exc:
+            raise UnavailableRAGStrategyError(strategy, str(exc)) from exc
+        selected_dependencies = replace(
+            context.dependencies,
+            llm=context.dependencies.strategy_llms.get(decision.strategy, context.llm),
+        )
+        selected_context = replace(
+            context,
+            strategy=decision.strategy,
+            dependencies=selected_dependencies,
+        )
+        selected = await execute_core_strategy(decision.strategy, request, selected_context)
+        decision_trace = RAGStrategyTrace(
+            strategy=strategy,
+            action="adaptive_selection",
+            status="complete",
+            detail={
+                "selected_strategy": decision.strategy.value,
+                "reason": decision.reason,
+                "decision_count": decision.decision_count,
+            },
+        )
+        return selected.model_copy(
+            update={
+                "resolved_strategy_id": strategy,
+                "strategy_trace": [decision_trace, *selected.strategy_trace],
+            }
+        )
+
     llm = context.llm
     if llm is None or llm.provider is None or not llm.model:
         raise RetrievalStrategyExecutionError(strategy.value, "resolved LLM is required")
+
+    if strategy is RAGStrategy.CORRECTIVE:
+        from app.rag.agentic.patterns.corrective import (
+            CORRECTIVE_RELEVANCE_THRESHOLD,
+            MAX_CORRECTIVE_RETRIES,
+            grade_evidence,
+            reformulate_query,
+        )
+        from app.rag.agentic.patterns.web_augmented import (
+            resolve_web_policy,
+            retrieve_web_results,
+        )
+
+        current_query = request.query
+        retained: list[EngineRetrievalResult] = []
+        corrective_evidence: list[dict[str, Any]] = []
+        trace: list[RAGStrategyTrace] = []
+        for attempt in range(MAX_CORRECTIVE_RETRIES + 1):
+            embedding = await _embed_text(context, current_query, strategy)
+            attempt_evidence: list[dict[str, Any]] = []
+            candidates = await _search_persisted(
+                context,
+                request,
+                query=current_query,
+                embedding=embedding,
+                retrieval_mode="hybrid",
+                evidence=attempt_evidence,
+            )
+            for item in attempt_evidence:
+                item.update({"query": current_query, "attempt": attempt})
+            corrective_evidence.extend(attempt_evidence)
+            scores = await grade_evidence(
+                provider=llm.provider,
+                model=llm.model,
+                query=current_query,
+                results=candidates,
+            )
+            filtered = [
+                result
+                for result, score in zip(candidates, scores, strict=True)
+                if score >= CORRECTIVE_RELEVANCE_THRESHOLD
+            ]
+            _mark_source_type(filtered, "persisted")
+            retained = rag_engine.merge_grounding_results(
+                [retained, filtered],
+                top_k=request.top_k,
+            )
+            trace.append(
+                RAGStrategyTrace(
+                    strategy=strategy,
+                    action="evidence_grade",
+                    status="complete",
+                    detail={
+                        "attempt": attempt,
+                        "candidate_count": len(candidates),
+                        "retained_count": len(filtered),
+                        "scores": scores,
+                        "decision": "sufficient" if filtered else "reformulate_or_fallback",
+                    },
+                )
+            )
+            if filtered:
+                trace.append(
+                    RAGStrategyTrace(
+                        strategy=strategy,
+                        action="corrective_stop",
+                        status="complete",
+                        detail={"stop_reason": "persisted_evidence_sufficient", "attempt": attempt},
+                    )
+                )
+                result = _canonical_result(
+                    request,
+                    strategy,
+                    retained,
+                    corrective_evidence,
+                )
+                return _extend_trace(result, trace)
+            if attempt < MAX_CORRECTIVE_RETRIES:
+                current_query = await reformulate_query(
+                    provider=llm.provider,
+                    model=llm.model,
+                    query=current_query,
+                    attempt=attempt + 1,
+                )
+                trace.append(
+                    RAGStrategyTrace(
+                        strategy=strategy,
+                        action="query_reformulation",
+                        status="complete",
+                        detail={"attempt": attempt + 1, "model": llm.model},
+                    )
+                )
+
+        web_capability = context.dependencies.search_capability
+        if web_capability is None or not _has_async_method(web_capability, "search"):
+            stop_reason = "web_capability_unavailable"
+        else:
+            policy = await resolve_web_policy(
+                context.dependencies.policy_services,
+                context.tenant_context,
+            )
+            stop_reason = policy.reason
+            if policy.allowed:
+                web_results, web_evidence = await retrieve_web_results(
+                    web_capability,
+                    tenant_context=context.tenant_context,
+                    query=current_query,
+                    top_k=request.top_k,
+                    policy=policy,
+                )
+                corrective_evidence.append(web_evidence)
+                retained = rag_engine.merge_grounding_results(
+                    [retained, web_results],
+                    top_k=request.top_k,
+                )
+                stop_reason = "web_fallback_complete"
+        trace.append(
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="corrective_stop",
+                status="complete",
+                detail={"stop_reason": stop_reason, "attempts": MAX_CORRECTIVE_RETRIES + 1},
+            )
+        )
+        result = _canonical_result(request, strategy, retained, corrective_evidence)
+        return _extend_trace(result, trace)
 
     if strategy is RAGStrategy.HYDE:
         generated_evidence: dict[str, Any] = {}
@@ -782,6 +1136,28 @@ async def _search_persisted(
     )
 
 
+def _mark_source_type(results: list[EngineRetrievalResult], source_type: str) -> None:
+    for result in results:
+        result.source_metadata = {
+            **result.source_metadata,
+            "source_type": source_type,
+        }
+
+
+def _append_trace(
+    result: RAGExecutionResult,
+    trace: RAGStrategyTrace,
+) -> RAGExecutionResult:
+    return result.model_copy(update={"strategy_trace": [*result.strategy_trace, trace]})
+
+
+def _extend_trace(
+    result: RAGExecutionResult,
+    trace: list[RAGStrategyTrace],
+) -> RAGExecutionResult:
+    return result.model_copy(update={"strategy_trace": [*result.strategy_trace, *trace]})
+
+
 def _canonical_result(
     request: RAGExecutionRequest,
     strategy: RAGStrategy,
@@ -903,13 +1279,16 @@ class RetrievalGateway:
             )
             if persistence_reason is not None:
                 return RAGStrategyReadiness(strategy, False, persistence_reason)
-        if capability.requires_graph and (
-            self.dependencies.graph_capability is None
-            or self.dependencies.session_factory is None
-        ):
+        if capability.requires_graph and not self._has_graph_capability():
             return RAGStrategyReadiness(strategy, False, "graph_capability_unavailable")
-        if capability.requires_search and self.dependencies.search_capability is None:
+        if capability.requires_search and not _has_async_method(
+            self.dependencies.search_capability, "search"
+        ):
             return RAGStrategyReadiness(strategy, False, "search_capability_unavailable")
+        if capability.requires_web_policy:
+            policy_reason = await self._web_policy_reason(tenant_context)
+            if policy_reason != "web_policy_allowed":
+                return RAGStrategyReadiness(strategy, False, policy_reason)
         if (
             isinstance(self.dependencies.collection_authorizer, SQLCollectionAuthorizer)
             and self.dependencies.session_factory is None
@@ -969,7 +1348,7 @@ class RetrievalGateway:
             top_k=top_k,
             filters=filters or {},
         )
-        self._validate_capabilities(strategy, capability)
+        await self._validate_capabilities(strategy, capability, tenant_context)
         llm = await self._resolve_llm(strategy, capability, tenant_context)
         runner = self._session_runner(tenant_context)
         await self._authorize_collection(runner, tenant_context, collection_id)
@@ -979,6 +1358,17 @@ class RetrievalGateway:
                 raise RuntimeError("A database session factory is not configured")
             return await runner.run(operation, repeatable_read=True)
 
+        bound_graph = (
+            self.dependencies.graph_capability.bind(runner.run)
+            if self.dependencies.graph_capability is not None and runner is not None
+            else None
+        )
+        if strategy is RAGStrategy.ADAPTIVE:
+            available_strategies, strategy_llms = await self._available_strategies(
+                tenant_context
+            )
+        else:
+            available_strategies, strategy_llms = (), {}
         context = RetrievalExecutionContext(
             tenant_context=tenant_context,
             strategy=strategy,
@@ -986,13 +1376,11 @@ class RetrievalGateway:
             dependencies=RetrievalRuntimeDependencies(
                 embedder=self.dependencies.embedder,
                 llm=llm,
-                graph_capability=(
-                    self.dependencies.graph_capability.bind(runner.run)
-                    if self.dependencies.graph_capability is not None and runner is not None
-                    else None
-                ),
+                graph_capability=bound_graph,
                 search_capability=self.dependencies.search_capability,
                 policy_services=self.dependencies.policy_services,
+                available_strategies=available_strategies,
+                strategy_llms=strategy_llms,
             ),
             _db_operation_runner=runner.run if runner is not None else None,
             _repeatable_read_db_operation_runner=(
@@ -1154,10 +1542,11 @@ class RetrievalGateway:
         if not authorized:
             raise CollectionNotFoundError(collection_id)
 
-    def _validate_capabilities(
+    async def _validate_capabilities(
         self,
         strategy: RAGStrategy,
         capability: RetrievalStrategyCapability,
+        tenant_context: TenantContext,
     ) -> None:
         if capability.requires_embedder and not _has_async_method(
             self.dependencies.embedder, "embed"
@@ -1171,13 +1560,80 @@ class RetrievalGateway:
             )
         if capability.requires_provider and self.dependencies.llm_resolver is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
-        if capability.requires_graph and (
-            self.dependencies.graph_capability is None
-            or self.dependencies.session_factory is None
-        ):
+        if capability.requires_graph and not self._has_graph_capability():
             raise UnavailableRAGStrategyError(strategy, "graph capability is not configured")
-        if capability.requires_search and self.dependencies.search_capability is None:
+        if capability.requires_search and not _has_async_method(
+            self.dependencies.search_capability, "search"
+        ):
             raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
+        if capability.requires_web_policy:
+            policy_reason = await self._web_policy_reason(tenant_context)
+            if policy_reason != "web_policy_allowed":
+                raise UnavailableRAGStrategyError(strategy, policy_reason)
+
+    def _has_graph_capability(self) -> bool:
+        return (
+            self.dependencies.session_factory is not None
+            and callable(getattr(self.dependencies.graph_capability, "bind", None))
+        )
+
+    async def _web_policy_reason(self, tenant_context: TenantContext) -> str:
+        from app.rag.agentic.patterns.web_augmented import resolve_web_policy
+
+        try:
+            decision = await resolve_web_policy(
+                self.dependencies.policy_services,
+                tenant_context,
+            )
+        except Exception:
+            return "web_policy_unavailable"
+        return decision.reason
+
+    async def _available_strategies(
+        self,
+        tenant_context: TenantContext,
+    ) -> tuple[tuple[RAGStrategy, ...], Mapping[RAGStrategy, ResolvedLLM]]:
+        web_policy_reason: str | None = None
+        available: list[RAGStrategy] = []
+        strategy_llms: dict[RAGStrategy, ResolvedLLM] = {}
+        for strategy, capability in self.dependencies.strategy_capabilities.items():
+            if strategy is RAGStrategy.ADAPTIVE:
+                continue
+            if strategy not in RAG_RUNTIME_CAPABILITIES:
+                continue
+            if not isinstance(capability.adapter, RAG_RUNTIME_CAPABILITIES[strategy]):
+                continue
+            if capability.requires_embedder and not _has_async_method(
+                self.dependencies.embedder, "embed"
+            ):
+                continue
+            if capability.requires_database and self.dependencies.session_factory is None:
+                continue
+            if capability.requires_provider:
+                try:
+                    candidate_llm = await self._resolve_llm(
+                        strategy,
+                        capability,
+                        tenant_context,
+                    )
+                except UnavailableRAGStrategyError:
+                    continue
+                if candidate_llm is None:
+                    continue
+                strategy_llms[strategy] = candidate_llm
+            if capability.requires_graph and not self._has_graph_capability():
+                continue
+            if capability.requires_search and not _has_async_method(
+                self.dependencies.search_capability, "search"
+            ):
+                continue
+            if capability.requires_web_policy:
+                if web_policy_reason is None:
+                    web_policy_reason = await self._web_policy_reason(tenant_context)
+                if web_policy_reason != "web_policy_allowed":
+                    continue
+            available.append(strategy)
+        return tuple(available), strategy_llms
 
     async def _resolve_llm(
         self,

@@ -34,6 +34,7 @@ from app.rag.gateway import (
     RetrievalGateway,
     RetrievalRuntimeDependencies,
     SQLCollectionAuthorizer,
+    TenantScopedGraphCapabilityAdapter,
     core_strategy_capabilities,
 )
 from app.tenancy.context import TenantContext
@@ -521,6 +522,10 @@ def test_only_core_strategies_are_certified_implemented() -> None:
         RAGStrategy.HYDE,
         RAGStrategy.MULTI_HOP,
         RAGStrategy.FUSION,
+        RAGStrategy.GRAPH,
+        RAGStrategy.CORRECTIVE,
+        RAGStrategy.ADAPTIVE,
+        RAGStrategy.WEB_AUGMENTED,
     }
     registry = build_default_registry()
     implemented = {
@@ -537,6 +542,16 @@ def test_only_core_strategies_are_certified_implemented() -> None:
 class _CollectionStore:
     def get_collection(self, collection_id: str, *, tenant_ctx: TenantContext) -> object:
         return object()
+
+
+class _SearchCapability:
+    async def search(self, request: object) -> list[object]:
+        return []
+
+
+class _AllowWebPolicy:
+    def evaluate(self, tool_name: str, *, tenant_ctx: TenantContext) -> str:
+        return "allow"
 
 
 class _ProbeTransaction:
@@ -574,6 +589,9 @@ async def test_readiness_reflects_core_dependencies() -> None:
         strategy_capabilities=core_strategy_capabilities(),
         embedder=_Embedder(),
         llm_resolver=lambda *_: ResolvedLLM(provider=provider, model="model"),
+        graph_capability=TenantScopedGraphCapabilityAdapter(),
+        search_capability=_SearchCapability(),
+        policy_services=(_AllowWebPolicy(),),
     )
     gateway = RetrievalGateway(dependencies)
 
@@ -822,6 +840,9 @@ async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:
             strategy_capabilities=core_strategy_capabilities(),
             embedder=_Embedder(),
             llm_resolver=lambda *_: ResolvedLLM(provider=provider, model="model"),
+            graph_capability=TenantScopedGraphCapabilityAdapter(),
+            search_capability=_SearchCapability(),
+            policy_services=(_AllowWebPolicy(),),
         )
     )
     configured_request = SimpleNamespace(
