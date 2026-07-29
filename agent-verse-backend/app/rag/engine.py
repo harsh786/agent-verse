@@ -58,6 +58,42 @@ class RetrievalResult:
     rrf_score: float = 0.0
 
 
+def merge_grounding_results(
+    result_groups: list[list[RetrievalResult]],
+    *,
+    top_k: int,
+) -> list[RetrievalResult]:
+    """Merge ranked evidence without discarding source provenance."""
+
+    merged: dict[str, RetrievalResult] = {}
+    provenance: dict[str, list[dict[str, Any]]] = {}
+    for results in result_groups:
+        for result in results:
+            source_provenance = dict(result.source_metadata)
+            existing = merged.get(result.chunk_id)
+            if existing is None:
+                result.source_metadata = dict(result.source_metadata)
+                merged[result.chunk_id] = result
+                provenance[result.chunk_id] = [source_provenance]
+                continue
+            if source_provenance not in provenance[result.chunk_id]:
+                provenance[result.chunk_id].append(source_provenance)
+            existing.score = max(existing.score, result.score)
+            existing.rrf_score = max(existing.rrf_score, result.rrf_score)
+            existing.retrieval_legs = list(
+                dict.fromkeys([*existing.retrieval_legs, *result.retrieval_legs])
+            )
+            existing.component_scores.update(result.component_scores)
+
+    for chunk_id, sources in provenance.items():
+        if len(sources) > 1:
+            merged[chunk_id].source_metadata["merged_provenance"] = sources
+    return sorted(
+        merged.values(),
+        key=lambda result: (-result.score, result.chunk_id),
+    )[:top_k]
+
+
 @dataclass(slots=True)
 class _BM25HeapEntry:
     score: float

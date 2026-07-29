@@ -192,6 +192,22 @@ class FusionRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.FUSION
 
 
+class GraphRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.GRAPH
+
+
+class CorrectiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.CORRECTIVE
+
+
+class AdaptiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.ADAPTIVE
+
+
+class WebAugmentedRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.WEB_AUGMENTED
+
+
 def is_rag_runtime_adapter(
     strategy: RAGStrategy,
     adapter: object,
@@ -213,5 +229,9 @@ RAG_RUNTIME_CAPABILITIES: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] = Mappin
         RAGStrategy.HYDE: HyDERAGRuntimeAdapter,
         RAGStrategy.MULTI_HOP: MultiHopRAGRuntimeAdapter,
         RAGStrategy.FUSION: FusionRAGRuntimeAdapter,
+        RAGStrategy.GRAPH: GraphRAGRuntimeAdapter,
+        RAGStrategy.CORRECTIVE: CorrectiveRAGRuntimeAdapter,
+        RAGStrategy.ADAPTIVE: AdaptiveRAGRuntimeAdapter,
+        RAGStrategy.WEB_AUGMENTED: WebAugmentedRAGRuntimeAdapter,
     }
 )
