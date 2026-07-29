@@ -730,6 +730,8 @@ async def retrieve_hyde(
         try:
             resp = await provider.complete(req)
         except Exception as exc:
+            if isinstance(exc, RetrievalStrategyExecutionError):
+                raise
             raise RetrievalStrategyExecutionError("hyde", "generation failed") from exc
         hyp_doc = resp.content.strip()
         if not hyp_doc:
@@ -751,6 +753,8 @@ async def retrieve_hyde(
                 if not generated_embedding:
                     raise ValueError("embedding response was empty")
             except Exception as exc:
+                if isinstance(exc, RetrievalStrategyExecutionError):
+                    raise
                 raise RetrievalStrategyExecutionError("hyde", "embedding failed") from exc
         if strategy_evidence is not None:
             strategy_evidence.update(
@@ -846,6 +850,8 @@ async def retrieve_multi_hop(
         if not sub_queries or all(item == query for item in sub_queries):
             raise ValueError("decomposition did not produce an independent hop")
     except Exception as exc:
+        if isinstance(exc, RetrievalStrategyExecutionError):
+            raise
         if strict:
             raise RetrievalStrategyExecutionError("multi_hop", "decomposition failed") from exc
         sub_queries = [query]
@@ -866,6 +872,8 @@ async def retrieve_multi_hop(
                 raise ValueError("embedding response was empty")
             hop_embeddings.append(embedding)
         except Exception as exc:
+            if isinstance(exc, RetrievalStrategyExecutionError):
+                raise
             if strict:
                 raise RetrievalStrategyExecutionError(
                     "multi_hop", "hop embedding failed"
@@ -906,6 +914,8 @@ async def retrieve_multi_hop(
             try:
                 per_hop_results.append(await search(sub_query, embedding))
             except Exception as exc:
+                if isinstance(exc, RetrievalStrategyExecutionError):
+                    raise
                 if strict:
                     raise RetrievalStrategyExecutionError(
                         "multi_hop", "retrieval hop failed"
@@ -1000,6 +1010,8 @@ async def retrieve_fusion(
         else:
             variants = expander.expand_for_fusion(query, max_variants=max_variants)
     except Exception as exc:
+        if isinstance(exc, RetrievalStrategyExecutionError):
+            raise
         if strict:
             raise RetrievalStrategyExecutionError(
                 "fusion", "provider query expansion failed"
@@ -1022,6 +1034,8 @@ async def retrieve_fusion(
                     raise ValueError("embedding response was empty")
                 variant_embeddings.append(embedding)
             except Exception as exc:
+                if isinstance(exc, RetrievalStrategyExecutionError):
+                    raise
                 if strict:
                     raise RetrievalStrategyExecutionError(
                         "fusion", "variant embedding failed"

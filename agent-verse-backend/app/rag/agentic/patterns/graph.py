@@ -169,7 +169,11 @@ async def query_graph_evidence(
                 SELECT community.root_id::text AS community_id,
                        string_agg(DISTINCT node.label, ', ' ORDER BY node.label) AS labels,
                        string_agg(DISTINCT NULLIF(node.content, ''), ' ') AS summary,
-                       max(node.confidence) AS confidence
+                       max(node.confidence) AS confidence,
+                       array_agg(DISTINCT node.id ORDER BY node.id) AS member_node_ids,
+                       array_agg(DISTINCT node.source_id ORDER BY node.source_id)
+                         FILTER (WHERE node.source_id IS NOT NULL)
+                         AS source_document_chunk_ids
                 FROM community_nodes AS community
                 JOIN knowledge_nodes AS node
                   ON node.id = community.node_id
@@ -222,7 +226,14 @@ async def query_graph_evidence(
             evidence_type="community",
             content=str(row[2] or row[1]),
             score=float(row[3]),
-            provenance={"community_id": str(row[0]), "labels": str(row[1] or "")},
+            provenance={
+                "community_id": str(row[0]),
+                "labels": str(row[1] or ""),
+                "member_node_ids": sorted(str(node_id) for node_id in (row[4] or [])),
+                "source_document_chunk_ids": sorted(
+                    str(source_id) for source_id in (row[5] or [])
+                ),
+            },
         )
         for row in community_rows
     )

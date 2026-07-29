@@ -183,6 +183,25 @@ def test_rag_query_uses_app_gateway_and_preserves_alias_trace() -> None:
     assert body["strategy_trace"][0]["status"] == "complete"
 
 
+def test_rag_query_threads_explicit_execution_id_to_gateway() -> None:
+    gateway = RecordingGateway(provider=RecordingProvider())
+    client = TestClient(_app(gateway), raise_server_exceptions=False)
+
+    response = client.post(
+        "/rag/query",
+        json={
+            "query": "retention policy",
+            "collection_id": "collection-1",
+            "strategy": "hybrid",
+            "execution_id": "api-execution-1",
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert gateway.calls[0][1]["execution_id"] == "api-execution-1"
+
+
 def test_rag_strategies_exposes_exact_canonical_contract_with_availability_metadata() -> None:
     client = TestClient(_app(RecordingGateway()), raise_server_exceptions=False)
 
@@ -1224,9 +1243,10 @@ async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
         "collection_id": "collection-1",
         "query": "retention policy",
         "strategy_id": "fusion_rag",
-        "top_k": 9,
-        "filters": {"department": "legal"},
-    }
+            "top_k": 9,
+            "filters": {"department": "legal"},
+            "execution_id": state.goal_id,
+        }
     assert "Evidence from collection-1" in update["rag_context"]
     assert state.context["rag_requested_strategy_id"] == "fusion_rag"
     assert state.context["retrieval_strategy"] == "fusion"

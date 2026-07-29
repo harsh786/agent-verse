@@ -3,9 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -14,9 +11,10 @@ import pytest
 class _FakeAgentState:
     """Minimal AgentState stub returned by the mock runner."""
 
-    class status:
+    class Status:
         value = "complete"
 
+    status = Status()
     iterations = 1
 
 
@@ -279,12 +277,25 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
     assert gateway_calls
     assert gateway_calls[0][0].tenant_id == "tenant-1"
     assert gateway_dependencies
-    assert gateway_dependencies[0].llm_resolver is not None
-    assert gateway_dependencies[0].collection_authorizer is not None
+    worker_dependencies = next(
+        dependency
+        for dependency in gateway_dependencies
+        if getattr(dependency, "llm_resolver", None) is not None
+        and getattr(dependency, "strategy_capabilities", None)
+    )
+    assert worker_dependencies.collection_authorizer is not None
     from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
 
-    assert isinstance(gateway_dependencies[0].search_capability, SafeWebSearchCapability)
-    resolver = gateway_dependencies[0].llm_resolver
+    assert isinstance(worker_dependencies.search_capability, SafeWebSearchCapability)
+    if worker_dependencies.session_factory is not None:
+        assert isinstance(
+            worker_dependencies.graph_capability,
+            TenantScopedGraphCapabilityAdapter,
+        )
+    else:
+        assert worker_dependencies.graph_capability is None
+    resolver = worker_dependencies.llm_resolver
     resolved = asyncio.run(
         resolver(
             TenantContext("tenant-1", PlanTier.PROFESSIONAL, "worker-key"),
@@ -300,6 +311,91 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
         )
     )
     assert denied is None
+
+
+def test_worker_loads_tenant_persisted_allow_and_domain_policy(monkeypatch: Any) -> None:
+    import asyncio
+
+    from app.governance.policies import Policy, PolicyEngine, PolicyResult
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def load(
+        self: PolicyEngine,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
+        assert strict
+        assert tenant_id == "tenant-worker"
+        self.add_policy(
+            Policy(
+                name="worker-web-domains",
+                tenant_id=tenant_id,
+                web_allowed_domains=["docs.example.com"],
+            )
+        )
+        return 1
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", load)
+    engine = asyncio.run(
+        tasks._load_worker_policy_engine(object(), "tenant-worker")
+    )
+    tenant = TenantContext("tenant-worker", PlanTier.ENTERPRISE, "key")
+
+    assert engine.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.ALLOW
+    assert engine.web_allowed_domains(tenant) == ("docs.example.com",)
+
+
+def test_worker_loads_tenant_web_deny_and_fails_closed_on_load_error(
+    monkeypatch: Any,
+) -> None:
+    import asyncio
+
+    from app.governance.policies import Policy, PolicyEngine, PolicyResult
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def deny(
+        self: PolicyEngine,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
+        self.add_policy(
+            Policy(name="deny-web", tenant_id=tenant_id or "", denied_tools=["web_search"])
+        )
+        return 1
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", deny)
+    tenant = TenantContext("tenant-worker", PlanTier.ENTERPRISE, "key")
+    denied = asyncio.run(
+        tasks._load_worker_policy_engine(object(), tenant.tenant_id)
+    )
+    assert denied.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.DENY
+
+    async def fail(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", fail)
+    failed = asyncio.run(
+        tasks._load_worker_policy_engine(object(), tenant.tenant_id)
+    )
+    assert failed.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.DENY
+
+
+def test_worker_graph_capability_is_scoped_only_when_database_is_configured() -> None:
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+    from app.scaling import tasks
+
+    capability = tasks._build_worker_graph_capability(object())
+
+    assert isinstance(capability, TenantScopedGraphCapabilityAdapter)
+    assert not hasattr(capability, "session_factory")
+    assert not hasattr(capability, "store")
+    assert tasks._build_worker_graph_capability(None) is None
 
 
 def test_consolidate_memories_task_is_registered() -> None:

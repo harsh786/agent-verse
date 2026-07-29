@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeGuard, TypeVar
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +70,115 @@ class CollectionAuthorizer(Protocol):
         tenant_context: TenantContext,
         collection_id: str,
     ) -> bool: ...
+
+
+class RAGCostController(Protocol):
+    async def check_and_record(
+        self,
+        *,
+        goal_id: str,
+        cost_usd: float,
+        tenant_ctx: TenantContext,
+        tool_name: str = "",
+        attempt_id: str = "",
+    ) -> bool: ...
+
+
+@dataclass(slots=True)
+class _RAGCostEvent:
+    operation: str
+    reserved_usd: float
+    actual_tokens: int = 0
+
+
+class _RAGCostGuard:
+    _ESTIMATED_COSTS: ClassVar[dict[str, float]] = {
+        "embedding": 0.0001,
+        "completion": 0.001,
+        "web_retrieval": 0.001,
+    }
+
+    def __init__(
+        self,
+        controller: RAGCostController | None,
+        *,
+        execution_id: str,
+        tenant_context: TenantContext,
+        strategy: RAGStrategy,
+        attempt_scope: str,
+    ) -> None:
+        self._controller = controller
+        self._execution_id = execution_id
+        self._tenant_context = tenant_context
+        self._strategy = strategy
+        self._attempt_scope = attempt_scope
+        self._sequence = 0
+        self.events: list[_RAGCostEvent] = []
+
+    async def reserve(self, operation: str) -> int | None:
+        if self._controller is None:
+            return None
+        self._sequence += 1
+        estimated_cost = self._ESTIMATED_COSTS[operation]
+        allowed = await self._controller.check_and_record(
+            goal_id=self._execution_id,
+            cost_usd=estimated_cost,
+            tenant_ctx=self._tenant_context,
+            tool_name=f"rag_{operation}",
+            attempt_id=f"rag:{self._attempt_scope}:{operation}:{self._sequence}",
+        )
+        if not allowed:
+            raise RetrievalStrategyExecutionError(
+                self._strategy.value,
+                f"budget_exhausted:{operation}",
+            )
+        self.events.append(_RAGCostEvent(operation, estimated_cost))
+        return len(self.events) - 1
+
+    def record_tokens(self, event_index: int | None, tokens: int) -> None:
+        if event_index is not None and tokens > 0:
+            self.events[event_index].actual_tokens = tokens
+
+    def traces(self) -> list[RAGStrategyTrace]:
+        execution_hash = hashlib.sha256(self._execution_id.encode("utf-8")).hexdigest()[:16]
+        return [
+            RAGStrategyTrace(
+                strategy=self._strategy,
+                action="rag_cost",
+                status="complete",
+                detail={
+                    "operation": event.operation,
+                    "reserved_usd": round(event.reserved_usd, 6),
+                    "actual_tokens": event.actual_tokens,
+                    "execution_id": f"sha256:{execution_hash}",
+                },
+            )
+            for event in self.events
+        ]
+
+
+class _BudgetedEmbedder:
+    def __init__(self, embedder: Any, guard: _RAGCostGuard) -> None:
+        self._embedder = embedder
+        self._guard = guard
+
+    async def embed(self, request: Any) -> Any:
+        event_index = await self._guard.reserve("embedding")
+        response = await self._embedder.embed(request)
+        self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
+        return response
+
+
+class _BudgetedProvider:
+    def __init__(self, provider: Any, guard: _RAGCostGuard) -> None:
+        self._provider = provider
+        self._guard = guard
+
+    async def complete(self, request: Any) -> Any:
+        event_index = await self._guard.reserve("completion")
+        response = await self._provider.complete(request)
+        self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
+        return response
 
 
 class KnowledgeCollectionStore(Protocol):
@@ -403,6 +514,7 @@ class RetrievalDependencies:
     graph_capability: GraphCapabilityAdapter | None = None
     search_capability: SafeWebSearchCapability | None = None
     policy_services: tuple[object, ...] = ()
+    cost_controller: RAGCostController | None = None
     strategy_timeout_seconds: float = 30.0
     statement_timeout_ms: int = 30_000
 
@@ -418,6 +530,7 @@ class RetrievalRuntimeDependencies:
     policy_services: tuple[object, ...]
     available_strategies: tuple[RAGStrategy, ...] = ()
     strategy_llms: Mapping[RAGStrategy, ResolvedLLM] = field(default_factory=dict)
+    cost_guard: _RAGCostGuard | None = None
 
 
 class CollectionNotFoundError(LookupError):
@@ -617,6 +730,10 @@ class RetrievalExecutionContext:
 
         return await self.run_db_operation(operation)
 
+    async def reserve_cost(self, operation: str) -> None:
+        if self.dependencies.cost_guard is not None:
+            await self.dependencies.cost_guard.reserve(operation)
+
 
 async def execute_core_strategy(
     strategy: RAGStrategy,
@@ -777,6 +894,7 @@ async def execute_core_strategy(
             evidence=evidence,
         )
         _mark_source_type(persisted, "persisted")
+        await context.reserve_cost("web_retrieval")
         try:
             web_results, web_evidence = await retrieve_web_results(
                 web_capability,
@@ -960,6 +1078,7 @@ async def execute_core_strategy(
             )
             stop_reason = policy.reason
             if policy.allowed:
+                await context.reserve_cost("web_retrieval")
                 try:
                     web_results, web_evidence = await retrieve_web_results(
                         web_capability,
@@ -1148,6 +1267,8 @@ async def _embed_text(
         response = await embedder.embed(EmbedRequest(texts=[text_value], input_type="query"))
         embedding = response.embeddings[0] if response.embeddings else None
     except Exception as exc:
+        if isinstance(exc, RetrievalStrategyExecutionError):
+            raise
         raise RetrievalStrategyExecutionError(strategy.value, "embedding failed") from exc
     if not embedding:
         raise RetrievalStrategyExecutionError(strategy.value, "embedding response was empty")
@@ -1376,6 +1497,7 @@ class RetrievalGateway:
         strategy_id: str | RAGStrategy,
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
+        execution_id: str = "",
     ) -> RAGExecutionResult:
         if not isinstance(tenant_context, TenantContext):
             raise TypeError("tenant_context must be a TenantContext")
@@ -1398,6 +1520,7 @@ class RetrievalGateway:
             requested_strategy_id=requested_strategy_id,
             top_k=top_k,
             filters=filters or {},
+            execution_id=execution_id or f"rag-{uuid.uuid4().hex}",
         )
         await self._validate_capabilities(strategy, capability, tenant_context)
         llm = await self._resolve_llm(strategy, capability, tenant_context)
@@ -1420,18 +1543,57 @@ class RetrievalGateway:
             )
         else:
             available_strategies, strategy_llms = (), {}
+        cost_guard = _RAGCostGuard(
+            self.dependencies.cost_controller,
+            execution_id=request.execution_id,
+            tenant_context=tenant_context,
+            strategy=strategy,
+            attempt_scope=hashlib.sha256(
+                f"{collection_id}:{strategy.value}:{query}".encode()
+            ).hexdigest()[:16],
+        )
+        runtime_embedder = (
+            _BudgetedEmbedder(self.dependencies.embedder, cost_guard)
+            if self.dependencies.cost_controller is not None
+            and self.dependencies.embedder is not None
+            else self.dependencies.embedder
+        )
+        runtime_llm = (
+            ResolvedLLM(
+                provider=_BudgetedProvider(llm.provider, cost_guard),
+                model=llm.model,
+                provider_type=llm.provider_type,
+            )
+            if self.dependencies.cost_controller is not None
+            and llm is not None
+            and llm.provider is not None
+            else llm
+        )
+        budgeted_strategy_llms = (
+            {
+                candidate: ResolvedLLM(
+                    provider=_BudgetedProvider(candidate_llm.provider, cost_guard),
+                    model=candidate_llm.model,
+                    provider_type=candidate_llm.provider_type,
+                )
+                for candidate, candidate_llm in strategy_llms.items()
+            }
+            if self.dependencies.cost_controller is not None
+            else strategy_llms
+        )
         context = RetrievalExecutionContext(
             tenant_context=tenant_context,
             strategy=strategy,
             filters=dict(request.filters),
             dependencies=RetrievalRuntimeDependencies(
-                embedder=self.dependencies.embedder,
-                llm=llm,
+                embedder=runtime_embedder,
+                llm=runtime_llm,
                 graph_capability=bound_graph,
                 search_capability=self.dependencies.search_capability,
                 policy_services=self.dependencies.policy_services,
                 available_strategies=available_strategies,
-                strategy_llms=strategy_llms,
+                strategy_llms=budgeted_strategy_llms,
+                cost_guard=cost_guard,
             ),
             _db_operation_runner=runner.run if runner is not None else None,
             _repeatable_read_db_operation_runner=(
@@ -1487,6 +1649,14 @@ class RetrievalGateway:
             raise TypeError("RAG strategy adapter returned an unsupported result type")
 
         total_latency_ms = (time.monotonic() - started) * 1000
+        normalized = normalized.model_copy(
+            update={
+                "strategy_trace": [
+                    *normalized.strategy_trace,
+                    *cost_guard.traces(),
+                ]
+            }
+        )
         logger.info(
             "rag_strategy_complete",
             strategy=strategy.value,

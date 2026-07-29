@@ -206,6 +206,7 @@ class RAGRetriever:
         strategy: str | RAGStrategy = RAGStrategy.HYBRID,
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
+        execution_id: str = "",
         *,
         synthesize: bool = True,
         max_context_chars: int = 6000,
@@ -217,14 +218,16 @@ class RAGRetriever:
         if not collection_id:
             raise ValueError("collection_id is required")
 
-        result = await self._gateway.execute(
-            tenant_ctx,
-            collection_id=collection_id,
-            query=query,
-            strategy_id=strategy,
-            top_k=top_k,
-            filters=filters or {},
-        )
+        execute_kwargs: dict[str, Any] = {
+            "collection_id": collection_id,
+            "query": query,
+            "strategy_id": strategy,
+            "top_k": top_k,
+            "filters": filters or {},
+        }
+        if execution_id:
+            execute_kwargs["execution_id"] = execution_id
+        result = await self._gateway.execute(tenant_ctx, **execute_kwargs)
         if not synthesize:
             return result
         answer = result.answer

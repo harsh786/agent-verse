@@ -691,6 +691,7 @@ def create_app(
             graph_capability=None,
             search_capability=_web_search_capability,
             policy_services=(_policy_engine, _cost, _hitl),
+            cost_controller=_cost,
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
             strategy_capabilities=core_strategy_capabilities(),
         )
@@ -1048,6 +1049,7 @@ def create_app(
                         getattr(app.state, "redis_cost_controller", _cost),
                         _hitl,
                     ),
+                    cost_controller=getattr(app.state, "redis_cost_controller", _cost),
                     collection_authorizer=SQLCollectionAuthorizer(),
                     strategy_capabilities=core_strategy_capabilities(),
                 )

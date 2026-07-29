@@ -217,14 +217,17 @@ async def execute_rag_node(
     if retrieval_gateway is None:
         raise RuntimeError("Retrieval gateway is not configured")
 
-    result = await retrieval_gateway.execute(
-        tenant_ctx,
-        collection_id=str(collection_id),
-        query=query,
-        strategy_id=requested_strategy_id,
-        top_k=top_k,
-        filters=filters,
-    )
+    execute_kwargs: dict[str, Any] = {
+        "collection_id": str(collection_id),
+        "query": query,
+        "strategy_id": requested_strategy_id,
+        "top_k": top_k,
+        "filters": filters,
+    }
+    execution_id = str(context.get("goal_id") or context.get("execution_id") or "")
+    if execution_id:
+        execute_kwargs["execution_id"] = execution_id
+    result = await retrieval_gateway.execute(tenant_ctx, **execute_kwargs)
     citations = [citation.model_dump(mode="json") for citation in result.citations]
     chunks = [
         {

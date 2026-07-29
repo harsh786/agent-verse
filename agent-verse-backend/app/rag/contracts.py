@@ -124,6 +124,7 @@ class RAGExecutionRequest(BaseModel):
     query: str = Field(min_length=1)
     requested_strategy_id: str = Field(min_length=1)
     collection_id: str | None = None
+    execution_id: str = ""
     top_k: int = Field(default=5, ge=1, le=20)
     filters: dict[str, Any] = Field(default_factory=dict)
 

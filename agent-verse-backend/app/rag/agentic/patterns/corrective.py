@@ -42,6 +42,8 @@ async def grade_evidence(
         raw_scores = payload["relevance"]
         scores = [float(score) for score in raw_scores]
     except Exception as exc:
+        if isinstance(exc, RetrievalStrategyExecutionError):
+            raise
         raise RetrievalStrategyExecutionError("corrective", "evidence grading failed") from exc
     if len(scores) != len(results) or any(score < 0.0 or score > 1.0 for score in scores):
         raise RetrievalStrategyExecutionError("corrective", "invalid evidence grades")
@@ -73,6 +75,8 @@ async def reformulate_query(
         response = await provider.complete(request)
         reformulated = str(response.content).strip()
     except Exception as exc:
+        if isinstance(exc, RetrievalStrategyExecutionError):
+            raise
         raise RetrievalStrategyExecutionError("corrective", "query reformulation failed") from exc
     if not reformulated or reformulated == query:
         raise RetrievalStrategyExecutionError(
