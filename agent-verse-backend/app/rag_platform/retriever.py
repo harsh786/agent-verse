@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from app.providers.base import CompletionRequest, Message
 from app.rag.contracts import (
@@ -26,6 +27,7 @@ class RAGSynthesisError(RuntimeError):
 class CitationVerification:
     grounded: bool
     unsupported_claims: list[str]
+    reason: str
 
 
 class MinimalCitationVerifier:
@@ -34,6 +36,107 @@ class MinimalCitationVerifier:
     _STOP_WORDS = frozenset(
         {"a", "an", "and", "are", "as", "at", "be", "is", "of", "or", "the", "to"}
     )
+    _SYNONYMS: ClassVar[dict[str, str]] = {
+        "allows": "allow",
+        "allowed": "allow",
+        "permit": "allow",
+        "permits": "allow",
+        "permitted": "allow",
+        "prohibits": "prohibit",
+        "prohibited": "prohibit",
+        "forbids": "prohibit",
+        "forbidden": "prohibit",
+        "mandatory": "required",
+        "requires": "required",
+    }
+
+    def __init__(self, *, provider: Any = None, model: str = "") -> None:
+        self.provider = provider
+        self.model = model.strip()
+
+    def _tokens(self, text: str) -> set[str]:
+        return {
+            self._SYNONYMS.get(token, token)
+            for token in re.findall(r"[a-z0-9]+", text.lower())
+            if len(token) > 2 and token not in self._STOP_WORDS
+        }
+
+    @staticmethod
+    def _contradiction(claim: str, evidence: str) -> bool:
+        claim_lower = claim.lower()
+        evidence_lower = evidence.lower()
+        claim_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", claim_lower))
+        evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence_lower))
+        if claim_numbers and evidence_numbers and claim_numbers != evidence_numbers:
+            return True
+        allow_words = ("allow", "permit")
+        prohibit_words = ("prohibit", "forbid", "deny", "ban")
+        claim_allows = any(word in claim_lower for word in allow_words)
+        evidence_allows = any(word in evidence_lower for word in allow_words)
+        claim_prohibits = any(word in claim_lower for word in prohibit_words)
+        evidence_prohibits = any(word in evidence_lower for word in prohibit_words)
+        if (claim_allows and evidence_prohibits) or (
+            claim_prohibits and evidence_allows
+        ):
+            return True
+        claim_not_required = bool(re.search(r"\bnot\s+required\b", claim_lower))
+        evidence_not_required = bool(
+            re.search(r"\bnot\s+required\b", evidence_lower)
+        )
+        claim_required = "required" in claim_lower and not claim_not_required
+        evidence_required = "required" in evidence_lower and not evidence_not_required
+        return (claim_required and evidence_not_required) or (
+            claim_not_required and evidence_required
+        )
+
+    async def _provider_entails(self, claim: str, evidence: str) -> CitationVerification:
+        if self.provider is None or not self.model:
+            return CitationVerification(False, [claim], "unsupported")
+        schema = {
+            "type": "object",
+            "properties": {
+                "supported": {"type": "boolean"},
+                "reason": {
+                    "type": "string",
+                    "enum": ["entailed", "not_entailed"],
+                },
+            },
+            "required": ["supported", "reason"],
+            "additionalProperties": False,
+        }
+        try:
+            response = await self.provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(
+                            role="user",
+                            content=(
+                                "Determine whether the claim is fully entailed by the evidence. "
+                                "Return only the requested JSON fields.\n\n"
+                                f"Claim: {claim}\nEvidence: {evidence}"
+                            ),
+                        )
+                    ],
+                    model=self.model,
+                    max_tokens=100,
+                    response_schema=schema,
+                )
+            )
+            parsed = json.loads(str(response.content))
+            if (
+                not isinstance(parsed, dict)
+                or set(parsed) != {"supported", "reason"}
+                or not isinstance(parsed["supported"], bool)
+                or parsed["reason"] not in {"entailed", "not_entailed"}
+            ):
+                raise ValueError("Invalid entailment response")
+        except Exception:
+            return CitationVerification(False, [claim], "verifier_failure")
+        return CitationVerification(
+            bool(parsed["supported"]),
+            [] if parsed["supported"] else [claim],
+            "supported" if parsed["supported"] else "unsupported",
+        )
 
     async def verify(
         self,
@@ -41,15 +144,12 @@ class MinimalCitationVerifier:
         citations: list[RAGCitation],
     ) -> CitationVerification:
         unsupported: list[str] = []
+        reasons: list[str] = []
         checked = 0
         for sentence in re.split(r"(?<=[.!?])\s+", answer.strip()):
             references = [int(value) for value in re.findall(r"\[(\d+)\]", sentence)]
             claim = re.sub(r"\[\d+\]", "", sentence).strip(" .")
-            claim_tokens = {
-                token
-                for token in re.findall(r"[a-z0-9]+", claim.lower())
-                if len(token) > 2 and token not in self._STOP_WORDS
-            }
+            claim_tokens = self._tokens(claim)
             if not claim_tokens:
                 continue
             checked += 1
@@ -58,17 +158,38 @@ class MinimalCitationVerifier:
                 for reference in references
             ):
                 unsupported.append(claim)
+                reasons.append("invalid_citation")
                 continue
             evidence = " ".join(citations[index - 1].content for index in references)
-            evidence_tokens = set(re.findall(r"[a-z0-9]+", evidence.lower()))
-            support = len(claim_tokens & evidence_tokens) / len(claim_tokens)
-            if support < 0.6:
+            if self._contradiction(claim, evidence):
                 unsupported.append(claim)
+                reasons.append("contradiction")
+                continue
+            evidence_tokens = self._tokens(evidence)
+            support = len(claim_tokens & evidence_tokens) / len(claim_tokens)
+            if support >= 0.6:
+                continue
+            entailment = await self._provider_entails(claim, evidence)
+            if not entailment.grounded:
+                unsupported.extend(entailment.unsupported_claims)
+                reasons.append(entailment.reason)
+        reason = (
+            "supported"
+            if checked > 0 and not unsupported
+            else "contradiction"
+            if "contradiction" in reasons
+            else "invalid_citation"
+            if "invalid_citation" in reasons
+            else "verifier_failure"
+            if "verifier_failure" in reasons
+            else "unsupported"
+        )
         return CitationVerification(
             grounded=checked > 0 and not unsupported,
             unsupported_claims=(
                 unsupported if unsupported else [] if checked > 0 else ["No claims verified"]
             ),
+            reason=reason,
         )
 
 
@@ -129,7 +250,20 @@ class RAGRetriever:
             )
         trace = list(result.strategy_trace)
         try:
-            verification = await self._citation_verifier.verify(
+            verifier = self._citation_verifier
+            if isinstance(verifier, MinimalCitationVerifier) and verifier.provider is None:
+                try:
+                    resolved = await self._resolve_llm(
+                        tenant_ctx,
+                        result.resolved_strategy_id,
+                    )
+                    verifier = MinimalCitationVerifier(
+                        provider=resolved.provider,
+                        model=resolved.model,
+                    )
+                except RAGSynthesisError:
+                    pass
+            verification = await verifier.verify(
                 answer,
                 result.citations,
             )
@@ -141,7 +275,8 @@ class RAGRetriever:
                     detail={
                         "unsupported_claims": list(
                             verification.unsupported_claims
-                        )
+                        ),
+                        "reason": str(getattr(verification, "reason", "unsupported")),
                     },
                 )
             )
