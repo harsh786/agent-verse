@@ -18,22 +18,20 @@ def tenant_ctx() -> TenantContext:
 
 
 def test_naive_rag_retriever_tool_instantiates() -> None:
-    """RetrieverTool can be created with a KnowledgeStore."""
+    """RetrieverTool requires an injected gateway."""
     from app.rag.agentic.retriever_tool import RetrieverTool
-    from app.rag.store import KnowledgeStore
 
-    tool = RetrieverTool(knowledge_store=KnowledgeStore())
+    tool = RetrieverTool(retrieval_gateway=object())
     assert tool is not None
 
 
-async def test_naive_rag_empty_kb_returns_fallback(tenant_ctx: TenantContext) -> None:
-    """RetrieverTool with empty KB returns parametric or none_available source."""
+async def test_naive_rag_requires_collection(tenant_ctx: TenantContext) -> None:
+    """RetrieverTool does not invent a fallback when no collection is supplied."""
     from app.rag.agentic.retriever_tool import RetrieverTool
-    from app.rag.store import KnowledgeStore
 
-    tool = RetrieverTool(knowledge_store=KnowledgeStore())
-    result = await tool.retrieve(query="test", tenant_ctx=tenant_ctx)
-    assert result.source in ("none_available", "parametric")
+    tool = RetrieverTool(retrieval_gateway=object())
+    with pytest.raises(ValueError, match="collection_ids"):
+        await tool.retrieve(query="test", tenant_ctx=tenant_ctx)
 
 
 # ── ADVANCED RAG (ContextPipeline) ────────────────────────────────────────────
@@ -168,43 +166,30 @@ async def test_fusion_rag_parallel_queries() -> None:
 # ── CORRECTIVE RAG ────────────────────────────────────────────────────────────
 
 
-async def test_corrective_rag_triggers_on_low_confidence(
+async def test_corrective_rag_uses_gateway_without_web_fallback(
     tenant_ctx: TenantContext,
 ) -> None:
-    """CRAG triggers web fallback when primary retrieval has low confidence."""
-    from app.rag.agentic.retriever_tool import RetrieverTool, RetrievalResult
-    from app.rag.store import KnowledgeStore
+    """CRAG delegates the explicit corrective strategy to the gateway."""
+    from app.rag.agentic.retriever_tool import RetrieverTool
+    from app.rag.contracts import RAGExecutionResult, RAGStrategy
 
-    web_calls: list[str] = []
+    class Gateway:
+        async def execute(self, tenant_ctx, **kwargs):
+            assert kwargs["strategy_id"] is RAGStrategy.CORRECTIVE
+            return RAGExecutionResult(
+                requested_strategy_id="corrective",
+                resolved_strategy_id=RAGStrategy.CORRECTIVE,
+            )
 
-    async def mock_web(query: str, top_k: int = 3) -> list[dict]:
-        web_calls.append(query)
-        return [{"content": "Web correction content", "url": "https://web.example.com"}]
-
-    low_conf = RetrievalResult(
-        query="test",
-        source="knowledge_base",
-        strategy_used="hybrid",
-        confidence=0.1,
-        context_text="Nothing found.",
-        chunks=[],
+    result = await RetrieverTool(retrieval_gateway=Gateway()).retrieve_corrective(
+        query="obscure topic",
+        tenant_ctx=tenant_ctx,
+        collection_ids=["collection-1"],
+        confidence_threshold=0.5,
     )
 
-    tool = RetrieverTool(
-        knowledge_store=KnowledgeStore(),
-        web_search_fn=mock_web,
-        web_search_available=True,
-    )
-
-    with patch.object(tool, "_retrieve_from_kb", AsyncMock(return_value=low_conf)):
-        result = await tool.retrieve_corrective(
-            query="obscure topic",
-            tenant_ctx=tenant_ctx,
-            confidence_threshold=0.5,
-        )
-
-    assert result.corrected is True
-    assert len(web_calls) > 0
+    assert result.strategy_used == "corrective"
+    assert not result.fallback_used
 
 
 # ── ADAPTIVE RAG ──────────────────────────────────────────────────────────────

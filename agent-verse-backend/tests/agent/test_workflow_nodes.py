@@ -109,12 +109,23 @@ class TestSkillNode:
         assert "skill_instructions" in result
 
     @pytest.mark.asyncio
-    async def test_rag_node_no_db_returns_empty(self):
+    async def test_rag_node_uses_gateway(self):
         from app.agent.workflow_nodes import execute_rag_node
+        from app.rag.contracts import RAGExecutionResult, RAGStrategy
+        from app.tenancy.context import PlanTier, TenantContext
+
+        class Gateway:
+            async def execute(self, tenant_ctx, **kwargs):
+                return RAGExecutionResult(
+                    requested_strategy_id="hybrid",
+                    resolved_strategy_id=RAGStrategy.HYBRID,
+                )
+
         result = await execute_rag_node(
             {"collection_id": "col-1", "query_template": "find relevant info"},
             {"goal": "test"},
-            db_session=None,
+            retrieval_gateway=Gateway(),
+            tenant_ctx=TenantContext("t1", PlanTier.PROFESSIONAL, "k1"),
         )
         assert "chunks" in result
         assert isinstance(result["chunks"], list)

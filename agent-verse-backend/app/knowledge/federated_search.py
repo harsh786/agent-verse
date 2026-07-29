@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from typing import Any
 
 from app.rag.contracts import RAGExecutionResult, RAGStrategy
@@ -36,6 +37,9 @@ def _normalize_scores(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     the single/zero result is not discarded by downstream min-score filters.
     """
     if not results:
+        return results
+    if len(results) == 1:
+        results[0]["normalized_score"] = 1.0
         return results
 
     scores = [r.get("score", 0.0) for r in results]
@@ -56,6 +60,17 @@ def _content_key(result: dict[str, Any]) -> str:
         return str(result["content_hash"])
     content = result.get("content", "")
     return hashlib.sha256(content[:512].encode()).hexdigest()
+
+
+def _merge_unique_dicts(
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_value = {
+        json.dumps(item, sort_keys=True, separators=(",", ":")): item
+        for item in [*first, *second]
+    }
+    return [by_value[key] for key in sorted(by_value)]
 
 
 async def federated_search(
@@ -146,17 +161,44 @@ async def federated_search(
     # ------------------------------------------------------------------ #
     # Sort by normalised score (descending)                               #
     # ------------------------------------------------------------------ #
-    all_results.sort(key=lambda r: r.get("normalized_score", 0.0), reverse=True)
+    all_results.sort(
+        key=lambda result: (
+            -float(result.get("normalized_score", 0.0)),
+            -float(result.get("score", 0.0)),
+            _content_key(result),
+            str(result.get("citation_id", "")),
+        )
+    )
 
     # ------------------------------------------------------------------ #
     # Deduplicate by content                                              #
     # ------------------------------------------------------------------ #
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for r in all_results:
-        key = _content_key(r)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(r)
+    merged_by_content: dict[str, dict[str, Any]] = {}
+    for result in all_results:
+        key = _content_key(result)
+        existing = merged_by_content.get(key)
+        if existing is None:
+            result["collection_ids"] = [str(result["collection_id"])]
+            result["sources"] = [str(result["source"])]
+            result["citation_refs"] = [str(result["citation_id"])]
+            merged_by_content[key] = result
+            continue
+        existing["collection_ids"] = sorted(
+            {*existing["collection_ids"], str(result["collection_id"])}
+        )
+        existing["sources"] = sorted(
+            {*existing["sources"], str(result["source"])}
+        )
+        existing["citation_refs"] = sorted(
+            {*existing["citation_refs"], str(result["citation_id"])}
+        )
+        existing["retrieval_legs"] = _merge_unique_dicts(
+            list(existing["retrieval_legs"]),
+            list(result["retrieval_legs"]),
+        )
+        existing["strategy_trace"] = _merge_unique_dicts(
+            list(existing["strategy_trace"]),
+            list(result["strategy_trace"]),
+        )
 
-    return deduped[:top_k]
+    return list(merged_by_content.values())[:top_k]

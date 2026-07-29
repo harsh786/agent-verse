@@ -47,12 +47,26 @@ class _AdaptiveRuntimeAdapter:
 
 class _Gateway:
     def __init__(self) -> None:
+        self.readiness_tenants: list[TenantContext] = []
         capability = SimpleNamespace()
         self.dependencies = SimpleNamespace(
             strategy_capabilities={
                 RAGStrategy.NAIVE: capability,
                 RAGStrategy.ADAPTIVE: capability,
             }
+        )
+
+    async def readiness(
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        strategy_id: RAGStrategy,
+    ) -> SimpleNamespace:
+        self.readiness_tenants.append(tenant_ctx)
+        available = strategy_id in {RAGStrategy.NAIVE, RAGStrategy.ADAPTIVE}
+        return SimpleNamespace(
+            available=available,
+            reason="ready" if available else "adapter_not_registered",
         )
 
     async def execute(
@@ -180,7 +194,8 @@ def test_rag_query_rejects_uncertified_canonical_strategy():
 
 
 def test_rag_list_strategies():
-    client = TestClient(_make_app())
+    app = _make_app()
+    client = TestClient(app)
     resp = client.get("/rag/strategies", headers=_HEADERS)
     assert resp.status_code == 200
     strategies = resp.json()["strategies"]
@@ -193,6 +208,10 @@ def test_rag_list_strategies():
     assert by_id[RAGStrategy.NAIVE.value]["available"] is True
     assert by_id[RAGStrategy.ADAPTIVE.value]["state"] == "implemented"
     assert by_id[RAGStrategy.GRAPH.value]["available"] is False
+    assert by_id[RAGStrategy.GRAPH.value]["unavailable_reason"] == "registry_not_certified"
+    gateway = app.state.retrieval_gateway
+    assert isinstance(gateway, _Gateway)
+    assert gateway.readiness_tenants == [_CTX] * len(RAGStrategy)
 
 
 def test_rag_retrieval_legs_present():

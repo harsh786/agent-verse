@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Legacy static workflow types (used by build_static_workflow / goal_service)
 # ---------------------------------------------------------------------------
@@ -73,6 +72,7 @@ class WorkflowStep:
     status: str = "pending"   # pending|running|complete|failed
     result: str = ""
     error: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,7 +81,7 @@ class WorkflowPlan:
     steps: list[WorkflowStep] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict, goal: str) -> "WorkflowPlan":
+    def from_dict(cls, data: dict[str, Any], goal: str) -> WorkflowPlan:
         steps = [
             WorkflowStep(
                 id=s.get("id", f"s{i + 1}"),
@@ -90,6 +90,7 @@ class WorkflowPlan:
                 depends_on=s.get("depends_on", []),
                 can_parallel=s.get("can_parallel", True),
                 estimated_minutes=s.get("estimated_minutes", 1),
+                config=dict(s),
             )
             for i, s in enumerate(data.get("steps", []))
         ]
@@ -152,7 +153,8 @@ class WorkflowPlanner:
             except Exception:
                 pass
 
-        prompt = f"""You are a workflow orchestration engine. Given a goal, produce a parallel-aware execution plan.
+        prompt = f"""You are a workflow orchestration engine.
+Given a goal, produce a parallel-aware execution plan.
 
 Goal: {goal}{tool_summary}
 

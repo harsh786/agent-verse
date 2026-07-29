@@ -1999,7 +1999,11 @@ class GoalService:
                 goal_id, {"type": "goal_started", "goal": goal_text}, tenant_ctx=tenant_ctx
             )
             plan = build_static_workflow(goal_text)
-            executor = WorkflowExecutor(mcp_client=self._get_mcp_client())
+            app_state = getattr(self._app_state, "state", self._app_state)
+            executor = WorkflowExecutor(
+                mcp_client=self._get_mcp_client(),
+                retrieval_gateway=getattr(app_state, "retrieval_gateway", None),
+            )
             await executor.run(
                 plan=plan,
                 goal=goal_text,

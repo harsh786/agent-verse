@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -76,6 +77,12 @@ class RecordingProvider:
         return CompletionResponse(content="Tenant answer [1]", model=request.model)
 
 
+class FailingProvider(RecordingProvider):
+    async def complete(self, request: Any) -> CompletionResponse:
+        self.requests.append(request)
+        raise RuntimeError("provider secret credential")
+
+
 class RecordingGateway:
     def __init__(
         self,
@@ -109,7 +116,11 @@ class RecordingGateway:
         if self.error is not None:
             raise self.error
         requested = str(kwargs["strategy_id"])
-        resolved = RAGStrategy.FUSION if requested == "fusion_rag" else RAGStrategy.HYBRID
+        resolved = (
+            RAGStrategy.FUSION
+            if requested in {"fusion", "fusion_rag"}
+            else RAGStrategy.HYBRID
+        )
         return _result(
             requested=requested,
             resolved=resolved,
@@ -268,6 +279,45 @@ def test_gateway_failure_is_sanitized_non_success_for_query_and_chat() -> None:
     assert "secret" not in chat_response.text
 
 
+def test_knowledge_chat_synthesis_failure_is_sanitized_non_success() -> None:
+    gateway = RecordingGateway(provider=FailingProvider())
+    client = TestClient(_app(gateway), raise_server_exceptions=False)
+
+    response = client.post(
+        "/knowledge/chat",
+        json={"question": "retention", "collection_ids": ["collection-1"]},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Answer synthesis is unavailable"}
+    assert "secret" not in response.text
+
+
+def test_knowledge_search_rejects_invalid_or_conflicting_limit() -> None:
+    client = TestClient(_app(RecordingGateway()), raise_server_exceptions=False)
+
+    invalid = client.get(
+        "/knowledge/search",
+        params={"q": "retention", "collection_id": "collection-1", "limit": 0},
+        headers=HEADERS,
+    )
+    conflicting = client.get(
+        "/knowledge/search",
+        params={
+            "q": "retention",
+            "collection_id": "collection-1",
+            "limit": 4,
+            "top_k": 5,
+        },
+        headers=HEADERS,
+    )
+
+    assert invalid.status_code == 422
+    assert conflicting.status_code == 422
+    assert conflicting.json() == {"detail": "Use top_k or limit, not both"}
+
+
 @pytest.mark.asyncio
 async def test_federated_search_is_gateway_backed_and_preserves_provenance() -> None:
     from app.knowledge.federated_search import federated_search
@@ -338,7 +388,7 @@ async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
         goal="retention policy",
         tenant_ctx=TENANT,
         context={
-            "_rag_strategy_override": "fusion_rag",
+            "_rag_strategy_override": "fusion",
             "retrieval_top_k": 9,
             "retrieval_filters": {"department": "legal"},
         },
@@ -351,12 +401,12 @@ async def test_agent_graph_persists_gateway_trace_and_fails_closed() -> None:
     assert gateway.calls[0][1] == {
         "collection_id": "collection-1",
         "query": "retention policy",
-        "strategy_id": "fusion_rag",
+        "strategy_id": RAGStrategy.FUSION,
         "top_k": 9,
         "filters": {"department": "legal"},
     }
     assert "Evidence from collection-1" in update["rag_context"]
-    assert state.context["rag_requested_strategy_id"] == "fusion_rag"
+    assert state.context["rag_requested_strategy_id"] == "fusion"
     assert state.context["rag_resolved_strategy_ids"] == ["fusion"]
     assert state.context["rag_citations"][0]["citation_id"] == "citation-collection-1"
     assert state.context["rag_retrieval_legs"][0]["result_count"] == 1
@@ -403,3 +453,126 @@ async def test_agent_graph_run_preserves_required_retrieval_failure_trace() -> N
     assert result.context["rag_retrieval_status"] == "failed"
     assert result.events[-1]["type"] == "knowledge_retrieval_failed"
     assert "secret" not in str(result.context)
+
+
+@pytest.mark.asyncio
+async def test_agent_graph_emits_canonical_success_and_sanitized_failure_events() -> None:
+    from app.agent.graph import AgentGraph, RetrievalEntryPointError
+
+    success_events: list[dict[str, Any]] = []
+
+    async def record_success(event: dict[str, Any]) -> None:
+        success_events.append(event)
+
+    success_graph = AgentGraph(
+        planner=FakeProvider(),
+        executor=FakeProvider(),
+        verifier=FakeProvider(),
+        retrieval_gateway=RecordingGateway(),
+    )
+    success_graph._agent_collection_ids = ["collection-1"]
+    success_graph._event_callback = record_success
+    success_state = AgentState(
+        goal="retention policy",
+        tenant_ctx=TENANT,
+        context={"retrieval_strategy": "hybrid"},
+    )
+
+    await success_graph._node_rag_retrieval(
+        {"agent_state": success_state, "tenant_ctx": TENANT}
+    )
+
+    success = next(event for event in success_events if event["type"] == "knowledge_retrieved")
+    assert success["requested_strategy_id"] == "hybrid"
+    assert success["resolved_strategy_ids"] == ["hybrid"]
+    assert success["citations"][0]["citation_id"] == "citation-collection-1"
+    assert success["retrieval_legs"][0]["result_count"] == 1
+    assert success["strategy_trace"][0]["status"] == "complete"
+
+    async def record_failure(event: dict[str, Any]) -> None:
+        failure_events.append(event)
+
+    failure_events: list[dict[str, Any]] = []
+    failure_graph = AgentGraph(
+        planner=FakeProvider(),
+        executor=FakeProvider(),
+        verifier=FakeProvider(),
+        retrieval_gateway=RecordingGateway(error=RuntimeError("database secret")),
+    )
+    failure_graph._agent_collection_ids = ["collection-1"]
+    failure_graph._event_callback = record_failure
+    failure_state = AgentState(goal="retention policy", tenant_ctx=TENANT)
+
+    with pytest.raises(RetrievalEntryPointError):
+        await failure_graph._node_rag_retrieval(
+            {"agent_state": failure_state, "tenant_ctx": TENANT}
+        )
+
+    failure = next(
+        event for event in failure_events if event["type"] == "knowledge_retrieval_failed"
+    )
+    assert failure["requested_strategy_id"] == "hybrid"
+    assert failure["status"] == "failed"
+    assert "secret" not in str(failure)
+
+
+@pytest.mark.asyncio
+async def test_agent_graph_rejects_noncanonical_strategy_without_promotion() -> None:
+    from app.agent.graph import AgentGraph, RetrievalEntryPointError
+
+    gateway = RecordingGateway()
+    graph = AgentGraph(
+        planner=FakeProvider(),
+        executor=FakeProvider(),
+        verifier=FakeProvider(),
+        retrieval_gateway=gateway,
+    )
+    graph._agent_collection_ids = ["collection-1"]
+    state = AgentState(
+        goal="retention policy",
+        tenant_ctx=TENANT,
+        context={"retrieval_strategy": "direct"},
+    )
+
+    with pytest.raises(RetrievalEntryPointError):
+        await graph._node_rag_retrieval({"agent_state": state, "tenant_ctx": TENANT})
+
+    assert gateway.calls == []
+    assert state.context["rag_retrieval_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_agent_graph_does_not_use_unrequested_web_fallback() -> None:
+    from app.agent.graph import AgentGraph
+
+    class EmptyGateway(RecordingGateway):
+        async def execute(
+            self, tenant_context: TenantContext, **kwargs: Any
+        ) -> RAGExecutionResult:
+            self.calls.append((tenant_context, kwargs))
+            return RAGExecutionResult(
+                requested_strategy_id=str(kwargs["strategy_id"]),
+                resolved_strategy_id=RAGStrategy.HYBRID,
+            )
+
+    web_search = SimpleNamespace(search=AsyncMock(return_value=[{"content": "web"}]))
+    graph = AgentGraph(
+        planner=FakeProvider(),
+        executor=FakeProvider(),
+        verifier=FakeProvider(),
+        retrieval_gateway=EmptyGateway(),
+    )
+    graph._agent_collection_ids = ["collection-1"]
+    graph._web_search_tool = web_search
+    state = AgentState(
+        goal="retention policy",
+        tenant_ctx=TENANT,
+        context={"retrieval_strategy": "hybrid"},
+    )
+
+    result = await graph._node_rag_retrieval(
+        {"agent_state": state, "tenant_ctx": TENANT}
+    )
+
+    assert result["rag_context"] == ""
+    web_search.search.assert_not_awaited()

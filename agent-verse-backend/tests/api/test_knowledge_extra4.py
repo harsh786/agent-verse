@@ -16,7 +16,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
-from app.rag.models import Chunk, KnowledgeCollection
+from app.rag.contracts import RAGExecutionResult, RAGStrategy
+from app.rag.models import KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
@@ -24,6 +25,22 @@ from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-know4", plan=PlanTier.PROFESSIONAL, api_key_id="kid-k4")
 _VALID_KEY = "av_test_knowledge_extra4"
+
+
+class RecordingGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TenantContext, dict[str, Any]]] = []
+
+    async def execute(
+        self,
+        tenant_ctx: TenantContext,
+        **kwargs: Any,
+    ) -> RAGExecutionResult:
+        self.calls.append((tenant_ctx, kwargs))
+        return RAGExecutionResult(
+            requested_strategy_id=str(kwargs["strategy_id"]),
+            resolved_strategy_id=RAGStrategy.HYBRID,
+        )
 
 
 def _make_app(
@@ -41,7 +58,7 @@ def _make_app(
     app.include_router(knowledge_router)
     app.state.knowledge_store = knowledge_store or KnowledgeStore()
     app.state.semantic_cache = semantic_cache or SemanticCache()
-    app.state.retrieval_gateway = MagicMock()
+    app.state.retrieval_gateway = RecordingGateway()
     if embedder is not None:
         app.state.embedder = embedder
     return app
@@ -180,18 +197,14 @@ def test_ingest_very_short_content_uses_fallback_chunk() -> None:
 # search — hybrid_search_db path (line 335)
 # ---------------------------------------------------------------------------
 
-def test_search_uses_hybrid_search_db_when_available() -> None:
-    """Line 335: Uses hybrid_search_db when store has the method."""
+def test_search_uses_gateway_and_never_direct_store() -> None:
+    """Knowledge search sends canonical input to the app gateway only."""
     embedder = _make_embedder()
 
     store = KnowledgeStore()
-    # Add hybrid_search_db method to the store
-    async def _hybrid_search_db(q, embedding, collection_id, tenant_ctx, top_k=10):
-        return []
-    store.hybrid_search_db = _hybrid_search_db  # type: ignore[attr-defined]
-
-    coll_id_holder: list[str] = []
-    client = TestClient(_make_app(knowledge_store=store, embedder=embedder), raise_server_exceptions=False)
+    store.hybrid_search_db = AsyncMock(side_effect=AssertionError("direct store bypass"))
+    app = _make_app(knowledge_store=store, embedder=embedder)
+    client = TestClient(app, raise_server_exceptions=False)
     coll_id = _create_collection(client)
 
     with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
@@ -199,7 +212,13 @@ def test_search_uses_hybrid_search_db_when_available() -> None:
             f"/knowledge/search?q=test&collection_id={coll_id}",
             headers=H,
         )
-    assert resp.status_code == 503
+    assert resp.status_code == 200
+    store.hybrid_search_db.assert_not_awaited()
+    gateway = app.state.retrieval_gateway
+    assert isinstance(gateway, RecordingGateway)
+    assert gateway.calls[0][0] is _CTX
+    assert gateway.calls[0][1]["collection_id"] == coll_id
+    assert gateway.calls[0][1]["strategy_id"] == "hybrid"
 
 
 # ---------------------------------------------------------------------------
@@ -996,15 +1015,15 @@ def test_federated_search_failure_is_structured_non_2xx() -> None:
     assert resp.json() == {"detail": "Retrieval service is unavailable"}
 
 
-def test_federated_search_no_embedder_503() -> None:
-    """Lines 1006-1010: No embedder returns 503."""
+def test_federated_search_uses_gateway_without_api_embedder() -> None:
+    """Embedding capability is validated behind the gateway boundary."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/knowledge/search/federated",
         json={"query": "test", "collection_ids": ["c1", "c2"]},
         headers=H,
     )
-    assert resp.status_code == 503
+    assert resp.status_code == 200
 
 
 def test_federated_search_missing_query() -> None:

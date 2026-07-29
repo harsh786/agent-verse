@@ -1,12 +1,12 @@
-"""RetrieverTool — agent-owned retrieval with strategy routing and structured results.
+"""Agent retrieval tool backed exclusively by the tenant-aware gateway."""
 
-NEVER returns empty strings. Every degraded path returns a structured
-RetrievalResult with source="none_available" and confidence=0.
-"""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from app.rag.contracts import RAGStrategy
 
 if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
@@ -14,268 +14,141 @@ if TYPE_CHECKING:
 
 @dataclass
 class CitationRef:
-    source: str          # kb|web|memory|graph
+    source: str
     url: str = ""
     page_number: int | None = None
     chunk_id: str = ""
     score: float = 0.0
+    citation_id: str = ""
+    collection_id: str = ""
 
 
 @dataclass
 class RetrievalResult:
-    """Structured retrieval result — never a silent empty string."""
+    """Structured gateway result used by agent retrieval callers."""
+
     query: str
-    source: str                  # knowledge_base|web|memory|graph|parametric|none_available
-    strategy_used: str           # auto|hybrid|vector|graph|hyde|web|memory
-    confidence: float            # 0.0-1.0
+    source: str
+    strategy_used: str
+    confidence: float
     chunks: list[dict[str, Any]] = field(default_factory=list)
     citations: list[CitationRef] = field(default_factory=list)
     fallback_used: bool = False
     fallback_reason: str = ""
     reformulation_count: int = 0
-    # context_text: stored field; if not supplied, computed from chunks in __post_init__
-    context_text: str = field(default="")
-    # CRAG correction metadata
+    context_text: str = ""
     corrected: bool = False
     correction_reason: str = ""
+    requested_strategy_id: str = ""
+    resolved_strategy_ids: list[str] = field(default_factory=list)
+    retrieval_legs: list[dict[str, Any]] = field(default_factory=list)
+    strategy_trace: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Compute context_text from chunks when not explicitly supplied."""
         if not self.context_text:
             self.context_text = "\n\n".join(
-                c.get("content", "") for c in self.chunks
+                str(chunk.get("content", "")) for chunk in self.chunks
             )
 
 
 class RetrieverTool:
-    """Unified retrieval tool wrapping all 7 retrieval sources."""
+    """Thin adapter from agent callers to canonical gateway executions."""
 
-    def __init__(
-        self,
-        *,
-        knowledge_store: Any = None,
-        kg_store: Any = None,
-        ltm_store: Any = None,
-        exec_memory: Any = None,
-        embedder: Any = None,
-        web_search_fn: Any = None,
-        web_search_available: bool = False,
-    ) -> None:
-        self._kb = knowledge_store
-        self._kg = kg_store
-        self._ltm = ltm_store
-        self._exec = exec_memory
-        self._embedder = embedder
-        self._web_fn = web_search_fn
-        self._web_available = web_search_available or (web_search_fn is not None)
+    def __init__(self, *, retrieval_gateway: Any) -> None:
+        if retrieval_gateway is None:
+            raise ValueError("retrieval_gateway is required")
+        self._gateway = retrieval_gateway
 
     async def retrieve(
         self,
         query: str,
         *,
         tenant_ctx: TenantContext,
-        strategy: str = "auto",
+        strategy: RAGStrategy = RAGStrategy.HYBRID,
         collection_ids: list[str] | None = None,
         top_k: int = 5,
-        min_confidence: float = 0.3,
-        allow_web_fallback: bool = True,
-        allow_reformulation: bool = True,
-        max_reformulation_attempts: int = 2,
+        min_confidence: float = 0.0,
         metadata_filter: dict[str, Any] | None = None,
+        **legacy_options: Any,
     ) -> RetrievalResult:
-        """Retrieve with strategy routing and structured degraded paths."""
+        """Retrieve the requested canonical strategy without fallback or promotion."""
 
-        # Determine effective strategy
-        effective_strategy = strategy
-        if strategy == "auto":
-            effective_strategy = self._select_strategy(query, collection_ids)
+        if legacy_options:
+            raise TypeError("Fallback and reformulation options are not supported")
+        if not isinstance(strategy, RAGStrategy):
+            raise TypeError("strategy must be a canonical RAGStrategy")
+        if not collection_ids:
+            raise ValueError("collection_ids is required")
 
-        # 1. Try KB retrieval
-        if effective_strategy in ("auto", "hybrid", "vector") and self._kb is not None:
-            result = await self._kb_retrieve(
-                query, tenant_ctx=tenant_ctx,
-                collection_ids=collection_ids, top_k=top_k,
-                min_confidence=min_confidence,
-                metadata_filter=metadata_filter,
+        gateway_results = []
+        for collection_id in collection_ids:
+            gateway_results.append(
+                await self._gateway.execute(
+                    tenant_ctx,
+                    collection_id=collection_id,
+                    query=query,
+                    strategy_id=strategy,
+                    top_k=top_k,
+                    filters=metadata_filter or {},
+                )
             )
-            # Sentence window expansion (if chunks have window_context metadata)
-            try:
-                from app.rag.sentence_window import SentenceWindowRetriever
-                _sw_retriever = SentenceWindowRetriever()
-                result.chunks = _sw_retriever.expand(result.chunks)
-                # Rebuild context_text from expanded chunks
-                if any(
-                    c.get("source_metadata", {}).get("window_expanded")
-                    for c in result.chunks
-                ):
-                    result.context_text = "\n\n".join(
-                        c.get("content", "") for c in result.chunks[:5]
-                    )
-            except Exception:
-                pass
-            if result.confidence >= min_confidence:
-                return result
 
-        # 2. Try web fallback if KB empty/low-confidence and web allowed
-        if allow_web_fallback and self._web_available and self._web_fn is not None:
-            try:
-                web_result = await self._web_retrieve(query, top_k=top_k)
-                if web_result.confidence >= min_confidence:
-                    return web_result
-            except Exception:
-                pass
-
-        # 3. Try memory fallback
-        if self._ltm is not None or self._exec is not None:
-            mem_result = await self._memory_retrieve(query, tenant_ctx=tenant_ctx, top_k=top_k)
-            if mem_result.confidence >= min_confidence:
-                return mem_result
-
-        # 4. Parametric baseline (no retrieval — model relies on training)
+        citations_by_id = {
+            citation.citation_id: (collection_id, citation)
+            for collection_id, result in zip(collection_ids, gateway_results, strict=True)
+            for citation in result.citations
+            if citation.score >= min_confidence
+        }
+        ordered = sorted(
+            citations_by_id.values(),
+            key=lambda item: (-item[1].score, item[1].citation_id),
+        )[:top_k]
+        chunks = [
+            {
+                "citation_id": citation.citation_id,
+                "chunk_id": citation.chunk_id,
+                "content": citation.content,
+                "score": citation.score,
+                "source": citation.source,
+                "collection_id": collection_id,
+                "metadata": dict(citation.metadata),
+            }
+            for collection_id, citation in ordered
+        ]
+        citations = [
+            CitationRef(
+                source=citation.source,
+                url=str(citation.metadata.get("source_url", "")),
+                page_number=citation.metadata.get("page_number"),
+                chunk_id=citation.chunk_id,
+                score=citation.score,
+                citation_id=citation.citation_id,
+                collection_id=collection_id,
+            )
+            for collection_id, citation in ordered
+        ]
+        resolved_ids = sorted(
+            {result.resolved_strategy_id.value for result in gateway_results}
+        )
         return RetrievalResult(
             query=query,
-            source="parametric",
-            strategy_used=effective_strategy,
-            confidence=0.1,
-            chunks=[],
-            citations=[],
-            fallback_used=True,
-            fallback_reason="all retrieval sources exhausted or unavailable",
-        )
-
-    def _select_strategy(self, query: str, collection_ids: list[str] | None) -> str:
-        """Select retrieval strategy using RetrievalPolicy."""
-        try:
-            from app.rag.agentic.retrieval_policy import RetrievalPolicy
-            policy = RetrievalPolicy()
-            strategy = policy.select(
-                query_type="factual",
-                kb_available=self._kb is not None,
-                web_available=self._web_available,
-                kg_available=self._kg is not None,
-            )
-            return strategy.value  # Returns "hybrid", "web", "graph", etc.
-        except Exception:
-            if self._kb is None and not self._web_available:
-                return "memory"
-            if self._kb is None:
-                return "web" if self._web_available else "parametric"
-            return "hybrid"
-
-    async def _kb_retrieve(
-        self,
-        query: str,
-        *,
-        tenant_ctx: TenantContext,
-        collection_ids: list[str] | None,
-        top_k: int,
-        min_confidence: float,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> RetrievalResult:
-        try:
-            # Get embedding
-            embedding: list[float] = []
-            if self._embedder is not None:
-                from app.providers.base import EmbedRequest
-                resp = await self._embedder.embed(EmbedRequest(texts=[query]))
-                embedding = resp.embeddings[0] if resp.embeddings else []
-
-            # Determine collections to search
-            if collection_ids:
-                search_cols = collection_ids
-            else:
-                cols = await self._kb.list_collections_async(tenant_ctx=tenant_ctx)
-                search_cols = [c.collection_id for c in cols]
-
-            if not search_cols:
-                return RetrievalResult(
-                    query=query, source="none_available",
-                    strategy_used="hybrid", confidence=0.0,
-                    fallback_used=True, fallback_reason="no KB collections found",
-                )
-
-            all_results = []
-            for col_id in search_cols[:3]:  # cap at 3 collections
-                results = await self._kb.hybrid_search_db(
-                    query=query,
-                    query_embedding=embedding,
-                    collection_id=col_id,
-                    tenant_ctx=tenant_ctx,
-                    top_k=top_k,
-                    metadata_filter=metadata_filter,
-                )
-                all_results.extend(results)
-
-            # Sort and deduplicate by chunk_id
-            seen: set[str] = set()
-            deduped = []
-            for r in sorted(all_results, key=lambda x: x.score, reverse=True):
-                if r.chunk_id not in seen:
-                    seen.add(r.chunk_id)
-                    deduped.append(r)
-
-            filtered = [r for r in deduped if r.score >= min_confidence]
-
-            if not filtered:
-                return RetrievalResult(
-                    query=query, source="none_available",
-                    strategy_used="hybrid", confidence=0.0,
-                    fallback_used=True,
-                    fallback_reason=f"no results above min_confidence={min_confidence}",
-                )
-
-            avg_confidence = sum(r.score for r in filtered) / len(filtered)
-            chunks = [
-                {"chunk_id": r.chunk_id, "content": r.content, "score": r.score,
-                 "source_url": r.source_url, "page_number": r.page_number}
-                for r in filtered[:top_k]
-            ]
-            citations = [
-                CitationRef(source="kb", url=r.source_url,
-                            page_number=r.page_number, chunk_id=r.chunk_id, score=r.score)
-                for r in filtered[:top_k]
-            ]
-
-            return RetrievalResult(
-                query=query, source="knowledge_base",
-                strategy_used="hybrid", confidence=avg_confidence,
-                chunks=chunks, citations=citations,
-            )
-
-        except Exception as exc:
-            return RetrievalResult(
-                query=query, source="none_available",
-                strategy_used="hybrid", confidence=0.0,
-                fallback_used=True, fallback_reason=f"KB retrieval error: {exc!s}",
-            )
-
-    async def _web_retrieve(self, query: str, top_k: int) -> RetrievalResult:
-        results = await self._web_fn(query, top_k=top_k)
-        chunks = [{"content": r.get("snippet", r.get("content", "")),
-                   "source_url": r.get("url", "")} for r in (results or [])]
-        citations = [CitationRef(source="web", url=r.get("url", "")) for r in (results or [])]
-        confidence = 0.6 if chunks else 0.0
-        return RetrievalResult(
-            query=query, source="web", strategy_used="web",
-            confidence=confidence, chunks=chunks, citations=citations,
-            fallback_used=not bool(chunks),  # mark as fallback when empty
-            fallback_reason="" if chunks else "web search returned no results",
-        )
-
-    async def _memory_retrieve(
-        self, query: str, *, tenant_ctx: TenantContext, top_k: int
-    ) -> RetrievalResult:
-        chunks = []
-        if self._ltm is not None:
-            try:
-                memories = self._ltm.recall(query=query, tenant_ctx=tenant_ctx, top_k=top_k)
-                chunks = [{"content": m.content, "source_url": ""} for m in memories]
-            except Exception:
-                pass
-        confidence = 0.5 if chunks else 0.0
-        return RetrievalResult(
-            query=query, source="memory", strategy_used="memory",
-            confidence=confidence, chunks=chunks, citations=[],
+            source="knowledge_base",
+            strategy_used=resolved_ids[0] if len(resolved_ids) == 1 else strategy.value,
+            confidence=max((citation.score for _, citation in ordered), default=0.0),
+            chunks=chunks,
+            citations=citations,
+            requested_strategy_id=strategy.value,
+            resolved_strategy_ids=resolved_ids,
+            retrieval_legs=[
+                leg.model_dump(mode="json")
+                for result in gateway_results
+                for leg in result.retrieval_legs
+            ],
+            strategy_trace=[
+                trace.model_dump(mode="json")
+                for result in gateway_results
+                for trace in result.strategy_trace
+            ],
         )
 
     async def parallel_retrieve(
@@ -283,68 +156,29 @@ class RetrieverTool:
         query: str,
         *,
         tenant_ctx: TenantContext,
-        sources: list[str] | None = None,
+        strategies: list[RAGStrategy],
+        collection_ids: list[str],
         top_k: int = 5,
-        min_confidence: float = 0.3,
-    ) -> list[RetrievalResult]:
-        """Fire retrieval across multiple sources in parallel via asyncio.gather."""
-        import asyncio
-        available_sources = sources or ["kb"]
-        tasks = []
-        for source in available_sources:
-            if source == "kb" and self._kb is not None:
-                tasks.append(self._kb_retrieve(
-                    query, tenant_ctx=tenant_ctx, collection_ids=None,
-                    top_k=top_k, min_confidence=min_confidence,
-                ))
-            elif source == "web" and self._web_fn is not None:
-                tasks.append(self._web_retrieve(query, top_k=top_k))
-            elif source in ("memory", "ltm"):
-                tasks.append(self._memory_retrieve(query, tenant_ctx=tenant_ctx, top_k=top_k))
-
-        if not tasks:
-            return [RetrievalResult(
-                query=query, source="parametric", strategy_used="parallel",
-                confidence=0.1, chunks=[], citations=[], fallback_used=True,
-                fallback_reason="no sources available for parallel retrieve",
-            )]
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        # Collect successful results (not exceptions, not failed fallbacks)
-        valid = [r for r in results if isinstance(r, RetrievalResult) and not r.fallback_used]
-        if valid:
-            return valid
-
-        # At least return any RetrievalResult we got (even failed ones)
-        any_result = next((r for r in results if isinstance(r, RetrievalResult)), None)
-        if any_result:
-            return [any_result]
-
-        # All tasks threw exceptions — return parametric baseline, never empty list
-        return [RetrievalResult(
-            query=query, source="parametric", strategy_used="parallel",
-            confidence=0.1, chunks=[], citations=[], fallback_used=True,
-            fallback_reason="all parallel retrieval sources failed with exceptions",
-        )]
-
-    async def _retrieve_from_kb(
-        self,
-        query: str,
-        *,
-        tenant_ctx: TenantContext,
-        collection_ids: list[str] | None,
-        top_k: int,
-        min_confidence: float,
+        min_confidence: float = 0.0,
         metadata_filter: dict[str, Any] | None = None,
-    ) -> RetrievalResult:
-        """Thin alias for _kb_retrieve — exposed so tests can patch it independently."""
-        return await self._kb_retrieve(
-            query,
-            tenant_ctx=tenant_ctx,
-            collection_ids=collection_ids,
-            top_k=top_k,
-            min_confidence=min_confidence,
-            metadata_filter=metadata_filter,
+    ) -> list[RetrievalResult]:
+        """Execute only the explicitly requested canonical strategies."""
+
+        return list(
+            await asyncio.gather(
+                *(
+                    self.retrieve(
+                        query,
+                        tenant_ctx=tenant_ctx,
+                        strategy=strategy,
+                        collection_ids=collection_ids,
+                        top_k=top_k,
+                        min_confidence=min_confidence,
+                        metadata_filter=metadata_filter,
+                    )
+                    for strategy in strategies
+                )
+            )
         )
 
     async def retrieve_corrective(
@@ -352,68 +186,21 @@ class RetrieverTool:
         query: str,
         *,
         tenant_ctx: TenantContext,
-        collection_ids: list[str] | None = None,
+        collection_ids: list[str],
         top_k: int = 5,
-        confidence_threshold: float = 0.5,
-        strategy: str = "hybrid",
-        allow_web_fallback: bool = True,
+        confidence_threshold: float = 0.0,
+        strategy: RAGStrategy = RAGStrategy.CORRECTIVE,
+        **legacy_options: Any,
     ) -> RetrievalResult:
-        """Corrective RAG (CRAG): retrieve → score → correct if needed."""
-        from app.rag.agentic.context_gap_detector import ContextGapDetector
+        """Execute canonical corrective retrieval without local correction fallback."""
 
-        # Step 1: Primary KB retrieval
-        primary = await self._retrieve_from_kb(
-            query=query,
+        if legacy_options:
+            raise TypeError("Fallback options are not supported")
+        return await self.retrieve(
+            query,
             tenant_ctx=tenant_ctx,
+            strategy=strategy,
             collection_ids=collection_ids,
             top_k=top_k,
-            min_confidence=0.0,
+            min_confidence=confidence_threshold,
         )
-
-        # Step 2: Evaluate quality — low confidence OR gap phrases
-        gap_detector = ContextGapDetector()
-        has_gap = gap_detector.has_gap(primary.context_text or "")
-        low_conf = primary.confidence < confidence_threshold
-        needs_correction = low_conf or has_gap
-
-        if not needs_correction:
-            return primary
-
-        # Step 3: Determine correction reason
-        # Prefer "low_confidence" when both triggers fire so callers can distinguish
-        # a pure confidence problem from a content-gap problem.
-        correction_reason = "low_confidence" if low_conf else "gap_detected"
-
-        # Step 4: Attempt web fallback
-        if allow_web_fallback and self._web_available and self._web_fn is not None:
-            try:
-                web_raw = await self._web_fn(query, top_k=top_k)
-                if web_raw:
-                    web_content = "\n".join(
-                        r.get("content", r.get("snippet", ""))[:500]
-                        for r in web_raw[:top_k]
-                    )
-                    return RetrievalResult(
-                        query=query,
-                        source="web",
-                        strategy_used="web_corrective",
-                        confidence=0.6,
-                        context_text=web_content,
-                        chunks=[
-                            {
-                                "content": r.get("content", ""),
-                                "score": 0.6,
-                                "source_url": r.get("url", ""),
-                            }
-                            for r in web_raw[:top_k]
-                        ],
-                        corrected=True,
-                        correction_reason=correction_reason,
-                    )
-            except Exception:
-                pass
-
-        # Step 5: Return original with correction flag set
-        primary.corrected = True
-        primary.correction_reason = correction_reason
-        return primary
