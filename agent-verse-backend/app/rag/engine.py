@@ -785,6 +785,7 @@ async def retrieve(
                         provider=provider,
                         retrieve_fn=_self_rag_retrieve,
                         model=model,
+                        strict=strict,
                     )
                 else:
                     refined = ""

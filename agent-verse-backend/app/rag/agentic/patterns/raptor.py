@@ -121,6 +121,8 @@ class RAPTORPattern(RAGPattern):
             source_ids = [sid for n in group for sid in n.source_ids]
             try:
                 if cb is not None and not cb.can_call():
+                    if strict:
+                        raise RuntimeError("RAPTOR provider circuit is open")
                     summary = combined[:300]
                 else:
                     resp = await provider.complete(CompletionRequest(
@@ -191,6 +193,8 @@ class RAPTORPattern(RAGPattern):
         # Answer query using hierarchical context
         try:
             if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("RAPTOR provider circuit is open")
                 result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
             else:
                 resp = await provider.complete(CompletionRequest(

@@ -236,7 +236,7 @@ async def test_strict_fusion_propagates_variant_embedding_failure() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "strategy",
-    ["fusion", "flare", "speculative", "raptor", "agentic_chunking"],
+    ["fusion", "flare", "self_rag", "speculative", "raptor", "agentic_chunking"],
 )
 async def test_strict_provider_backed_strategies_propagate_provider_failure(
     strategy: str,
@@ -288,6 +288,88 @@ async def test_strict_provider_backed_strategies_propagate_provider_failure(
     assert provider.requests
     assert all(request.model == "tenant-model" for request in provider.requests)
     assert "secret-provider-detail" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("strategy", "class_path", "pattern_factory", "breaker_key"),
+    [
+        (
+            "flare",
+            "app.rag.agentic.patterns.flare.FLAREPattern",
+            lambda: __import__(
+                "app.rag.agentic.patterns.flare", fromlist=["FLAREPattern"]
+            ).FLAREPattern(),
+            "pattern_flare",
+        ),
+        (
+            "self_rag",
+            "app.rag.agentic.patterns.self_rag.SelfRAGPattern",
+            lambda: __import__(
+                "app.rag.agentic.patterns.self_rag", fromlist=["SelfRAGPattern"]
+            ).SelfRAGPattern(),
+            "pattern_self_rag",
+        ),
+        (
+            "speculative",
+            "app.rag.agentic.patterns.speculative.SpeculativeRAGPattern",
+            lambda: __import__(
+                "app.rag.agentic.patterns.speculative", fromlist=["SpeculativeRAGPattern"]
+            ).SpeculativeRAGPattern(n_candidates=2),
+            "pattern_speculative_rag",
+        ),
+        (
+            "raptor",
+            "app.rag.agentic.patterns.raptor.RAPTORPattern",
+            lambda: __import__(
+                "app.rag.agentic.patterns.raptor", fromlist=["RAPTORPattern"]
+            ).RAPTORPattern(cluster_size=4, max_levels=2),
+            "pattern_raptor",
+        ),
+    ],
+)
+async def test_strict_provider_patterns_reject_open_circuit(
+    strategy: str,
+    class_path: str,
+    pattern_factory: object,
+    breaker_key: str,
+) -> None:
+    from app.providers.base import CompletionRequest, CompletionResponse
+    from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError, retrieve
+
+    class OpenBreaker:
+        def can_call(self) -> bool:
+            return False
+
+    class Provider:
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            return CompletionResponse(
+                content='{"should_retrieve": true}',
+                model=request.model,
+            )
+
+    pattern = pattern_factory()  # type: ignore[operator]
+    pattern._circuit_breakers[breaker_key] = OpenBreaker()
+    base_results = [
+        RetrievalResult("chunk-1", "first evidence", 0.8, {}, ["vector"]),
+        RetrievalResult("chunk-2", "second evidence", 0.7, {}, ["fts"]),
+    ]
+
+    with (
+        patch(class_path, return_value=pattern),
+        patch("app.rag.engine.hybrid_search", AsyncMock(return_value=base_results)),
+        pytest.raises(RetrievalStrategyExecutionError, match=strategy),
+    ):
+        await retrieve(
+            AsyncMock(),
+            query="retention policy",
+            query_embedding=[0.1],
+            collection_id="collection-1",
+            strategy=strategy,
+            provider=Provider(),
+            model="tenant-model",
+            strict=True,
+        )
 
 
 @pytest.mark.asyncio

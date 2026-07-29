@@ -649,7 +649,15 @@ def create_app(
             if not model:
                 provider_default = getattr(provider, "_default_model", "")
                 model = provider_default.strip() if isinstance(provider_default, str) else ""
-            return ResolvedLLM(provider=provider, model=model) if model else None
+            return (
+                ResolvedLLM(
+                    provider=provider,
+                    model=model,
+                    provider_type=provider_name.strip().lower(),
+                )
+                if model
+                else None
+            )
 
         provider_default = getattr(_app_provider, "_default_model", "")
         model = provider_default.strip() if isinstance(provider_default, str) else ""
@@ -657,7 +665,13 @@ def create_app(
             model = "fake-provider"
         if not model:
             return None
-        return ResolvedLLM(provider=_app_provider, model=model)
+        return ResolvedLLM(
+            provider=_app_provider,
+            model=model,
+            provider_type=str(
+                getattr(_app_provider, "_agentverse_provider_type", "")
+            ),
+        )
 
     _retrieval_gateway = RetrievalGateway(
         RetrievalDependencies(

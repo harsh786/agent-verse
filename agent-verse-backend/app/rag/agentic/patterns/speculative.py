@@ -105,6 +105,8 @@ class SpeculativeRAGPattern(RAGPattern):
         for _ in range(self._n):
             try:
                 if cb is not None and not cb.can_call():
+                    if strict:
+                        raise RuntimeError("Speculative RAG provider circuit is open")
                     break
                 resp = await provider.complete(CompletionRequest(
                     messages=[
@@ -154,6 +156,8 @@ class SpeculativeRAGPattern(RAGPattern):
 
             try:
                 if cb is not None and not cb.can_call():
+                    if strict:
+                        raise RuntimeError("Speculative RAG provider circuit is open")
                     candidate.score = 0.3
                     verified.append(candidate)
                     continue
