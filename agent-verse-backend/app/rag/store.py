@@ -332,7 +332,10 @@ class KnowledgeStore:
                     SET status = :status,
                         chunk_count = :chunk_count,
                         error_message = :error_message,
-                        indexed_at = CASE WHEN :status = 'completed' THEN now() ELSE indexed_at END
+                        indexed_at = CASE
+                            WHEN :status IN ('running', 'completed') THEN now()
+                            ELSE indexed_at
+                        END
                     WHERE id = :id AND tenant_id = :tenant_id
                       AND domain_metadata->>'record_type' = 'ingestion_job'
                 """),
@@ -387,6 +390,45 @@ class KnowledgeStore:
             "error_message": str(row[4]) if row[4] else None,
             "source_url": str(row[5] or ""),
         }
+
+    async def reconcile_stale_ingestion_jobs_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        stale_after_seconds: int,
+    ) -> int:
+        """Mark tenant-scoped running repository jobs interrupted after restart."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        if stale_after_seconds < 1:
+            raise ValueError("stale_after_seconds must be positive")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'failed',
+                        error_message = 'Repository ingestion interrupted'
+                    WHERE tenant_id = :tenant_id
+                      AND source_type = 'repository'
+                      AND status = 'running'
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                      AND COALESCE(indexed_at, created_at)
+                          < now() - make_interval(secs => :stale_after_seconds)
+                """),
+                {
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "stale_after_seconds": stale_after_seconds,
+                },
+            )
+        return result.rowcount or 0
 
     def ingest_chunk(
         self,
@@ -850,6 +892,86 @@ class KnowledgeStore:
             )
         return [chunk.chunk_id for chunk in chunks]
 
+    async def ingest_repository_chunks_async(
+        self,
+        chunks: list[Chunk],
+        *,
+        job_id: str,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+    ) -> list[str]:
+        """Commit repository chunks, counters, association, and completion atomically."""
+        if self._db is None:
+            raise RuntimeError("Repository ingestion requires a database")
+        if not chunks:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                completed = await session.execute(
+                    text("""
+                        UPDATE knowledge_documents AS job
+                        SET status = 'completed', chunk_count = 0,
+                            error_message = NULL, indexed_at = now()
+                        WHERE job.id = :job_id AND job.tenant_id = :tenant_id
+                          AND job.collection_id = :collection_id
+                          AND job.status = 'running'
+                          AND job.domain_metadata->>'record_type' = 'ingestion_job'
+                          AND EXISTS (
+                              SELECT 1 FROM knowledge_collections AS collection
+                              WHERE collection.id = job.collection_id
+                                AND collection.tenant_id = job.tenant_id
+                                AND collection.is_active IS TRUE
+                          )
+                    """),
+                    {
+                        "job_id": job_id,
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "collection_id": collection_id,
+                    },
+                )
+                if completed.rowcount != 1:
+                    raise KeyError(f"Repository ingestion job not running: {job_id}")
+            return []
+        records = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "document_id": chunk.document_id,
+                "content": chunk.content,
+                "embedding": chunk.embedding,
+                "metadata": dict(chunk.metadata),
+                "chunk_index": chunk.chunk_index,
+                "freshness_ttl_hours": None,
+                "parent_chunk_id": chunk.parent_chunk_id,
+                "chunk_level": chunk.chunk_level,
+                "window_start": chunk.window_start,
+                "window_end": chunk.window_end,
+                "window_id": None,
+                "hierarchy_level": 0,
+                "is_proposition": False,
+                "strategy_metadata": {"ingestion_job_id": job_id},
+            }
+            for chunk in chunks
+        ]
+        await self._persist_chunks(
+            records,
+            collection_id=collection_id,
+            tenant_id=tenant_ctx.tenant_id,
+            completion_job_id=job_id,
+        )
+        cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if cached is not None:
+            cached.chunks.extend(chunks)
+            cached.collection.document_count = len(
+                {chunk.document_id for chunk in cached.chunks}
+            )
+        return [chunk.chunk_id for chunk in chunks]
+
     async def _persist_chunk(
         self,
         *,
@@ -901,6 +1023,7 @@ class KnowledgeStore:
         *,
         collection_id: str,
         tenant_id: str,
+        completion_job_id: str | None = None,
     ) -> None:
         if self._db is None:
             return
@@ -1017,6 +1140,26 @@ class KnowledgeStore:
                 """),
                 {"id": collection_id, "tid": tenant_id},
             )
+            if completion_job_id is not None:
+                completed = await session.execute(
+                    text("""
+                        UPDATE knowledge_documents
+                        SET status = 'completed',
+                            chunk_count = :chunk_count,
+                            error_message = NULL,
+                            indexed_at = now()
+                        WHERE id = :job_id AND tenant_id = :tenant_id
+                          AND status = 'running'
+                          AND domain_metadata->>'record_type' = 'ingestion_job'
+                    """),
+                    {
+                        "job_id": completion_job_id,
+                        "tenant_id": tenant_id,
+                        "chunk_count": len(records),
+                    },
+                )
+                if completed.rowcount != 1:
+                    raise KeyError(f"Repository ingestion job not running: {completion_job_id}")
 
     async def _db_ingest_with_citations(
         self,

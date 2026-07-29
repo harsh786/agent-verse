@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import uuid as _uuid
 from contextlib import suppress
 from typing import Any
@@ -10,6 +11,15 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, SecretStr
 
+from app.core.config import get_settings
+from app.ingestion.repository_security import (
+    RepositoryLimits,
+    RepositorySecurityError,
+    read_repository_files,
+    validate_branch,
+    validate_patterns,
+    validate_repository_url,
+)
 from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
@@ -616,6 +626,16 @@ async def ingest_repository(
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
+    settings = get_settings()
+
+    try:
+        if body.max_files < 1:
+            raise RepositorySecurityError("Repository max_files must be positive")
+        repository_url = validate_repository_url(body.repo_url)
+        branch = validate_branch(body.branch)
+        file_patterns = validate_patterns(body.file_patterns)
+    except RepositorySecurityError as exc:
+        raise HTTPException(status_code=400, detail="Invalid repository ingestion input") from exc
 
     collection = await store.get_collection_async(
         body.collection_id,
@@ -625,11 +645,15 @@ async def ingest_repository(
         raise HTTPException(status_code=404, detail="Knowledge collection not found")
     await _embed_texts_or_http(["Repository ingestion readiness check"], embedder)
     try:
+        await store.reconcile_stale_ingestion_jobs_async(
+            tenant_ctx=tenant,
+            stale_after_seconds=settings.repo_ingest_stale_job_seconds,
+        )
         job_id = await store.create_ingestion_job_async(
             collection_id=body.collection_id,
-            source_url=body.repo_url,
+            source_url=repository_url,
             source_type="repository",
-            title=body.repo_url.rstrip("/").rsplit("/", 2)[-1],
+            title=repository_url.rstrip("/").rsplit("/", 2)[-1],
             tenant_ctx=tenant,
         )
     except Exception as exc:
@@ -643,14 +667,21 @@ async def ingest_repository(
     task = asyncio.create_task(
         _ingest_repo_background(
             job_id=job_id,
-            repo_url=body.repo_url,
+            repo_url=repository_url,
             collection_id=body.collection_id,
-            branch=body.branch,
-            file_patterns=body.file_patterns,
-            max_files=body.max_files,
+            branch=branch,
+            file_patterns=file_patterns,
+            max_files=min(body.max_files, settings.repo_ingest_max_files),
             store=store,
             embedder=embedder,
             tenant_ctx=tenant,
+            limits=RepositoryLimits(
+                max_files=min(body.max_files, settings.repo_ingest_max_files),
+                max_file_bytes=settings.repo_ingest_max_file_bytes,
+                max_total_bytes=settings.repo_ingest_max_total_bytes,
+                max_repository_bytes=settings.repo_ingest_max_repository_bytes,
+            ),
+            clone_timeout_seconds=settings.repo_ingest_clone_timeout_seconds,
         )
     )
     # Don't await — return immediately
@@ -659,9 +690,9 @@ async def ingest_repository(
     return {
         "status": "ingestion_started",
         "job_id": job_id,
-        "repo_url": body.repo_url,
+        "repo_url": repository_url,
         "collection_id": body.collection_id,
-        "branch": body.branch,
+        "branch": branch,
         "message": "Repository ingestion started in background.",
     }
 
@@ -671,6 +702,10 @@ async def get_ingestion_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     try:
+        await store.reconcile_stale_ingestion_jobs_async(
+            tenant_ctx=tenant,
+            stale_after_seconds=get_settings().repo_ingest_stale_job_seconds,
+        )
         job = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
     except Exception as exc:
         raise HTTPException(
@@ -692,6 +727,8 @@ async def _ingest_repo_background(
     store: Any,
     embedder: Any,
     tenant_ctx: Any,
+    limits: RepositoryLimits | None = None,
+    clone_timeout_seconds: int = 120,
 ) -> None:
     import asyncio
     import pathlib
@@ -701,9 +738,21 @@ async def _ingest_repo_background(
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     from app.observability.logging import get_logger
     logger = get_logger(__name__)
+    if limits is None:
+        settings = get_settings()
+        limits = RepositoryLimits(
+            max_files=min(max_files, settings.repo_ingest_max_files),
+            max_file_bytes=settings.repo_ingest_max_file_bytes,
+            max_total_bytes=settings.repo_ingest_max_total_bytes,
+            max_repository_bytes=settings.repo_ingest_max_repository_bytes,
+        )
 
     tmpdir = tempfile.mkdtemp(prefix="agentverse_repo_")
+    proc: Any = None
     try:
+        repo_url = validate_repository_url(repo_url)
+        branch = validate_branch(branch)
+        file_patterns = validate_patterns(file_patterns)
         await store.update_ingestion_job_async(
             job_id,
             status="running",
@@ -713,12 +762,39 @@ async def _ingest_repo_background(
         )
         # Clone using git — non-blocking async subprocess
         proc = await asyncio.create_subprocess_exec(
-            "git", "clone", "--depth=1", "--branch", branch, repo_url, tmpdir,
+            "git",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "clone",
+            "--depth=1",
+            "--single-branch",
+            "--no-tags",
+            "--branch",
+            branch,
+            "--",
+            repo_url,
+            tmpdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GCM_INTERACTIVE": "never",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+            },
         )
         try:
-            _stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            _stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=clone_timeout_seconds,
+            )
         except TimeoutError:
             proc.kill()
             raise RuntimeError("Repository clone timed out") from None
@@ -726,62 +802,66 @@ async def _ingest_repo_background(
         if proc.returncode != 0:
             raise RuntimeError("Repository clone failed")
 
-        files_processed = 0
         prepared_chunks: list[Chunk] = []
-        seen_files: set[pathlib.Path] = set()
-
-        for pattern in file_patterns:
-            for filepath in pathlib.Path(tmpdir).glob(pattern):
-                if files_processed >= max_files:
-                    break
-                if not filepath.is_file() or filepath in seen_files:
-                    continue
-                seen_files.add(filepath)
-                text_content = filepath.read_text(encoding="utf-8", errors="replace")
-                if not text_content.strip():
-                    continue
-                ext = filepath.suffix.lstrip(".")
-                src_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
-                raw_chunks = _chunk_by_tokens_repo(
-                    text_content,
-                    max_tokens=512,
-                    overlap_tokens=64,
+        repository_files = read_repository_files(
+            pathlib.Path(tmpdir),
+            file_patterns,
+            limits,
+        )
+        for repository_file in repository_files:
+            suffix = pathlib.PurePosixPath(repository_file.relative_path).suffix.lstrip(".")
+            source_type = "code" if suffix in {"py", "ts", "js"} else "text"
+            raw_chunks = _chunk_by_tokens_repo(
+                repository_file.content,
+                max_tokens=512,
+                overlap_tokens=64,
+            )
+            document_id = hashlib.sha256(
+                f"{repo_url}:{repository_file.relative_path}".encode()
+            ).hexdigest()[:32]
+            embeddings = await _embed_texts_or_http(raw_chunks, embedder)
+            prepared_chunks.extend(
+                Chunk(
+                    document_id=document_id,
+                    content=chunk_content,
+                    embedding=embeddings[index],
+                    chunk_index=index,
+                    metadata={
+                        "source_file": repository_file.relative_path,
+                        "repo_url": repo_url,
+                        "source_type": source_type,
+                        "source_doc_id": document_id,
+                    },
                 )
-                rel_path = str(filepath.relative_to(tmpdir))
-                document_id = hashlib.sha256(
-                    f"{repo_url}:{rel_path}".encode()
-                ).hexdigest()[:32]
-                embeddings = await _embed_texts_or_http(raw_chunks, embedder)
-                prepared_chunks.extend(
-                    Chunk(
-                        document_id=document_id,
-                        content=chunk_content,
-                        embedding=embeddings[index],
-                        chunk_index=index,
-                        metadata={
-                            "source_file": rel_path,
-                            "repo_url": repo_url,
-                            "source_type": src_type,
-                            "source_doc_id": document_id,
-                        },
-                    )
-                    for index, chunk_content in enumerate(raw_chunks)
-                )
-                files_processed += 1
+                for index, chunk_content in enumerate(raw_chunks)
+            )
 
-        await store.ingest_chunks_async(
+        await store.ingest_repository_chunks_async(
             prepared_chunks,
+            job_id=job_id,
             collection_id=collection_id,
             tenant_ctx=tenant_ctx,
         )
-        await store.update_ingestion_job_async(
-            job_id,
-            status="completed",
-            chunk_count=len(prepared_chunks),
-            error_message=None,
-            tenant_ctx=tenant_ctx,
+        logger.info(
+            "repo_ingest_complete",
+            repo=repo_url,
+            files=len(repository_files),
         )
-        logger.info("repo_ingest_complete", repo=repo_url, files=files_processed)
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            with suppress(Exception):
+                await proc.wait()
+        await asyncio.shield(
+            store.update_ingestion_job_async(
+                job_id,
+                status="failed",
+                chunk_count=0,
+                error_message="Repository ingestion cancelled",
+                tenant_ctx=tenant_ctx,
+            )
+        )
+        raise
     except Exception as exc:
         logger.warning("repo_ingest_failed", repo=repo_url, error=type(exc).__name__)
         try:
