@@ -1561,6 +1561,43 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             citations=canonical_citations,
             max_context_chars=body.max_context_chars,
         )
+        retriever = RAGRetriever(gateway=_retrieval_gateway(request))
+        verified = await retriever.verify_result(
+            RAGExecutionResult(
+                requested_strategy_id=body.strategy,
+                resolved_strategy_id=resolved_strategy,
+                citations=canonical_citations,
+                retrieval_legs=[
+                    leg
+                    for result in results
+                    for leg in list(result.get("retrieval_legs", []))
+                ],
+                strategy_trace=[
+                    trace
+                    for result in results
+                    for trace in list(result.get("strategy_trace", []))
+                ],
+                answer=answer,
+            ),
+            tenant_ctx=tenant_ctx,
+        )
+        if not verified.grounded:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "answer_ungrounded",
+                    "reason": verified.strategy_trace[-1].detail.get(
+                        "reason",
+                        "unsupported",
+                    ),
+                    "requested_strategy_id": body.strategy,
+                    "strategy_trace": [
+                        trace.model_dump(mode="json")
+                        for trace in verified.strategy_trace
+                    ],
+                },
+            )
+        answer = verified.answer
     except Exception as exc:
         _raise_retrieval_http_error(exc)
 
@@ -1590,6 +1627,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
         "collections_searched": len(collection_ids),
         "chunks_retrieved": len(canonical_citations),
         "question": body.question,
+        "grounded": True,
         "requested_strategy_id": body.strategy,
         "resolved_strategy_ids": sorted(
             {str(result["resolved_strategy_id"]) for result in results}
@@ -1600,9 +1638,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             for leg in list(result.get("retrieval_legs", []))
         ],
         "strategy_trace": [
-            trace
-            for result in results
-            for trace in list(result.get("strategy_trace", []))
+            trace.model_dump(mode="json") for trace in verified.strategy_trace
         ],
     }
 

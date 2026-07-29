@@ -61,6 +61,13 @@ class MinimalCitationVerifier:
             if len(token) > 2 and token not in self._STOP_WORDS
         }
 
+    def _normalize(self, text: str) -> str:
+        return " ".join(
+            self._SYNONYMS.get(token, token)
+            for token in re.findall(r"[a-z0-9]+", text.lower())
+            if token not in self._STOP_WORDS
+        )
+
     @staticmethod
     def _contradiction(claim: str, evidence: str) -> bool:
         claim_lower = claim.lower()
@@ -128,6 +135,11 @@ class MinimalCitationVerifier:
                 or set(parsed) != {"supported", "reason"}
                 or not isinstance(parsed["supported"], bool)
                 or parsed["reason"] not in {"entailed", "not_entailed"}
+                or (parsed["supported"] is True and parsed["reason"] != "entailed")
+                or (
+                    parsed["supported"] is False
+                    and parsed["reason"] != "not_entailed"
+                )
             ):
                 raise ValueError("Invalid entailment response")
         except Exception:
@@ -148,31 +160,42 @@ class MinimalCitationVerifier:
         checked = 0
         for sentence in re.split(r"(?<=[.!?])\s+", answer.strip()):
             references = [int(value) for value in re.findall(r"\[(\d+)\]", sentence)]
-            claim = re.sub(r"\[\d+\]", "", sentence).strip(" .")
-            claim_tokens = self._tokens(claim)
-            if not claim_tokens:
-                continue
-            checked += 1
-            if not references or any(
-                reference < 1 or reference > len(citations)
-                for reference in references
-            ):
-                unsupported.append(claim)
-                reasons.append("invalid_citation")
-                continue
-            evidence = " ".join(citations[index - 1].content for index in references)
-            if self._contradiction(claim, evidence):
-                unsupported.append(claim)
-                reasons.append("contradiction")
-                continue
-            evidence_tokens = self._tokens(evidence)
-            support = len(claim_tokens & evidence_tokens) / len(claim_tokens)
-            if support >= 0.6:
-                continue
-            entailment = await self._provider_entails(claim, evidence)
-            if not entailment.grounded:
-                unsupported.extend(entailment.unsupported_claims)
-                reasons.append(entailment.reason)
+            sentence_without_refs = re.sub(r"\[\d+\]", "", sentence).strip(" .")
+            material_claims = [
+                part.strip(" ,")
+                for part in re.split(r"\s+and\s+", sentence_without_refs)
+                if len(self._tokens(part)) >= 2
+            ] or [sentence_without_refs]
+            for claim in material_claims:
+                claim_tokens = self._tokens(claim)
+                if not claim_tokens:
+                    continue
+                checked += 1
+                if not references or any(
+                    reference < 1 or reference > len(citations)
+                    for reference in references
+                ):
+                    unsupported.append(claim)
+                    reasons.append("invalid_citation")
+                    continue
+                evidence = " ".join(
+                    citations[index - 1].content for index in references
+                )
+                if self._contradiction(claim, evidence):
+                    unsupported.append(claim)
+                    reasons.append("contradiction")
+                    continue
+                claim_normalized = self._normalize(claim)
+                evidence_normalized = self._normalize(evidence)
+                if claim_normalized and (
+                    claim_normalized == evidence_normalized
+                    or f" {claim_normalized} " in f" {evidence_normalized} "
+                ):
+                    continue
+                entailment = await self._provider_entails(claim, evidence)
+                if not entailment.grounded:
+                    unsupported.extend(entailment.unsupported_claims)
+                    reasons.append(entailment.reason)
         reason = (
             "supported"
             if checked > 0 and not unsupported
@@ -248,6 +271,17 @@ class RAGRetriever:
                 citations=result.citations,
                 max_context_chars=max_context_chars,
             )
+        result = result.model_copy(update={"answer": answer})
+        return await self.verify_result(result, tenant_ctx=tenant_ctx)
+
+    async def verify_result(
+        self,
+        result: RAGExecutionResult,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> RAGExecutionResult:
+        """Apply the same typed citation verification to any synthesized result."""
+
         trace = list(result.strategy_trace)
         try:
             verifier = self._citation_verifier
@@ -264,7 +298,7 @@ class RAGRetriever:
                 except RAGSynthesisError:
                     pass
             verification = await verifier.verify(
-                answer,
+                result.answer,
                 result.citations,
             )
             trace.append(
@@ -293,7 +327,7 @@ class RAGRetriever:
             grounded = False
         return result.model_copy(
             update={
-                "answer": answer,
+                "answer": result.answer,
                 "grounded": grounded,
                 "strategy_trace": trace,
             }
