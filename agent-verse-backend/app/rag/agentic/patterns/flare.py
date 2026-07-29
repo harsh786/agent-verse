@@ -87,6 +87,8 @@ class FLAREPattern(RAGPattern):
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         system_prompt: str = _FLARE_GENERATE_SYSTEM,
         max_tokens: int = 800,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Execute FLARE: generate → check uncertainty → retrieve → refine."""
@@ -117,7 +119,7 @@ class FLAREPattern(RAGPattern):
                     Message(role="system", content=system_prompt),
                     Message(role="user", content=query),
                 ],
-                model="",
+                model=model,
                 max_tokens=max_tokens,
                 temperature=0.3,
             ))
@@ -127,6 +129,8 @@ class FLAREPattern(RAGPattern):
         except Exception:
             if cb is not None:
                 cb.record_failure()
+            if strict:
+                raise
             return ""
 
         # Step 2: Check for uncertainty
@@ -144,6 +148,8 @@ class FLAREPattern(RAGPattern):
             try:
                 context = await retrieve_fn(uncertain_claim)
             except Exception:
+                if strict:
+                    raise
                 break
 
             if not context:
@@ -165,7 +171,7 @@ class FLAREPattern(RAGPattern):
                             ),
                         ),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=max_tokens,
                     temperature=0.0,
                 ))
@@ -185,6 +191,8 @@ class FLAREPattern(RAGPattern):
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
                 break
 
         try:

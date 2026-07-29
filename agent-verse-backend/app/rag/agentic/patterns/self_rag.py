@@ -90,6 +90,7 @@ class SelfRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
+        model: str = "",
         **kwargs: Any,
     ) -> str:
         """Execute Self-RAG with critique tokens. Returns answer string."""
@@ -100,7 +101,7 @@ class SelfRAGPattern(RAGPattern):
             pass
         result = await self.execute_with_critique(
             query=query, provider=provider,
-            retrieve_fn=retrieve_fn, max_tokens=max_tokens,
+            retrieve_fn=retrieve_fn, max_tokens=max_tokens, model=model,
         )
         try:
             from app.observability.logging import get_logger
@@ -116,6 +117,7 @@ class SelfRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
+        model: str = "",
     ) -> SelfRAGResult:
         """Execute Self-RAG. Returns SelfRAGResult with full critique metadata."""
         from app.providers.base import CompletionRequest, Message
@@ -131,7 +133,7 @@ class SelfRAGPattern(RAGPattern):
             cb = None
 
         # Step 1: Decide if retrieval needed
-        should_retrieve = await self._should_retrieve(query, provider)
+        should_retrieve = await self._should_retrieve(query, provider, model)
 
         context = ""
         if should_retrieve and retrieve_fn is not None:
@@ -157,7 +159,7 @@ class SelfRAGPattern(RAGPattern):
                 return SelfRAGResult(answer="", retrieved=bool(context))
             resp = await provider.complete(CompletionRequest(
                 messages=messages,
-                model="",
+                model=model,
                 max_tokens=max_tokens,
                 temperature=0.0,
             ))
@@ -173,7 +175,7 @@ class SelfRAGPattern(RAGPattern):
         is_relevant = is_supported = is_useful = True
         confidence = 0.7
         if context:
-            critique = await self._critique(query, answer, context, provider)
+            critique = await self._critique(query, answer, context, provider, model)
             is_relevant = critique.get("is_relevant", True)
             is_supported = critique.get("is_supported", True)
             is_useful = critique.get("is_useful", True)
@@ -189,7 +191,7 @@ class SelfRAGPattern(RAGPattern):
             confidence=confidence,
         )
 
-    async def _should_retrieve(self, query: str, provider: Any) -> bool:
+    async def _should_retrieve(self, query: str, provider: Any, model: str = "") -> bool:
         from app.providers.base import CompletionRequest, Message
         try:
             resp = await provider.complete(CompletionRequest(
@@ -197,7 +199,7 @@ class SelfRAGPattern(RAGPattern):
                     Message(role="system", content=_SHOULD_RETRIEVE_SYSTEM),
                     Message(role="user", content=f"Query: {query[:300]}"),
                 ],
-                model="",
+                model=model,
                 max_tokens=100,
                 temperature=0.0,
                 response_schema={
@@ -218,7 +220,7 @@ class SelfRAGPattern(RAGPattern):
             return True
 
     async def _critique(
-        self, query: str, answer: str, context: str, provider: Any
+        self, query: str, answer: str, context: str, provider: Any, model: str = ""
     ) -> dict:  # type: ignore[type-arg]
         from app.providers.base import CompletionRequest, Message
         try:
@@ -234,7 +236,7 @@ class SelfRAGPattern(RAGPattern):
                         ),
                     ),
                 ],
-                model="",
+                model=model,
                 max_tokens=150,
                 temperature=0.0,
                 response_schema={

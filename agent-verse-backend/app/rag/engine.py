@@ -20,6 +20,7 @@ Retrieval modes:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -112,6 +113,12 @@ async def hybrid_search(
                 raise RetrievalLegExecutionError("collection_metadata") from exc
             embedding_dim = 1536
     table = f"knowledge_chunks_{embedding_dim}"
+    metadata_clause = (
+        " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
+    )
+    metadata_params = (
+        {"metadata_filter": json.dumps(metadata_filter)} if metadata_filter else {}
+    )
 
     # Per-leg result dicts: chunk_id → (content, metadata, rank)
     vector_ranks: dict[str, tuple[str, dict[str, Any], int]] = {}
@@ -130,6 +137,7 @@ async def hybrid_search(
                        1 - (embedding <=> :emb::vector) AS score
                 FROM {table}
                 WHERE collection_id = :cid
+                  {metadata_clause}
                 ORDER BY embedding <=> :emb::vector
                 LIMIT :limit
             """)
@@ -137,6 +145,7 @@ async def hybrid_search(
                 "emb": str(query_embedding),
                 "cid": collection_id,
                 "limit": top_k * 3,
+                **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
                 vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
@@ -154,6 +163,7 @@ async def hybrid_search(
                                   plainto_tsquery('english', :q)) AS score
                 FROM {table}
                 WHERE collection_id = :cid
+                  {metadata_clause}
                   AND to_tsvector('english', content) @@ plainto_tsquery('english', :q)
                 ORDER BY score DESC
                 LIMIT :limit
@@ -162,6 +172,7 @@ async def hybrid_search(
                 "q": query[:500],
                 "cid": collection_id,
                 "limit": top_k * 3,
+                **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
                 fts_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
@@ -178,6 +189,7 @@ async def hybrid_search(
                        similarity(content, :q) AS score
                 FROM {table}
                 WHERE collection_id = :cid
+                  {metadata_clause}
                   AND content % :q
                 ORDER BY score DESC
                 LIMIT :limit
@@ -186,6 +198,7 @@ async def hybrid_search(
                 "q": query[:500],
                 "cid": collection_id,
                 "limit": top_k * 2,
+                **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
                 trgm_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
@@ -321,6 +334,7 @@ async def rerank_results(
     query: str,
     *,
     provider: Any = None,
+    model: str = "",
     top_k: int | None = None,
 ) -> list[RetrievalResult]:
     """Cross-encoder reranking of top retrieval results.
@@ -352,6 +366,7 @@ async def rerank_results(
         )
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
+            model=model,
             max_tokens=100,
         )
         resp = await provider.complete(req)
@@ -377,8 +392,10 @@ async def retrieve_hyde(
     query_embedding: list[float] | None,
     collection_id: str,
     provider: Any = None,
+    model: str = "",
     top_k: int = 10,
     embedding_dim: int | None = None,
+    metadata_filter: dict[str, Any] | None = None,
     strict: bool = False,
 ) -> list[RetrievalResult]:
     """HyDE: generate a hypothetical answer, search with it. Falls back to hybrid."""
@@ -388,6 +405,7 @@ async def retrieve_hyde(
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
         )
     try:
         from app.providers.base import CompletionRequest, Message
@@ -399,6 +417,7 @@ async def retrieve_hyde(
                 )),
                 Message(role="user", content=f"Question: {query}"),
             ],
+            model=model,
             max_tokens=200,
         )
         resp = await provider.complete(req)
@@ -406,6 +425,7 @@ async def retrieve_hyde(
         return await hybrid_search(
             session, query=hyp_doc, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
             strict=strict,
         )
     except Exception as exc:
@@ -415,6 +435,7 @@ async def retrieve_hyde(
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
         )
 
 
@@ -425,8 +446,10 @@ async def retrieve_multi_hop(
     query_embedding: list[float] | None,
     collection_id: str,
     provider: Any = None,
+    model: str = "",
     top_k: int = 10,
     embedding_dim: int | None = None,
+    metadata_filter: dict[str, Any] | None = None,
     strict: bool = False,
 ) -> list[RetrievalResult]:
     """Multi-hop: decompose query, search each sub-query, merge results."""
@@ -436,6 +459,7 @@ async def retrieve_multi_hop(
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
         )
     try:
         import json as _json
@@ -448,6 +472,7 @@ async def retrieve_multi_hop(
                 )),
                 Message(role="user", content=f"Query: {query}"),
             ],
+            model=model,
             max_tokens=150,
         )
         resp = await provider.complete(req)
@@ -468,6 +493,7 @@ async def retrieve_multi_hop(
             hop = await hybrid_search(
                 session, query=sub_q, query_embedding=query_embedding,
                 collection_id=collection_id, top_k=per_hop, embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter,
                 strict=strict,
             )
             for r in hop:
@@ -494,6 +520,8 @@ async def retrieve_fusion(
     embedding_dim: int | None = None,
     embedder: Any = None,
     provider: Any = None,
+    model: str = "",
+    metadata_filter: dict[str, Any] | None = None,
     strict: bool = False,
     search_operation: Callable[
         [str, list[float] | None],
@@ -511,11 +539,22 @@ async def retrieve_fusion(
     from app.rag.agentic.query_expander import QueryExpander
 
     expander = QueryExpander()
-    if provider is not None and hasattr(expander, "expand_for_fusion_async"):
-        variants = await expander.expand_for_fusion_async(
-            query, max_variants=max_variants, provider=provider
-        )
-    else:
+    try:
+        if provider is not None and hasattr(expander, "expand_for_fusion_async"):
+            variants = await expander.expand_for_fusion_async(
+                query,
+                max_variants=max_variants,
+                provider=provider,
+                model=model,
+                strict=strict,
+            )
+        else:
+            variants = expander.expand_for_fusion(query, max_variants=max_variants)
+    except Exception as exc:
+        if strict:
+            raise RetrievalStrategyExecutionError(
+                "fusion", "provider query expansion failed"
+            ) from exc
         variants = expander.expand_for_fusion(query, max_variants=max_variants)
 
     # Use original embedding for all variants (best-effort: embed each if embedder available)
@@ -544,7 +583,8 @@ async def retrieve_fusion(
             return await hybrid_search(
                 session=session, query=q, query_embedding=emb,
                 collection_id=collection_id, top_k=top_k,
-                ef_search=ef_search, embedding_dim=embedding_dim, strict=strict,
+                ef_search=ef_search, embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter, strict=strict,
             )
         except Exception as exc:
             if strict:
@@ -615,8 +655,10 @@ async def retrieve(
     top_k: int = 10,
     strategy: str | None = None,
     provider: Any = None,
+    model: str = "",
     embedding_dim: int | None = None,
     retrieval_mode: str = "hybrid",
+    metadata_filter: dict[str, Any] | None = None,
     long_term_memory: Any = None,
     tenant_ctx: Any = None,
     embedder: Any = None,
@@ -634,14 +676,16 @@ async def retrieve(
             return await retrieve_hyde(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, provider=provider,
-                top_k=top_k, embedding_dim=embedding_dim,
+                model=model, top_k=top_k, embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter,
                 strict=strict,
             )
         if strategy == "multi_hop":
             return await retrieve_multi_hop(
                 session, query=query, query_embedding=query_embedding,
                 collection_id=collection_id, provider=provider,
-                top_k=top_k, embedding_dim=embedding_dim,
+                model=model, top_k=top_k, embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter,
                 strict=strict,
             )
         if strategy == "fusion":
@@ -651,6 +695,8 @@ async def retrieve(
                 embedding_dim=embedding_dim,
                 embedder=embedder or provider,
                 provider=provider,
+                model=model,
+                metadata_filter=metadata_filter,
                 strict=strict,
             )
         if strategy == "corrective":
@@ -659,7 +705,8 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim, strict=strict,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter, strict=strict,
                 )
                 # CRAG correction: if low confidence, the caller (RetrieverTool.retrieve_corrective)
                 # handles web fallback. At engine level, return base results + confidence metadata.
@@ -679,6 +726,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy in ("flare", "self_rag"):
@@ -692,12 +740,14 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
             try:
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim, strict=strict,
+                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter, strict=strict,
                 )
                 if not base_results:
                     return base_results
@@ -711,12 +761,17 @@ async def retrieve(
                         extra = await hybrid_search(
                             session, query=q, query_embedding=query_embedding,
                             collection_id=collection_id, top_k=3,
-                            embedding_dim=embedding_dim, strict=strict,
+                            embedding_dim=embedding_dim, metadata_filter=metadata_filter,
+                            strict=strict,
                         )
                         return "\n".join(r.content[:300] for r in extra)
 
                     refined = await pattern.execute(
-                        query=query, provider=provider, retrieve_fn=_flare_retrieve
+                        query=query,
+                        provider=provider,
+                        retrieve_fn=_flare_retrieve,
+                        model=model,
+                        strict=strict,
                     )
                 elif strategy == "self_rag":
                     from app.rag.agentic.patterns.self_rag import SelfRAGPattern
@@ -726,7 +781,10 @@ async def retrieve(
                         return context_text
 
                     refined = await pattern.execute(
-                        query=query, provider=provider, retrieve_fn=_self_rag_retrieve
+                        query=query,
+                        provider=provider,
+                        retrieve_fn=_self_rag_retrieve,
+                        model=model,
                     )
                 else:
                     refined = ""
@@ -747,6 +805,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy == "speculative":
@@ -758,7 +817,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k,
-                    embedding_dim=embedding_dim, strict=strict,
+                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results
@@ -767,14 +826,19 @@ async def retrieve(
                     r = await hybrid_search(
                         session, query=q, query_embedding=query_embedding,
                         collection_id=collection_id, top_k=3,
-                        embedding_dim=embedding_dim, strict=strict,
+                        embedding_dim=embedding_dim, metadata_filter=metadata_filter,
+                        strict=strict,
                     )
                     return "\n".join(x.content[:300] for x in r)
 
                 from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
                 pattern = SpeculativeRAGPattern(n_candidates=2)
                 best = await pattern.execute(
-                    query=query, provider=provider, retrieve_fn=_spec_retrieve,
+                    query=query,
+                    provider=provider,
+                    retrieve_fn=_spec_retrieve,
+                    model=model,
+                    strict=strict,
                 )
                 if best and base_results:
                     base_results[0] = RetrievalResult(
@@ -796,6 +860,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy == "raptor":
@@ -807,7 +872,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=min(top_k * 2, 20),
-                    embedding_dim=embedding_dim, strict=strict,
+                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results[:top_k]
@@ -818,7 +883,11 @@ async def retrieve(
                 from app.rag.agentic.patterns.raptor import RAPTORPattern
                 pattern = RAPTORPattern(cluster_size=4, max_levels=2)
                 answer = await pattern.execute(
-                    query=query, chunks=chunks, provider=provider
+                    query=query,
+                    chunks=chunks,
+                    provider=provider,
+                    model=model,
+                    strict=strict,
                 )
                 if answer and base_results:
                     summary = RetrievalResult(
@@ -839,6 +908,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy == "colbert":
@@ -846,7 +916,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k * 2,
-                    embedding_dim=embedding_dim, strict=strict,
+                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
                 )
                 if not base_results:
                     return base_results
@@ -875,6 +945,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy == "agentic_chunking":
@@ -887,7 +958,7 @@ async def retrieve(
                 base_results = await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k * 2,
-                    embedding_dim=embedding_dim, strict=strict,
+                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results[:top_k]
@@ -897,7 +968,12 @@ async def retrieve(
                 ]
                 pattern = AgenticChunkingPattern(max_propositions=5)
                 proposition_chunks = await pattern.execute(
-                    chunks=chunks, provider=provider, query=query, top_k=top_k
+                    chunks=chunks,
+                    provider=provider,
+                    query=query,
+                    top_k=top_k,
+                    model=model,
+                    strict=strict,
                 )
                 return [
                     RetrievalResult(
@@ -923,6 +999,7 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         if strategy == "parametric":
@@ -974,12 +1051,14 @@ async def retrieve(
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
             except Exception as exc:
                 logger.warning("graph_strategy_failed", error=str(exc)[:80])
                 return await hybrid_search(
                     session, query=query, query_embedding=query_embedding,
                     collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
                 )
 
         mode = "lexical" if strategy == "lexical" else retrieval_mode
@@ -987,6 +1066,7 @@ async def retrieve(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k,
             retrieval_mode=mode, embedding_dim=embedding_dim, strict=strict,
+            metadata_filter=metadata_filter,
         )
     except Exception as exc:
         if strict:
@@ -995,4 +1075,5 @@ async def retrieve(
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
         )

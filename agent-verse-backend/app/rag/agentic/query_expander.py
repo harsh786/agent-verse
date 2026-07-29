@@ -41,6 +41,8 @@ class QueryExpander:
         query: str,
         max_variants: int = 4,
         provider: Any = None,
+        model: str = "",
+        strict: bool = False,
     ) -> list[str]:
         """LLM-driven query expansion for Fusion RAG. Falls back to rule-based."""
         if provider is None:
@@ -56,7 +58,7 @@ class QueryExpander:
                     )),
                     Message(role="user", content=f"Query: {query}"),
                 ],
-                model="",
+                model=model,
                 max_tokens=200,
                 temperature=0.7,
             ))
@@ -68,5 +70,6 @@ class QueryExpander:
             ]
             return list(dict.fromkeys(variants))[:max_variants]
         except Exception:
+            if strict:
+                raise
             return self.expand_for_fusion(query, max_variants=max_variants)
-

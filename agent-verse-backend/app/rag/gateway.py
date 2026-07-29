@@ -229,6 +229,7 @@ class RetrievalExecutionContext:
 
     tenant_context: TenantContext
     strategy: RAGStrategy
+    filters: dict[str, Any]
     dependencies: RetrievalRuntimeDependencies
     _db_operation_runner: Callable[[DatabaseOperation[Any]], Awaitable[Any]] | None
 
@@ -266,6 +267,7 @@ class RetrievalExecutionContext:
                         query_embedding=variant_embedding,
                         collection_id=collection_id,
                         top_k=top_k,
+                        metadata_filter=self.filters,
                         strict=True,
                     )
 
@@ -279,6 +281,8 @@ class RetrievalExecutionContext:
                 top_k=top_k,
                 embedder=self.dependencies.embedder,
                 provider=self.llm.provider if self.llm is not None else None,
+                model=self.llm.model if self.llm is not None else "",
+                metadata_filter=self.filters,
                 strict=True,
                 search_operation=search_operation,
             )
@@ -292,6 +296,8 @@ class RetrievalExecutionContext:
                 top_k=top_k,
                 strategy=self.strategy.value,
                 provider=self.llm.provider if self.llm is not None else None,
+                model=self.llm.model if self.llm is not None else "",
+                metadata_filter=self.filters,
                 embedder=self.dependencies.embedder,
                 tenant_ctx=self.tenant_context,
                 strict=True,
@@ -346,6 +352,7 @@ class RetrievalGateway:
         context = RetrievalExecutionContext(
             tenant_context=tenant_context,
             strategy=strategy,
+            filters=dict(request.filters),
             dependencies=RetrievalRuntimeDependencies(
                 embedder=self.dependencies.embedder,
                 llm=llm,
@@ -369,8 +376,11 @@ class RetrievalGateway:
                     "resolved_strategy_id": strategy,
                 }
             )
-        if isinstance(result, Sequence) and all(
+        if (
+            isinstance(result, (list, tuple))
+            and all(
             isinstance(item, EngineRetrievalResult) for item in result
+            )
         ):
             return self._normalize_engine_results(request, strategy, list(result))
         raise TypeError("RAG strategy adapter returned an unsupported result type")

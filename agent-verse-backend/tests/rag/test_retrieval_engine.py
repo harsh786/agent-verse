@@ -231,3 +231,176 @@ async def test_strict_fusion_propagates_variant_embedding_failure() -> None:
             embedder=embedder,
             strict=True,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy",
+    ["fusion", "flare", "speculative", "raptor", "agentic_chunking"],
+)
+async def test_strict_provider_backed_strategies_propagate_provider_failure(
+    strategy: str,
+) -> None:
+    from app.providers.base import CompletionRequest
+    from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError, retrieve
+
+    class FailingProvider:
+        def __init__(self) -> None:
+            self.requests: list[CompletionRequest] = []
+
+        async def complete(self, request: CompletionRequest) -> None:
+            self.requests.append(request)
+            raise RuntimeError("secret-provider-detail")
+
+    provider = FailingProvider()
+    base_results = [
+        RetrievalResult(
+            chunk_id="chunk-1",
+            content="Evidence for provider-backed strategy",
+            score=0.8,
+            source_metadata={},
+            retrieval_legs=["vector"],
+        ),
+        RetrievalResult(
+            chunk_id="chunk-2",
+            content="Additional evidence for hierarchy",
+            score=0.7,
+            source_metadata={},
+            retrieval_legs=["fts"],
+        ),
+    ]
+
+    with (
+        patch("app.rag.engine.hybrid_search", AsyncMock(return_value=base_results)),
+        pytest.raises(RetrievalStrategyExecutionError) as exc_info,
+    ):
+        await retrieve(
+            AsyncMock(),
+            query="retention policy",
+            query_embedding=[0.1],
+            collection_id="collection-1",
+            strategy=strategy,
+            provider=provider,
+            model="tenant-model",
+            strict=True,
+        )
+
+    assert provider.requests
+    assert all(request.model == "tenant-model" for request in provider.requests)
+    assert "secret-provider-detail" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("strategy", "response_content"),
+    [
+        ("hyde", "Hypothetical evidence"),
+        ("multi_hop", '["first hop", "second hop"]'),
+    ],
+)
+async def test_generation_retrievers_use_resolved_model(
+    strategy: str,
+    response_content: str,
+) -> None:
+    from app.providers.base import CompletionRequest, CompletionResponse
+    from app.rag.engine import retrieve
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.requests: list[CompletionRequest] = []
+
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            self.requests.append(request)
+            return CompletionResponse(content=response_content, model=request.model)
+
+    provider = RecordingProvider()
+    with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[])):
+        await retrieve(
+            AsyncMock(),
+            query="retention policy",
+            query_embedding=[0.1],
+            collection_id="collection-1",
+            strategy=strategy,
+            provider=provider,
+            model="tenant-model",
+            strict=True,
+        )
+
+    assert provider.requests
+    assert all(request.model == "tenant-model" for request in provider.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        "naive",
+        "hybrid",
+        "hyde",
+        "multi_hop",
+        "corrective",
+        "flare",
+        "self_rag",
+        "speculative",
+        "fusion",
+        "raptor",
+        "colbert",
+        "agentic_chunking",
+        "adaptive",
+        "modular",
+        "agentic",
+        "web_augmented",
+        "raft",
+    ],
+)
+async def test_metadata_filters_reach_every_persisted_strategy_leg(strategy: str) -> None:
+    from app.rag.engine import retrieve
+
+    observed_filters: list[dict[str, object] | None] = []
+
+    async def hybrid(*args: object, **kwargs: object) -> list[object]:
+        del args
+        observed_filters.append(kwargs.get("metadata_filter"))  # type: ignore[arg-type]
+        return []
+
+    with patch("app.rag.engine.hybrid_search", side_effect=hybrid):
+        await retrieve(
+            AsyncMock(),
+            query="retention policy",
+            query_embedding=None,
+            collection_id="collection-1",
+            strategy=strategy,
+            metadata_filter={"department": "legal"},
+        )
+
+    assert observed_filters
+    assert observed_filters == [{"department": "legal"}] * len(observed_filters)
+
+
+@pytest.mark.asyncio
+async def test_metadata_filter_is_bound_in_sql_before_leg_limits() -> None:
+    from app.rag.engine import hybrid_search
+
+    session = AsyncMock()
+    empty_result = MagicMock()
+    empty_result.fetchall.return_value = []
+    session.execute.return_value = empty_result
+
+    await hybrid_search(
+        session,
+        query="retention policy",
+        query_embedding=None,
+        collection_id="collection-1",
+        retrieval_mode="lexical",
+        embedding_dim=1536,
+        metadata_filter={"department": "legal"},
+        strict=True,
+    )
+
+    assert session.execute.await_count == 2
+    for call in session.execute.await_args_list:
+        statement = str(call.args[0])
+        params = call.args[1]
+        assert "metadata @> CAST(:metadata_filter AS jsonb)" in statement
+        assert statement.index("metadata @>") < statement.index("LIMIT")
+        assert params["metadata_filter"] == '{"department": "legal"}'

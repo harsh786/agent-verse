@@ -77,6 +77,8 @@ class SpeculativeRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 500,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Generate N candidates, verify each, return best-supported."""
@@ -109,7 +111,7 @@ class SpeculativeRAGPattern(RAGPattern):
                         Message(role="system", content=_CANDIDATE_SYSTEM),
                         Message(role="user", content=query),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=max_tokens,
                     temperature=0.7,  # diversity
                 ))
@@ -121,6 +123,8 @@ class SpeculativeRAGPattern(RAGPattern):
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
 
         if not candidates:
             try:
@@ -139,6 +143,8 @@ class SpeculativeRAGPattern(RAGPattern):
                     context = await retrieve_fn(candidate.text[:200]) or ""
                     candidate.context_used = context[:500]
                 except Exception:
+                    if strict:
+                        raise
                     pass
 
             if not context:
@@ -163,7 +169,7 @@ class SpeculativeRAGPattern(RAGPattern):
                             ),
                         ),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=100,
                     temperature=0.0,
                     response_schema={
@@ -186,6 +192,8 @@ class SpeculativeRAGPattern(RAGPattern):
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
                 candidate.score = 0.3
             verified.append(candidate)
 
