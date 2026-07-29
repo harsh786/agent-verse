@@ -29,13 +29,22 @@ from app.tenancy.context import PlanTier, TenantContext
 TENANT = TenantContext("tenant-gap", PlanTier.PROFESSIONAL, "key-gap")
 
 
-def test_production_capability_registry_is_intentionally_fail_closed() -> None:
-    """Task 4 wires entrypoints; Tasks 5-11 later certify concrete adapters."""
+def test_production_capability_registry_contains_only_core_adapters() -> None:
     from app.main import create_app
 
     gateway = create_app(manage_pools=False).state.retrieval_gateway
 
-    assert gateway.dependencies.strategy_capabilities == {}
+    assert set(gateway.dependencies.strategy_capabilities) == {
+        RAGStrategy.NAIVE,
+        RAGStrategy.HYBRID,
+        RAGStrategy.HYDE,
+        RAGStrategy.MULTI_HOP,
+        RAGStrategy.FUSION,
+    }
+    assert all(
+        capability.requires_database
+        for capability in gateway.dependencies.strategy_capabilities.values()
+    )
 
 
 class RecordingGateway:

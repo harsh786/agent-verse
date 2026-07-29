@@ -2,10 +2,11 @@
 World-Class RAG Retrieval Engine
 =================================
 
-Three retrieval legs fused with Reciprocal Rank Fusion (RRF):
+Four retrieval legs fused with Reciprocal Rank Fusion (RRF):
   1. pgvector ANN — cosine similarity with HNSW index
-  2. PostgreSQL FTS — tsvector + ts_rank_cd (BM25-like)
+  2. PostgreSQL FTS — tsvector + ts_rank_cd
   3. pg_trgm fuzzy — trigram similarity for typo tolerance
+  4. Application Okapi BM25 over a bounded persisted corpus
 
 After fusion: optional cross-encoder reranking of top-50 candidates.
 
@@ -20,6 +21,7 @@ Retrieval modes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -46,6 +48,8 @@ class RetrievalResult:
     score: float
     source_metadata: dict[str, Any]
     retrieval_legs: list[str] = field(default_factory=list)  # which legs contributed
+    component_scores: dict[str, float] = field(default_factory=dict)
+    rrf_score: float = 0.0
 
 
 class RetrievalExecutionError(RuntimeError):
@@ -86,9 +90,10 @@ async def hybrid_search(
     embedding_dim: int | None = None,
     metadata_filter: dict[str, Any] | None = None,
     strict: bool = False,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> list[RetrievalResult]:
     """
-    Tri-leg retrieval with RRF fusion.
+    Four-leg retrieval with RRF fusion.
 
     Args:
         query: Natural language query for FTS/trigram
@@ -136,9 +141,13 @@ async def hybrid_search(
     )
 
     # Per-leg result dicts: chunk_id → (content, metadata, rank)
-    vector_ranks: dict[str, tuple[str, dict[str, Any], int]] = {}
-    fts_ranks: dict[str, tuple[str, dict[str, Any], int]] = {}
-    trgm_ranks: dict[str, tuple[str, dict[str, Any], int]] = {}
+    vector_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
+    fts_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
+    trgm_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
+    bm25_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
+
+    if strict and retrieval_mode in ("hybrid", "vector") and not query_embedding:
+        raise RetrievalLegExecutionError("vector")
 
     # Leg 1: pgvector ANN
     if query_embedding and retrieval_mode in ("hybrid", "vector"):
@@ -153,7 +162,7 @@ async def hybrid_search(
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
-                ORDER BY {vector_expression} <=> {query_vector_expression}
+                 ORDER BY {vector_expression} <=> {query_vector_expression}, id ASC
                 LIMIT :limit
             """)
             rows = await session.execute(vec_sql, {
@@ -163,13 +172,16 @@ async def hybrid_search(
                 **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
-                vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
+                vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
             if strict:
                 raise RetrievalLegExecutionError("vector") from e
             logger.debug("vector_leg_failed", error=str(e)[:80])
 
-    # Leg 2: PostgreSQL Full-Text Search (BM25-like)
+    if retrieval_mode in ("hybrid", "vector"):
+        _record_leg_evidence(evidence, "vector", vector_ranks)
+
+    # Leg 2: PostgreSQL Full-Text Search
     if retrieval_mode in ("hybrid", "lexical"):
         try:
             fts_sql = text(f"""
@@ -180,7 +192,7 @@ async def hybrid_search(
                 WHERE collection_id = :cid
                   {metadata_clause}
                   AND to_tsvector('english', content) @@ plainto_tsquery('english', :q)
-                ORDER BY score DESC
+                 ORDER BY score DESC, id ASC
                 LIMIT :limit
             """)
             rows = await session.execute(fts_sql, {
@@ -190,7 +202,7 @@ async def hybrid_search(
                 **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
-                fts_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
+                fts_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
             if strict:
                 raise RetrievalLegExecutionError("fts") from e
@@ -206,7 +218,7 @@ async def hybrid_search(
                 WHERE collection_id = :cid
                   {metadata_clause}
                   AND content % :q
-                ORDER BY score DESC
+                 ORDER BY score DESC, id ASC
                 LIMIT :limit
             """)
             rows = await session.execute(trgm_sql, {
@@ -216,47 +228,106 @@ async def hybrid_search(
                 **metadata_params,
             })
             for i, row in enumerate(rows.fetchall()):
-                trgm_ranks[row[0]] = (row[1], row[2] or {}, i + 1)
+                trgm_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
             if strict:
                 raise RetrievalLegExecutionError("trgm") from e
             logger.debug("trgm_leg_failed", error=str(e)[:80])
 
+    if retrieval_mode in ("hybrid", "lexical"):
+        _record_leg_evidence(evidence, "fts", fts_ranks)
+        _record_leg_evidence(evidence, "trigram", trgm_ranks)
+
+    # Leg 4: bounded application-side Okapi BM25 over the persisted corpus.
+    if retrieval_mode == "hybrid":
+        try:
+            from app.rag.bm25 import BM25Retriever
+
+            corpus_limit = min(max(top_k * 50, 200), 5000)
+            corpus_sql = text(f"""
+                SELECT id, content, metadata
+                FROM {table}
+                WHERE collection_id = :cid
+                  {metadata_clause}
+                ORDER BY id ASC
+                LIMIT :corpus_limit
+            """)
+            rows = await session.execute(
+                corpus_sql,
+                {"cid": collection_id, "corpus_limit": corpus_limit, **metadata_params},
+            )
+            retriever = BM25Retriever()
+            retriever.index(
+                [
+                    {
+                        "chunk_id": row[0],
+                        "content": row[1],
+                        "source_metadata": row[2] or {},
+                    }
+                    for row in rows.fetchall()
+                ]
+            )
+            for rank, hit in enumerate(retriever.search(query, top_k=top_k * 3), start=1):
+                bm25_ranks[hit.chunk_id] = (
+                    hit.content,
+                    hit.source_metadata,
+                    rank,
+                    hit.score,
+                )
+        except Exception as exc:
+            if strict:
+                raise RetrievalLegExecutionError("bm25") from exc
+            logger.debug("bm25_leg_failed", error=str(exc)[:80])
+        _record_leg_evidence(evidence, "bm25", bm25_ranks)
+
     # Collect all unique chunk IDs
-    all_ids = set(vector_ranks) | set(fts_ranks) | set(trgm_ranks)
+    all_ids = set(vector_ranks) | set(fts_ranks) | set(trgm_ranks) | set(bm25_ranks)
     if not all_ids:
         return []
 
     # Compute RRF scores
-    fused: list[tuple[str, float, str, dict[str, Any], list[str]]] = []
+    fused: list[
+        tuple[str, float, str, dict[str, Any], list[str], dict[str, float]]
+    ] = []
     for chunk_id in all_ids:
         ranks: list[int] = []
         legs: list[str] = []
         content: str = ""
         metadata: dict[str, Any] = {}
+        component_scores: dict[str, float] = {}
 
         if chunk_id in vector_ranks:
-            content, metadata, r = vector_ranks[chunk_id]
+            content, metadata, r, component_score = vector_ranks[chunk_id]
             ranks.append(r)
             legs.append("vector")
+            component_scores["vector"] = component_score
         if chunk_id in fts_ranks:
-            c, m, r = fts_ranks[chunk_id]
+            c, m, r, component_score = fts_ranks[chunk_id]
             if not content:
                 content, metadata = c, m
             ranks.append(r)
             legs.append("fts")
+            component_scores["fts"] = component_score
         if chunk_id in trgm_ranks:
-            c, m, r = trgm_ranks[chunk_id]
+            c, m, r, component_score = trgm_ranks[chunk_id]
             if not content:
                 content, metadata = c, m
             ranks.append(r)
-            legs.append("trgm")
+            legs.append("trigram")
+            component_scores["trigram"] = component_score
+        if chunk_id in bm25_ranks:
+            c, m, r, component_score = bm25_ranks[chunk_id]
+            if not content:
+                content, metadata = c, m
+            ranks.append(r)
+            legs.append("bm25")
+            component_scores["bm25"] = component_score
 
         score = _rrf_score(ranks)
-        fused.append((chunk_id, score, content, metadata, legs))
+        fused.append((chunk_id, score, content, metadata, legs, component_scores))
 
     # Sort by RRF score descending
-    fused.sort(key=lambda x: x[1], reverse=True)
+    fused.sort(key=lambda item: (-item[1], item[0]))
 
     results = [
         RetrievalResult(
@@ -265,8 +336,10 @@ async def hybrid_search(
             score=score,
             source_metadata=meta,
             retrieval_legs=legs,
+            component_scores=component_scores,
+            rrf_score=score,
         )
-        for cid, score, content, meta, legs in fused[:top_k]
+        for cid, score, content, meta, legs, component_scores in fused[:top_k]
     ]
 
     # Post-filter by metadata if requested
@@ -285,9 +358,28 @@ async def hybrid_search(
         vector_hits=len(vector_ranks),
         fts_hits=len(fts_ranks),
         trgm_hits=len(trgm_ranks),
+        bm25_hits=len(bm25_ranks),
     )
 
     return results
+
+
+def _record_leg_evidence(
+    evidence: list[dict[str, Any]] | None,
+    component: str,
+    ranks: dict[str, tuple[str, dict[str, Any], int, float]],
+) -> None:
+    if evidence is None:
+        return
+    evidence.append(
+        {
+            "component": component,
+            "result_count": len(ranks),
+            "component_scores": {
+                chunk_id: item[3] for chunk_id, item in sorted(ranks.items())
+            },
+        }
+    )
 
 
 class RetrievalPlanner:
@@ -410,9 +502,11 @@ async def retrieve_hyde(
     top_k: int = 10,
     embedding_dim: int | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    embedder: Any = None,
     strict: bool = False,
+    strategy_evidence: dict[str, Any] | None = None,
 ) -> list[RetrievalResult]:
-    """HyDE: generate a hypothetical answer, search with it. Falls back to hybrid."""
+    """Generate, embed, and vector-search a hypothetical document."""
     if provider is None:
         if strict:
             raise RetrievalStrategyExecutionError("hyde", "LLM provider is required")
@@ -421,6 +515,10 @@ async def retrieve_hyde(
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )
+    if strict and not model.strip():
+        raise RetrievalStrategyExecutionError("hyde", "LLM model is required")
+    if strict and embedder is None:
+        raise RetrievalStrategyExecutionError("hyde", "embedding provider is required")
     try:
         from app.providers.base import CompletionRequest, Message
         req = CompletionRequest(
@@ -434,16 +532,52 @@ async def retrieve_hyde(
             model=model,
             max_tokens=200,
         )
-        resp = await provider.complete(req)
+        try:
+            resp = await provider.complete(req)
+        except Exception as exc:
+            raise RetrievalStrategyExecutionError("hyde", "generation failed") from exc
         hyp_doc = resp.content.strip()
+        if not hyp_doc:
+            raise RetrievalStrategyExecutionError("hyde", "generated document is empty")
+        if embedder is None:
+            generated_embedding = query_embedding
+        else:
+            from app.providers.base import EmbedRequest
+
+            try:
+                embedding_response = await embedder.embed(
+                    EmbedRequest(texts=[hyp_doc], input_type="document")
+                )
+                generated_embedding = (
+                    embedding_response.embeddings[0]
+                    if embedding_response.embeddings
+                    else None
+                )
+                if not generated_embedding:
+                    raise ValueError("embedding response was empty")
+            except Exception as exc:
+                raise RetrievalStrategyExecutionError("hyde", "embedding failed") from exc
+        if strategy_evidence is not None:
+            strategy_evidence.update(
+                {
+                    "generated_text_sha256": hashlib.sha256(
+                        hyp_doc.encode("utf-8")
+                    ).hexdigest(),
+                    "model": model,
+                    "generation": "hypothetical_document",
+                }
+            )
         return await hybrid_search(
-            session, query=hyp_doc, query_embedding=query_embedding,
+            session, query=hyp_doc, query_embedding=generated_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
+            retrieval_mode="vector",
             strict=strict,
         )
     except Exception as exc:
         if strict:
+            if isinstance(exc, RetrievalStrategyExecutionError):
+                raise
             raise RetrievalStrategyExecutionError("hyde", "algorithm failed") from exc
         logger.warning("hyde_failed_falling_back", error=str(exc)[:80])
         return await hybrid_search(
@@ -454,7 +588,7 @@ async def retrieve_hyde(
 
 
 async def retrieve_multi_hop(
-    session: AsyncSession,
+    session: AsyncSession | None,
     *,
     query: str,
     query_embedding: list[float] | None,
@@ -464,17 +598,30 @@ async def retrieve_multi_hop(
     top_k: int = 10,
     embedding_dim: int | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    embedder: Any = None,
     strict: bool = False,
+    max_hops: int = 3,
+    search_operation: Callable[
+        [str, list[float] | None], Awaitable[list[RetrievalResult]]
+    ]
+    | None = None,
+    strategy_evidence: list[dict[str, Any]] | None = None,
 ) -> list[RetrievalResult]:
     """Multi-hop: decompose query, search each sub-query, merge results."""
     if provider is None:
         if strict:
             raise RetrievalStrategyExecutionError("multi_hop", "LLM provider is required")
+        if session is None:
+            return []
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )
+    if strict and not model.strip():
+        raise RetrievalStrategyExecutionError("multi_hop", "LLM model is required")
+    if strict and embedder is None:
+        raise RetrievalStrategyExecutionError("multi_hop", "embedding provider is required")
     try:
         import json as _json
 
@@ -493,33 +640,117 @@ async def retrieve_multi_hop(
         resp = await provider.complete(req)
         sub_queries: list[str] = _json.loads(resp.content.strip())
         if not isinstance(sub_queries, list):
-            sub_queries = [query]
-        sub_queries = [str(q) for q in sub_queries[:3]]
+            raise ValueError("decomposition was not a list")
+        bounded_hops = min(max(max_hops, 1), 5)
+        sub_queries = list(
+            dict.fromkeys(str(item).strip() for item in sub_queries if str(item).strip())
+        )[:bounded_hops]
+        if not sub_queries or all(item == query for item in sub_queries):
+            raise ValueError("decomposition did not produce an independent hop")
     except Exception as exc:
         if strict:
             raise RetrievalStrategyExecutionError("multi_hop", "decomposition failed") from exc
         sub_queries = [query]
 
-    seen: set[str] = set()
-    all_results: list[RetrievalResult] = []
-    per_hop = max(top_k // max(len(sub_queries), 1), 3)
-    for sub_q in sub_queries:
+    hop_embeddings: list[list[float] | None] = []
+    for sub_query in sub_queries:
+        if embedder is None:
+            hop_embeddings.append(query_embedding)
+            continue
         try:
-            hop = await hybrid_search(
-                session, query=sub_q, query_embedding=query_embedding,
-                collection_id=collection_id, top_k=per_hop, embedding_dim=embedding_dim,
-                metadata_filter=metadata_filter,
-                strict=strict,
+            from app.providers.base import EmbedRequest
+
+            response = await embedder.embed(
+                EmbedRequest(texts=[sub_query], input_type="query")
             )
-            for r in hop:
-                if r.chunk_id not in seen:
-                    seen.add(r.chunk_id)
-                    all_results.append(r)
+            embedding = response.embeddings[0] if response.embeddings else None
+            if not embedding:
+                raise ValueError("embedding response was empty")
+            hop_embeddings.append(embedding)
+        except Exception as exc:
+            if strict:
+                raise RetrievalStrategyExecutionError(
+                    "multi_hop", "hop embedding failed"
+                ) from exc
+            hop_embeddings.append(query_embedding)
+
+    per_hop = max(top_k // max(len(sub_queries), 1), 3)
+
+    async def search(sub_query: str, embedding: list[float] | None) -> list[RetrievalResult]:
+        if search_operation is not None:
+            return await search_operation(sub_query, embedding)
+        if session is None:
+            raise ValueError("session is required when search_operation is not supplied")
+        return await hybrid_search(
+            session,
+            query=sub_query,
+            query_embedding=embedding,
+            collection_id=collection_id,
+            top_k=per_hop,
+            embedding_dim=embedding_dim,
+            metadata_filter=metadata_filter,
+            strict=strict,
+        )
+
+    if search_operation is not None:
+        try:
+            per_hop_results = await asyncio.gather(
+                *[
+                    search(sub_query, embedding)
+                    for sub_query, embedding in zip(
+                        sub_queries, hop_embeddings, strict=True
+                    )
+                ]
+            )
         except Exception as exc:
             if strict:
                 raise RetrievalStrategyExecutionError("multi_hop", "retrieval hop failed") from exc
-            pass
-    all_results.sort(key=lambda r: r.score, reverse=True)
+            per_hop_results = []
+    else:
+        per_hop_results = []
+        for sub_query, embedding in zip(sub_queries, hop_embeddings, strict=True):
+            try:
+                per_hop_results.append(await search(sub_query, embedding))
+            except Exception as exc:
+                if strict:
+                    raise RetrievalStrategyExecutionError(
+                        "multi_hop", "retrieval hop failed"
+                    ) from exc
+
+    if strategy_evidence is not None:
+        strategy_evidence.extend(
+            {
+                "hop": index,
+                "query": sub_query,
+                "result_count": len(hop_results),
+                "component_scores": {
+                    result.chunk_id: result.score for result in hop_results
+                },
+            }
+            for index, (sub_query, hop_results) in enumerate(
+                zip(sub_queries, per_hop_results, strict=True), start=1
+            )
+        )
+
+    merged: dict[str, RetrievalResult] = {}
+    for sub_query, hop_results in zip(sub_queries, per_hop_results, strict=True):
+        for result in hop_results:
+            existing = merged.get(result.chunk_id)
+            if existing is None:
+                result.source_metadata = {
+                    **result.source_metadata,
+                    "hop_queries": [sub_query],
+                }
+                merged[result.chunk_id] = result
+            else:
+                hop_queries = existing.source_metadata.setdefault("hop_queries", [])
+                if sub_query not in hop_queries:
+                    hop_queries.append(sub_query)
+                existing.score = max(existing.score, result.score)
+                existing.retrieval_legs = list(
+                    dict.fromkeys([*existing.retrieval_legs, *result.retrieval_legs])
+                )
+    all_results = sorted(merged.values(), key=lambda result: (-result.score, result.chunk_id))
     return all_results[:top_k]
 
 
@@ -543,6 +774,7 @@ async def retrieve_fusion(
         Awaitable[list[RetrievalResult]],
     ]
     | None = None,
+    strategy_evidence: list[dict[str, Any]] | None = None,
 ) -> list[RetrievalResult]:
     """Fusion RAG: expand query into N variants, retrieve, and RRF-merge.
 
@@ -550,8 +782,12 @@ async def retrieve_fusion(
     fresh tenant-scoped session per call. Legacy direct callers are serialized
     because an ``AsyncSession`` cannot safely be shared by concurrent tasks.
     """
-    from app.context.rerank_policy import rrf_fuse
     from app.rag.agentic.query_expander import QueryExpander
+
+    if strict and provider is not None and not model.strip():
+        raise RetrievalStrategyExecutionError("fusion", "LLM model is required")
+    if strict and embedder is None and query_embedding is None:
+        raise RetrievalStrategyExecutionError("fusion", "embedding provider is required")
 
     expander = QueryExpander()
     try:
@@ -572,16 +808,21 @@ async def retrieve_fusion(
             ) from exc
         variants = expander.expand_for_fusion(query, max_variants=max_variants)
 
-    # Use original embedding for all variants (best-effort: embed each if embedder available)
+    if strict and len(variants) < 2:
+        raise RetrievalStrategyExecutionError("fusion", "query expansion produced one variant")
+
+    # Embed every variant, including the original query.
     variant_embeddings: list[list[float] | None] = []
     for v in variants:
-        if embedder is not None and v != query:
+        if embedder is not None:
             try:
                 from app.providers.base import EmbedRequest
-                resp = await embedder.embed(EmbedRequest(texts=[v]))
-                variant_embeddings.append(
-                    resp.embeddings[0] if resp.embeddings else query_embedding
-                )
+
+                resp = await embedder.embed(EmbedRequest(texts=[v], input_type="query"))
+                embedding = resp.embeddings[0] if resp.embeddings else None
+                if not embedding:
+                    raise ValueError("embedding response was empty")
+                variant_embeddings.append(embedding)
             except Exception as exc:
                 if strict:
                     raise RetrievalStrategyExecutionError(
@@ -619,46 +860,48 @@ async def retrieve_fusion(
         for q, emb in zip(variants, variant_embeddings, strict=True):
             per_variant_results.append(await _retrieve_legacy(q, emb))
 
-    # Build ranked lists for rrf_fuse
-    ranked_lists: list[list[dict[str, Any]]] = []
-    for variant_results in per_variant_results:
-        ranked_list = [
+    merged: dict[str, RetrievalResult] = {}
+    rrf_scores: dict[str, float] = {}
+    for variant, variant_results in zip(variants, per_variant_results, strict=True):
+        for rank, result in enumerate(variant_results, start=1):
+            rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0.0) + 1.0 / (
+                _RRF_K + rank
+            )
+            existing = merged.get(result.chunk_id)
+            if existing is None:
+                result.source_metadata = {
+                    **result.source_metadata,
+                    "fusion_queries": [variant],
+                }
+                merged[result.chunk_id] = result
+            else:
+                provenance = existing.source_metadata.setdefault("fusion_queries", [])
+                if variant not in provenance:
+                    provenance.append(variant)
+                existing.retrieval_legs = list(
+                    dict.fromkeys([*existing.retrieval_legs, *result.retrieval_legs])
+                )
+
+    fused_results = list(merged.values())
+    if strategy_evidence is not None:
+        strategy_evidence.extend(
             {
-                "chunk_id": r.chunk_id,
-                "content": r.content,
-                "score": r.score,
-                "source_metadata": r.source_metadata,
-                "retrieval_legs": r.retrieval_legs,
+                "variant": index,
+                "query": variant,
+                "result_count": len(variant_results),
+                "component_scores": {
+                    result.chunk_id: result.score for result in variant_results
+                },
             }
-            for r in variant_results
-        ]
-        if ranked_list:
-            ranked_lists.append(ranked_list)
-
-    if not ranked_lists:
-        return []
-
-    fused = rrf_fuse(ranked_lists, k=60)
-
-    # Deduplicate by chunk_id
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for item in fused:
-        cid = item.get("chunk_id", "")
-        if cid not in seen:
-            seen.add(cid)
-            deduped.append(item)
-
-    return [
-        RetrievalResult(
-            chunk_id=d["chunk_id"],
-            content=d["content"],
-            score=d.get("score", 0.0),
-            source_metadata=d.get("source_metadata", {}),
-            retrieval_legs=d.get("retrieval_legs", ["fusion"]),
+            for index, (variant, variant_results) in enumerate(
+                zip(variants, per_variant_results, strict=True), start=1
+            )
         )
-        for d in deduped[:top_k]
-    ]
+    for result in fused_results:
+        result.score = rrf_scores[result.chunk_id]
+        result.rrf_score = result.score
+    fused_results.sort(key=lambda result: (-result.score, result.chunk_id))
+    return fused_results[:top_k]
 
 
 async def retrieve(
@@ -693,6 +936,7 @@ async def retrieve(
                 collection_id=collection_id, provider=provider,
                 model=model, top_k=top_k, embedding_dim=embedding_dim,
                 metadata_filter=metadata_filter,
+                embedder=embedder,
                 strict=strict,
             )
         if strategy == "multi_hop":
@@ -701,6 +945,7 @@ async def retrieve(
                 collection_id=collection_id, provider=provider,
                 model=model, top_k=top_k, embedding_dim=embedding_dim,
                 metadata_filter=metadata_filter,
+                embedder=embedder,
                 strict=strict,
             )
         if strategy == "fusion":
@@ -1090,7 +1335,13 @@ async def retrieve(
                     metadata_filter=metadata_filter,
                 )
 
-        mode = "lexical" if strategy == "lexical" else retrieval_mode
+        mode = (
+            "lexical"
+            if strategy == "lexical"
+            else "vector"
+            if strategy == "naive"
+            else retrieval_mode
+        )
         return await hybrid_search(
             session, query=query, query_embedding=query_embedding,
             collection_id=collection_id, top_k=top_k,

@@ -1005,6 +1005,7 @@ def run_goal(
                 RetrievalDependencies,
                 RetrievalGateway,
                 SQLCollectionAuthorizer,
+                core_strategy_capabilities,
             )
 
             async def _resolve_worker_retrieval_llm(
@@ -1048,8 +1049,7 @@ def run_goal(
                     search_capability=None,
                     policy_services=(_policy, _cost, _hitl),
                     collection_authorizer=collection_authorizer,
-                    # Tasks 5-11 populate this only after adapter certification.
-                    strategy_capabilities={},
+                    strategy_capabilities=core_strategy_capabilities(),
                 )
             )
 

@@ -1,21 +1,22 @@
-"""True Okapi BM25 retrieval using rank_bm25 library.
-
-This replaces the PostgreSQL FTS approximation with proper BM25 scoring:
-  - IDF normalization (Okapi BM25 parameter k1=1.5, b=0.75)
-  - Works on in-memory chunk collections
-  - Used as an additional leg in hybrid retrieval when rank_bm25 is available
-  - Falls back gracefully to simple TF scoring when library is unavailable
-"""
+"""Bounded application-side Okapi BM25 corpus scoring."""
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+_MAX_DOCUMENT_CHARS = 100_000
+_MAX_DOCUMENT_TOKENS = 20_000
+
 
 def _tokenize(text: str) -> list[str]:
-    """Tokenize text into lowercase alphanumeric words."""
-    return re.findall(r"\b[a-zA-Z0-9]+\b", text.lower())
+    """Tokenize bounded text into lowercase Unicode-safe words."""
+
+    return re.findall(r"[^\W_]+", text[:_MAX_DOCUMENT_CHARS].casefold())[
+        :_MAX_DOCUMENT_TOKENS
+    ]
 
 
 @dataclass
@@ -36,21 +37,22 @@ class BM25Retriever:
         self._k1 = k1
         self._b = b
         self._chunks: list[dict[str, Any]] = []
-        self._bm25: Any = None
+        self._corpus: list[list[str]] = []
+        self._document_frequency: Counter[str] = Counter()
+        self._average_length = 0.0
 
     def index(self, chunks: list[dict[str, Any]]) -> None:
         """Index a list of chunk dicts (must have 'content' and 'chunk_id')."""
         self._chunks = [c for c in chunks if c.get("content")]
-        corpus = [_tokenize(c["content"]) for c in self._chunks]
-        if not corpus:
-            self._bm25 = None
-            return
-        try:
-            from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
-
-            self._bm25 = BM25Okapi(corpus, k1=self._k1, b=self._b)
-        except ImportError:
-            self._bm25 = None
+        self._corpus = [_tokenize(str(c["content"])) for c in self._chunks]
+        self._document_frequency = Counter(
+            token for document in self._corpus for token in set(document)
+        )
+        self._average_length = (
+            sum(len(document) for document in self._corpus) / len(self._corpus)
+            if self._corpus
+            else 0.0
+        )
 
     def search(self, query: str, top_k: int = 10) -> list[BM25Hit]:
         """Search indexed chunks using BM25 scoring.
@@ -64,25 +66,33 @@ class BM25Retriever:
         if not query_tokens:
             return []
 
-        if self._bm25 is not None:
-            scores: list[float] = list(self._bm25.get_scores(query_tokens))
-        else:
-            # Fallback: simple term-frequency scoring
-            scores = [
-                float(
-                    sum(
-                        1
-                        for qt in query_tokens
-                        if qt in _tokenize(c.get("content", ""))
-                    )
+        document_count = len(self._corpus)
+        average_length = self._average_length or 1.0
+        scores: list[float] = []
+        for document in self._corpus:
+            frequencies = Counter(document)
+            score = 0.0
+            for token in query_tokens:
+                frequency = frequencies[token]
+                if not frequency:
+                    continue
+                document_frequency = self._document_frequency[token]
+                inverse_document_frequency = math.log(
+                    1.0 + (document_count - document_frequency + 0.5)
+                    / (document_frequency + 0.5)
                 )
-                for c in self._chunks
-            ]
+                denominator = frequency + self._k1 * (
+                    1.0 - self._b + self._b * len(document) / average_length
+                )
+                score += inverse_document_frequency * frequency * (self._k1 + 1.0) / denominator
+            scores.append(score)
 
         ranked = sorted(
             enumerate(scores),
-            key=lambda x: x[1],
-            reverse=True,
+            key=lambda item: (
+                -item[1],
+                str(self._chunks[item[0]].get("chunk_id", item[0])),
+            ),
         )
         results: list[BM25Hit] = []
         for idx, score in ranked[:top_k]:
@@ -103,10 +113,6 @@ class BM25Retriever:
 
     @property
     def is_available(self) -> bool:
-        """True if rank_bm25 library is installed."""
-        try:
-            import rank_bm25  # noqa: F401  # type: ignore[import-untyped]
+        """The built-in scorer has no optional runtime dependency."""
 
-            return True
-        except ImportError:
-            return False
+        return True

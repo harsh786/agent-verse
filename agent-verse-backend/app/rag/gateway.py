@@ -14,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.rls import sqlalchemy_rls_context
 from app.rag import engine as rag_engine
 from app.rag.contracts import (
+    FusionRAGRuntimeAdapter,
+    HybridRAGRuntimeAdapter,
+    HyDERAGRuntimeAdapter,
+    MultiHopRAGRuntimeAdapter,
+    NaiveRAGRuntimeAdapter,
     RAGCitation,
     RAGExecutionRequest,
     RAGExecutionResult,
@@ -23,7 +28,12 @@ from app.rag.contracts import (
     UnavailableRAGStrategyError,
     resolve_rag_strategy,
 )
-from app.rag.engine import RetrievalResult as EngineRetrievalResult
+from app.rag.engine import (
+    RetrievalResult as EngineRetrievalResult,
+)
+from app.rag.engine import (
+    RetrievalStrategyExecutionError,
+)
 from app.tenancy.context import TenantContext
 
 T = TypeVar("T")
@@ -126,6 +136,42 @@ class RetrievalStrategyCapability:
     requires_provider: bool = False
     requires_graph: bool = False
     requires_search: bool = False
+    requires_database: bool = False
+
+
+def core_strategy_capabilities() -> Mapping[RAGStrategy, RetrievalStrategyCapability]:
+    """Return certified core strategy adapters."""
+
+    return {
+        RAGStrategy.NAIVE: RetrievalStrategyCapability(
+            NaiveRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_database=True,
+        ),
+        RAGStrategy.HYBRID: RetrievalStrategyCapability(
+            HybridRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_database=True,
+        ),
+        RAGStrategy.HYDE: RetrievalStrategyCapability(
+            HyDERAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_provider=True,
+            requires_database=True,
+        ),
+        RAGStrategy.MULTI_HOP: RetrievalStrategyCapability(
+            MultiHopRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_provider=True,
+            requires_database=True,
+        ),
+        RAGStrategy.FUSION: RetrievalStrategyCapability(
+            FusionRAGRuntimeAdapter(),
+            requires_embedder=True,
+            requires_provider=True,
+            requires_database=True,
+        ),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +362,305 @@ class RetrievalExecutionContext:
         return await self.run_db_operation(operation)
 
 
+async def execute_core_strategy(
+    strategy: RAGStrategy,
+    request: RAGExecutionRequest,
+    context: RetrievalExecutionContext,
+) -> RAGExecutionResult:
+    """Execute one certified strategy through tenant-scoped persistence boundaries."""
+
+    collection_id = request.collection_id
+    if not collection_id:
+        raise RetrievalStrategyExecutionError(strategy.value, "collection is required")
+
+    if strategy is RAGStrategy.NAIVE:
+        embedding = await _embed_text(context, request.query, strategy)
+        results = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="vector",
+        )
+        evidence = [
+            {
+                "component": "vector",
+                "query": request.query,
+                "result_count": len(results),
+                "component_scores": {
+                    result.chunk_id: result.component_scores.get("vector", result.score)
+                    for result in results
+                },
+            }
+        ]
+        return _canonical_result(request, strategy, results, evidence)
+
+    if strategy is RAGStrategy.HYBRID:
+        embedding = await _embed_text(context, request.query, strategy)
+        evidence = []
+        results = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+        )
+        return _canonical_result(request, strategy, results, evidence, rrf=True)
+
+    llm = context.llm
+    if llm is None or llm.provider is None or not llm.model:
+        raise RetrievalStrategyExecutionError(strategy.value, "resolved LLM is required")
+
+    if strategy is RAGStrategy.HYDE:
+        generated_evidence: dict[str, Any] = {}
+
+        async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+            return await rag_engine.retrieve_hyde(
+                session,
+                query=request.query,
+                query_embedding=None,
+                collection_id=collection_id,
+                provider=llm.provider,
+                model=llm.model,
+                top_k=request.top_k,
+                metadata_filter=request.filters,
+                embedder=context.dependencies.embedder,
+                strict=True,
+                strategy_evidence=generated_evidence,
+            )
+
+        results = await context.run_db_operation(operation)
+        generated_evidence["provider_type"] = llm.provider_type
+        evidence = [
+            {
+                "component": "vector",
+                "query": request.query,
+                "result_count": len(results),
+                "component_scores": {
+                    result.chunk_id: result.component_scores.get("vector", result.score)
+                    for result in results
+                },
+            }
+        ]
+        return _canonical_result(
+            request,
+            strategy,
+            results,
+            evidence,
+            initial_trace=("hypothetical_document", generated_evidence),
+        )
+
+    strategy_evidence: list[dict[str, Any]] = []
+
+    async def search_operation(
+        variant_query: str,
+        variant_embedding: list[float] | None,
+    ) -> list[EngineRetrievalResult]:
+        return await _search_persisted(
+            context,
+            request,
+            query=variant_query,
+            embedding=variant_embedding,
+            retrieval_mode="hybrid",
+        )
+
+    if strategy is RAGStrategy.MULTI_HOP:
+        results = await rag_engine.retrieve_multi_hop(
+            None,
+            query=request.query,
+            query_embedding=None,
+            collection_id=collection_id,
+            provider=llm.provider,
+            model=llm.model,
+            top_k=request.top_k,
+            metadata_filter=request.filters,
+            embedder=context.dependencies.embedder,
+            strict=True,
+            search_operation=search_operation,
+            strategy_evidence=strategy_evidence,
+        )
+        return _canonical_result(
+            request,
+            strategy,
+            results,
+            strategy_evidence,
+            initial_trace=(
+                "query_decomposition",
+                {
+                    "model": llm.model,
+                    "provider_type": llm.provider_type,
+                    "hop_count": len(strategy_evidence),
+                },
+            ),
+        )
+
+    if strategy is RAGStrategy.FUSION:
+        results = await rag_engine.retrieve_fusion(
+            None,
+            query=request.query,
+            query_embedding=None,
+            collection_id=collection_id,
+            provider=llm.provider,
+            model=llm.model,
+            top_k=request.top_k,
+            embedder=context.dependencies.embedder,
+            metadata_filter=request.filters,
+            strict=True,
+            search_operation=search_operation,
+            strategy_evidence=strategy_evidence,
+        )
+        return _canonical_result(
+            request,
+            strategy,
+            results,
+            strategy_evidence,
+            rrf=True,
+            initial_trace=(
+                "query_expansion",
+                {
+                    "model": llm.model,
+                    "provider_type": llm.provider_type,
+                    "variant_count": len(strategy_evidence),
+                },
+            ),
+        )
+
+    raise RetrievalStrategyExecutionError(strategy.value, "adapter is not certified")
+
+
+async def _embed_text(
+    context: RetrievalExecutionContext,
+    text_value: str,
+    strategy: RAGStrategy,
+) -> list[float]:
+    from app.providers.base import EmbedRequest
+
+    embedder: Any = context.dependencies.embedder
+    if embedder is None or not callable(getattr(embedder, "embed", None)):
+        raise RetrievalStrategyExecutionError(
+            strategy.value, "embedding provider is required"
+        )
+    try:
+        response = await embedder.embed(EmbedRequest(texts=[text_value], input_type="query"))
+        embedding = response.embeddings[0] if response.embeddings else None
+    except Exception as exc:
+        raise RetrievalStrategyExecutionError(strategy.value, "embedding failed") from exc
+    if not embedding:
+        raise RetrievalStrategyExecutionError(strategy.value, "embedding response was empty")
+    return list(embedding)
+
+
+async def _search_persisted(
+    context: RetrievalExecutionContext,
+    request: RAGExecutionRequest,
+    *,
+    query: str,
+    embedding: list[float] | None,
+    retrieval_mode: str,
+    evidence: list[dict[str, Any]] | None = None,
+) -> list[EngineRetrievalResult]:
+    async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+        return await rag_engine.hybrid_search(
+            session,
+            query=query,
+            query_embedding=embedding,
+            collection_id=request.collection_id or "",
+            top_k=request.top_k,
+            retrieval_mode=retrieval_mode,
+            metadata_filter=request.filters,
+            strict=True,
+            evidence=evidence,
+        )
+
+    return await context.run_db_operation(operation)
+
+
+def _canonical_result(
+    request: RAGExecutionRequest,
+    strategy: RAGStrategy,
+    results: list[EngineRetrievalResult],
+    evidence: list[dict[str, Any]],
+    *,
+    rrf: bool = False,
+    initial_trace: tuple[str, dict[str, Any]] | None = None,
+) -> RAGExecutionResult:
+    citations = [
+        RAGCitation(
+            citation_id=f"citation-{index}",
+            chunk_id=result.chunk_id,
+            content=result.content,
+            score=result.score,
+            source=str(
+                result.source_metadata.get("source")
+                or result.source_metadata.get("source_url")
+                or result.source_metadata.get("source_doc_id")
+                or request.collection_id
+                or "unknown"
+            ),
+            metadata={
+                **result.source_metadata,
+                "component_scores": dict(result.component_scores),
+                "rrf_score": result.rrf_score,
+            },
+        )
+        for index, result in enumerate(results, start=1)
+    ]
+    retrieval_legs = [
+        RAGRetrievalLeg(
+            strategy=strategy,
+            query=str(item.get("query") or request.query),
+            result_count=int(item.get("result_count", 0)),
+            score=max(
+                (float(score) for score in item.get("component_scores", {}).values()),
+                default=0.0,
+            ),
+            metadata=dict(item),
+        )
+        for item in evidence
+    ]
+    trace: list[RAGStrategyTrace] = []
+    if initial_trace is not None:
+        trace.append(
+            RAGStrategyTrace(
+                strategy=strategy,
+                action=initial_trace[0],
+                status="complete",
+                detail=initial_trace[1],
+            )
+        )
+    trace.extend(
+        RAGStrategyTrace(
+            strategy=strategy,
+            action="retrieval_leg",
+            status="complete",
+            detail=dict(item),
+        )
+        for item in evidence
+    )
+    if rrf:
+        trace.append(
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="rrf_merge",
+                status="complete",
+                detail={
+                    "rrf_scores": {
+                        result.chunk_id: result.rrf_score for result in results
+                    }
+                },
+            )
+        )
+    return RAGExecutionResult(
+        requested_strategy_id=request.requested_strategy_id,
+        resolved_strategy_id=strategy,
+        citations=citations,
+        retrieval_legs=retrieval_legs,
+        strategy_trace=trace,
+        grounded=bool(citations),
+    )
+
+
 class RetrievalGateway:
     """Authenticate, authorize, and dispatch one canonical RAG execution."""
 
@@ -342,6 +687,8 @@ class RetrievalGateway:
             return RAGStrategyReadiness(strategy, False, "invalid_adapter")
         if capability.requires_embedder and self.dependencies.embedder is None:
             return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
+        if capability.requires_database and self.dependencies.session_factory is None:
+            return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")
         if capability.requires_graph and (
             self.dependencies.graph_capability is None
             or self.dependencies.session_factory is None
@@ -539,6 +886,10 @@ class RetrievalGateway:
     ) -> None:
         if capability.requires_embedder and self.dependencies.embedder is None:
             raise UnavailableRAGStrategyError(strategy, "embedding provider is not configured")
+        if capability.requires_database and self.dependencies.session_factory is None:
+            raise UnavailableRAGStrategyError(
+                strategy, "database session factory is not configured"
+            )
         if capability.requires_provider and self.dependencies.llm_resolver is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
         if capability.requires_graph and (

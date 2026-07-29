@@ -193,7 +193,7 @@ async def test_strict_fusion_propagates_direct_variant_failure() -> None:
     with (
         patch(
             "app.rag.agentic.query_expander.QueryExpander.expand_for_fusion",
-            return_value=["variant-1"],
+            return_value=["variant-1", "variant-2"],
         ),
         patch(
             "app.rag.engine.hybrid_search",
@@ -204,7 +204,7 @@ async def test_strict_fusion_propagates_direct_variant_failure() -> None:
         await retrieve_fusion(
             session,
             query="retention policy",
-            query_embedding=None,
+            query_embedding=[0.1],
             collection_id="collection-1",
             strict=True,
         )
@@ -415,6 +415,11 @@ async def test_generation_retrievers_use_resolved_model(
             self.requests.append(request)
             return CompletionResponse(content=response_content, model=request.model)
 
+        async def embed(self, request: object) -> object:
+            from app.providers.base import EmbedResponse
+
+            return EmbedResponse(embeddings=[[0.2]])
+
     provider = RecordingProvider()
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[])):
         await retrieve(
@@ -425,6 +430,7 @@ async def test_generation_retrievers_use_resolved_model(
             strategy=strategy,
             provider=provider,
             model="tenant-model",
+            embedder=provider,
             strict=True,
         )
 

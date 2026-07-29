@@ -1175,6 +1175,7 @@ def build_default_registry(
         adapter = runtime_capabilities.get(strategy)
         if adapter is not None and is_rag_runtime_adapter(strategy, adapter):
             capability.state = IMPL
+            capability.adapter_path = f"{adapter.__module__}:{adapter.__name__}"
         elif capability.state not in (PLAN, StrategyState.DISABLED):
             capability.state = PART
 

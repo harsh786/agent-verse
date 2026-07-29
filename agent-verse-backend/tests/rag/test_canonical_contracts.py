@@ -211,10 +211,16 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
         if capability.state is StrategyState.IMPLEMENTED
     }
 
-    assert RAG_RUNTIME_CAPABILITIES == {}
-    assert implemented_ids == set()
+    expected = {
+        RAGStrategy.NAIVE,
+        RAGStrategy.HYBRID,
+        RAGStrategy.HYDE,
+        RAGStrategy.MULTI_HOP,
+        RAGStrategy.FUSION,
+    }
+    assert set(RAG_RUNTIME_CAPABILITIES) == expected
+    assert implemented_ids == expected
     assert set(RAG_RUNTIME_CAPABILITIES) == implemented_ids
-    assert all(capability.state is not StrategyState.IMPLEMENTED for capability in rag_capabilities)
 
 
 def test_registry_derives_implemented_state_from_runtime_capabilities() -> None:
