@@ -218,7 +218,7 @@ async def smart_context_fetch(
 
         # Enumerate collections via the public API (works with DB-loaded knowledge)
         try:
-            collections = knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+            collections = await knowledge_store.list_collections_async(tenant_ctx=tenant_ctx)
             collection_ids = [c.collection_id for c in collections]
         except Exception:
             collection_ids = []

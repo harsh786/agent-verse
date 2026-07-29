@@ -7,6 +7,7 @@ from typing import Any
 
 from app.rag.contracts import RAGStrategy
 from app.rag_platform.query_planner import QueryPlanner, RAGResult, RetrievalLeg
+from app.tenancy.context import TenantContext
 
 _log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class RAGRetriever:
     async def retrieve(
         self,
         query: str,
-        tenant_id: str,
+        tenant_ctx: TenantContext,
         collection_id: str | None = None,
         strategy: RAGStrategy = RAGStrategy.ADAPTIVE,
         top_k: int = 5,
@@ -46,17 +47,17 @@ class RAGRetriever:
         result = RAGResult(query=query, strategy_used=strategy)
 
         # 1. Base vector retrieval
-        vector_leg = await self._vector_search(query, tenant_id, collection_id, top_k)
+        vector_leg = await self._vector_search(query, tenant_ctx, collection_id, top_k)
         result.legs.append(vector_leg)
 
         # 2. Graph expansion (if GRAPH or MULTI_HOP strategy)
         if strategy in (RAGStrategy.GRAPH, RAGStrategy.MULTI_HOP) and self._kg_store:
-            graph_leg = await self._graph_expand(query, tenant_id, vector_leg.results)
+            graph_leg = await self._graph_expand(query, tenant_ctx, vector_leg.results)
             result.legs.append(graph_leg)
 
         # 3. HyDE (if HYDE strategy)
         if strategy == RAGStrategy.HYDE and self._provider:
-            hyde_leg = await self._hyde_retrieve(query, tenant_id, collection_id, top_k)
+            hyde_leg = await self._hyde_retrieve(query, tenant_ctx, collection_id, top_k)
             result.legs.append(hyde_leg)
 
         # 4. Synthesize answer with citations
@@ -112,7 +113,7 @@ class RAGRetriever:
     async def _vector_search(
         self,
         query: str,
-        tenant_id: str,
+        tenant_ctx: TenantContext,
         collection_id: str | None,
         top_k: int,
     ) -> RetrievalLeg:
@@ -123,16 +124,13 @@ class RAGRetriever:
         results: list[dict[str, Any]] = []
 
         if self._knowledge_store and hasattr(self._knowledge_store, "search"):
-            try:
-                search_results = await self._knowledge_store.search(
-                    query=query,
-                    collection_id=collection_id,
-                    tenant_id=tenant_id,
-                    top_k=top_k,
-                )
-                results = search_results if isinstance(search_results, list) else []
-            except Exception as exc:
-                _log.warning("Vector search failed: %s", exc)
+            search_results = await self._knowledge_store.search(
+                query=query,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+            )
+            results = search_results if isinstance(search_results, list) else []
 
         return RetrievalLeg(
             strategy=RAGStrategy.NAIVE,
@@ -145,7 +143,7 @@ class RAGRetriever:
     async def _graph_expand(
         self,
         query: str,
-        tenant_id: str,
+        tenant_ctx: TenantContext,
         seed_results: list[dict[str, Any]],
     ) -> RetrievalLeg:
         """Expand retrieval using the knowledge graph."""
@@ -157,12 +155,15 @@ class RAGRetriever:
         if self._kg_store:
             try:
                 nodes = self._kg_store.query_nodes(
-                    tenant_id,
+                    tenant_ctx.tenant_id,
                     search=query.split()[0] if query else "",
                     limit=5,
                 )
                 for node in nodes:
-                    edges = self._kg_store.get_edges_for_node(node.node_id, tenant_id)
+                    edges = self._kg_store.get_edges_for_node(
+                        node.node_id,
+                        tenant_ctx.tenant_id,
+                    )
                     for edge in edges[:3]:
                         expanded.append({
                             "content": f"[Graph] {node.label} {edge.edge_type.value} related node",
@@ -184,7 +185,7 @@ class RAGRetriever:
     async def _hyde_retrieve(
         self,
         query: str,
-        tenant_id: str,
+        tenant_ctx: TenantContext,
         collection_id: str | None,
         top_k: int,
     ) -> RetrievalLeg:
@@ -205,7 +206,12 @@ class RAGRetriever:
                 )
             )
             hypothetical_doc = resp.content
-            return await self._vector_search(hypothetical_doc, tenant_id, collection_id, top_k)
+            return await self._vector_search(
+                hypothetical_doc,
+                tenant_ctx,
+                collection_id,
+                top_k,
+            )
         except Exception as exc:
             _log.warning("HyDE failed: %s", exc)
             return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])

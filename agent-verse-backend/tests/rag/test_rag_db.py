@@ -102,6 +102,27 @@ async def test_persisted_search_requires_explicit_tenant_context() -> None:
         await store.search("query", "collection", top_k=5)
 
 
+async def test_in_memory_search_requires_explicit_tenant_context() -> None:
+    store = KnowledgeStore()
+
+    with pytest.raises(TypeError, match="tenant_ctx"):
+        await store.search("query", "collection", top_k=5)
+
+
+async def test_empty_in_memory_batch_validates_collection() -> None:
+    store = KnowledgeStore()
+
+    with pytest.raises(KeyError, match="not found"):
+        await store.ingest_chunks_async([], collection_id="missing", tenant_ctx=T)
+
+
+def test_startup_does_not_run_cross_tenant_knowledge_hydration() -> None:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "app/main.py").read_text()
+    assert "_knowledge_store_db.sync_from_db" not in source
+
+
 async def test_engine_rejects_unconfigured_dimension_before_building_table_sql() -> None:
     from app.rag.engine import RetrievalLegExecutionError, hybrid_search
 

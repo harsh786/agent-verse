@@ -1,7 +1,7 @@
 """SourceInventory — builds a snapshot of all retrieval sources available for a tenant."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -52,12 +52,12 @@ class SourceInventory:
         self._web = web_search_available
         self._embedder = embedder_available
 
-    def build(self, *, tenant_ctx: "TenantContext") -> SourceInventoryResult:
+    async def build(self, *, tenant_ctx: TenantContext) -> SourceInventoryResult:
         # KB state
         kb_collections = 0
         kb_chunks = 0
         if self._kb is not None:
-            cols = self._kb.list_collections(tenant_ctx=tenant_ctx)
+            cols = await self._kb.list_collections_async(tenant_ctx=tenant_ctx)
             kb_collections = len(cols)
             kb_chunks = sum(getattr(c, "document_count", 0) for c in cols)
 

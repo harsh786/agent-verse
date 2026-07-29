@@ -213,9 +213,18 @@ async def test_federated_search_normalizes_scores() -> None:
 
     cid_a = str(uuid4())
     cid_b = str(uuid4())
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
     # Two collections return results with very different score scales
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
+    async def mock_search(
+        query: str,
+        cid: str,
+        top_k: int,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[dict]:
+        assert tenant_ctx.tenant_id == "federated-tenant"
         if cid == cid_a:
             # High-range scores (e.g. from a cosine similarity model ~0.9)
             return [
@@ -237,6 +246,7 @@ async def test_federated_search_normalizes_scores() -> None:
         collection_ids=[cid_a, cid_b],
         store=mock_store,
         top_k=6,
+        tenant_ctx=tenant_ctx,
     )
 
     assert len(results) > 0, "Should return results"
@@ -257,8 +267,16 @@ async def test_federated_search_deduplicates_results() -> None:
     cid_a = str(uuid4())
     cid_b = str(uuid4())
     shared_hash = "shared_content_hash_123"
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
+    async def mock_search(
+        query: str,
+        cid: str,
+        top_k: int,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[dict]:
         return [{"content": "identical content", "score": 0.9, "content_hash": shared_hash}]
 
     mock_store = MagicMock()
@@ -269,6 +287,7 @@ async def test_federated_search_deduplicates_results() -> None:
         collection_ids=[cid_a, cid_b],
         store=mock_store,
         top_k=10,
+        tenant_ctx=tenant_ctx,
     )
 
     # The same content_hash must appear exactly once
@@ -279,14 +298,22 @@ async def test_federated_search_deduplicates_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_federated_search_handles_collection_error() -> None:
-    """A failing collection must not abort the entire search."""
+async def test_federated_search_propagates_collection_error() -> None:
+    """A collection failure must not become an empty successful response."""
     from app.knowledge.federated_search import federated_search
 
     cid_good = str(uuid4())
     cid_bad = str(uuid4())
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
+    async def mock_search(
+        query: str,
+        cid: str,
+        top_k: int,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[dict]:
         if cid == cid_bad:
             raise RuntimeError("Collection unavailable")
         return [{"content": "good result", "score": 0.8, "content_hash": "good_hash"}]
@@ -294,16 +321,14 @@ async def test_federated_search_handles_collection_error() -> None:
     mock_store = MagicMock()
     mock_store.search = mock_search
 
-    results = await federated_search(
-        query="test",
-        collection_ids=[cid_good, cid_bad],
-        store=mock_store,
-        top_k=10,
-    )
-
-    # Still returns results from the working collection
-    assert len(results) == 1
-    assert results[0]["content"] == "good result"
+    with pytest.raises(RuntimeError, match="Collection unavailable"):
+        await federated_search(
+            query="test",
+            collection_ids=[cid_good, cid_bad],
+            store=mock_store,
+            top_k=10,
+            tenant_ctx=tenant_ctx,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +479,7 @@ async def test_sync_from_db_does_not_hydrate_legacy_documents() -> None:
 
     assert "documents" not in source
     assert "chunks.append" not in source
-    assert "collection metadata" in source.lower()
+    assert "per tenant on demand" in source.lower()
 
 
 @pytest.mark.asyncio

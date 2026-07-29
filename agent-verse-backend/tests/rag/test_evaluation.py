@@ -1,10 +1,14 @@
 """Tests for RetrievalEvaluator."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.rag.evaluation import RetrievalEvaluator
+from app.tenancy.context import PlanTier, TenantContext
+
+TENANT = TenantContext("evaluation-tenant", PlanTier.PROFESSIONAL, "key")
 
 
 @pytest.fixture
@@ -23,7 +27,7 @@ async def test_perfect_retrieval_scores_1():
             {"chunk_id": "c2", "text": "Also relevant"},
         ]
     )
-    evaluator = RetrievalEvaluator(store)
+    evaluator = RetrievalEvaluator(store, tenant_ctx=TENANT)
     report = await evaluator.evaluate_collection(
         collection_id="col-1",
         test_queries=["What is the policy?"],
@@ -43,7 +47,7 @@ async def test_zero_retrieval_scores_0():
             {"chunk_id": "c99", "text": "Irrelevant"},
         ]
     )
-    evaluator = RetrievalEvaluator(store)
+    evaluator = RetrievalEvaluator(store, tenant_ctx=TENANT)
     report = await evaluator.evaluate_collection(
         collection_id="col-2",
         test_queries=["Find the answer"],
@@ -59,7 +63,7 @@ async def test_zero_retrieval_scores_0():
 @pytest.mark.asyncio
 async def test_query_count_mismatch_raises():
     store = MagicMock()
-    evaluator = RetrievalEvaluator(store)
+    evaluator = RetrievalEvaluator(store, tenant_ctx=TENANT)
     with pytest.raises(ValueError, match="same length"):
         await evaluator.evaluate_collection(
             collection_id="col-3",
@@ -77,7 +81,7 @@ async def test_overall_score_is_weighted():
             {"chunk_id": "c1", "text": "chunk"},
         ]
     )
-    evaluator = RetrievalEvaluator(store)
+    evaluator = RetrievalEvaluator(store, tenant_ctx=TENANT)
     report = await evaluator.evaluate_collection(
         collection_id="col-4",
         test_queries=["q"],

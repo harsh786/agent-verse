@@ -545,7 +545,7 @@ class AgentGraph:
             _kb = getattr(self, "_knowledge_store", None)
             if _kb is not None:
                 inventory = SourceInventory(knowledge_store=_kb)
-                sources = inventory.build(tenant_ctx=agent_state.tenant_ctx)
+                sources = await inventory.build(tenant_ctx=agent_state.tenant_ctx)
                 agent_state.context["_source_inventory"] = sources.to_dict()
         except Exception:
             pass
@@ -657,7 +657,9 @@ class AgentGraph:
                 search_collections = list(self._agent_collection_ids[:3])
                 if not search_collections:
                     # Fall back to all tenant collections (up to 3)
-                    _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+                    _all_cols = await self._knowledge_store.list_collections_async(
+                        tenant_ctx=tenant_ctx
+                    )
                     search_collections = [c.collection_id for c in _all_cols[:3]]
 
                 if search_collections:
@@ -765,7 +767,9 @@ class AgentGraph:
                 _rrf_collections = list(self._agent_collection_ids[:2])
                 if not _rrf_collections and self._knowledge_store is not None:
                     try:
-                        _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+                        _all_cols = await self._knowledge_store.list_collections_async(
+                            tenant_ctx=tenant_ctx
+                        )
                         _rrf_collections = [c.collection_id for c in _all_cols[:2]]
                     except Exception:
                         pass

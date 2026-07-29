@@ -25,6 +25,7 @@ class _SchemaState(TypedDict):
     columns: dict[int, set[str]]
     indexes: dict[int, set[str]]
     policies: dict[str, tuple[bool, bool, int]]
+    index_definitions: dict[str, str]
 
 
 def _alembic(database_url: str, *arguments: str) -> None:
@@ -44,6 +45,7 @@ async def _schema_state(database_url: str) -> _SchemaState:
         columns: dict[int, set[str]] = {}
         indexes: dict[int, set[str]] = {}
         policies: dict[str, tuple[bool, bool, int]] = {}
+        index_definitions: dict[str, str] = {}
         for dimension in DIMENSIONS:
             table = f"knowledge_chunks_{dimension}"
             columns[dimension] = set(
@@ -65,6 +67,18 @@ async def _schema_state(database_url: str) -> _SchemaState:
                     )
                 ).scalars()
             )
+            definition_rows = (
+                await connection.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE tablename = :table"
+                    ),
+                    {"table": table},
+                )
+            ).all()
+            index_definitions.update(
+                {str(row[0]): str(row[1]) for row in definition_rows}
+            )
         for table in ["knowledge_collections", *(f"knowledge_chunks_{d}" for d in DIMENSIONS)]:
             row = (
                 await connection.execute(
@@ -78,7 +92,12 @@ async def _schema_state(database_url: str) -> _SchemaState:
             ).one()
             policies[table] = (bool(row[0]), bool(row[1]), int(row[2]))
     await engine.dispose()
-    return {"columns": columns, "indexes": indexes, "policies": policies}
+    return {
+        "columns": columns,
+        "indexes": indexes,
+        "policies": policies,
+        "index_definitions": index_definitions,
+    }
 
 
 @pytest.fixture(scope="module")
@@ -119,3 +138,21 @@ def test_0091_upgrade_downgrade_upgrade_round_trip(isolated_postgres: str) -> No
             rls and forced and policy_count >= 1
             for rls, forced, policy_count in state["policies"].values()
         )
+
+    halfvec_index = "idx_knowledge_chunks_3072_vector_halfvec"
+    assert halfvec_index not in before["index_definitions"]
+    assert "halfvec(3072)" in upgraded["index_definitions"][halfvec_index]
+    assert "halfvec_cosine_ops" in upgraded["index_definitions"][halfvec_index]
+    assert halfvec_index not in downgraded["index_definitions"]
+    assert "halfvec(3072)" in reupgraded["index_definitions"][halfvec_index]
+
+
+def test_0091_uses_retry_safe_concurrent_index_ddl() -> None:
+    migration = BACKEND_ROOT / "app/db/migrations/versions/0091_rag_ingestion_structures.py"
+    source = migration.read_text()
+
+    assert "autocommit_block" in source
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in source
+    assert "DROP INDEX CONCURRENTLY IF EXISTS" in source
+    assert "CREATE INDEX IF NOT EXISTS" not in source
+    assert "indisvalid" in source

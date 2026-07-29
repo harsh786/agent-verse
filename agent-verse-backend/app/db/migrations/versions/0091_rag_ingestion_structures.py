@@ -7,6 +7,7 @@ Create Date: 2026-07-29
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0091_rag_ingestion_structures"
@@ -15,6 +16,21 @@ branch_labels = None
 depends_on = None
 
 _DIMENSIONS = (768, 1024, 1536, 3072)
+
+
+def _create_index_concurrently(index_name: str, statement: str) -> None:
+    """Retry an interrupted concurrent build without replacing a valid index."""
+    is_valid = op.get_bind().execute(
+        sa.text(
+            "SELECT index.indisvalid FROM pg_index AS index "
+            "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
+            "WHERE relation.relname = :index_name"
+        ),
+        {"index_name": index_name},
+    ).scalar_one_or_none()
+    if is_valid is False:
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
+    op.execute(statement)
 
 
 def upgrade() -> None:
@@ -52,31 +68,6 @@ def upgrade() -> None:
             "JSONB NOT NULL DEFAULT '{}'::jsonb"
         )
 
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_window_id "
-            f"ON {table}(window_id) WHERE window_id IS NOT NULL"
-        )
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_hierarchy "
-            f"ON {table}(collection_id, hierarchy_level)"
-        )
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_proposition "
-            f"ON {table}(collection_id) WHERE is_proposition IS TRUE"
-        )
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_metadata "
-            f"ON {table} USING gin (metadata jsonb_path_ops)"
-        )
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_strategy_metadata "
-            f"ON {table} USING gin (strategy_metadata jsonb_path_ops)"
-        )
-        op.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_{table}_fts "
-            f"ON {table} USING gin (to_tsvector('english', content))"
-        )
-
         op.execute(f"DROP POLICY IF EXISTS {table}_isolation ON {table}")
         op.execute(
             f"CREATE POLICY {table}_isolation ON {table} "
@@ -98,21 +89,76 @@ def upgrade() -> None:
     )
     op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS window_start INTEGER")
     op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS window_end INTEGER")
-    op.execute(
-        f"CREATE INDEX IF NOT EXISTS ix_{table}_parent_chunk_id "
-        f"ON {table}(parent_chunk_id)"
-    )
+    with op.get_context().autocommit_block():
+        for dimension in _DIMENSIONS:
+            table = f"knowledge_chunks_{dimension}"
+            _create_index_concurrently(
+                f"idx_{table}_window_id",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_window_id "
+                f"ON {table}(window_id) WHERE window_id IS NOT NULL",
+            )
+            _create_index_concurrently(
+                f"idx_{table}_hierarchy",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_hierarchy "
+                f"ON {table}(collection_id, hierarchy_level)",
+            )
+            _create_index_concurrently(
+                f"idx_{table}_proposition",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_proposition "
+                f"ON {table}(collection_id) WHERE is_proposition IS TRUE",
+            )
+            _create_index_concurrently(
+                f"idx_{table}_metadata",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_metadata "
+                f"ON {table} USING gin (metadata jsonb_path_ops)",
+            )
+            _create_index_concurrently(
+                f"idx_{table}_strategy_metadata",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_strategy_metadata "
+                f"ON {table} USING gin (strategy_metadata jsonb_path_ops)",
+            )
+            _create_index_concurrently(
+                f"idx_{table}_fts",
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_{table}_fts "
+                f"ON {table} USING gin (to_tsvector('english', content))",
+            )
+        _create_index_concurrently(
+            "idx_knowledge_chunks_3072_vector_halfvec",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+            "idx_knowledge_chunks_3072_vector_halfvec ON knowledge_chunks_3072 "
+            "USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops) "
+            "WITH (m = 16, ef_construction = 64)",
+        )
+        _create_index_concurrently(
+            "ix_knowledge_chunks_3072_parent_chunk_id",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+            "ix_knowledge_chunks_3072_parent_chunk_id "
+            "ON knowledge_chunks_3072(parent_chunk_id)",
+        )
 
 
 def downgrade() -> None:
+    with op.get_context().autocommit_block():
+        for dimension in _DIMENSIONS:
+            table = f"knowledge_chunks_{dimension}"
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_fts")
+            op.execute(
+                f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_strategy_metadata"
+            )
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_metadata")
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_proposition")
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_hierarchy")
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_window_id")
+        op.execute(
+            "DROP INDEX CONCURRENTLY IF EXISTS "
+            "idx_knowledge_chunks_3072_vector_halfvec"
+        )
+        op.execute(
+            "DROP INDEX CONCURRENTLY IF EXISTS ix_knowledge_chunks_3072_parent_chunk_id"
+        )
+
     for dimension in _DIMENSIONS:
         table = f"knowledge_chunks_{dimension}"
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_fts")
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_strategy_metadata")
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_metadata")
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_proposition")
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_hierarchy")
-        op.execute(f"DROP INDEX IF EXISTS idx_{table}_window_id")
         op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS strategy_metadata")
         op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS is_proposition")
         op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS hierarchy_level")
@@ -124,7 +170,6 @@ def downgrade() -> None:
         )
 
     table = "knowledge_chunks_3072"
-    op.execute(f"DROP INDEX IF EXISTS ix_{table}_parent_chunk_id")
     op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS window_end")
     op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS window_start")
     op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS chunk_level")
