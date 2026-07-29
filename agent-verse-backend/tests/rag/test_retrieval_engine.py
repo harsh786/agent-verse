@@ -506,3 +506,174 @@ async def test_metadata_filter_is_bound_in_sql_before_leg_limits() -> None:
         assert "metadata @> CAST(:metadata_filter AS jsonb)" in statement
         assert statement.index("metadata @>") < statement.index("LIMIT")
         assert params["metadata_filter"] == '{"department": "legal"}'
+
+
+@pytest.mark.asyncio
+async def test_self_rag_provider_helper_opens_at_failure_threshold() -> None:
+    from app.providers.base import CompletionRequest, Message
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+    from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
+
+    provider = AsyncMock()
+    provider.complete.side_effect = RuntimeError("provider failed")
+    breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=60)
+    request = CompletionRequest(
+        messages=[Message(role="user", content="private prompt")],
+        model="tenant-model",
+    )
+    pattern = SelfRAGPattern()
+
+    assert await pattern._complete_with_breaker(
+        provider=provider,
+        request=request,
+        breaker=breaker,
+        strict=False,
+    ) is None
+    assert breaker._failure_count == 1
+    assert breaker.state is CircuitState.CLOSED
+
+    assert await pattern._complete_with_breaker(
+        provider=provider,
+        request=request,
+        breaker=breaker,
+        strict=False,
+    ) is None
+    assert breaker._failure_count == 2
+    assert breaker.state is CircuitState.OPEN
+    assert breaker._opened_at > 0
+    assert provider.complete.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_self_rag_provider_helper_success_resets_breaker() -> None:
+    from app.providers.base import CompletionRequest, CompletionResponse, Message
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+    from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
+
+    provider = AsyncMock()
+    provider.complete.return_value = CompletionResponse(content="ok", model="tenant-model")
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
+    breaker._failure_count = 2
+    request = CompletionRequest(
+        messages=[Message(role="user", content="private prompt")],
+        model="tenant-model",
+    )
+
+    response = await SelfRAGPattern()._complete_with_breaker(
+        provider=provider,
+        request=request,
+        breaker=breaker,
+        strict=True,
+    )
+
+    assert response is not None and response.content == "ok"
+    assert breaker._failure_count == 0
+    assert breaker._opened_at == 0.0
+    assert breaker.state is CircuitState.CLOSED
+    provider.complete.assert_awaited_once_with(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict", [False, True])
+async def test_self_rag_provider_helper_blocked_call_is_inert(strict: bool) -> None:
+    import time
+    from contextlib import nullcontext
+
+    from app.providers.base import CompletionRequest, Message
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+    from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
+
+    provider = AsyncMock()
+    breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=10_000)
+    breaker._state = CircuitState.OPEN
+    breaker._failure_count = 2
+    breaker._opened_at = time.monotonic()
+    opened_at = breaker._opened_at
+    request = CompletionRequest(
+        messages=[Message(role="user", content="private prompt")],
+        model="tenant-model",
+    )
+    expected = pytest.raises(RuntimeError, match="circuit is open") if strict else nullcontext()
+
+    with expected:
+        result = await SelfRAGPattern()._complete_with_breaker(
+            provider=provider,
+            request=request,
+            breaker=breaker,
+            strict=strict,
+        )
+        assert result is None
+
+    provider.complete.assert_not_awaited()
+    assert breaker._failure_count == 2
+    assert breaker._opened_at == opened_at
+    assert breaker.state is CircuitState.OPEN
+
+
+@pytest.mark.asyncio
+async def test_self_rag_provider_helper_strict_failure_is_sanitized() -> None:
+    from app.providers.base import CompletionRequest, Message
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+    from app.reliability.circuit_breaker import CircuitBreaker
+
+    provider = AsyncMock()
+    provider.complete.side_effect = RuntimeError("private prompt and secret-value")
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
+    request = CompletionRequest(
+        messages=[Message(role="user", content="private prompt")],
+        model="tenant-model",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await SelfRAGPattern()._complete_with_breaker(
+            provider=provider,
+            request=request,
+            breaker=breaker,
+            strict=True,
+        )
+
+    assert str(exc_info.value) == "Self-RAG provider call failed"
+    assert "private prompt" not in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+    assert breaker._failure_count == 1
+    provider.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_self_rag_routes_decision_generation_and_critique_through_helper() -> None:
+    from app.providers.base import CompletionResponse
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+
+    provider = AsyncMock()
+    provider.complete.side_effect = [
+        CompletionResponse(
+            content='{"should_retrieve": true}',
+            model="tenant-model",
+        ),
+        CompletionResponse(content="grounded answer", model="tenant-model"),
+        CompletionResponse(
+            content=(
+                '{"is_relevant": true, "is_supported": true, '
+                '"is_useful": true, "confidence": 0.9}'
+            ),
+            model="tenant-model",
+        ),
+    ]
+    pattern = SelfRAGPattern()
+
+    with patch.object(
+        pattern,
+        "_complete_with_breaker",
+        wraps=pattern._complete_with_breaker,
+    ) as complete:
+        result = await pattern.execute_with_critique(
+            query="retention policy",
+            provider=provider,
+            retrieve_fn=AsyncMock(return_value="tenant evidence"),
+            model="tenant-model",
+            strict=True,
+        )
+
+    assert result.answer == "grounded answer"
+    assert complete.await_count == 3
+    assert provider.complete.await_count == 3
