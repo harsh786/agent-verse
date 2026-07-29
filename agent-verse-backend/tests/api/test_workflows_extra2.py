@@ -553,3 +553,44 @@ def test_saved_rag_workflow_failure_is_non_2xx_and_never_falls_back() -> None:
     assert detail["reason"] == "Retrieval service is unavailable"
     assert detail["strategy_trace"]
     goal_service.submit_goal.assert_not_awaited()
+
+
+def test_parallel_rag_wave_failure_is_non_2xx() -> None:
+    from app.rag.contracts import RAGExecutionResult, RAGStrategy
+
+    class Gateway:
+        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> Any:
+            if kwargs["collection_id"] == "collection-fail":
+                raise RuntimeError("private retrieval failure")
+            return RAGExecutionResult(
+                requested_strategy_id="hybrid",
+                resolved_strategy_id=RAGStrategy.HYBRID,
+            )
+
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock()
+    app = _make_app(goal_service=goal_service)
+    app.state.retrieval_gateway = Gateway()
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post(
+        "/workflows",
+        json={
+            "name": "Parallel RAG",
+            "definition": {
+                "steps": [
+                    {"id": "rag-ok", "tool": "rag", "collection_id": "collection-ok"},
+                    {"id": "rag-fail", "tool": "rag", "collection_id": "collection-fail"},
+                ]
+            },
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()
+
+    response = client.post(
+        f"/workflows/{created['id']}/run",
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "workflow_retrieval_failed"
+    goal_service.submit_goal.assert_not_awaited()

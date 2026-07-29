@@ -547,12 +547,17 @@ async def run_workflow(
             )
             result = await executor.execute(plan, tenant_ctx=tenant)
             if result.get("status") == "failed":
-                failed_step_id = str(result.get("failed_step", ""))
-                failed_step = next(
-                    (step for step in plan.steps if step.id == failed_step_id),
-                    None,
-                )
-                if failed_step is not None and failed_step.tool == "rag":
+                failed_ids = {
+                    str(result.get("failed_step", "")),
+                    *[str(value) for value in result.get("failed_steps", [])],
+                }
+                failed_rag_steps = [
+                    step
+                    for step in plan.steps
+                    if step.id in failed_ids and step.tool == "rag"
+                ]
+                if failed_rag_steps:
+                    failed_step = failed_rag_steps[0]
                     requested_strategy = str(
                         failed_step.config.get("requested_strategy_id", "")
                     )

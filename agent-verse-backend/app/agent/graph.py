@@ -384,10 +384,18 @@ class AgentGraph:
             _post_exec_target = "self_consistency"
             g.add_edge("self_consistency", "verify")
         if getattr(self, "_enable_self_refine", False):
-            g.add_edge("execute", "refine")
+            g.add_conditional_edges(
+                "execute",
+                self._route_after_execute,
+                {"failed": END, "continue": "refine"},
+            )
             g.add_edge("refine", _post_exec_target)
         else:
-            g.add_edge("execute", _post_exec_target)
+            g.add_conditional_edges(
+                "execute",
+                self._route_after_execute,
+                {"failed": END, "continue": _post_exec_target},
+            )
         # Reflection: reflect → plan edge so re-plan follows reflection
         if self._enable_reflection:
             g.add_edge("reflect", "plan")
@@ -1640,6 +1648,7 @@ class AgentGraph:
                     tenant_ctx=tenant_ctx,
                     parent_goal_id=agent_state.goal_id,
                     graph_factory=_sub_graph_factory,
+                    event_callback=self._event_callback,
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
@@ -4138,6 +4147,10 @@ class AgentGraph:
         if self._enable_reflection:
             return "reflect"
         return "replan"
+
+    def _route_after_execute(self, state: GraphState) -> str:
+        agent_state: AgentState = state["agent_state"]
+        return "failed" if agent_state.status is GoalStatus.FAILED else "continue"
 
     # ------------------------------------------------------------------
     # Public interface

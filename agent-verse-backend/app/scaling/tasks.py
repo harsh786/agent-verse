@@ -993,7 +993,9 @@ def run_goal(
             try:
                 from app.rag.store import KnowledgeStore as _KnowledgeStore  # correct path
                 if db_factory is not None:
-                    _knowledge_store_worker = _KnowledgeStore(db_factory=db_factory)
+                    _knowledge_store_worker = _KnowledgeStore(
+                        db_session_factory=db_factory
+                    )
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
 
@@ -1106,7 +1108,12 @@ def run_goal(
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
         except Exception as _ag_exc:
             retrieval_required = bool(agent_id or _agent_collection_ids)
-            if retrieval_required:
+            environment = os.getenv("ENVIRONMENT", "development")
+            legacy_fallback_allowed = (
+                environment != "production"
+                and os.getenv("ALLOW_LEGACY_AGENT_LOOP", "").lower() == "true"
+            )
+            if retrieval_required or not legacy_fallback_allowed:
                 sanitized = RuntimeError("Canonical AgentGraph assembly failed")
                 _run_async(mark_worker_failed(sanitized))
                 _run_async(_decrement_after_completion(tenant_id, REDIS_URL))

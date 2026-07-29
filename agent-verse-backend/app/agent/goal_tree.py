@@ -70,6 +70,7 @@ async def execute_sub_goal(
     tenant_ctx: TenantContext,
     graph_factory: Any,  # Callable[[], AgentGraph] — Any avoids circular import
     semaphore: asyncio.Semaphore,
+    event_callback: Any = None,
 ) -> SubGoal:
     """Execute a single sub-goal using a spawned AgentGraph instance."""
     async with semaphore:
@@ -78,6 +79,7 @@ async def execute_sub_goal(
             state: AgentState = await graph.run(
                 goal=sub_goal.description,
                 tenant_ctx=tenant_ctx,
+                event_callback=event_callback,
             )
             sub_goal.status = state.status
             sub_goal.provenance = list(state.provenance)
@@ -148,6 +150,7 @@ async def execute_goal_tree(
     tenant_ctx: TenantContext,
     parent_goal_id: str,
     graph_factory: Any,
+    event_callback: Any = None,
     max_parallel: int = 4,
 ) -> list[SubGoal]:
     """Decompose goal → build dependency DAG → execute with parallelism.
@@ -187,6 +190,7 @@ async def execute_goal_tree(
                 tenant_ctx=tenant_ctx,
                 graph_factory=graph_factory,
                 semaphore=semaphore,
+                event_callback=event_callback,
             )
             for sg in ready
         ]

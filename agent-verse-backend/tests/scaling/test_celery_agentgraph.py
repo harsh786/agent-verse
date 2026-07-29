@@ -113,6 +113,8 @@ def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
     # Patching AgentLoop triggers monkey-patch detection → uses _FallbackLoop
     monkeypatch.setattr(_loop_mod, "AgentLoop", _FallbackLoop)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_LOOP", "true")
+    monkeypatch.setenv("ENVIRONMENT", "development")
 
     result = tasks.run_goal.run(
         "goal-fallback-1",
@@ -149,6 +151,35 @@ def test_retrieval_capable_goal_never_uses_legacy_loop_on_graph_failure(
         "normal",
         False,
         agent_id="configured-agent",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "agentgraph_assembly_failed"
+    assert "secret" not in str(result)
+
+
+def test_unbound_production_goal_never_uses_legacy_loop_on_graph_failure(
+    monkeypatch: Any,
+) -> None:
+    import uuid
+
+    import app.agent.graph as _graph_mod
+    from app.scaling import tasks
+
+    class BrokenGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            raise RuntimeError("private graph assembly secret")
+
+    monkeypatch.setattr(_graph_mod, "AgentGraph", BrokenGraph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+    result = tasks.run_goal.run(
+        f"goal-unbound-{uuid.uuid4().hex}",
+        "tenant-1",
+        "unbound goal",
+        "normal",
+        False,
     )
 
     assert result["status"] == "failed"

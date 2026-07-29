@@ -425,6 +425,41 @@ async def test_rag_retriever_verifier_failure_is_explicitly_ungrounded() -> None
     assert "secret" not in str(result.strategy_trace[-1].detail)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "contents", "grounded"),
+    [
+        ("Retention is thirty days [1].", ["Retention is thirty days."], True),
+        ("The moon is cheese [1].", ["Retention is thirty days."], False),
+        (
+            "Retention is thirty days [1]. Appeals take ten days [2].",
+            ["Retention is thirty days.", "Appeals take ten days."],
+            True,
+        ),
+    ],
+)
+async def test_default_citation_verifier_checks_claim_support(
+    answer: str,
+    contents: list[str],
+    grounded: bool,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    citations = [
+        RAGCitation(
+            citation_id="citation-1",
+            chunk_id="chunk-1",
+            content=part,
+            score=0.9,
+            source="guide.pdf",
+        )
+        for part in contents
+    ]
+    result = await MinimalCitationVerifier().verify(answer, citations)
+
+    assert result.grounded is grounded
+
+
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
     class DuplicateGateway(RecordingGateway):
         async def execute(
