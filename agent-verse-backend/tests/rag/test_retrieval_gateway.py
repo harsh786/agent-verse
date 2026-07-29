@@ -1053,6 +1053,69 @@ async def test_app_resolver_uses_each_tenants_configured_provider_and_model() ->
 
 
 @pytest.mark.asyncio
+async def test_app_resolver_preserves_azure_and_together_identity() -> None:
+    from app.main import create_app
+    from app.providers.vault import get_vault
+
+    class TenantConfigStore:
+        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+            configs = {
+                "tenant-azure": {
+                    "provider": "azure",
+                    "encrypted_key": get_vault().encrypt("azure-secret"),
+                    "model": "azure-deployment",
+                    "base_url": "https://example.openai.azure.com",
+                },
+                "tenant-together": {
+                    "provider": "together",
+                    "encrypted_key": get_vault().encrypt("together-secret"),
+                    "model": "meta-llama/model",
+                    "base_url": "https://api.together.xyz/v1",
+                },
+            }
+            return configs.get(tenant_id)
+
+    app = create_app()
+    app.state.llm_config_store = TenantConfigStore()
+    resolver = app.state.retrieval_gateway.dependencies.llm_resolver
+    assert resolver is not None
+
+    azure = await resolver(
+        TenantContext("tenant-azure", PlanTier.PROFESSIONAL, "key-a"),
+        RAGStrategy.FUSION,
+    )
+    together = await resolver(
+        TenantContext("tenant-together", PlanTier.PROFESSIONAL, "key-b"),
+        RAGStrategy.FUSION,
+    )
+
+    assert isinstance(azure, ResolvedLLM)
+    assert azure.provider_type == "azure"
+    assert azure.model == "azure-deployment"
+    assert isinstance(together, ResolvedLLM)
+    assert together.provider_type == "together"
+    assert together.model == "meta-llama/model"
+    assert "azure-secret" not in repr(azure.provider)
+    assert "together-secret" not in repr(together.provider)
+
+
+@pytest.mark.parametrize("provider_type", ["azure", "together"])
+def test_custom_openai_provider_rejects_blank_model(provider_type: str) -> None:
+    from app.providers.registry import ProviderConfigurationError, instantiate_configured_provider
+
+    with pytest.raises(ProviderConfigurationError) as exc_info:
+        instantiate_configured_provider(
+            provider_type,
+            api_key="secret-value",
+            model="",
+            base_url="https://example.test/v1",
+        )
+
+    assert provider_type in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

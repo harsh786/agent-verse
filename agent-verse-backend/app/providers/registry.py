@@ -23,6 +23,15 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+class ProviderConfigurationError(ValueError):
+    """A tenant provider configuration cannot be instantiated safely."""
+
+    def __init__(self, provider_type: str, reason: str) -> None:
+        super().__init__(f"Invalid {provider_type} provider configuration: {reason}")
+        self.provider_type = provider_type
+        self.reason = reason
+
+
 @dataclass
 class ProviderConfig:
     provider_type: str  # anthropic | openai_compatible | gemini | ollama | groq
@@ -200,10 +209,13 @@ def instantiate_configured_provider(
 ) -> Any | None:
     """Instantiate one tenant-configured provider without global fallback."""
 
-    normalized = provider_type.strip().lower()
+    original_type = provider_type.strip().lower()
+    if original_type in {"azure", "together"} and not model.strip():
+        raise ProviderConfigurationError(original_type, "explicit deployment/model is required")
+    normalized = original_type
     if normalized in {"openai", "together", "azure"}:
         normalized = "openai_compatible"
-    return _instantiate_provider(
+    provider = _instantiate_provider(
         ProviderConfig(
             provider_type=normalized,
             api_key=api_key,
@@ -211,6 +223,9 @@ def instantiate_configured_provider(
             models=[model] if model.strip() else None,
         )
     )
+    if provider is not None:
+        provider._agentverse_provider_type = original_type
+    return provider
 
 
 def get_provider_catalog() -> list[dict[str, Any]]:

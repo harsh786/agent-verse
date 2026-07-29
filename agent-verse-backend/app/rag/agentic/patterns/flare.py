@@ -113,6 +113,8 @@ class FLAREPattern(RAGPattern):
         # Step 1: Initial generation
         try:
             if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("FLARE provider circuit is open")
                 return ""
             resp = await provider.complete(CompletionRequest(
                 messages=[
@@ -158,6 +160,8 @@ class FLAREPattern(RAGPattern):
             # Step 4: Re-generate with context
             try:
                 if cb is not None and not cb.can_call():
+                    if strict:
+                        raise RuntimeError("FLARE provider circuit is open")
                     break
                 refined_resp = await provider.complete(CompletionRequest(
                     messages=[

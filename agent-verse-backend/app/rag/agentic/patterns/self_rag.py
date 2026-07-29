@@ -91,6 +91,7 @@ class SelfRAGPattern(RAGPattern):
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
         model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Execute Self-RAG with critique tokens. Returns answer string."""
@@ -101,7 +102,7 @@ class SelfRAGPattern(RAGPattern):
             pass
         result = await self.execute_with_critique(
             query=query, provider=provider,
-            retrieve_fn=retrieve_fn, max_tokens=max_tokens, model=model,
+            retrieve_fn=retrieve_fn, max_tokens=max_tokens, model=model, strict=strict,
         )
         try:
             from app.observability.logging import get_logger
@@ -118,6 +119,7 @@ class SelfRAGPattern(RAGPattern):
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
         model: str = "",
+        strict: bool = False,
     ) -> SelfRAGResult:
         """Execute Self-RAG. Returns SelfRAGResult with full critique metadata."""
         from app.providers.base import CompletionRequest, Message
@@ -133,13 +135,15 @@ class SelfRAGPattern(RAGPattern):
             cb = None
 
         # Step 1: Decide if retrieval needed
-        should_retrieve = await self._should_retrieve(query, provider, model)
+        should_retrieve = await self._should_retrieve(query, provider, model, strict)
 
         context = ""
         if should_retrieve and retrieve_fn is not None:
             try:
                 context = await retrieve_fn(query) or ""
             except Exception:
+                if strict:
+                    raise
                 context = ""
 
         # Step 2: Generate response
@@ -156,6 +160,8 @@ class SelfRAGPattern(RAGPattern):
                 messages = [Message(role="user", content=query)]
 
             if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("Self-RAG provider circuit is open")
                 return SelfRAGResult(answer="", retrieved=bool(context))
             resp = await provider.complete(CompletionRequest(
                 messages=messages,
@@ -169,13 +175,15 @@ class SelfRAGPattern(RAGPattern):
         except Exception:
             if cb is not None:
                 cb.record_failure()
+            if strict:
+                raise
             return SelfRAGResult(answer="", retrieved=bool(context))
 
         # Step 3: Critique (only if we retrieved)
         is_relevant = is_supported = is_useful = True
         confidence = 0.7
         if context:
-            critique = await self._critique(query, answer, context, provider, model)
+            critique = await self._critique(query, answer, context, provider, model, strict)
             is_relevant = critique.get("is_relevant", True)
             is_supported = critique.get("is_supported", True)
             is_useful = critique.get("is_useful", True)
@@ -191,7 +199,13 @@ class SelfRAGPattern(RAGPattern):
             confidence=confidence,
         )
 
-    async def _should_retrieve(self, query: str, provider: Any, model: str = "") -> bool:
+    async def _should_retrieve(
+        self,
+        query: str,
+        provider: Any,
+        model: str = "",
+        strict: bool = False,
+    ) -> bool:
         from app.providers.base import CompletionRequest, Message
         try:
             resp = await provider.complete(CompletionRequest(
@@ -217,10 +231,18 @@ class SelfRAGPattern(RAGPattern):
             except Exception:
                 return True  # default: retrieve
         except Exception:
+            if strict:
+                raise
             return True
 
     async def _critique(
-        self, query: str, answer: str, context: str, provider: Any, model: str = ""
+        self,
+        query: str,
+        answer: str,
+        context: str,
+        provider: Any,
+        model: str = "",
+        strict: bool = False,
     ) -> dict:  # type: ignore[type-arg]
         from app.providers.base import CompletionRequest, Message
         try:
@@ -255,4 +277,6 @@ class SelfRAGPattern(RAGPattern):
             except Exception:
                 return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}
         except Exception:
+            if strict:
+                raise
             return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}

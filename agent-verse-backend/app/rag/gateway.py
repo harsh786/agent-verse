@@ -98,6 +98,7 @@ class ResolvedLLM:
 
     provider: object | None
     model: str
+    provider_type: str = ""
 
 
 LLMResolver = Callable[
@@ -512,5 +513,9 @@ class RetrievalGateway:
                 raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
             if not isinstance(resolved.model, str) or not resolved.model.strip():
                 raise UnavailableRAGStrategyError(strategy, "LLM model is not configured")
-            return ResolvedLLM(provider=resolved.provider, model=resolved.model.strip())
+            return ResolvedLLM(
+                provider=resolved.provider,
+                model=resolved.model.strip(),
+                provider_type=resolved.provider_type,
+            )
         return resolved

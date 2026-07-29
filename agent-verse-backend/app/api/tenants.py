@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
 from app.core.errors import ConflictError, NotFoundError, PlatformError
 from app.providers.vault import get_vault
@@ -205,7 +205,19 @@ class LLMProviderConfig(BaseModel):
     base_url: str | None = Field(
         default=None, description="Base URL override (for Ollama / Azure / vLLM)"
     )
-    default_model: str = Field(default="", description="Default model slug")
+    default_model: str = Field(
+        default="",
+        description="Default model slug",
+        validate_default=True,
+    )
+
+    @field_validator("default_model")
+    @classmethod
+    def require_custom_provider_model(cls, value: str, info: ValidationInfo) -> str:
+        provider = str(info.data.get("provider") or "").strip().lower()
+        if provider in {"azure", "together"} and not value.strip():
+            raise ValueError("Azure and Together require an explicit deployment/model")
+        return value.strip()
 
 
 @router.get("/me/llm")
