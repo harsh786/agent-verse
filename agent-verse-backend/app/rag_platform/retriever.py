@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,7 +42,19 @@ class MinimalCitationVerifier:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+        normalized = unicodedata.normalize("NFKC", text)
+        normalized = re.sub(r"\[(?:\d+(?:\s*,\s*\d+)*)\]", "", normalized)
+        normalized = " ".join(normalized.split()).strip()
+        segments = re.split(r"(https?://\S+)", normalized, flags=re.IGNORECASE)
+        normalized = "".join(
+            segment
+            if re.fullmatch(r"https?://\S+", segment, flags=re.IGNORECASE)
+            else segment.casefold()
+            for segment in segments
+        )
+        if not re.search(r"https?://\S+$", normalized, flags=re.IGNORECASE):
+            normalized = normalized.rstrip(".!?").rstrip()
+        return normalized
 
     @classmethod
     def _atomic_claims(cls, answer: str) -> list[tuple[str, list[int]]]:
@@ -55,14 +68,15 @@ class MinimalCitationVerifier:
                 scoped,
                 flags=re.IGNORECASE,
             ).strip()
+            scoped = re.sub(
+                r"^(?:and|but)\s+",
+                "",
+                scoped,
+                flags=re.IGNORECASE,
+            )
             references = [int(value) for value in re.findall(r"\d+", marker.group())]
-            parts = [
-                part.strip(" ,;\n")
-                for part in re.split(r"\s*(?:[,;\n]|\band\b|\bbut\b)\s*", scoped)
-                if cls._normalize(part)
-            ]
-            for claim in parts:
-                atomic.append((claim, list(references)))
+            if cls._normalize(scoped):
+                atomic.append((scoped, list(references)))
             cursor = marker.end()
         trailing = re.sub(r"^[\s,;:.!?]+", "", answer[cursor:]).strip()
         if cls._normalize(trailing):
