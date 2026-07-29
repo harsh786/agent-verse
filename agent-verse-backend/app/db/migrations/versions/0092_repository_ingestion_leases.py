@@ -16,6 +16,10 @@ branch_labels = None
 depends_on = None
 
 _DIMENSIONS = (768, 1024, 1536, 3072)
+_RLS_BACKFILL_TABLES = (
+    "knowledge_documents",
+    *(f"knowledge_chunks_{dimension}" for dimension in _DIMENSIONS),
+)
 
 
 def _create_index_concurrently(index_name: str, statement: str) -> None:
@@ -34,6 +38,9 @@ def _create_index_concurrently(index_name: str, statement: str) -> None:
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+    # Keep the owner bypass inside transactional DDL so failures restore FORCE automatically.
+    for table in _RLS_BACKFILL_TABLES:
+        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS job_source_hash TEXT")
     op.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS lease_owner TEXT")
     op.execute(
@@ -168,6 +175,11 @@ def upgrade() -> None:
             f"CREATE TRIGGER trg_{table}_job_integrity BEFORE INSERT OR UPDATE ON {table} "
             "FOR EACH ROW EXECUTE FUNCTION enforce_repository_chunk_job_integrity()"
         )
+
+    # Restore runtime isolation before the concurrent-index block commits this transaction.
+    for table in _RLS_BACKFILL_TABLES:
+        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
 
     with op.get_context().autocommit_block():
         _create_index_concurrently(
