@@ -34,6 +34,7 @@ class RAGQueryRequest(BaseModel):
     strategy: str = RAGStrategy.HYBRID.value
     top_k: int = Field(default=5, ge=1, le=20)
     filters: dict[str, Any] = Field(default_factory=dict)
+    execution_id: str = Field(default="", max_length=128)
 
 
 def _resolve_request_strategy(strategy_id: str) -> RAGStrategy:
@@ -79,6 +80,7 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
             strategy=body.strategy,
             top_k=body.top_k,
             filters=body.filters,
+            execution_id=body.execution_id,
         )
     except Exception as exc:
         _raise_retrieval_http_error(exc)

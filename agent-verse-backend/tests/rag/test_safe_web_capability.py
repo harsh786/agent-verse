@@ -351,6 +351,75 @@ async def test_governed_capability_preserves_successful_empty_backend_result() -
     assert await capability.search(_request(domains=())) == []
 
 
+@pytest.mark.parametrize("failure", ["non_2xx", "tls"])
+async def test_governed_capability_records_rejection_and_continues_candidates(
+    failure: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "searx.test":
+            return _searx_response(
+                ["https://8.8.8.8/failing", "https://8.8.4.4/success"]
+            )
+        if request.url.host == "8.8.8.8":
+            if failure == "tls":
+                raise httpx.ConnectError("TLS handshake failed", request=request)
+            return httpx.Response(503, request=request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b"Second candidate succeeds",
+            request=request,
+        )
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(domains=("8.8.8.8", "8.8.4.4")),),
+        transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
+    )
+    assert capability is not None
+    request = _request(domains=("8.8.8.8", "8.8.4.4"))
+
+    evidence = await capability.search(request)
+
+    assert [item.url for item in evidence] == ["https://8.8.4.4/success"]
+    assert request.report.candidate_count == 2
+    assert len(request.report.rejections) == 1
+    rejection = request.report.rejections[0]
+    assert rejection.reason == "fetch_http_error"
+    assert len(rejection.url_sha256) == 64
+    assert "failing" not in str(rejection)
+
+
+async def test_governed_capability_bounds_rejection_audit_records() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "searx.test":
+            return _searx_response(
+                [f"https://8.8.8.8/failure-{index}" for index in range(20)]
+            )
+        return httpx.Response(503, request=request)
+
+    capability = _build_capability(
+        searxng_url="https://searx.test",
+        policy_services=(_Policy(domains=("8.8.8.8",)),),
+        transport=httpx.MockTransport(handler),
+        fetch_transport_factory=lambda: httpx.MockTransport(handler),
+    )
+    assert capability is not None
+    request = WebSearchRequest(
+        tenant_context=TENANT,
+        query="current retention guidance",
+        allowed_domains=("8.8.8.8",),
+        max_results=20,
+        max_bytes=4096,
+        timeout_seconds=2.0,
+    )
+
+    assert await capability.search(request) == []
+    assert request.report.candidate_count == 8
+    assert len(request.report.rejections) == 8
+
+
 async def test_governed_capability_enforces_policy_before_search() -> None:
     calls = 0
 

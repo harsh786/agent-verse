@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.db.rls import sqlalchemy_rls_context
+from app.governance.policies import PolicyEngine, PolicyResult
 from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
 from app.knowledge_graph.store import KnowledgeGraphStore
 from app.providers.base import CompletionRequest, CompletionResponse, EmbedRequest, EmbedResponse
@@ -176,6 +177,10 @@ async def tenants(
         )
         await session.execute(
             text("DELETE FROM knowledge_nodes WHERE tenant_id IN (:a, :b)"),
+            {"a": tenant_a.tenant_id, "b": tenant_b.tenant_id},
+        )
+        await session.execute(
+            text("DELETE FROM governance_policies WHERE tenant_id IN (:a, :b)"),
             {"a": tenant_a.tenant_id, "b": tenant_b.tenant_id},
         )
         for dimension in SUPPORTED_EMBEDDING_DIMENSIONS:
@@ -616,6 +621,19 @@ async def test_restricted_graph_rag_enforces_rls_filters_and_all_evidence_types(
     assert all("mixed path" not in citation.content for citation in graph_citations)
     assert all("Beyond Node" not in citation.content for citation in graph_citations)
     assert all(citation.metadata["tenant_id"].startswith("sha256:") for citation in graph_citations)
+    communities = [
+        citation
+        for citation in graph_citations
+        if citation.metadata["graph_evidence_type"] == "community"
+    ]
+    assert communities
+    for community in communities:
+        provenance = community.metadata["provenance"]
+        assert provenance["member_node_ids"] == sorted(provenance["member_node_ids"])
+        assert provenance["source_document_chunk_ids"] == sorted(
+            provenance["source_document_chunk_ids"]
+        )
+        assert chunk_id in provenance["source_document_chunk_ids"]
 
     async with (
         postgres_database.runtime_factory() as session,
@@ -683,6 +701,43 @@ async def test_graph_store_persists_and_loads_inside_restricted_rls_scope(
     assert len(loaded_edges) == 1
     assert loaded_edges[0].edge_id == edge.edge_id
     assert loaded_edges[0].tenant_id == tenant.tenant_id
+
+
+async def test_policy_engine_strict_loads_tenant_web_deny_and_domains(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO governance_policies "
+                "(id, tenant_id, name, tools_pattern, action, priority, description) "
+                "VALUES ('worker-web-deny', :tenant_id, 'deny web', 'web_search', "
+                "'deny', 100, '')"
+            ),
+            {"tenant_id": tenant.tenant_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO tenant_settings (tenant_id, settings) "
+                "VALUES (:tenant_id, CAST(:settings AS jsonb)) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET settings=EXCLUDED.settings"
+            ),
+            {
+                "tenant_id": tenant.tenant_id,
+                "settings": '{"web_search_allowed_domains":["docs.example.com"]}',
+            },
+        )
+
+    engine = PolicyEngine()
+    assert await engine.reload_from_db(
+        postgres_database.runtime_factory,
+        tenant_id=tenant.tenant_id,
+        strict=True,
+    ) == 1
+    assert engine.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.DENY
+    assert engine.web_allowed_domains(tenant) == ("docs.example.com",)
 
 
 async def test_ingest_and_search_share_persisted_contract_after_restart(
@@ -1108,7 +1163,7 @@ async def test_readiness_matches_current_rag_migration_capabilities(
             )
         ).scalar_one()
 
-    assert migration == "0093_current_embedding_defaults"
+    assert migration == "0094_knowledge_graph_rls"
     assert "voyage-4-large" in embedding_default
     assert readiness.available
 

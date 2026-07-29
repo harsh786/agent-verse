@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import inspect
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urljoin, urlparse
@@ -26,6 +27,18 @@ _MAX_WEB_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True, slots=True)
+class WebRejection:
+    reason: str
+    url_sha256: str
+
+
+@dataclass(slots=True)
+class WebSearchReport:
+    candidate_count: int = 0
+    rejections: list[WebRejection] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class WebSearchRequest:
     tenant_context: TenantContext
     query: str
@@ -33,6 +46,7 @@ class WebSearchRequest:
     max_results: int
     max_bytes: int
     timeout_seconds: float
+    report: WebSearchReport = field(default_factory=WebSearchReport)
 
     @property
     def tenant_id(self) -> str:
@@ -152,6 +166,7 @@ class GovernedWebSearchCapability:
 
     configured = True
     _MAX_REDIRECTS = 3
+    _MAX_REJECTIONS = 8
 
     def __init__(
         self,
@@ -298,6 +313,7 @@ class GovernedWebSearchCapability:
             raise WebSearchCapabilityError("backend_timeout") from exc
         if search_result.error:
             raise WebSearchCapabilityError(search_result.error_code or "backend_error")
+        request.report.candidate_count = len(search_result.results[:max_results])
 
         evidence: list[WebEvidence] = []
         remaining_bytes = max_bytes
@@ -312,17 +328,35 @@ class GovernedWebSearchCapability:
                     deadline=deadline,
                 )
             except ValueError:
+                self._record_rejection(request, result.url, "unsafe_or_invalid")
                 continue
-            except (httpx.TimeoutException, TimeoutError) as exc:
-                raise WebSearchCapabilityError("fetch_timeout") from exc
-            except httpx.HTTPError as exc:
-                raise WebSearchCapabilityError("fetch_error") from exc
+            except (httpx.TimeoutException, TimeoutError):
+                self._record_rejection(request, result.url, "fetch_timeout")
+                continue
+            except httpx.HTTPError:
+                self._record_rejection(request, result.url, "fetch_http_error")
+                continue
             item_size = len(item.content.encode("utf-8"))
             if item_size == 0:
                 continue
             evidence.append(item)
             remaining_bytes -= item_size
         return evidence
+
+    def _record_rejection(
+        self,
+        request: WebSearchRequest,
+        url: str,
+        reason: str,
+    ) -> None:
+        if len(request.report.rejections) >= self._MAX_REJECTIONS:
+            return
+        request.report.rejections.append(
+            WebRejection(
+                reason=reason,
+                url_sha256=hashlib.sha256(url.encode("utf-8")).hexdigest(),
+            )
+        )
 
 
 def build_safe_web_search_capability(
@@ -385,6 +419,8 @@ async def retrieve_web_results(
         isinstance(item, WebEvidence) for item in raw_results
     ):
         raise TypeError("Web capability returned invalid evidence")
+    if not raw_results and request.report.candidate_count > 0:
+        raise WebSearchCapabilityError("insufficient_safe_evidence")
 
     accepted: list[RetrievalResult] = []
     bytes_used = 0
@@ -447,6 +483,11 @@ async def retrieve_web_results(
         "max_bytes": request.max_bytes,
         "timeout_seconds": request.timeout_seconds,
         "allowed_domains": list(policy.allowed_domains),
+        "candidate_count": request.report.candidate_count,
+        "rejections": [
+            {"reason": rejection.reason, "url_sha256": rejection.url_sha256}
+            for rejection in request.report.rejections
+        ],
         "component_scores": {result.chunk_id: result.score for result in accepted},
     }
 

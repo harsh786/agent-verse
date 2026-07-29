@@ -721,6 +721,7 @@ class AgentGraph:
                         strategy_id=requested_strategy,
                         top_k=raw_top_k,
                         filters=retrieval_filters,
+                        execution_id=agent_state.goal_id,
                     )
                     if not isinstance(gateway_result, RAGExecutionResult):
                         raise TypeError("Retrieval gateway returned an invalid result")
@@ -887,6 +888,7 @@ class AgentGraph:
                 collection_ids=list(self._agent_collection_ids),
                 top_k=7,
                 min_confidence=0.2,
+                execution_id=agent_state.goal_id,
             )
 
             count = agent_state.context.get("remediation_count", 0) + 1
@@ -2077,6 +2079,7 @@ class AgentGraph:
             strategy=step_strategy,
             top_k=int(state.context.get("retrieval_top_k", 3)),
             filters=state.context.get("retrieval_filters", {}),
+            execution_id=state.goal_id,
         )
 
         # 4. Circuit breaker
@@ -2258,6 +2261,7 @@ class AgentGraph:
                         strategy=_strategy,
                         collection_ids=list(self._agent_collection_ids),
                         top_k=3,
+                        execution_id=state.goal_id,
                     )
                     if _retrieval.chunks:
                         _directive_contexts.append(

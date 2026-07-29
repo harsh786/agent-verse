@@ -221,6 +221,32 @@ def _run_async(coro: Any) -> Any:
         loop.close()
 
 
+async def _load_worker_policy_engine(db_factory: Any, tenant_id: str) -> Any:
+    from app.governance.policies import Policy, PolicyEngine
+
+    engine = PolicyEngine()
+    try:
+        await engine.reload_from_db(db_factory, tenant_id=tenant_id, strict=True)
+    except Exception as exc:
+        logger.warning("worker_policy_load_failed_closed: %s", type(exc).__name__)
+        engine.add_policy(
+            Policy(
+                name="worker-policy-load-failed",
+                tenant_id=tenant_id,
+                denied_tools=["*"],
+            )
+        )
+    return engine
+
+
+def _build_worker_graph_capability(db_factory: Any) -> Any:
+    if db_factory is None:
+        return None
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+
+    return TenantScopedGraphCapabilityAdapter()
+
+
 def _record_goal_duration_metric(
     status: str, *, started_monotonic: float, priority: str
 ) -> None:
@@ -854,9 +880,8 @@ def run_goal(
         try:
             from app.agent.graph import AgentGraph
             from app.governance.audit import AuditLog
-            from app.governance.cost import CostController
+            from app.governance.cost import CostController, RedisCostController
             from app.governance.hitl import HITLGateway
-            from app.governance.policies import PolicyEngine
             from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
             from app.memory.execution import ExecutionMemory
@@ -867,7 +892,7 @@ def run_goal(
             _audit = AuditLog(db_session_factory=db_factory)
             _hitl = HITLGateway()
             _cost = CostController()
-            _policy = PolicyEngine()
+            _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
             _ltm = LongTermMemoryStore()
             _eval = EvalRunner()
             _exec_mem = ExecutionMemory()
@@ -878,7 +903,12 @@ def run_goal(
             if _redis_url_cw:
                 try:
                     import redis.asyncio as _aioredis_cw
-                    _cost._redis = _aioredis_cw.from_url(_redis_url_cw, decode_responses=True)
+                    _cost = RedisCostController(
+                        redis=_aioredis_cw.from_url(
+                            _redis_url_cw,
+                            decode_responses=True,
+                        )
+                    )
                 except Exception:
                     pass
 
@@ -1058,9 +1088,10 @@ def run_goal(
                     session_factory=db_factory,
                     embedder=_embedder_for_graph,
                     llm_resolver=_resolve_worker_retrieval_llm,
-                    graph_capability=None,
+                    graph_capability=_build_worker_graph_capability(db_factory),
                     search_capability=worker_web_search,
                     policy_services=(_policy, _cost, _hitl),
+                    cost_controller=_cost,
                     collection_authorizer=collection_authorizer,
                     strategy_capabilities=core_strategy_capabilities(),
                 )

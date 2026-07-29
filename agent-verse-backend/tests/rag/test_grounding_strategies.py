@@ -55,6 +55,23 @@ class _Embedder:
         return EmbedResponse(embeddings=[[value, 0.25]], model="embed-model")
 
 
+class _UsageEmbedder(_Embedder):
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        response = await super().embed(request)
+        response.total_tokens = 12
+        return response
+
+
+class _BudgetController:
+    def __init__(self, allowed_calls: int) -> None:
+        self.allowed_calls = allowed_calls
+        self.calls: list[dict[str, Any]] = []
+
+    async def check_and_record(self, **kwargs: Any) -> bool:
+        self.calls.append(kwargs)
+        return len(self.calls) <= self.allowed_calls
+
+
 class _CorrectiveProvider:
     def __init__(self) -> None:
         self.requests: list[CompletionRequest] = []
@@ -154,6 +171,8 @@ class _GraphSession:
                         "Retention, Legal Hold",
                         "Retention and legal hold controls form one policy cluster.",
                         0.71,
+                        ["entity-1", "entity-2"],
+                        ["seed-1", "document-1"],
                     )
                 ]
             )
@@ -201,6 +220,17 @@ class _EmptyWebCapability:
     configured = True
 
     async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
+        return []
+
+
+class _AllRejectedWebCapability:
+    configured = True
+
+    async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
+        request.report.candidate_count = 1
+        request.report.rejections.append(
+            web_augmented.WebRejection(reason="ssrf_rejected", url_sha256="0" * 64)
+        )
         return []
 
 
@@ -367,6 +397,19 @@ async def test_graph_merges_vector_entity_path_and_community_provenance() -> Non
         trace.detail["tenant_id"] == graph_citations[0].metadata["tenant_id"]
         for trace in graph_leg_traces
     )
+    community = next(
+        citation
+        for citation in graph_citations
+        if citation.metadata["graph_evidence_type"] == "community"
+    )
+    assert community.metadata["provenance"]["member_node_ids"] == [
+        "entity-1",
+        "entity-2",
+    ]
+    assert community.metadata["provenance"]["source_document_chunk_ids"] == [
+        "document-1",
+        "seed-1",
+    ]
     assert all("tenant_id" in params for _, params in graph_session.calls)
     graph_sql = [sql for sql, _ in graph_session.calls if "graph_" in sql]
     assert all("metadata_filter" in sql for sql in graph_sql)
@@ -771,6 +814,41 @@ async def test_corrective_web_fallback_traces_successful_empty_search() -> None:
 
 
 @pytest.mark.parametrize(
+    ("strategy", "provider"),
+    [
+        (RAGStrategy.WEB_AUGMENTED, None),
+        (RAGStrategy.CORRECTIVE, _CorrectiveProvider()),
+    ],
+)
+async def test_all_web_candidates_rejected_is_explicit_insufficient_failure(
+    strategy: RAGStrategy,
+    provider: object | None,
+) -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("low", "low", 0.1, {}, ["vector"])]
+
+    adapter = core_strategy_capabilities()[strategy].adapter
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="insufficient_safe_evidence"),
+    ):
+        await adapter.execute(
+            _request(strategy),
+            _context(
+                strategy,
+                embedder=_Embedder(),
+                provider=provider,
+                web=_AllRejectedWebCapability(),
+                policies=(_AllowWebPolicy(),),
+                runner=runner,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
     ("web", "policies", "reason"),
     [
         (None, (_AllowWebPolicy(),), "search_capability_unavailable"),
@@ -827,3 +905,190 @@ def test_registry_promotes_exactly_tasks_one_through_six_strategies() -> None:
     assert set(RAG_RUNTIME_CAPABILITIES) == expected
     assert set(core_strategy_capabilities()) == expected
     assert implemented == expected
+
+
+async def test_corrective_budget_denial_bounds_model_and_embedding_calls() -> None:
+    provider = _CorrectiveProvider()
+    embedder = _Embedder()
+    budget = _BudgetController(allowed_calls=3)
+
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=embedder,
+            llm_resolver=lambda *_: ResolvedLLM(
+                provider=provider,
+                model="tenant-rag-model",
+            ),
+            cost_controller=budget,
+        )
+    )
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("low", "low", 0.1, {}, ["vector"])]
+
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="budget_exhausted"),
+    ):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention",
+            strategy_id=RAGStrategy.CORRECTIVE,
+            execution_id="goal-budget",
+        )
+
+    assert [call["tool_name"] for call in budget.calls] == [
+        "rag_embedding",
+        "rag_completion",
+        "rag_completion",
+        "rag_embedding",
+    ]
+    assert all(call["goal_id"] == "goal-budget" for call in budget.calls)
+    assert len(provider.requests) == 2
+    assert len(embedder.requests) == 1
+
+
+async def test_rag_cost_trace_records_sanitized_execution_and_actual_tokens() -> None:
+    budget = _BudgetController(allowed_calls=10)
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_UsageEmbedder(),
+            cost_controller=budget,
+        )
+    )
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("one", "one", 0.8, {}, ["vector"])]
+
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention",
+            strategy_id=RAGStrategy.HYBRID,
+            execution_id="secret-goal-id",
+        )
+
+    cost_trace = next(trace for trace in result.strategy_trace if trace.action == "rag_cost")
+    assert cost_trace.detail["actual_tokens"] == 12
+    assert cost_trace.detail["execution_id"].startswith("sha256:")
+    assert "secret-goal-id" not in str(cost_trace.detail)
+
+
+async def test_budget_is_shared_and_denied_across_collection_fetches() -> None:
+    from app.pipeline.steps import smart_context_fetch
+
+    budget = _BudgetController(allowed_calls=1)
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+            cost_controller=budget,
+        )
+    )
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("one", "one", 0.8, {}, ["vector"])]
+
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="budget_exhausted"),
+    ):
+        await smart_context_fetch(
+            step="retention",
+            tenant_ctx=TENANT,
+            retrieval_gateway=gateway,
+            collection_ids=["collection-1", "collection-2"],
+            strategy=RAGStrategy.HYBRID,
+            execution_id="goal-across-collections",
+        )
+
+    assert len(budget.calls) == 2
+    assert {call["goal_id"] for call in budget.calls} == {"goal-across-collections"}
+    assert len({call["attempt_id"] for call in budget.calls}) == 2
+
+
+async def test_adaptive_selected_strategy_stops_on_shared_budget_exhaustion() -> None:
+    class HyDEProvider:
+        def __init__(self) -> None:
+            self.requests: list[CompletionRequest] = []
+
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            self.requests.append(request)
+            return CompletionResponse(content="hypothetical answer", model=request.model)
+
+    provider = HyDEProvider()
+    embedder = _Embedder()
+    budget = _BudgetController(allowed_calls=1)
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=embedder,
+            llm_resolver=lambda *_: ResolvedLLM(provider=provider, model="tenant-model"),
+            cost_controller=budget,
+        )
+    )
+
+    with pytest.raises(RetrievalStrategyExecutionError, match="budget_exhausted"):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="what is dynamic orchestration",
+            strategy_id=RAGStrategy.ADAPTIVE,
+            execution_id="adaptive-budget",
+        )
+
+    assert [call["tool_name"] for call in budget.calls] == [
+        "rag_completion",
+        "rag_embedding",
+    ]
+    assert len(provider.requests) == 1
+    assert embedder.requests == []
+
+
+async def test_web_retrieval_reserves_cost_and_traces_bounded_usage() -> None:
+    budget = _BudgetController(allowed_calls=10)
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+            search_capability=_WebCapability(),
+            policy_services=(_AllowWebPolicy(),),
+            cost_controller=budget,
+        )
+    )
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("one", "one", 0.8, {}, ["vector"])]
+
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="current retention",
+            strategy_id=RAGStrategy.WEB_AUGMENTED,
+            execution_id="web-budget",
+        )
+
+    assert [call["tool_name"] for call in budget.calls] == [
+        "rag_embedding",
+        "rag_web_retrieval",
+    ]
+    assert [
+        trace.detail["operation"]
+        for trace in result.strategy_trace
+        if trace.action == "rag_cost"
+    ] == ["embedding", "web_retrieval"]

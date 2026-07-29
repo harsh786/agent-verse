@@ -69,6 +69,7 @@ class RetrieverTool:
         top_k: int = 5,
         min_confidence: float = 0.0,
         metadata_filter: dict[str, Any] | None = None,
+        execution_id: str = "",
         **legacy_options: Any,
     ) -> RetrievalResult:
         """Retrieve the requested canonical strategy without fallback or promotion."""
@@ -82,16 +83,16 @@ class RetrieverTool:
 
         gateway_results = []
         for collection_id in collection_ids:
-            gateway_results.append(
-                await self._gateway.execute(
-                    tenant_ctx,
-                    collection_id=collection_id,
-                    query=query,
-                    strategy_id=strategy,
-                    top_k=top_k,
-                    filters=metadata_filter or {},
-                )
-            )
+            execute_kwargs: dict[str, Any] = {
+                "collection_id": collection_id,
+                "query": query,
+                "strategy_id": strategy,
+                "top_k": top_k,
+                "filters": metadata_filter or {},
+            }
+            if execution_id:
+                execute_kwargs["execution_id"] = execution_id
+            gateway_results.append(await self._gateway.execute(tenant_ctx, **execute_kwargs))
 
         citations_by_id = {
             (collection_id, citation.source, citation.citation_id): (
@@ -164,6 +165,7 @@ class RetrieverTool:
         top_k: int = 5,
         min_confidence: float = 0.0,
         metadata_filter: dict[str, Any] | None = None,
+        execution_id: str = "",
     ) -> list[RetrievalResult]:
         """Execute only the explicitly requested canonical strategies."""
 
@@ -178,6 +180,7 @@ class RetrieverTool:
                         top_k=top_k,
                         min_confidence=min_confidence,
                         metadata_filter=metadata_filter,
+                        execution_id=execution_id,
                     )
                     for strategy in strategies
                 )
@@ -193,6 +196,7 @@ class RetrieverTool:
         top_k: int = 5,
         confidence_threshold: float = 0.0,
         strategy: RAGStrategy = RAGStrategy.CORRECTIVE,
+        execution_id: str = "",
         **legacy_options: Any,
     ) -> RetrievalResult:
         """Execute canonical corrective retrieval without local correction fallback."""
@@ -206,4 +210,5 @@ class RetrieverTool:
             collection_ids=collection_ids,
             top_k=top_k,
             min_confidence=confidence_threshold,
+            execution_id=execution_id,
         )

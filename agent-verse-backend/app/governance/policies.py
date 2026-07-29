@@ -159,13 +159,74 @@ class PolicyEngine:
                     return PolicyResult.REQUIRE_APPROVAL
         return PolicyResult.ALLOW
 
-    async def reload_from_db(self, db: Any, tenant_id: str | None = None) -> int:
+    async def reload_from_db(
+        self,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
         """Reload policies from DB. If tenant_id given, reload only that tenant's policies.
         Called by Redis subscriber when another replica modifies policies.
         Returns count of policies loaded.
         """
+        if db is None and strict:
+            raise RuntimeError("Policy database is not configured")
         if db is None:
             return 0
+        if strict:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for strict policy loading")
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT name, action, tools_pattern, tenant_id "
+                            "FROM governance_policies WHERE tenant_id=:tid"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).fetchall()
+                settings_row = (
+                    await session.execute(
+                        text(
+                            "SELECT settings->'web_search_allowed_domains' "
+                            "FROM tenant_settings WHERE tenant_id=:tid"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).scalar_one_or_none()
+            self._policies = [policy for policy in self._policies if policy.tenant_id != tenant_id]
+            for name, action, tools_pattern, policy_tenant_id in rows:
+                self._policies.append(
+                    Policy(
+                        name=name,
+                        denied_tools=[tools_pattern or "*"] if action == "deny" else [],
+                        approval_tools=(
+                            [tools_pattern or "*"] if action == "require_approval" else []
+                        ),
+                        tenant_id=policy_tenant_id or tenant_id,
+                        action=action,
+                        tool_pattern=tools_pattern or "*",
+                    )
+                )
+            if isinstance(settings_row, list):
+                self._policies.append(
+                    Policy(
+                        name="persisted-web-domain-restrictions",
+                        tenant_id=tenant_id,
+                        web_allowed_domains=[str(domain) for domain in settings_row],
+                    )
+                )
+            return len(rows)
         try:
             from sqlalchemy import text
             async with db() as session:

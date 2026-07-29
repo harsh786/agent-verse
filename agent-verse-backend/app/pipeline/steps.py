@@ -184,6 +184,7 @@ async def smart_context_fetch(
     strategy: RAGStrategy = RAGStrategy.HYBRID,
     top_k: int = 3,
     filters: dict[str, Any] | None = None,
+    execution_id: str = "",
 ) -> str:
     """Fetch per-step context only through the tenant-aware retrieval gateway."""
 
@@ -197,14 +198,16 @@ async def smart_context_fetch(
     citations = []
     query_text = step or goal
     for collection_id in collection_ids[:3]:
-        result = await retrieval_gateway.execute(
-            tenant_ctx,
-            collection_id=collection_id,
-            query=query_text,
-            strategy_id=strategy,
-            top_k=top_k,
-            filters=filters or {},
-        )
+        execute_kwargs: dict[str, Any] = {
+            "collection_id": collection_id,
+            "query": query_text,
+            "strategy_id": strategy,
+            "top_k": top_k,
+            "filters": filters or {},
+        }
+        if execution_id:
+            execute_kwargs["execution_id"] = execution_id
+        result = await retrieval_gateway.execute(tenant_ctx, **execute_kwargs)
         citations.extend(result.citations)
     citations.sort(key=lambda citation: (-citation.score, citation.citation_id))
     return "\n".join(
