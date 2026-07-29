@@ -6,7 +6,7 @@ import inspect
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any
 
 from app.providers.base import CompletionRequest, Message
 from app.rag.contracts import (
@@ -31,113 +31,42 @@ class CitationVerification:
 
 
 class MinimalCitationVerifier:
-    """Verify each cited claim has deterministic lexical support in its evidence."""
+    """Verify citation-marker-scoped claims conservatively."""
 
-    _STOP_WORDS = frozenset(
-        {"a", "an", "and", "are", "as", "at", "be", "is", "of", "or", "the", "to"}
-    )
-    _SYNONYMS: ClassVar[dict[str, str]] = {
-        "allows": "allow",
-        "allowed": "allow",
-        "permit": "allow",
-        "permits": "allow",
-        "permitted": "allow",
-        "prohibits": "prohibit",
-        "prohibited": "prohibit",
-        "forbids": "prohibit",
-        "forbidden": "prohibit",
-        "mandatory": "required",
-        "requires": "required",
-    }
+    _MARKER_GROUP = re.compile(r"(?:\[(?:\d+(?:\s*,\s*\d+)*)\]\s*)+")
 
     def __init__(self, *, provider: Any = None, model: str = "") -> None:
         self.provider = provider
         self.model = model.strip()
 
-    def _tokens(self, text: str) -> set[str]:
-        return {
-            self._SYNONYMS.get(token, token)
-            for token in re.findall(r"[a-z0-9]+", text.lower())
-            if len(token) > 2 and token not in self._STOP_WORDS
-        }
-
-    def _normalize(self, text: str) -> str:
-        return " ".join(
-            self._SYNONYMS.get(token, token)
-            for token in re.findall(r"[a-z0-9]+", text.lower())
-            if token not in self._STOP_WORDS
-        )
-
     @staticmethod
-    def _contradiction(claim: str, evidence: str) -> bool:
-        claim_lower = claim.lower()
-        evidence_lower = evidence.lower()
-        claim_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", claim_lower))
-        evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence_lower))
-        if claim_numbers and not claim_numbers.issubset(evidence_numbers):
-            return True
-        allow_words = ("allow", "permit")
-        prohibit_words = ("prohibit", "forbid", "deny", "ban")
-        claim_negated_allow = bool(
-            re.search(r"\b(?:not|never)\s+(?:allow\w*|permit\w*)", claim_lower)
-        )
-        evidence_negated_allow = bool(
-            re.search(r"\b(?:not|never)\s+(?:allow\w*|permit\w*)", evidence_lower)
-        )
-        claim_allows = any(word in claim_lower for word in allow_words) and not claim_negated_allow
-        evidence_allows = (
-            any(word in evidence_lower for word in allow_words)
-            and not evidence_negated_allow
-        )
-        claim_prohibits = any(word in claim_lower for word in prohibit_words)
-        evidence_prohibits = any(word in evidence_lower for word in prohibit_words)
-        claim_prohibits = claim_prohibits or claim_negated_allow
-        evidence_prohibits = evidence_prohibits or evidence_negated_allow
-        if (claim_allows and evidence_prohibits) or (
-            claim_prohibits and evidence_allows
-        ):
-            return True
-        claim_not_required = bool(re.search(r"\bnot\s+required\b", claim_lower))
-        evidence_not_required = bool(
-            re.search(r"\bnot\s+required\b", evidence_lower)
-        )
-        claim_required = "required" in claim_lower and not claim_not_required
-        evidence_required = "required" in evidence_lower and not evidence_not_required
-        if (claim_required and evidence_not_required) or (
-            claim_not_required and evidence_required
-        ):
-            return True
-        return bool(
-            evidence_allows
-            and re.search(r"\b(?:retract\w*|withdrawn|false)\b", evidence_lower)
-        )
+    def _normalize(text: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
-    @staticmethod
-    def _has_extra_numbers(claim: str, evidence: str) -> bool:
-        claim_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", claim))
-        evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence))
-        return bool(claim_numbers and evidence_numbers - claim_numbers)
-
-    @staticmethod
-    def _atomic_claims(answer: str) -> list[tuple[str, list[int]]]:
+    @classmethod
+    def _atomic_claims(cls, answer: str) -> list[tuple[str, list[int]]]:
         atomic: list[tuple[str, list[int]]] = []
-        for clause in re.split(r"[;.!?]+", answer):
-            clause = clause.strip()
-            if not clause:
-                continue
-            all_references = [
-                int(value) for value in re.findall(r"\[(\d+)\]", clause)
+        cursor = 0
+        for marker in cls._MARKER_GROUP.finditer(answer):
+            scoped = answer[cursor : marker.start()]
+            scoped = re.sub(
+                r"^[\s,;:.!?]+(?:and\s+|but\s+)?",
+                "",
+                scoped,
+                flags=re.IGNORECASE,
+            ).strip()
+            references = [int(value) for value in re.findall(r"\d+", marker.group())]
+            parts = [
+                part.strip(" ,;\n")
+                for part in re.split(r"\s*(?:[,;\n]|\band\b|\bbut\b)\s*", scoped)
+                if cls._normalize(part)
             ]
-            parts = re.split(r"\s+and\s+", clause)
-            for part in parts:
-                references = [
-                    int(value) for value in re.findall(r"\[(\d+)\]", part)
-                ]
-                if not references and len(all_references) == 1:
-                    references = list(all_references)
-                claim = re.sub(r"\[\d+\]", "", part).strip(" ,")
-                if claim:
-                    atomic.append((claim, references))
+            for claim in parts:
+                atomic.append((claim, list(references)))
+            cursor = marker.end()
+        trailing = re.sub(r"^[\s,;:.!?]+", "", answer[cursor:]).strip()
+        if cls._normalize(trailing):
+            atomic.append((trailing, []))
         return atomic
 
     async def _provider_entails(self, claim: str, evidence: str) -> CitationVerification:
@@ -203,8 +132,8 @@ class MinimalCitationVerifier:
         reasons: list[str] = []
         checked = 0
         for claim, references in self._atomic_claims(answer):
-            claim_tokens = self._tokens(claim)
-            if not claim_tokens:
+            claim_normalized = self._normalize(claim)
+            if not claim_normalized:
                 continue
             checked += 1
             if not references or any(
@@ -215,20 +144,8 @@ class MinimalCitationVerifier:
                 reasons.append("invalid_citation")
                 continue
             evidence = " ".join(citations[index - 1].content for index in references)
-            if self._contradiction(claim, evidence):
-                unsupported.append(claim)
-                reasons.append("contradiction")
-                continue
-            claim_normalized = self._normalize(claim)
             evidence_normalized = self._normalize(evidence)
-            if (
-                not self._has_extra_numbers(claim, evidence)
-                and claim_normalized
-                and (
-                    claim_normalized == evidence_normalized
-                    or f" {claim_normalized} " in f" {evidence_normalized} "
-                )
-            ):
+            if claim_normalized == evidence_normalized:
                 continue
             entailment = await self._provider_entails(claim, evidence)
             if not entailment.grounded:
