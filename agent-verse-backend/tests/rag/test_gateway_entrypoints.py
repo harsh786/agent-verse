@@ -943,6 +943,94 @@ async def test_every_non_identical_claim_calls_provider_and_no_provider_fails_cl
     assert not conservative.grounded
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The amount is 1,000 USD",
+        "Smith, Jones, and Lee approved the policy",
+        "Version 3.5 is supported",
+    ],
+)
+async def test_providerless_exact_normalization_preserves_meaningful_punctuation(
+    text: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        f"  {text}.   [1]",
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content=text,
+                score=0.9, source="policy",
+            )
+        ],
+    )
+
+    assert result.grounded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        ("Version 3.5 is supported [1]", "Version 3-5 is supported"),
+        (
+            "Use https://example.com/Admin?Role=Owner [1]",
+            "Use https://example.com/admin?Role=Owner",
+        ),
+    ],
+)
+async def test_providerless_normalization_rejects_value_or_url_case_changes(
+    claim: str,
+    evidence: str,
+) -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    result = await MinimalCitationVerifier().verify(
+        claim,
+        [
+            RAGCitation(
+                citation_id="c1", chunk_id="ch1", content=evidence,
+                score=0.9, source="policy",
+            )
+        ],
+    )
+
+    assert not result.grounded
+
+
+@pytest.mark.asyncio
+async def test_non_identical_comma_prose_is_one_provider_verified_claim() -> None:
+    from app.rag_platform.retriever import MinimalCitationVerifier
+
+    provider = RecordingProvider()
+    provider.complete = AsyncMock(
+        return_value=CompletionResponse(
+            content='{"supported": true, "reason": "entailed"}',
+            model="entailment-model",
+        )
+    )
+    result = await MinimalCitationVerifier(
+        provider=provider,
+        model="entailment-model",
+    ).verify(
+        "Smith, Jones, and Lee authorized the policy [1]",
+        [
+            RAGCitation(
+                citation_id="c1",
+                chunk_id="ch1",
+                content="The policy was approved by Smith, Jones, and Lee",
+                score=0.9,
+                source="policy",
+            )
+        ],
+    )
+
+    assert result.grounded
+    provider.complete.assert_awaited_once()
+
+
 def test_knowledge_chat_preserves_merged_repeated_id_provenance() -> None:
     class DuplicateGateway(RecordingGateway):
         async def execute(
