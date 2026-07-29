@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 
 # RRF constant (standard: 60)
 _RRF_K = 60
+_SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 3072})
 
 
 @dataclass
@@ -112,6 +113,11 @@ async def hybrid_search(
             if strict:
                 raise RetrievalLegExecutionError("collection_metadata") from exc
             embedding_dim = 1536
+    if embedding_dim not in _SUPPORTED_EMBEDDING_DIMENSIONS:
+        if strict:
+            raise RetrievalLegExecutionError("collection_metadata")
+        logger.warning("unsupported_embedding_dimension", embedding_dim=embedding_dim)
+        return []
     table = f"knowledge_chunks_{embedding_dim}"
     metadata_clause = (
         " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
@@ -129,16 +135,16 @@ async def hybrid_search(
     if query_embedding and retrieval_mode in ("hybrid", "vector"):
         try:
             await session.execute(
-                text("SET LOCAL hnsw.ef_search = :ef"),
-                {"ef": ef_search},
+                text("SELECT set_config('hnsw.ef_search', :ef, true)"),
+                {"ef": str(ef_search)},
             )
             vec_sql = text(f"""
                 SELECT id, content, metadata,
-                       1 - (embedding <=> :emb::vector) AS score
+                       1 - (embedding <=> CAST(:emb AS vector)) AS score
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
-                ORDER BY embedding <=> :emb::vector
+                ORDER BY embedding <=> CAST(:emb AS vector)
                 LIMIT :limit
             """)
             rows = await session.execute(vec_sql, {
