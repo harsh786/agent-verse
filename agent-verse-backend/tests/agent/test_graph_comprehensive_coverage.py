@@ -1042,8 +1042,9 @@ async def test_agent_run_with_cot_enabled() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_node_rag_retrieval_with_knowledge_store_and_collection_ids() -> None:
-    """Knowledge store provides relevant context for the agent."""
+async def test_node_rag_retrieval_does_not_bypass_missing_gateway() -> None:
+    """A bound collection fails closed instead of querying KnowledgeStore directly."""
+    from app.agent.graph import RetrievalEntryPointError
     from app.rag.store import KnowledgeStore
 
     mock_ks = MagicMock(spec=KnowledgeStore)
@@ -1059,11 +1060,11 @@ async def test_node_rag_retrieval_with_knowledge_store_and_collection_ids() -> N
 
     agent_state = _make_agent_state("deploy via API")
     state = {"agent_state": agent_state, "tenant_ctx": T, "rag_context": ""}
-    result = await graph._node_rag_retrieval(state)
+    with pytest.raises(RetrievalEntryPointError):
+        await graph._node_rag_retrieval(state)
 
-    # Knowledge context should be in agent_state.context
-    assert "rag_knowledge" in agent_state.context
-    assert "API endpoint" in agent_state.context["rag_knowledge"]
+    mock_ks.hybrid_search_db.assert_not_called()
+    assert agent_state.context["rag_retrieval_status"] == "failed"
 
 
 # ===========================================================================
@@ -1200,8 +1201,9 @@ async def test_node_rag_retrieval_ltm_memory_provides_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_node_rag_retrieval_with_embedder_and_knowledge_store() -> None:
-    """Embedder is used for knowledge store queries — covers lines 377-383."""
+async def test_node_rag_retrieval_embedder_does_not_enable_store_bypass() -> None:
+    """An embedder does not permit bypassing a missing retrieval gateway."""
+    from app.agent.graph import RetrievalEntryPointError
     from app.rag.store import KnowledgeStore
 
     mock_ks = MagicMock(spec=KnowledgeStore)
@@ -1217,19 +1219,18 @@ async def test_node_rag_retrieval_with_embedder_and_knowledge_store() -> None:
 
     agent_state = _make_agent_state("deploy API")
     state = {"agent_state": agent_state, "tenant_ctx": T, "rag_context": ""}
-    result = await graph._node_rag_retrieval(state)
+    with pytest.raises(RetrievalEntryPointError):
+        await graph._node_rag_retrieval(state)
 
-    # hybrid_search_db should have been called with non-empty embedding
-    mock_ks.hybrid_search_db.assert_called_once()
-    call_kwargs = mock_ks.hybrid_search_db.call_args.kwargs
-    assert call_kwargs["query_embedding"] != []  # Embedder provided a vector
+    mock_ks.hybrid_search_db.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_node_rag_retrieval_embedder_failure_is_swallowed() -> None:
-    """When embedder fails, knowledge store query still proceeds with empty embedding."""
-    from app.rag.store import KnowledgeStore
+async def test_node_rag_retrieval_missing_gateway_is_required_failure() -> None:
+    """A missing gateway is explicit even when an embedder is also broken."""
+    from app.agent.graph import RetrievalEntryPointError
     from app.providers.base import EmbedRequest as _ER
+    from app.rag.store import KnowledgeStore
 
     mock_ks = MagicMock(spec=KnowledgeStore)
     mock_ks.hybrid_search_db = AsyncMock(return_value=[])
@@ -1249,10 +1250,10 @@ async def test_node_rag_retrieval_embedder_failure_is_swallowed() -> None:
 
     agent_state = _make_agent_state("task")
     state = {"agent_state": agent_state, "tenant_ctx": T, "rag_context": ""}
-    result = await graph._node_rag_retrieval(state)  # Must not raise
+    with pytest.raises(RetrievalEntryPointError):
+        await graph._node_rag_retrieval(state)
 
-    # Should still call hybrid_search_db with empty embedding
-    mock_ks.hybrid_search_db.assert_called_once()
+    mock_ks.hybrid_search_db.assert_not_called()
 
 
 @pytest.mark.asyncio

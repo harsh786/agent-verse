@@ -419,7 +419,7 @@ def test_search_no_embedder_returns_503() -> None:
     assert resp.status_code == 503
 
 
-def test_search_with_embedder_empty_result() -> None:
+def test_search_with_embedder_but_no_gateway_fails_closed() -> None:
     embedder = _make_embedder()
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
     coll = client.post(
@@ -432,8 +432,7 @@ def test_search_with_embedder_empty_result() -> None:
         f"/knowledge/search?q=test+query&collection_id={coll_id}",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
