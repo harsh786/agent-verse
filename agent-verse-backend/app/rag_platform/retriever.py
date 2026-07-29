@@ -74,14 +74,25 @@ class MinimalCitationVerifier:
         evidence_lower = evidence.lower()
         claim_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", claim_lower))
         evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence_lower))
-        if claim_numbers and evidence_numbers and claim_numbers != evidence_numbers:
+        if claim_numbers and not claim_numbers.issubset(evidence_numbers):
             return True
         allow_words = ("allow", "permit")
         prohibit_words = ("prohibit", "forbid", "deny", "ban")
-        claim_allows = any(word in claim_lower for word in allow_words)
-        evidence_allows = any(word in evidence_lower for word in allow_words)
+        claim_negated_allow = bool(
+            re.search(r"\b(?:not|never)\s+(?:allow\w*|permit\w*)", claim_lower)
+        )
+        evidence_negated_allow = bool(
+            re.search(r"\b(?:not|never)\s+(?:allow\w*|permit\w*)", evidence_lower)
+        )
+        claim_allows = any(word in claim_lower for word in allow_words) and not claim_negated_allow
+        evidence_allows = (
+            any(word in evidence_lower for word in allow_words)
+            and not evidence_negated_allow
+        )
         claim_prohibits = any(word in claim_lower for word in prohibit_words)
         evidence_prohibits = any(word in evidence_lower for word in prohibit_words)
+        claim_prohibits = claim_prohibits or claim_negated_allow
+        evidence_prohibits = evidence_prohibits or evidence_negated_allow
         if (claim_allows and evidence_prohibits) or (
             claim_prohibits and evidence_allows
         ):
@@ -92,9 +103,42 @@ class MinimalCitationVerifier:
         )
         claim_required = "required" in claim_lower and not claim_not_required
         evidence_required = "required" in evidence_lower and not evidence_not_required
-        return (claim_required and evidence_not_required) or (
+        if (claim_required and evidence_not_required) or (
             claim_not_required and evidence_required
+        ):
+            return True
+        return bool(
+            evidence_allows
+            and re.search(r"\b(?:retract\w*|withdrawn|false)\b", evidence_lower)
         )
+
+    @staticmethod
+    def _has_extra_numbers(claim: str, evidence: str) -> bool:
+        claim_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", claim))
+        evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence))
+        return bool(claim_numbers and evidence_numbers - claim_numbers)
+
+    @staticmethod
+    def _atomic_claims(answer: str) -> list[tuple[str, list[int]]]:
+        atomic: list[tuple[str, list[int]]] = []
+        for clause in re.split(r"[;.!?]+", answer):
+            clause = clause.strip()
+            if not clause:
+                continue
+            all_references = [
+                int(value) for value in re.findall(r"\[(\d+)\]", clause)
+            ]
+            parts = re.split(r"\s+and\s+", clause)
+            for part in parts:
+                references = [
+                    int(value) for value in re.findall(r"\[(\d+)\]", part)
+                ]
+                if not references and len(all_references) == 1:
+                    references = list(all_references)
+                claim = re.sub(r"\[\d+\]", "", part).strip(" ,")
+                if claim:
+                    atomic.append((claim, references))
+        return atomic
 
     async def _provider_entails(self, claim: str, evidence: str) -> CitationVerification:
         if self.provider is None or not self.model:
@@ -158,44 +202,38 @@ class MinimalCitationVerifier:
         unsupported: list[str] = []
         reasons: list[str] = []
         checked = 0
-        for sentence in re.split(r"(?<=[.!?])\s+", answer.strip()):
-            references = [int(value) for value in re.findall(r"\[(\d+)\]", sentence)]
-            sentence_without_refs = re.sub(r"\[\d+\]", "", sentence).strip(" .")
-            material_claims = [
-                part.strip(" ,")
-                for part in re.split(r"\s+and\s+", sentence_without_refs)
-                if len(self._tokens(part)) >= 2
-            ] or [sentence_without_refs]
-            for claim in material_claims:
-                claim_tokens = self._tokens(claim)
-                if not claim_tokens:
-                    continue
-                checked += 1
-                if not references or any(
-                    reference < 1 or reference > len(citations)
-                    for reference in references
-                ):
-                    unsupported.append(claim)
-                    reasons.append("invalid_citation")
-                    continue
-                evidence = " ".join(
-                    citations[index - 1].content for index in references
-                )
-                if self._contradiction(claim, evidence):
-                    unsupported.append(claim)
-                    reasons.append("contradiction")
-                    continue
-                claim_normalized = self._normalize(claim)
-                evidence_normalized = self._normalize(evidence)
-                if claim_normalized and (
+        for claim, references in self._atomic_claims(answer):
+            claim_tokens = self._tokens(claim)
+            if not claim_tokens:
+                continue
+            checked += 1
+            if not references or any(
+                reference < 1 or reference > len(citations)
+                for reference in references
+            ):
+                unsupported.append(claim)
+                reasons.append("invalid_citation")
+                continue
+            evidence = " ".join(citations[index - 1].content for index in references)
+            if self._contradiction(claim, evidence):
+                unsupported.append(claim)
+                reasons.append("contradiction")
+                continue
+            claim_normalized = self._normalize(claim)
+            evidence_normalized = self._normalize(evidence)
+            if (
+                not self._has_extra_numbers(claim, evidence)
+                and claim_normalized
+                and (
                     claim_normalized == evidence_normalized
                     or f" {claim_normalized} " in f" {evidence_normalized} "
-                ):
-                    continue
-                entailment = await self._provider_entails(claim, evidence)
-                if not entailment.grounded:
-                    unsupported.extend(entailment.unsupported_claims)
-                    reasons.append(entailment.reason)
+                )
+            ):
+                continue
+            entailment = await self._provider_entails(claim, evidence)
+            if not entailment.grounded:
+                unsupported.extend(entailment.unsupported_claims)
+                reasons.append(entailment.reason)
         reason = (
             "supported"
             if checked > 0 and not unsupported
