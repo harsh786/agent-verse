@@ -6,6 +6,7 @@ import asyncio
 import html
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -158,7 +159,7 @@ class GovernedWebSearchCapability:
         backend: WebSearchTool,
         policy_services: tuple[object, ...],
         default_allowed_domains: tuple[str, ...] = (),
-        transport: httpx.AsyncBaseTransport | None = None,
+        fetch_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
     ) -> None:
         if not backend.configured:
             raise ValueError("A configured SearXNG backend is required")
@@ -167,7 +168,9 @@ class GovernedWebSearchCapability:
         self._default_allowed_domains = tuple(
             sorted({domain.lower().strip(".") for domain in default_allowed_domains if domain})
         )
-        self._transport = transport
+        self._fetch_transport_factory = (
+            fetch_transport_factory or httpx.AsyncHTTPTransport
+        )
 
     async def _validate_url(
         self,
@@ -209,56 +212,58 @@ class GovernedWebSearchCapability:
         deadline: float,
     ) -> WebEvidence:
         current_url = result.url
-        async with httpx.AsyncClient(
-            timeout=max(0.1, deadline - asyncio.get_running_loop().time()),
-            follow_redirects=False,
-            transport=self._transport,
-            trust_env=False,
-            headers={"User-Agent": "AgentVerse-RAG/1.0"},
-        ) as client:
-            for redirect_count in range(self._MAX_REDIRECTS + 1):
-                async with asyncio.timeout_at(deadline):
-                    target = await self._validate_url(current_url, allowed_domains)
-                    async with client.stream(
+        for redirect_count in range(self._MAX_REDIRECTS + 1):
+            async with asyncio.timeout_at(deadline):
+                target = await self._validate_url(current_url, allowed_domains)
+                async with (
+                    httpx.AsyncClient(
+                        timeout=max(0.1, deadline - asyncio.get_running_loop().time()),
+                        follow_redirects=False,
+                        transport=self._fetch_transport_factory(),
+                        trust_env=False,
+                        headers={"User-Agent": "AgentVerse-RAG/1.0"},
+                    ) as client,
+                    client.stream(
                         "GET",
                         target.pinned_url,
                         headers={"Host": target.host_header},
                         extensions={"sni_hostname": target.hostname},
-                    ) as response:
-                        if response.is_redirect:
-                            if redirect_count >= self._MAX_REDIRECTS:
-                                raise ValueError("Web result exceeded redirect limit")
-                            location = response.headers.get("location", "")
-                            if not location:
-                                raise ValueError("Web result redirect had no location")
-                            current_url = urljoin(current_url, location)
-                            continue
-                        response.raise_for_status()
-                        content_type = response.headers.get("content-type", "").lower()
-                        if not any(
-                            allowed in content_type
-                            for allowed in ("text/", "application/json", "application/xhtml")
-                        ):
-                            raise ValueError("Web result content type is not textual")
-                        body = bytearray()
-                        async for chunk in response.aiter_bytes(chunk_size=8192):
-                            body.extend(chunk)
-                            if len(body) >= max_bytes:
-                                del body[max_bytes:]
-                                break
-                content = bytes(body).decode("utf-8", errors="ignore")
-                if "html" in content_type or "xhtml" in content_type:
-                    content = _html_to_text(content)
-                fetched_at = datetime.now(UTC)
-                return WebEvidence(
-                    title=result.title,
-                    url=current_url,
-                    content=content,
-                    fetched_at=fetched_at,
-                    source=result.source or "searxng",
-                    domain=target.domain,
-                    freshness_seconds=0.0,
-                )
+                    ) as response,
+                ):
+                    if response.is_redirect:
+                        if redirect_count >= self._MAX_REDIRECTS:
+                            raise ValueError("Web result exceeded redirect limit")
+                        location = response.headers.get("location", "")
+                        if not location:
+                            raise ValueError("Web result redirect had no location")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").lower()
+                    if not any(
+                        allowed in content_type
+                        for allowed in ("text/", "application/json", "application/xhtml")
+                    ):
+                        raise ValueError("Web result content type is not textual")
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        body.extend(chunk)
+                        if len(body) >= max_bytes:
+                            del body[max_bytes:]
+                            break
+            content = bytes(body).decode("utf-8", errors="ignore")
+            if "html" in content_type or "xhtml" in content_type:
+                content = _html_to_text(content)
+            fetched_at = datetime.now(UTC)
+            return WebEvidence(
+                title=result.title,
+                url=current_url,
+                content=content,
+                fetched_at=fetched_at,
+                source=result.source or "searxng",
+                domain=target.domain,
+                freshness_seconds=0.0,
+            )
         raise ValueError("Web result fetch did not complete")
 
     async def search(self, request: WebSearchRequest) -> list[WebEvidence]:
@@ -326,6 +331,7 @@ def build_safe_web_search_capability(
     policy_services: tuple[object, ...],
     allowed_domains: tuple[str, ...] = (),
     transport: httpx.AsyncBaseTransport | None = None,
+    fetch_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
 ) -> SafeWebSearchCapability | None:
     if not searxng_url.strip():
         return None
@@ -340,7 +346,7 @@ def build_safe_web_search_capability(
         backend=backend,
         policy_services=policy_services,
         default_allowed_domains=allowed_domains,
-        transport=transport,
+        fetch_transport_factory=fetch_transport_factory,
     )
 
 
