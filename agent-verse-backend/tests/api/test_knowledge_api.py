@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
 from app.providers.fake import FakeProvider
+from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.rag.gateway import CollectionNotFoundError
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
@@ -14,6 +16,39 @@ from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-rag", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
 _VALID_KEY = "av_test_ragkey"
+
+
+class _KnowledgeGateway:
+    def __init__(self, store: KnowledgeStore) -> None:
+        self._store = store
+
+    async def execute(
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        collection_id: str,
+        query: str,
+        strategy_id: str,
+        top_k: int,
+        filters: dict[str, object],
+    ) -> RAGExecutionResult:
+        del top_k, filters
+        if self._store.get_collection(collection_id, tenant_ctx=tenant_ctx) is None:
+            raise CollectionNotFoundError(collection_id)
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id="citation-1",
+                    chunk_id="chunk-1",
+                    content=f"Gateway evidence for {query}",
+                    score=0.8,
+                    source="test.md",
+                )
+            ],
+            grounded=True,
+        )
 
 
 def _make_app(
@@ -30,6 +65,7 @@ def _make_app(
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(knowledge_router)
     app.state.knowledge_store = knowledge_store or KnowledgeStore()
+    app.state.retrieval_gateway = _KnowledgeGateway(app.state.knowledge_store)
     app.state.semantic_cache = semantic_cache or SemanticCache()
     # Provide a FakeProvider so search endpoints have an embedder available.
     # Tests that explicitly want no embedder can pass embedder=None explicitly.
@@ -178,14 +214,13 @@ def test_search_returns_results() -> None:
         assert "score" in result
 
 
-def test_search_empty_collection_returns_empty() -> None:
+def test_search_missing_collection_returns_not_found() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get(
         "/knowledge/search?q=anything&collection_id=no-such&top_k=5&threshold=0.0",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

@@ -217,34 +217,54 @@ async def test_federated_search_normalizes_scores() -> None:
     tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
     # Two collections return results with very different score scales
-    async def mock_search(
-        query: str,
-        cid: str,
-        top_k: int,
+    async def mock_execute(
+        tenant_context: TenantContext,
         *,
-        tenant_ctx: TenantContext,
-    ) -> list[dict]:
-        assert tenant_ctx.tenant_id == "federated-tenant"
-        if cid == cid_a:
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del query, top_k, filters
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+
+        assert tenant_context.tenant_id == "federated-tenant"
+        if collection_id == cid_a:
             # High-range scores (e.g. from a cosine similarity model ~0.9)
-            return [
-                {"content": f"doc_a_{i}", "score": 0.9 - i * 0.05, "content_hash": f"h_a_{i}"}
+            values = [
+                (f"doc_a_{i}", 0.9 - i * 0.05, f"h_a_{i}")
                 for i in range(3)
             ]
         else:
             # Low-range scores (e.g. from a BM25 model ~0.1)
-            return [
-                {"content": f"doc_b_{i}", "score": 0.1 + i * 0.02, "content_hash": f"h_b_{i}"}
+            values = [
+                (f"doc_b_{i}", 0.1 + i * 0.02, f"h_b_{i}")
                 for i in range(3)
             ]
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id=content_hash,
+                    chunk_id=content_hash,
+                    content=content,
+                    score=score,
+                    source=collection_id,
+                    metadata={"content_hash": content_hash},
+                )
+                for content, score, content_hash in values
+            ],
+        )
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
     results = await federated_search(
         query="test query",
         collection_ids=[cid_a, cid_b],
-        store=mock_store,
+        gateway=mock_gateway,
         top_k=6,
         tenant_ctx=tenant_ctx,
     )
@@ -270,22 +290,40 @@ async def test_federated_search_deduplicates_results() -> None:
     from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(
-        query: str,
-        cid: str,
-        top_k: int,
+    async def mock_execute(
+        tenant_context: TenantContext,
         *,
-        tenant_ctx: TenantContext,
-    ) -> list[dict]:
-        return [{"content": "identical content", "score": 0.9, "content_hash": shared_hash}]
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del tenant_context, query, top_k, filters
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id=shared_hash,
+                    chunk_id=shared_hash,
+                    content="identical content",
+                    score=0.9,
+                    source=collection_id,
+                    metadata={"content_hash": shared_hash},
+                )
+            ],
+        )
+
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
     results = await federated_search(
         query="test",
         collection_ids=[cid_a, cid_b],
-        store=mock_store,
+        gateway=mock_gateway,
         top_k=10,
         tenant_ctx=tenant_ctx,
     )
@@ -307,25 +345,43 @@ async def test_federated_search_propagates_collection_error() -> None:
     from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(
-        query: str,
-        cid: str,
-        top_k: int,
+    async def mock_execute(
+        tenant_context: TenantContext,
         *,
-        tenant_ctx: TenantContext,
-    ) -> list[dict]:
-        if cid == cid_bad:
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del tenant_context, query, top_k, filters
+        if collection_id == cid_bad:
             raise RuntimeError("Collection unavailable")
-        return [{"content": "good result", "score": 0.8, "content_hash": "good_hash"}]
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id="good_hash",
+                    chunk_id="good_hash",
+                    content="good result",
+                    score=0.8,
+                    source=collection_id,
+                    metadata={"content_hash": "good_hash"},
+                )
+            ],
+        )
+
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
     with pytest.raises(RuntimeError, match="Collection unavailable"):
         await federated_search(
             query="test",
             collection_ids=[cid_good, cid_bad],
-            store=mock_store,
+                gateway=mock_gateway,
             top_k=10,
             tenant_ctx=tenant_ctx,
         )
@@ -337,8 +393,8 @@ async def test_federated_search_propagates_collection_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_embedder_none_raises_503() -> None:
-    """search_knowledge() must raise HTTP 503 when embedder is None (Fix 5)."""
+async def test_retrieval_gateway_none_raises_503() -> None:
+    """search_knowledge() must fail closed when no gateway is configured."""
     from fastapi import HTTPException
 
     from app.api.knowledge import search_knowledge
@@ -354,7 +410,7 @@ async def test_embedder_none_raises_503() -> None:
     mock_request.state.tenant = tenant_ctx
     mock_request.app.state.knowledge_store = KnowledgeStore()
     mock_request.app.state.semantic_cache = SemanticCache()
-    mock_request.app.state.embedder = None  # KEY: no embedder configured
+    mock_request.app.state.retrieval_gateway = None
 
     with pytest.raises(HTTPException) as exc_info:
         await search_knowledge(
@@ -363,12 +419,8 @@ async def test_embedder_none_raises_503() -> None:
             collection_id=str(uuid4()),
         )
 
-    assert exc_info.value.status_code == 503, (
-        f"Expected 503 when embedder=None, got {exc_info.value.status_code}"
-    )
-    assert "embedding" in exc_info.value.detail.lower(), (
-        "503 detail must mention embedding configuration"
-    )
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Retrieval service is unavailable"
 
 
 # ---------------------------------------------------------------------------

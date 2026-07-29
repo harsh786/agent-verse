@@ -11,8 +11,10 @@ Usage::
     results = await federated_search(
         query="breach of contract",
         collection_ids=["uuid1", "uuid2"],
-        store=knowledge_store,
+        gateway=retrieval_gateway,
+        strategy="hybrid",
         top_k=10,
+        tenant_ctx=tenant_ctx,
     )
 """
 from __future__ import annotations
@@ -21,6 +23,7 @@ import asyncio
 import hashlib
 from typing import Any
 
+from app.rag.contracts import RAGExecutionResult, RAGStrategy
 from app.tenancy.context import TenantContext
 
 __all__ = ["federated_search"]
@@ -58,10 +61,12 @@ def _content_key(result: dict[str, Any]) -> str:
 async def federated_search(
     query: str,
     collection_ids: list[str],
-    store: Any,
+    gateway: Any,
     top_k: int = 10,
     *,
     tenant_ctx: TenantContext,
+    strategy: str | RAGStrategy = RAGStrategy.HYBRID,
+    filters: dict[str, Any] | None = None,
     per_collection_k: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search *query* across every collection in *collection_ids* in parallel.
@@ -75,8 +80,7 @@ async def federated_search(
     Args:
         query: Natural-language search query.
         collection_ids: UUIDs of collections to search.
-        store: A ``KnowledgeStore`` instance (or any object with a
-            ``search(query, collection_id, top_k)`` coroutine).
+        gateway: The tenant-aware retrieval gateway.
         top_k: Final number of results to return after merging.
         per_collection_k: How many results to fetch per collection before
             merging (defaults to ``top_k * 2`` for better recall).
@@ -95,15 +99,35 @@ async def federated_search(
     # Parallel fetch — one coroutine per collection                       #
     # ------------------------------------------------------------------ #
     async def _search_one(cid: str) -> list[dict[str, Any]]:
-        result = await store.search(
-            query,
-            cid,
+        result = await gateway.execute(
+            tenant_ctx,
+            query=query,
+            collection_id=cid,
+            strategy_id=strategy,
             top_k=fetch_k,
-            tenant_ctx=tenant_ctx,
+            filters=filters or {},
         )
-        if not isinstance(result, list):
-            raise TypeError("Knowledge store search must return a list")
-        return result
+        if not isinstance(result, RAGExecutionResult):
+            raise TypeError("Retrieval gateway must return RAGExecutionResult")
+        retrieval_legs = [leg.model_dump(mode="json") for leg in result.retrieval_legs]
+        strategy_trace = [trace.model_dump(mode="json") for trace in result.strategy_trace]
+        return [
+            {
+                "collection_id": cid,
+                "citation_id": citation.citation_id,
+                "chunk_id": citation.chunk_id,
+                "content": citation.content,
+                "score": citation.score,
+                "source": citation.source,
+                "content_hash": citation.metadata.get("content_hash"),
+                "metadata": dict(citation.metadata),
+                "requested_strategy_id": result.requested_strategy_id,
+                "resolved_strategy_id": result.resolved_strategy_id.value,
+                "retrieval_legs": retrieval_legs,
+                "strategy_trace": strategy_trace,
+            }
+            for citation in result.citations
+        ]
 
     per_collection: list[list[dict[str, Any]]] = list(
         await asyncio.gather(*[_search_one(cid) for cid in collection_ids])
