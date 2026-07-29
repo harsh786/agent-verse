@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -750,12 +751,14 @@ async def test_public_fusion_uses_concurrent_tenant_scoped_session_per_variant(
     observed_sessions: list[RecordingSession] = []
     active_sessions: set[int] = set()
     max_active = 0
+    observed_filters: list[dict[str, Any] | None] = []
 
     async def hybrid_variant(session: Any, *, query: str, **_: object) -> list[RetrievalResult]:
         nonlocal max_active
         assert session.rls_tenant_id == TENANT.tenant_id
         observed_sessions.append(session)
         active_sessions.add(session.session_id)
+        observed_filters.append(_.get("metadata_filter"))  # type: ignore[arg-type]
         max_active = max(max_active, len(active_sessions))
         await asyncio.sleep(0)
         assert session.rls_tenant_id == TENANT.tenant_id
@@ -797,12 +800,14 @@ async def test_public_fusion_uses_concurrent_tenant_scoped_session_per_variant(
             collection_id="collection-1",
             query="retention policy",
             strategy_id="fusion",
+            filters={"department": "legal"},
         )
 
     assert result.resolved_strategy_id is RAGStrategy.FUSION
     assert len(observed_sessions) == 3
     assert len({id(session) for session in observed_sessions}) == 3
     assert max_active == 3
+    assert observed_filters == [{"department": "legal"}] * 3
     assert len(factory.sessions) == 4  # authorization plus three variants
     assert record_rls == [
         (1, TENANT.tenant_id),
@@ -857,6 +862,69 @@ async def test_graph_capability_exposes_only_tenant_scoped_operations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_result",
+    [
+        "",
+        "not-engine-results",
+        b"",
+        b"not-engine-results",
+        iter(()),
+        range(0),
+    ],
+)
+async def test_gateway_rejects_non_engine_result_sequences(
+    invalid_result: object,
+    record_rls: list[tuple[int, str]],
+) -> None:
+    class InvalidAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> object:
+            return invalid_result
+
+    gateway, _, _ = _gateway(adapter=InvalidAdapter())
+
+    with pytest.raises(TypeError, match="unsupported result type"):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id="fusion",
+        )
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_mixed_engine_result_list(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.engine import RetrievalResult
+
+    class MixedAdapter:
+        async def execute(
+            self,
+            request: RAGExecutionRequest,
+            context: RetrievalExecutionContext,
+        ) -> list[object]:
+            return [
+                RetrievalResult("chunk-1", "evidence", 0.8, {}, ["vector"]),
+                "invalid",
+            ]
+
+    gateway, _, _ = _gateway(adapter=MixedAdapter())
+
+    with pytest.raises(TypeError, match="unsupported result type"):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id="fusion",
+        )
+
+
+@pytest.mark.asyncio
 async def test_resolved_provider_and_model_are_passed_to_adapter(
     record_rls: list[tuple[int, str]],
 ) -> None:
@@ -908,18 +976,80 @@ def test_create_app_wires_in_memory_retrieval_gateway() -> None:
     assert app.state.retrieval_gateway.dependencies.session_factory is None
 
 
-def test_create_app_retrieval_resolver_never_returns_blank_model() -> None:
+@pytest.mark.asyncio
+async def test_create_app_retrieval_resolver_uses_actual_provider_fallback_model() -> None:
     from app.agent.model_router import ModelRouter
     from app.core.config import Settings
     from app.main import create_app
 
     with patch.object(ModelRouter, "model_for", return_value=""):
-        app = create_app(settings=Settings(default_model="fallback-model"))
+        app = create_app(settings=Settings(default_model="unrelated-model"))
         resolver = app.state.retrieval_gateway.dependencies.llm_resolver
         assert resolver is not None
         resolved = resolver(TENANT, RAGStrategy.FUSION)
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
         assert isinstance(resolved, ResolvedLLM)
-        assert resolved.model == "fallback-model"
+        assert resolved.model == "fake-provider"
+
+
+@pytest.mark.asyncio
+async def test_app_resolver_uses_each_tenants_configured_provider_and_model() -> None:
+    from app.main import create_app
+    from app.providers.anthropic_provider import AnthropicProvider
+    from app.providers.openai_compatible import OpenAICompatibleProvider
+    from app.providers.vault import get_vault
+    from app.tenancy.context import PlanTier, TenantContext
+
+    class TenantConfigStore:
+        def __init__(self, configs: dict[str, dict[str, object]]) -> None:
+            self.configs = configs
+
+        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+            return self.configs.get(tenant_id)
+
+    vault = get_vault()
+    app = create_app()
+    app.state.llm_config_store = TenantConfigStore(
+        {
+            "tenant-anthropic": {
+                "provider": "anthropic",
+                "encrypted_key": vault.encrypt("anthropic-secret"),
+                "model": "claude-tenant-model",
+                "base_url": None,
+            },
+            "tenant-openai": {
+                "provider": "openai",
+                "encrypted_key": vault.encrypt("openai-secret"),
+                "model": "gpt-tenant-model",
+                "base_url": "https://api.openai.com/v1",
+            },
+        }
+    )
+    resolver = app.state.retrieval_gateway.dependencies.llm_resolver
+    assert resolver is not None
+
+    anthropic = resolver(
+        TenantContext("tenant-anthropic", PlanTier.PROFESSIONAL, "key-a"),
+        RAGStrategy.FUSION,
+    )
+    openai = resolver(
+        TenantContext("tenant-openai", PlanTier.PROFESSIONAL, "key-b"),
+        RAGStrategy.FUSION,
+    )
+    if inspect.isawaitable(anthropic):
+        anthropic = await anthropic
+    if inspect.isawaitable(openai):
+        openai = await openai
+
+    assert isinstance(anthropic, ResolvedLLM)
+    assert isinstance(anthropic.provider, AnthropicProvider)
+    assert anthropic.model == "claude-tenant-model"
+    assert isinstance(openai, ResolvedLLM)
+    assert isinstance(openai.provider, OpenAICompatibleProvider)
+    assert openai.model == "gpt-tenant-model"
+    assert "anthropic-secret" not in repr(anthropic.provider)
+    assert "openai-secret" not in repr(openai.provider)
 
 
 @pytest.mark.asyncio
@@ -973,6 +1103,8 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
         pools=pools,  # type: ignore[arg-type]
         manage_pools=True,
     )
+    redis_cost_controller = object()
+    app.state.redis_cost_controller = redis_cost_controller
     in_memory_gateway = app.state.retrieval_gateway
 
     async with app.router.lifespan_context(app):
@@ -987,6 +1119,7 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
         assert db_gateway.dependencies.graph_capability is not kg_store
         assert not hasattr(db_gateway.dependencies.graph_capability, "_db")
         assert kg_store._db is db_factory
+        assert redis_cost_controller in db_gateway.dependencies.policy_services
 
     assert pools.started
     assert pools.stopped

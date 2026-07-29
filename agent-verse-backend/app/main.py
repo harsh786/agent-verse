@@ -602,16 +602,59 @@ def create_app(
         _model_router = None
         logger.warning("model_router_init_failed", error=str(_mr_exc))
 
-    def _resolve_retrieval_llm(
+    async def _resolve_retrieval_llm(
         tenant_context: TenantContext,
         strategy: RAGStrategy,
     ) -> ResolvedLLM | None:
-        del tenant_context, strategy
-        model = _model_router.model_for("execution") if _model_router is not None else ""
-        model = model.strip() or settings.default_model.strip()
-        if not model:
-            provider_default = getattr(_app_provider, "_default_model", "")
-            model = provider_default.strip() if isinstance(provider_default, str) else ""
+        del strategy
+        tenant_config: dict[str, Any] | None = None
+        config_store = getattr(app.state, "llm_config_store", None)
+        if config_store is not None:
+            tenant_config = await config_store.get_config(tenant_context.tenant_id)
+        if tenant_config is None:
+            tenant_config = getattr(app.state, "_llm_configs", {}).get(
+                tenant_context.tenant_id
+            )
+
+        if tenant_config is not None:
+            encrypted_key = str(tenant_config.get("encrypted_key") or "")
+            provider_name = str(tenant_config.get("provider") or "")
+            configured_model = str(
+                tenant_config.get("model")
+                or tenant_config.get("default_model")
+                or ""
+            ).strip()
+            if not encrypted_key or not provider_name:
+                return None
+            try:
+                from app.providers.registry import instantiate_configured_provider
+
+                api_key = get_vault().decrypt(encrypted_key)
+                provider = instantiate_configured_provider(
+                    provider_name,
+                    api_key=api_key,
+                    model=configured_model,
+                    base_url=str(tenant_config.get("base_url") or ""),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "tenant_retrieval_provider_resolution_failed",
+                    tenant_id=tenant_context.tenant_id,
+                    error=type(exc).__name__,
+                )
+                return None
+            if provider is None:
+                return None
+            model = configured_model
+            if not model:
+                provider_default = getattr(provider, "_default_model", "")
+                model = provider_default.strip() if isinstance(provider_default, str) else ""
+            return ResolvedLLM(provider=provider, model=model) if model else None
+
+        provider_default = getattr(_app_provider, "_default_model", "")
+        model = provider_default.strip() if isinstance(provider_default, str) else ""
+        if not model and isinstance(_app_provider, FakeProvider):
+            model = "fake-provider"
         if not model:
             return None
         return ResolvedLLM(provider=_app_provider, model=model)
@@ -977,7 +1020,11 @@ def create_app(
                     llm_resolver=_resolve_retrieval_llm,
                     graph_capability=_graph_capability,
                     search_capability=getattr(app.state, "mcp_client", None),
-                    policy_services=(_policy_engine, _cost, _hitl),
+                    policy_services=(
+                        _policy_engine,
+                        getattr(app.state, "redis_cost_controller", _cost),
+                        _hitl,
+                    ),
                     collection_authorizer=SQLCollectionAuthorizer(),
                     strategy_capabilities={},
                 )

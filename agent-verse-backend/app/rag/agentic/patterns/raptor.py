@@ -77,6 +77,8 @@ class RAPTORPattern(RAGPattern):
         chunks: list[dict[str, Any]],
         provider: Any,
         max_tokens: int = 600,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Build RAPTOR tree from chunks and answer query using all levels."""
@@ -129,7 +131,7 @@ class RAPTORPattern(RAGPattern):
                                 content=f"Chunks to summarize:\n\n{combined[:3000]}",
                             ),
                         ],
-                        model="",
+                        model=model,
                         max_tokens=max_tokens,
                         temperature=0.0,
                     ))
@@ -139,6 +141,8 @@ class RAPTORPattern(RAGPattern):
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
                 summary = combined[:300]
             return TreeNode(content=summary, level=_level, source_ids=source_ids)
 
@@ -158,6 +162,8 @@ class RAPTORPattern(RAGPattern):
                     await asyncio.gather(*[_summarize_group(g, level) for g in groups])
                 )
             except Exception:
+                if strict:
+                    raise
                 # Sequential fallback for deterministic ordering
                 parent_nodes = []
                 for g in groups:
@@ -198,7 +204,7 @@ class RAPTORPattern(RAGPattern):
                             ),
                         ),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=max_tokens,
                     temperature=0.0,
                 ))
@@ -208,6 +214,8 @@ class RAPTORPattern(RAGPattern):
         except Exception:
             if cb is not None:
                 cb.record_failure()
+            if strict:
+                raise
             # Fallback: return best summary if LLM fails
             result = summary_nodes[-1].content if summary_nodes else (chunks[0].get("content", "") if chunks else "")
 

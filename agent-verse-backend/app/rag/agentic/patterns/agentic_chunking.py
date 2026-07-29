@@ -59,6 +59,8 @@ class AgenticChunkingPattern(RAGPattern):
         chunk_content: str,
         provider: Any,
         max_tokens: int = 400,
+        model: str = "",
+        strict: bool = False,
     ) -> list[str]:
         """Extract atomic propositions from a single chunk."""
         try:
@@ -68,7 +70,7 @@ class AgenticChunkingPattern(RAGPattern):
                     Message(role="system", content=_PROPOSITION_SYSTEM),
                     Message(role="user", content=chunk_content[:2000]),
                 ],
-                model="",
+                model=model,
                 max_tokens=max_tokens,
                 temperature=0.0,
             ))
@@ -80,6 +82,8 @@ class AgenticChunkingPattern(RAGPattern):
             ]
             return props[: self._max_props]
         except Exception:
+            if strict:
+                raise
             # Fallback: split into sentences
             import re
             sentences = re.split(r'[.!?]', chunk_content)
@@ -92,6 +96,8 @@ class AgenticChunkingPattern(RAGPattern):
         provider: Any,
         query: str = "",
         top_k: int = 10,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Extract propositions from all chunks. Returns proposition-level chunk dicts."""
@@ -102,7 +108,12 @@ class AgenticChunkingPattern(RAGPattern):
             content = chunk.get("content", "")
             if not content:
                 return [chunk]
-            propositions = await self.extract_propositions(content, provider)
+            propositions = await self.extract_propositions(
+                content,
+                provider,
+                model=model,
+                strict=strict,
+            )
             if not propositions:
                 return [chunk]
             return [
