@@ -302,6 +302,13 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
                 rls_observations.append((id(self), current_tenant, sql))
             return await self._session.execute(statement, params or {})
 
+        async def scalar(
+            self,
+            statement: Any,
+            params: dict[str, Any] | None = None,
+        ) -> Any:
+            return await self._session.scalar(statement, params or {})
+
     active_sessions = 0
     max_active_sessions = 0
     opened_sessions = 0
@@ -346,6 +353,12 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
         rls_observations.clear()
         embedder.texts.clear()
 
+    readiness = await gateway.readiness(tenant, strategy_id=RAGStrategy.NAIVE)
+    assert readiness.available
+    assert readiness.reason == "ready"
+    assert active_sessions == 0
+
+    reset_recording()
     naive_result = await gateway.execute(
         tenant,
         collection_id=collection_id,
