@@ -1,5 +1,4 @@
 """Tests for the knowledge ingestion pipeline — Phase P0.2."""
-import pytest
 import os
 
 
@@ -90,13 +89,21 @@ def test_jira_adf_to_text():
 
 
 def test_knowledge_ingestors_all_importable():
-    from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
+    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
     from app.knowledge.ingestors.github_ingestor import GitHubIngestor
-    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
     from app.knowledge.ingestors.jira_ingestor import JiraIngestor
+    from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
     from app.knowledge.ingestors.slack_ingestor import SlackIngestor
-    for cls in [PdfIngestor, DocxIngestor, GitHubIngestor, ConfluenceIngestor, JiraIngestor, SlackIngestor]:
+    ingestor_classes = [
+        PdfIngestor,
+        DocxIngestor,
+        GitHubIngestor,
+        ConfluenceIngestor,
+        JiraIngestor,
+        SlackIngestor,
+    ]
+    for cls in ingestor_classes:
         assert cls is not None
 
 
@@ -129,7 +136,9 @@ def test_knowledge_api_has_pdf_ingest_endpoint():
                 result.extend(_collect_routes(getattr(r, "routes", [])))
             return result
         all_routes = _collect_routes(app.routes)
-        assert any("ingest/pdf" in r for r in all_routes), "POST /knowledge/ingest/pdf endpoint must exist"
+        assert any("ingest/pdf" in r for r in all_routes), (
+            "POST /knowledge/ingest/pdf endpoint must exist"
+        )
 
 
 def test_knowledge_api_has_github_ingest_endpoint():
@@ -151,11 +160,14 @@ def test_knowledge_api_has_github_ingest_endpoint():
                 result.extend(_collect_routes(getattr(r, "routes", [])))
             return result
         all_routes = _collect_routes(app.routes)
-        assert any("ingest/github" in r for r in all_routes), "POST /knowledge/ingest/github endpoint must exist"
+        assert any("ingest/github" in r for r in all_routes), (
+            "POST /knowledge/ingest/github endpoint must exist"
+        )
 
 
 def test_reindex_task_in_celery_beat():
     import inspect
+
     from app.scaling import celery_app as ca
     src = inspect.getsource(ca)
     assert "reindex_stale_knowledge" in src or "reindex" in src.lower(), \
@@ -165,6 +177,7 @@ def test_reindex_task_in_celery_beat():
 def test_rag_store_hybrid_search_returns_citation_fields():
     """hybrid_search_db must return source_url, source_doc_id, page_number."""
     import inspect
+
     from app.rag import store
     src = inspect.getsource(store)
     assert "source_url" in src, "KnowledgeStore.hybrid_search_db must return source_url"

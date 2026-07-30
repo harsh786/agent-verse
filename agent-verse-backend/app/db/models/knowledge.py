@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy import (
@@ -30,6 +31,13 @@ from app.db.models import Base
 
 class KnowledgeCollection(Base):
     __tablename__ = "knowledge_collections"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_knowledge_collections_tenant_id_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(32), primary_key=True, default=lambda: uuid.uuid4().hex

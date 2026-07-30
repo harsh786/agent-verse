@@ -1,5 +1,6 @@
 """ContextGapDetector — detects 12 gap signal phrases defined in doc-2 §4."""
 from __future__ import annotations
+
 import re
 
 _GAP_SIGNALS = frozenset({

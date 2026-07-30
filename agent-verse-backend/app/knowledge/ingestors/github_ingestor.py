@@ -1,8 +1,11 @@
 """GitHub repository ingestor — crawls code/docs via GitHub REST API."""
 from __future__ import annotations
+
 import os
-from typing import Any
+from typing import Any, cast
+
 import httpx
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,7 +41,7 @@ class GitHubIngestor:
             h["Authorization"] = f"Bearer {self._token}"
         return h
 
-    async def _get_tree(self, owner: str, repo: str) -> list[dict]:
+    async def _get_tree(self, owner: str, repo: str) -> list[dict[str, Any]]:
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"
         async with httpx.AsyncClient(timeout=30, headers=self._headers()) as c:
             r = await c.get(url)
@@ -46,7 +49,7 @@ class GitHubIngestor:
             data = r.json()
             if data.get("truncated"):
                 logger.warning("github_tree_truncated", owner=owner, repo=repo)
-            return data.get("tree", [])
+            return cast(list[dict[str, Any]], data.get("tree", []))
 
     async def _fetch_file_content(self, owner: str, repo: str, path: str) -> str:
         url = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{path}"
@@ -120,5 +123,11 @@ class GitHubIngestor:
             except Exception as exc:
                 logger.warning("github_file_fetch_failed", path=path, error=str(exc))
 
-        logger.info("github_repo_ingested", owner=owner, repo=repo, files=file_count, chunks=len(chunks))
+        logger.info(
+            "github_repo_ingested",
+            owner=owner,
+            repo=repo,
+            files=file_count,
+            chunks=len(chunks),
+        )
         return chunks

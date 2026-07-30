@@ -49,6 +49,11 @@ from app.db.models.skill import Skill  # noqa: E402
 from app.db.models.mfa import TenantMFA  # noqa: E402
 from app.db.models.knowledge_graph import KnowledgeEdge, KnowledgeNode  # noqa: E402
 from app.db.models.memory import EpisodicMemory, ProceduralMemory  # noqa: E402
+from app.db.models.raft import (  # noqa: E402
+    RAFTConfirmationGrant,
+    RAFTDataset,
+    RAFTFineTuneJob,
+)
 
 __all__ = [
     "Base",
@@ -108,4 +113,8 @@ __all__ = [
     # episodic + procedural memory
     "EpisodicMemory",
     "ProceduralMemory",
+    # RAFT
+    "RAFTDataset",
+    "RAFTFineTuneJob",
+    "RAFTConfirmationGrant",
 ]

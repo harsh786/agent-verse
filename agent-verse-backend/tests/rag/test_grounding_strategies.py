@@ -24,11 +24,8 @@ from app.rag.agentic.patterns.web_augmented import (
     WebEvidence,
     WebSearchRequest,
 )
-from app.rag.contracts import (
-    RAG_RUNTIME_CAPABILITIES,
-    RAGExecutionRequest,
-    RAGStrategy,
-)
+from app.rag.catalogue import RAG_RUNTIME_CAPABILITIES
+from app.rag.contracts import RAGExecutionRequest, RAGStrategy
 from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
@@ -885,17 +882,7 @@ def test_registry_promotes_exactly_tasks_one_through_six_strategies() -> None:
         build_default_registry,
     )
 
-    expected = {
-        RAGStrategy.NAIVE,
-        RAGStrategy.HYBRID,
-        RAGStrategy.HYDE,
-        RAGStrategy.MULTI_HOP,
-        RAGStrategy.FUSION,
-        RAGStrategy.GRAPH,
-        RAGStrategy.CORRECTIVE,
-        RAGStrategy.ADAPTIVE,
-        RAGStrategy.WEB_AUGMENTED,
-    }
+    expected = set(RAGStrategy)
     implemented = {
         RAGStrategy(capability.strategy_id)
         for capability in build_default_registry().list_by_category(StrategyCategory.RAG)

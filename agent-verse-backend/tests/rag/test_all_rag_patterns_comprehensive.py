@@ -9,6 +9,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 from app.providers.fake import FakeProvider
+from tests.rag.colbert_fakes import DeterministicColBERTReranker
 
 
 def _fake(responses: list[str] | None = None) -> FakeProvider:
@@ -132,22 +133,34 @@ class TestAgenticChunkingPattern:
 class TestColBERTPattern:
     def test_init(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        p = ColBERTPattern(alpha=0.6)
+        p = ColBERTPattern(
+            alpha=0.6,
+            reranker=DeterministicColBERTReranker(),
+        )
         assert p.pattern_id == "colbert_late_interaction"
         assert p._alpha == 0.6
 
     def test_state_is_implemented(self) -> None:
         from app.rag.agentic.patterns.base import RAGPatternState
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        assert ColBERTPattern().state == RAGPatternState.IMPLEMENTED
+        assert (
+            ColBERTPattern(reranker=DeterministicColBERTReranker()).state
+            == RAGPatternState.IMPLEMENTED
+        )
 
     def test_rerank_empty_returns_empty(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        assert ColBERTPattern().rerank("query", []) == []
+        assert (
+            ColBERTPattern(reranker=DeterministicColBERTReranker()).rerank(
+                "query",
+                [],
+            )
+            == []
+        )
 
     def test_rerank_sorts_by_score(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        p = ColBERTPattern(alpha=0.5)
+        p = ColBERTPattern(alpha=0.5, reranker=DeterministicColBERTReranker())
         chunks = [
             {"content": "machine learning algorithms", "chunk_id": "c1", "score": 0.3},
             {"content": "cooking recipes for dinner", "chunk_id": "c2", "score": 0.8},
@@ -158,7 +171,7 @@ class TestColBERTPattern:
 
     def test_rerank_top_k(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        p = ColBERTPattern()
+        p = ColBERTPattern(reranker=DeterministicColBERTReranker())
         chunks = [
             {"content": f"doc {i}", "chunk_id": f"c{i}", "score": 0.5}
             for i in range(5)
@@ -168,7 +181,7 @@ class TestColBERTPattern:
 
     async def test_execute_returns_string(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        p = ColBERTPattern()
+        p = ColBERTPattern(reranker=DeterministicColBERTReranker())
         chunks = [
             {"content": "machine learning is a field", "chunk_id": "c1", "score": 0.7},
             {"content": "deep neural networks", "chunk_id": "c2", "score": 0.5},
@@ -179,7 +192,9 @@ class TestColBERTPattern:
 
     async def test_execute_empty_chunks_returns_empty_string(self) -> None:
         from app.rag.agentic.patterns.colbert import ColBERTPattern
-        result = await ColBERTPattern().execute(query="test", chunks=[])
+        result = await ColBERTPattern(
+            reranker=DeterministicColBERTReranker()
+        ).execute(query="test", chunks=[])
         assert result == ""
 
 
@@ -490,30 +505,14 @@ class TestStrategyRegistry:
             "procedural_memory",
         ]:
             assert registry.is_available(pattern_id) is True, f"{pattern_id} not available"
-        for strategy in [
-            RAGStrategy.FUSION,
-            RAGStrategy.GRAPH,
-            RAGStrategy.CORRECTIVE,
-            RAGStrategy.ADAPTIVE,
-            RAGStrategy.WEB_AUGMENTED,
-        ]:
+        for strategy in RAGStrategy:
             assert registry.get(strategy.value) is not None
             assert registry.is_available(strategy.value)
-        for strategy in [
-            RAGStrategy.FLARE,
-            RAGStrategy.RAPTOR,
-            RAGStrategy.SELF_RAG,
-            RAGStrategy.SPECULATIVE,
-            RAGStrategy.AGENTIC_CHUNKING,
-            RAGStrategy.COLBERT,
-        ]:
-            assert registry.get(strategy.value) is not None
-            assert not registry.is_available(strategy.value)
 
     def test_planned_patterns_not_available(self) -> None:
         from app.orchestration.strategy_registry import build_default_registry
         registry = build_default_registry()
-        assert registry.is_available("raft") is False
+        assert registry.is_available("raft") is True
 
     def test_get_by_id(self) -> None:
         from app.orchestration.strategy_registry import build_default_registry

@@ -64,6 +64,14 @@ class _Embedder:
         return EmbedResponse(embeddings=[list(self.embedding) for _ in request.texts])
 
 
+class _Provider:
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        return CompletionResponse(
+            content="variant one\nvariant two\nvariant three",
+            model=request.model,
+        )
+
+
 class _EmptyAdapter:
     async def execute(
         self,
@@ -859,6 +867,7 @@ async def test_restricted_role_rls_and_gateway_reject_foreign_collection(
             strategy_capabilities={
                 RAGStrategy.HYBRID: RetrievalStrategyCapability(adapter=_EmptyAdapter())
             },
+                embedder=_Embedder(_embedding(768)),
         )
     )
     owner_result = await gateway.execute(
@@ -1163,7 +1172,7 @@ async def test_readiness_matches_current_rag_migration_capabilities(
             )
         ).scalar_one()
 
-    assert migration == "0094_knowledge_graph_rls"
+    assert migration == "0095_raft_lifecycle"
     assert "voyage-4-large" in embedding_default
     assert readiness.available
 
@@ -1457,6 +1466,12 @@ async def test_concurrent_gateway_operations_use_independent_restricted_sessions
             strategy_capabilities={
                 RAGStrategy.FUSION: RetrievalStrategyCapability(adapter=_ConcurrentAdapter())
             },
+                embedder=_Embedder(_embedding(768)),
+                llm_resolver=lambda *_: ResolvedLLM(
+                    provider=_Provider(),
+                    model="tenant-model",
+                    provider_type="test",
+                ),
         )
     )
     await gateway.execute(

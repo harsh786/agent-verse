@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,17 +35,7 @@ def test_production_capability_registry_contains_certified_adapters() -> None:
 
     gateway = create_app(manage_pools=False).state.retrieval_gateway
 
-    assert set(gateway.dependencies.strategy_capabilities) == {
-        RAGStrategy.NAIVE,
-        RAGStrategy.HYBRID,
-        RAGStrategy.HYDE,
-        RAGStrategy.MULTI_HOP,
-        RAGStrategy.FUSION,
-        RAGStrategy.GRAPH,
-        RAGStrategy.CORRECTIVE,
-        RAGStrategy.ADAPTIVE,
-        RAGStrategy.WEB_AUGMENTED,
-    }
+    assert set(gateway.dependencies.strategy_capabilities) == set(RAGStrategy)
     assert all(
         capability.requires_database
         for capability in gateway.dependencies.strategy_capabilities.values()
@@ -285,22 +276,54 @@ class ReadyAdapter:
         )
 
 
+class ReadyProbeTransaction:
+    async def __aenter__(self) -> ReadyProbeTransaction:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class ReadyProbeSession:
+    def begin(self) -> ReadyProbeTransaction:
+        return ReadyProbeTransaction()
+
+    async def execute(self, statement: object, params: object = None) -> object:
+        del params
+        return statement
+
+    async def scalar(self, statement: object) -> object:
+        return True if "to_regclass" in str(statement) else 1
+
+
+@asynccontextmanager
+async def ready_session_factory() -> Any:
+    yield ReadyProbeSession()
+
+
+class ReadyEmbedder:
+    async def embed(self, request: object) -> object:
+        return request
+
+
 def _gateway_for_readiness(
     *,
     adapter: Any = None,
     requires_provider: bool = False,
     llm_resolver: Any = None,
 ) -> RetrievalGateway:
+    strategy = RAGStrategy.HYDE if requires_provider else RAGStrategy.HYBRID
     return RetrievalGateway(
         RetrievalDependencies(
-            session_factory=None,
+            session_factory=ready_session_factory,
             collection_authorizer=AllowedAuthorizer(),
             strategy_capabilities={
-                RAGStrategy.HYBRID: RetrievalStrategyCapability(
+                strategy: RetrievalStrategyCapability(
                     adapter=adapter if adapter is not None else ReadyAdapter(),
                     requires_provider=requires_provider,
                 )
             },
+            embedder=ReadyEmbedder(),
             llm_resolver=llm_resolver,
         )
     )
@@ -340,13 +363,13 @@ async def test_gateway_readiness_validates_tenant_provider_and_model() -> None:
         strategy: RAGStrategy,
     ) -> ResolvedLLM:
         tenants.append(tenant_ctx)
-        assert strategy is RAGStrategy.HYBRID
+        assert strategy is RAGStrategy.HYDE
         return ResolvedLLM(provider=Provider(), model="tenant-model")
 
     readiness = await _gateway_for_readiness(
         requires_provider=True,
         llm_resolver=resolve_llm,
-    ).readiness(TENANT, strategy_id=RAGStrategy.HYBRID)
+    ).readiness(TENANT, strategy_id=RAGStrategy.HYDE)
 
     assert readiness.available
     assert readiness.reason == "ready"
@@ -368,7 +391,7 @@ async def test_gateway_readiness_safely_rejects_invalid_adapter_and_provider() -
     invalid_result = await invalid.readiness(TENANT, strategy_id=RAGStrategy.HYBRID)
     provider_result = await provider_failure.readiness(
         TENANT,
-        strategy_id=RAGStrategy.HYBRID,
+        strategy_id=RAGStrategy.HYDE,
     )
 
     assert not invalid_result.available

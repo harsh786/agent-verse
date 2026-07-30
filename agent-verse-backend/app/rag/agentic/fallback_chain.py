@@ -1,7 +1,8 @@
 """FallbackChain — tracks fallback attempts per doc-2 §4 exact order."""
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 
 @dataclass
@@ -11,12 +12,25 @@ class FallbackAttempt:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class FallbackDecision:
+    source: str
+    reason: str
+
+
 class FallbackChain:
     # Doc-2 §4: exact fallback order
-    FALLBACK_ORDER: list[str] = ["hybrid", "graph", "hyde", "web", "ltm", "parametric"]
+    FALLBACK_ORDER: ClassVar[list[str]] = [
+        "hybrid",
+        "graph",
+        "hyde",
+        "web",
+        "ltm",
+        "parametric",
+    ]
 
     # Strategies that require external infrastructure
-    REQUIRES_INFRA: dict[str, str] = {
+    REQUIRES_INFRA: ClassVar[dict[str, str]] = {
         "graph": "kg_store",
         "web": "web_search",
         "ltm": "ltm_store",
@@ -52,6 +66,21 @@ class FallbackChain:
             if required is None or required in available_infra:
                 return s
         return None
+
+    def next_decision(
+        self,
+        current: str,
+        *,
+        reason: str,
+        available_infra: set[str] | None = None,
+    ) -> FallbackDecision | None:
+        """Return and record the next explicit fallback source."""
+
+        source = self.next_available_strategy(current, available_infra)
+        if source is None:
+            return None
+        self.record_attempt(source, success=False, reason=reason)
+        return FallbackDecision(source=source, reason=reason)
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -87,7 +87,10 @@ class SentenceWindowRetriever:
                         "original_sentence": result.content,
                         "window_expanded": True,
                     },
-                    retrieval_legs=getattr(result, "retrieval_legs", []) + ["window_expanded"],
+                    retrieval_legs=[
+                        *getattr(result, "retrieval_legs", []),
+                        "window_expanded",
+                    ],
                 )
                 expanded.append(result_copy)
             else:

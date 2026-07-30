@@ -24,7 +24,12 @@ from app.providers.base import (
     EmbedResponse,
 )
 from app.rag.bm25 import BM25CorpusScorer
-from app.rag.contracts import RAG_RUNTIME_CAPABILITIES, RAGExecutionRequest, RAGStrategy
+from app.rag.catalogue import (
+    RAG_CAPABILITY_CATALOGUE,
+    RAG_RUNTIME_CAPABILITIES,
+    RAGCapabilityCatalogueEntry,
+)
+from app.rag.contracts import RAGExecutionRequest, RAGStrategy
 from app.rag.engine import RetrievalLegExecutionError, RetrievalResult, hybrid_search
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
@@ -515,18 +520,8 @@ async def test_multi_hop_embeds_each_decomposition_and_dedupes_with_provenance()
     assert provider.requests[0].model == "tenant-rag-model"
 
 
-def test_only_core_strategies_are_certified_implemented() -> None:
-    expected = {
-        RAGStrategy.NAIVE,
-        RAGStrategy.HYBRID,
-        RAGStrategy.HYDE,
-        RAGStrategy.MULTI_HOP,
-        RAGStrategy.FUSION,
-        RAGStrategy.GRAPH,
-        RAGStrategy.CORRECTIVE,
-        RAGStrategy.ADAPTIVE,
-        RAGStrategy.WEB_AUGMENTED,
-    }
+def test_all_canonical_strategies_are_certified_implemented() -> None:
+    expected = set(RAGStrategy)
     registry = build_default_registry()
     implemented = {
         RAGStrategy(capability.strategy_id)
@@ -600,6 +595,7 @@ async def test_readiness_reflects_core_dependencies() -> None:
     ready = {
         strategy: await gateway.readiness(tenant, strategy_id=strategy)
         for strategy in RAG_RUNTIME_CAPABILITIES
+        if strategy not in {RAGStrategy.COLBERT, RAGStrategy.RAFT}
     }
     assert all(status.available for status in ready.values())
 
@@ -615,6 +611,52 @@ async def test_readiness_reflects_core_dependencies() -> None:
         for strategy in RAG_RUNTIME_CAPABILITIES
     }
     assert all(not status.available for status in statuses.values())
+
+
+async def test_bulk_discovery_uses_catalogue_predicates_and_one_schema_probe() -> None:
+    schema_probe_count = 0
+
+    class CountingProbeSession(_ProbeSession):
+        async def scalar(self, statement: object) -> object:
+            nonlocal schema_probe_count
+            if "to_regclass" in str(statement):
+                schema_probe_count += 1
+                return True
+            return 1
+
+    @asynccontextmanager
+    async def counting_session_factory() -> Any:
+        yield CountingProbeSession()
+
+    tenant = TenantContext(
+        tenant_id="tenant-1",
+        api_key_id="key-1",
+        plan="enterprise",
+    )
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=counting_session_factory,
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+            llm_resolver=lambda *_: ResolvedLLM(
+                provider=_Provider(["unused"]),
+                model="model",
+            ),
+        )
+    )
+    original = RAGCapabilityCatalogueEntry.evaluate_readiness
+    with patch.object(
+        RAGCapabilityCatalogueEntry,
+        "evaluate_readiness",
+        autospec=True,
+        side_effect=original,
+    ) as evaluate:
+        statuses = await gateway.readiness_all(tenant)
+
+    assert set(statuses) == set(RAGStrategy)
+    assert evaluate.call_count == len(RAG_CAPABILITY_CATALOGUE)
+    assert schema_probe_count == 1
 
 
 @pytest.mark.parametrize(
@@ -854,7 +896,11 @@ async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:
 
     payload = await list_strategies(configured_request)  # type: ignore[arg-type]
     available = {item["id"] for item in payload["strategies"] if item["available"]}
-    assert available == {strategy.value for strategy in RAG_RUNTIME_CAPABILITIES}
+    assert available == {
+        strategy.value
+        for strategy in RAG_RUNTIME_CAPABILITIES
+        if strategy not in {RAGStrategy.COLBERT, RAGStrategy.RAFT}
+    }
 
     unavailable = RetrievalGateway(
         RetrievalDependencies(

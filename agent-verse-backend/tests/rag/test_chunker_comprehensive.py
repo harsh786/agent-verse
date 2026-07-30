@@ -1,8 +1,6 @@
 """Comprehensive tests for app/rag/chunker.py — targeting 95%+ coverage."""
 from __future__ import annotations
 
-import pytest
-
 from app.rag.chunker import Chunk, SemanticChunker
 
 

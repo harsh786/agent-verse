@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── GitHubIngestor ────────────────────────────────────────────────────────────
 
 class TestGitHubIngestorInit:
@@ -351,8 +350,9 @@ class TestPdfIngestor:
         saved = sys.modules.get("pypdf")
         sys.modules["pypdf"] = None  # type: ignore
         try:
-            from app.knowledge.ingestors import pdf_ingestor
             import importlib
+
+            from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
             chunks = ing.extract_chunks(content=b"%PDF-1.4 dummy", filename="test.pdf")
@@ -382,8 +382,9 @@ class TestPdfIngestor:
         saved = sys.modules.get("pypdf")
         sys.modules["pypdf"] = mock_pypdf  # type: ignore
         try:
-            from app.knowledge.ingestors import pdf_ingestor
             import importlib
+
+            from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
             chunks = ing.extract_chunks(
@@ -418,8 +419,9 @@ class TestPdfIngestor:
         saved = sys.modules.get("pypdf")
         sys.modules["pypdf"] = mock_pypdf  # type: ignore
         try:
-            from app.knowledge.ingestors import pdf_ingestor
             import importlib
+
+            from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
             chunks = ing.extract_chunks(content=b"pdf", filename="short.pdf")
@@ -445,8 +447,9 @@ class TestPdfIngestor:
         saved = sys.modules.get("pypdf")
         sys.modules["pypdf"] = mock_pypdf  # type: ignore
         try:
-            from app.knowledge.ingestors import pdf_ingestor
             import importlib
+
+            from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
             chunks = ing.extract_chunks(content=b"pdf", filename="null_page.pdf")
@@ -466,8 +469,9 @@ class TestPdfIngestor:
         saved = sys.modules.get("pypdf")
         sys.modules["pypdf"] = mock_pypdf  # type: ignore
         try:
-            from app.knowledge.ingestors import pdf_ingestor
             import importlib
+
+            from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
             chunks = ing.extract_chunks(content=b"corrupt", filename="bad.pdf")
@@ -487,8 +491,9 @@ class TestDocxIngestor:
         saved = sys.modules.get("docx")
         sys.modules["docx"] = None  # type: ignore
         try:
-            from app.knowledge.ingestors import docx_ingestor
             import importlib
+
+            from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
             chunks = ing.extract_chunks(content=b"fake docx", filename="test.docx")
@@ -524,8 +529,9 @@ class TestDocxIngestor:
         saved = sys.modules.get("docx")
         sys.modules["docx"] = mock_docx  # type: ignore
         try:
-            from app.knowledge.ingestors import docx_ingestor
             import importlib
+
+            from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
             chunks = ing.extract_chunks(
@@ -561,8 +567,9 @@ class TestDocxIngestor:
         saved = sys.modules.get("docx")
         sys.modules["docx"] = mock_docx  # type: ignore
         try:
-            from app.knowledge.ingestors import docx_ingestor
             import importlib
+
+            from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
             chunks = ing.extract_chunks(content=b"docx", filename="short.docx")
@@ -582,8 +589,9 @@ class TestDocxIngestor:
         saved = sys.modules.get("docx")
         sys.modules["docx"] = mock_docx  # type: ignore
         try:
-            from app.knowledge.ingestors import docx_ingestor
             import importlib
+
+            from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
             chunks = ing.extract_chunks(content=b"corrupt", filename="bad.docx")
@@ -725,6 +733,7 @@ class TestJiraIngestor:
 
     def test_make_basic_encoding(self):
         import base64
+
         from app.knowledge.ingestors.jira_ingestor import JiraIngestor
         result = JiraIngestor._make_basic("user@x.com", "mytoken")
         decoded = base64.b64decode(result).decode()
@@ -930,7 +939,7 @@ class TestJiraIngestor:
 
         ing = self._make()
         with patch("httpx.AsyncClient", return_value=mock_client):
-            chunks = await ing.ingest_project(
+            await ing.ingest_project(
                 "PROJ", jql_extra="status = Open", max_issues=10
             )
 

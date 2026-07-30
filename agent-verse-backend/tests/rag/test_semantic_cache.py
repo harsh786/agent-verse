@@ -1,6 +1,8 @@
 """SemanticCacheBridge: tenant isolation, error guard, fresh evidence rule."""
 from __future__ import annotations
+
 import pytest
+
 from app.state_runtime.cache_bridge import SemanticCacheBridge
 
 
@@ -51,6 +53,5 @@ def test_cache_never_overrides_fresh_evidence():
     from app.rag.agentic.retriever_tool import RetrievalResult
     fresh = RetrievalResult(query="q", source="knowledge_base", strategy_used="hybrid",
                             confidence=0.88, chunks=[{"content": "fresh", "score": 0.88}])
-    cache_hit = {"content": "stale cache", "score": 0.70}
     should_use_cache = (fresh.confidence < 0.35 and not fresh.chunks)
     assert should_use_cache is False

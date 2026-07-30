@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -12,8 +14,14 @@ from app.api.rag_platform import (
     _resolve_request_strategy,
     list_strategies,
 )
-from app.orchestration.strategy_registry import build_default_registry
-from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult, RAGStrategy
+from app.orchestration.strategy_registry import StrategyState, build_default_registry
+from app.rag.contracts import (
+    RAGExecutionRequest,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def test_knowledge_store_has_delete_document():
@@ -106,6 +114,18 @@ def test_rag_query_resolves_historical_ids(
     class BoundaryAdapter:
         strategy = resolved_strategy
 
+        @classmethod
+        def probe_trace(cls) -> RAGStrategyTrace:
+            return RAGStrategyTrace(
+                strategy=cls.strategy,
+                action="boundary_probe",
+                status="complete",
+                detail={
+                    "adapter_strategy": cls.strategy.value,
+                    "evidence": "boundary adapter",
+                },
+            )
+
         async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
             return RAGExecutionResult(
                 requested_strategy_id=request.requested_strategy_id,
@@ -140,11 +160,11 @@ def test_rag_query_rejects_malformed_raw_capability_registration(
         raising=False,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        _resolve_request_strategy(RAGStrategy.HYBRID.value)
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "RAG strategy is unavailable: hybrid"
+    capability = registry.get(RAGStrategy.HYBRID.value)
+    assert capability is not None
+    assert capability.state is not StrategyState.IMPLEMENTED
+    assert not registry.is_available(RAGStrategy.HYBRID.value)
+    assert _resolve_request_strategy(RAGStrategy.HYBRID.value) is RAGStrategy.HYBRID
 
 
 def test_rag_query_rejects_unknown_strategy() -> None:
@@ -155,32 +175,32 @@ def test_rag_query_rejects_unknown_strategy() -> None:
     assert exc_info.value.detail == "Unknown RAG strategy: unknown-rag"
 
 
-def test_rag_query_default_is_canonical_adaptive() -> None:
-    request = RAGQueryRequest(query="tenant-scoped retrieval")
+def test_rag_query_default_is_canonical_hybrid() -> None:
+    request = RAGQueryRequest(
+        query="tenant-scoped retrieval",
+        collection_id="collection-1",
+    )
 
-    assert request.strategy == RAGStrategy.ADAPTIVE.value
-    with pytest.raises(HTTPException) as exc_info:
-        _resolve_request_strategy(request.strategy)
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "RAG strategy is unavailable: adaptive"
+    assert request.strategy == RAGStrategy.HYBRID.value
+    assert _resolve_request_strategy(request.strategy) is RAGStrategy.HYBRID
 
 
-@pytest.mark.parametrize("strategy_id", [strategy.value for strategy in RAGStrategy])
-def test_rag_query_rejects_known_but_unavailable_strategies(strategy_id: str) -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        _resolve_request_strategy(strategy_id)
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == f"RAG strategy is unavailable: {strategy_id}"
+@pytest.mark.parametrize("strategy", list(RAGStrategy))
+def test_rag_query_resolves_every_known_strategy(strategy: RAGStrategy) -> None:
+    assert _resolve_request_strategy(strategy.value) is strategy
 
 
 async def test_rag_strategy_discovery_lists_all_canonical_strategies_unavailable() -> None:
     class RequestState:
-        tenant = object()
+        tenant = TenantContext(
+            tenant_id="tenant-1",
+            plan=PlanTier.PROFESSIONAL,
+            api_key_id="key-1",
+        )
 
     class DiscoveryRequest:
         state = RequestState()
+        app = SimpleNamespace(state=SimpleNamespace(retrieval_gateway=None))
 
     payload = await list_strategies(DiscoveryRequest())  # type: ignore[arg-type]
     strategies = payload["strategies"]

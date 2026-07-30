@@ -2,9 +2,6 @@
 """True BM25, WebSocket MCP, RAPTOR parallel."""
 from __future__ import annotations
 
-import pytest
-
-
 # ── True BM25 ─────────────────────────────────────────────────────────────────
 
 

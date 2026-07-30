@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeGuard, TypeVar
 
 from sqlalchemy import text
@@ -18,16 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 from app.rag import engine as rag_engine
+from app.rag.catalogue import (
+    RAG_CAPABILITY_CATALOGUE,
+    RAGAdapterConfiguration,
+    RAGRuntimeDependency,
+    ReadinessContext,
+    ReadinessFact,
+)
 from app.rag.contracts import (
-    RAG_RUNTIME_CAPABILITIES,
-    AdaptiveRAGRuntimeAdapter,
-    CorrectiveRAGRuntimeAdapter,
-    FusionRAGRuntimeAdapter,
-    GraphRAGRuntimeAdapter,
-    HybridRAGRuntimeAdapter,
-    HyDERAGRuntimeAdapter,
-    MultiHopRAGRuntimeAdapter,
-    NaiveRAGRuntimeAdapter,
+    DIRECT_CORE_RAG_STRATEGIES,
     RAGCitation,
     RAGExecutionRequest,
     RAGExecutionResult,
@@ -35,7 +35,6 @@ from app.rag.contracts import (
     RAGStrategy,
     RAGStrategyTrace,
     UnavailableRAGStrategyError,
-    WebAugmentedRAGRuntimeAdapter,
     resolve_rag_strategy,
 )
 from app.rag.engine import (
@@ -44,11 +43,14 @@ from app.rag.engine import (
 from app.rag.engine import (
     RetrievalStrategyExecutionError,
 )
+from app.rag.raft import RAFTService
+from app.rag_platform.reranker_contract import AsyncCloseableProtocol
 from app.tenancy.context import TenantContext
 
 if TYPE_CHECKING:
     from app.rag.agentic.patterns.graph import GraphEvidence, GraphEvidenceQuery
     from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+    from app.rag.modular import ModularPipelineSpec
 
 T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
@@ -312,65 +314,29 @@ class RetrievalStrategyCapability:
     requires_search: bool = False
     requires_database: bool = False
     requires_web_policy: bool = False
+    requires_raft_service: bool = False
+    requires_raft_model: bool = False
 
 
-def core_strategy_capabilities() -> Mapping[RAGStrategy, RetrievalStrategyCapability]:
+def core_strategy_capabilities(
+    configuration: RAGAdapterConfiguration | None = None,
+) -> Mapping[RAGStrategy, RetrievalStrategyCapability]:
     """Return certified core strategy adapters."""
-
-    return {
-        RAGStrategy.NAIVE: RetrievalStrategyCapability(
-            NaiveRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_database=True,
-        ),
-        RAGStrategy.HYBRID: RetrievalStrategyCapability(
-            HybridRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_database=True,
-        ),
-        RAGStrategy.HYDE: RetrievalStrategyCapability(
-            HyDERAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_provider=True,
-            requires_database=True,
-        ),
-        RAGStrategy.MULTI_HOP: RetrievalStrategyCapability(
-            MultiHopRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_provider=True,
-            requires_database=True,
-        ),
-        RAGStrategy.FUSION: RetrievalStrategyCapability(
-            FusionRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_provider=True,
-            requires_database=True,
-        ),
-        RAGStrategy.GRAPH: RetrievalStrategyCapability(
-            GraphRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_graph=True,
-            requires_database=True,
-        ),
-        RAGStrategy.CORRECTIVE: RetrievalStrategyCapability(
-            CorrectiveRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_provider=True,
-            requires_database=True,
-        ),
-        RAGStrategy.ADAPTIVE: RetrievalStrategyCapability(
-            AdaptiveRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_database=True,
-        ),
-        RAGStrategy.WEB_AUGMENTED: RetrievalStrategyCapability(
-            WebAugmentedRAGRuntimeAdapter(),
-            requires_embedder=True,
-            requires_search=True,
-            requires_database=True,
-            requires_web_policy=True,
-        ),
-    }
+    capabilities: dict[RAGStrategy, RetrievalStrategyCapability] = {}
+    for strategy, entry in RAG_CAPABILITY_CATALOGUE.items():
+        required = set(entry.required_dependencies)
+        capabilities[strategy] = RetrievalStrategyCapability(
+            adapter=entry.create_adapter(configuration),
+            requires_embedder=RAGRuntimeDependency.EMBEDDER in required,
+            requires_provider=RAGRuntimeDependency.PROVIDER in required,
+            requires_graph=RAGRuntimeDependency.GRAPH in required,
+            requires_search=RAGRuntimeDependency.WEB in required,
+            requires_database=RAGRuntimeDependency.DATABASE in required,
+            requires_web_policy=RAGRuntimeDependency.WEB in required,
+            requires_raft_service=RAGRuntimeDependency.RAFT_SERVICE in required,
+            requires_raft_model=RAGRuntimeDependency.RAFT_MODEL in required,
+        )
+    return capabilities
 
 
 def _has_async_method(dependency: object | None, method_name: str) -> bool:
@@ -387,21 +353,6 @@ def _is_safe_web_capability(
         isinstance(capability, SafeWebSearchCapability)
         and capability.configured
         and inspect.iscoroutinefunction(capability.search)
-    )
-
-
-def _has_async_context_factory(factory: object | None) -> bool:
-    if not callable(factory):
-        return False
-    try:
-        context = factory()
-    except Exception:
-        return False
-    if inspect.iscoroutine(context):
-        context.close()
-        return False
-    return _has_async_method(context, "__aenter__") and _has_async_method(
-        context, "__aexit__"
     )
 
 
@@ -546,13 +497,16 @@ class RetrievalDependencies:
     search_capability: SafeWebSearchCapability | None = None
     policy_services: tuple[object, ...] = ()
     cost_controller: RAGCostController | None = None
+    modular_pipeline: ModularPipelineSpec | None = None
+    raft_service: RAFTService | None = None
+    colbert_checkpoint: str = "colbert-ir/colbertv2.0"
     strategy_timeout_seconds: float = 30.0
     statement_timeout_ms: int = 30_000
 
 
 @dataclass(frozen=True, slots=True)
 class RetrievalRuntimeDependencies:
-    """Non-authoritative capabilities safe to expose to a strategy adapter."""
+    """Resolved capabilities and trusted configuration exposed to an adapter."""
 
     embedder: object | None
     llm: ResolvedLLM | None
@@ -562,6 +516,8 @@ class RetrievalRuntimeDependencies:
     available_strategies: tuple[RAGStrategy, ...] = ()
     strategy_llms: Mapping[RAGStrategy, ResolvedLLM] = field(default_factory=dict)
     cost_guard: _RAGCostGuard | None = None
+    modular_pipeline: ModularPipelineSpec | None = None
+    raft_service: RAFTService | None = None
 
 
 class CollectionNotFoundError(LookupError):
@@ -772,6 +728,12 @@ async def execute_core_strategy(
     context: RetrievalExecutionContext,
 ) -> RAGExecutionResult:
     """Execute one certified strategy through tenant-scoped persistence boundaries."""
+
+    if (
+        strategy not in DIRECT_CORE_RAG_STRATEGIES
+        and strategy is not RAGStrategy.ADAPTIVE
+    ):
+        raise RetrievalStrategyExecutionError(strategy.value, "adapter is not certified")
 
     collection_id = request.collection_id
     if not collection_id:
@@ -996,6 +958,33 @@ async def execute_core_strategy(
                 "resolved_strategy_id": strategy,
                 "strategy_trace": [decision_trace, *selected.strategy_trace],
             }
+        )
+
+    if strategy in {RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING}:
+        embedding = await _embed_text(context, request.query, strategy)
+        results = await context.retrieve_engine(
+            query=request.query,
+            query_embedding=embedding,
+            collection_id=collection_id,
+            top_k=request.top_k,
+        )
+        return _canonical_result(
+            request,
+            strategy,
+            results,
+            [
+                {
+                    "component": strategy.value,
+                    "result_count": len(results),
+                    "precomputed": True,
+                    "hierarchy_levels": sorted(
+                        {
+                            int(result.source_metadata.get("hierarchy_level", 0))
+                            for result in results
+                        }
+                    ),
+                }
+            ],
         )
 
     llm = context.llm
@@ -1314,6 +1303,7 @@ async def _search_persisted(
     embedding: list[float] | None,
     retrieval_mode: str,
     evidence: list[dict[str, Any]] | None = None,
+    top_k: int | None = None,
 ) -> list[EngineRetrievalResult]:
     async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
         await _require_active_collection(
@@ -1326,7 +1316,7 @@ async def _search_persisted(
             query=query,
             query_embedding=embedding,
             collection_id=request.collection_id or "",
-            top_k=request.top_k,
+            top_k=top_k or request.top_k,
             retrieval_mode=retrieval_mode,
             metadata_filter=request.filters,
             strict=True,
@@ -1452,6 +1442,36 @@ class RetrievalGateway:
 
     def __init__(self, dependencies: RetrievalDependencies) -> None:
         self.dependencies = dependencies
+        self._close_lock = asyncio.Lock()
+        self._is_closed = False
+
+    async def aclose(self) -> None:
+        """Close each gateway-owned capability adapter at most once."""
+        async with self._close_lock:
+            if self._is_closed:
+                return
+            self._is_closed = True
+            closeable_adapters: list[AsyncCloseableProtocol] = []
+            seen_adapter_ids: set[int] = set()
+            for capability in self.dependencies.strategy_capabilities.values():
+                adapter = capability.adapter
+                adapter_id = id(adapter)
+                if (
+                    adapter_id not in seen_adapter_ids
+                    and isinstance(adapter, AsyncCloseableProtocol)
+                ):
+                    seen_adapter_ids.add(adapter_id)
+                    closeable_adapters.append(adapter)
+            results = await asyncio.gather(
+                *(adapter.aclose() for adapter in closeable_adapters),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "rag_capability_close_failed",
+                        failure_type=type(result).__name__,
+                    )
 
     async def readiness(
         self,
@@ -1465,43 +1485,19 @@ class RetrievalGateway:
         if not isinstance(tenant_context, TenantContext):
             raise TypeError("tenant_context must be a TenantContext")
         strategy = resolve_rag_strategy(strategy_id)
-        capability = self.dependencies.strategy_capabilities.get(strategy)
-        if capability is None:
-            return RAGStrategyReadiness(strategy, False, "adapter_not_registered")
-        execute = getattr(capability.adapter, "execute", None)
-        if not inspect.iscoroutinefunction(execute) or inspect.isabstract(capability.adapter):
-            return RAGStrategyReadiness(strategy, False, "invalid_adapter")
-        if capability.requires_embedder and not _has_async_method(
-            self.dependencies.embedder, "embed"
-        ):
-            return RAGStrategyReadiness(strategy, False, "embedder_unavailable")
-        if capability.requires_database:
-            persistence_reason = await _probe_session_factory(
-                self.dependencies.session_factory,
-                tenant_context.tenant_id,
-            )
-            if persistence_reason is not None:
-                return RAGStrategyReadiness(strategy, False, persistence_reason)
-        if capability.requires_graph and not self._has_graph_capability():
-            return RAGStrategyReadiness(strategy, False, "graph_capability_unavailable")
-        if capability.requires_search and not _is_safe_web_capability(
-            self.dependencies.search_capability
-        ):
-            return RAGStrategyReadiness(strategy, False, "search_capability_unavailable")
-        if capability.requires_web_policy:
-            policy_reason = await self._web_policy_reason(tenant_context)
-            if policy_reason != "web_policy_allowed":
-                return RAGStrategyReadiness(strategy, False, policy_reason)
+        context = await self.readiness_context(
+            tenant_context,
+            collection_id=collection_id,
+            strategies=(strategy,),
+        )
+        decision = RAG_CAPABILITY_CATALOGUE[strategy].evaluate_readiness(context)
+        if not decision.available:
+            return RAGStrategyReadiness(strategy, False, decision.reason)
         if (
             isinstance(self.dependencies.collection_authorizer, SQLCollectionAuthorizer)
             and self.dependencies.session_factory is None
         ):
             return RAGStrategyReadiness(strategy, False, "session_factory_unavailable")
-        if capability.requires_provider:
-            try:
-                await self._resolve_llm(strategy, capability, tenant_context)
-            except UnavailableRAGStrategyError:
-                return RAGStrategyReadiness(strategy, False, "llm_provider_unavailable")
         if collection_id is not None:
             try:
                 await self._authorize_collection(
@@ -1518,6 +1514,161 @@ class RetrievalGateway:
                     "collection_authorization_unavailable",
                 )
         return RAGStrategyReadiness(strategy, True, "ready")
+
+    async def readiness_all(
+        self,
+        tenant_context: TenantContext,
+        *,
+        collection_id: str | None = None,
+    ) -> Mapping[RAGStrategy, RAGStrategyReadiness]:
+        """Evaluate every catalogue predicate from one bounded shared-fact snapshot."""
+        context = await self.readiness_context(
+            tenant_context,
+            collection_id=collection_id,
+        )
+        return MappingProxyType(
+            {
+                strategy: RAGStrategyReadiness(
+                    strategy,
+                    decision.available,
+                    decision.reason,
+                )
+                for strategy, entry in RAG_CAPABILITY_CATALOGUE.items()
+                for decision in (entry.evaluate_readiness(context),)
+            }
+        )
+
+    async def readiness_context(
+        self,
+        tenant_context: TenantContext,
+        *,
+        collection_id: str | None = None,
+        probe_database: bool = True,
+        strategies: Sequence[RAGStrategy] | None = None,
+        resolve_providers: bool = True,
+    ) -> ReadinessContext:
+        """Compute shared dependency facts once for one tenant discovery request."""
+        from app.rag.readiness import probe_colbert_library, probe_colbert_readiness
+
+        if probe_database:
+            persistence_reason = await _probe_session_factory(
+                self.dependencies.session_factory,
+                tenant_context.tenant_id,
+            )
+        elif callable(self.dependencies.session_factory):
+            persistence_reason = None
+        else:
+            persistence_reason = "session_factory_unavailable"
+        database_fact = ReadinessFact(
+            persistence_reason is None,
+            persistence_reason or "ready",
+        )
+        embedder_available = _has_async_method(self.dependencies.embedder, "embed")
+        embedder_fact = ReadinessFact(
+            embedder_available,
+            "ready" if embedder_available else "embedder_unavailable",
+        )
+        graph_available = self._has_graph_capability()
+        graph_fact = ReadinessFact(
+            graph_available,
+            "ready" if graph_available else "graph_capability_unavailable",
+        )
+        if not _is_safe_web_capability(self.dependencies.search_capability):
+            web_fact = ReadinessFact(False, "search_capability_unavailable")
+        else:
+            web_reason = await self._web_policy_reason(tenant_context)
+            web_fact = ReadinessFact(
+                web_reason == "web_policy_allowed",
+                "ready" if web_reason == "web_policy_allowed" else web_reason,
+            )
+        service = self.dependencies.raft_service
+        raft_service_fact = ReadinessFact(
+            isinstance(service, RAFTService),
+            "ready" if isinstance(service, RAFTService) else "raft_service_unavailable",
+        )
+        if collection_id is None:
+            raft_model_fact = ReadinessFact(False, "raft_model_selection_required")
+        else:
+            try:
+                has_raft_model = bool(
+                    isinstance(service, RAFTService)
+                    and await service.has_completed_model(
+                        tenant_context,
+                        collection_id=collection_id,
+                    )
+                )
+            except Exception:
+                has_raft_model = False
+            raft_model_fact = ReadinessFact(
+                has_raft_model,
+                "ready" if has_raft_model else "raft_model_unavailable",
+            )
+        colbert_library_fact = probe_colbert_library()
+        colbert_checkpoint_fact = probe_colbert_readiness(
+            self.dependencies.colbert_checkpoint,
+            library_fact=colbert_library_fact,
+        )
+        facts = MappingProxyType(
+            {
+                RAGRuntimeDependency.DATABASE: database_fact,
+                RAGRuntimeDependency.EMBEDDER: embedder_fact,
+                RAGRuntimeDependency.PROVIDER: ReadinessFact(True, "ready"),
+                RAGRuntimeDependency.GRAPH: graph_fact,
+                RAGRuntimeDependency.WEB: web_fact,
+                RAGRuntimeDependency.COLBERT_LIBRARY: colbert_library_fact,
+                RAGRuntimeDependency.COLBERT_CHECKPOINT: colbert_checkpoint_fact,
+                RAGRuntimeDependency.RAFT_SERVICE: raft_service_fact,
+                RAGRuntimeDependency.RAFT_MODEL: raft_model_fact,
+            }
+        )
+        strategy_facts: dict[
+            RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]
+        ] = {}
+        adapter_facts: dict[RAGStrategy, ReadinessFact] = {}
+        target_strategies = tuple(strategies or RAG_CAPABILITY_CATALOGUE)
+        for strategy in target_strategies:
+            entry = RAG_CAPABILITY_CATALOGUE[strategy]
+            capability = self.dependencies.strategy_capabilities.get(strategy)
+            if capability is None:
+                adapter_facts[strategy] = ReadinessFact(False, "adapter_not_registered")
+            else:
+                execute = getattr(capability.adapter, "execute", None)
+                is_valid = inspect.iscoroutinefunction(execute) and not inspect.isabstract(
+                    capability.adapter
+                )
+                adapter_facts[strategy] = ReadinessFact(
+                    is_valid,
+                    "ready" if is_valid else "invalid_adapter",
+                )
+            if RAGRuntimeDependency.PROVIDER not in entry.required_dependencies:
+                continue
+            if not resolve_providers:
+                provider_available = self.dependencies.llm_resolver is not None
+                strategy_facts[strategy] = MappingProxyType(
+                    {
+                        RAGRuntimeDependency.PROVIDER: ReadinessFact(
+                            provider_available,
+                            "ready" if provider_available else "llm_provider_unavailable",
+                        )
+                    }
+                )
+                continue
+            try:
+                if capability is None:
+                    raise UnavailableRAGStrategyError(strategy, "adapter is unavailable")
+                await self._resolve_llm(strategy, capability, tenant_context)
+            except Exception:
+                provider_fact = ReadinessFact(False, "llm_provider_unavailable")
+            else:
+                provider_fact = ReadinessFact(True, "ready")
+            strategy_facts[strategy] = MappingProxyType(
+                {RAGRuntimeDependency.PROVIDER: provider_fact}
+            )
+        return ReadinessContext(
+            facts,
+            MappingProxyType(strategy_facts),
+            MappingProxyType(adapter_facts),
+        )
 
     async def execute(
         self,
@@ -1537,13 +1688,6 @@ class RetrievalGateway:
             strategy_id.value if isinstance(strategy_id, RAGStrategy) else strategy_id
         )
         strategy = resolve_rag_strategy(strategy_id)
-        capability = self.dependencies.strategy_capabilities.get(strategy)
-        if capability is None:
-            raise UnavailableRAGStrategyError(
-                strategy,
-                "no runtime adapter is configured",
-            )
-
         request = RAGExecutionRequest(
             tenant_id=tenant_context.tenant_id,
             collection_id=collection_id,
@@ -1553,7 +1697,14 @@ class RetrievalGateway:
             filters=filters or {},
             execution_id=execution_id or f"rag-{uuid.uuid4().hex}",
         )
-        await self._validate_capabilities(strategy, capability, tenant_context)
+        await self._validate_capabilities(
+            strategy,
+            tenant_context,
+            collection_id=collection_id,
+        )
+        capability = self.dependencies.strategy_capabilities.get(strategy)
+        if capability is None:
+            raise UnavailableRAGStrategyError(strategy, "adapter_not_registered")
         llm = await self._resolve_llm(strategy, capability, tenant_context)
         runner = self._session_runner(tenant_context)
         await self._authorize_collection(runner, tenant_context, collection_id)
@@ -1568,7 +1719,11 @@ class RetrievalGateway:
             if self.dependencies.graph_capability is not None and runner is not None
             else None
         )
-        if strategy is RAGStrategy.ADAPTIVE:
+        if strategy in {
+            RAGStrategy.ADAPTIVE,
+            RAGStrategy.AGENTIC,
+            RAGStrategy.MODULAR,
+        }:
             available_strategies, strategy_llms = await self._available_strategies(
                 tenant_context
             )
@@ -1623,6 +1778,8 @@ class RetrievalGateway:
                 available_strategies=available_strategies,
                 strategy_llms=budgeted_strategy_llms,
                 cost_guard=cost_guard,
+                modular_pipeline=self.dependencies.modular_pipeline,
+                raft_service=self.dependencies.raft_service,
             ),
             _db_operation_runner=runner.run if runner is not None else None,
             _repeatable_read_db_operation_runner=(
@@ -1797,31 +1954,20 @@ class RetrievalGateway:
     async def _validate_capabilities(
         self,
         strategy: RAGStrategy,
-        capability: RetrievalStrategyCapability,
         tenant_context: TenantContext,
+        *,
+        collection_id: str,
     ) -> None:
-        if capability.requires_embedder and not _has_async_method(
-            self.dependencies.embedder, "embed"
-        ):
-            raise UnavailableRAGStrategyError(strategy, "embedding provider is not configured")
-        if capability.requires_database and not _has_async_context_factory(
-            self.dependencies.session_factory
-        ):
-            raise UnavailableRAGStrategyError(
-                strategy, "database session factory is not configured"
-            )
-        if capability.requires_provider and self.dependencies.llm_resolver is None:
-            raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
-        if capability.requires_graph and not self._has_graph_capability():
-            raise UnavailableRAGStrategyError(strategy, "graph capability is not configured")
-        if capability.requires_search and not _is_safe_web_capability(
-            self.dependencies.search_capability
-        ):
-            raise UnavailableRAGStrategyError(strategy, "search capability is not configured")
-        if capability.requires_web_policy:
-            policy_reason = await self._web_policy_reason(tenant_context)
-            if policy_reason != "web_policy_allowed":
-                raise UnavailableRAGStrategyError(strategy, policy_reason)
+        context = await self.readiness_context(
+            tenant_context,
+            collection_id=collection_id,
+            probe_database=False,
+            strategies=(strategy,),
+            resolve_providers=False,
+        )
+        decision = RAG_CAPABILITY_CATALOGUE[strategy].evaluate_readiness(context)
+        if not decision.available:
+            raise UnavailableRAGStrategyError(strategy, decision.reason)
 
     def _has_graph_capability(self) -> bool:
         return (
@@ -1845,23 +1991,20 @@ class RetrievalGateway:
         self,
         tenant_context: TenantContext,
     ) -> tuple[tuple[RAGStrategy, ...], Mapping[RAGStrategy, ResolvedLLM]]:
-        web_policy_reason: str | None = None
         available: list[RAGStrategy] = []
         strategy_llms: dict[RAGStrategy, ResolvedLLM] = {}
-        for strategy, capability in self.dependencies.strategy_capabilities.items():
+        readiness = await self.readiness_context(
+            tenant_context,
+            probe_database=False,
+        )
+        for strategy, entry in RAG_CAPABILITY_CATALOGUE.items():
             if strategy is RAGStrategy.ADAPTIVE:
                 continue
-            if strategy not in RAG_RUNTIME_CAPABILITIES:
+            decision = entry.evaluate_readiness(readiness)
+            if not decision.available:
                 continue
-            if not isinstance(capability.adapter, RAG_RUNTIME_CAPABILITIES[strategy]):
-                continue
-            if capability.requires_embedder and not _has_async_method(
-                self.dependencies.embedder, "embed"
-            ):
-                continue
-            if capability.requires_database and self.dependencies.session_factory is None:
-                continue
-            if capability.requires_provider:
+            capability = self.dependencies.strategy_capabilities[strategy]
+            if RAGRuntimeDependency.PROVIDER in entry.required_dependencies:
                 try:
                     candidate_llm = await self._resolve_llm(
                         strategy,
@@ -1873,17 +2016,6 @@ class RetrievalGateway:
                 if candidate_llm is None:
                     continue
                 strategy_llms[strategy] = candidate_llm
-            if capability.requires_graph and not self._has_graph_capability():
-                continue
-            if capability.requires_search and not _is_safe_web_capability(
-                self.dependencies.search_capability
-            ):
-                continue
-            if capability.requires_web_policy:
-                if web_policy_reason is None:
-                    web_policy_reason = await self._web_policy_reason(tenant_context)
-                if web_policy_reason != "web_policy_allowed":
-                    continue
             available.append(strategy)
         return tuple(available), strategy_llms
 
@@ -1893,21 +2025,31 @@ class RetrievalGateway:
         capability: RetrievalStrategyCapability,
         tenant_context: TenantContext,
     ) -> ResolvedLLM | None:
+        del capability
+        requires_provider = (
+            RAGRuntimeDependency.PROVIDER
+            in RAG_CAPABILITY_CATALOGUE[strategy].required_dependencies
+        )
         resolver = self.dependencies.llm_resolver
         if resolver is None:
+            if requires_provider:
+                raise UnavailableRAGStrategyError(
+                    strategy,
+                    "LLM provider is not configured",
+                )
             return None
         try:
             resolved = resolver(tenant_context, strategy)
             if inspect.isawaitable(resolved):
                 resolved = await resolved
         except Exception as exc:
-            if capability.requires_provider:
+            if requires_provider:
                 raise UnavailableRAGStrategyError(
                     strategy,
                     "LLM provider resolution failed",
                 ) from exc
             return None
-        if capability.requires_provider and resolved is None:
+        if requires_provider and resolved is None:
             raise UnavailableRAGStrategyError(strategy, "LLM provider is not configured")
         if resolved is not None:
             if not _has_async_method(resolved.provider, "complete"):
