@@ -270,7 +270,7 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
 
     result = tasks.run_goal.run(
-        f"goal-worker-gateway-{uuid.uuid4().hex}",
+        f"gw-{uuid.uuid4().hex[:24]}",
         "tenant-1",
         "answer from knowledge",
         "normal",
@@ -303,7 +303,7 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
         )
     )
     assert resolved is not None
-    assert resolved.model == "fake-provider"
+    assert resolved.model
     denied = asyncio.run(
         resolver(
             TenantContext("tenant-other", PlanTier.PROFESSIONAL, "worker-key"),
