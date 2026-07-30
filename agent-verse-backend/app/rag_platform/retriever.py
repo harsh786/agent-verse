@@ -7,7 +7,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, cast
 
 from app.providers.base import CompletionRequest, Message
 from app.rag.contracts import (
@@ -16,6 +16,7 @@ from app.rag.contracts import (
     RAGStrategy,
     RAGStrategyTrace,
 )
+from app.rag.engine import RetrievalStrategyExecutionError
 from app.rag.gateway import ResolvedLLM, RetrievalGateway
 from app.tenancy.context import TenantContext
 
@@ -29,6 +30,15 @@ class CitationVerification:
     grounded: bool
     unsupported_claims: list[str]
     reason: str
+
+
+class _BudgetContext(Protocol):
+    @property
+    def event_count(self) -> int: ...
+
+    def wrap_provider(self, provider: Any, operation: str) -> Any: ...
+
+    def traces(self, start: int = 0) -> list[RAGStrategyTrace]: ...
 
 
 class MinimalCitationVerifier:
@@ -125,6 +135,8 @@ class MinimalCitationVerifier:
                 )
             ):
                 raise ValueError("Invalid entailment response")
+        except RetrievalStrategyExecutionError:
+            raise
         except Exception:
             return CitationVerification(False, [claim], "verifier_failure")
         return CitationVerification(
@@ -230,6 +242,10 @@ class RAGRetriever:
         result = await self._gateway.execute(tenant_ctx, **execute_kwargs)
         if not synthesize:
             return result
+        budget_context = cast(_BudgetContext | None, result._budget_context)
+        post_retrieval_cost_start = (
+            budget_context.event_count if budget_context is not None else 0
+        )
         answer = result.answer
         if not answer and result.citations:
             answer = await self.synthesize(
@@ -238,33 +254,48 @@ class RAGRetriever:
                 strategy=result.resolved_strategy_id,
                 citations=result.citations,
                 max_context_chars=max_context_chars,
+                budget_context=budget_context,
             )
         result = result.model_copy(update={"answer": answer})
-        return await self.verify_result(result, tenant_ctx=tenant_ctx)
+        result._budget_context = budget_context
+        return await self.verify_result(
+            result,
+            tenant_ctx=tenant_ctx,
+            cost_trace_start=post_retrieval_cost_start,
+        )
 
     async def verify_result(
         self,
         result: RAGExecutionResult,
         *,
         tenant_ctx: TenantContext,
+        cost_trace_start: int = 0,
     ) -> RAGExecutionResult:
         """Apply the same typed citation verification to any synthesized result."""
 
         trace = list(result.strategy_trace)
         try:
             verifier = self._citation_verifier
-            if isinstance(verifier, MinimalCitationVerifier) and verifier.provider is None:
-                try:
-                    resolved = await self._resolve_llm(
-                        tenant_ctx,
-                        result.resolved_strategy_id,
+            if isinstance(verifier, MinimalCitationVerifier):
+                provider = verifier.provider
+                model = verifier.model
+                if provider is None:
+                    try:
+                        resolved = await self._resolve_llm(
+                            tenant_ctx,
+                            result.resolved_strategy_id,
+                        )
+                        provider = resolved.provider
+                        model = resolved.model
+                    except RAGSynthesisError:
+                        pass
+                budget_context = cast(_BudgetContext | None, result._budget_context)
+                if provider is not None and budget_context is not None:
+                    provider = budget_context.wrap_provider(
+                        provider,
+                        "citation_verification",
                     )
-                    verifier = MinimalCitationVerifier(
-                        provider=resolved.provider,
-                        model=resolved.model,
-                    )
-                except RAGSynthesisError:
-                    pass
+                verifier = MinimalCitationVerifier(provider=provider, model=model)
             verification = await verifier.verify(
                 result.answer,
                 result.citations,
@@ -283,6 +314,8 @@ class RAGRetriever:
                 )
             )
             grounded = bool(verification.grounded)
+        except RetrievalStrategyExecutionError:
+            raise
         except Exception:
             trace.append(
                 RAGStrategyTrace(
@@ -293,13 +326,18 @@ class RAGRetriever:
                 )
             )
             grounded = False
-        return result.model_copy(
+        budget_context = cast(_BudgetContext | None, result._budget_context)
+        if budget_context is not None:
+            trace.extend(budget_context.traces(cost_trace_start))
+        verified_result = result.model_copy(
             update={
                 "answer": result.answer,
                 "grounded": grounded,
                 "strategy_trace": trace,
             }
         )
+        verified_result._budget_context = budget_context
+        return verified_result
 
     async def synthesize(
         self,
@@ -309,6 +347,7 @@ class RAGRetriever:
         strategy: RAGStrategy,
         citations: list[RAGCitation],
         max_context_chars: int = 6000,
+        budget_context: _BudgetContext | None = None,
     ) -> str:
         """Synthesize canonical citations with the tenant's configured provider/model."""
 
@@ -316,6 +355,8 @@ class RAGRetriever:
         provider: Any = resolved.provider
         if provider is None:
             raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        if budget_context is not None:
+            provider = budget_context.wrap_provider(provider, "synthesis")
         context_parts: list[str] = []
         context_length = 0
         for index, citation in enumerate(citations, start=1):
@@ -347,6 +388,8 @@ class RAGRetriever:
                 )
             )
         except Exception as exc:
+            if isinstance(exc, RetrievalStrategyExecutionError):
+                raise
             raise RAGSynthesisError("Answer synthesis failed") from exc
         answer = str(response.content).strip()
         if not answer:

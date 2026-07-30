@@ -222,20 +222,19 @@ def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> 
 def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any) -> None:
     """The eager Celery path calls the canonical worker gateway from AgentGraph."""
     import asyncio
+    import uuid
 
     import app.agent.graph as _graph_mod
-    import app.rag.gateway as _gateway_mod
     from app.rag.contracts import RAGExecutionResult, RAGStrategy
     from app.scaling import tasks
     from app.tenancy.context import PlanTier, TenantContext
 
     gateway_calls: list[tuple[Any, dict[str, Any]]] = []
-    gateway_dependencies: list[Any] = []
+    worker_dependencies: Any = None
 
     class _Gateway:
         def __init__(self, dependencies: Any) -> None:
             self.dependencies = dependencies
-            gateway_dependencies.append(dependencies)
 
         async def execute(self, tenant_ctx: Any, **kwargs: Any) -> RAGExecutionResult:
             gateway_calls.append((tenant_ctx, kwargs))
@@ -261,12 +260,17 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
             )
             return _FakeAgentState()
 
-    monkeypatch.setattr(_gateway_mod, "RetrievalGateway", _Gateway)
+    def build_worker_gateway(dependencies: Any) -> _Gateway:
+        nonlocal worker_dependencies
+        worker_dependencies = dependencies
+        return _Gateway(dependencies)
+
+    monkeypatch.setattr(tasks, "_build_worker_retrieval_gateway", build_worker_gateway)
     monkeypatch.setattr(_graph_mod, "AgentGraph", _Graph)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
 
     result = tasks.run_goal.run(
-        "goal-worker-gateway",
+        f"goal-worker-gateway-{uuid.uuid4().hex}",
         "tenant-1",
         "answer from knowledge",
         "normal",
@@ -276,13 +280,9 @@ def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any
     assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
     assert gateway_calls
     assert gateway_calls[0][0].tenant_id == "tenant-1"
-    assert gateway_dependencies
-    worker_dependencies = next(
-        dependency
-        for dependency in gateway_dependencies
-        if getattr(dependency, "llm_resolver", None) is not None
-        and getattr(dependency, "strategy_capabilities", None)
-    )
+    assert worker_dependencies is not None
+    assert worker_dependencies.llm_resolver is not None
+    assert worker_dependencies.strategy_capabilities
     assert worker_dependencies.collection_authorizer is not None
     from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
     from app.rag.gateway import TenantScopedGraphCapabilityAdapter
