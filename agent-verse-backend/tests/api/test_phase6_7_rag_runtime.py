@@ -14,6 +14,7 @@ from app.rag.contracts import (
     RAGExecutionRequest,
     RAGExecutionResult,
     RAGRetrievalLeg,
+    RAGStrategyTrace,
     UnavailableRAGStrategyError,
 )
 from app.rag_platform.query_planner import QueryPlanner, RAGStrategy
@@ -28,6 +29,15 @@ _HEADERS = {"X-API-Key": _KEY}
 class _NaiveRuntimeAdapter:
     strategy = RAGStrategy.NAIVE
 
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action="naive_test_probe",
+            status="complete",
+            detail={"adapter_strategy": cls.strategy.value, "evidence": "naive"},
+        )
+
     async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
         return RAGExecutionResult(
             requested_strategy_id=request.requested_strategy_id,
@@ -37,6 +47,15 @@ class _NaiveRuntimeAdapter:
 
 class _AdaptiveRuntimeAdapter:
     strategy = RAGStrategy.ADAPTIVE
+
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action="adaptive_test_probe",
+            status="complete",
+            detail={"adapter_strategy": cls.strategy.value, "evidence": "adaptive"},
+        )
 
     async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
         return RAGExecutionResult(
@@ -68,6 +87,15 @@ class _Gateway:
             available=available,
             reason="ready" if available else "adapter_not_registered",
         )
+
+    async def readiness_all(
+        self,
+        tenant_ctx: TenantContext,
+    ) -> dict[RAGStrategy, SimpleNamespace]:
+        return {
+            strategy: await self.readiness(tenant_ctx, strategy_id=strategy)
+            for strategy in RAGStrategy
+        }
 
     async def execute(
         self,

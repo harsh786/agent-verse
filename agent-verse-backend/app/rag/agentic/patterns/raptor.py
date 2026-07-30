@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.contracts import RAGStrategy
+from app.tenancy.context import TenantContext
 
 _SUMMARIZE_SYSTEM = """Summarize these text chunks into a single coherent paragraph.
 Preserve key facts, entities, and relationships. Be concise but complete."""
@@ -73,6 +75,29 @@ class RAPTORPattern(RAGPattern):
         except Exception:
             pass
         return True
+
+    async def retrieve_precomputed(
+        self,
+        *,
+        store: Any,
+        query: str,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search persisted leaf and summary levels without rebuilding the tree."""
+        return cast(
+            list[dict[str, Any]],
+            await store.search_precomputed_index(
+                strategy=RAGStrategy.RAPTOR,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+            ),
+        )
 
     async def execute(
         self,

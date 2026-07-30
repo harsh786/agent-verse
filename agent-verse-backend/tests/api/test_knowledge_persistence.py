@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,8 +14,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
-from app.providers.base import EmbedRequest, EmbedResponse
+from app.providers.base import (
+    CompletionRequest,
+    CompletionResponse,
+    EmbedRequest,
+    EmbedResponse,
+)
 from app.providers.fake import FakeProvider
+from app.rag.contracts import RAGStrategy
+from app.rag.indexing import RAGIndexRecord
 from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
@@ -371,6 +380,362 @@ def test_orchestrated_document_ingest_returns_only_committed_ids() -> None:
     assert store.chunks_committed
     assert response.json()["ingested"] == len(response.json()["chunk_ids"])
     assert response.json()["ingested"] > 0
+
+
+def test_orchestrated_document_ingest_builds_selected_strategy_indexes() -> None:
+    class _IndexingProvider:
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            payload = json.loads(str(request.messages[-1].content).split("\n", 1)[1])
+            if "proposition" in str(request.messages[0].content).casefold():
+                content = json.dumps([[f"{chunk} proposition"] for chunk in payload])
+            else:
+                content = json.dumps(
+                    [f"Summary of {' '.join(group)}" for group in payload]
+                )
+            return CompletionResponse(content=content, model=request.model)
+
+    class _IndexingStore(_AwaitedStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.index_records: list[RAGIndexRecord] = []
+
+        async def persist_index_records(
+            self,
+            records: list[RAGIndexRecord],
+            *,
+            collection_id: str,
+            tenant_ctx: TenantContext,
+        ) -> list[str]:
+            assert collection_id == "collection-1"
+            assert tenant_ctx == TENANT
+            self.index_records.extend(records)
+            return [record.chunk_id for record in records]
+
+    store = _IndexingStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+    app = _app(store)
+    app.state._app_provider = _IndexingProvider()
+    app.state.indexing_model = "indexing-model"
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            "content": "Alpha policy paragraph.\n\nBeta review paragraph.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["raptor", "agentic_chunking"],
+            "raptor_cluster_size": 2,
+            "raptor_max_levels": 2,
+            "parent_window_size": 1,
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["ingested"] == len(store.index_records)
+    assert {record.strategy for record in store.index_records} == {
+        RAGStrategy.RAPTOR,
+        RAGStrategy.AGENTIC_CHUNKING,
+    }
+    assert any(record.is_proposition for record in store.index_records)
+    ordinals = [record.chunk_index for record in store.index_records]
+    assert len(ordinals) == len(set(ordinals))
+
+
+def test_indexed_ingest_replaces_changed_content_and_rejects_empty() -> None:
+    class _IndexingProvider:
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            payload = json.loads(str(request.messages[-1].content).split("\n", 1)[1])
+            content = json.dumps(
+                [f"Summary of {' '.join(group)}" for group in payload]
+            )
+            return CompletionResponse(content=content, model=request.model)
+
+    class _ReplacingIndexStore(_AwaitedStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.index_records: list[RAGIndexRecord] = []
+            self.persist_calls = 0
+            self.chunk_count = 0
+            self.document_count = 0
+
+        async def persist_index_records(
+            self,
+            records: list[RAGIndexRecord],
+            *,
+            collection_id: str,
+            tenant_ctx: TenantContext,
+        ) -> list[str]:
+            del collection_id, tenant_ctx
+            self.persist_calls += 1
+            document_ids = {record.document_id for record in records}
+            self.index_records = [
+                record
+                for record in self.index_records
+                if record.document_id not in document_ids
+            ]
+            self.index_records.extend(records)
+            self.chunk_count = len(self.index_records)
+            self.document_count = len(
+                {record.document_id for record in self.index_records}
+            )
+            return [record.chunk_id for record in records]
+
+    store = _ReplacingIndexStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+    app = _app(store)
+    app.state._app_provider = _IndexingProvider()
+    app.state.indexing_model = "indexing-model"
+    client = TestClient(app, raise_server_exceptions=False)
+    request = {
+        "content": json.dumps(
+            ["Alpha policy paragraph.", "Beta review paragraph."]
+        ),
+        "content_type": "json",
+        "source_identity": "policy-handbook",
+        "indexing_strategies": ["raptor"],
+        "raptor_cluster_size": 2,
+    }
+
+    first_response = client.post(
+        "/knowledge/collections/collection-1/documents",
+        json=request,
+        headers={"X-API-Key": API_KEY},
+    )
+    first_records = list(store.index_records)
+
+    changed_response = client.post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            **request,
+            "content": json.dumps(["Gamma revised policy paragraph."]),
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+    records_before = list(store.index_records)
+    persist_calls_before = store.persist_calls
+    counters_before = (store.chunk_count, store.document_count)
+
+    empty_response = client.post(
+        "/knowledge/collections/collection-1/documents",
+        json={**request, "content": "[]"},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert first_response.status_code == 201
+    assert first_records
+    assert changed_response.status_code == 201
+    assert records_before
+    assert any("Gamma revised" in record.content for record in records_before)
+    assert not any(
+        "Alpha policy" in record.content or "Beta review" in record.content
+        for record in records_before
+    )
+    assert empty_response.status_code == 422, empty_response.text
+    assert empty_response.json() == {
+        "detail": "Indexed content produced no indexable chunks"
+    }
+    assert store.index_records == records_before
+    assert store.persist_calls == persist_calls_before
+    assert (store.chunk_count, store.document_count) == counters_before
+
+
+def test_orchestrated_document_ingest_resolves_each_strategy_runtime() -> None:
+    class _IndexingProvider:
+        def __init__(self) -> None:
+            self.requests: list[CompletionRequest] = []
+
+        async def complete(self, request: CompletionRequest) -> CompletionResponse:
+            self.requests.append(request)
+            payload = json.loads(str(request.messages[-1].content).split("\n", 1)[1])
+            if "proposition" in str(request.messages[0].content).casefold():
+                content = json.dumps([[f"{chunk} proposition"] for chunk in payload])
+            else:
+                content = json.dumps(
+                    [f"Summary of {' '.join(group)}" for group in payload]
+                )
+            return CompletionResponse(content=content, model=request.model)
+
+    class _IndexingStore(_AwaitedStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.index_records: list[RAGIndexRecord] = []
+
+        async def persist_index_records(
+            self,
+            records: list[RAGIndexRecord],
+            *,
+            collection_id: str,
+            tenant_ctx: TenantContext,
+        ) -> list[str]:
+            del collection_id, tenant_ctx
+            self.index_records.extend(records)
+            return [record.chunk_id for record in records]
+
+    raptor_provider = _IndexingProvider()
+    agentic_provider = _IndexingProvider()
+
+    async def resolve(
+        tenant_ctx: TenantContext,
+        strategy: RAGStrategy,
+    ) -> SimpleNamespace:
+        assert tenant_ctx == TENANT
+        if strategy is RAGStrategy.RAPTOR:
+            return SimpleNamespace(provider=raptor_provider, model="raptor-model")
+        return SimpleNamespace(provider=agentic_provider, model="agentic-model")
+
+    store = _IndexingStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+    app = _app(store)
+    app.state.retrieval_gateway = SimpleNamespace(
+        dependencies=SimpleNamespace(llm_resolver=resolve)
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            "content": "Alpha policy paragraph.\n\nBeta review paragraph.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["raptor", "agentic_chunking"],
+            "raptor_cluster_size": 2,
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 201
+    assert {request.model for request in raptor_provider.requests} == {"raptor-model"}
+    assert {request.model for request in agentic_provider.requests} == {"agentic-model"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "content": "Indexed content requires a stable source identity.",
+            "indexing_strategies": ["raptor"],
+        },
+        {
+            "content": "Indexed content must be durably persisted.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["raptor"],
+            "in_memory_only": True,
+        },
+    ],
+)
+def test_orchestrated_indexed_ingest_rejects_unsafe_identity_or_persistence_mode(
+    payload: dict[str, Any],
+) -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json=payload,
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 422
+
+
+def test_orchestrated_document_ingest_caps_request_content_size() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={"content": "x" * 1_000_001},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("raptor_cluster_size", 1),
+        ("raptor_cluster_size", 65),
+        ("raptor_max_levels", 0),
+        ("raptor_max_levels", 9),
+        ("parent_window_size", -1),
+        ("parent_window_size", 17),
+        ("raptor_summary_batch_size", 0),
+        ("raptor_summary_batch_size", 65),
+        ("proposition_batch_size", 0),
+        ("proposition_batch_size", 65),
+        ("embedding_batch_size", 0),
+        ("embedding_batch_size", 257),
+    ],
+)
+def test_orchestrated_document_ingest_rejects_unbounded_indexing_config(
+    field: str,
+    value: int,
+) -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            "content": "Bound every ingestion-time indexing parameter.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["raptor"],
+            field: value,
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 422
+
+
+def test_orchestrated_document_ingest_rejects_noncanonical_indexing_strategy() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            "content": "Only canonical ingestion-time strategies are accepted.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["hybrid"],
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 422
+
+
+def test_orchestrated_document_ingest_requires_indexing_runtime() -> None:
+    store = _AwaitedStore()
+    store.seed_collection(
+        KnowledgeCollection(name="indexed", collection_id="collection-1")
+    )
+
+    response = TestClient(_app(store), raise_server_exceptions=False).post(
+        "/knowledge/collections/collection-1/documents",
+        json={
+            "content": "Do not silently skip the selected indexing strategy.",
+            "source_identity": "policy-handbook",
+            "indexing_strategies": ["raptor"],
+        },
+        headers={"X-API-Key": API_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "RAG indexing provider or model is unavailable"}
 
 
 def test_orchestrated_document_failure_returns_sanitized_non_2xx() -> None:

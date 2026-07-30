@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.rag.chunker import Chunk, SemanticChunker
-
 
 # ---------------------------------------------------------------------------
 # Basic construction
@@ -107,7 +104,11 @@ def test_markdown_splits_on_headings() -> None:
 def test_markdown_headings_preserved_in_metadata() -> None:
     """Markdown chunks carry the section heading in metadata."""
     chunker = SemanticChunker(max_chars=512, overlap_chars=0, min_chunk_chars=5)
-    text = "Intro text before any heading.\n# Section Alpha\nAlpha body content here.\n## Section Beta\nBeta body content here."
+    text = (
+        "Intro text before any heading.\n"
+        "# Section Alpha\nAlpha body content here.\n"
+        "## Section Beta\nBeta body content here."
+    )
     result = chunker.chunk(text, source_type="markdown")
     # At least one chunk should have a heading in metadata
     headings_found = [c.metadata.get("heading", "") for c in result if c.metadata.get("heading")]

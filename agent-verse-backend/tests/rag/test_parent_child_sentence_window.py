@@ -2,9 +2,6 @@
 """Parent-child and sentence window retrieval tests."""
 from __future__ import annotations
 
-import pytest
-
-
 # ── Parent-Child Chunking ─────────────────────────────────────────────────────
 
 def test_parent_child_chunker_creates_hierarchy():

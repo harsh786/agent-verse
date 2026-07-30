@@ -14,7 +14,7 @@ doc-2 §12 explicitly requires this file:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 _CHARS_PER_TOKEN = 4
 
@@ -71,7 +71,7 @@ class ContextBudgetManager:
             def relevance(c: dict[str, Any]) -> float:
                 content_lower = c.get("content", "").lower()
                 word_overlap = sum(1 for w in query_words if w in content_lower)
-                return c.get("score", 0.5) + 0.1 * word_overlap
+                return cast(float, c.get("score", 0.5)) + 0.1 * word_overlap
 
             deduped = sorted(deduped, key=relevance, reverse=True)
 

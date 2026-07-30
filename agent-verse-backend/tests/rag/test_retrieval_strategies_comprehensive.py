@@ -1,12 +1,15 @@
-"""All retrieval strategies: BM25, hybrid, vector, HyDE, multi-hop, fusion, colbert, corrective, adaptive."""
+"""Comprehensive coverage for all retrieval strategies."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.store import KnowledgeStore
-from app.rag.models import KnowledgeCollection, Chunk
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
+from tests.rag.colbert_fakes import DeterministicColBERTReranker
 
 
 @pytest.fixture
@@ -44,7 +47,9 @@ def populated_store(tenant_ctx: TenantContext) -> KnowledgeStore:
 
 # ── VECTOR / COSINE SIMILARITY ────────────────────────────────────────────────
 
-def test_vector_search_by_embedding(populated_store: KnowledgeStore, tenant_ctx: TenantContext) -> None:
+def test_vector_search_by_embedding(
+    populated_store: KnowledgeStore, tenant_ctx: TenantContext
+) -> None:
     """Cosine similarity must rank Python ML chunks above Java/JS for Python query."""
     results = populated_store.hybrid_search(
         query="python machine learning",
@@ -95,7 +100,9 @@ def test_bm25_idf_weights_rare_terms() -> None:
 
 # ── HYBRID SEARCH (vector + FTS + trigram + BM25) ────────────────────────────
 
-def test_hybrid_search_combines_signals(populated_store: KnowledgeStore, tenant_ctx: TenantContext) -> None:
+def test_hybrid_search_combines_signals(
+    populated_store: KnowledgeStore, tenant_ctx: TenantContext
+) -> None:
     results = populated_store.hybrid_search(
         query="python ml tutorial",
         query_embedding=[0.9, 0.1] * 5,
@@ -112,7 +119,9 @@ def test_hybrid_search_combines_signals(populated_store: KnowledgeStore, tenant_
         assert r.score >= 0
 
 
-def test_hybrid_search_with_metadata_filter(populated_store: KnowledgeStore, tenant_ctx: TenantContext) -> None:
+def test_hybrid_search_with_metadata_filter(
+    populated_store: KnowledgeStore, tenant_ctx: TenantContext
+) -> None:
     """Metadata filter must restrict results."""
     results = populated_store.hybrid_search(
         query="content",
@@ -129,17 +138,19 @@ def test_hybrid_search_with_metadata_filter(populated_store: KnowledgeStore, ten
 # ── HYDE RETRIEVAL ────────────────────────────────────────────────────────────
 
 async def test_hyde_generates_hypothetical_doc() -> None:
-    from app.rag.engine import retrieve_hyde, RetrievalResult
     from app.providers.fake import FakeProvider
+    from app.rag.engine import RetrievalResult, retrieve_hyde
 
     session = AsyncMock(spec=AsyncSession)
 
     # Accept positional session arg + keyword args matching engine.hybrid_search signature
-    async def fake_hybrid(session, **kw):  # noqa: ANN001
+    async def fake_hybrid(session, **kw):
         return [RetrievalResult("c1", "Python ML content", 0.9, {}, ["vector"])]
 
     provider = FakeProvider(
-        responses=["A machine learning tutorial using Python and scikit-learn for classification tasks."]
+        responses=[
+            "A machine learning tutorial using Python and scikit-learn for classification tasks."
+        ]
     )
 
     with patch("app.rag.engine.hybrid_search", side_effect=fake_hybrid):
@@ -157,14 +168,14 @@ async def test_hyde_generates_hypothetical_doc() -> None:
 # ── MULTI-HOP RETRIEVAL ───────────────────────────────────────────────────────
 
 async def test_multi_hop_decomposes_query() -> None:
-    from app.rag.engine import retrieve_multi_hop, RetrievalResult
     from app.providers.fake import FakeProvider
+    from app.rag.engine import RetrievalResult, retrieve_multi_hop
 
     session = AsyncMock(spec=AsyncSession)
 
     call_count: list[int] = []
 
-    async def fake_hybrid(session, **kw):  # noqa: ANN001
+    async def fake_hybrid(session, **kw):
         call_count.append(1)
         return [RetrievalResult(f"c{len(call_count)}", "content", 0.8, {}, ["vector"])]
 
@@ -216,8 +227,8 @@ def test_sentence_window_chunker() -> None:
 
 
 def test_sentence_window_retriever_expands() -> None:
-    from app.rag.sentence_window import SentenceWindowRetriever
     from app.rag.engine import RetrievalResult
+    from app.rag.sentence_window import SentenceWindowRetriever
 
     retriever = SentenceWindowRetriever()
     result = RetrievalResult(
@@ -287,7 +298,7 @@ def test_cross_encoder_reranks() -> None:
 def test_colbert_maxsim_scores() -> None:
     from app.rag.agentic.patterns.colbert import ColBERTPattern
 
-    pattern = ColBERTPattern()
+    pattern = ColBERTPattern(reranker=DeterministicColBERTReranker())
     score = pattern._maxsim_score(
         "python machine learning",
         "Python is great for machine learning and data science",
@@ -304,8 +315,9 @@ def test_colbert_maxsim_scores() -> None:
 # ── MEMORY STRATEGY RETRIEVAL ─────────────────────────────────────────────────
 
 async def test_memory_strategy_returns_ltm() -> None:
-    from app.rag.engine import retrieve
     from unittest.mock import AsyncMock, MagicMock
+
+    from app.rag.engine import retrieve
 
     session = AsyncMock(spec=AsyncSession)
     mock_ltm = AsyncMock()

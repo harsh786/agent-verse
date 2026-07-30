@@ -1,7 +1,9 @@
 """PDF document ingestor using pypdf (open-source, no cloud dependencies)."""
 from __future__ import annotations
+
 import io
 from typing import Any
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -18,7 +20,7 @@ class PdfIngestor:
     ) -> list[dict[str, Any]]:
         chunks: list[dict[str, Any]] = []
         try:
-            from pypdf import PdfReader
+            from pypdf import PdfReader  # type: ignore[import-not-found]
         except ImportError:
             logger.warning("pypdf_not_installed", hint="pip install pypdf")
             return [{

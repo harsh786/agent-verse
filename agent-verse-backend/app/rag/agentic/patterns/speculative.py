@@ -11,14 +11,25 @@ Inspired by speculative decoding applied to RAG:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.contracts import (
+    RAGExecutionRequest,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
+from app.rag.contracts import (
+    SpeculativeRAGRuntimeAdapter as SpeculativeRAGRuntimeContract,
+)
+from app.rag.engine import RetrievalStrategyExecutionError, first_task_group_exception
 
-_CANDIDATE_SYSTEM = """Generate a concise, direct answer to this question.
+_CANDIDATE_SYSTEM = """Generate a concise, direct candidate answer to this question.
 Be specific and factual."""
 
 _VERIFY_SYSTEM = (
@@ -36,6 +47,183 @@ class Candidate:
     score: float = 0.0
     supported: bool = False
     context_used: str = ""
+    verified_claims: list[str] | None = None
+
+
+class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
+    """Canonical speculative adapter with concurrent drafting and retrieval."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.SPECULATIVE
+
+    def __init__(self, candidate_count: int = 3) -> None:
+        if candidate_count < 1:
+            raise ValueError("candidate_count must be positive")
+        self._candidate_count = candidate_count
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.providers.base import CompletionRequest, Message
+        from app.rag.gateway import (
+            _canonical_result,
+            _embed_text,
+            _extend_trace,
+            _search_persisted,
+        )
+
+        if context is None or context.llm is None or context.llm.provider is None:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "resolved LLM is required"
+            )
+
+        provider = context.llm.provider
+        model = context.llm.model
+        evidence: list[dict[str, Any]] = []
+
+        async def generate_draft() -> Candidate:
+            response = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_CANDIDATE_SYSTEM),
+                        Message(role="user", content=request.query),
+                    ],
+                    model=model,
+                    max_tokens=500,
+                    temperature=0.7,
+                )
+            )
+            text = response.content.strip()
+            if not text:
+                raise RetrievalStrategyExecutionError(
+                    self.strategy.value, "draft generation returned empty content"
+                )
+            return Candidate(text=text)
+
+        async def retrieve() -> list[Any]:
+            embedding = await _embed_text(context, request.query, self.strategy)
+            return await _search_persisted(
+                context,
+                request,
+                query=request.query,
+                embedding=embedding,
+                retrieval_mode="hybrid",
+                evidence=evidence,
+            )
+
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                retrieval_task = task_group.create_task(retrieve())
+                draft_tasks = [
+                    task_group.create_task(generate_draft())
+                    for _ in range(self._candidate_count)
+                ]
+        except BaseExceptionGroup as exc:
+            raise first_task_group_exception(exc) from None
+
+        results = retrieval_task.result()
+        candidates = [task.result() for task in draft_tasks]
+        context_text = "\n\n".join(result.content for result in results)
+
+        async def verify(candidate: Candidate) -> Candidate:
+            response = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_VERIFY_SYSTEM),
+                        Message(
+                            role="user",
+                            content=(
+                                f"Question: {request.query}\n"
+                                f"Candidate: {candidate.text}\n"
+                                f"Context: {context_text}"
+                            ),
+                        ),
+                    ],
+                    model=model,
+                    max_tokens=180,
+                    temperature=0.0,
+                    response_schema={
+                        "type": "object",
+                        "properties": {
+                            "score": {"type": "number"},
+                            "supported": {"type": "boolean"},
+                            "verified_claims": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                )
+            )
+            try:
+                payload = json.loads(response.content)
+                if (
+                    not isinstance(payload, dict)
+                    or isinstance(payload.get("score"), bool)
+                    or not isinstance(payload.get("score"), int | float)
+                    or not isinstance(payload.get("supported"), bool)
+                    or not isinstance(payload.get("verified_claims", []), list)
+                    or not all(
+                        isinstance(claim, str)
+                        for claim in payload.get("verified_claims", [])
+                    )
+                ):
+                    raise TypeError("invalid verifier field types")
+                candidate.score = max(0.0, min(1.0, float(payload["score"])))
+                candidate.supported = payload["supported"]
+                claims = payload.get("verified_claims", [])
+                candidate.verified_claims = claims
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RetrievalStrategyExecutionError(
+                    self.strategy.value, "draft verification returned an invalid decision"
+                ) from exc
+            return candidate
+
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                verification_tasks = [
+                    task_group.create_task(verify(candidate)) for candidate in candidates
+                ]
+        except BaseExceptionGroup as exc:
+            raise first_task_group_exception(exc) from None
+        verified = [task.result() for task in verification_tasks]
+        supported = [candidate for candidate in verified if candidate.supported]
+        if not supported:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "no speculative candidate was supported"
+            )
+        best = max(supported, key=lambda candidate: candidate.score)
+        verified_claims = [
+            claim.strip() for claim in best.verified_claims or [] if claim.strip()
+        ]
+        normalized_draft = best.text.casefold()
+        if not verified_claims or any(
+            claim.casefold() not in normalized_draft for claim in verified_claims
+        ):
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value,
+                "supported speculative candidate requires explicit verified claims",
+            )
+        result = _canonical_result(request, self.strategy, results, evidence)
+        result = result.model_copy(update={"answer": best.text})
+        return _extend_trace(
+            result,
+            [
+                RAGStrategyTrace(
+                    strategy=self.strategy,
+                    action="speculative_verification",
+                    status="complete",
+                    detail={
+                        "candidate_count": len(verified),
+                        "supported_count": len(supported),
+                        "overlapped_retrieval": True,
+                        "verified_claims": verified_claims,
+                        "scores": [candidate.score for candidate in verified],
+                    },
+                )
+            ],
+        )
 
 
 class SpeculativeRAGPattern(RAGPattern):

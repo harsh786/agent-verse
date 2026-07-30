@@ -21,7 +21,7 @@ class ParentChunk:
     chunk_id: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    children: list["ChildChunk"] = field(default_factory=list)
+    children: list[ChildChunk] = field(default_factory=list)
 
 
 @dataclass

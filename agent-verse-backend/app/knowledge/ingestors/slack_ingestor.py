@@ -1,7 +1,10 @@
 """Slack channel message ingestor via Web API."""
 from __future__ import annotations
+
 from typing import Any
+
 import httpx
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -12,18 +15,18 @@ class SlackIngestor:
     def __init__(self, token: str) -> None:
         self._token = token
 
-    def _headers(self) -> dict:
+    def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
     async def ingest_channel(
         self, channel_id: str, *, channel_name: str = "", max_messages: int = 500
     ) -> list[dict[str, Any]]:
-        chunks = []
-        cursor = None
+        chunks: list[dict[str, Any]] = []
+        cursor: str | None = None
         message_count = 0
 
         while message_count < max_messages:
-            params: dict = {"channel": channel_id, "limit": 200}
+            params: dict[str, str | int] = {"channel": channel_id, "limit": 200}
             if cursor:
                 params["cursor"] = cursor
 

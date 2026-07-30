@@ -11,8 +11,8 @@ from app.orchestration.strategy_registry import (
     StrategyState,
     build_default_registry,
 )
+from app.rag.catalogue import RAG_RUNTIME_CAPABILITIES
 from app.rag.contracts import (
-    RAG_RUNTIME_CAPABILITIES,
     RAG_STRATEGY_ALIASES,
     RAGCitation,
     RAGExecutionRequest,
@@ -201,6 +201,7 @@ def test_runtime_adapter_contract_requires_tenant_scoped_requests() -> None:
         "execution_id": "",
     }
     assert hasattr(RAGRuntimeAdapter, "execute")
+    assert hasattr(RAGRuntimeAdapter, "probe_trace")
 
 
 @pytest.mark.parametrize("top_k", [0, 21])
@@ -234,6 +235,15 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
         RAGStrategy.CORRECTIVE,
         RAGStrategy.ADAPTIVE,
         RAGStrategy.WEB_AUGMENTED,
+        RAGStrategy.RAPTOR,
+        RAGStrategy.AGENTIC_CHUNKING,
+        RAGStrategy.COLBERT,
+        RAGStrategy.SPECULATIVE,
+        RAGStrategy.AGENTIC,
+        RAGStrategy.SELF_RAG,
+        RAGStrategy.FLARE,
+        RAGStrategy.MODULAR,
+        RAGStrategy.RAFT,
     }
     assert set(RAG_RUNTIME_CAPABILITIES) == expected
     assert implemented_ids == expected
@@ -243,6 +253,15 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
 def test_registry_derives_implemented_state_from_runtime_capabilities() -> None:
     class HybridRuntimeAdapter:
         strategy = RAGStrategy.HYBRID
+
+        @classmethod
+        def probe_trace(cls) -> RAGStrategyTrace:
+            return RAGStrategyTrace(
+                strategy=cls.strategy,
+                action="probe_hybrid",
+                status="complete",
+                detail={"evidence": "hybrid", "adapter_strategy": cls.strategy.value},
+            )
 
         async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
             return RAGExecutionResult(

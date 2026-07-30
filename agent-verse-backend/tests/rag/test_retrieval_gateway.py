@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.providers.base import CompletionResponse, EmbedResponse
 from app.rag.contracts import (
     RAGCitation,
     RAGExecutionRequest,
@@ -30,6 +31,7 @@ from app.rag.gateway import (
     RetrievalGateway,
     RetrievalStrategyCapability,
     SQLCollectionAuthorizer,
+    TenantScopedGraphCapabilityAdapter,
 )
 from app.tenancy.context import PlanTier, TenantContext
 
@@ -41,8 +43,22 @@ TENANT = TenantContext(
 
 
 class _CompleteProvider:
-    async def complete(self, request: object) -> object:
-        return request
+    async def complete(self, request: Any) -> CompletionResponse:
+        return CompletionResponse(
+            content="retention policy\nrecords retention\npolicy duration",
+            model=request.model,
+        )
+
+
+class _Embedder:
+    async def embed(self, request: Any) -> EmbedResponse:
+        return EmbedResponse(
+            embeddings=[[0.1] for _ in request.texts],
+            model="test-embedder",
+        )
+
+
+_DEFAULT_DEPENDENCY = object()
 
 
 class _Transaction:
@@ -125,14 +141,23 @@ class StaticAdapter:
         return self.result
 
 
+class CloseableAdapter(StaticAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_count = 0
+
+    async def aclose(self) -> None:
+        self.close_count += 1
+
+
 def _gateway(
     *,
     adapter: Any | None = None,
     strategy: RAGStrategy = RAGStrategy.FUSION,
     authorizer: RecordingAuthorizer | None = None,
     session_factory: RecordingSessionFactory | None = None,
-    embedder: object | None = object(),
-    llm_resolver: Callable[..., object] | None = None,
+    embedder: object | None = _Embedder(),
+    llm_resolver: Callable[..., object] | None | object = _DEFAULT_DEPENDENCY,
     requires_embedder: bool = False,
     requires_provider: bool = False,
     graph_capability: object | None = None,
@@ -142,6 +167,17 @@ def _gateway(
 ) -> tuple[RetrievalGateway, RecordingAuthorizer, RecordingSessionFactory]:
     factory = session_factory or RecordingSessionFactory()
     collection_authorizer = authorizer or RecordingAuthorizer()
+    resolved_llm_resolver: Callable[..., object] | None
+    if llm_resolver is _DEFAULT_DEPENDENCY:
+        def default_llm_resolver(*_: object) -> ResolvedLLM:
+            return ResolvedLLM(
+                provider=_CompleteProvider(),
+                model="test-model",
+            )
+
+        resolved_llm_resolver = default_llm_resolver
+    else:
+        resolved_llm_resolver = llm_resolver  # type: ignore[assignment]
     capabilities = {}
     if adapter is not None:
         capabilities[strategy] = RetrievalStrategyCapability(
@@ -154,7 +190,7 @@ def _gateway(
     dependencies = RetrievalDependencies(
         session_factory=factory,
         embedder=embedder,
-        llm_resolver=llm_resolver,
+        llm_resolver=resolved_llm_resolver,
         graph_capability=graph_capability,
         search_capability=search_capability,
         policy_services=(),
@@ -162,6 +198,30 @@ def _gateway(
         strategy_capabilities=capabilities,
     )
     return RetrievalGateway(dependencies), collection_authorizer, factory
+
+
+@pytest.mark.asyncio
+async def test_gateway_closes_each_closeable_capability_adapter_exactly_once() -> None:
+    shared_adapter = CloseableAdapter()
+    distinct_adapter = CloseableAdapter()
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=None,
+            collection_authorizer=RecordingAuthorizer(),
+            strategy_capabilities={
+                RAGStrategy.NAIVE: RetrievalStrategyCapability(shared_adapter),
+                RAGStrategy.HYBRID: RetrievalStrategyCapability(shared_adapter),
+                RAGStrategy.FUSION: RetrievalStrategyCapability(distinct_adapter),
+                RAGStrategy.GRAPH: RetrievalStrategyCapability(StaticAdapter()),
+            },
+        )
+    )
+
+    await asyncio.gather(gateway.aclose(), gateway.aclose())
+    await gateway.aclose()
+
+    assert shared_adapter.close_count == 1
+    assert distinct_adapter.close_count == 1
 
 
 @pytest.fixture
@@ -417,29 +477,34 @@ async def test_fusion_engine_propagates_gateway_operation_failure() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("gateway_kwargs", "reason"),
+    ("gateway_kwargs", "strategy", "reason"),
     [
-        ({}, "runtime adapter"),
+        ({}, RAGStrategy.FUSION, "adapter_not_registered"),
         (
-            {"adapter": StaticAdapter(), "embedder": None, "requires_embedder": True},
-            "embedding provider",
+            {"adapter": StaticAdapter(), "embedder": None},
+            RAGStrategy.FUSION,
+            "embedder_unavailable",
         ),
         (
-            {"adapter": StaticAdapter(), "requires_provider": True},
-            "LLM provider",
+            {"adapter": StaticAdapter(), "llm_resolver": None},
+            RAGStrategy.FUSION,
+            "llm_provider_unavailable",
         ),
         (
-            {"adapter": StaticAdapter(), "requires_graph": True},
-            "graph capability",
+            {"adapter": StaticAdapter(), "strategy": RAGStrategy.GRAPH},
+            RAGStrategy.GRAPH,
+            "graph_capability_unavailable",
         ),
         (
-            {"adapter": StaticAdapter(), "requires_search": True},
-            "search capability",
+            {"adapter": StaticAdapter(), "strategy": RAGStrategy.WEB_AUGMENTED},
+            RAGStrategy.WEB_AUGMENTED,
+            "search_capability_unavailable",
         ),
     ],
 )
 async def test_missing_strategy_dependencies_raise_sanitized_unavailable_error(
     gateway_kwargs: dict[str, Any],
+    strategy: RAGStrategy,
     reason: str,
 ) -> None:
     gateway, _, _ = _gateway(**gateway_kwargs)
@@ -449,10 +514,10 @@ async def test_missing_strategy_dependencies_raise_sanitized_unavailable_error(
             TENANT,
             collection_id="collection-1",
             query="retention policy",
-            strategy_id="fusion",
+            strategy_id=strategy,
         )
 
-    assert reason in exc_info.value.reason
+    assert exc_info.value.reason == reason
     assert "secret-value" not in str(exc_info.value)
 
 
@@ -774,7 +839,11 @@ async def test_gateway_engine_runner_is_always_strict(
                 top_k=request.top_k,
             )
 
-    gateway, _, _ = _gateway(adapter=GraphAdapter(), strategy=RAGStrategy.GRAPH)
+    gateway, _, _ = _gateway(
+        adapter=GraphAdapter(),
+        strategy=RAGStrategy.GRAPH,
+        graph_capability=TenantScopedGraphCapabilityAdapter(),
+    )
 
     with (
         patch("app.rag.engine.hybrid_search", AsyncMock()) as hybrid,
@@ -797,7 +866,7 @@ async def test_gateway_engine_runner_passes_configured_embedder(
 ) -> None:
     from app.rag.engine import RetrievalResult
 
-    embedder = object()
+    embedder = _Embedder()
 
     class FusionAdapter:
         async def execute(
@@ -871,7 +940,7 @@ async def test_public_fusion_uses_concurrent_tenant_scoped_session_per_variant(
                 top_k=request.top_k,
             )
 
-    gateway, _, factory = _gateway(adapter=FusionAdapter(), embedder=None)
+    gateway, _, factory = _gateway(adapter=FusionAdapter())
 
     with (
         patch(
@@ -1296,10 +1365,13 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     redis_cost_controller = object()
     app.state.redis_cost_controller = redis_cost_controller
     in_memory_gateway = app.state.retrieval_gateway
+    in_memory_gateway.aclose = AsyncMock()
 
     async with app.router.lifespan_context(app):
         db_gateway = app.state.retrieval_gateway
+        db_gateway.aclose = AsyncMock()
         assert db_gateway is not in_memory_gateway
+        in_memory_gateway.aclose.assert_awaited_once()
         assert db_gateway.dependencies.session_factory is db_factory
         assert isinstance(db_gateway.dependencies.collection_authorizer, SQLCollectionAuthorizer)
         assert isinstance(
@@ -1319,3 +1391,20 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
 
     assert pools.started
     assert pools.stopped
+    db_gateway.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_lifespan_closes_active_hot_replacement_once() -> None:
+    from app.main import create_app
+
+    app = create_app(manage_pools=False)
+    initial_gateway = app.state.retrieval_gateway
+    initial_gateway.aclose = AsyncMock()
+    replacement_gateway = AsyncMock()
+
+    async with app.router.lifespan_context(app):
+        app.state.retrieval_gateway = replacement_gateway
+
+    initial_gateway.aclose.assert_awaited_once()
+    replacement_gateway.aclose.assert_awaited_once()

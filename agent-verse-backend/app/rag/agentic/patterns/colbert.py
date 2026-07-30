@@ -1,100 +1,405 @@
-"""ColBERT — Late Interaction Reranking via MaxSim Token Scoring.
+"""ColBERT token-level late-interaction reranking."""
 
-Production path: Uses all-MiniLM-L6-v2 from sentence-transformers to generate
-token-level embeddings, then computes MaxSim exactly as in ColBERT.
-
-Fallback: TF-IDF weighted token overlap (no external model required).
-"""
 from __future__ import annotations
 
 import math
-import re
-from collections import Counter
-from dataclasses import dataclass
-from typing import Any
+import warnings
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from dataclasses import replace
+from functools import partial
+from threading import Lock
+from typing import Any, ClassVar, Protocol, cast
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.contracts import ColBERTRAGRuntimeAdapter as ColBERTRAGRuntimeContract
+from app.rag.contracts import RAGExecutionRequest, RAGExecutionResult, RAGStrategy
+from app.rag.engine import RetrievalStrategyExecutionError
+from app.rag_platform.reranker_contract import (
+    AsyncCloseableProtocol,
+    BoundedAsyncExecutor,
+    RerankerInferenceError,
+    RerankerLoadError,
+    RerankerProtocol,
+)
 
-_STOPWORDS = frozenset({
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "shall", "can", "of", "in", "on",
-    "at", "to", "for", "with", "by", "from", "as", "and", "or", "but",
-    "not", "so", "if", "when", "where", "how", "that", "this", "these",
-    "those", "it", "its", "i", "you", "he", "she", "we", "they", "what",
-    "who", "which",
-})
-
-_encoder_instance: Any = None
-
-
-def _get_encoder() -> Any | None:
-    """Load sentence-transformers encoder lazily (singleton)."""
-    global _encoder_instance
-    if _encoder_instance is not None:
-        return _encoder_instance
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        # all-MiniLM-L6-v2: 22MB, 384-dim, fast and accurate
-        _encoder_instance = SentenceTransformer("all-MiniLM-L6-v2")
-        return _encoder_instance
-    except Exception:
-        return None
+DEFAULT_COLBERT_CHECKPOINT = "colbert-ir/colbertv2.0"
+_MAX_CANDIDATES = 100
 
 
-def _tokenize(text: str) -> list[str]:
-    """Tokenize text into lowercase non-stopword tokens."""
-    tokens = re.findall(r'\b[a-zA-Z0-9]+\b', text.lower())
-    return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
+class RAGatouilleColBERTModel(Protocol):
+    """Supported blocking RAGatouille surface for checkpoint-correct scoring."""
+
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        k: int,
+    ) -> object: ...
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two float vectors."""
-    if not a or not b or len(a) != len(b):
+ColBERTModelLoader = Callable[[], RAGatouilleColBERTModel]
+
+
+class ColBERTCompatibilityReranker(
+    RerankerProtocol,
+    AsyncCloseableProtocol,
+    Protocol,
+):
+    """Async and synchronous scoring required by the legacy pattern wrapper."""
+
+    def score_sync(self, query: str, documents: list[str]) -> list[float]: ...
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if not left or len(left) != len(right):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(x * x for x in b))
-    return dot / (mag_a * mag_b) if mag_a > 0 and mag_b > 0 else 0.0
+    magnitude_left = math.sqrt(sum(value * value for value in left))
+    magnitude_right = math.sqrt(sum(value * value for value in right))
+    if magnitude_left == 0.0 or magnitude_right == 0.0:
+        return 0.0
+    return sum(
+        left_value * right_value
+        for left_value, right_value in zip(left, right, strict=True)
+    ) / (magnitude_left * magnitude_right)
 
 
-def _maxsim_with_embeddings(
-    query_emb: list[list[float]],
-    doc_emb: list[list[float]],
+def maxsim_score(
+    query_embeddings: list[list[float]],
+    document_embeddings: list[list[float]],
 ) -> float:
-    """True ColBERT MaxSim using token embeddings."""
-    if not query_emb or not doc_emb:
+    """Compute ColBERT MaxSim across every query token and document token."""
+    if not query_embeddings or not document_embeddings:
         return 0.0
-    total = 0.0
-    for q_tok_emb in query_emb:
-        max_sim = max((_cosine(q_tok_emb, d_tok_emb) for d_tok_emb in doc_emb), default=0.0)
-        total += max_sim
-    return total / len(query_emb)
+    similarities = [
+        max(
+            _cosine(query_token, document_token)
+            for document_token in document_embeddings
+        )
+        for query_token in query_embeddings
+    ]
+    return sum(similarities)
 
 
-@dataclass
-class ColBERTScore:
-    chunk_id: str
-    content: str
-    colbert_score: float
-    original_score: float
+def _load_colbert_model(
+    checkpoint: str = DEFAULT_COLBERT_CHECKPOINT,
+) -> RAGatouilleColBERTModel:
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"(?s).*RAGatouille WARNING: Future Release Notice.*",
+                category=UserWarning,
+            )
+            from ragatouille import RAGPretrainedModel  # type: ignore[import-untyped]
+
+        return cast(
+            RAGatouilleColBERTModel,
+            RAGPretrainedModel.from_pretrained(checkpoint),
+        )
+    except Exception as exc:
+        raise RerankerLoadError(
+            f"ColBERT model could not be loaded: {checkpoint}"
+        ) from exc
+
+
+def _result_index(
+    result: Mapping[str, object],
+    documents: list[str],
+) -> int:
+    content = result.get("content")
+    if not isinstance(content, str):
+        raise RerankerInferenceError("ColBERT result content is missing or invalid")
+
+    raw_index = result.get("result_index")
+    if raw_index is not None:
+        if (
+            isinstance(raw_index, bool)
+            or not isinstance(raw_index, int)
+            or not 0 <= raw_index < len(documents)
+        ):
+            raise RerankerInferenceError("ColBERT result_index is invalid")
+        if documents[raw_index] != content:
+            raise RerankerInferenceError(
+                "ColBERT result_index does not match result content"
+            )
+        return raw_index
+
+    matching_indices = [
+        index for index, document in enumerate(documents) if document == content
+    ]
+    if not matching_indices:
+        raise RerankerInferenceError("ColBERT result content is not a candidate")
+    if len(matching_indices) > 1:
+        raise RerankerInferenceError(
+            "ColBERT result content maps to multiple candidates"
+        )
+    return matching_indices[0]
+
+
+def _scores_in_candidate_order(results: object, documents: list[str]) -> list[float]:
+    if not isinstance(results, list) or len(results) != len(documents):
+        raise RerankerInferenceError(
+            "ColBERT returned a result count that does not match the candidates"
+        )
+
+    scores: list[float | None] = [None] * len(documents)
+    for raw_result in results:
+        if not isinstance(raw_result, Mapping):
+            raise RerankerInferenceError("ColBERT returned an invalid result record")
+        index = _result_index(raw_result, documents)
+        if scores[index] is not None:
+            raise RerankerInferenceError("ColBERT returned a duplicate candidate result")
+        raw_score = raw_result.get("score")
+        if isinstance(raw_score, bool) or not isinstance(raw_score, int | float):
+            raise RerankerInferenceError("ColBERT result score is missing or invalid")
+        score = float(raw_score)
+        if not math.isfinite(score):
+            raise RerankerInferenceError("ColBERT result score must be finite")
+        scores[index] = score
+
+    if any(score is None for score in scores):
+        raise RerankerInferenceError("ColBERT omitted a candidate result")
+    return cast(list[float], scores)
+
+
+class ColBERTLateInteractionReranker(RerankerProtocol):
+    """Lazy real ColBERT scorer with model work isolated from the event loop."""
+
+    def __init__(
+        self,
+        *,
+        checkpoint: str = DEFAULT_COLBERT_CHECKPOINT,
+        model_loader: ColBERTModelLoader | None = None,
+        max_workers: int = 1,
+        max_queue_size: int = 0,
+        backend_thread_safe: bool = False,
+    ) -> None:
+        if max_workers < 1:
+            raise ValueError("max_workers must be positive")
+        if not checkpoint.strip():
+            raise ValueError("ColBERT checkpoint cannot be empty")
+        self._model_loader = model_loader or partial(_load_colbert_model, checkpoint)
+        self._backend_thread_safe = backend_thread_safe
+        self._model: RAGatouilleColBERTModel | None = None
+        self._model_lock = Lock()
+        self._rerank_lock = Lock()
+        worker_count = max_workers if backend_thread_safe else 1
+        self._workers = BoundedAsyncExecutor(
+            max_workers=worker_count,
+            max_queue_size=max_queue_size,
+            thread_name_prefix="colbert-reranker",
+        )
+
+    def _get_model(self) -> RAGatouilleColBERTModel:
+        if self._model is not None:
+            return self._model
+        with self._model_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                self._model = self._model_loader()
+            except RerankerLoadError:
+                raise
+            except Exception as exc:
+                raise RerankerLoadError("ColBERT model could not be loaded") from exc
+            return self._model
+
+    def _score_blocking(self, query: str, documents: list[str]) -> list[float]:
+        model = self._get_model()
+        try:
+            inference_guard = (
+                nullcontext() if self._backend_thread_safe else self._rerank_lock
+            )
+            with inference_guard:
+                results = model.rerank(
+                    query=query,
+                    documents=documents,
+                    k=len(documents),
+                )
+            return _scores_in_candidate_order(results, documents)
+        except (RerankerLoadError, RerankerInferenceError):
+            raise
+        except Exception as exc:
+            raise RerankerInferenceError(
+                "ColBERT late-interaction scoring failed"
+            ) from exc
+
+    async def score(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
+            return []
+        return await self._workers.run(self._score_blocking, query, documents)
+
+    async def aclose(self) -> None:
+        """Cancel queued work and shut down the dedicated worker lifecycle."""
+        await self._workers.aclose()
+
+    def score_sync(self, query: str, documents: list[str]) -> list[float]:
+        """Compatibility boundary that still performs model work in a worker thread."""
+        if not documents:
+            return []
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(self._score_blocking, query, documents).result()
+
+
+class ColBERTRAGRuntimeAdapter(ColBERTRAGRuntimeContract):
+    """Canonical persisted retrieval followed by real ColBERT late interaction."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.COLBERT
+
+    def __init__(
+        self,
+        *,
+        colbert_checkpoint: str = DEFAULT_COLBERT_CHECKPOINT,
+        reranker: RerankerProtocol | None = None,
+        owns_reranker: bool = False,
+        candidate_multiplier: int = 4,
+    ) -> None:
+        if candidate_multiplier < 2:
+            raise ValueError("ColBERT candidate_multiplier must be at least 2")
+        self._reranker: RerankerProtocol
+        if reranker is None:
+            self._reranker = ColBERTLateInteractionReranker(
+                checkpoint=colbert_checkpoint
+            )
+            self._owns_reranker = True
+        else:
+            self._reranker = reranker
+            self._owns_reranker = owns_reranker
+        self._candidate_multiplier = candidate_multiplier
+
+    async def aclose(self) -> None:
+        """Shut down an owned reranker lifecycle when the implementation exposes one."""
+        if not self._owns_reranker:
+            return
+        close = getattr(self._reranker, "aclose", None)
+        if close is not None:
+            await close()
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.contracts import RAGStrategyTrace
+        from app.rag.gateway import (
+            _canonical_result,
+            _embed_text,
+            _extend_trace,
+            _search_persisted,
+        )
+
+        if context is None:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "tenant-scoped gateway context is required"
+            )
+        candidate_limit = min(
+            request.top_k * self._candidate_multiplier,
+            _MAX_CANDIDATES,
+        )
+        embedding = await _embed_text(context, request.query, self.strategy)
+        evidence: list[dict[str, Any]] = []
+        candidates = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+            top_k=candidate_limit,
+        )
+        try:
+            rerank_scores = await self._reranker.score(
+                request.query,
+                [candidate.content for candidate in candidates],
+            )
+        except (RerankerLoadError, RerankerInferenceError):
+            raise
+        except Exception as exc:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "reranker failed"
+            ) from exc
+        if len(rerank_scores) != len(candidates):
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "reranker returned an invalid score count"
+            )
+
+        reranked = sorted(
+            (
+                replace(
+                    candidate,
+                    score=rerank_score,
+                    source_metadata={
+                        **candidate.source_metadata,
+                        "original_score": candidate.score,
+                        "colbert_score": rerank_score,
+                        "rerank_score": rerank_score,
+                    },
+                    retrieval_legs=list(
+                        dict.fromkeys([*candidate.retrieval_legs, self.strategy.value])
+                    ),
+                    component_scores={
+                        **candidate.component_scores,
+                        "colbert": rerank_score,
+                    },
+                )
+                for candidate, rerank_score in zip(
+                    candidates,
+                    rerank_scores,
+                    strict=True,
+                )
+            ),
+            key=lambda candidate: (-candidate.score, candidate.chunk_id),
+        )[: request.top_k]
+        result = _canonical_result(request, self.strategy, reranked, evidence)
+        return _extend_trace(
+            result,
+            [
+                RAGStrategyTrace(
+                    strategy=self.strategy,
+                    action="colbert_late_interaction",
+                    status="complete",
+                    detail={
+                        "candidate_count": len(candidates),
+                        "candidate_limit": candidate_limit,
+                        "returned_count": len(reranked),
+                        "rerank_scores": {
+                            candidate.chunk_id: candidate.score
+                            for candidate in reranked
+                        },
+                    },
+                )
+            ],
+        )
 
 
 class ColBERTPattern(RAGPattern):
-    """ColBERT late interaction reranking.
+    """Compatibility wrapper over the real ColBERT late-interaction scorer."""
 
-    Production: token-level embeddings via all-MiniLM-L6-v2 + MaxSim.
-    Fallback: TF-IDF weighted token overlap.
-    """
-
-    def __init__(self, alpha: float = 0.5) -> None:
-        """
-        Args:
-            alpha: weight for ColBERT score vs original score.
-                   final = alpha * colbert + (1-alpha) * original
-        """
+    def __init__(
+        self,
+        alpha: float = 0.5,
+        *,
+        reranker: ColBERTCompatibilityReranker | None = None,
+        owns_reranker: bool = False,
+    ) -> None:
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("alpha must be between zero and one")
         self._alpha = alpha
+        self._reranker: ColBERTCompatibilityReranker
+        if reranker is None:
+            self._reranker = ColBERTLateInteractionReranker()
+            self._owns_reranker = True
+        else:
+            self._reranker = reranker
+            self._owns_reranker = owns_reranker
+
+    async def aclose(self) -> None:
+        """Shut down the compatibility wrapper's dedicated worker lifecycle."""
+        if self._owns_reranker:
+            await self._reranker.aclose()
 
     @property
     def pattern_id(self) -> str:
@@ -106,76 +411,52 @@ class ColBERTPattern(RAGPattern):
 
     @property
     def description(self) -> str:
-        encoder = _get_encoder()
-        backend = (
-            "all-MiniLM-L6-v2 (real token embeddings)"
-            if encoder
-            else "TF-IDF token overlap (fallback)"
-        )
         return (
-            f"ColBERT late interaction reranking — MaxSim token-level scoring. "
-            f"Backend: {backend}. Alpha={self._alpha}."
+            "ColBERT late interaction reranking with contextual token embeddings "
+            f"and MaxSim scoring. Alpha={self._alpha}."
         )
 
     def is_compatible(self, goal_properties: Any) -> bool:
+        del goal_properties
         try:
             from app.core.config import get_settings
 
-            if not get_settings().enable_colbert:
-                return False
+            return bool(get_settings().enable_colbert)
         except Exception:
-            pass
-        return True
+            return False
 
-    def _embed_tokens(self, text: str) -> list[list[float]] | None:
-        """Embed each token of the text.
-
-        Returns list of per-token embeddings (shape: [n_tokens, dim]) or None
-        when the encoder is unavailable.
-        """
-        encoder = _get_encoder()
-        if encoder is None:
-            return None
-        tokens = _tokenize(text)
-        if not tokens:
-            return None
-        try:
-            embeddings = encoder.encode(tokens, batch_size=64, show_progress_bar=False)
-            return [emb.tolist() for emb in embeddings]
-        except Exception:
-            return None
+    def _merge_scores(
+        self,
+        chunks: list[dict[str, Any]],
+        scores: list[float],
+        top_k: int | None,
+    ) -> list[dict[str, Any]]:
+        if len(scores) != len(chunks):
+            raise RerankerInferenceError("ColBERT returned an invalid score count")
+        reranked = []
+        for chunk, colbert_score in zip(chunks, scores, strict=True):
+            original_score = float(chunk.get("score", 0.0))
+            rerank_score = (
+                self._alpha * colbert_score
+                + (1.0 - self._alpha) * original_score
+            )
+            reranked.append(
+                {
+                    **chunk,
+                    "score": rerank_score,
+                    "original_score": original_score,
+                    "colbert_score": colbert_score,
+                    "rerank_score": rerank_score,
+                }
+            )
+        reranked.sort(
+            key=lambda chunk: (-float(chunk["score"]), str(chunk.get("chunk_id", "")))
+        )
+        return reranked if top_k is None else reranked[:top_k]
 
     def _maxsim_score(self, query: str, document: str) -> float:
-        """Compute MaxSim score — real embeddings or TF-IDF fallback."""
-        # Try real token embeddings first
-        q_emb = self._embed_tokens(query)
-        d_emb = self._embed_tokens(document)
-        if q_emb is not None and d_emb is not None:
-            return _maxsim_with_embeddings(q_emb, d_emb)
-
-        # TF-IDF fallback (original implementation)
-        query_tokens = _tokenize(query)
-        doc_tokens = _tokenize(document)
-        if not query_tokens or not doc_tokens:
-            return 0.0
-        doc_token_set = set(doc_tokens)
-        doc_freq = Counter(doc_tokens)
-        total_doc_tokens = len(doc_tokens)
-        max_sim_sum = 0.0
-        for q_tok in query_tokens:
-            if q_tok in doc_token_set:
-                tf = doc_freq[q_tok] / total_doc_tokens
-                max_sim = min(1.0, 0.7 + 0.3 * tf * 10)
-            elif any(
-                dt.startswith(q_tok[:4])
-                for dt in doc_token_set
-                if len(dt) >= 4 and len(q_tok) >= 4
-            ):
-                max_sim = 0.6
-            else:
-                max_sim = 0.0
-            max_sim_sum += max_sim
-        return max_sim_sum / len(query_tokens)
+        """Compatibility helper backed by the configured real ColBERT model."""
+        return self._reranker.score_sync(query, [document])[0]
 
     def rerank(
         self,
@@ -183,30 +464,27 @@ class ColBERTPattern(RAGPattern):
         chunks: list[dict[str, Any]],
         top_k: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Rerank chunks using ColBERT MaxSim scoring. Returns sorted list."""
         if not chunks:
             return []
+        scores = self._reranker.score_sync(
+            query,
+            [str(chunk.get("content", "")) for chunk in chunks],
+        )
+        return self._merge_scores(chunks, scores, top_k)
 
-        scored: list[dict[str, Any]] = []
-        for chunk in chunks:
-            content = chunk.get("content", "")
-            original_score = float(chunk.get("score", 0.5))
-            colbert = self._maxsim_score(query, content)
-
-            # Blend ColBERT with original retrieval score
-            final = self._alpha * colbert + (1 - self._alpha) * original_score
-
-            scored.append({
-                **chunk,
-                "score": final,
-                "colbert_score": colbert,
-                "original_score": original_score,
-            })
-
-        scored.sort(key=lambda c: c["score"], reverse=True)
-        if top_k is not None:
-            scored = scored[:top_k]
-        return scored
+    async def rerank_async(
+        self,
+        query: str,
+        chunks: list[dict[str, Any]],
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not chunks:
+            return []
+        scores = await self._reranker.score(
+            query,
+            [str(chunk.get("content", "")) for chunk in chunks],
+        )
+        return self._merge_scores(chunks, scores, top_k)
 
     async def execute(
         self,
@@ -216,30 +494,18 @@ class ColBERTPattern(RAGPattern):
         top_k: int = 5,
         **kwargs: Any,
     ) -> str:
-        """Rerank chunks and return combined context string."""
-        import asyncio
+        del kwargs
+        reranked = await self.rerank_async(query, chunks, top_k)
+        return "\n\n".join(str(chunk.get("content", "")) for chunk in reranked)
 
-        try:
-            from app.observability.logging import get_logger
 
-            get_logger(__name__).info("colbert_late_interaction_started", query=query[:60])
-        except Exception:
-            pass
+def _get_encoder() -> RAGatouilleColBERTModel | None:
+    """Compatibility availability probe without substituting another scorer."""
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_load_colbert_model).result()
+    except RerankerLoadError:
+        return None
 
-        # Run blocking inference in thread pool to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
-        try:
-            reranked = await loop.run_in_executor(None, self.rerank, query, chunks, top_k)
-        except Exception:
-            reranked = self.rerank(query, chunks, top_k)
 
-        result = "\n\n".join(c.get("content", "") for c in reranked) if reranked else ""
-
-        try:
-            from app.observability.logging import get_logger
-
-            get_logger(__name__).info("colbert_late_interaction_completed", result_len=len(result))
-        except Exception:
-            pass
-
-        return result
+_maxsim_with_embeddings = maxsim_score

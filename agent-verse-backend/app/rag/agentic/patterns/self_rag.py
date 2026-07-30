@@ -20,9 +20,24 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.agentic.query_reformulator import QueryReformulator
+from app.rag.contracts import (
+    RAGExecutionRequest,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
+from app.rag.contracts import (
+    SelfRAGRuntimeAdapter as SelfRAGRuntimeContract,
+)
+from app.rag.engine import (
+    RetrievalResult,
+    RetrievalStrategyExecutionError,
+    merge_grounding_results,
+)
 
 _SHOULD_RETRIEVE_SYSTEM = """Decide if the following query requires external retrieval.
 Respond with JSON: {"should_retrieve": <true/false>, "reason": "<brief reason>"}
@@ -52,6 +67,215 @@ class SelfRAGResult:
     is_supported: bool = True
     is_useful: bool = True
     confidence: float = 0.7
+
+
+@dataclass(frozen=True, slots=True)
+class CritiqueRecord:
+    attempt: int
+    relevance: bool
+    support: bool
+    usefulness: bool
+    confidence: float
+
+    def to_metadata(self) -> dict[str, int | bool | float]:
+        return {
+            "attempt": self.attempt,
+            "relevance": self.relevance,
+            "support": self.support,
+            "usefulness": self.usefulness,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CritiqueDecision:
+    is_relevant: bool
+    is_supported: bool
+    is_useful: bool
+    confidence: float
+
+    @classmethod
+    def from_json(cls, content: str) -> CritiqueDecision:
+        try:
+            payload = json.loads(content)
+            if not isinstance(payload, dict):
+                raise TypeError("critique must be an object")
+            bool_fields = ("is_relevant", "is_supported", "is_useful")
+            if any(not isinstance(payload.get(field), bool) for field in bool_fields):
+                raise TypeError("critique boolean fields must be booleans")
+            raw_confidence = payload.get("confidence")
+            if isinstance(raw_confidence, bool) or not isinstance(
+                raw_confidence, int | float
+            ):
+                raise TypeError("critique confidence must be numeric")
+            confidence = float(raw_confidence)
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("critique confidence is outside 0.0-1.0")
+            return cls(
+                is_relevant=payload["is_relevant"],
+                is_supported=payload["is_supported"],
+                is_useful=payload["is_useful"],
+                confidence=confidence,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid critique decision") from exc
+
+    def to_dict(self) -> dict[str, bool | float]:
+        return {
+            "is_relevant": self.is_relevant,
+            "is_supported": self.is_supported,
+            "is_useful": self.is_useful,
+            "confidence": self.confidence,
+        }
+
+
+class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
+    """Canonical Self-RAG adapter with persisted critique and bounded retry evidence."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.SELF_RAG
+
+    def __init__(self, max_retries: int = 1) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
+        self._max_retries = max_retries
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.providers.base import CompletionRequest, Message
+        from app.rag.gateway import (
+            _canonical_result,
+            _embed_text,
+            _extend_trace,
+            _search_persisted,
+        )
+
+        if context is None or context.llm is None or context.llm.provider is None:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "resolved LLM is required"
+            )
+
+        provider = context.llm.provider
+        model = context.llm.model
+        pattern = SelfRAGPattern()
+        should_retrieve = await pattern._should_retrieve(
+            request.query,
+            provider,
+            model,
+            True,
+        )
+        evidence: list[dict[str, Any]] = []
+        retained: list[RetrievalResult] = []
+        critiques: list[CritiqueRecord] = []
+        current_query = request.query
+        answer = ""
+
+        if not should_retrieve:
+            response = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=request.query)],
+                    model=model,
+                    max_tokens=800,
+                    temperature=0.0,
+                )
+            )
+            answer = response.content.strip()
+        else:
+            reformulator = QueryReformulator(max_attempts=1)
+            for attempt in range(self._max_retries + 1):
+                embedding = await _embed_text(context, current_query, self.strategy)
+                attempt_evidence: list[dict[str, Any]] = []
+                retrieved = await _search_persisted(
+                    context,
+                    request,
+                    query=current_query,
+                    embedding=embedding,
+                    retrieval_mode="hybrid",
+                    evidence=attempt_evidence,
+                )
+                for item in attempt_evidence:
+                    item.update({"attempt": attempt, "query": current_query})
+                evidence.extend(attempt_evidence)
+                retained = merge_grounding_results(
+                    [retained, retrieved],
+                    top_k=request.top_k,
+                )
+                context_text = "\n\n".join(item.content for item in retrieved)
+                response = await provider.complete(
+                    CompletionRequest(
+                        messages=[
+                            Message(role="system", content=_GENERATE_WITH_CONTEXT),
+                            Message(
+                                role="user",
+                                content=(
+                                    f"Context:\n{context_text}\n\n"
+                                    f"Question: {request.query}"
+                                ),
+                            ),
+                        ],
+                        model=model,
+                        max_tokens=800,
+                        temperature=0.0,
+                    )
+                )
+                answer = response.content.strip()
+                try:
+                    critique = await pattern._critique(
+                        request.query,
+                        answer,
+                        context_text,
+                        provider,
+                        model,
+                        True,
+                    )
+                except ValueError as exc:
+                    raise RetrievalStrategyExecutionError(
+                        self.strategy.value, "LLM returned an invalid critique decision"
+                    ) from exc
+                record = CritiqueRecord(
+                    attempt=attempt,
+                    relevance=critique["is_relevant"],
+                    support=critique["is_supported"],
+                    usefulness=critique["is_useful"],
+                    confidence=critique["confidence"],
+                )
+                critiques.append(record)
+                if record.support and record.usefulness:
+                    break
+                if attempt < self._max_retries:
+                    reformulation = await reformulator.reformulate_one(
+                        current_query,
+                        provider=provider,
+                        model=model,
+                        strict=True,
+                    )
+                    current_query = reformulation.reformulated_query
+
+        terminal_critique = critiques[-1] if critiques else None
+        is_grounded = bool(
+            terminal_critique
+            and terminal_critique.support
+            and terminal_critique.usefulness
+        )
+        result = _canonical_result(request, self.strategy, retained, evidence)
+        result = result.model_copy(update={"answer": answer, "grounded": is_grounded})
+        return _extend_trace(
+            result,
+            [
+                RAGStrategyTrace(
+                    strategy=self.strategy,
+                    action="self_rag_critique",
+                    status="complete",
+                    detail={
+                        "retrieval_required": should_retrieve,
+                        "critiques": [record.to_metadata() for record in critiques],
+                        "retry_count": max(0, len(critiques) - 1),
+                    },
+                )
+            ],
+        )
 
 
 class SelfRAGPattern(RAGPattern):
@@ -320,10 +544,21 @@ class SelfRAGPattern(RAGPattern):
             strict=strict,
         )
         if resp is None:
-            return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}
+            return {
+                "is_relevant": False,
+                "is_supported": False,
+                "is_useful": False,
+                "confidence": 0.0,
+            }
         raw = (resp.content or "").strip()
         try:
-            parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}
+            return CritiqueDecision.from_json(raw).to_dict()
+        except ValueError:
+            if strict:
+                raise
+            return {
+                "is_relevant": False,
+                "is_supported": False,
+                "is_useful": False,
+                "confidence": 0.0,
+            }

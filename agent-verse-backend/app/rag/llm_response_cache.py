@@ -21,8 +21,8 @@ Design decisions
 
 Savings (typical):
   - 40% of planner calls are cache-able (same goal, same tools)
-  - Planner call cost: ~$0.01–0.03 saved per cache hit
-  - Latency: 500ms–3s → <5ms on cache hit
+    - Planner call cost: ~$0.01-0.03 saved per cache hit
+    - Latency: 500ms-3s -> <5ms on cache hit
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import json
 import time
 import zlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from app.observability.logging import get_logger
 
@@ -112,7 +112,7 @@ class LLMResponseCache:
                 raw = await self._redis.get(f"{_PREFIX}{tenant_id}:{key}")
                 if raw:
                     data = json.loads(zlib.decompress(raw))
-                    content = data["content"]
+                    content = cast(str, data["content"])
                     # Promote to L1
                     self._l1_put(tenant_id, key, LLMCacheEntry(
                         content=content, model=model, cached_at=time.monotonic()

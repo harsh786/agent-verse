@@ -3,27 +3,24 @@ World-class SemanticCache tests — covers every layer of the new implementation
 """
 from __future__ import annotations
 
-import asyncio
-import struct
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.rag.semantic_cache import (
     SemanticCache,
     _CacheHit,
-    _LRUCache,
-    _cosine,
     _compress,
+    _cosine,
     _decompress,
     _find_best_match,
+    _LRUCache,
     _pack_embedding,
     _unpack_embedding,
 )
 from app.tenancy.context import PlanTier, TenantContext
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -91,12 +88,29 @@ def _mock_redis() -> MagicMock:
         def __init__(self):
             self._ops = []
 
-        def hset(self, *a, **kw): self._ops.append(("hset", a, kw)); return self
-        def expire(self, *a, **kw): self._ops.append(("expire", a, kw)); return self
-        def sadd(self, *a, **kw): self._ops.append(("sadd", a, kw)); return self
-        def get(self, *a, **kw): self._ops.append(("get", a, kw)); return self
-        def delete(self, *a, **kw): self._ops.append(("del", a, kw)); return self
-        def hmget(self, *a, **kw): self._ops.append(("hmget", a, kw)); return self
+        def hset(self, *a, **kw):
+            self._ops.append(("hset", a, kw))
+            return self
+
+        def expire(self, *a, **kw):
+            self._ops.append(("expire", a, kw))
+            return self
+
+        def sadd(self, *a, **kw):
+            self._ops.append(("sadd", a, kw))
+            return self
+
+        def get(self, *a, **kw):
+            self._ops.append(("get", a, kw))
+            return self
+
+        def delete(self, *a, **kw):
+            self._ops.append(("del", a, kw))
+            return self
+
+        def hmget(self, *a, **kw):
+            self._ops.append(("hmget", a, kw))
+            return self
 
         async def execute(self):
             results = []
@@ -171,7 +185,7 @@ def test_pack_unpack_roundtrip():
     original = [0.1, -0.5, 0.9, 0.0, 1.0]
     packed = _pack_embedding(original)
     recovered = _unpack_embedding(packed)
-    for a, b in zip(original, recovered):
+    for a, b in zip(original, recovered, strict=True):
         assert abs(a - b) < 1e-5  # float32 precision
 
 
@@ -449,7 +463,7 @@ async def test_clear_removes_redis_entries():
     assert await cache.size("t-clear") == 1
 
     # Clear
-    deleted = await cache.clear_async(tenant_ctx=ctx)
+    await cache.clear_async(tenant_ctx=ctx)
 
     # Verify it's gone
     assert await cache.size("t-clear") == 0

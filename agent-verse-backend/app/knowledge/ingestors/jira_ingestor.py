@@ -1,8 +1,10 @@
 """Jira issue ingestor via REST API v3."""
 from __future__ import annotations
-import re
-from typing import Any
+
+from typing import Any, cast
+
 import httpx
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -30,12 +32,18 @@ class JiraIngestor:
             jql += f" AND {jql_extra}"
         jql += " ORDER BY updated DESC"
 
-        chunks = []
+        chunks: list[dict[str, Any]] = []
         start = 0
 
         while len(chunks) // 2 < max_issues:  # rough estimate
-            params = {"jql": jql, "startAt": start, "maxResults": 50,
-                      "fields": "summary,description,status,assignee,priority,comment,labels,created,updated"}
+            params: dict[str, str | int] = {
+                "jql": jql,
+                "startAt": start,
+                "maxResults": 50,
+                "fields": (
+                    "summary,description,status,assignee,priority,comment,labels,created,updated"
+                ),
+            }
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.get(f"{self._base}/rest/api/3/search",
                                params=params, headers=self._headers)
@@ -96,13 +104,13 @@ class JiraIngestor:
         return chunks
 
     @staticmethod
-    def _adf_to_text(adf: dict) -> str:
+    def _adf_to_text(adf: dict[str, Any]) -> str:
         """Convert Atlassian Document Format to plain text (recursive)."""
         if not isinstance(adf, dict):
             return str(adf)
         node_type = adf.get("type", "")
         if node_type == "text":
-            return adf.get("text", "")
+            return cast(str, adf.get("text", ""))
         parts = []
         for child in adf.get("content", []):
             parts.append(JiraIngestor._adf_to_text(child))

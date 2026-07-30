@@ -58,6 +58,101 @@ class RetrievalResult:
     rrf_score: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class ParentWindowCitation:
+    parent_chunk_id: str
+    parent_content: str
+
+
+async def load_agentic_parent_citations(
+    session: AsyncSession,
+    *,
+    child_chunk_ids: list[str],
+    collection_id: str,
+    tenant_id: str,
+    embedding_dim: int,
+) -> dict[str, ParentWindowCitation]:
+    """Load parent windows for tenant-scoped persisted proposition hits."""
+    if embedding_dim not in _SUPPORTED_EMBEDDING_DIMENSIONS:
+        raise RetrievalStrategyExecutionError(
+            "agentic_chunking", "unsupported embedding dimension"
+        )
+    table = f"knowledge_chunks_{embedding_dim}"
+    rows = (
+        await session.execute(
+            text(f"""
+                SELECT child.id, parent.id, parent.content
+                FROM {table} AS child
+                JOIN {table} AS parent
+                  ON parent.id = child.parent_chunk_id
+                 AND parent.collection_id = child.collection_id
+                 AND parent.tenant_id = child.tenant_id
+                WHERE child.id = ANY(:child_ids)
+                  AND child.collection_id = :collection_id
+                  AND child.tenant_id = :tenant_id
+                  AND child.is_proposition IS TRUE
+            """),
+            {
+                "child_ids": child_chunk_ids,
+                "collection_id": collection_id,
+                "tenant_id": tenant_id,
+            },
+        )
+    ).fetchall()
+    return {
+        str(row[0]): ParentWindowCitation(str(row[1]), str(row[2]))
+        for row in rows
+    }
+
+
+def expand_agentic_parent_results(
+    results: list[RetrievalResult],
+    parent_citations: dict[str, ParentWindowCitation],
+    *,
+    top_k: int,
+) -> list[RetrievalResult]:
+    """Expand propositions, preserve provenance, and dedupe before final top-k."""
+    expanded: dict[str, RetrievalResult] = {}
+    for result in results:
+        parent = parent_citations.get(result.chunk_id)
+        if parent is None:
+            raise RetrievalStrategyExecutionError(
+                "agentic_chunking",
+                f"persisted proposition has no parent: {result.chunk_id}",
+            )
+        proposition = {
+            "proposition_chunk_id": result.chunk_id,
+            "proposition_content": result.content,
+            "score": result.score,
+        }
+        existing = expanded.get(parent.parent_chunk_id)
+        if existing is None:
+            result.source_metadata = {
+                **result.source_metadata,
+                "strategy": "agentic_chunking",
+                **proposition,
+                "parent_chunk_id": parent.parent_chunk_id,
+                "propositions": [proposition],
+            }
+            result.chunk_id = parent.parent_chunk_id
+            result.content = parent.parent_content
+            result.retrieval_legs = list(
+                dict.fromkeys([*result.retrieval_legs, "agentic_chunking"])
+            )
+            expanded[parent.parent_chunk_id] = result
+            continue
+        existing.source_metadata["propositions"].append(proposition)
+        existing.score = max(existing.score, result.score)
+        existing.component_scores.update(result.component_scores)
+        existing.retrieval_legs = list(
+            dict.fromkeys([*existing.retrieval_legs, *result.retrieval_legs])
+        )
+    return sorted(
+        expanded.values(),
+        key=lambda result: (-result.score, result.chunk_id),
+    )[:top_k]
+
+
 def merge_grounding_results(
     result_groups: list[list[RetrievalResult]],
     *,
@@ -128,9 +223,11 @@ class RetrievalStrategyExecutionError(RetrievalExecutionError):
         self.reason = reason
 
 
-def _first_group_exception(group: BaseExceptionGroup[BaseException]) -> BaseException:
+def first_task_group_exception(group: BaseExceptionGroup[BaseException]) -> BaseException:
+    """Return the first concrete TaskGroup failure for canonical error propagation."""
+
     first = group.exceptions[0]
-    return _first_group_exception(first) if isinstance(first, BaseExceptionGroup) else first
+    return first_task_group_exception(first) if isinstance(first, BaseExceptionGroup) else first
 
 
 async def _run_parallel_searches(
@@ -153,7 +250,7 @@ async def _run_parallel_searches(
             for index, (query, embedding) in enumerate(requests):
                 group.create_task(run_one(index, query, embedding))
     except BaseExceptionGroup as exc:
-        raise _first_group_exception(exc) from None
+        raise first_task_group_exception(exc) from None
     return [result if result is not None else [] for result in results]
 
 
@@ -1343,51 +1440,29 @@ async def retrieve(
 
         if strategy == "raptor":
             try:
-                if strict and provider is None:
-                    raise RetrievalStrategyExecutionError(
-                        "raptor", "LLM provider is required"
-                    )
-                base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=min(top_k * 2, 20),
-                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
-                )
-                if not base_results or provider is None:
-                    return base_results[:top_k]
-                chunks = [
-                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score}
-                    for r in base_results
-                ]
-                from app.rag.agentic.patterns.raptor import RAPTORPattern
-                raptor_pattern = RAPTORPattern(cluster_size=4, max_levels=2)
-                answer = await raptor_pattern.execute(
+                results = await hybrid_search(
+                    session,
                     query=query,
-                    chunks=chunks,
-                    provider=provider,
-                    model=model,
-                    strict=strict,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
+                    metadata_filter={
+                        **(metadata_filter or {}),
+                        "rag_strategy": "raptor",
+                    },
+                    strict=True,
                 )
-                if answer and base_results:
-                    summary = RetrievalResult(
-                        chunk_id="raptor_summary",
-                        content=answer[:3000],
-                        score=0.95,
-                        source_metadata={"strategy": "raptor", "source_count": len(base_results)},
-                        retrieval_legs=["raptor"],
+                for result in results:
+                    result.retrieval_legs = list(
+                        dict.fromkeys([*result.retrieval_legs, "raptor"])
                     )
-                    return [summary, *base_results[:top_k - 1]]
-                return base_results[:top_k]
+                    result.source_metadata["strategy"] = "raptor"
+                return results
             except Exception as exc:
-                if strict:
-                    if isinstance(exc, RetrievalStrategyExecutionError):
-                        raise
-                    raise RetrievalStrategyExecutionError("raptor", "algorithm failed") from exc
-                logger.warning("raptor_failed", error=str(exc)[:80])
-                return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
-                    metadata_filter=metadata_filter,
-                )
+                raise RetrievalStrategyExecutionError(
+                    "raptor", "precomputed index search failed"
+                ) from exc
 
         if strategy == "colbert":
             try:
@@ -1405,7 +1480,14 @@ async def retrieve(
                 ]
                 from app.rag.agentic.patterns.colbert import ColBERTPattern
                 colbert_pattern = ColBERTPattern(alpha=0.5)
-                reranked = colbert_pattern.rerank(query=query, chunks=chunks, top_k=top_k)
+                try:
+                    reranked = await colbert_pattern.rerank_async(
+                        query=query,
+                        chunks=chunks,
+                        top_k=top_k,
+                    )
+                finally:
+                    await colbert_pattern.aclose()
                 return [
                     RetrievalResult(
                         chunk_id=c["chunk_id"],
@@ -1431,57 +1513,44 @@ async def retrieve(
 
         if strategy == "agentic_chunking":
             try:
-                if strict and provider is None:
-                    raise RetrievalStrategyExecutionError(
-                        "agentic_chunking", "LLM provider is required"
-                    )
-                from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
-                base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k * 2,
-                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
-                )
-                if not base_results or provider is None:
-                    return base_results[:top_k]
-                chunks = [
-                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score}
-                    for r in base_results
-                ]
-                chunking_pattern = AgenticChunkingPattern(max_propositions=5)
-                proposition_chunks = await chunking_pattern.execute(
-                    chunks=chunks,
-                    provider=provider,
+                results = await hybrid_search(
+                    session,
                     query=query,
-                    top_k=top_k,
-                    model=model,
-                    strict=strict,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=min(top_k * 4, 100),
+                    embedding_dim=embedding_dim,
+                    metadata_filter={
+                        **(metadata_filter or {}),
+                        "rag_strategy": "agentic_chunking",
+                        "is_proposition": True,
+                    },
+                    strict=True,
                 )
-                return [
-                    RetrievalResult(
-                        chunk_id=c.get("chunk_id", f"prop_{i}"),
-                        content=c.get("content", ""),
-                        score=c.get("score", 0.7),
-                        source_metadata={
-                            "strategy": "agentic_chunking",
-                            "source_chunk": c.get("source_chunk_id", ""),
-                        },
-                        retrieval_legs=["agentic_chunking"],
-                    )
-                    for i, c in enumerate(proposition_chunks[:top_k])
-                ]
-            except Exception as exc:
-                if strict:
-                    if isinstance(exc, RetrievalStrategyExecutionError):
-                        raise
+                if not results:
+                    return []
+                resolved_embedding_dim = embedding_dim or (
+                    len(query_embedding) if query_embedding else None
+                )
+                if resolved_embedding_dim is None or tenant_ctx is None:
                     raise RetrievalStrategyExecutionError(
-                        "agentic_chunking", "algorithm failed"
-                    ) from exc
-                logger.warning("agentic_chunking_failed", error=str(exc)[:80])
-                return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
-                    metadata_filter=metadata_filter,
+                        "agentic_chunking",
+                        "tenant-scoped persistence context is required",
+                    )
+                parents = await load_agentic_parent_citations(
+                    session,
+                    child_chunk_ids=[result.chunk_id for result in results],
+                    collection_id=collection_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    embedding_dim=resolved_embedding_dim,
                 )
+                return expand_agentic_parent_results(results, parents, top_k=top_k)
+            except Exception as exc:
+                if isinstance(exc, RetrievalStrategyExecutionError):
+                    raise
+                raise RetrievalStrategyExecutionError(
+                    "agentic_chunking", "precomputed index search failed"
+                ) from exc
 
         if strategy == "parametric":
             # Skip retrieval entirely — LLM uses its own knowledge

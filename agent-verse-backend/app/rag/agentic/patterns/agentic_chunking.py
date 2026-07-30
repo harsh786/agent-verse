@@ -9,9 +9,11 @@ Based on: Chen et al. 2023 'Dense X Retrieval'
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.contracts import RAGStrategy
+from app.tenancy.context import TenantContext
 
 _PROPOSITION_SYSTEM = """Extract self-contained factual propositions from this text.
 Each proposition must:
@@ -53,6 +55,29 @@ class AgenticChunkingPattern(RAGPattern):
             pass
         # Best for knowledge-intensive goals requiring high precision
         return True
+
+    async def retrieve_precomputed(
+        self,
+        *,
+        store: Any,
+        query: str,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search persisted propositions and return their parent-window citations."""
+        return cast(
+            list[dict[str, Any]],
+            await store.search_precomputed_index(
+                strategy=RAGStrategy.AGENTIC_CHUNKING,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+            ),
+        )
 
     async def extract_propositions(
         self,
