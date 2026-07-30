@@ -21,6 +21,26 @@ from typing import Any
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+_OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+
+class ProviderConfigurationError(ValueError):
+    """A tenant provider configuration cannot be instantiated safely."""
+
+    def __init__(self, provider_type: str, reason: str) -> None:
+        super().__init__(f"Invalid {provider_type} provider configuration: {reason}")
+        self.provider_type = provider_type
+        self.reason = reason
+
+
+def _requires_explicit_openai_model(provider_type: str, base_url: str) -> bool:
+    provider_type = provider_type.strip().lower()
+    if provider_type in {"azure", "together", "openai_compatible"}:
+        return True
+    normalized_url = base_url.strip().rstrip("/").lower()
+    return provider_type == "openai" and bool(normalized_url) and normalized_url != (
+        _OFFICIAL_OPENAI_BASE_URL.lower()
+    )
 
 
 @dataclass
@@ -59,11 +79,17 @@ def _detect_providers() -> list[ProviderConfig]:
         )
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_BASE_URL"):
+        openai_base_url = os.getenv("OPENAI_BASE_URL", _OFFICIAL_OPENAI_BASE_URL)
+        provider_type = (
+            "openai"
+            if openai_base_url.rstrip("/").lower() == _OFFICIAL_OPENAI_BASE_URL.lower()
+            else "openai_compatible"
+        )
         providers.append(
             ProviderConfig(
-                provider_type="openai_compatible",
+                provider_type=provider_type,
                 api_key=os.getenv("OPENAI_API_KEY", ""),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                base_url=openai_base_url,
                 display_name="OpenAI",
             )
         )
@@ -133,20 +159,27 @@ def resolve_provider(
 def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
     """Instantiate a provider from its config. Returns None if prerequisites missing."""
     ptype = cfg.provider_type
+    configured_model = cfg.models[0].strip() if cfg.models and cfg.models[0].strip() else ""
 
     if ptype == "anthropic":
         if not cfg.api_key:
             return None
         from app.providers.anthropic_provider import AnthropicProvider
 
-        return AnthropicProvider(api_key=cfg.api_key)
+        return AnthropicProvider(
+            api_key=cfg.api_key,
+            default_model=configured_model or "claude-opus-4-8",
+        )
 
-    elif ptype in ("openai_compatible", "openai"):
+    elif ptype in ("openai_compatible", "openai", "azure", "together"):
+        if _requires_explicit_openai_model(ptype, cfg.base_url) and not configured_model:
+            raise ProviderConfigurationError(ptype, "explicit deployment/model is required")
         from app.providers.openai_compatible import OpenAICompatibleProvider
 
         return OpenAICompatibleProvider(
             api_key=cfg.api_key,
-            base_url=cfg.base_url or "https://api.openai.com/v1",
+            base_url=cfg.base_url or _OFFICIAL_OPENAI_BASE_URL,
+            default_model=configured_model or "gpt-5.2",
         )
 
     elif ptype == "gemini":
@@ -155,7 +188,10 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         try:
             from app.providers.gemini_provider import GeminiProvider
 
-            return GeminiProvider(api_key=cfg.api_key)
+            return GeminiProvider(
+                api_key=cfg.api_key,
+                default_model=configured_model or "gemini-2.5-pro",
+            )
         except ImportError:
             return None
 
@@ -166,6 +202,7 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         return OpenAICompatibleProvider(
             api_key="ollama",  # placeholder
             base_url=cfg.base_url or "http://localhost:11434/v1",
+            default_model=configured_model or "llama3.2",
         )
 
     elif ptype == "groq":
@@ -176,9 +213,35 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         return OpenAICompatibleProvider(
             api_key=cfg.api_key,
             base_url=cfg.base_url or "https://api.groq.com/openai/v1",
+            default_model=configured_model or "llama-3.1-70b-versatile",
         )
 
     return None
+
+
+def instantiate_configured_provider(
+    provider_type: str,
+    *,
+    api_key: str,
+    model: str = "",
+    base_url: str = "",
+) -> Any | None:
+    """Instantiate one tenant-configured provider without global fallback."""
+
+    original_type = provider_type.strip().lower()
+    if _requires_explicit_openai_model(original_type, base_url) and not model.strip():
+        raise ProviderConfigurationError(original_type, "explicit deployment/model is required")
+    provider = _instantiate_provider(
+        ProviderConfig(
+            provider_type=original_type,
+            api_key=api_key,
+            base_url=base_url,
+            models=[model] if model.strip() else None,
+        )
+    )
+    if provider is not None:
+        provider._agentverse_provider_type = original_type
+    return provider
 
 
 def get_provider_catalog() -> list[dict[str, Any]]:

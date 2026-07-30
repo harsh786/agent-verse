@@ -77,7 +77,17 @@ class RetrievalEvaluator:
         # Path 1: explicit async .search() — preserves backward compat with test mocks.
         search_fn = getattr(self._store, "search", None)
         if search_fn is not None and inspect.iscoroutinefunction(search_fn):
-            return await search_fn(collection_id=collection_id, query=query, top_k=k)
+            if self._tenant_ctx is None:
+                raise RuntimeError("tenant_ctx is required for retrieval evaluation")
+            result = await search_fn(
+                collection_id=collection_id,
+                query=query,
+                top_k=k,
+                tenant_ctx=self._tenant_ctx,
+            )
+            if not isinstance(result, list):
+                raise TypeError("Knowledge store search must return a list")
+            return result
 
         # Path 2: real KnowledgeStore.hybrid_search_db (async, prefers DB).
         if hasattr(self._store, "hybrid_search_db") and self._tenant_ctx is not None:
@@ -128,7 +138,7 @@ class RetrievalEvaluator:
         query_results: list[QueryEvalResult] = []
         chunk_relevance_hits: dict[str, int] = {}
 
-        for query, expected in zip(test_queries, expected_chunks):
+        for query, expected in zip(test_queries, expected_chunks, strict=True):
             result = await self._evaluate_query(collection_id, query, expected, k)
             query_results.append(result)
             # Track which expected chunks were never found (for low-quality detection)
@@ -225,7 +235,9 @@ class RetrievalEvaluator:
         recs: list[str] = []
 
         if overall < 0.5:
-            recs.append("Overall quality is low. Consider re-embedding with a higher-quality model.")
+            recs.append(
+                "Overall quality is low. Consider re-embedding with a higher-quality model."
+            )
         if precision < 0.4:
             recs.append(
                 "Low precision: retrieval returns many irrelevant chunks. "

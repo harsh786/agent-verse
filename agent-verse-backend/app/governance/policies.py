@@ -49,6 +49,7 @@ class Policy:
     allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
     tenant_id: str = ""
     timezone: str = "UTC"  # IANA timezone name (e.g. "America/New_York")
+    web_allowed_domains: list[str] = field(default_factory=list)
     # Supplementary fields populated when reloading from DB
     action: str = ""
     tool_pattern: str = ""
@@ -81,6 +82,24 @@ class PolicyEngine:
     def add_policy(self, policy: Policy) -> None:
         self._policies.append(policy)
 
+    def web_allowed_domains(self, tenant_ctx: TenantContext) -> tuple[str, ...]:
+        domain_sets = [
+            {
+                domain.strip().lower().strip(".")
+                for domain in policy.web_allowed_domains
+                if domain.strip()
+            }
+            for policy in self._policies
+            if (not policy.tenant_id or policy.tenant_id == tenant_ctx.tenant_id)
+            and policy.web_allowed_domains
+        ]
+        if not domain_sets:
+            return ()
+        allowed = domain_sets[0]
+        for domains in domain_sets[1:]:
+            allowed &= domains
+        return tuple(sorted(allowed))
+
     def _is_within_time_window(self, policy: Policy) -> bool:
         """Returns True if current time (in policy.timezone) is within policy's allowed window."""
         if policy.allowed_hours_utc is None and policy.allowed_weekdays is None:
@@ -96,9 +115,11 @@ class PolicyEngine:
         from datetime import datetime
 
         now = datetime.now(tz)
-        if policy.allowed_weekdays is not None:
-            if now.weekday() not in policy.allowed_weekdays:
-                return False
+        if (
+            policy.allowed_weekdays is not None
+            and now.weekday() not in policy.allowed_weekdays
+        ):
+            return False
         if policy.allowed_hours_utc is not None:
             start_h, end_h = policy.allowed_hours_utc
             if not (start_h <= now.hour < end_h):
@@ -138,13 +159,74 @@ class PolicyEngine:
                     return PolicyResult.REQUIRE_APPROVAL
         return PolicyResult.ALLOW
 
-    async def reload_from_db(self, db: Any, tenant_id: str | None = None) -> int:
+    async def reload_from_db(
+        self,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
         """Reload policies from DB. If tenant_id given, reload only that tenant's policies.
         Called by Redis subscriber when another replica modifies policies.
         Returns count of policies loaded.
         """
+        if db is None and strict:
+            raise RuntimeError("Policy database is not configured")
         if db is None:
             return 0
+        if strict:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for strict policy loading")
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT name, action, tools_pattern, tenant_id "
+                            "FROM governance_policies WHERE tenant_id=:tid"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).fetchall()
+                settings_row = (
+                    await session.execute(
+                        text(
+                            "SELECT settings->'web_search_allowed_domains' "
+                            "FROM tenant_settings WHERE tenant_id=:tid"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).scalar_one_or_none()
+            self._policies = [policy for policy in self._policies if policy.tenant_id != tenant_id]
+            for name, action, tools_pattern, policy_tenant_id in rows:
+                self._policies.append(
+                    Policy(
+                        name=name,
+                        denied_tools=[tools_pattern or "*"] if action == "deny" else [],
+                        approval_tools=(
+                            [tools_pattern or "*"] if action == "require_approval" else []
+                        ),
+                        tenant_id=policy_tenant_id or tenant_id,
+                        action=action,
+                        tool_pattern=tools_pattern or "*",
+                    )
+                )
+            if isinstance(settings_row, list):
+                self._policies.append(
+                    Policy(
+                        name="persisted-web-domain-restrictions",
+                        tenant_id=tenant_id,
+                        web_allowed_domains=[str(domain) for domain in settings_row],
+                    )
+                )
+            return len(rows)
         try:
             from sqlalchemy import text
             async with db() as session:
@@ -234,7 +316,10 @@ class PolicyEngine:
 
         while True:
             try:
-                async with aioredis.from_url(redis_url, decode_responses=True) as r:
+                async with aioredis.from_url(  # type: ignore[no-untyped-call]
+                    redis_url,
+                    decode_responses=True,
+                ) as r:
                     pubsub = r.pubsub()
                     await pubsub.subscribe("policy_changes")
                     logger.info("policy_pubsub_subscribed")
@@ -360,7 +445,7 @@ class PolicyVersionManager:
         from sqlalchemy import select
         from sqlalchemy import update as sa_update
 
-        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+        from app.db.models.governance import PolicyVersion
 
         result = await db.execute(
             select(PolicyVersion).where(
@@ -410,7 +495,7 @@ class PolicyVersionManager:
         from sqlalchemy import func, select
         from sqlalchemy import update as sa_update
 
-        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+        from app.db.models.governance import PolicyVersion
 
         target_result = await db.execute(
             select(PolicyVersion).where(
@@ -470,14 +555,14 @@ class PolicyVersionManager:
         """Return all version snapshots for a policy, oldest first."""
         from sqlalchemy import select
 
-        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+        from app.db.models.governance import PolicyVersion
 
         result = await db.execute(
             select(PolicyVersion)
             .where(PolicyVersion.policy_id == policy_id)
             .order_by(PolicyVersion.version_number)
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -498,7 +583,7 @@ class PolicyVersionManager:
         changed_by: str | None = None,
         parent_policy_id: str | None = None,
     ) -> dict[str, Any]:
-        from app.db.models.governance import PolicyVersion  # type: ignore[attr-defined]
+        from app.db.models.governance import PolicyVersion
 
         pv = PolicyVersion(
             tenant_id=tenant_id,

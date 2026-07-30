@@ -1,247 +1,423 @@
-"""RAG Retriever - unified retrieval across vector, graph, and multimodal."""
+"""Thin synthesis layer over the tenant-aware retrieval gateway."""
+
 from __future__ import annotations
-import logging
-from typing import Any
-from app.rag_platform.query_planner import RAGStrategy, RetrievalLeg, RAGResult, QueryPlanner
 
-_log = logging.getLogger(__name__)
+import inspect
+import json
+import re
+import unicodedata
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
+
+from app.providers.base import CompletionRequest, Message
+from app.rag.contracts import (
+    RAGCitation,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
+from app.rag.engine import RetrievalStrategyExecutionError
+from app.rag.gateway import ResolvedLLM, RetrievalGateway
+from app.tenancy.context import TenantContext
 
 
-class RAGRetriever:
-    """Unified retrieval across vector search, graph expansion, and multimodal."""
+class RAGSynthesisError(RuntimeError):
+    """Raised when retrieved evidence cannot be synthesized safely."""
 
-    def __init__(self) -> None:
-        self._provider: Any = None
-        self._knowledge_store: Any = None
-        self._kg_store: Any = None
-        self._planner = QueryPlanner()
 
-    def set_dependencies(
-        self,
-        provider: Any = None,
-        knowledge_store: Any = None,
-        kg_store: Any = None,
-    ) -> None:
-        self._provider = provider
-        self._knowledge_store = knowledge_store
-        self._kg_store = kg_store
+@dataclass(frozen=True, slots=True)
+class CitationVerification:
+    grounded: bool
+    unsupported_claims: list[str]
+    reason: str
 
-    async def retrieve(
-        self,
-        query: str,
-        tenant_id: str,
-        collection_id: str | None = None,
-        strategy: RAGStrategy = RAGStrategy.AUTO,
-        top_k: int = 5,
-    ) -> RAGResult:
-        """Retrieve relevant content using the specified strategy."""
 
-        if strategy == RAGStrategy.AUTO:
-            strategy = self._planner.select_strategy(query)
+class _BudgetContext(Protocol):
+    @property
+    def event_count(self) -> int: ...
 
-        result = RAGResult(query=query, strategy_used=strategy)
+    def wrap_provider(self, provider: Any, operation: str) -> Any: ...
 
-        # 1. Base vector retrieval
-        vector_leg = await self._vector_search(query, tenant_id, collection_id, top_k)
-        result.legs.append(vector_leg)
+    def traces(self, start: int = 0) -> list[RAGStrategyTrace]: ...
 
-        # 2. Graph expansion (if GRAPH or MULTI_HOP strategy)
-        if strategy in (RAGStrategy.GRAPH, RAGStrategy.MULTI_HOP) and self._kg_store:
-            graph_leg = await self._graph_expand(query, tenant_id, vector_leg.results)
-            result.legs.append(graph_leg)
 
-        # 3. HyDE (if HYDE strategy)
-        if strategy == RAGStrategy.HYDE and self._provider:
-            hyde_leg = await self._hyde_retrieve(query, tenant_id, collection_id, top_k)
-            result.legs.append(hyde_leg)
+class MinimalCitationVerifier:
+    """Verify citation-marker-scoped claims conservatively."""
 
-        # 4. Synthesize answer with citations
-        all_chunks: list[dict] = []
-        for leg in result.legs:
-            all_chunks.extend(leg.results)
+    _MARKER_GROUP = re.compile(
+        r"\[(?:\d+(?:\s*,\s*\d+)*)\]"
+        r"(?:\s*(?:,\s*)?\[(?:\d+(?:\s*,\s*\d+)*)\])*"
+    )
 
-        # Rerank results
-        if len(all_chunks) > top_k:
-            try:
-                from app.rag_platform.reranker import reranker
-                if self._provider:
-                    reranker.set_provider(self._provider)
-                all_chunks = await reranker.rerank(query, all_chunks, top_k)
-            except Exception:
-                all_chunks = all_chunks[:top_k]
+    def __init__(self, *, provider: Any = None, model: str = "") -> None:
+        self.provider = provider
+        self.model = model.strip()
 
-        if all_chunks:
-            result.citations = [
-                {
-                    "index": i + 1,
-                    "content": c.get("content", "")[:300],
-                    "score": c.get("score", 0.0),
-                    "source": c.get("source", ""),
-                    "collection_id": c.get("collection_id", ""),
-                }
-                for i, c in enumerate(all_chunks[:top_k])
-            ]
-            result.confidence = sum(c.get("score", 0) for c in all_chunks[:top_k]) / max(
-                len(all_chunks[:top_k]), 1
+    @staticmethod
+    def _normalize(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text)
+        normalized = re.sub(r"\[(?:\d+(?:\s*,\s*\d+)*)\]", "", normalized)
+        normalized = " ".join(normalized.split()).strip()
+        if not re.search(r"https?://\S+$", normalized, flags=re.IGNORECASE):
+            normalized = normalized.rstrip(".!?").rstrip()
+        return normalized
+
+    @classmethod
+    def _atomic_claims(cls, answer: str) -> list[tuple[str, list[int]]]:
+        atomic: list[tuple[str, list[int]]] = []
+        cursor = 0
+        for marker in cls._MARKER_GROUP.finditer(answer):
+            scoped = answer[cursor : marker.start()]
+            scoped = re.sub(
+                r"^[\s,;:.!?]+(?:and\s+|but\s+)?",
+                "",
+                scoped,
+                flags=re.IGNORECASE,
+            ).strip()
+            scoped = re.sub(
+                r"^(?:and|but)\s+",
+                "",
+                scoped,
+                flags=re.IGNORECASE,
             )
+            references = [int(value) for value in re.findall(r"\d+", marker.group())]
+            if cls._normalize(scoped):
+                atomic.append((scoped, list(references)))
+            cursor = marker.end()
+        trailing = re.sub(r"^[\s,;:.!?]+", "", answer[cursor:]).strip()
+        if cls._normalize(trailing):
+            atomic.append((trailing, []))
+        return atomic
 
-        # 5. Generate answer
-        result.answer = await self._synthesize(query, all_chunks[:top_k])
-        result.grounded = len(result.citations) > 0
-
-        # Verify citations
-        if result.answer and result.citations:
-            try:
-                from app.rag_platform.reranker import citation_verifier
-                if self._provider:
-                    citation_verifier.set_provider(self._provider)
-                verification = await citation_verifier.verify_citations(
-                    result.answer, result.citations
-                )
-                result.grounded = verification.get("grounded", True)
-                result.refused_claims = verification.get("unsupported_claims", [])
-            except Exception:
-                pass
-
-        return result
-
-    async def _vector_search(
-        self,
-        query: str,
-        tenant_id: str,
-        collection_id: str | None,
-        top_k: int,
-    ) -> RetrievalLeg:
-        """Perform vector similarity search."""
-        import time
-
-        start = time.monotonic()
-        results: list[dict] = []
-
-        if self._knowledge_store and hasattr(self._knowledge_store, "search"):
-            try:
-                search_results = await self._knowledge_store.search(
-                    query=query,
-                    collection_id=collection_id,
-                    tenant_id=tenant_id,
-                    top_k=top_k,
-                )
-                results = search_results if isinstance(search_results, list) else []
-            except Exception as exc:
-                _log.warning("Vector search failed: %s", exc)
-
-        return RetrievalLeg(
-            strategy=RAGStrategy.DIRECT,
-            query=query,
-            results=results,
-            score=sum(r.get("score", 0) for r in results) / max(len(results), 1),
-            latency_ms=(time.monotonic() - start) * 1000,
-        )
-
-    async def _graph_expand(
-        self,
-        query: str,
-        tenant_id: str,
-        seed_results: list[dict],
-    ) -> RetrievalLeg:
-        """Expand retrieval using the knowledge graph."""
-        import time
-
-        start = time.monotonic()
-        expanded: list[dict] = []
-
-        if self._kg_store:
-            try:
-                nodes = self._kg_store.query_nodes(
-                    tenant_id,
-                    search=query.split()[0] if query else "",
-                    limit=5,
-                )
-                for node in nodes:
-                    edges = self._kg_store.get_edges_for_node(node.node_id, tenant_id)
-                    for edge in edges[:3]:
-                        expanded.append({
-                            "content": f"[Graph] {node.label} {edge.edge_type.value} related node",
-                            "score": node.confidence * 0.8,
-                            "source": "knowledge_graph",
-                            "edge_type": edge.edge_type.value,
-                        })
-            except Exception as exc:
-                _log.warning("Graph expansion failed: %s", exc)
-
-        return RetrievalLeg(
-            strategy=RAGStrategy.GRAPH,
-            query=query,
-            results=expanded,
-            score=sum(r.get("score", 0) for r in expanded) / max(len(expanded), 1),
-            latency_ms=(time.monotonic() - start) * 1000,
-        )
-
-    async def _hyde_retrieve(
-        self,
-        query: str,
-        tenant_id: str,
-        collection_id: str | None,
-        top_k: int,
-    ) -> RetrievalLeg:
-        """HyDE: generate a hypothetical document, then search for similar real docs."""
-        if self._provider is None:
-            return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])
-
+    async def _provider_entails(self, claim: str, evidence: str) -> CitationVerification:
+        if self.provider is None or not self.model:
+            return CitationVerification(False, [claim], "unsupported")
+        schema = {
+            "type": "object",
+            "properties": {
+                "supported": {"type": "boolean"},
+                "reason": {
+                    "type": "string",
+                    "enum": ["entailed", "not_entailed"],
+                },
+            },
+            "required": ["supported", "reason"],
+            "additionalProperties": False,
+        }
         try:
-            from app.providers.base import CompletionRequest, Message
-
-            resp = await self._provider.complete(
-                CompletionRequest(
-                    messages=[
-                        Message(role="user", content=f"Write a detailed answer to: {query}")
-                    ],
-                    model="",
-                    max_tokens=200,
-                )
-            )
-            hypothetical_doc = resp.content
-            return await self._vector_search(hypothetical_doc, tenant_id, collection_id, top_k)
-        except Exception as exc:
-            _log.warning("HyDE failed: %s", exc)
-            return RetrievalLeg(strategy=RAGStrategy.HYDE, query=query, results=[])
-
-    async def _synthesize(self, query: str, chunks: list[dict]) -> str:
-        """Synthesize an answer from retrieved chunks."""
-        if not chunks:
-            return "No relevant information found for this query."
-
-        if self._provider is None:
-            return "\n\n".join(c.get("content", "")[:200] for c in chunks[:3])
-
-        try:
-            from app.providers.base import CompletionRequest, Message
-
-            context = "\n\n".join(
-                f"[{i+1}] {c.get('content', '')[:300]}" for i, c in enumerate(chunks[:5])
-            )
-            resp = await self._provider.complete(
+            response = await self.provider.complete(
                 CompletionRequest(
                     messages=[
                         Message(
                             role="user",
                             content=(
-                                "Answer the question using ONLY the provided context. "
-                                "Cite sources using [N] notation. "
-                                "If the context doesn't support an answer, say so.\n\n"
-                                f"Context:\n{context}\n\nQuestion: {query}"
+                                "Determine whether the claim is fully entailed by the evidence. "
+                                "Return only the requested JSON fields.\n\n"
+                                f"Claim: {claim}\nEvidence: {evidence}"
                             ),
                         )
                     ],
-                    model="",
-                    max_tokens=500,
+                    model=self.model,
+                    max_tokens=100,
+                    response_schema=schema,
                 )
             )
-            return resp.content
+            parsed = json.loads(str(response.content))
+            if (
+                not isinstance(parsed, dict)
+                or set(parsed) != {"supported", "reason"}
+                or not isinstance(parsed["supported"], bool)
+                or parsed["reason"] not in {"entailed", "not_entailed"}
+                or (parsed["supported"] is True and parsed["reason"] != "entailed")
+                or (
+                    parsed["supported"] is False
+                    and parsed["reason"] != "not_entailed"
+                )
+            ):
+                raise ValueError("Invalid entailment response")
+        except RetrievalStrategyExecutionError:
+            raise
+        except Exception:
+            return CitationVerification(False, [claim], "verifier_failure")
+        return CitationVerification(
+            bool(parsed["supported"]),
+            [] if parsed["supported"] else [claim],
+            "supported" if parsed["supported"] else "unsupported",
+        )
+
+    async def verify(
+        self,
+        answer: str,
+        citations: list[RAGCitation],
+    ) -> CitationVerification:
+        unsupported: list[str] = []
+        reasons: list[str] = []
+        checked = 0
+        for claim, references in self._atomic_claims(answer):
+            claim_normalized = self._normalize(claim)
+            if not claim_normalized:
+                continue
+            checked += 1
+            if not references or any(
+                reference < 1 or reference > len(citations)
+                for reference in references
+            ):
+                unsupported.append(claim)
+                reasons.append("invalid_citation")
+                continue
+            evidence = " ".join(citations[index - 1].content for index in references)
+            evidence_normalized = self._normalize(evidence)
+            if claim_normalized == evidence_normalized:
+                continue
+            entailment = await self._provider_entails(claim, evidence)
+            if not entailment.grounded:
+                unsupported.extend(entailment.unsupported_claims)
+                reasons.append(entailment.reason)
+        reason = (
+            "supported"
+            if checked > 0 and not unsupported
+            else "contradiction"
+            if "contradiction" in reasons
+            else "invalid_citation"
+            if "invalid_citation" in reasons
+            else "verifier_failure"
+            if "verifier_failure" in reasons
+            else "unsupported"
+        )
+        return CitationVerification(
+            grounded=checked > 0 and not unsupported,
+            unsupported_claims=(
+                unsupported if unsupported else [] if checked > 0 else ["No claims verified"]
+            ),
+            reason=reason,
+        )
+
+
+class RAGRetriever:
+    """Retrieve through one gateway, then optionally synthesize its citations."""
+
+    def __init__(
+        self,
+        *,
+        gateway: RetrievalGateway | Any | None = None,
+        citation_verifier: Any | None = None,
+    ) -> None:
+        self._gateway = gateway
+        self._citation_verifier = citation_verifier or MinimalCitationVerifier()
+
+    def set_gateway(self, gateway: RetrievalGateway | Any) -> None:
+        """Set the injected gateway for application assembly and tests."""
+
+        self._gateway = gateway
+
+    async def retrieve(
+        self,
+        query: str,
+        tenant_ctx: TenantContext,
+        collection_id: str | None = None,
+        strategy: str | RAGStrategy = RAGStrategy.HYBRID,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        execution_id: str = "",
+        *,
+        synthesize: bool = True,
+        max_context_chars: int = 6000,
+    ) -> RAGExecutionResult:
+        """Execute canonical retrieval without alternate or fallback algorithms."""
+
+        if self._gateway is None:
+            raise RuntimeError("Retrieval gateway is not configured")
+        if not collection_id:
+            raise ValueError("collection_id is required")
+
+        execute_kwargs: dict[str, Any] = {
+            "collection_id": collection_id,
+            "query": query,
+            "strategy_id": strategy,
+            "top_k": top_k,
+            "filters": filters or {},
+        }
+        if execution_id:
+            execute_kwargs["execution_id"] = execution_id
+        result = await self._gateway.execute(tenant_ctx, **execute_kwargs)
+        if not synthesize:
+            return result
+        budget_context = cast(_BudgetContext | None, result._budget_context)
+        post_retrieval_cost_start = (
+            budget_context.event_count if budget_context is not None else 0
+        )
+        answer = result.answer
+        if not answer and result.citations:
+            answer = await self.synthesize(
+                query=query,
+                tenant_ctx=tenant_ctx,
+                strategy=result.resolved_strategy_id,
+                citations=result.citations,
+                max_context_chars=max_context_chars,
+                budget_context=budget_context,
+            )
+        result = result.model_copy(update={"answer": answer})
+        result._budget_context = budget_context
+        return await self.verify_result(
+            result,
+            tenant_ctx=tenant_ctx,
+            cost_trace_start=post_retrieval_cost_start,
+        )
+
+    async def verify_result(
+        self,
+        result: RAGExecutionResult,
+        *,
+        tenant_ctx: TenantContext,
+        cost_trace_start: int = 0,
+    ) -> RAGExecutionResult:
+        """Apply the same typed citation verification to any synthesized result."""
+
+        trace = list(result.strategy_trace)
+        try:
+            verifier = self._citation_verifier
+            if isinstance(verifier, MinimalCitationVerifier):
+                provider = verifier.provider
+                model = verifier.model
+                if provider is None:
+                    try:
+                        resolved = await self._resolve_llm(
+                            tenant_ctx,
+                            result.resolved_strategy_id,
+                        )
+                        provider = resolved.provider
+                        model = resolved.model
+                    except RAGSynthesisError:
+                        pass
+                budget_context = cast(_BudgetContext | None, result._budget_context)
+                if provider is not None and budget_context is not None:
+                    provider = budget_context.wrap_provider(
+                        provider,
+                        "citation_verification",
+                    )
+                verifier = MinimalCitationVerifier(provider=provider, model=model)
+            verification = await verifier.verify(
+                result.answer,
+                result.citations,
+            )
+            trace.append(
+                RAGStrategyTrace(
+                    strategy=result.resolved_strategy_id,
+                    action="citation_verification",
+                    status="complete",
+                    detail={
+                        "unsupported_claims": list(
+                            verification.unsupported_claims
+                        ),
+                        "reason": str(getattr(verification, "reason", "unsupported")),
+                    },
+                )
+            )
+            grounded = bool(verification.grounded)
+        except RetrievalStrategyExecutionError:
+            raise
+        except Exception:
+            trace.append(
+                RAGStrategyTrace(
+                    strategy=result.resolved_strategy_id,
+                    action="citation_verification",
+                    status="failed",
+                    detail={"reason": "citation_verifier_unavailable"},
+                )
+            )
+            grounded = False
+        budget_context = cast(_BudgetContext | None, result._budget_context)
+        if budget_context is not None:
+            trace.extend(budget_context.traces(cost_trace_start))
+        verified_result = result.model_copy(
+            update={
+                "answer": result.answer,
+                "grounded": grounded,
+                "strategy_trace": trace,
+            }
+        )
+        verified_result._budget_context = budget_context
+        return verified_result
+
+    async def synthesize(
+        self,
+        *,
+        query: str,
+        tenant_ctx: TenantContext,
+        strategy: RAGStrategy,
+        citations: list[RAGCitation],
+        max_context_chars: int = 6000,
+        budget_context: _BudgetContext | None = None,
+    ) -> str:
+        """Synthesize canonical citations with the tenant's configured provider/model."""
+
+        resolved = await self._resolve_llm(tenant_ctx, strategy)
+        provider: Any = resolved.provider
+        if provider is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        if budget_context is not None:
+            provider = budget_context.wrap_provider(provider, "synthesis")
+        context_parts: list[str] = []
+        context_length = 0
+        for index, citation in enumerate(citations, start=1):
+            part = f"[{index}] {citation.content}"
+            if context_length + len(part) > max_context_chars:
+                break
+            context_parts.append(part)
+            context_length += len(part)
+        if not context_parts:
+            raise RAGSynthesisError("No retrieved evidence fits the synthesis context")
+        context = "\n\n".join(context_parts)
+
+        try:
+            response = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(
+                            role="system",
+                            content=(
+                                "Answer using only the supplied evidence. Cite supporting "
+                                "evidence with [N]. If the evidence is insufficient, say so.\n\n"
+                                f"Evidence:\n{context}"
+                            ),
+                        ),
+                        Message(role="user", content=query),
+                    ],
+                    model=resolved.model,
+                    max_tokens=1200,
+                )
+            )
         except Exception as exc:
-            _log.warning("Synthesis failed: %s", exc)
-            return "\n\n".join(c.get("content", "")[:200] for c in chunks[:3])
+            if isinstance(exc, RetrievalStrategyExecutionError):
+                raise
+            raise RAGSynthesisError("Answer synthesis failed") from exc
+        answer = str(response.content).strip()
+        if not answer:
+            raise RAGSynthesisError("Answer synthesis returned no content")
+        return answer
+
+    async def _resolve_llm(
+        self,
+        tenant_ctx: TenantContext,
+        strategy: RAGStrategy,
+    ) -> ResolvedLLM:
+        dependencies = getattr(self._gateway, "dependencies", None)
+        resolver = getattr(dependencies, "llm_resolver", None)
+        if resolver is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        try:
+            resolved = resolver(tenant_ctx, strategy)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+        except Exception as exc:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable") from exc
+        if not isinstance(resolved, ResolvedLLM) or not resolved.model.strip():
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        provider = resolved.provider
+        if provider is None:
+            raise RAGSynthesisError("Tenant LLM provider is unavailable")
+        return resolved
 
 
-# Module-level singleton
+# Kept for callers that configure a process-local singleton explicitly.
 rag_retriever = RAGRetriever()

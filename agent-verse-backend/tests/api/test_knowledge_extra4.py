@@ -12,11 +12,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import router as knowledge_router
-from app.rag.models import Chunk, KnowledgeCollection
+from app.rag.contracts import RAGExecutionResult, RAGStrategy
+from app.rag.models import KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
@@ -24,6 +25,22 @@ from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-know4", plan=PlanTier.PROFESSIONAL, api_key_id="kid-k4")
 _VALID_KEY = "av_test_knowledge_extra4"
+
+
+class RecordingGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TenantContext, dict[str, Any]]] = []
+
+    async def execute(
+        self,
+        tenant_ctx: TenantContext,
+        **kwargs: Any,
+    ) -> RAGExecutionResult:
+        self.calls.append((tenant_ctx, kwargs))
+        return RAGExecutionResult(
+            requested_strategy_id=str(kwargs["strategy_id"]),
+            resolved_strategy_id=RAGStrategy.HYBRID,
+        )
 
 
 def _make_app(
@@ -41,6 +58,7 @@ def _make_app(
     app.include_router(knowledge_router)
     app.state.knowledge_store = knowledge_store or KnowledgeStore()
     app.state.semantic_cache = semantic_cache or SemanticCache()
+    app.state.retrieval_gateway = RecordingGateway()
     if embedder is not None:
         app.state.embedder = embedder
     return app
@@ -179,18 +197,14 @@ def test_ingest_very_short_content_uses_fallback_chunk() -> None:
 # search — hybrid_search_db path (line 335)
 # ---------------------------------------------------------------------------
 
-def test_search_uses_hybrid_search_db_when_available() -> None:
-    """Line 335: Uses hybrid_search_db when store has the method."""
+def test_search_uses_gateway_and_never_direct_store() -> None:
+    """Knowledge search sends canonical input to the app gateway only."""
     embedder = _make_embedder()
 
     store = KnowledgeStore()
-    # Add hybrid_search_db method to the store
-    async def _hybrid_search_db(q, embedding, collection_id, tenant_ctx, top_k=10):
-        return []
-    store.hybrid_search_db = _hybrid_search_db  # type: ignore[attr-defined]
-
-    coll_id_holder: list[str] = []
-    client = TestClient(_make_app(knowledge_store=store, embedder=embedder), raise_server_exceptions=False)
+    store.hybrid_search_db = AsyncMock(side_effect=AssertionError("direct store bypass"))
+    app = _make_app(knowledge_store=store, embedder=embedder)
+    client = TestClient(app, raise_server_exceptions=False)
     coll_id = _create_collection(client)
 
     with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
@@ -199,6 +213,12 @@ def test_search_uses_hybrid_search_db_when_available() -> None:
             headers=H,
         )
     assert resp.status_code == 200
+    store.hybrid_search_db.assert_not_awaited()
+    gateway = app.state.retrieval_gateway
+    assert isinstance(gateway, RecordingGateway)
+    assert gateway.calls[0][0] is _CTX
+    assert gateway.calls[0][1]["collection_id"] == coll_id
+    assert gateway.calls[0][1]["strategy_id"] == "hybrid"
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +383,8 @@ def test_ingest_file_short_content_fallback_chunk() -> None:
 # ingest/repo — background task (lines 546-609)
 # ---------------------------------------------------------------------------
 
-def test_ingest_repo_returns_202_immediately() -> None:
-    """Lines 475-512: Repo ingest returns 202 without blocking."""
+def test_ingest_repo_requires_durable_job_backend() -> None:
+    """Repository ingestion never schedules without durable job storage."""
     embedder = _make_embedder()
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
     coll_id = _create_collection(client)
@@ -378,9 +398,7 @@ def test_ingest_repo_returns_202_immediately() -> None:
         },
         headers=H,
     )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["status"] == "ingestion_started"
+    assert resp.status_code == 503
 
 
 def test_ingest_repo_background_clone_failure() -> None:
@@ -389,7 +407,8 @@ def test_ingest_repo_background_clone_failure() -> None:
 
     async def _run():
         from app.api.knowledge import _ingest_repo_background
-        store = KnowledgeStore()
+        store = MagicMock()
+        store.update_ingestion_job_async = AsyncMock()
         # Using a URL that will fail to clone (no real git)
         with patch("asyncio.create_subprocess_exec") as mock_proc:
             proc = AsyncMock()
@@ -397,6 +416,7 @@ def test_ingest_repo_background_clone_failure() -> None:
             proc.communicate = AsyncMock(return_value=(b"", b"fatal: not found"))
             mock_proc.return_value = proc
             await _ingest_repo_background(
+                job_id="job-clone-failure",
                 repo_url="https://github.com/notexist/repo",
                 collection_id="coll-x",
                 branch="main",
@@ -417,7 +437,8 @@ def test_ingest_repo_background_timeout() -> None:
 
     async def _run():
         from app.api.knowledge import _ingest_repo_background
-        store = KnowledgeStore()
+        store = MagicMock()
+        store.update_ingestion_job_async = AsyncMock()
         with patch("asyncio.create_subprocess_exec") as mock_proc:
             proc = AsyncMock()
             proc.returncode = 0
@@ -425,6 +446,7 @@ def test_ingest_repo_background_timeout() -> None:
             proc.communicate = AsyncMock(side_effect=TimeoutError())
             mock_proc.return_value = proc
             await _ingest_repo_background(
+                job_id="job-timeout",
                 repo_url="https://github.com/slow/repo",
                 collection_id="coll-x",
                 branch="main",
@@ -487,8 +509,12 @@ def test_ingest_openapi_valid_spec() -> None:
 
 
 def test_ingest_openapi_no_embedder() -> None:
-    """Lines 628-688: OpenAPI ingest without embedder (empty embeddings)."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    """OpenAPI ingestion without an embedder is fail-closed."""
+    store = KnowledgeStore()
+    client = TestClient(
+        _make_app(knowledge_store=store),
+        raise_server_exceptions=False,
+    )
     coll_id = _create_collection(client)
 
     import json
@@ -498,7 +524,8 @@ def test_ingest_openapi_no_embedder() -> None:
         json={"collection_id": coll_id, "content": json.dumps(spec)},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
+    assert resp.status_code == 503
+    assert store._data[(_CTX.tenant_id, coll_id)].chunks == []
 
 
 def test_ingest_openapi_yaml_format() -> None:
@@ -548,12 +575,15 @@ def test_ingest_openapi_empty_paths() -> None:
         assert resp.json()["endpoints_ingested"] == 0
 
 
-def test_ingest_openapi_embedder_exception_swallowed() -> None:
-    """Lines 663-667: Embedder exception is swallowed per-chunk."""
-    from app.providers.base import EmbedResponse
+def test_ingest_openapi_embedder_exception_is_fail_closed() -> None:
+    """OpenAPI embedder failures return 503 without writes."""
     embedder = AsyncMock()
     embedder.embed = AsyncMock(side_effect=Exception("Embed fail"))
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+    store = KnowledgeStore()
+    client = TestClient(
+        _make_app(knowledge_store=store, embedder=embedder),
+        raise_server_exceptions=False,
+    )
     coll_id = _create_collection(client)
 
     import json
@@ -563,7 +593,8 @@ def test_ingest_openapi_embedder_exception_swallowed() -> None:
         json={"collection_id": coll_id, "content": json.dumps(spec)},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
+    assert resp.status_code == 503
+    assert store._data[(_CTX.tenant_id, coll_id)].chunks == []
 
 
 # ---------------------------------------------------------------------------
@@ -760,7 +791,7 @@ def test_ingest_chunks_from_source_helper() -> None:
 
 
 def test_ingest_chunks_from_source_embedder_exception() -> None:
-    """Lines 807-831: Embedder exception per chunk is swallowed."""
+    """A structured source embedder failure is fail-closed."""
     import asyncio
     from app.api.knowledge import _ingest_chunks_from_source
 
@@ -778,12 +809,14 @@ def test_ingest_chunks_from_source_embedder_exception() -> None:
         count = await _ingest_chunks_from_source(store, chunks, "coll-exc", _CTX, embedder)
         return count
 
-    count = asyncio.run(_run())
-    assert count >= 0  # swallowed, may succeed with empty embedding
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.status_code == 503
+    assert store._data[(_CTX.tenant_id, "coll-exc")].chunks == []
 
 
 def test_ingest_chunks_no_embedder() -> None:
-    """Lines 803-831: No embedder → empty embeddings, still ingests."""
+    """A structured source without an embedder is fail-closed."""
     import asyncio
     from app.api.knowledge import _ingest_chunks_from_source
 
@@ -799,8 +832,10 @@ def test_ingest_chunks_no_embedder() -> None:
         count = await _ingest_chunks_from_source(store, chunks, "coll-noemb", _CTX, None)
         return count
 
-    count = asyncio.run(_run())
-    assert count >= 0
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.status_code == 503
+    assert store._data[(_CTX.tenant_id, "coll-noemb")].chunks == []
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +979,11 @@ def test_federated_search_with_embedder() -> None:
     coll2 = _create_collection(client, "FedColl2")
 
     mock_results: list = []
-    with patch("app.knowledge.federated_search.federated_search", new_callable=AsyncMock, return_value=mock_results):
+    with patch(
+        "app.knowledge.federated_search.federated_search",
+        new_callable=AsyncMock,
+        return_value=mock_results,
+    ) as search:
         resp = client.post(
             "/knowledge/search/federated",
             json={"query": "test query", "collection_ids": [coll1, coll2], "top_k": 5},
@@ -954,17 +993,37 @@ def test_federated_search_with_embedder() -> None:
     body = resp.json()
     assert "results" in body
     assert "total" in body
+    assert search.await_args.kwargs["tenant_ctx"].tenant_id == _CTX.tenant_id
 
 
-def test_federated_search_no_embedder_503() -> None:
-    """Lines 1006-1010: No embedder returns 503."""
+def test_federated_search_failure_is_structured_non_2xx() -> None:
+    embedder = _make_embedder()
+    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+
+    with patch(
+        "app.knowledge.federated_search.federated_search",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("private collection failure"),
+    ):
+        resp = client.post(
+            "/knowledge/search/federated",
+            json={"query": "test", "collection_ids": ["c1"]},
+            headers=H,
+        )
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Retrieval service is unavailable"}
+
+
+def test_federated_search_uses_gateway_without_api_embedder() -> None:
+    """Embedding capability is validated behind the gateway boundary."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/knowledge/search/federated",
         json={"query": "test", "collection_ids": ["c1", "c2"]},
         headers=H,
     )
-    assert resp.status_code == 503
+    assert resp.status_code == 200
 
 
 def test_federated_search_missing_query() -> None:

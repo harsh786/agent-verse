@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -183,6 +184,54 @@ def test_set_llm_config_returns_200() -> None:
     data = resp.json()
     assert data["provider"] == "anthropic"
     assert data["configured"] is True
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("azure", "https://example.openai.azure.com"),
+        ("together", "https://api.together.xyz/v1"),
+        ("openai_compatible", "https://custom.example/v1"),
+        ("openai", "https://custom.example/v1"),
+    ],
+)
+def test_custom_openai_provider_requires_explicit_model(
+    provider: str,
+    base_url: str,
+) -> None:
+    client = TestClient(_make_app(AsyncMock()), raise_server_exceptions=False)
+
+    response = client.put(
+        "/tenants/me/llm",
+        json={
+            "provider": provider,
+            "api_key": "secret-value",
+            "base_url": base_url,
+            "default_model": "",
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert response.status_code == 422
+    assert "secret-value" not in response.text
+
+
+def test_official_openai_provider_allows_default_model() -> None:
+    client = TestClient(_make_app(AsyncMock()), raise_server_exceptions=False)
+
+    response = client.put(
+        "/tenants/me/llm",
+        json={
+            "provider": "openai",
+            "api_key": "secret-value",
+            "base_url": "https://api.openai.com/v1",
+            "default_model": "",
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    )
+
+    assert response.status_code == 200
+    assert "secret-value" not in response.text
 
 
 def test_get_llm_config_unconfigured_returns_not_configured() -> None:

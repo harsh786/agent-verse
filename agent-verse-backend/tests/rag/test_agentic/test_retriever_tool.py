@@ -1,163 +1,160 @@
-# tests/rag/test_agentic/test_retriever_tool.py
-"""RetrieverTool must NEVER return silent empty strings — always a structured result."""
+"""Gateway contract tests for RetrieverTool."""
+
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from app.rag.agentic.retriever_tool import RetrieverTool, RetrievalResult
-from app.rag.agentic.source_inventory import SourceInventory, SourceInventoryResult
-from app.tenancy.context import TenantContext, PlanTier
-from app.rag.store import KnowledgeStore
-from app.rag.models import KnowledgeCollection, Chunk
+
+from app.rag.agentic.retriever_tool import RetrieverTool
+from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
-def tenant_ctx():
-    return TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
+def tenant_ctx() -> TenantContext:
+    return TenantContext("t1", PlanTier.PROFESSIONAL, "k1")
 
 
-@pytest.fixture
-def empty_store():
-    return KnowledgeStore()
+class Gateway:
+    def __init__(self, *, score: float = 0.8, error: Exception | None = None) -> None:
+        self.score = score
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(self, tenant_ctx: TenantContext, **kwargs: Any) -> RAGExecutionResult:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return RAGExecutionResult(
+            requested_strategy_id=str(kwargs["strategy_id"]),
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id="citation-1",
+                    chunk_id="chunk-1",
+                    content="Tenant evidence",
+                    score=self.score,
+                    source="guide.pdf",
+                    metadata={"page_number": 3},
+                )
+            ],
+        )
 
 
-@pytest.fixture
-def loaded_store(tenant_ctx):
-    store = KnowledgeStore()
-    col = KnowledgeCollection(name="docs", collection_id="col1", embedder="fake")
-    store.create_collection(col, tenant_ctx=tenant_ctx)
-    chunk = Chunk(
-        document_id="d1",
-        content="The AgentVerse platform supports dynamic orchestration.",
-        embedding=[0.1] * 10,
-        chunk_index=0,
-        chunk_id="c1",
-        metadata={"source_url": "https://docs.example.com/page1", "page_number": 1},
-    )
-    store.ingest_chunk(chunk, collection_id="col1", tenant_ctx=tenant_ctx)
-    return store
-
-
-# ── Never return empty strings ────────────────────────────────────────────────
-
-async def test_empty_kb_returns_structured_result_not_empty_string(tenant_ctx, empty_store):
-    tool = RetrieverTool(knowledge_store=empty_store)
-    result = await tool.retrieve(
-        query="what is agentverse",
+@pytest.mark.asyncio
+async def test_retrieval_returns_gateway_content_and_citations(
+    tenant_ctx: TenantContext,
+) -> None:
+    gateway = Gateway()
+    result = await RetrieverTool(retrieval_gateway=gateway).retrieve(
+        "policy",
         tenant_ctx=tenant_ctx,
+        strategy=RAGStrategy.HYBRID,
+        collection_ids=["collection-1"],
     )
-    assert isinstance(result, RetrievalResult)
-    # Must NOT be silent empty — must have a source explanation
-    assert result.source in ("none_available", "parametric", "web", "memory")
-    assert result.confidence >= 0.0
+
+    assert result.context_text == "Tenant evidence"
+    assert result.citations[0].citation_id == "citation-1"
+    assert result.citations[0].page_number == 3
+    assert not result.fallback_used
 
 
-async def test_retrieval_returns_content_when_kb_has_data(tenant_ctx, loaded_store):
-    tool = RetrieverTool(knowledge_store=loaded_store)
-    result = await tool.retrieve(
-        query="dynamic orchestration",
+@pytest.mark.asyncio
+async def test_retrieval_respects_min_confidence(tenant_ctx: TenantContext) -> None:
+    result = await RetrieverTool(retrieval_gateway=Gateway(score=0.2)).retrieve(
+        "policy",
         tenant_ctx=tenant_ctx,
-        collection_ids=["col1"],
+        collection_ids=["collection-1"],
+        min_confidence=0.5,
     )
-    assert isinstance(result, RetrievalResult)
-    assert len(result.chunks) > 0
-    assert result.confidence > 0.0
-    assert result.source == "knowledge_base"
+
+    assert result.chunks == []
+    assert result.confidence == 0.0
+    assert not result.fallback_used
 
 
-async def test_retrieval_result_has_citations(tenant_ctx, loaded_store):
-    tool = RetrieverTool(knowledge_store=loaded_store)
-    result = await tool.retrieve(
-        query="platform",
+@pytest.mark.asyncio
+async def test_retrieval_rejects_noncanonical_strategy(
+    tenant_ctx: TenantContext,
+) -> None:
+    gateway = Gateway()
+    with pytest.raises(TypeError, match="canonical"):
+        await RetrieverTool(retrieval_gateway=gateway).retrieve(
+            "policy",
+            tenant_ctx=tenant_ctx,
+            strategy="auto",  # type: ignore[arg-type]
+            collection_ids=["collection-1"],
+        )
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_retrieval_failure_propagates_without_parametric_fallback(
+    tenant_ctx: TenantContext,
+) -> None:
+    with pytest.raises(RuntimeError, match="gateway failed"):
+        await RetrieverTool(
+            retrieval_gateway=Gateway(error=RuntimeError("gateway failed"))
+        ).retrieve(
+            "policy",
+            tenant_ctx=tenant_ctx,
+            collection_ids=["collection-1"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_retrieval_passes_filters_and_top_k(tenant_ctx: TenantContext) -> None:
+    gateway = Gateway()
+    await RetrieverTool(retrieval_gateway=gateway).retrieve(
+        "policy",
         tenant_ctx=tenant_ctx,
-        collection_ids=["col1"],
+        strategy=RAGStrategy.GRAPH,
+        collection_ids=["collection-1"],
+        top_k=7,
+        metadata_filter={"team": "legal"},
     )
-    # Citations must be structured, not empty
-    assert isinstance(result.citations, list)
+
+    assert gateway.calls[0]["strategy_id"] is RAGStrategy.GRAPH
+    assert gateway.calls[0]["top_k"] == 7
+    assert gateway.calls[0]["filters"] == {"team": "legal"}
 
 
-async def test_retrieval_respects_min_confidence(tenant_ctx, loaded_store):
-    tool = RetrieverTool(knowledge_store=loaded_store)
-    result = await tool.retrieve(
-        query="completely unrelated topic xyz123",
+@pytest.mark.asyncio
+async def test_repeated_citation_ids_across_collections_preserve_both(
+    tenant_ctx: TenantContext,
+) -> None:
+    class RepeatedIdGateway:
+        async def execute(
+            self, tenant_ctx: TenantContext, **kwargs: Any
+        ) -> RAGExecutionResult:
+            collection_id = str(kwargs["collection_id"])
+            return RAGExecutionResult(
+                requested_strategy_id="hybrid",
+                resolved_strategy_id=RAGStrategy.HYBRID,
+                citations=[
+                    RAGCitation(
+                        citation_id="citation-1",
+                        chunk_id=f"chunk-{collection_id}",
+                        content=f"Evidence {collection_id}",
+                        score=0.8,
+                        source=f"source-{collection_id}",
+                    )
+                ],
+            )
+
+    result = await RetrieverTool(retrieval_gateway=RepeatedIdGateway()).retrieve(
+        "policy",
         tenant_ctx=tenant_ctx,
-        collection_ids=["col1"],
-        min_confidence=0.9,   # very high threshold
+        collection_ids=["collection-1", "collection-2"],
     )
-    # Low-confidence results filtered out → graceful degradation
-    assert isinstance(result, RetrievalResult)
 
-
-# ── SourceInventory ───────────────────────────────────────────────────────────
-
-def test_source_inventory_empty_kb(tenant_ctx, empty_store):
-    inventory = SourceInventory(knowledge_store=empty_store)
-    result = inventory.build(tenant_ctx=tenant_ctx)
-    assert isinstance(result, SourceInventoryResult)
-    assert result.kb_collections == 0
-    assert result.kb_state == "empty"
-
-
-def test_source_inventory_with_data(tenant_ctx, loaded_store):
-    inventory = SourceInventory(knowledge_store=loaded_store)
-    result = inventory.build(tenant_ctx=tenant_ctx)
-    assert result.kb_collections >= 1
-    assert result.kb_state in ("sparse", "healthy")
-
-
-def test_source_inventory_knows_web_available(tenant_ctx, empty_store):
-    inventory = SourceInventory(knowledge_store=empty_store, web_search_available=True)
-    result = inventory.build(tenant_ctx=tenant_ctx)
-    assert result.web_available is True
-
-
-# ── Strategy routing ─────────────────────────────────────────────────────────
-
-async def test_strategy_auto_selects_web_when_kb_empty(tenant_ctx, empty_store):
-    tool = RetrieverTool(knowledge_store=empty_store, web_search_available=True)
-    result = await tool.retrieve(
-        query="current Python version",
-        tenant_ctx=tenant_ctx,
-        strategy="auto",
-    )
-    # With empty KB, auto should route to web or parametric
-    assert result.source in ("web", "parametric", "none_available")
-    assert result.strategy_used is not None
-
-
-# ── Extra coverage ────────────────────────────────────────────────────────────
-
-def test_source_inventory_to_dict(tenant_ctx, empty_store):
-    inventory = SourceInventory(knowledge_store=empty_store, web_search_available=True)
-    result = inventory.build(tenant_ctx=tenant_ctx)
-    d = result.to_dict()
-    assert isinstance(d, dict)
-    assert "kb_collections" in d
-    assert "web_available" in d
-    assert d["web_available"] is True
-
-
-async def test_retrieval_context_text_property(tenant_ctx, loaded_store):
-    tool = RetrieverTool(knowledge_store=loaded_store)
-    result = await tool.retrieve(
-        query="dynamic orchestration",
-        tenant_ctx=tenant_ctx,
-        collection_ids=["col1"],
-    )
-    # context_text must be a non-empty string when chunks present
-    assert isinstance(result.context_text, str)
-    if result.chunks:
-        assert len(result.context_text) > 0
-
-
-async def test_parallel_retrieve_never_returns_empty_on_all_failures(tenant_ctx):
-    """parallel_retrieve must never return empty list — even when all sources fail."""
-    # Use empty store with no web search — will fail all attempts
-    tool = RetrieverTool(knowledge_store=KnowledgeStore())
-    results = await tool.parallel_retrieve(
-        query="any query",
-        tenant_ctx=tenant_ctx,
-        sources=["kb"],
-    )
-    assert isinstance(results, list)
-    assert len(results) >= 1  # MUST never be empty
-    assert all(isinstance(r, RetrievalResult) for r in results)
+    assert len(result.citations) == 2
+    assert {citation.collection_id for citation in result.citations} == {
+        "collection-1",
+        "collection-2",
+    }
+    assert {chunk["content"] for chunk in result.chunks} == {
+        "Evidence collection-1",
+        "Evidence collection-2",
+    }

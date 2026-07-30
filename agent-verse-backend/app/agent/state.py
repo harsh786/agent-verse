@@ -55,6 +55,9 @@ class SubGoal:
     status: GoalStatus = GoalStatus.PLANNING
     result: str = ""
     error: str = ""
+    provenance: list[dict[str, Any]] = field(default_factory=list)
+    retrieval_trace: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -31,6 +31,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.rag.contracts import UnknownRAGStrategyError
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -542,8 +543,42 @@ async def run_workflow(
             executor = WorkflowExecutor(
                 provider=getattr(request.app.state, "_app_provider", None),
                 mcp_client=getattr(request.app.state, "mcp_client", None),
+                retrieval_gateway=getattr(request.app.state, "retrieval_gateway", None),
             )
             result = await executor.execute(plan, tenant_ctx=tenant)
+            if result.get("status") == "failed":
+                failed_ids = {
+                    str(result.get("failed_step", "")),
+                    *[str(value) for value in result.get("failed_steps", [])],
+                }
+                failed_rag_steps = [
+                    step
+                    for step in plan.steps
+                    if step.id in failed_ids and step.tool == "rag"
+                ]
+                if failed_rag_steps:
+                    failed_step = failed_rag_steps[0]
+                    requested_strategy = str(
+                        failed_step.config.get("requested_strategy_id", "")
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "code": "workflow_retrieval_failed",
+                            "reason": "Retrieval service is unavailable",
+                            "requested_strategy_id": requested_strategy,
+                            "strategy_trace": [
+                                {
+                                    "strategy": failed_step.config.get(
+                                        "strategy",
+                                        requested_strategy,
+                                    ),
+                                    "action": "workflow_retrieval",
+                                    "status": "failed",
+                                }
+                            ],
+                        },
+                    )
             return {
                 "run_id": run_id,
                 "status": result.get("status", "complete"),
@@ -553,6 +588,13 @@ async def run_workflow(
                 "waves": result.get("waves", 0),
                 "summary": result.get("summary", ""),
             }
+        except UnknownRAGStrategyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        except HTTPException:
+            raise
         except Exception:
             pass  # Fall through to GoalService
 

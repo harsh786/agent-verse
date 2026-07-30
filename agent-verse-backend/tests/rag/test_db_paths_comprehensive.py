@@ -5,9 +5,7 @@ without requiring a real PostgreSQL connection.
 """
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, UTC
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime
 
 import pytest
 
@@ -36,11 +34,11 @@ class _MockSession:
         rows = self._rows
 
         class _Result:
-            def fetchall(_self): return rows
-            def fetchone(_self): return rows[0] if rows else None
-            def scalars(_self):
+            def fetchall(self): return rows
+            def fetchone(self): return rows[0] if rows else None
+            def scalars(self):
                 class _Scalars:
-                    def all(_s): return rows
+                    def all(self): return rows
                 return _Scalars()
         return _Result()
 
@@ -77,9 +75,9 @@ class TestExecutionMemoryDBPaths:
     @pytest.mark.asyncio
     async def test_recall_async_db_success_with_matching_rows(self):
         """Lines 201-223: DB returns rows, filter by keyword → result list."""
-        from app.memory.execution import ExecutionMemory
-
         import json
+
+        from app.memory.execution import ExecutionMemory
         db = _MockDB(rows=[
             ("Deploy kubernetes service", json.dumps(["build", "push"]), True),
             ("Send welcome email", json.dumps(["compose", "send"]), True),
@@ -94,9 +92,9 @@ class TestExecutionMemoryDBPaths:
     @pytest.mark.asyncio
     async def test_recall_async_db_success_no_matching_rows(self):
         """DB returns rows but none match the hint → empty filtered result."""
-        from app.memory.execution import ExecutionMemory
-
         import json
+
+        from app.memory.execution import ExecutionMemory
         db = _MockDB(rows=[
             ("Send email to bob", json.dumps(["compose"]), True),
         ])
@@ -107,9 +105,9 @@ class TestExecutionMemoryDBPaths:
     @pytest.mark.asyncio
     async def test_recall_async_db_success_respects_limit(self):
         """Lines 221-222: limit is respected in DB path."""
-        from app.memory.execution import ExecutionMemory
-
         import json
+
+        from app.memory.execution import ExecutionMemory
         db = _MockDB(rows=[
             (f"task number {i}", json.dumps([f"step{i}"]), True)
             for i in range(10)
@@ -295,38 +293,33 @@ class TestToolReliabilityDBPaths:
 # ── rag/store.py sync context → RuntimeError path ─────────────────────────────
 
 
-class TestKnowledgeStoreAsyncFireAndForget:
-    """Tests for fire-and-forget DB tasks in KnowledgeStore."""
+class TestKnowledgeStoreAwaitedBoundaries:
+    """Tests for explicit persisted versus in-memory mutation boundaries."""
 
-    def test_create_collection_in_sync_context_with_db_hits_runtimeerror(self):
-        """Lines 104-105: sync context → get_running_loop() raises RuntimeError → except pass."""
+    def test_create_collection_sync_helper_rejects_db_store(self):
         from app.rag.models import KnowledgeCollection
         from app.rag.store import KnowledgeStore
 
-        # In a sync test function there is NO running event loop, so
-        # asyncio.get_running_loop() will raise RuntimeError → lines 104-105 are hit
         db = _MockDB()
         store = KnowledgeStore(db_session_factory=db)
-        col_id = store.create_collection(
-            KnowledgeCollection(name="sync-test-col"), tenant_ctx=_CTX
-        )
-        assert col_id is not None
+        with pytest.raises(RuntimeError, match="create_collection_async"):
+            store.create_collection(KnowledgeCollection(name="sync-test-col"), tenant_ctx=_CTX)
 
-    def test_ingest_chunk_in_sync_context_with_db_hits_runtimeerror(self):
-        """Lines 165-166: sync context → ingest_chunk with DB hits RuntimeError."""
+    def test_ingest_chunk_sync_helper_rejects_db_store(self):
         from app.rag.models import Chunk, KnowledgeCollection
         from app.rag.store import KnowledgeStore
 
-        db = _MockDB()
-        store = KnowledgeStore(db_session_factory=db)
+        store = KnowledgeStore()
         col_id = store.create_collection(
             KnowledgeCollection(name="sync-ingest-col"), tenant_ctx=_CTX
         )
         chunk = Chunk(document_id="d1", content="sync content", embedding=[0.1, 0.2], chunk_index=0)
-        # In sync context: get_running_loop() raises RuntimeError → lines 165-166 covered
-        store.ingest_chunk(chunk, collection_id=col_id, tenant_ctx=_CTX)
+        store._db = _MockDB()
+        with pytest.raises(RuntimeError, match="ingest_chunks_async"):
+            store.ingest_chunk(chunk, collection_id=col_id, tenant_ctx=_CTX)
         col = store.get_collection(col_id, tenant_ctx=_CTX)
-        assert col.document_count == 1
+        assert col is not None
+        assert col.document_count == 0
 
     @pytest.mark.asyncio
     async def test_db_create_collection_none_db_returns_early(self):
@@ -374,37 +367,45 @@ class TestKnowledgeStoreAsyncFireAndForget:
         # No exception; _db is None → early return
 
     @pytest.mark.asyncio
-    async def test_ingest_document_with_db_in_async_context_creates_task(self):
-        """Lines 407-426: In async context, ingest_document with DB creates a fire-and-forget task."""
-        from app.rag.models import KnowledgeCollection
+    async def test_ingest_document_propagates_db_failure(self):
+        from app.providers.fake import FakeProvider
         from app.rag.store import KnowledgeStore
 
-        db = _MockDB()
-        store = KnowledgeStore(db_session_factory=db)
-        col_id = store.create_collection(
-            KnowledgeCollection(name="async-doc-col"), tenant_ctx=_CTX
-        )
-        # In async test context → get_running_loop() succeeds → create_task is called
-        chunk_id = await store.ingest_document(
-            collection_id=col_id,
-            content="Async ingest test content here.",
-            tenant_ctx=_CTX,
-        )
-        assert chunk_id is not None
-        # Give the fire-and-forget task a chance to run (it will silently fail on mock)
-        await asyncio.sleep(0)
+        class _FailDB:
+            def __call__(self):
+                class _Context:
+                    async def __aenter__(self):
+                        raise RuntimeError("write failed")
+
+                    async def __aexit__(self, *args):
+                        return None
+
+                return _Context()
+
+        store = KnowledgeStore(db_session_factory=_FailDB())
+        with pytest.raises(RuntimeError, match="write failed"):
+            await store.ingest_document(
+                collection_id="collection",
+                content="Async ingest test content here.",
+                tenant_ctx=_CTX,
+                embedder=FakeProvider(embed_dim=768),
+            )
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_db_with_empty_embedding_falls_back(self):
-        """Line 266: empty query_embedding → fallback to in-memory."""
-        from app.rag.models import KnowledgeCollection
+    async def test_hybrid_search_db_with_empty_embedding_still_requires_db(self):
         from app.rag.store import KnowledgeStore
 
-        db = _MockDB()
-        store = KnowledgeStore(db_session_factory=db)
-        col_id = store.create_collection(
-            KnowledgeCollection(name="empty-emb-col"), tenant_ctx=_CTX
-        )
-        # Empty embedding → should fall back without hitting DB
-        results = await store.hybrid_search_db("test query", [], col_id, _CTX, top_k=3)
-        assert isinstance(results, list)
+        class _FailDB:
+            def __call__(self):
+                class _Context:
+                    async def __aenter__(self):
+                        raise RuntimeError("read failed")
+
+                    async def __aexit__(self, *args):
+                        return None
+
+                return _Context()
+
+        store = KnowledgeStore(db_session_factory=_FailDB())
+        with pytest.raises(RuntimeError, match="read failed"):
+            await store.hybrid_search_db("test query", [], "collection", _CTX, top_k=3)

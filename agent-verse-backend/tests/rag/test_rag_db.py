@@ -1,15 +1,9 @@
 """Tests for KnowledgeStore DB persistence — dual-write hybrid pattern.
 
-Verifies:
-- sync_from_db() returns 0 with no DB factory (no-op)
-- DB failures never break in-memory create_collection() / ingest_chunk()
-- hybrid_search_db() falls back to in-memory search when DB not available
-- hybrid_search_db() falls back gracefully when DB query fails
+Verifies the explicit in-memory fallback and fail-closed persisted boundaries.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -47,24 +41,19 @@ async def test_knowledge_store_sync_from_db_noop() -> None:
 
 
 async def test_knowledge_store_create_collection_with_db_factory_error() -> None:
-    """DB failure must not prevent in-memory collection creation."""
+    """Persisted collection failures propagate and do not mutate the cache."""
     store = KnowledgeStore(db_session_factory=_bad_factory)
     col = KnowledgeCollection(name="test-col", collection_id="col1")
-    cid = store.create_collection(col, tenant_ctx=T)
 
-    # Let fire-and-forget DB task run and fail gracefully
-    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="DB down"):
+        await store.create_collection_async(col, tenant_ctx=T)
 
-    assert cid == "col1"
-    assert store.get_collection("col1", tenant_ctx=T) is not None
+    assert store.get_collection("col1", tenant_ctx=T) is None
 
 
 async def test_knowledge_store_ingest_with_db_factory_error() -> None:
-    """DB failure must not prevent in-memory ingest or search."""
+    """DB-backed sync mutation helpers reject accidental production use."""
     store = KnowledgeStore(db_session_factory=_bad_factory)
-    col = KnowledgeCollection(name="test", collection_id="col1")
-    store.create_collection(col, tenant_ctx=T)
-
     chunk = Chunk(
         document_id="d1",
         content="hello world vector search",
@@ -72,15 +61,8 @@ async def test_knowledge_store_ingest_with_db_factory_error() -> None:
         chunk_index=0,
         chunk_id="c1",
     )
-    store.ingest_chunk(chunk, collection_id="col1", tenant_ctx=T)
-
-    # Let all fire-and-forget tasks run and fail gracefully
-    await asyncio.sleep(0)
-
-    # In-memory search still works after DB failures
-    results = store.hybrid_search("hello", [0.1] * 768, "col1", T, top_k=5)
-    assert len(results) >= 1
-    assert results[0].chunk_id == "c1"
+    with pytest.raises(RuntimeError, match="ingest_chunks_async"):
+        store.ingest_chunk(chunk, collection_id="col1", tenant_ctx=T)
 
 
 async def test_knowledge_store_hybrid_search_db_no_db_falls_back() -> None:
@@ -104,32 +86,57 @@ async def test_knowledge_store_hybrid_search_db_no_db_falls_back() -> None:
     assert "memory" in results[0].content.lower()
 
 
-async def test_knowledge_store_hybrid_search_db_fallback_on_error() -> None:
-    """hybrid_search_db() falls back to in-memory when DB query fails."""
+async def test_knowledge_store_hybrid_search_db_propagates_db_error() -> None:
+    """A configured persisted read never substitutes stale in-memory state."""
     store = KnowledgeStore(db_session_factory=_bad_factory)
-    col = KnowledgeCollection(name="kb", collection_id="col3")
-    store.create_collection(col, tenant_ctx=T)
-
-    # Let the create_collection DB task run and fail
-    await asyncio.sleep(0)
-
     vec = [0.5] * 768
-    chunk = Chunk(
-        document_id="d3",
-        content="python async programming",
-        embedding=vec,
-        chunk_index=0,
-        chunk_id="c3",
-    )
-    store.ingest_chunk(chunk, collection_id="col3", tenant_ctx=T)
 
-    # Let the ingest DB task run and fail
-    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="DB down"):
+        await store.hybrid_search_db("async", vec, "col3", T, top_k=5)
 
-    # hybrid_search_db should fall back to in-memory (DB fails)
-    results = await store.hybrid_search_db("async", vec, "col3", T, top_k=5)
-    assert len(results) >= 1
-    assert results[0].chunk_id == "c3"
+
+async def test_persisted_search_requires_explicit_tenant_context() -> None:
+    store = KnowledgeStore(db_session_factory=_bad_factory)
+
+    with pytest.raises(TypeError, match="tenant_ctx"):
+        await store.search("query", "collection", top_k=5)
+
+
+async def test_in_memory_search_requires_explicit_tenant_context() -> None:
+    store = KnowledgeStore()
+
+    with pytest.raises(TypeError, match="tenant_ctx"):
+        await store.search("query", "collection", top_k=5)
+
+
+async def test_empty_in_memory_batch_validates_collection() -> None:
+    store = KnowledgeStore()
+
+    with pytest.raises(KeyError, match="not found"):
+        await store.ingest_chunks_async([], collection_id="missing", tenant_ctx=T)
+
+
+def test_startup_does_not_run_cross_tenant_knowledge_hydration() -> None:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "app/main.py").read_text()
+    assert "_knowledge_store_db.sync_from_db" not in source
+
+
+async def test_engine_rejects_unconfigured_dimension_before_building_table_sql() -> None:
+    from app.rag.engine import RetrievalLegExecutionError, hybrid_search
+
+    with pytest.raises(RetrievalLegExecutionError) as exc_info:
+        await hybrid_search(
+            object(),  # type: ignore[arg-type]
+            query="query",
+            query_embedding=None,
+            collection_id="collection",
+            embedding_dim=999,
+            strict=True,
+        )
+
+    assert exc_info.value.leg == "collection_metadata"
 
 
 async def test_knowledge_store_no_db_ingest_is_synchronous() -> None:

@@ -95,8 +95,10 @@ class CostController:
         cost_usd: float,
         tenant_ctx: TenantContext,
         tool_name: str = "",
+        attempt_id: str = "",
     ) -> bool:
         """Atomically check budget and record cost. Returns True if within budget."""
+        del attempt_id
         lock_key = f"{tenant_ctx.tenant_id}:{goal_id}"
         async with self._locks[lock_key]:
             await self._reset_if_new_day_atomic(tenant_ctx.tenant_id)

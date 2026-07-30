@@ -6,13 +6,13 @@ and IngestionOrchestrator.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 
 def _tenant_ctx(tenant_id: str = "t1"):
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="test-key")
 
 
@@ -201,32 +201,32 @@ class TestPDFLayoutChunker:
 
 class TestGetChunkerForStrategy:
     def test_semantic_strategy(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, SemanticChunker
+        from app.ingestion.chunkers import SemanticChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("semantic")
         assert isinstance(chunker, SemanticChunker)
 
     def test_ast_strategy(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, ASTChunker
+        from app.ingestion.chunkers import ASTChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("ast")
         assert isinstance(chunker, ASTChunker)
 
     def test_heading_strategy(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, HeadingChunker
+        from app.ingestion.chunkers import HeadingChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("heading")
         assert isinstance(chunker, HeadingChunker)
 
     def test_unknown_strategy_returns_semantic(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, SemanticChunker
+        from app.ingestion.chunkers import SemanticChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("unknown_strategy")
         assert isinstance(chunker, SemanticChunker)
 
     def test_code_strategy_returns_ast(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, ASTChunker
+        from app.ingestion.chunkers import ASTChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("code")
         assert isinstance(chunker, ASTChunker)
 
     def test_table_strategy(self) -> None:
-        from app.ingestion.chunkers import get_chunker_for_strategy, TableChunker
+        from app.ingestion.chunkers import TableChunker, get_chunker_for_strategy
         chunker = get_chunker_for_strategy("table")
         assert isinstance(chunker, TableChunker)
 
@@ -251,10 +251,14 @@ class TestIngestionOrchestrator:
             content_type="text",
             collection_id="col1",
             tenant_ctx=ctx,
+            dry_run=True,
         )
         assert result.tenant_id == "t1"
         assert result.collection_id == "col1"
-        assert result.chunks_created >= 1
+        assert result.chunks_prepared >= 1
+        assert result.chunks_created == 0
+        assert result.chunk_ids == []
+        assert not result.persisted
 
     async def test_ingest_auto_detects_content_type(self) -> None:
         from app.ingestion.orchestrator import IngestionOrchestrator
@@ -265,13 +269,17 @@ class TestIngestionOrchestrator:
             content_type="auto",
             collection_id="col1",
             tenant_ctx=ctx,
+            dry_run=True,
         )
-        assert result.chunks_created >= 1
+        assert result.chunks_prepared >= 1
 
-    async def test_ingest_with_kb_calls_ingest_document(self) -> None:
+    async def test_ingest_with_kb_calls_atomic_batch_once(self) -> None:
         from app.ingestion.orchestrator import IngestionOrchestrator
         mock_kb = MagicMock()
-        mock_kb.ingest_document = AsyncMock(return_value="chunk-id-123")
+        mock_kb._db = object()
+        mock_kb.ingest_chunks_async = AsyncMock(
+            side_effect=lambda chunks, **_: [chunk.chunk_id for chunk in chunks]
+        )
         orch = IngestionOrchestrator(knowledge_store=mock_kb)
         ctx = _tenant_ctx()
         result = await orch.ingest(
@@ -280,8 +288,9 @@ class TestIngestionOrchestrator:
             collection_id="col1",
             tenant_ctx=ctx,
         )
-        assert mock_kb.ingest_document.called
+        mock_kb.ingest_chunks_async.assert_awaited_once()
         assert result.chunks_created >= 1
+        assert result.persisted
 
     async def test_ingest_returns_ingestion_result(self) -> None:
         from app.ingestion.orchestrator import IngestionOrchestrator, IngestionResult
@@ -292,14 +301,16 @@ class TestIngestionOrchestrator:
             content_type="text",
             collection_id="test-collection",
             tenant_ctx=ctx,
+            dry_run=True,
         )
         assert isinstance(result, IngestionResult)
         assert result.ingestion_id is not None
-        assert len(result.chunk_ids) == result.chunks_created
+        assert result.chunk_ids == []
+        assert result.chunks_created == 0
 
     def test_chunk_dispatches_to_correct_chunker(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
         orch = IngestionOrchestrator()
         chunks = orch._chunk(
             "def foo():\n    pass\ndef bar():\n    pass",
@@ -308,8 +319,8 @@ class TestIngestionOrchestrator:
         assert len(chunks) >= 1
 
     def test_chunk_with_quality_check(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
         orch = IngestionOrchestrator()
         chunks = orch._chunk_with_quality_check(
             "This is decent content worth keeping for quality testing purposes.",
@@ -323,22 +334,26 @@ class TestIngestionOrchestrator:
         ctx = _tenant_ctx()
         md = "# Title\n\nParagraph one.\n\n## Section Two\n\nParagraph two."
         result = await orch.ingest(
-            md, content_type="auto", collection_id="docs", tenant_ctx=ctx
+            md,
+            content_type="auto",
+            collection_id="docs",
+            tenant_ctx=ctx,
+            dry_run=True,
         )
-        assert result.chunks_created >= 1
+        assert result.chunks_prepared >= 1
 
-    async def test_ingest_kb_error_still_creates_ids(self) -> None:
+    async def test_ingest_kb_error_propagates_without_ids(self) -> None:
         from app.ingestion.orchestrator import IngestionOrchestrator
         mock_kb = MagicMock()
-        mock_kb.ingest_document = AsyncMock(side_effect=RuntimeError("DB down"))
+        mock_kb._db = object()
+        mock_kb.ingest_chunks_async = AsyncMock(side_effect=RuntimeError("DB down"))
         orch = IngestionOrchestrator(knowledge_store=mock_kb)
         ctx = _tenant_ctx()
-        result = await orch.ingest(
-            "Content that fails to persist.",
-            content_type="text",
-            collection_id="col1",
-            tenant_ctx=ctx,
-        )
-        # Even on failure, we should still get chunk IDs (fallback UUIDs)
-        assert result.chunks_created >= 1
-        assert len(result.chunk_ids) == result.chunks_created
+        with pytest.raises(RuntimeError, match="DB down"):
+            await orch.ingest(
+                "Content that fails to persist.",
+                content_type="text",
+                collection_id="col1",
+                tenant_ctx=ctx,
+            )
+        mock_kb.ingest_chunks_async.assert_awaited_once()

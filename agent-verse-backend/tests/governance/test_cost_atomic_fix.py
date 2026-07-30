@@ -1,8 +1,13 @@
 """Regression tests for C4 — atomic cost control that cannot regress."""
-import pytest
+
 from unittest.mock import AsyncMock
-from app.governance.cost import RedisCostController, BudgetConfig
-from app.tenancy.context import TenantContext, PlanTier
+
+import pytest
+
+from app.governance.cost import BudgetConfig, RedisCostController
+from app.rag.contracts import RAGStrategy
+from app.rag.gateway import _RAGCostGuard
+from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="cost-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1", roles=())
 
@@ -29,7 +34,7 @@ def _make_fake_redis(initial_goal=0.0, initial_daily=0.0):
     async def exists(key):
         return 1 if key in store else 0
 
-    async def set(key, value, ex=None):
+    async def set_value(key, value, ex=None):
         store[key] = value
 
     redis = AsyncMock()
@@ -38,7 +43,7 @@ def _make_fake_redis(initial_goal=0.0, initial_daily=0.0):
     redis.expire.side_effect = expire
     redis.expireat.side_effect = expireat
     redis.exists.side_effect = exists
-    redis.set.side_effect = set
+    redis.set.side_effect = set_value
     redis.register_script = None  # forces fallback non-Lua path
     redis._store = store
     return redis
@@ -161,9 +166,64 @@ class TestRedisCostControllerAtomicFix:
         assert r2 is False, "Daily budget not enforced"
 
         # Daily total must be $0.70, not $1.10
-        status = await ctrl.get_budget_status(goal_id="g2", tenant_ctx=T)
+        await ctrl.get_budget_status(goal_id="g2", tenant_ctx=T)
         # Check via redis store that daily counter is 0.70
         daily_key = ctrl._daily_key(T.tenant_id)
         daily_stored = float(fake_redis._store.get(daily_key, 0))
         assert daily_stored == pytest.approx(0.70, abs=0.01), \
             f"Daily counter inflated by denied request: {daily_stored}"
+
+    @pytest.mark.asyncio
+    async def test_repeated_client_execution_id_uses_unique_billing_invocations(self):
+        fake_redis = _make_fake_redis()
+        controller = RedisCostController(redis=fake_redis)
+        controller.configure_tenant_budget(
+            T.tenant_id,
+            BudgetConfig(per_goal_usd=10.0, per_tenant_daily_usd=10.0),
+        )
+
+        first = _RAGCostGuard(
+            controller,
+            execution_id="client-correlation-id",
+            invocation_id="server-invocation-1",
+            tenant_context=T,
+            strategy=RAGStrategy.HYBRID,
+        )
+        second = _RAGCostGuard(
+            controller,
+            execution_id="client-correlation-id",
+            invocation_id="server-invocation-2",
+            tenant_context=T,
+            strategy=RAGStrategy.HYBRID,
+        )
+
+        await first.reserve("embedding", reservation_key="query-embedding")
+        await second.reserve("embedding", reservation_key="query-embedding")
+
+        status = await controller.get_budget_status(
+            goal_id="client-correlation-id",
+            tenant_ctx=T,
+        )
+        assert status["goal_spent"] == pytest.approx(0.0002)
+
+    @pytest.mark.asyncio
+    async def test_internal_retry_reuses_same_invocation_reservation(self):
+        fake_redis = _make_fake_redis()
+        controller = RedisCostController(redis=fake_redis)
+        guard = _RAGCostGuard(
+            controller,
+            execution_id="server-goal-id",
+            invocation_id="server-invocation",
+            tenant_context=T,
+            strategy=RAGStrategy.CORRECTIVE,
+        )
+
+        first = await guard.reserve("completion", reservation_key="grade-attempt-1")
+        retry = await guard.reserve("completion", reservation_key="grade-attempt-1")
+
+        assert retry == first
+        status = await controller.get_budget_status(
+            goal_id="server-goal-id",
+            tenant_ctx=T,
+        )
+        assert status["goal_spent"] == pytest.approx(0.001)

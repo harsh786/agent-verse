@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -162,10 +161,8 @@ def test_ingest_no_embedder_returns_503() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    # Without embedder, embed_texts returns empty vectors and ingest succeeds (201).
-    # The 503 guard only applies to the /search endpoint (where empty embeddings
-    # would silently corrupt retrieval results).
-    assert resp.status_code == 201
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Embedding provider is unavailable"}
 
 
 def test_ingest_with_embedder(monkeypatch) -> None:
@@ -206,7 +203,7 @@ def test_ingest_with_embedder(monkeypatch) -> None:
 # search
 # ---------------------------------------------------------------------------
 
-def test_search_no_embedder_returns_503() -> None:
+def test_search_without_gateway_returns_503() -> None:
     store = KnowledgeStore()
     client = TestClient(_make_app(store), raise_server_exceptions=False)
     resp = client.get(
@@ -214,10 +211,10 @@ def test_search_no_embedder_returns_503() -> None:
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 503
-    assert "embedding" in resp.json()["detail"].lower()
+    assert resp.json()["detail"] == "Retrieval service is unavailable"
 
 
-def test_search_with_embedder(monkeypatch) -> None:
+def test_search_with_embedder_still_requires_gateway(monkeypatch) -> None:
     async def mock_embed_texts(texts, provider):
         return [[0.1] * 768 for _ in texts]
 
@@ -231,8 +228,7 @@ def test_search_with_embedder(monkeypatch) -> None:
         "/knowledge/search?q=python&collection_id=col-1",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

@@ -1,17 +1,16 @@
 """Tests for PatternSelector — 10 tests covering goal archetypes."""
 from __future__ import annotations
 
-import pytest
 from app.orchestration.pattern_selector import PatternSelector
 from app.orchestration.runtime_profile import (
     Complexity,
-    Domain,
     GoalProperties,
     KnowledgeState,
     RiskLevel,
     TimeSensitivity,
 )
 from app.orchestration.strategy_registry import build_default_registry
+from app.rag.contracts import RAGStrategy
 
 
 def _selector() -> PatternSelector:
@@ -19,7 +18,7 @@ def _selector() -> PatternSelector:
 
 
 def _props(**kwargs) -> GoalProperties:  # type: ignore[no-untyped-def]
-    defaults = dict(raw_goal="test goal")
+    defaults = {"raw_goal": "test goal"}
     defaults.update(kwargs)
     return GoalProperties(**defaults)
 
@@ -31,12 +30,15 @@ def test_simple_low_risk_profile():
     sel = _selector()
     props = _props(complexity=Complexity.SIMPLE, risk=RiskLevel.LOW)
     agent = sel.select_agent_patterns(props)
+    rag = sel.select_rag_strategy(props)
     mem = sel.select_memory_cache_policy(props)
     model = sel.select_model_plan(props)
     assert "hitl" not in agent.safety
     assert "rollback" not in agent.safety
     assert mem.use_semantic_cache is True
     assert model.cost_class == "low"
+    assert agent.rag == [RAGStrategy.HYBRID.value]
+    assert rag.strategy == RAGStrategy.CORRECTIVE.value
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,7 @@ def test_complex_goal_patterns():
     assert "chain_of_thought" in agent.reasoning
     assert "reflection" in agent.reasoning
     assert rag.reranker == "rrf"
+    assert rag.strategy == RAGStrategy.FUSION.value
     assert mem.use_long_term_memory is True
 
 
@@ -84,11 +87,12 @@ def test_coding_goal_sandbox_and_ast():
     assert sec.sandbox_required is True
     assert rag.chunking_strategy == "ast"
     assert rag.embedding_model == "code"
+    assert rag.strategy == RAGStrategy.COLBERT.value
     assert ev.eval_suite == "coding"
 
 
 # ---------------------------------------------------------------------------
-# 5. Web-requiring goal: flare (or web_augmented_rag legacy), web_search in sources
+# 5. Web-requiring goal: FLARE with web_search in sources
 # ---------------------------------------------------------------------------
 def test_web_goal_rag_strategy():
     sel = _selector()
@@ -96,7 +100,7 @@ def test_web_goal_rag_strategy():
     rag = sel.select_rag_strategy(props)
     assert rag.web_fallback_enabled is True
     assert "web_search" in rag.sources
-    assert rag.strategy in ("flare", "web_augmented_rag")
+    assert rag.strategy == RAGStrategy.FLARE.value
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +128,7 @@ def test_realtime_token_budget():
 
 
 # ---------------------------------------------------------------------------
-# 8. Expert complexity: raptor (or agentic_rag legacy), goal_tree, LTM+KG memory, rag eval suite
+# 8. Expert complexity: RAPTOR, goal_tree, LTM+KG memory, rag eval suite
 # ---------------------------------------------------------------------------
 def test_expert_complexity_full_profile():
     sel = _selector()
@@ -136,7 +140,7 @@ def test_expert_complexity_full_profile():
     assert "goal_tree" in agent.multi_agent
     assert agent.persistence_mode is True
     assert agent.max_iterations == 50
-    assert rag.strategy in ("raptor", "agentic_rag")
+    assert rag.strategy == RAGStrategy.RAPTOR.value
     assert "knowledge_graph" in rag.sources
     assert mem.use_knowledge_graph is True
     assert ev.eval_suite == "rag"

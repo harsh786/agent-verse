@@ -1,17 +1,111 @@
 """Phase 6+7: GraphRAG/RAG Platform + Agent Runtime 2.0 tests."""
+
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.api.rag_platform import router as rag_router
-from app.api.agent_runtime import router as runtime_router
-from app.rag_platform.query_planner import QueryPlanner, RAGStrategy
+
 from app.agent_runtime.models import AgentRole, RiskLevel, StepStatus
+from app.api.agent_runtime import router as runtime_router
+from app.api.rag_platform import router as rag_router
+from app.orchestration.strategy_registry import build_default_registry
+from app.rag.contracts import (
+    RAGExecutionRequest,
+    RAGExecutionResult,
+    RAGRetrievalLeg,
+    UnavailableRAGStrategyError,
+)
+from app.rag_platform.query_planner import QueryPlanner, RAGStrategy
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-p67", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p67")
 _KEY = "ak_phase67_test_key"
 _HEADERS = {"X-API-Key": _KEY}
+
+
+class _NaiveRuntimeAdapter:
+    strategy = RAGStrategy.NAIVE
+
+    async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=self.strategy,
+        )
+
+
+class _AdaptiveRuntimeAdapter:
+    strategy = RAGStrategy.ADAPTIVE
+
+    async def execute(self, request: RAGExecutionRequest) -> RAGExecutionResult:
+        return RAGExecutionResult(
+            requested_strategy_id=request.requested_strategy_id,
+            resolved_strategy_id=self.strategy,
+        )
+
+
+class _Gateway:
+    def __init__(self) -> None:
+        self.readiness_tenants: list[TenantContext] = []
+        capability = SimpleNamespace()
+        self.dependencies = SimpleNamespace(
+            strategy_capabilities={
+                RAGStrategy.NAIVE: capability,
+                RAGStrategy.ADAPTIVE: capability,
+            }
+        )
+
+    async def readiness(
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        strategy_id: RAGStrategy,
+    ) -> SimpleNamespace:
+        self.readiness_tenants.append(tenant_ctx)
+        available = strategy_id in {RAGStrategy.NAIVE, RAGStrategy.ADAPTIVE}
+        return SimpleNamespace(
+            available=available,
+            reason="ready" if available else "adapter_not_registered",
+        )
+
+    async def execute(
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        collection_id: str,
+        query: str,
+        strategy_id: str,
+        top_k: int,
+        filters: dict,
+    ) -> RAGExecutionResult:
+        del tenant_ctx, collection_id, top_k, filters
+        strategy = RAGStrategy(strategy_id)
+        if strategy not in {RAGStrategy.NAIVE, RAGStrategy.ADAPTIVE}:
+            raise UnavailableRAGStrategyError(strategy)
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=strategy,
+            retrieval_legs=[
+                RAGRetrievalLeg(
+                    strategy=strategy,
+                    query=query,
+                    result_count=0,
+                )
+            ],
+            answer="No matching certified evidence.",
+        )
+
+
+@pytest.fixture(autouse=True)
+def _certified_rag_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = build_default_registry(
+        rag_runtime_capabilities={
+            RAGStrategy.NAIVE: _NaiveRuntimeAdapter,
+            RAGStrategy.ADAPTIVE: _AdaptiveRuntimeAdapter,
+        }
+    )
+    monkeypatch.setattr("app.api.rag_platform.get_strategy_registry", lambda: registry)
 
 
 def _make_app():
@@ -24,6 +118,7 @@ def _make_app():
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(rag_router)
     app.include_router(runtime_router)
+    app.state.retrieval_gateway = _Gateway()
     return app
 
 
@@ -35,7 +130,8 @@ def test_rag_query_returns_answer():
         "/rag/query",
         json={
             "query": "What is an AI agent?",
-            "strategy": "direct",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.NAIVE.value,
             "top_k": 3,
         },
         headers=_HEADERS,
@@ -48,43 +144,118 @@ def test_rag_query_returns_answer():
     assert "grounded" in data
 
 
-def test_rag_query_auto_strategy():
+def test_rag_query_adaptive_strategy():
     client = TestClient(_make_app())
     resp = client.post(
         "/rag/query",
-        json={"query": "How does agent planning work?"},
+        json={
+            "query": "How does agent planning work?",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.ADAPTIVE.value,
+        },
         headers=_HEADERS,
     )
     assert resp.status_code == 200
     assert resp.json()["strategy_used"] in [s.value for s in RAGStrategy]
 
 
-def test_rag_list_strategies():
+def test_rag_query_rejects_removed_direct_id():
     client = TestClient(_make_app())
+
+    resp = client.post(
+        "/rag/query",
+        json={
+            "query": "What is an AI agent?",
+            "collection_id": "collection-1",
+            "strategy": "direct",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Unknown RAG strategy: direct"
+
+
+def test_rag_query_rejects_uncertified_canonical_strategy():
+    client = TestClient(_make_app())
+
+    resp = client.post(
+        "/rag/query",
+        json={
+            "query": "What is connected?",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.GRAPH.value,
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "RAG strategy is unavailable: graph"
+
+
+def test_rag_list_strategies():
+    app = _make_app()
+    client = TestClient(app)
     resp = client.get("/rag/strategies", headers=_HEADERS)
     assert resp.status_code == 200
     strategies = resp.json()["strategies"]
-    assert len(strategies) >= 5
+    assert len(strategies) == len(RAGStrategy)
     ids = {s["id"] for s in strategies}
-    assert "direct" in ids
-    assert "graph" in ids
-    assert "hyde" in ids
+    assert ids == {strategy.value for strategy in RAGStrategy}
+    assert {"auto", "direct", "multimodal"}.isdisjoint(ids)
+    by_id = {strategy["id"]: strategy for strategy in strategies}
+    assert by_id[RAGStrategy.NAIVE.value]["state"] == "implemented"
+    assert by_id[RAGStrategy.NAIVE.value]["available"] is True
+    assert by_id[RAGStrategy.ADAPTIVE.value]["state"] == "implemented"
+    assert by_id[RAGStrategy.GRAPH.value]["available"] is False
+    assert by_id[RAGStrategy.GRAPH.value]["unavailable_reason"] == "registry_not_certified"
+    gateway = app.state.retrieval_gateway
+    assert isinstance(gateway, _Gateway)
+    assert gateway.readiness_tenants == [_CTX] * len(RAGStrategy)
 
 
 def test_rag_retrieval_legs_present():
     client = TestClient(_make_app())
-    resp = client.post("/rag/query", json={"query": "test query"}, headers=_HEADERS)
+    resp = client.post(
+        "/rag/query",
+        json={
+            "query": "test query",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.ADAPTIVE.value,
+        },
+        headers=_HEADERS,
+    )
     assert resp.status_code == 200
     legs = resp.json()["retrieval_legs"]
     assert isinstance(legs, list)
     assert len(legs) >= 1
 
 
+def test_rag_query_rejects_top_k_above_public_limit() -> None:
+    client = TestClient(_make_app())
+    response = client.post(
+        "/rag/query",
+        json={
+            "query": "test query",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.NAIVE.value,
+            "top_k": 21,
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
 def test_rag_confidence_score():
     client = TestClient(_make_app())
     resp = client.post(
         "/rag/query",
-        json={"query": "What is semantic search?"},
+        json={
+            "query": "What is semantic search?",
+            "collection_id": "collection-1",
+            "strategy": RAGStrategy.ADAPTIVE.value,
+        },
         headers=_HEADERS,
     )
     assert resp.status_code == 200

@@ -11,19 +11,21 @@ Usage::
     results = await federated_search(
         query="breach of contract",
         collection_ids=["uuid1", "uuid2"],
-        store=knowledge_store,
+        gateway=retrieval_gateway,
+        strategy="hybrid",
         top_k=10,
+        tenant_ctx=tenant_ctx,
     )
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from typing import Any
 
-from app.observability.logging import get_logger
-
-_log = get_logger(__name__)
+from app.rag.contracts import RAGExecutionResult, RAGStrategy
+from app.tenancy.context import TenantContext
 
 __all__ = ["federated_search"]
 
@@ -35,6 +37,9 @@ def _normalize_scores(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     the single/zero result is not discarded by downstream min-score filters.
     """
     if not results:
+        return results
+    if len(results) == 1:
+        results[0]["normalized_score"] = 1.0
         return results
 
     scores = [r.get("score", 0.0) for r in results]
@@ -57,12 +62,26 @@ def _content_key(result: dict[str, Any]) -> str:
     return hashlib.sha256(content[:512].encode()).hexdigest()
 
 
+def _merge_unique_dicts(
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_value = {
+        json.dumps(item, sort_keys=True, separators=(",", ":")): item
+        for item in [*first, *second]
+    }
+    return [by_value[key] for key in sorted(by_value)]
+
+
 async def federated_search(
     query: str,
     collection_ids: list[str],
-    store: Any,
+    gateway: Any,
     top_k: int = 10,
     *,
+    tenant_ctx: TenantContext,
+    strategy: str | RAGStrategy = RAGStrategy.HYBRID,
+    filters: dict[str, Any] | None = None,
     per_collection_k: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search *query* across every collection in *collection_ids* in parallel.
@@ -76,8 +95,7 @@ async def federated_search(
     Args:
         query: Natural-language search query.
         collection_ids: UUIDs of collections to search.
-        store: A ``KnowledgeStore`` instance (or any object with a
-            ``search(query, collection_id, top_k)`` coroutine).
+        gateway: The tenant-aware retrieval gateway.
         top_k: Final number of results to return after merging.
         per_collection_k: How many results to fetch per collection before
             merging (defaults to ``top_k * 2`` for better recall).
@@ -96,15 +114,36 @@ async def federated_search(
     # Parallel fetch — one coroutine per collection                       #
     # ------------------------------------------------------------------ #
     async def _search_one(cid: str) -> list[dict[str, Any]]:
-        try:
-            return await store.search(query, cid, top_k=fetch_k)
-        except Exception as exc:
-            _log.warning(
-                "federated_search_collection_error",
-                collection_id=cid,
-                error=str(exc),
-            )
-            return []
+        result = await gateway.execute(
+            tenant_ctx,
+            query=query,
+            collection_id=cid,
+            strategy_id=strategy,
+            top_k=fetch_k,
+            filters=filters or {},
+        )
+        if not isinstance(result, RAGExecutionResult):
+            raise TypeError("Retrieval gateway must return RAGExecutionResult")
+        retrieval_legs = [leg.model_dump(mode="json") for leg in result.retrieval_legs]
+        strategy_trace = [trace.model_dump(mode="json") for trace in result.strategy_trace]
+        return [
+            {
+                "collection_id": cid,
+                "citation_id": f"{cid}:{citation.citation_id}",
+                "original_citation_id": citation.citation_id,
+                "chunk_id": citation.chunk_id,
+                "content": citation.content,
+                "score": citation.score,
+                "source": citation.source,
+                "content_hash": citation.metadata.get("content_hash"),
+                "metadata": dict(citation.metadata),
+                "requested_strategy_id": result.requested_strategy_id,
+                "resolved_strategy_id": result.resolved_strategy_id.value,
+                "retrieval_legs": retrieval_legs,
+                "strategy_trace": strategy_trace,
+            }
+            for citation in result.citations
+        ]
 
     per_collection: list[list[dict[str, Any]]] = list(
         await asyncio.gather(*[_search_one(cid) for cid in collection_ids])
@@ -123,17 +162,44 @@ async def federated_search(
     # ------------------------------------------------------------------ #
     # Sort by normalised score (descending)                               #
     # ------------------------------------------------------------------ #
-    all_results.sort(key=lambda r: r.get("normalized_score", 0.0), reverse=True)
+    all_results.sort(
+        key=lambda result: (
+            -float(result.get("normalized_score", 0.0)),
+            -float(result.get("score", 0.0)),
+            _content_key(result),
+            str(result.get("citation_id", "")),
+        )
+    )
 
     # ------------------------------------------------------------------ #
     # Deduplicate by content                                              #
     # ------------------------------------------------------------------ #
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for r in all_results:
-        key = _content_key(r)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(r)
+    merged_by_content: dict[str, dict[str, Any]] = {}
+    for result in all_results:
+        key = _content_key(result)
+        existing = merged_by_content.get(key)
+        if existing is None:
+            result["collection_ids"] = [str(result["collection_id"])]
+            result["sources"] = [str(result["source"])]
+            result["citation_refs"] = [str(result["citation_id"])]
+            merged_by_content[key] = result
+            continue
+        existing["collection_ids"] = sorted(
+            {*existing["collection_ids"], str(result["collection_id"])}
+        )
+        existing["sources"] = sorted(
+            {*existing["sources"], str(result["source"])}
+        )
+        existing["citation_refs"] = sorted(
+            {*existing["citation_refs"], str(result["citation_id"])}
+        )
+        existing["retrieval_legs"] = _merge_unique_dicts(
+            list(existing["retrieval_legs"]),
+            list(result["retrieval_legs"]),
+        )
+        existing["strategy_trace"] = _merge_unique_dicts(
+            list(existing["strategy_trace"]),
+            list(result["strategy_trace"]),
+        )
 
-    return deduped[:top_k]
+    return list(merged_by_content.values())[:top_k]

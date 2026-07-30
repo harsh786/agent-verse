@@ -1,14 +1,17 @@
 """Tests for StrategyRegistry — canonical pattern catalogue."""
+
 from __future__ import annotations
 
+import enum
+
 import pytest
+
 from app.orchestration.strategy_registry import (
-    StrategyCapability,
-    StrategyState,
     StrategyCategory,
-    StrategyRegistry,
+    StrategyState,
     build_default_registry,
 )
+from app.rag.contracts import RAGStrategy, resolve_rag_strategy
 
 
 def test_registry_has_all_required_agent_patterns():
@@ -33,21 +36,9 @@ def test_registry_has_all_required_agent_patterns():
 
 def test_registry_has_all_required_rag_patterns():
     registry = build_default_registry()
-    required = {
-        "naive_rag",
-        "hybrid_rag",
-        "hyde",
-        "multi_hop_rag",
-        "graph_rag",
-        "corrective_rag",
-        "adaptive_rag",
-        "agentic_rag",
-        "web_augmented_rag",
-        "fusion_rag",
-        "self_rag",
-    }
     registered = {s.strategy_id for s in registry.list_by_category(StrategyCategory.RAG)}
-    assert required.issubset(registered), f"Missing: {required - registered}"
+
+    assert registered == {strategy.value for strategy in RAGStrategy}
 
 
 def test_registry_has_all_safety_patterns():
@@ -83,12 +74,41 @@ def test_every_entry_has_valid_state():
         assert entry.state in valid_states
 
 
+def test_registry_enums_preserve_original_string_enum_bases() -> None:
+    assert StrategyState.__bases__ == (str, enum.Enum)
+    assert StrategyCategory.__bases__ == (str, enum.Enum)
+
+
 def test_lookup_by_id():
     registry = build_default_registry()
-    cap = registry.get("hybrid_rag")
+    cap = registry.get("hybrid")
     assert cap is not None
-    assert cap.strategy_id == "hybrid_rag"
+    assert cap.strategy_id == "hybrid"
     assert cap.category == StrategyCategory.RAG
+
+
+@pytest.mark.parametrize(
+    ("historical_id", "canonical"),
+    [
+        ("fusion_rag", RAGStrategy.FUSION),
+        ("corrective_rag", RAGStrategy.CORRECTIVE),
+        ("speculative_rag", RAGStrategy.SPECULATIVE),
+        ("colbert_late_interaction", RAGStrategy.COLBERT),
+        ("multi_hop_rag", RAGStrategy.MULTI_HOP),
+        ("graph_rag", RAGStrategy.GRAPH),
+    ],
+)
+def test_only_boundary_resolver_accepts_historical_ids(
+    historical_id: str,
+    canonical: RAGStrategy,
+) -> None:
+    registry = build_default_registry()
+
+    assert resolve_rag_strategy(historical_id) is canonical
+    assert registry.get(historical_id) is None
+    capability = registry.get(canonical.value)
+    assert capability is not None
+    assert capability.strategy_id == canonical.value
 
 
 def test_lookup_nonexistent_returns_none():
@@ -103,7 +123,11 @@ def test_filter_by_cost_class():
 
 def test_is_available_checks_state():
     registry = build_default_registry()
-    assert registry.is_available("hybrid_rag", available_deps={"knowledge_store", "embedder"})
+    assert not registry.is_available(
+        "hybrid",
+        available_deps={"knowledge_store", "embedder"},
+    )
+    assert registry.is_available("chain_of_thought")
     cap = registry.get("tree_of_thoughts")
     assert cap is not None
     assert cap.strategy_id == "tree_of_thoughts"

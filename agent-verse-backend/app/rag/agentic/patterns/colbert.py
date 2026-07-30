@@ -53,7 +53,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two float vectors."""
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(x * x for x in b))
     return dot / (mag_a * mag_b) if mag_a > 0 and mag_b > 0 else 0.0
