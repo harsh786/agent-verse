@@ -982,6 +982,36 @@ async def test_rag_cost_trace_records_sanitized_execution_and_actual_tokens() ->
     assert "secret-goal-id" not in str(cost_trace.detail)
 
 
+async def test_repeated_gateway_request_charges_with_distinct_server_invocations() -> None:
+    budget = _BudgetController(allowed_calls=10)
+    gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=_session_factory,  # type: ignore[arg-type]
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_CollectionStore()),
+            strategy_capabilities=core_strategy_capabilities(),
+            embedder=_Embedder(),
+            cost_controller=budget,
+        )
+    )
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [RetrievalResult("one", "one", 0.8, {}, ["vector"])]
+
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        for _ in range(2):
+            await gateway.execute(
+                TENANT,
+                collection_id="collection-1",
+                query="same request",
+                strategy_id=RAGStrategy.HYBRID,
+                execution_id="same-client-correlation",
+            )
+
+    assert len(budget.calls) == 2
+    assert len({call["attempt_id"] for call in budget.calls}) == 2
+    assert {call["goal_id"] for call in budget.calls} == {"same-client-correlation"}
+
+
 async def test_budget_is_shared_and_denied_across_collection_fetches() -> None:
     from app.pipeline.steps import smart_context_fetch
 

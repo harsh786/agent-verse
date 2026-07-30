@@ -202,6 +202,140 @@ def test_rag_query_threads_explicit_execution_id_to_gateway() -> None:
     assert gateway.calls[0][1]["execution_id"] == "api-execution-1"
 
 
+@pytest.mark.asyncio
+async def test_synthesis_fails_before_provider_call_when_goal_budget_is_exhausted() -> None:
+    from app.governance.cost import CostController
+    from app.rag.engine import RetrievalStrategyExecutionError
+    from app.rag.gateway import _RAGCostGuard
+    from app.rag_platform.retriever import RAGRetriever
+
+    provider = RecordingProvider()
+    gateway = RecordingGateway(provider=provider)
+    guard = _RAGCostGuard(
+        CostController(per_goal_usd=0.0, per_tenant_daily_usd=10.0),
+        execution_id="goal-synthesis",
+        invocation_id="invocation-synthesis",
+        tenant_context=TENANT,
+        strategy=RAGStrategy.HYBRID,
+    )
+    result = _result(
+        requested="hybrid",
+        resolved=RAGStrategy.HYBRID,
+        collection_id="collection-1",
+    )
+    result._budget_context = guard
+
+    retriever = RAGRetriever(gateway=gateway)
+    with pytest.raises(RetrievalStrategyExecutionError, match="budget_exhausted"):
+        await retriever.synthesize(
+            query="retention",
+            tenant_ctx=TENANT,
+            strategy=RAGStrategy.HYBRID,
+            citations=result.citations,
+            budget_context=result._budget_context,
+        )
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "budget_scope",
+    ["goal", "daily"],
+)
+async def test_multi_claim_verifier_stops_on_goal_or_daily_budget(
+    budget_scope: str,
+) -> None:
+    import uuid
+
+    from app.governance.cost import CostController
+    from app.rag.engine import RetrievalStrategyExecutionError
+    from app.rag.gateway import _RAGCostGuard
+    from app.rag_platform.retriever import MinimalCitationVerifier, RAGRetriever
+
+    controller = (
+        CostController(per_goal_usd=0.0015, per_tenant_daily_usd=10.0)
+        if budget_scope == "goal"
+        else CostController(per_goal_usd=10.0, per_tenant_daily_usd=0.0015)
+    )
+
+    provider = RecordingProvider()
+    guard = _RAGCostGuard(
+        controller,
+        execution_id="goal-verify",
+        invocation_id=uuid.uuid4().hex,
+        tenant_context=TENANT,
+        strategy=RAGStrategy.HYBRID,
+    )
+    verifier = MinimalCitationVerifier(provider=provider, model="tenant-model")
+    result = _result(
+        requested="hybrid",
+        resolved=RAGStrategy.HYBRID,
+        collection_id="collection-1",
+    ).model_copy(
+        update={"answer": "First claim [1]. Second claim [1]."}
+    )
+    result._budget_context = guard
+    retriever = RAGRetriever(gateway=RecordingGateway(), citation_verifier=verifier)
+
+    with pytest.raises(RetrievalStrategyExecutionError, match="budget_exhausted"):
+        await retriever.verify_result(result, tenant_ctx=TENANT)
+
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesis_and_verification_append_safe_shared_cost_trace() -> None:
+    from app.governance.cost import CostController
+    from app.rag.gateway import _RAGCostGuard
+    from app.rag_platform.retriever import MinimalCitationVerifier, RAGRetriever
+
+    provider = RecordingProvider()
+    guard = _RAGCostGuard(
+        CostController(per_goal_usd=10.0, per_tenant_daily_usd=10.0),
+        execution_id="goal-shared-budget",
+        invocation_id="server-only-invocation",
+        tenant_context=TENANT,
+        strategy=RAGStrategy.HYBRID,
+    )
+    gateway = RecordingGateway(provider=provider)
+    retriever = RAGRetriever(
+        gateway=gateway,
+        citation_verifier=MinimalCitationVerifier(
+            provider=provider,
+            model="tenant-model",
+        ),
+    )
+    result = _result(
+        requested="hybrid",
+        resolved=RAGStrategy.HYBRID,
+        collection_id="collection-1",
+    )
+    result._budget_context = guard
+    answer = await retriever.synthesize(
+        query="retention",
+        tenant_ctx=TENANT,
+        strategy=RAGStrategy.HYBRID,
+        citations=result.citations,
+        budget_context=guard,
+    )
+    result = result.model_copy(update={"answer": answer})
+    result._budget_context = guard
+
+    verified = await retriever.verify_result(result, tenant_ctx=TENANT)
+
+    cost_traces = [
+        trace for trace in verified.strategy_trace if trace.action == "rag_cost"
+    ]
+    assert [trace.detail["operation"] for trace in cost_traces] == [
+        "synthesis",
+        "citation_verification",
+    ]
+    assert all(trace.detail["execution_id"].startswith("sha256:") for trace in cost_traces)
+    assert all(trace.detail["invocation_id"].startswith("sha256:") for trace in cost_traces)
+    assert "goal-shared-budget" not in str(cost_traces)
+    assert "server-only-invocation" not in str(cost_traces)
+
+
 def test_rag_strategies_exposes_exact_canonical_contract_with_availability_metadata() -> None:
     client = TestClient(_app(RecordingGateway()), raise_server_exceptions=False)
 

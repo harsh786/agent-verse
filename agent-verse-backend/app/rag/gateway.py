@@ -96,6 +96,8 @@ class _RAGCostGuard:
         "embedding": 0.0001,
         "completion": 0.001,
         "web_retrieval": 0.001,
+        "synthesis": 0.001,
+        "citation_verification": 0.001,
     }
 
     def __init__(
@@ -103,29 +105,39 @@ class _RAGCostGuard:
         controller: RAGCostController | None,
         *,
         execution_id: str,
+        invocation_id: str,
         tenant_context: TenantContext,
         strategy: RAGStrategy,
-        attempt_scope: str,
     ) -> None:
         self._controller = controller
         self._execution_id = execution_id
+        self._invocation_id = invocation_id
         self._tenant_context = tenant_context
         self._strategy = strategy
-        self._attempt_scope = attempt_scope
         self._sequence = 0
         self.events: list[_RAGCostEvent] = []
+        self._reservations: dict[str, int] = {}
 
-    async def reserve(self, operation: str) -> int | None:
+    async def reserve(
+        self,
+        operation: str,
+        *,
+        reservation_key: str = "",
+    ) -> int | None:
         if self._controller is None:
             return None
+        if reservation_key and reservation_key in self._reservations:
+            return self._reservations[reservation_key]
         self._sequence += 1
         estimated_cost = self._ESTIMATED_COSTS[operation]
+        operation_key = reservation_key or f"{operation}:{self._sequence}"
+        operation_hash = hashlib.sha256(operation_key.encode()).hexdigest()[:16]
         allowed = await self._controller.check_and_record(
             goal_id=self._execution_id,
             cost_usd=estimated_cost,
             tenant_ctx=self._tenant_context,
             tool_name=f"rag_{operation}",
-            attempt_id=f"rag:{self._attempt_scope}:{operation}:{self._sequence}",
+            attempt_id=f"rag:{self._invocation_id}:{operation_hash}",
         )
         if not allowed:
             raise RetrievalStrategyExecutionError(
@@ -133,14 +145,25 @@ class _RAGCostGuard:
                 f"budget_exhausted:{operation}",
             )
         self.events.append(_RAGCostEvent(operation, estimated_cost))
-        return len(self.events) - 1
+        event_index = len(self.events) - 1
+        if reservation_key:
+            self._reservations[reservation_key] = event_index
+        return event_index
 
     def record_tokens(self, event_index: int | None, tokens: int) -> None:
         if event_index is not None and tokens > 0:
             self.events[event_index].actual_tokens = tokens
 
-    def traces(self) -> list[RAGStrategyTrace]:
+    @property
+    def event_count(self) -> int:
+        return len(self.events)
+
+    def wrap_provider(self, provider: Any, operation: str) -> _BudgetedProvider:
+        return _BudgetedProvider(provider, self, operation=operation)
+
+    def traces(self, start: int = 0) -> list[RAGStrategyTrace]:
         execution_hash = hashlib.sha256(self._execution_id.encode("utf-8")).hexdigest()[:16]
+        invocation_hash = hashlib.sha256(self._invocation_id.encode()).hexdigest()[:16]
         return [
             RAGStrategyTrace(
                 strategy=self._strategy,
@@ -151,9 +174,10 @@ class _RAGCostGuard:
                     "reserved_usd": round(event.reserved_usd, 6),
                     "actual_tokens": event.actual_tokens,
                     "execution_id": f"sha256:{execution_hash}",
+                    "invocation_id": f"sha256:{invocation_hash}",
                 },
             )
-            for event in self.events
+            for event in self.events[start:]
         ]
 
 
@@ -170,12 +194,19 @@ class _BudgetedEmbedder:
 
 
 class _BudgetedProvider:
-    def __init__(self, provider: Any, guard: _RAGCostGuard) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        guard: _RAGCostGuard,
+        *,
+        operation: str = "completion",
+    ) -> None:
         self._provider = provider
         self._guard = guard
+        self._operation = operation
 
     async def complete(self, request: Any) -> Any:
-        event_index = await self._guard.reserve("completion")
+        event_index = await self._guard.reserve(self._operation)
         response = await self._provider.complete(request)
         self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
         return response
@@ -1546,11 +1577,9 @@ class RetrievalGateway:
         cost_guard = _RAGCostGuard(
             self.dependencies.cost_controller,
             execution_id=request.execution_id,
+            invocation_id=uuid.uuid4().hex,
             tenant_context=tenant_context,
             strategy=strategy,
-            attempt_scope=hashlib.sha256(
-                f"{collection_id}:{strategy.value}:{query}".encode()
-            ).hexdigest()[:16],
         )
         runtime_embedder = (
             _BudgetedEmbedder(self.dependencies.embedder, cost_guard)
@@ -1662,7 +1691,7 @@ class RetrievalGateway:
             strategy=strategy.value,
             latency_ms=round(total_latency_ms, 2),
         )
-        return normalized.model_copy(
+        final_result = normalized.model_copy(
             update={
                 "strategy_trace": [
                     *normalized.strategy_trace,
@@ -1675,6 +1704,8 @@ class RetrievalGateway:
                 ]
             }
         )
+        final_result._budget_context = cost_guard
+        return final_result
 
     @staticmethod
     def _normalize_engine_results(

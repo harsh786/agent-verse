@@ -8,7 +8,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, ClassVar, Protocol, TypeGuard, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class RAGStrategy(StrEnum):
@@ -139,6 +139,7 @@ class RAGExecutionResult(BaseModel):
     strategy_trace: list[RAGStrategyTrace] = Field(default_factory=list)
     answer: str = ""
     grounded: bool = False
+    _budget_context: object | None = PrivateAttr(default=None)
 
 
 @runtime_checkable

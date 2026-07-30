@@ -247,6 +247,12 @@ def _build_worker_graph_capability(db_factory: Any) -> Any:
     return TenantScopedGraphCapabilityAdapter()
 
 
+def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
+    from app.rag.gateway import RetrievalGateway
+
+    return RetrievalGateway(dependencies)
+
+
 def _record_goal_duration_metric(
     status: str, *, started_monotonic: float, priority: str
 ) -> None:
@@ -1038,7 +1044,6 @@ def run_goal(
                 KnowledgeStoreCollectionAuthorizer,
                 ResolvedLLM,
                 RetrievalDependencies,
-                RetrievalGateway,
                 SQLCollectionAuthorizer,
                 core_strategy_capabilities,
             )
@@ -1083,7 +1088,7 @@ def run_goal(
                     worker_settings.web_search_allowed_domains
                 ),
             )
-            _retrieval_gateway_worker = RetrievalGateway(
+            _retrieval_gateway_worker = _build_worker_retrieval_gateway(
                 RetrievalDependencies(
                     session_factory=db_factory,
                     embedder=_embedder_for_graph,
