@@ -710,6 +710,7 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
         top_k: int = 5,
         metadata_filter: dict[str, Any] | None = None,
+        retrieval_mode: str = "hybrid",
     ) -> list[HybridSearchResult]:
         """Search persisted chunks via pgvector, FTS, and pg_trgm RRF fusion."""
         if self._db is None:
@@ -748,7 +749,7 @@ class KnowledgeStore:
                 query_embedding=query_embedding or None,
                 collection_id=collection_id,
                 top_k=top_k,
-                retrieval_mode="hybrid",
+                retrieval_mode=retrieval_mode,
                 embedding_dim=embedding_dim,
                 metadata_filter=metadata_filter,
                 strict=True,
@@ -787,6 +788,7 @@ class KnowledgeStore:
                 tenant_ctx,
                 top_k=top_k,
                 metadata_filter=metadata_filter,
+                retrieval_mode="lexical",
             )
             return [
                 {
