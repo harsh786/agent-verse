@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import warnings
 from collections.abc import Callable, Mapping
@@ -93,11 +94,12 @@ def _load_colbert_model(
                 message=r"(?s).*RAGatouille WARNING: Future Release Notice.*",
                 category=UserWarning,
             )
-            from ragatouille import RAGPretrainedModel  # type: ignore[import-untyped]
+            ragatouille = importlib.import_module("ragatouille")
+            pretrained_model = ragatouille.RAGPretrainedModel
 
         return cast(
             RAGatouilleColBERTModel,
-            RAGPretrainedModel.from_pretrained(checkpoint),
+            pretrained_model.from_pretrained(checkpoint),
         )
     except Exception as exc:
         raise RerankerLoadError(
