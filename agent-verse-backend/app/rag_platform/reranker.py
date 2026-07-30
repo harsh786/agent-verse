@@ -1,13 +1,38 @@
-"""Reranker abstraction for RAG post-retrieval ranking."""
+"""Typed reranker abstractions for RAG post-retrieval ranking."""
+
 from __future__ import annotations
+
+import json
 import logging
 from typing import Any
+
+from app.rag.cross_encoder import CrossEncoderReranker
+from app.rag_platform.reranker_contract import (
+    RerankerInferenceError,
+    RerankerLoadError,
+    RerankerProtocol,
+)
 
 _log = logging.getLogger(__name__)
 
 
+class CrossEncoderDocumentReranker(CrossEncoderReranker):
+    """Generic pairwise cross-encoder, distinct from ColBERT late interaction."""
+
+
+def build_reranker(name: str) -> RerankerProtocol:
+    """Build exactly the configured reranker without substitution or relabeling."""
+    if name == "cross_encoder":
+        return CrossEncoderDocumentReranker()
+    if name == "colbert":
+        from app.rag.agentic.patterns.colbert import ColBERTLateInteractionReranker
+
+        return ColBERTLateInteractionReranker()
+    raise ValueError(f"Unknown reranker: {name}")
+
+
 class Reranker:
-    """Reranks retrieved documents for relevance."""
+    """Legacy LLM reranker retained for non-model-specific callers."""
 
     def __init__(self) -> None:
         self._provider: Any = None
@@ -16,56 +41,63 @@ class Reranker:
         self._provider = provider
 
     async def rerank(
-        self, query: str, documents: list[dict], top_k: int = 5
-    ) -> list[dict]:
-        """Rerank documents by relevance to the query."""
+        self,
+        query: str,
+        documents: list[dict[str, Any]],
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
         if not documents:
             return []
-
-        # Try LLM-based reranking
-        if self._provider:
+        if self._provider is not None:
             try:
                 return await self._llm_rerank(query, documents, top_k)
             except Exception as exc:
-                _log.debug("LLM reranking failed, using score-based: %s", exc)
+                _log.debug("LLM reranking failed, using score ordering: %s", exc)
+        return sorted(
+            documents,
+            key=lambda document: float(document.get("score", 0.0)),
+            reverse=True,
+        )[:top_k]
 
-        # Fallback: score-based reranking (already sorted by vector score)
-        return sorted(documents, key=lambda d: d.get("score", 0), reverse=True)[:top_k]
-
-    async def _llm_rerank(self, query: str, documents: list[dict], top_k: int) -> list[dict]:
-        """Use LLM to rerank documents by relevance."""
+    async def _llm_rerank(
+        self,
+        query: str,
+        documents: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
         from app.providers.base import CompletionRequest, Message
 
-        doc_list = "\n".join(
-            f"[{i+1}] {d.get('content', '')[:200]}"
-            for i, d in enumerate(documents[:10])
+        document_list = "\n".join(
+            f"[{index + 1}] {document.get('content', '')[:200]}"
+            for index, document in enumerate(documents[:10])
         )
         prompt = (
-            f"Rank these documents by relevance to the query. "
-            f"Return only a JSON array of indices (1-indexed), most relevant first.\n\n"
-            f"Query: {query}\n\nDocuments:\n{doc_list}\n\n"
-            f"Return JSON array only: [3, 1, 5, ...]"
+            "Rank these documents by relevance to the query. "
+            "Return only a JSON array of 1-indexed indices, most relevant first.\n\n"
+            f"Query: {query}\n\nDocuments:\n{document_list}"
         )
-        resp = await self._provider.complete(CompletionRequest(
-            messages=[Message(role="user", content=prompt)],
-            model="",
-            max_tokens=100,
-        ))
-        import json
-        indices = json.loads(resp.content.strip())
-        reranked = []
-        for idx in indices[:top_k]:
-            if 1 <= idx <= len(documents):
-                reranked.append(documents[idx - 1])
-        # Append remaining docs not in the ranked list
-        reranked_set = {id(d) for d in reranked}
-        for d in documents:
-            if id(d) not in reranked_set and len(reranked) < top_k:
-                reranked.append(d)
-        return reranked
+        response = await self._provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content=prompt)],
+                model="",
+                max_tokens=100,
+            )
+        )
+        indices = json.loads(response.content.strip())
+        reranked = [
+            documents[index - 1]
+            for index in indices[:top_k]
+            if isinstance(index, int) and 1 <= index <= len(documents)
+        ]
+        selected = {id(document) for document in reranked}
+        reranked.extend(
+            document
+            for document in documents
+            if id(document) not in selected and len(reranked) < top_k
+        )
+        return reranked[:top_k]
 
 
-# Citation verifier
 class CitationVerifier:
     """Verifies that cited claims are supported by source documents."""
 
@@ -76,43 +108,61 @@ class CitationVerifier:
         self._provider = provider
 
     async def verify_citations(
-        self, answer: str, citations: list[dict]
+        self,
+        answer: str,
+        citations: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Check that the answer's claims are supported by citations."""
         if not citations or not answer:
             return {"verified": True, "unsupported_claims": [], "confidence": 1.0}
-
         if self._provider is None:
             return {"verified": True, "unsupported_claims": [], "confidence": 0.7}
 
         try:
             from app.providers.base import CompletionRequest, Message
-            context = "\n".join(c.get("content", "")[:300] for c in citations[:5])
-            prompt = (
-                f"Is the following answer fully supported by the context? "
-                f"List any claims not supported by the context.\n\n"
-                f"Context:\n{context}\n\nAnswer:\n{answer[:500]}\n\n"
-                f"Return JSON: {{\"supported\": true/false, \"unsupported_claims\": [...]}}"
+
+            context = "\n".join(
+                str(citation.get("content", ""))[:300] for citation in citations[:5]
             )
-            resp = await self._provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=200,
-            ))
-            import json
-            result = json.loads(resp.content.strip())
+            response = await self._provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(
+                            role="user",
+                            content=(
+                                "Is the answer fully supported by the context? Return JSON "
+                                'with supported and unsupported_claims.\n\n'
+                                f"Context:\n{context}\n\nAnswer:\n{answer[:500]}"
+                            ),
+                        )
+                    ],
+                    model="",
+                    max_tokens=200,
+                )
+            )
+            result = json.loads(response.content.strip())
             unsupported = result.get("unsupported_claims", [])
             return {
                 "verified": result.get("supported", True),
                 "unsupported_claims": unsupported,
                 "confidence": 1.0 - (len(unsupported) * 0.1),
-                "grounded": len(unsupported) == 0,
+                "grounded": not unsupported,
             }
         except Exception as exc:
             _log.debug("Citation verification failed: %s", exc)
             return {"verified": True, "unsupported_claims": [], "confidence": 0.5}
 
 
-# Singletons
 reranker = Reranker()
 citation_verifier = CitationVerifier()
+
+__all__ = [
+    "CitationVerifier",
+    "CrossEncoderDocumentReranker",
+    "Reranker",
+    "RerankerInferenceError",
+    "RerankerLoadError",
+    "RerankerProtocol",
+    "build_reranker",
+    "citation_verifier",
+    "reranker",
+]

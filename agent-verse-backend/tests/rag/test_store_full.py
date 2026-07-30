@@ -24,16 +24,16 @@ def test_create_and_get_collection() -> None:
 def test_list_collections_tenant_isolated() -> None:
     """list_collections returns only collections belonging to the requesting tenant."""
     store = KnowledgeStore()
-    T_A = TenantContext(tenant_id="rag-iso-a", plan=PlanTier.FREE, api_key_id="ra")
-    T_B = TenantContext(tenant_id="rag-iso-b", plan=PlanTier.FREE, api_key_id="rb")
+    tenant_a = TenantContext(tenant_id="rag-iso-a", plan=PlanTier.FREE, api_key_id="ra")
+    tenant_b = TenantContext(tenant_id="rag-iso-b", plan=PlanTier.FREE, api_key_id="rb")
 
     col_a = KnowledgeCollection(name="A col", collection_id="ca1")
     col_b = KnowledgeCollection(name="B col", collection_id="cb1")
-    store.create_collection(col_a, tenant_ctx=T_A)
-    store.create_collection(col_b, tenant_ctx=T_B)
+    store.create_collection(col_a, tenant_ctx=tenant_a)
+    store.create_collection(col_b, tenant_ctx=tenant_b)
 
-    cols_a = store.list_collections(tenant_ctx=T_A)
-    cols_b = store.list_collections(tenant_ctx=T_B)
+    cols_a = store.list_collections(tenant_ctx=tenant_a)
+    cols_b = store.list_collections(tenant_ctx=tenant_b)
 
     assert len(cols_a) == 1
     assert cols_a[0].collection_id == "ca1"

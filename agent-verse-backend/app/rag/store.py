@@ -18,11 +18,15 @@ import json
 import math
 import uuid as _uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.observability.logging import get_logger
 from app.rag.models import Chunk, KnowledgeCollection
 from app.tenancy.context import TenantContext
+
+if TYPE_CHECKING:
+    from app.rag.contracts import RAGStrategy
+    from app.rag.indexing import RAGIndexRecord
 
 _VECTOR_WEIGHT = 0.7
 _TRIGRAM_WEIGHT = 0.3
@@ -96,6 +100,7 @@ class KnowledgeStore:
     def __init__(self, db_session_factory: Any = None) -> None:
         # Key: (tenant_id, collection_id) → _CollectionStore
         self._data: dict[tuple[str, str], _CollectionStore] = {}
+        self._index_records: dict[tuple[str, str], list[RAGIndexRecord]] = {}
         self._db = db_session_factory
 
     def create_collection(
@@ -1011,6 +1016,273 @@ class KnowledgeStore:
 
         return chunk_id
 
+    async def persist_index_records(
+        self,
+        records: list[RAGIndexRecord],
+        *,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+    ) -> list[str]:
+        """Atomically persist one complete ingestion-time strategy index."""
+        if not records:
+            return []
+        document_ids = {record.document_id for record in records}
+        if len(document_ids) != 1:
+            raise ValueError("An index replacement must contain exactly one document")
+        document_id = next(iter(document_ids))
+        persisted = [
+            {
+                "chunk_id": record.chunk_id,
+                "document_id": record.document_id,
+                "content": record.content,
+                "embedding": record.embedding,
+                "metadata": {
+                    **record.metadata,
+                    "rag_strategy": record.strategy.value,
+                    "node_type": record.strategy_metadata.get("node_type", ""),
+                    "parent_chunk_id": record.parent_chunk_id,
+                    "window_id": record.window_id,
+                    "hierarchy_level": record.hierarchy_level,
+                    "is_proposition": record.is_proposition,
+                },
+                "chunk_index": record.chunk_index,
+                "freshness_ttl_hours": None,
+                "parent_chunk_id": record.parent_chunk_id,
+                "chunk_level": record.chunk_level,
+                "window_start": record.window_start,
+                "window_end": record.window_end,
+                "window_id": record.window_id,
+                "hierarchy_level": record.hierarchy_level,
+                "is_proposition": record.is_proposition,
+                "strategy_metadata": {
+                    **record.strategy_metadata,
+                    "strategy": record.strategy.value,
+                },
+            }
+            for record in records
+        ]
+        if self._db is not None:
+            await self._persist_chunks(
+                persisted,
+                collection_id=collection_id,
+                tenant_id=tenant_ctx.tenant_id,
+                replacement_document_id=document_id,
+            )
+        cache_key = (tenant_ctx.tenant_id, collection_id)
+        existing = self._index_records.setdefault(cache_key, [])
+        existing[:] = [
+            record for record in existing if record.document_id != document_id
+        ]
+        existing.extend(records)
+        return [record.chunk_id for record in records]
+
+    async def search_precomputed_index(
+        self,
+        *,
+        strategy: RAGStrategy,
+        query: str,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Search only persisted records built for the requested strategy."""
+        if self._db is None:
+            return self._search_precomputed_memory(
+                strategy=strategy,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+            )
+
+        strategy_filter: dict[str, Any] = {"rag_strategy": strategy.value}
+        if strategy.value == "agentic_chunking":
+            strategy_filter["is_proposition"] = True
+        candidate_limit = (
+            min(top_k * 4, 100)
+            if strategy.value == "agentic_chunking"
+            else top_k
+        )
+        results = await self.hybrid_search_db(
+            query,
+            query_embedding,
+            collection_id,
+            tenant_ctx,
+            top_k=candidate_limit,
+            metadata_filter=strategy_filter,
+            retrieval_mode="hybrid",
+        )
+        if strategy.value == "agentic_chunking":
+            return await self._expand_agentic_parent_citations(
+                results,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+            )
+        return [
+            {
+                "chunk_id": result.chunk_id,
+                "content": result.content,
+                "score": result.score,
+                "metadata": result.metadata,
+                "citation_chunk_id": result.chunk_id,
+                "citation_content": result.content,
+            }
+            for result in results
+        ]
+
+    def _search_precomputed_memory(
+        self,
+        *,
+        strategy: RAGStrategy,
+        query: str,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        records = self._index_records.get((tenant_ctx.tenant_id, collection_id), [])
+        candidates = [record for record in records if record.strategy is strategy]
+        if strategy.value == "agentic_chunking":
+            candidates = [record for record in candidates if record.is_proposition]
+        candidate_limit = (
+            min(top_k * 4, 100)
+            if strategy.value == "agentic_chunking"
+            else top_k
+        )
+        ranked = sorted(
+            candidates,
+            key=lambda record: (
+                -(
+                    _VECTOR_WEIGHT
+                    * _cosine_similarity(query_embedding, record.embedding)
+                    + _TRIGRAM_WEIGHT * _trigram_score(query, record.content)
+                ),
+                record.chunk_id,
+            ),
+        )[:candidate_limit]
+        by_id = {record.chunk_id: record for record in records}
+        from app.rag.engine import (
+            ParentWindowCitation,
+            RetrievalResult,
+            expand_agentic_parent_results,
+        )
+
+        retrieval_results: list[RetrievalResult] = []
+        parent_citations: dict[str, ParentWindowCitation] = {}
+        for record in ranked:
+            score = (
+                _VECTOR_WEIGHT * _cosine_similarity(query_embedding, record.embedding)
+                + _TRIGRAM_WEIGHT * _trigram_score(query, record.content)
+            )
+            retrieval_results.append(
+                RetrievalResult(
+                    chunk_id=record.chunk_id,
+                    content=record.content,
+                    score=score,
+                    source_metadata=record.to_search_result(score=score)["metadata"],
+                    retrieval_legs=[strategy.value],
+                )
+            )
+            parent = by_id.get(record.parent_chunk_id or "")
+            if parent is not None and record.is_proposition:
+                parent_citations[record.chunk_id] = ParentWindowCitation(
+                    parent.chunk_id,
+                    parent.content,
+                )
+        if strategy.value == "agentic_chunking":
+            retrieval_results = expand_agentic_parent_results(
+                retrieval_results,
+                parent_citations,
+                top_k=top_k,
+            )
+        return [
+            {
+                "chunk_id": result.chunk_id,
+                "content": result.content,
+                "score": result.score,
+                "metadata": result.source_metadata,
+                "citation_chunk_id": result.chunk_id,
+                "citation_content": result.content,
+            }
+            for result in retrieval_results[:top_k]
+        ]
+
+    async def _expand_agentic_parent_citations(
+        self,
+        results: list[HybridSearchResult],
+        *,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        if not results or self._db is None:
+            return []
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if dimension_row is None:
+                return []
+            from app.rag.engine import (
+                RetrievalResult,
+                expand_agentic_parent_results,
+                load_agentic_parent_citations,
+            )
+
+            citations = await load_agentic_parent_citations(
+                session,
+                child_chunk_ids=[result.chunk_id for result in results],
+                collection_id=collection_id,
+                tenant_id=tenant_ctx.tenant_id,
+                embedding_dim=int(dimension_row[0]),
+            )
+        expanded = expand_agentic_parent_results(
+            [
+                RetrievalResult(
+                    chunk_id=result.chunk_id,
+                    content=result.content,
+                    score=result.score,
+                    source_metadata=dict(result.metadata),
+                    retrieval_legs=["agentic_chunking"],
+                    component_scores={
+                        "vector": result.vector_score,
+                        "trigram": result.trigram_score,
+                    },
+                )
+                for result in results
+            ],
+            citations,
+            top_k=top_k,
+        )
+        return [
+            {
+                "chunk_id": result.chunk_id,
+                "content": result.content,
+                "score": result.score,
+                "metadata": result.source_metadata,
+                "citation_chunk_id": result.chunk_id,
+                "citation_content": result.content,
+            }
+            for result in expanded
+        ]
+
     async def ingest_chunks_async(
         self,
         chunks: list[Chunk],
@@ -1215,6 +1487,7 @@ class KnowledgeStore:
         completion_job_id: str | None = None,
         completion_source_hash: str | None = None,
         completion_lease_owner: str | None = None,
+        replacement_document_id: str | None = None,
     ) -> None:
         if self._db is None:
             return
@@ -1291,6 +1564,21 @@ class KnowledgeStore:
                     {"dimension": dimension, "id": collection_id, "tid": tenant_id},
                 )
 
+            if replacement_document_id is not None:
+                await session.execute(
+                    text(f"""
+                        DELETE FROM {table}
+                        WHERE collection_id = :collection_id
+                          AND tenant_id = :tenant_id
+                          AND document_id = :document_id
+                    """),
+                    {
+                        "collection_id": collection_id,
+                        "tenant_id": tenant_id,
+                        "document_id": replacement_document_id,
+                    },
+                )
+
             await session.execute(
                 text(f"""
                     INSERT INTO {table}
@@ -1316,15 +1604,17 @@ class KnowledgeStore:
                 text(f"""
                     UPDATE knowledge_collections
                     SET chunk_count = (
-                            SELECT count(*) FROM {table} WHERE collection_id = :id
+                            SELECT count(*) FROM {table}
+                            WHERE collection_id = :id AND tenant_id = :tid
                         ),
                         document_count = (
                             SELECT count(DISTINCT document_id) FROM {table}
-                            WHERE collection_id = :id
+                            WHERE collection_id = :id AND tenant_id = :tid
                         ),
                         total_size_bytes = (
                             SELECT COALESCE(sum(octet_length(content)), 0)
-                            FROM {table} WHERE collection_id = :id
+                            FROM {table}
+                            WHERE collection_id = :id AND tenant_id = :tid
                         ),
                         last_indexed_at = now(),
                         updated_at = now()

@@ -31,6 +31,7 @@ Service wiring (all stored on ``app.state``):
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -137,6 +138,7 @@ from app.rag.agentic.patterns.web_augmented import (
     build_safe_web_search_capability,
     parse_allowed_domains,
 )
+from app.rag.catalogue import RAGAdapterConfiguration
 from app.rag.contracts import RAGStrategy
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
@@ -683,6 +685,15 @@ def create_app(
         policy_services=(_policy_engine, _cost, _hitl),
         allowed_domains=parse_allowed_domains(settings.web_search_allowed_domains),
     )
+    from app.rag.raft import InMemoryRAFTRepository, RAFTService
+
+    _raft_service = RAFTService(
+        repository=InMemoryRAFTRepository(),
+        providers={},
+    )
+    _rag_adapter_configuration = RAGAdapterConfiguration(
+        colbert_checkpoint=settings.colbert_checkpoint
+    )
     _retrieval_gateway = RetrievalGateway(
         RetrievalDependencies(
             session_factory=None,
@@ -693,9 +704,16 @@ def create_app(
             policy_services=(_policy_engine, _cost, _hitl),
             cost_controller=_cost,
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
-            strategy_capabilities=core_strategy_capabilities(),
+            strategy_capabilities=core_strategy_capabilities(
+                _rag_adapter_configuration
+            ),
+            raft_service=_raft_service,
+            colbert_checkpoint=settings.colbert_checkpoint,
         )
     )
+    _retrieval_gateways_to_close: dict[int, object] = {
+        id(_retrieval_gateway): _retrieval_gateway
+    }
 
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
@@ -742,6 +760,34 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        async def close_retrieval_gateways() -> None:
+            active_gateway = getattr(app.state, "retrieval_gateway", None)
+            if active_gateway is not None:
+                _retrieval_gateways_to_close[id(active_gateway)] = active_gateway
+            gateways = tuple(_retrieval_gateways_to_close.values())
+            _retrieval_gateways_to_close.clear()
+
+            async def close_gateway(gateway: object) -> None:
+                close = getattr(gateway, "aclose", None)
+                if close is not None:
+                    await close()
+
+            results = await asyncio.gather(
+                *(close_gateway(gateway) for gateway in gateways),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "retrieval_gateway_close_failed",
+                        failure_type=type(result).__name__,
+                    )
+
+        async def close_process_rerankers() -> None:
+            from app.rag.cross_encoder import close_default_cross_encoder
+
+            await close_default_cross_encoder()
+
         if manage_pools:
             active = pools or ConnectionPools(settings=settings)
             await active.startup()
@@ -1037,7 +1083,9 @@ def create_app(
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
 
-            app.state.retrieval_gateway = RetrievalGateway(
+            from app.rag.raft_repository import SQLRAFTRepository
+
+            db_retrieval_gateway = RetrievalGateway(
                 RetrievalDependencies(
                     session_factory=db_factory,
                     embedder=app.state.embedder,
@@ -1051,9 +1099,20 @@ def create_app(
                     ),
                     cost_controller=getattr(app.state, "redis_cost_controller", _cost),
                     collection_authorizer=SQLCollectionAuthorizer(),
-                    strategy_capabilities=core_strategy_capabilities(),
+                    strategy_capabilities=core_strategy_capabilities(
+                        _rag_adapter_configuration
+                    ),
+                    raft_service=RAFTService(
+                        repository=SQLRAFTRepository(db_factory),
+                        providers={},
+                    ),
+                    colbert_checkpoint=settings.colbert_checkpoint,
                 )
             )
+            await close_retrieval_gateways()
+            app.state.retrieval_gateway = db_retrieval_gateway
+            app.state.raft_service = db_retrieval_gateway.dependencies.raft_service
+            _retrieval_gateways_to_close[id(db_retrieval_gateway)] = db_retrieval_gateway
 
             # Wire DB into reflexion wirer singleton for cross-process persistence
             try:
@@ -1425,6 +1484,8 @@ def create_app(
             try:
                 yield
             finally:
+                await close_retrieval_gateways()
+                await close_process_rerankers()
                 _repo_tasks = list(
                     getattr(app.state, "repository_ingestion_tasks", set())
                 )
@@ -1441,7 +1502,11 @@ def create_app(
                         await _ps_task
                 await active.shutdown()
         else:
-            yield
+            try:
+                yield
+            finally:
+                await close_retrieval_gateways()
+                await close_process_rerankers()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
@@ -1515,6 +1580,7 @@ def create_app(
     app.state.knowledge_store = _knowledge_store
     app.state.repository_ingestion_tasks = set()
     app.state.retrieval_gateway = _retrieval_gateway
+    app.state.raft_service = _raft_service
     app.state.safe_web_search_capability = _web_search_capability
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory

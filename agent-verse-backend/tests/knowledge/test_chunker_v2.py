@@ -4,10 +4,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.knowledge.chunker_v2 import _chunk_by_chars, chunk_by_chars, chunk_by_tokens
-
 
 # ── _chunk_by_chars ────────────────────────────────────────────────────────────
 
@@ -90,7 +87,6 @@ class TestChunkByTokensTiktoken:
 
         with patch.dict(sys.modules, {"tiktoken": mock_tiktoken}):
             # Need to reload the module so the import is re-tried
-            import importlib
             import app.knowledge.chunker_v2 as mod
             # Monkey-patch the imported tiktoken within the function by triggering it
             result = mod.chunk_by_tokens("some text content here", max_tokens=20, overlap_tokens=5)
@@ -105,7 +101,6 @@ class TestChunkByTokensTiktoken:
         mock_tiktoken.get_encoding.return_value = mock_enc
 
         with patch.dict(sys.modules, {"tiktoken": mock_tiktoken}):
-            import importlib
             import app.knowledge.chunker_v2 as mod
             result = mod.chunk_by_tokens("some text", max_tokens=512, overlap_tokens=64)
             assert isinstance(result, list)

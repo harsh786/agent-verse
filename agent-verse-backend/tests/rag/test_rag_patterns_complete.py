@@ -1,12 +1,10 @@
 # tests/rag/test_rag_patterns_complete.py
 """All 5 RAG patterns must be IMPLEMENTED with working execute() methods."""
 from __future__ import annotations
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from app.providers.fake import FakeProvider
 from app.rag.agentic.patterns.base import RAGPatternState
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from tests.rag.colbert_fakes import DeterministicColBERTReranker
 
 # ── FLARE ─────────────────────────────────────────────────────────────────────
 
@@ -249,7 +247,7 @@ async def test_raptor_handles_few_chunks():
 
 def test_colbert_state_is_implemented():
     from app.rag.agentic.patterns.colbert import ColBERTPattern
-    p = ColBERTPattern()
+    p = ColBERTPattern(reranker=DeterministicColBERTReranker())
     assert p.state == RAGPatternState.IMPLEMENTED
 
 
@@ -262,7 +260,7 @@ def test_colbert_reranks_chunks():
         {"chunk_id": "c2", "content": "Java is used for enterprise software.", "score": 0.6},
         {"chunk_id": "c3", "content": "Python is widely used in machine learning.", "score": 0.4},
     ]
-    pattern = ColBERTPattern()
+    pattern = ColBERTPattern(reranker=DeterministicColBERTReranker())
     reranked = pattern.rerank(
         query="Python programming for machine learning",
         chunks=chunks,
@@ -277,7 +275,7 @@ def test_colbert_reranks_chunks():
 def test_colbert_maxsim_scores():
     """ColBERT MaxSim: query tokens match doc tokens."""
     from app.rag.agentic.patterns.colbert import ColBERTPattern
-    pattern = ColBERTPattern()
+    pattern = ColBERTPattern(reranker=DeterministicColBERTReranker())
     score = pattern._maxsim_score(
         query="machine learning python",
         document="Python is used for machine learning and data science.",
@@ -289,7 +287,7 @@ def test_colbert_maxsim_scores():
 def test_colbert_empty_chunks():
     """ColBERT: handles empty chunk list gracefully."""
     from app.rag.agentic.patterns.colbert import ColBERTPattern
-    pattern = ColBERTPattern()
+    pattern = ColBERTPattern(reranker=DeterministicColBERTReranker())
     result = pattern.rerank(query="test", chunks=[])
     assert result == []
 
@@ -297,7 +295,7 @@ def test_colbert_empty_chunks():
 async def test_colbert_execute_reranks_and_returns_context():
     """ColBERT.execute() reranks and returns combined context string."""
     from app.rag.agentic.patterns.colbert import ColBERTPattern
-    pattern = ColBERTPattern()
+    pattern = ColBERTPattern(reranker=DeterministicColBERTReranker())
     chunks = [
         {"chunk_id": "c1", "content": "Relevant content about Python.", "score": 0.4},
         {"chunk_id": "c2", "content": "Irrelevant content about cooking.", "score": 0.9},

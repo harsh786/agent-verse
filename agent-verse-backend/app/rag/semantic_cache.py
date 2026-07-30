@@ -29,14 +29,13 @@ Key improvements over v1:
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import struct
 import time
 import zlib
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
@@ -52,7 +51,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
         # Truncate to shorter — happens when provider changes embedding dimensions
         n = min(len(a), len(b))
         a, b = a[:n], b[:n]
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(x * x for x in b))
     if mag_a == 0.0 or mag_b == 0.0:
@@ -146,7 +145,9 @@ class _LRUCache:
         self._store.pop(tenant_id, None)
 
     def stats(self, tenant_id: str) -> dict[str, Any]:
-        store = self._store.get(tenant_id, {})
+        store = self._store.get(tenant_id)
+        if store is None:
+            return {"l1_size": 0, "l1_total_hits": 0}
         now = time.monotonic()
         valid = [e for e in store.values() if (now - e.created_at) <= self._ttl]
         return {
@@ -216,7 +217,7 @@ class SemanticCache:
         self,
         embedding: list[float],
         tenant_id: str,
-    ) -> "_CacheHit | None":
+    ) -> _CacheHit | None:
         """
         True semantic similarity lookup.
         Returns a _CacheHit(response, similarity, source) or None.
@@ -238,7 +239,12 @@ class SemanticCache:
             s["hits"] += 1
             s["l1_hits"] += 1
             logger.debug("semantic_cache_l1_hit", tenant=tenant_id, latency_ms=round(latency_ms, 2))
-            return _CacheHit(response=l1_response, similarity=1.0, source="l1", latency_ms=latency_ms)
+            return _CacheHit(
+                response=l1_response,
+                similarity=1.0,
+                source="l1",
+                latency_ms=latency_ms,
+            )
 
         # ── L2 ANN backend lookup (pgvector HNSW — faster for large caches) ──
         if self._backend is not None:
@@ -261,7 +267,12 @@ class SemanticCache:
                             similarity=round(score, 4),
                             latency_ms=round(latency_ms, 2),
                         )
-                        return _CacheHit(response=response, similarity=score, source="l2_ann", latency_ms=latency_ms)
+                        return _CacheHit(
+                            response=response,
+                            similarity=score,
+                            source="l2_ann",
+                            latency_ms=latency_ms,
+                        )
             except Exception as _ann_exc:
                 logger.debug("semantic_cache_ann_error", error=str(_ann_exc)[:80])
 
@@ -326,7 +337,13 @@ class SemanticCache:
         hit = await self.get_similar(embedding, tenant_id)
         return hit.response if hit else None
 
-    async def set_async(self, query: str, embedding: list[float] | None, response: str, tenant_id: str) -> None:
+    async def set_async(
+        self,
+        query: str,
+        embedding: list[float] | None,
+        response: str,
+        tenant_id: str,
+    ) -> None:
         """Backward-compatible wrapper for old hash-based API."""
         if embedding is None:
             self._l1_text_set(query, response, tenant_id)
@@ -334,7 +351,13 @@ class SemanticCache:
         await self.store_async(embedding, query, response, tenant_id)
 
     # Backward-compatible sync API (legacy cosine similarity)
-    def store_sync(self, *, query_embedding: list[float], response: str, tenant_ctx: TenantContext) -> None:
+    def store_sync(
+        self,
+        *,
+        query_embedding: list[float],
+        response: str,
+        tenant_ctx: TenantContext,
+    ) -> None:
         """Legacy sync store. Stores in L1 only (no Redis without async)."""
         import uuid
         self._l1._put(query_embedding, response, tenant_ctx.tenant_id, key=uuid.uuid4().hex[:16])
@@ -352,7 +375,13 @@ class SemanticCache:
 
     # ── Backward-compatible sync aliases (old tests use these) ───────────────
 
-    def store(self, *, query_embedding: list[float], response: str, tenant_ctx: TenantContext) -> None:  # type: ignore[override]
+    def store(
+        self,
+        *,
+        query_embedding: list[float],
+        response: str,
+        tenant_ctx: TenantContext,
+    ) -> None:
         """Backward-compatible sync store alias → calls store_sync."""
         self.store_sync(query_embedding=query_embedding, response=response, tenant_ctx=tenant_ctx)
 
@@ -360,7 +389,7 @@ class SemanticCache:
         """Backward-compatible sync lookup alias → calls lookup_sync."""
         return self.lookup_sync(query_embedding=query_embedding, tenant_ctx=tenant_ctx)
 
-    def clear(self, *, tenant_ctx: TenantContext) -> None:  # type: ignore[override]
+    def clear(self, *, tenant_ctx: TenantContext) -> None:
         """Backward-compatible sync clear. Clears L1 and resets stats (no Redis flush)."""
         tid = tenant_ctx.tenant_id
         self._l1.clear(tid)
@@ -372,7 +401,7 @@ class SemanticCache:
         self,
         embeddings: list[list[float]],
         tenant_id: str,
-    ) -> list["_CacheHit | None"]:
+    ) -> list[_CacheHit | None]:
         """
         Look up multiple embeddings in a single batched Redis pipeline.
         Dramatically reduces round-trips when checking cache for all plan steps at once.
@@ -384,7 +413,12 @@ class SemanticCache:
         for i, emb in enumerate(embeddings):
             l1_resp = self._l1.get(emb, tenant_id)
             if l1_resp is not None:
-                results[i] = _CacheHit(response=l1_resp, similarity=1.0, source="l1", latency_ms=0.0)
+                results[i] = _CacheHit(
+                    response=l1_resp,
+                    similarity=1.0,
+                    source="l1",
+                    latency_ms=0.0,
+                )
             else:
                 l1_misses.append(i)
 
@@ -401,7 +435,12 @@ class SemanticCache:
                     response = best[0]
                     sim = best[1]
                     self._l1._put(emb, response, tenant_id, key=f"batch:{i}")
-                    results[i] = _CacheHit(response=response, similarity=sim, source="l2", latency_ms=0.0)
+                    results[i] = _CacheHit(
+                        response=response,
+                        similarity=sim,
+                        source="l2",
+                        latency_ms=0.0,
+                    )
                     s = self._get_stats(tenant_id)
                     s["hits"] += 1
                     s["l2_hits"] += 1
@@ -456,7 +495,7 @@ class SemanticCache:
             texts = [p["query"] for p in patterns]
             resp = await embedder.embed(EmbedRequest(texts=texts))
             count = 0
-            for pattern, emb in zip(patterns, resp.embeddings or []):
+            for pattern, emb in zip(patterns, resp.embeddings or [], strict=False):
                 if emb:
                     await self.store_async(emb, pattern["query"], pattern["response"], tenant_id)
                     count += 1
@@ -514,9 +553,9 @@ class SemanticCache:
     async def size(self, tenant_id: str) -> int:
         """Return number of entries stored in Redis for this tenant."""
         if self._redis is None:
-            return self._l1.stats(tenant_id).get("l1_size", 0)
+            return cast(int, self._l1.stats(tenant_id).get("l1_size", 0))
         try:
-            return await self._redis.scard(f"{self._PREFIX_INDEX}{tenant_id}")
+            return cast(int, await self._redis.scard(f"{self._PREFIX_INDEX}{tenant_id}"))
         except Exception:
             return 0
 
@@ -580,7 +619,11 @@ class SemanticCache:
             # pipeline() may be a coroutine (AsyncMock in tests) or a sync object
             if asyncio.iscoroutine(pipe):
                 pipe = await pipe
-            entry_keys = [f"{self._PREFIX_ENTRY}{tenant_id}:{eid.decode() if isinstance(eid, bytes) else eid}" for eid in entry_ids]
+            entry_keys = [
+                f"{self._PREFIX_ENTRY}{tenant_id}:"
+                f"{eid.decode() if isinstance(eid, bytes) else eid}"
+                for eid in entry_ids
+            ]
             for key in entry_keys:
                 pipe.hmget(key, "emb", "resp")
             results = await pipe.execute()
@@ -600,7 +643,7 @@ class SemanticCache:
 
     async def _redis_lookup(
         self, embedding: list[float], tenant_id: str
-    ) -> "_CacheHit | None":
+    ) -> _CacheHit | None:
         """
         Load all tenant entries from Redis and find the most similar one.
         O(n) scan in Python — acceptable for n < 10,000.
@@ -656,7 +699,13 @@ class SemanticCache:
 
     def _get_stats(self, tenant_id: str) -> dict[str, int]:
         if tenant_id not in self._stats:
-            self._stats[tenant_id] = {"hits": 0, "misses": 0, "l1_hits": 0, "l2_hits": 0, "bytes_saved": 0}
+            self._stats[tenant_id] = {
+                "hits": 0,
+                "misses": 0,
+                "l1_hits": 0,
+                "l2_hits": 0,
+                "bytes_saved": 0,
+            }
         return self._stats[tenant_id]
 
 
@@ -665,7 +714,7 @@ class SemanticCache:
 @dataclass
 class _CacheHit:
     response: str
-    similarity: float    # 0.92–1.00 for L2; 1.0 for L1
+    similarity: float    # 0.92-1.00 for L2; 1.0 for L1
     source: str          # "l1" | "l2"
     latency_ms: float
 

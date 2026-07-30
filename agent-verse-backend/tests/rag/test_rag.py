@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
-from app.rag.models import Chunk, Document, KnowledgeCollection
-from app.rag.store import HybridSearchResult, KnowledgeStore
-from app.rag.semantic_cache import SemanticCache
 from app.memory.execution import ExecutionMemory
+from app.rag.models import Chunk, Document, KnowledgeCollection
+from app.rag.semantic_cache import SemanticCache
+from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-test", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")

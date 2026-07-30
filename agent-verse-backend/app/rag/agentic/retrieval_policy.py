@@ -1,9 +1,10 @@
 """RetrievalPolicy — selects retrieval strategy based on query + source availability."""
 from __future__ import annotations
-import enum
+
+from enum import StrEnum
 
 
-class RetrievalStrategy(str, enum.Enum):
+class RetrievalStrategy(StrEnum):
     HYBRID = "hybrid"
     GRAPH = "graph"
     HYDE = "hyde"

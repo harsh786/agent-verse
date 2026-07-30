@@ -7,6 +7,7 @@ import pytest
 
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
+from tests.rag.colbert_fakes import DeterministicColBERTReranker
 
 
 @pytest.fixture
@@ -364,7 +365,10 @@ def test_colbert_reranks_by_relevance() -> None:
     """ColBERTPattern reranks chunks — Java-heavy chunk should drop in rank."""
     from app.rag.agentic.patterns.colbert import ColBERTPattern
 
-    pattern = ColBERTPattern(alpha=0.5)
+    pattern = ColBERTPattern(
+        alpha=0.5,
+        reranker=DeterministicColBERTReranker(),
+    )
     chunks = [
         {
             "chunk_id": "c1",

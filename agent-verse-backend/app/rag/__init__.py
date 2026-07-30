@@ -1,7 +1,13 @@
 """Retrieval-augmented generation primitives."""
 
-from app.rag.contracts import (
+from app.rag.catalogue import (
+    RAG_CAPABILITY_CATALOGUE,
     RAG_RUNTIME_CAPABILITIES,
+    RAGCapabilityCatalogueEntry,
+    RAGRuntimeDependency,
+    RAGRuntimeReadiness,
+)
+from app.rag.contracts import (
     RAG_STRATEGY_ALIASES,
     RAGCitation,
     RAGExecutionRequest,
@@ -18,13 +24,17 @@ from app.rag.contracts import (
 )
 
 __all__ = [
+    "RAG_CAPABILITY_CATALOGUE",
     "RAG_RUNTIME_CAPABILITIES",
     "RAG_STRATEGY_ALIASES",
+    "RAGCapabilityCatalogueEntry",
     "RAGCitation",
     "RAGExecutionRequest",
     "RAGExecutionResult",
     "RAGRetrievalLeg",
     "RAGRuntimeAdapter",
+    "RAGRuntimeDependency",
+    "RAGRuntimeReadiness",
     "RAGStrategy",
     "RAGStrategyError",
     "RAGStrategyTrace",

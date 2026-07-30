@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, ClassVar, Protocol, TypeGuard, runtime_checkable
@@ -32,6 +32,22 @@ class RAGStrategy(StrEnum):
     AGENTIC_CHUNKING = "agentic_chunking"
     COLBERT = "colbert"
     RAFT = "raft"
+
+
+DIRECT_CORE_RAG_STRATEGIES: frozenset[RAGStrategy] = frozenset(
+    {
+        RAGStrategy.NAIVE,
+        RAGStrategy.HYBRID,
+        RAGStrategy.HYDE,
+        RAGStrategy.MULTI_HOP,
+        RAGStrategy.GRAPH,
+        RAGStrategy.CORRECTIVE,
+        RAGStrategy.WEB_AUGMENTED,
+        RAGStrategy.FUSION,
+        RAGStrategy.RAPTOR,
+        RAGStrategy.AGENTIC_CHUNKING,
+    }
+)
 
 
 RAG_STRATEGY_ALIASES: Mapping[str, RAGStrategy] = MappingProxyType(
@@ -154,11 +170,29 @@ class RAGRuntimeAdapter(Protocol):
         context: Any = None,
     ) -> RAGExecutionResult: ...
 
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace: ...
+
 
 class _CoreRAGRuntimeAdapter(RAGRuntimeAdapter):
     """Concrete canonical adapter delegated to the tenant-scoped gateway runtime."""
 
     strategy: ClassVar[RAGStrategy]
+    probe_action: ClassVar[str]
+    probe_evidence: ClassVar[str]
+
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        """Exercise the adapter-owned, dependency-free strategy identity probe."""
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action=cls.probe_action,
+            status="complete",
+            detail={
+                "adapter_strategy": cls.strategy.value,
+                "evidence": cls.probe_evidence,
+            },
+        )
 
     async def execute(
         self,
@@ -176,38 +210,205 @@ class _CoreRAGRuntimeAdapter(RAGRuntimeAdapter):
 
 class NaiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.NAIVE
+    probe_action = "probe_vector_retrieval"
+    probe_evidence = "persisted vector retrieval"
 
 
 class HybridRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.HYBRID
+    probe_action = "probe_four_leg_rrf"
+    probe_evidence = "four-leg reciprocal rank fusion"
 
 
 class HyDERAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.HYDE
+    probe_action = "probe_hypothetical_document"
+    probe_evidence = "hypothetical document embedding"
 
 
 class MultiHopRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.MULTI_HOP
+    probe_action = "probe_hop_decomposition"
+    probe_evidence = "decomposed hop retrieval"
 
 
 class FusionRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.FUSION
+    probe_action = "probe_expanded_query_rrf"
+    probe_evidence = "expanded-query reciprocal rank fusion"
 
 
 class GraphRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.GRAPH
+    probe_action = "probe_graph_evidence"
+    probe_evidence = "tenant-scoped graph evidence"
 
 
 class CorrectiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.CORRECTIVE
+    probe_action = "probe_corrective_retry"
+    probe_evidence = "graded corrective retry"
 
 
 class AdaptiveRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.ADAPTIVE
+    probe_action = "probe_adaptive_routing"
+    probe_evidence = "capability-aware adaptive routing"
 
 
 class WebAugmentedRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.WEB_AUGMENTED
+    probe_action = "probe_web_augmentation"
+    probe_evidence = "policy-authorized web augmentation"
+
+
+class RAPTORRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.RAPTOR
+    probe_action = "probe_hierarchical_summary"
+    probe_evidence = "hierarchical summary retrieval"
+
+
+class AgenticChunkingRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.AGENTIC_CHUNKING
+    probe_action = "probe_semantic_boundaries"
+    probe_evidence = "semantic boundary chunking"
+
+
+class ColBERTRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.COLBERT
+    probe_action = "probe_late_interaction"
+    probe_evidence = "late-interaction token scoring"
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.agentic.patterns.colbert import (
+            ColBERTRAGRuntimeAdapter as ColBERT,
+        )
+
+        return await ColBERT().execute(request, context)
+
+
+class _ReasoningRAGRuntimeAdapter(RAGRuntimeAdapter):
+    """Lazy contract adapter for a reasoning strategy implementation."""
+
+    strategy: ClassVar[RAGStrategy]
+    probe_action: ClassVar[str]
+    probe_evidence: ClassVar[str]
+
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action=cls.probe_action,
+            status="complete",
+            detail={
+                "adapter_strategy": cls.strategy.value,
+                "evidence": cls.probe_evidence,
+            },
+        )
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.agentic.patterns.agentic import AgenticRAGRuntimeAdapter as Agentic
+        from app.rag.agentic.patterns.flare import FLARERAGRuntimeAdapter as Flare
+        from app.rag.agentic.patterns.self_rag import SelfRAGRuntimeAdapter as SelfRAG
+        from app.rag.agentic.patterns.speculative import (
+            SpeculativeRAGRuntimeAdapter as Speculative,
+        )
+
+        adapters: dict[RAGStrategy, Callable[[], RAGRuntimeAdapter]] = {
+            RAGStrategy.SPECULATIVE: Speculative,
+            RAGStrategy.AGENTIC: Agentic,
+            RAGStrategy.SELF_RAG: SelfRAG,
+            RAGStrategy.FLARE: Flare,
+        }
+        return await adapters[self.strategy]().execute(request, context)
+
+
+class SpeculativeRAGRuntimeAdapter(_ReasoningRAGRuntimeAdapter):
+    strategy = RAGStrategy.SPECULATIVE
+    probe_action = "probe_draft_verification"
+    probe_evidence = "draft and evidence verification"
+
+
+class AgenticRAGRuntimeAdapter(_ReasoningRAGRuntimeAdapter):
+    strategy = RAGStrategy.AGENTIC
+    probe_action = "probe_agentic_loop"
+    probe_evidence = "bounded agentic retrieval loop"
+
+
+class SelfRAGRuntimeAdapter(_ReasoningRAGRuntimeAdapter):
+    strategy = RAGStrategy.SELF_RAG
+    probe_action = "probe_self_critique"
+    probe_evidence = "retrieval relevance self-critique"
+
+
+class FLARERAGRuntimeAdapter(_ReasoningRAGRuntimeAdapter):
+    strategy = RAGStrategy.FLARE
+    probe_action = "probe_uncertainty_retrieval"
+    probe_evidence = "uncertainty-triggered retrieval"
+
+
+class ModularRAGRuntimeAdapter(RAGRuntimeAdapter):
+    """Lazy canonical contract adapter for validated Modular RAG graphs."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.MODULAR
+
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action="probe_modular_pipeline",
+            status="complete",
+            detail={
+                "adapter_strategy": cls.strategy.value,
+                "evidence": "validated modular pipeline",
+            },
+        )
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.agentic.patterns.modular import (
+            ModularRAGRuntimeAdapter as Modular,
+        )
+
+        return await Modular().execute(request, context)
+
+
+class RAFTRAGRuntimeAdapter(RAGRuntimeAdapter):
+    """Lazy canonical adapter for completed RAFT models."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.RAFT
+
+    @classmethod
+    def probe_trace(cls) -> RAGStrategyTrace:
+        return RAGStrategyTrace(
+            strategy=cls.strategy,
+            action="probe_completed_model",
+            status="complete",
+            detail={
+                "adapter_strategy": cls.strategy.value,
+                "evidence": "compatible completed RAFT model inference",
+            },
+        )
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.rag.agentic.patterns.raft import RAFTRAGRuntimeAdapter as RAFTAdapter
+
+        return await RAFTAdapter().execute(request, context)
 
 
 def is_rag_runtime_adapter(
@@ -221,19 +422,5 @@ def is_rag_runtime_adapter(
         and not inspect.isabstract(adapter)
         and getattr(adapter, "strategy", None) is strategy
         and inspect.iscoroutinefunction(getattr(adapter, "execute", None))
+        and callable(getattr(adapter, "probe_trace", None))
     )
-
-
-RAG_RUNTIME_CAPABILITIES: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] = MappingProxyType(
-    {
-        RAGStrategy.NAIVE: NaiveRAGRuntimeAdapter,
-        RAGStrategy.HYBRID: HybridRAGRuntimeAdapter,
-        RAGStrategy.HYDE: HyDERAGRuntimeAdapter,
-        RAGStrategy.MULTI_HOP: MultiHopRAGRuntimeAdapter,
-        RAGStrategy.FUSION: FusionRAGRuntimeAdapter,
-        RAGStrategy.GRAPH: GraphRAGRuntimeAdapter,
-        RAGStrategy.CORRECTIVE: CorrectiveRAGRuntimeAdapter,
-        RAGStrategy.ADAPTIVE: AdaptiveRAGRuntimeAdapter,
-        RAGStrategy.WEB_AUGMENTED: WebAugmentedRAGRuntimeAdapter,
-    }
-)

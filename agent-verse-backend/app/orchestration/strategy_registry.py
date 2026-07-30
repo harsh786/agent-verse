@@ -9,10 +9,16 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from app.rag.contracts import (
+from app.rag.catalogue import (
+    RAG_CAPABILITY_CATALOGUE,
     RAG_RUNTIME_CAPABILITIES,
+    RAGRuntimeDependency,
+    RAGRuntimeReadiness,
+)
+from app.rag.contracts import (
     RAGRuntimeAdapter,
     RAGStrategy,
+    RAGStrategyTrace,
     is_rag_runtime_adapter,
 )
 
@@ -45,6 +51,44 @@ class StrategyCapability:
     latency_class: str = "interactive"
     risk_class: str = "low"
     compatible_goal_properties: dict[str, Any] = field(default_factory=dict)
+    runtime_adapter: type[RAGRuntimeAdapter] | None = field(
+        default=None,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RAGStrategyContractProbe:
+    """Static adapter identity/contract evidence, not operational readiness proof."""
+
+    strategy_id: str
+    adapter_path: str
+    available: bool
+    trace: RAGStrategyTrace
+    missing_dependencies: tuple[str, ...] = ()
+
+    @property
+    def contract_evidence(self) -> str:
+        evidence = self.trace.detail.get("evidence")
+        return evidence if isinstance(evidence, str) else ""
+
+    @property
+    def evidence(self) -> str:
+        """Compatibility alias for static contract evidence."""
+        return self.contract_evidence
+
+
+RAGStrategyProbe = RAGStrategyContractProbe
+
+
+def _readiness_from_available_dependencies(
+    available_deps: set[str],
+) -> RAGRuntimeReadiness:
+    readiness = RAGRuntimeReadiness.all_available()
+    for dependency in RAGRuntimeDependency:
+        if dependency.value not in available_deps:
+            readiness = readiness.without(dependency)
+    return readiness
 
 
 class StrategyRegistry:
@@ -89,7 +133,89 @@ class StrategyRegistry:
             return False
         if cap.state in (StrategyState.PLANNED, StrategyState.DISABLED):
             return False
+        if cap.category is StrategyCategory.RAG and available_deps is not None:
+            strategy = RAGStrategy(strategy_id)
+            readiness = _readiness_from_available_dependencies(available_deps)
+            return not RAG_CAPABILITY_CATALOGUE[strategy].missing_dependencies(readiness)
         return available_deps is None or not set(cap.required_deps) - available_deps
+
+    def resolve_rag_adapter(self, strategy_id: str) -> type[RAGRuntimeAdapter]:
+        capability = self.get(strategy_id)
+        if (
+            capability is None
+            or capability.category is not StrategyCategory.RAG
+            or capability.state is not StrategyState.IMPLEMENTED
+            or capability.runtime_adapter is None
+        ):
+            raise LookupError(f"RAG strategy has no implemented adapter: {strategy_id}")
+        return capability.runtime_adapter
+
+    def probe_rag_strategy(
+        self,
+        strategy_id: str,
+        *,
+        available_deps: set[str] | None = None,
+    ) -> RAGStrategyContractProbe:
+        """Compatibility wrapper for the static identity/contract probe."""
+        return self.probe_rag_strategy_contract(
+            strategy_id,
+            available_deps=available_deps,
+        )
+
+    def probe_rag_strategy_contract(
+        self,
+        strategy_id: str,
+        *,
+        available_deps: set[str] | None = None,
+    ) -> RAGStrategyContractProbe:
+        """Validate adapter identity and contract without claiming operational evidence."""
+        capability = self.get(strategy_id)
+        adapter = self.resolve_rag_adapter(strategy_id)
+        if capability is None:
+            raise LookupError(f"RAG strategy is not registered: {strategy_id}")
+        readiness = (
+            RAGRuntimeReadiness.all_available()
+            if available_deps is None
+            else _readiness_from_available_dependencies(available_deps)
+        )
+        missing = tuple(
+            dependency.value
+            for dependency in RAG_CAPABILITY_CATALOGUE[
+                RAGStrategy(strategy_id)
+            ].missing_dependencies(readiness)
+        )
+        adapter_path = f"{adapter.__module__}:{adapter.__name__}"
+        strategy = RAGStrategy(strategy_id)
+        raw_trace = adapter.probe_trace()
+        trace = raw_trace.model_copy(
+            update={"action": f"identity_contract_{raw_trace.action}"}
+        )
+        if adapter.strategy is not strategy or trace.strategy is not strategy:
+            raise TypeError(f"RAG adapter probe strategy mismatch: {strategy_id}")
+        if not trace.action.strip() or not RAGStrategyContractProbe(
+            strategy_id=strategy_id,
+            adapter_path=adapter_path,
+            available=True,
+            trace=trace,
+        ).evidence.strip():
+            raise ValueError(f"RAG adapter probe returned no evidence: {strategy_id}")
+        if missing:
+            trace = trace.model_copy(
+                update={
+                    "status": "unavailable",
+                    "detail": {
+                        **trace.detail,
+                        "missing_dependencies": list(missing),
+                    },
+                }
+            )
+        return RAGStrategyContractProbe(
+            strategy_id=strategy_id,
+            adapter_path=adapter_path,
+            available=not missing,
+            trace=trace,
+            missing_dependencies=missing,
+        )
 
 
 def build_default_registry(
@@ -1172,10 +1298,15 @@ def build_default_registry(
         if capability.category is not R:
             continue
         strategy = RAGStrategy(capability.strategy_id)
+        catalogue_entry = RAG_CAPABILITY_CATALOGUE[strategy]
+        capability.required_deps = [
+            dependency.value for dependency in catalogue_entry.required_dependencies
+        ]
         adapter = runtime_capabilities.get(strategy)
         if adapter is not None and is_rag_runtime_adapter(strategy, adapter):
             capability.state = IMPL
             capability.adapter_path = f"{adapter.__module__}:{adapter.__name__}"
+            capability.runtime_adapter = adapter
         elif capability.state not in (PLAN, StrategyState.DISABLED):
             capability.state = PART
 

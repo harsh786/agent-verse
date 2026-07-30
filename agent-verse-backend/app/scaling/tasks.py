@@ -1081,6 +1081,11 @@ def run_goal(
                 else SQLCollectionAuthorizer()
             )
             worker_settings = get_settings()
+            from app.rag.catalogue import RAGAdapterConfiguration
+
+            worker_rag_adapter_configuration = RAGAdapterConfiguration(
+                colbert_checkpoint=worker_settings.colbert_checkpoint
+            )
             worker_web_search = build_safe_web_search_capability(
                 searxng_url=worker_settings.searxng_url,
                 policy_services=(_policy, _cost, _hitl),
@@ -1098,7 +1103,10 @@ def run_goal(
                     policy_services=(_policy, _cost, _hitl),
                     cost_controller=_cost,
                     collection_authorizer=collection_authorizer,
-                    strategy_capabilities=core_strategy_capabilities(),
+                    strategy_capabilities=core_strategy_capabilities(
+                        worker_rag_adapter_configuration
+                    ),
+                    colbert_checkpoint=worker_settings.colbert_checkpoint,
                 )
             )
 

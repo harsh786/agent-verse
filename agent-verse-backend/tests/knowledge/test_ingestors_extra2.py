@@ -1,12 +1,10 @@
 """Extra coverage for all knowledge ingestors — mock all external HTTP/lib calls."""
 from __future__ import annotations
 
-import io
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── DocxIngestor ──────────────────────────────────────────────────────────────
 
@@ -22,12 +20,16 @@ class TestDocxIngestor:
                 source_url="http://example.com/test.docx",
             )
         assert len(result) == 1
-        assert "install python-docx" in result[0]["content"].lower() or "docx" in result[0]["content"].lower()
+        content = result[0]["content"].lower()
+        assert "install python-docx" in content or "docx" in content
 
     def test_extract_chunks_with_mock_docx(self):
         """Happy path: python-docx is available and parses paragraphs."""
         mock_paragraph = MagicMock()
-        mock_paragraph.text = "This is a test paragraph with enough text content to be included in the chunk output."
+        mock_paragraph.text = (
+            "This is a test paragraph with enough text content to be included "
+            "in the chunk output."
+        )
 
         mock_doc = MagicMock()
         mock_doc.paragraphs = [mock_paragraph] * 5  # 5 identical paragraphs
@@ -37,6 +39,7 @@ class TestDocxIngestor:
 
         with patch.dict(sys.modules, {"docx": mock_docx_module}):
             import importlib
+
             from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
@@ -54,6 +57,7 @@ class TestDocxIngestor:
 
         with patch.dict(sys.modules, {"docx": mock_docx_module}):
             import importlib
+
             from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
@@ -75,6 +79,7 @@ class TestDocxIngestor:
 
         with patch.dict(sys.modules, {"docx": mock_docx_module}):
             import importlib
+
             from app.knowledge.ingestors import docx_ingestor
             importlib.reload(docx_ingestor)
             ing = docx_ingestor.DocxIngestor()
@@ -89,6 +94,7 @@ class TestPdfIngestor:
         """When pypdf not installed, returns placeholder chunk."""
         with patch.dict(sys.modules, {"pypdf": None}):
             import importlib
+
             from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
@@ -113,6 +119,7 @@ class TestPdfIngestor:
 
         with patch.dict(sys.modules, {"pypdf": mock_pypdf}):
             import importlib
+
             from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
@@ -140,6 +147,7 @@ class TestPdfIngestor:
 
         with patch.dict(sys.modules, {"pypdf": mock_pypdf}):
             import importlib
+
             from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
@@ -153,6 +161,7 @@ class TestPdfIngestor:
 
         with patch.dict(sys.modules, {"pypdf": mock_pypdf}):
             import importlib
+
             from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
@@ -172,6 +181,7 @@ class TestPdfIngestor:
 
         with patch.dict(sys.modules, {"pypdf": mock_pypdf}):
             import importlib
+
             from app.knowledge.ingestors import pdf_ingestor
             importlib.reload(pdf_ingestor)
             ing = pdf_ingestor.PdfIngestor()
@@ -315,7 +325,11 @@ class TestSlackIngestor:
         from app.knowledge.ingestors.slack_ingestor import SlackIngestor
 
         messages = [
-            {"type": "message", "text": f"Message {i} with enough content here to be included in chunk.", "ts": f"1234.{i:04d}"}
+            {
+                "type": "message",
+                "text": f"Message {i} with enough content here to be included in chunk.",
+                "ts": f"1234.{i:04d}",
+            }
             for i in range(7)
         ]
         mock_resp = MagicMock()
@@ -371,7 +385,11 @@ class TestSlackIngestor:
 
         def make_messages(n=3):
             return [
-                {"type": "message", "text": f"Content message number {i} with sufficient length", "ts": f"{i}"}
+                {
+                    "type": "message",
+                    "text": f"Content message number {i} with sufficient length",
+                    "ts": f"{i}",
+                }
                 for i in range(n)
             ]
 
@@ -451,7 +469,10 @@ class TestJiraIngestor:
                 "key": "PROJ-1",
                 "fields": {
                     "summary": "Fix production bug in authentication module",
-                    "description": "Full description of the authentication bug that needs to be fixed urgently.",
+                    "description": (
+                        "Full description of the authentication bug that needs to be "
+                        "fixed urgently."
+                    ),
                     "status": {"name": "Open"},
                     "priority": {"name": "High"},
                     "comment": {"comments": []},
@@ -485,7 +506,15 @@ class TestJiraIngestor:
 
         adf_description = {
             "type": "paragraph",
-            "content": [{"type": "text", "text": "This is an ADF description paragraph with enough content to be included."}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "This is an ADF description paragraph with enough content "
+                        "to be included."
+                    ),
+                }
+            ],
         }
         issues = [
             {
@@ -495,9 +524,16 @@ class TestJiraIngestor:
                     "description": adf_description,
                     "status": {"name": "Done"},
                     "priority": {"name": "Low"},
-                    "comment": {"comments": [
-                        {"body": "This comment is long enough to be included as a separate chunk in the knowledge base."}
-                    ]},
+                    "comment": {
+                        "comments": [
+                            {
+                                "body": (
+                                    "This comment is long enough to be included as a "
+                                    "separate chunk in the knowledge base."
+                                )
+                            }
+                        ]
+                    },
                 },
             }
         ]
@@ -525,14 +561,21 @@ class TestJiraIngestor:
 
         adf_comment = {
             "type": "paragraph",
-            "content": [{"type": "text", "text": "This is a comment in ADF format with enough text."}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is a comment in ADF format with enough text.",
+                }
+            ],
         }
         issues = [
             {
                 "key": "PROJ-3",
                 "fields": {
                     "summary": "Test issue with ADF comment that is long enough",
-                    "description": "Description with enough content to be included in the output chunks.",
+                    "description": (
+                        "Description with enough content to be included in the output chunks."
+                    ),
                     "status": {"name": "In Progress"},
                     "priority": {"name": "Medium"},
                     "comment": {"comments": [{"body": adf_comment}]},
@@ -668,8 +711,9 @@ class TestGitHubIngestorExtra:
 
     @pytest.mark.asyncio
     async def test_ingest_repo_404_skips_file(self):
-        from app.knowledge.ingestors.github_ingestor import GitHubIngestor
         import httpx
+
+        from app.knowledge.ingestors.github_ingestor import GitHubIngestor
 
         tree_items = [{"type": "blob", "path": "deleted.py", "size": 100}]
 
@@ -700,8 +744,9 @@ class TestGitHubIngestorExtra:
 
     @pytest.mark.asyncio
     async def test_ingest_repo_other_http_error_logged(self):
-        from app.knowledge.ingestors.github_ingestor import GitHubIngestor
         import httpx
+
+        from app.knowledge.ingestors.github_ingestor import GitHubIngestor
 
         tree_items = [{"type": "blob", "path": "app.py", "size": 100}]
 
@@ -715,7 +760,11 @@ class TestGitHubIngestorExtra:
         async def mock_get(url, *args, **kwargs):
             if "git/trees" in url:
                 return mock_tree_resp
-            err = httpx.HTTPStatusError("Service Unavailable", request=MagicMock(), response=mock_503_resp)
+            err = httpx.HTTPStatusError(
+                "Service Unavailable",
+                request=MagicMock(),
+                response=mock_503_resp,
+            )
             raise err
 
         mock_client = AsyncMock()

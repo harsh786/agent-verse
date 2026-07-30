@@ -1,9 +1,12 @@
 # tests/rag/test_phase3_retrieval.py
 """Phase 3: RAG/Retrieval gap fixes."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.rag.engine import RetrievalResult
 
 
@@ -62,8 +65,8 @@ async def test_retrieve_agentic_chunking_dispatched(session, base_results):
 
 async def test_query_expander_llm_path():
     """expand_for_fusion_async uses LLM when provider given."""
-    from app.rag.agentic.query_expander import QueryExpander
     from app.providers.fake import FakeProvider
+    from app.rag.agentic.query_expander import QueryExpander
     expander = QueryExpander()
     provider = FakeProvider(responses=["Alternative 1\nAlternative 2\nAlternative 3"])
     variants = await expander.expand_for_fusion_async(
@@ -75,8 +78,8 @@ async def test_query_expander_llm_path():
 
 async def test_query_reformulator_llm_path():
     """reformulate_async uses LLM when provider given."""
-    from app.rag.agentic.query_reformulator import QueryReformulator
     from app.providers.fake import FakeProvider
+    from app.rag.agentic.query_reformulator import QueryReformulator
     reformulator = QueryReformulator(max_attempts=2)
     provider = FakeProvider(responses=["Rewrite 1\nRewrite 2"])
     rewrites = await reformulator.reformulate_async("what is AgentVerse", provider=provider)
@@ -103,7 +106,7 @@ def test_fallback_chain_uses_graph_when_infra_available():
 
 def test_cross_encoder_no_runtime_error_in_async_context():
     """CROSS_ENCODER must not call asyncio.get_event_loop() in production."""
-    from app.context.rerank_policy import RerankPolicy, RerankStrategy
+    from app.context.rerank_policy import RerankPolicy
     policy = RerankPolicy()
     chunks = [
         {"chunk_id": "c1", "content": "Python is great", "score": 0.8},

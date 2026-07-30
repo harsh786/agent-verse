@@ -304,3 +304,38 @@ sequence after remediation is:
 No product source fix was applied during certification. Existing user changes were preserved.
 Test runners updated their normal report/cache artifacts. Three dedicated local test tenants
 and their scoped test data were created; Jira was accessed read-only.
+
+## Canonical persisted RAG checkpoint
+
+Checkpoint date: 2026-07-31
+
+Tasks 7-12 of the canonical persisted RAG runtime plan were implemented after the original
+certification run. The runtime now has one typed 18-strategy catalogue, tenant-aware gateway
+readiness, bounded reasoning strategies, persisted RAPTOR and proposition indexes,
+checkpoint-correct ColBERT reranking, validated Modular RAG, and a provider-neutral RAFT
+lifecycle.
+
+Security and durability controls include forced RLS on the RAFT tables, tenant-consistent
+composite foreign keys, atomic and idempotent indexed ingestion, exact Decimal cost binding,
+single-use RAFT confirmation grants, recoverable provider submission state, and monotonic
+fine-tune job transitions. Paid RAFT submission remains disabled until a provider is
+configured and the exact quoted cost is explicitly confirmed.
+
+Final automated evidence on the merged implementation:
+
+- RAG, knowledge, and affected API non-integration suites: **1,204 passed, 4 skipped,
+  66 deselected**. The skips require unavailable local cross-encoder or ColBERT artifacts.
+- PostgreSQL/Testcontainers integration suite: **66 passed, 1,093 deselected**.
+- Exact scoped Ruff gate: **all checks passed**.
+- Exact scoped mypy gate: **64 source files, no issues**.
+- Alembic has one head: `0095_raft_lifecycle`.
+- Regenerated OpenAPI contains seven `/rag/raft/*` lifecycle routes.
+
+RAGatouille is pinned under the optional `colbert` extra rather than the default runtime
+dependency set. The configured ColBERT checkpoint is used consistently by API and worker
+execution paths.
+
+This checkpoint clears the automated Program 1 RAG gate. It does not change the overall
+**NOT CERTIFIED** verdict because current real-provider credentials were unavailable for the
+17 non-paid live API journeys, and paid RAFT certification still requires explicit
+action-time cost confirmation.

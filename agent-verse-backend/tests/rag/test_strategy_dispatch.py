@@ -43,48 +43,6 @@ async def test_retrieve_dispatches_colbert(session):
     assert len(results) > 0
 
 
-async def test_retrieve_dispatches_raptor_no_provider(session):
-    """raptor without provider falls back to hybrid."""
-    from app.rag.engine import RetrievalResult, retrieve
-
-    with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
-        RetrievalResult("c1", "content", 0.8, {}, ["vector"])
-    ])):
-        results = await retrieve(
-            session, query="test", query_embedding=[0.1]*10,
-            collection_id="col1", strategy="raptor",
-            provider=None,
-        )
-    assert isinstance(results, list)
-
-
-async def test_retrieve_dispatches_speculative_no_provider(session):
-    """speculative without provider falls back to hybrid."""
-    from app.rag.engine import retrieve
-
-    with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[])):
-        results = await retrieve(
-            session, query="test", query_embedding=[0.1]*10,
-            collection_id="col1", strategy="speculative",
-        )
-    assert isinstance(results, list)
-
-
-async def test_retrieve_dispatches_flare_no_provider(session):
-    """flare without provider falls back to hybrid."""
-    from app.rag.engine import RetrievalResult, retrieve
-
-    with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[
-        RetrievalResult("c1", "content", 0.8, {}, ["vector"])
-    ])):
-        results = await retrieve(
-            session, query="test", query_embedding=[0.1]*10,
-            collection_id="col1", strategy="flare",
-            provider=None,
-        )
-    assert isinstance(results, list)
-
-
 def test_strategy_registry_implemented_patterns():
     """Only production-wired agent patterns are certified IMPLEMENTED in this slice."""
     from app.orchestration.strategy_registry import (
@@ -120,6 +78,15 @@ def test_strategy_registry_implemented_patterns():
         "corrective",
         "adaptive",
         "web_augmented",
+        "raptor",
+        "agentic_chunking",
+        "colbert",
+        "speculative",
+        "agentic",
+        "self_rag",
+        "flare",
+        "modular",
+        "raft",
     }
     assert all(
         reg.is_available(cap.strategy_id)

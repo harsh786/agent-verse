@@ -1,14 +1,14 @@
 # tests/rag/test_agentic/test_layer4_complete.py
 """All 9 Layer 4 RAG agentic files must exist and have standard interface."""
 from __future__ import annotations
-import pytest
-from app.rag.agentic.query_expander import QueryExpander
-from app.rag.agentic.retrieval_policy import RetrievalPolicy, RetrievalStrategy
+
 from app.rag.agentic.citation_threader import CitationThreader
-from app.rag.agentic.rag_trace import RAGTrace
-from app.rag.agentic.query_reformulator import QueryReformulator
-from app.rag.agentic.fallback_chain import FallbackChain
 from app.rag.agentic.context_gap_detector import ContextGapDetector
+from app.rag.agentic.fallback_chain import FallbackChain
+from app.rag.agentic.query_expander import QueryExpander
+from app.rag.agentic.query_reformulator import QueryReformulator
+from app.rag.agentic.rag_trace import RAGTrace
+from app.rag.agentic.retrieval_policy import RetrievalPolicy, RetrievalStrategy
 from app.rag.agentic.retriever_tool import RetrieverTool
 from app.rag.agentic.source_inventory import SourceInventory
 

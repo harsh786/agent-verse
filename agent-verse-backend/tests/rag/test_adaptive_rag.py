@@ -1,8 +1,9 @@
 # tests/rag/test_adaptive_rag.py
 """Adaptive RAG: pattern selects strategy based on query heuristics."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, patch
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 

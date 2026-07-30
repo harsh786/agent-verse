@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     enable_self_consistency: bool = True
     enable_peer_review: bool = True
     enable_agentic_chunking: bool = True
+    colbert_checkpoint: str = "colbert-ir/colbertv2.0"
 
     # --- Agent Civilization ---
     civilization_max_agents_per_tenant: int = 50

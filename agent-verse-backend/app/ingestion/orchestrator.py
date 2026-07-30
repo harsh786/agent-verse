@@ -1,7 +1,9 @@
 """IngestionOrchestrator — routes content to the right parser, chunker, and store."""
 from __future__ import annotations
 
+import hashlib
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +13,8 @@ from app.ingestion.parser_registry import ParserRegistry
 from app.rag.models import Chunk
 
 if TYPE_CHECKING:
+    from app.rag.contracts import RAGStrategy
+    from app.rag.indexing import IndexingDependency, RAGIndexingConfig
     from app.tenancy.context import TenantContext
 
 
@@ -28,15 +32,23 @@ class IngestionResult:
     persisted: bool = False
 
 
+class EmptyIndexedContentError(ValueError):
+    """Raised when indexed ingestion has no nonblank chunks to replace a source."""
+
+
 class IngestionOrchestrator:
     def __init__(
         self,
         *,
         knowledge_store: Any = None,
         embedder: Any = None,
+        indexing_dependencies: Mapping[RAGStrategy, IndexingDependency] | None = None,
+        rag_indexing_config: RAGIndexingConfig | None = None,
     ) -> None:
         self._kb = knowledge_store
         self._embedder = embedder
+        self._indexing_dependencies = dict(indexing_dependencies or {})
+        self._rag_indexing_config = rag_indexing_config
         self._classifier = ContentClassifier()
         self._chunking_selector = ChunkingStrategySelector()
         self._parser_registry = ParserRegistry()
@@ -113,6 +125,7 @@ class IngestionOrchestrator:
         metadata: dict[str, Any] | None = None,
         dry_run: bool = False,
         in_memory_only: bool = False,
+        source_identity: str = "",
     ) -> IngestionResult:
         # 1. Detect content type
         if content_type in ("auto", "unknown"):
@@ -144,6 +157,14 @@ class IngestionOrchestrator:
         chunks_text = self._filter_quality(raw_texts)
 
         chunks_prepared = len(chunks_text)
+        if (
+            self._rag_indexing_config is not None
+            and self._rag_indexing_config.strategies
+            and not any(chunk.strip() for chunk in chunks_text)
+        ):
+            raise EmptyIndexedContentError(
+                "Indexed content produced no indexable chunks"
+            )
         if dry_run:
             return IngestionResult(
                 ingestion_id=uuid.uuid4().hex,
@@ -166,13 +187,66 @@ class IngestionOrchestrator:
                 "An in-memory knowledge store requires in_memory_only=True"
             )
 
+        document_id = uuid.uuid4().hex
+        if (
+            self._rag_indexing_config is not None
+            and self._rag_indexing_config.strategies
+        ):
+            if in_memory_only:
+                raise ValueError("Indexed ingestion does not support in_memory_only")
+            if not source_identity.strip():
+                raise ValueError("Indexed ingestion requires source_identity")
+            if self._embedder is None:
+                raise RuntimeError(
+                    "Configured RAG indexing requires LLM and embedding providers"
+                )
+            from app.rag.indexing import RAGIndexingPipeline
+
+            identity_scope = "\x1f".join(
+                (tenant_ctx.tenant_id, collection_id, source_identity.strip())
+            )
+            document_id = hashlib.sha256(identity_scope.encode()).hexdigest()
+
+            pipeline = RAGIndexingPipeline(
+                store=self._kb,
+                embedder=self._embedder,
+                dependencies=self._indexing_dependencies,
+                config=self._rag_indexing_config,
+            )
+            indexed_records = await pipeline.index_document(
+                collection_id=collection_id,
+                document_id=document_id,
+                chunks=chunks_text,
+                tenant_ctx=tenant_ctx,
+                metadata={
+                    **(metadata or {}),
+                    "content_type": detected.value,
+                    "chunking_strategy": chunking_strategy,
+                    "source_url": source_url,
+                    "source_identity": source_identity,
+                    "source_type": detected.value,
+                },
+            )
+            indexed_ids = [record.chunk_id for record in indexed_records]
+            return IngestionResult(
+                ingestion_id=uuid.uuid4().hex,
+                tenant_id=tenant_ctx.tenant_id,
+                collection_id=collection_id,
+                content_type=detected,
+                chunking_strategy=chunking_strategy,
+                chunks_created=len(indexed_ids),
+                source_url=source_url,
+                chunk_ids=indexed_ids,
+                chunks_prepared=chunks_prepared,
+                persisted=True,
+            )
+
         from app.providers.base import embed_texts
 
         embeddings = await embed_texts(chunks_text, provider=self._embedder)
         if len(embeddings) != chunks_prepared:
             raise RuntimeError("Embedding provider returned an incomplete batch")
 
-        document_id = uuid.uuid4().hex
         chunks = [
             Chunk(
                 document_id=document_id,
