@@ -110,7 +110,17 @@ def test_strategy_registry_implemented_patterns():
         for cap in rag_patterns
         if cap.state is StrategyState.IMPLEMENTED
     }
-    assert implemented == {"naive", "hybrid", "hyde", "multi_hop", "fusion"}
+    assert implemented == {
+        "naive",
+        "hybrid",
+        "hyde",
+        "multi_hop",
+        "fusion",
+        "graph",
+        "corrective",
+        "adaptive",
+        "web_augmented",
+    }
     assert all(
         reg.is_available(cap.strategy_id)
         == (cap.strategy_id in implemented)

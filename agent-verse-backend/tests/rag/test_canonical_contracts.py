@@ -198,6 +198,7 @@ def test_runtime_adapter_contract_requires_tenant_scoped_requests() -> None:
         "collection_id": "collection-1",
         "top_k": 7,
         "filters": {},
+        "execution_id": "",
     }
     assert hasattr(RAGRuntimeAdapter, "execute")
 
@@ -229,6 +230,10 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
         RAGStrategy.HYDE,
         RAGStrategy.MULTI_HOP,
         RAGStrategy.FUSION,
+        RAGStrategy.GRAPH,
+        RAGStrategy.CORRECTIVE,
+        RAGStrategy.ADAPTIVE,
+        RAGStrategy.WEB_AUGMENTED,
     }
     assert set(RAG_RUNTIME_CAPABILITIES) == expected
     assert implemented_ids == expected
