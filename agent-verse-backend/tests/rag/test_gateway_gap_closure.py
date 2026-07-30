@@ -29,7 +29,7 @@ from app.tenancy.context import PlanTier, TenantContext
 TENANT = TenantContext("tenant-gap", PlanTier.PROFESSIONAL, "key-gap")
 
 
-def test_production_capability_registry_contains_only_core_adapters() -> None:
+def test_production_capability_registry_contains_certified_adapters() -> None:
     from app.main import create_app
 
     gateway = create_app(manage_pools=False).state.retrieval_gateway
@@ -40,6 +40,10 @@ def test_production_capability_registry_contains_only_core_adapters() -> None:
         RAGStrategy.HYDE,
         RAGStrategy.MULTI_HOP,
         RAGStrategy.FUSION,
+        RAGStrategy.GRAPH,
+        RAGStrategy.CORRECTIVE,
+        RAGStrategy.ADAPTIVE,
+        RAGStrategy.WEB_AUGMENTED,
     }
     assert all(
         capability.requires_database
