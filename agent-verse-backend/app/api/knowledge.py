@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import uuid as _uuid
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
+from app.ingestion.orchestrator import EmptyIndexedContentError
 from app.ingestion.repository_security import (
     RepositoryLimits,
     RepositorySecurityError,
@@ -37,6 +39,9 @@ from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
+
+if TYPE_CHECKING:
+    from app.rag.indexing import IndexingDependency
 
 # Check if Playwright is available at module load time
 try:
@@ -135,14 +140,37 @@ class SlackIngestRequest(BaseModel):
     max_messages: int = 500
 
 
+IndexingStrategy = Literal["raptor", "agentic_chunking"]
+
+
 class CollectionIngestRequest(BaseModel):
     """Request body for POST /collections/{collection_id}/documents (IngestionOrchestrator path)."""
-    content: str
+    content: str = Field(min_length=1, max_length=1_000_000)
     content_type: str = "auto"
     source_url: str = ""
-    metadata: dict[str, Any] = {}
+    source_identity: str = Field(
+        default="",
+        max_length=256,
+        pattern=r"^[A-Za-z0-9._:/-]*$",
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
     in_memory_only: bool = False
+    indexing_strategies: set[IndexingStrategy] = Field(default_factory=set)
+    raptor_cluster_size: int = Field(default=4, ge=2, le=64)
+    raptor_max_levels: int = Field(default=3, ge=1, le=8)
+    parent_window_size: int = Field(default=1, ge=0, le=16)
+    raptor_summary_batch_size: int = Field(default=16, ge=1, le=64)
+    proposition_batch_size: int = Field(default=16, ge=1, le=64)
+    embedding_batch_size: int = Field(default=64, ge=1, le=256)
+
+    @model_validator(mode="after")
+    def validate_indexed_ingestion(self) -> CollectionIngestRequest:
+        if self.indexing_strategies and not self.source_identity:
+            raise ValueError("source_identity is required for indexed ingestion")
+        if self.indexing_strategies and self.in_memory_only:
+            raise ValueError("indexed ingestion does not support in_memory_only")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +197,48 @@ def _retrieval_gateway(request: Request) -> Any:
     if gateway is None:
         raise HTTPException(status_code=503, detail="Retrieval service is unavailable")
     return gateway
+
+
+async def _resolve_indexing_llm(
+    request: Request,
+    tenant_ctx: TenantContext,
+    strategies: set[IndexingStrategy],
+) -> dict[RAGStrategy, IndexingDependency]:
+    from app.rag.indexing import IndexingDependency
+
+    gateway = getattr(request.app.state, "retrieval_gateway", None)
+    dependencies = getattr(gateway, "dependencies", None)
+    resolver = getattr(dependencies, "llm_resolver", None)
+    resolved_dependencies: dict[RAGStrategy, IndexingDependency] = {}
+    if resolver is not None:
+        for strategy_name in strategies:
+            strategy = RAGStrategy(strategy_name)
+            try:
+                resolved = resolver(tenant_ctx, strategy)
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
+            except Exception:
+                return {}
+            provider = getattr(resolved, "provider", None)
+            model = str(getattr(resolved, "model", "") or "").strip()
+            if provider is None or not model:
+                return {}
+            resolved_dependencies[strategy] = IndexingDependency(provider, model)
+        return resolved_dependencies
+
+    provider = getattr(request.app.state, "_app_provider", None)
+    provider_default = getattr(provider, "_default_model", "")
+    model = str(
+        getattr(request.app.state, "indexing_model", "")
+        or (provider_default if isinstance(provider_default, str) else "")
+        or get_settings().default_model
+    ).strip()
+    if provider is None or not model:
+        return {}
+    return {
+        RAGStrategy(strategy): IndexingDependency(provider, model)
+        for strategy in strategies
+    }
 
 
 def _parse_retrieval_filters(filters: str | None) -> dict[str, Any]:
@@ -1964,9 +2034,43 @@ async def ingest_document_into_collection(
 
     try:
         from app.ingestion.orchestrator import IngestionOrchestrator
+        from app.rag.indexing import RAGIndexingConfig
+
+        embedder = getattr(request.app.state, "embedder", None)
+        indexing_dependencies: dict[RAGStrategy, IndexingDependency] = {}
+        if body.indexing_strategies:
+            indexing_dependencies = await _resolve_indexing_llm(
+                request,
+                tenant_ctx,
+                body.indexing_strategies,
+            )
+            if embedder is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="RAG indexing embedder is unavailable",
+                )
+            if len(indexing_dependencies) != len(body.indexing_strategies):
+                raise HTTPException(
+                    status_code=503,
+                    detail="RAG indexing provider or model is unavailable",
+                )
+
+        indexing_config = RAGIndexingConfig(
+            strategies=frozenset(
+                RAGStrategy(strategy) for strategy in body.indexing_strategies
+            ),
+            raptor_cluster_size=body.raptor_cluster_size,
+            raptor_max_levels=body.raptor_max_levels,
+            parent_window_size=body.parent_window_size,
+            raptor_summary_batch_size=body.raptor_summary_batch_size,
+            proposition_batch_size=body.proposition_batch_size,
+            embedding_batch_size=body.embedding_batch_size,
+        )
         orchestrator = IngestionOrchestrator(
             knowledge_store=knowledge_store,
-            embedder=getattr(request.app.state, "embedder", None),
+            embedder=embedder,
+            indexing_dependencies=indexing_dependencies,
+            rag_indexing_config=indexing_config,
         )
         result = await orchestrator.ingest(
             content=body.content,
@@ -1977,6 +2081,7 @@ async def ingest_document_into_collection(
             metadata=body.metadata or {},
             dry_run=body.dry_run,
             in_memory_only=body.in_memory_only,
+            source_identity=body.source_identity,
         )
         return {
             "ingested": result.chunks_created,
@@ -1989,11 +2094,17 @@ async def ingest_document_into_collection(
         }
     except HTTPException:
         raise
+    except EmptyIndexedContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Indexed content produced no indexable chunks",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=503,
             detail="Knowledge persistence is unavailable",
         ) from exc
+
 
 @router.get("/collections/{collection_id}/documents")
 async def list_documents(

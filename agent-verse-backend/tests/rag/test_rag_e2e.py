@@ -2,9 +2,11 @@
 """End-to-end tests: RAG patterns invoked through retrieve() dispatch."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.rag.engine import RetrievalResult
 
 
@@ -16,9 +18,27 @@ def session():
 @pytest.fixture
 def base_results():
     return [
-        RetrievalResult("c1", "Python is a programming language.", 0.8, {"source_url": "https://a.com"}, ["vector"]),
-        RetrievalResult("c2", "Python is used for machine learning.", 0.7, {"source_url": "https://b.com"}, ["vector"]),
-        RetrievalResult("c3", "Java is used for enterprise software.", 0.5, {"source_url": "https://c.com"}, ["fts"]),
+        RetrievalResult(
+            "c1",
+            "Python is a programming language.",
+            0.8,
+            {"source_url": "https://a.com"},
+            ["vector"],
+        ),
+        RetrievalResult(
+            "c2",
+            "Python is used for machine learning.",
+            0.7,
+            {"source_url": "https://b.com"},
+            ["vector"],
+        ),
+        RetrievalResult(
+            "c3",
+            "Java is used for enterprise software.",
+            0.5,
+            {"source_url": "https://c.com"},
+            ["fts"],
+        ),
     ]
 
 
@@ -35,14 +55,18 @@ async def test_retrieve_colbert_reranks_by_query_relevance(session, base_results
     assert len(results) > 0
     # Python chunks should rank higher
     if len(results) >= 2:
-        python_count = sum(1 for r in results[:2] if "python" in r.content.lower() or "Python" in r.content)
+        python_count = sum(
+            1
+            for r in results[:2]
+            if "python" in r.content.lower() or "Python" in r.content
+        )
         assert python_count >= 1
 
 
 async def test_retrieve_raptor_returns_summary_plus_detail(session, base_results):
     """RAPTOR dispatch: returns hierarchical summary + detail chunks."""
-    from app.rag.engine import retrieve
     from app.providers.fake import FakeProvider
+    from app.rag.engine import retrieve
     provider = FakeProvider(responses=["Summary of Python chunks.", "Final answer about Python."])
     with patch("app.rag.engine.hybrid_search", AsyncMock(return_value=base_results)):
         results = await retrieve(
@@ -57,8 +81,8 @@ async def test_retrieve_raptor_returns_summary_plus_detail(session, base_results
 
 async def test_retrieve_speculative_returns_verified_answer(session, base_results):
     """Speculative RAG dispatch: generates candidates and verifies."""
-    from app.rag.engine import retrieve
     from app.providers.fake import FakeProvider
+    from app.rag.engine import retrieve
     provider = FakeProvider(responses=[
         "Python is excellent for ML.",
         '{"score": 0.9, "supported": true}',
@@ -138,7 +162,11 @@ def test_cross_encoder_rerank_uses_tfidf_fallback():
     policy = RerankPolicy()
     chunks = [
         {"chunk_id": "c1", "content": "Python machine learning deep neural networks", "score": 0.3},
-        {"chunk_id": "c2", "content": "Java enterprise application server deployment", "score": 0.9},
+        {
+            "chunk_id": "c2",
+            "content": "Java enterprise application server deployment",
+            "score": 0.9,
+        },
     ]
     # Query is about Python ML — c1 should rank higher despite lower original score
     result = policy._tfidf_rerank(chunks, query="python machine learning")

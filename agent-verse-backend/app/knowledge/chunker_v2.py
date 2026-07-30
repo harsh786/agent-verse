@@ -8,7 +8,42 @@ module is safe to import in environments without the tiktoken package.
 """
 from __future__ import annotations
 
-__all__ = ["chunk_by_chars", "chunk_by_tokens"]
+from dataclasses import dataclass
+
+__all__ = ["ParentWindow", "build_parent_windows", "chunk_by_chars", "chunk_by_tokens"]
+
+
+@dataclass(frozen=True, slots=True)
+class ParentWindow:
+    """A stable sentence/chunk window independent of embedding dimensions."""
+
+    content: str
+    center_index: int
+    start_index: int
+    end_index: int
+
+
+def build_parent_windows(chunks: list[str], radius: int = 1) -> list[ParentWindow]:
+    """Build one citation window around each source chunk."""
+    if radius < 0:
+        raise ValueError("radius cannot be negative")
+    windows: list[ParentWindow] = []
+    for index, content in enumerate(chunks):
+        if not content.strip():
+            continue
+        start = max(0, index - radius)
+        end = min(len(chunks), index + radius + 1)
+        windows.append(
+            ParentWindow(
+                content="\n\n".join(
+                    chunk.strip() for chunk in chunks[start:end] if chunk.strip()
+                ),
+                center_index=index,
+                start_index=start,
+                end_index=end,
+            )
+        )
+    return windows
 
 
 def _chunk_by_chars(text: str, max_chars: int, overlap: int) -> list[str]:

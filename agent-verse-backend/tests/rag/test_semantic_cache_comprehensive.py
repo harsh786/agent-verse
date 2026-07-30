@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -40,28 +40,32 @@ class TestCosineFunction:
         assert _cosine(v, v) == pytest.approx(1.0)
 
 
-_do_hash = lambda emb: __import__("hashlib").sha256(__import__("struct").pack(f"{len(emb)}f", *emb)).hexdigest()[:32]
+def _do_hash(embedding: list[float]) -> str:
+    import hashlib
+    import struct
+
+    packed = struct.pack(f"{len(embedding)}f", *embedding)
+    return hashlib.sha256(packed).hexdigest()[:32]
+
 
 class TestSemanticCacheHashAndKey:
     def test_hash_embedding_is_deterministic(self):
         """Covers line 68: _hash_embedding produces stable hash."""
-        cache = SemanticCache()
         emb = [0.1, 0.2, 0.3, 0.4]
         h1 = _do_hash(emb)
         h2 = _do_hash(emb)
         assert h1 == h2
 
     def test_hash_embedding_different_for_different_vectors(self):
-        cache = SemanticCache()
         h1 = _do_hash([0.1, 0.2])
         h2 = _do_hash([0.3, 0.4])
         assert h1 != h2
 
     def test_hash_embedding_length(self):
         """Hash should be 32 chars (hexdigest[:32])."""
-        cache = SemanticCache()
-        from app.rag.semantic_cache import _pack_embedding
         import hashlib
+
+        from app.rag.semantic_cache import _pack_embedding
         h = hashlib.sha256(_pack_embedding([1.0, 2.0, 3.0])).hexdigest()[:32]
         assert len(h) == 32
 

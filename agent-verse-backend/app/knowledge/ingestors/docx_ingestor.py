@@ -1,7 +1,9 @@
 """DOCX document ingestor using python-docx."""
 from __future__ import annotations
+
 import io
 from typing import Any
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -13,7 +15,7 @@ class DocxIngestor:
         self, *, content: bytes, filename: str, source_url: str = ""
     ) -> list[dict[str, Any]]:
         try:
-            from docx import Document
+            from docx import Document  # type: ignore[import-not-found]
         except ImportError:
             logger.warning("python_docx_not_installed")
             return [{"content": f"[DOCX: {filename} — install python-docx]",

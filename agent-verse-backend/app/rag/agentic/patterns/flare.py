@@ -16,9 +16,23 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.contracts import (
+    FLARERAGRuntimeAdapter as FLARERAGRuntimeContract,
+)
+from app.rag.contracts import (
+    RAGExecutionRequest,
+    RAGExecutionResult,
+    RAGStrategy,
+    RAGStrategyTrace,
+)
+from app.rag.engine import (
+    RetrievalResult,
+    RetrievalStrategyExecutionError,
+    merge_grounding_results,
+)
 
 _UNCERTAINTY_SIGNALS = frozenset(
     {
@@ -53,6 +67,9 @@ _FLARE_REFINE_SYSTEM = (
     "given in the context."
 )
 
+_FLARE_FOLLOW_UP_SYSTEM = """Rewrite the uncertain span as one standalone factual search
+question. Return only the new question. Do not repeat hedging language or answer it."""
+
 
 def _detect_uncertainty(text: str) -> bool:
     """Returns True if the text contains uncertainty signals."""
@@ -67,6 +84,148 @@ def _extract_uncertain_claim(text: str) -> str:
         if _detect_uncertainty(sentence) and sentence.strip():
             return sentence.strip()
     return text[:200]
+
+
+class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
+    """Canonical FLARE adapter with independently embedded follow-up retrieval."""
+
+    strategy: ClassVar[RAGStrategy] = RAGStrategy.FLARE
+
+    def __init__(self, max_iterations: int = 2) -> None:
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be positive")
+        self._max_iterations = max_iterations
+
+    async def execute(
+        self,
+        request: RAGExecutionRequest,
+        context: Any = None,
+    ) -> RAGExecutionResult:
+        from app.providers.base import CompletionRequest, Message
+        from app.rag.gateway import (
+            _canonical_result,
+            _embed_text,
+            _extend_trace,
+            _search_persisted,
+        )
+
+        if context is None or context.llm is None or context.llm.provider is None:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "resolved LLM is required"
+            )
+
+        provider = context.llm.provider
+        model = context.llm.model
+        response = await provider.complete(
+            CompletionRequest(
+                messages=[
+                    Message(role="system", content=_FLARE_GENERATE_SYSTEM),
+                    Message(role="user", content=request.query),
+                ],
+                model=model,
+                max_tokens=800,
+                temperature=0.3,
+            )
+        )
+        answer = response.content.strip()
+        evidence: list[dict[str, Any]] = []
+        retained: list[RetrievalResult] = []
+        follow_ups: list[dict[str, Any]] = []
+
+        for iteration in range(self._max_iterations):
+            if not _detect_uncertainty(answer):
+                break
+            uncertain_span = _extract_uncertain_claim(answer)
+            follow_up_response = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_FLARE_FOLLOW_UP_SYSTEM),
+                        Message(role="user", content=uncertain_span),
+                    ],
+                    model=model,
+                    max_tokens=120,
+                    temperature=0.0,
+                )
+            )
+            follow_up = follow_up_response.content.strip()
+            if not follow_up or follow_up == uncertain_span:
+                raise RetrievalStrategyExecutionError(
+                    self.strategy.value, "follow-up generation did not create new text"
+                )
+            embedding = await _embed_text(context, follow_up, self.strategy)
+            follow_up_evidence: list[dict[str, Any]] = []
+            retrieved = await _search_persisted(
+                context,
+                request,
+                query=follow_up,
+                embedding=embedding,
+                retrieval_mode="hybrid",
+                evidence=follow_up_evidence,
+            )
+            for item in follow_up_evidence:
+                item.update(
+                    {
+                        "iteration": iteration,
+                        "uncertain_span": uncertain_span,
+                        "follow_up": follow_up,
+                    }
+                )
+            evidence.extend(follow_up_evidence)
+            retained = merge_grounding_results(
+                [retained, retrieved],
+                top_k=request.top_k,
+            )
+            follow_ups.append(
+                {
+                    "iteration": iteration,
+                    "uncertain_span": uncertain_span,
+                    "follow_up": follow_up,
+                    "result_count": len(retrieved),
+                }
+            )
+            context_text = "\n\n".join(item.content for item in retrieved)
+            continuation = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_FLARE_REFINE_SYSTEM),
+                        Message(
+                            role="user",
+                            content=(
+                                f"Question: {request.query}\n"
+                                f"Draft so far: {answer}\n"
+                                f"Follow-up: {follow_up}\n"
+                                f"Context:\n{context_text}\n\n"
+                                "Continue the answer with the uncertainty resolved."
+                            ),
+                        ),
+                    ],
+                    model=model,
+                    max_tokens=800,
+                    temperature=0.0,
+                )
+            )
+            answer = continuation.content.strip()
+
+        result = _canonical_result(request, self.strategy, retained, evidence)
+        result = result.model_copy(update={"answer": answer})
+        return _extend_trace(
+            result,
+            [
+                RAGStrategyTrace(
+                    strategy=self.strategy,
+                    action="flare_follow_up",
+                    status="complete",
+                    detail={
+                        "follow_ups": follow_ups,
+                        "stop_reason": (
+                            "uncertainty_resolved"
+                            if not _detect_uncertainty(answer)
+                            else "max_iterations_reached"
+                        ),
+                    },
+                )
+            ],
+        )
 
 
 class FLAREPattern(RAGPattern):

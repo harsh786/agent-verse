@@ -1,9 +1,11 @@
 """Metadata filtering: pre-filter retrieval by JSONB metadata fields."""
 from __future__ import annotations
+
 import pytest
+
+from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.store import KnowledgeStore
-from app.rag.models import KnowledgeCollection, Chunk
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -86,6 +88,7 @@ def test_hybrid_search_filter_no_match_returns_empty(store_with_chunks, tenant_c
 
 def test_hybrid_search_db_accepts_metadata_filter_param():
     import inspect
+
     from app.rag.store import KnowledgeStore
     sig = inspect.signature(KnowledgeStore.hybrid_search_db)
     assert "metadata_filter" in sig.parameters
@@ -93,6 +96,7 @@ def test_hybrid_search_db_accepts_metadata_filter_param():
 
 async def test_engine_hybrid_search_accepts_metadata_filter():
     import inspect
+
     from app.rag.engine import hybrid_search
     sig = inspect.signature(hybrid_search)
     assert "metadata_filter" in sig.parameters

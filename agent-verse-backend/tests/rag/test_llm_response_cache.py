@@ -1,11 +1,11 @@
 """Tests for LLMResponseCache (app/rag/llm_response_cache.py)."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from app.rag.llm_response_cache import LLMResponseCache
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -125,7 +125,9 @@ def test_should_skip_cache_normal_goal():
 @pytest.mark.asyncio
 async def test_stats_hit_rate():
     cache = _make_cache()
-    await cache.set(system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning")
+    await cache.set(
+        system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning"
+    )
     await cache.get(system="s", user="u", model="m", tenant_id="t", task_type="planning")  # hit
     await cache.get(system="s", user="MISS", model="m", tenant_id="t", task_type="planning")  # miss
     s = cache.stats("t")
@@ -137,7 +139,9 @@ async def test_stats_hit_rate():
 @pytest.mark.asyncio
 async def test_stats_l1_hits_tracked():
     cache = _make_cache()
-    await cache.set(system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning")
+    await cache.set(
+        system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning"
+    )
     await cache.get(system="s", user="u", model="m", tenant_id="t", task_type="planning")
     s = cache.stats("t")
     assert s["l1_hits"] >= 1
@@ -152,16 +156,21 @@ async def test_redis_miss_falls_through_to_l1():
     cache = _make_cache(redis=redis)
 
     # Warm L1
-    await cache.set(system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning")
+    await cache.set(
+        system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning"
+    )
     result = await cache.get(system="s", user="u", model="m", tenant_id="t", task_type="planning")
     assert result == "r"
 
 
 @pytest.mark.asyncio
 async def test_redis_hit_promotes_to_l1():
-    import json, zlib
+    import json
+    import zlib
     redis = AsyncMock()
-    cached = zlib.compress(json.dumps({"content": "cached-plan", "model": "m", "ts": 1000}).encode())
+    cached = zlib.compress(
+        json.dumps({"content": "cached-plan", "model": "m", "ts": 1000}).encode()
+    )
     redis.get.return_value = cached
     cache = _make_cache(redis=redis)
 
@@ -185,7 +194,9 @@ async def test_redis_error_does_not_raise():
 @pytest.mark.asyncio
 async def test_clear_removes_l1_entries():
     cache = _make_cache()
-    await cache.set(system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning")
+    await cache.set(
+        system="s", user="u", model="m", response="r", tenant_id="t", task_type="planning"
+    )
     await cache.clear("t")
     result = await cache.get(system="s", user="u", model="m", tenant_id="t", task_type="planning")
     assert result is None

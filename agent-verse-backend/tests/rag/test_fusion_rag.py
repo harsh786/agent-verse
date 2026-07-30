@@ -1,17 +1,16 @@
 # tests/rag/test_fusion_rag.py
 """Fusion RAG: multi-query → parallel retrieval → RRF merge."""
 from __future__ import annotations
-import asyncio
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from unittest.mock import AsyncMock, patch
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # ── retrieve_fusion() unit tests ─────────────────────────────────────────────
 
 async def test_retrieve_fusion_returns_merged_results():
     """retrieve_fusion must call hybrid_search N times and merge via RRF."""
-    from app.rag.engine import retrieve_fusion, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve_fusion
 
     mock_session = AsyncMock(spec=AsyncSession)
     call_count = 0
@@ -48,7 +47,7 @@ async def test_retrieve_fusion_returns_merged_results():
 
 async def test_retrieve_fusion_deduplicates_by_chunk_id():
     """Same chunk_id from multiple queries must appear only once in output."""
-    from app.rag.engine import retrieve_fusion, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve_fusion
 
     session = AsyncMock(spec=AsyncSession)
 
@@ -73,7 +72,7 @@ async def test_retrieve_fusion_deduplicates_by_chunk_id():
 
 async def test_retrieve_fusion_graceful_on_partial_failure():
     """If one query variant fails, others must still contribute results."""
-    from app.rag.engine import retrieve_fusion, RetrievalResult
+    from app.rag.engine import RetrievalResult, retrieve_fusion
 
     session = AsyncMock(spec=AsyncSession)
     call_count = 0
@@ -100,6 +99,7 @@ async def test_retrieve_fusion_graceful_on_partial_failure():
 def test_retrieve_fusion_strategy_added_to_retrieve_dispatch():
     """retrieve() must dispatch 'fusion' strategy to retrieve_fusion()."""
     import inspect
+
     from app.rag import engine
     src = inspect.getsource(engine.retrieve)
     assert "fusion" in src, "retrieve() must handle strategy='fusion'"
@@ -107,8 +107,8 @@ def test_retrieve_fusion_strategy_added_to_retrieve_dispatch():
 
 def test_fusion_rag_pattern_state_is_implemented():
     """FusionRAGPattern must be IMPLEMENTED after this task."""
-    from app.rag.agentic.patterns.fusion import FusionRAGPattern
     from app.rag.agentic.patterns.base import RAGPatternState
+    from app.rag.agentic.patterns.fusion import FusionRAGPattern
     p = FusionRAGPattern()
     assert p.state == RAGPatternState.IMPLEMENTED
 

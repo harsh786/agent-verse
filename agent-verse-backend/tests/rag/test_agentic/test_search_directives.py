@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from app.rag.agentic.search_directive_parser import SearchDirectiveParser, SearchDirective
+
+from app.rag.agentic.search_directive_parser import SearchDirectiveParser
 
 
 @pytest.fixture

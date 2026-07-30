@@ -1,10 +1,10 @@
 # tests/rag/test_memory_strategy.py
 """memory RAG strategy — LTM semantic recall."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
+
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.rag.engine import RetrievalResult
 
 
 async def test_memory_strategy_calls_ltm_recall():

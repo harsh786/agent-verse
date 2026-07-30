@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from app.rag.semantic_cache import SemanticCache
 from app.tenancy.context import PlanTier, TenantContext
 

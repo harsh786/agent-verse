@@ -12,6 +12,7 @@ from app.rag.agentic.patterns.fusion import FusionRAGPattern
 from app.rag.agentic.patterns.raptor import RAPTORPattern
 from app.rag.agentic.patterns.self_rag import SelfRAGPattern
 from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
+from tests.rag.colbert_fakes import DeterministicColBERTReranker
 
 
 def test_all_rag_pattern_adapters_importable():
@@ -19,14 +20,19 @@ def test_all_rag_pattern_adapters_importable():
                 SpeculativeRAGPattern, FusionRAGPattern, FLAREPattern,
                 RAPTORPattern, AgenticChunkingPattern, ColBERTPattern]
     for cls in adapters:
-        p = cls()
+        p = (
+            cls(reranker=DeterministicColBERTReranker())
+            if cls is ColBERTPattern
+            else cls()
+        )
         assert isinstance(p, RAGPattern)
 
 
 def test_all_rag_patterns_have_unique_ids():
     adapters = [CorrectiveRAGPattern(), AdaptiveRAGPattern(), SelfRAGPattern(),
                 SpeculativeRAGPattern(), FusionRAGPattern(), FLAREPattern(),
-                RAPTORPattern(), AgenticChunkingPattern(), ColBERTPattern()]
+                RAPTORPattern(), AgenticChunkingPattern(),
+                ColBERTPattern(reranker=DeterministicColBERTReranker())]
     ids = [p.pattern_id for p in adapters]
     assert len(ids) == len(set(ids))
 
@@ -55,7 +61,11 @@ def test_all_patterns_have_state():
     for cls in [CorrectiveRAGPattern, AdaptiveRAGPattern, SelfRAGPattern,
                 SpeculativeRAGPattern, FusionRAGPattern, FLAREPattern,
                 RAPTORPattern, AgenticChunkingPattern, ColBERTPattern]:
-        p = cls()
+        p = (
+            cls(reranker=DeterministicColBERTReranker())
+            if cls is ColBERTPattern
+            else cls()
+        )
         assert p.state in (
             RAGPatternState.IMPLEMENTED,
             RAGPatternState.PARTIAL,
@@ -64,29 +74,17 @@ def test_all_patterns_have_state():
 
 
 def test_all_patterns_list_in_init():
-    assert hasattr(patterns_pkg, "ALL_RAG_PATTERNS")
-    assert len(patterns_pkg.ALL_RAG_PATTERNS) >= 9
+    from app.rag.catalogue import RAG_RUNTIME_CAPABILITIES
+
+    assert patterns_pkg.RAG_RUNTIME_ADAPTERS is RAG_RUNTIME_CAPABILITIES
+    assert len(patterns_pkg.RAG_RUNTIME_ADAPTERS) == 18
 
 
 def test_registry_pattern_ids_match_adapters():
     from app.orchestration.strategy_registry import build_default_registry
-    from app.rag.contracts import RAGStrategy
 
     registry = build_default_registry()
-    canonical_ids = {
-        "corrective_rag": RAGStrategy.CORRECTIVE,
-        "adaptive_rag": RAGStrategy.ADAPTIVE,
-        "self_rag": RAGStrategy.SELF_RAG,
-        "speculative_rag": RAGStrategy.SPECULATIVE,
-            "fusion_rag": RAGStrategy.FUSION,
-            "graph_rag": RAGStrategy.GRAPH,
-            "web_augmented": RAGStrategy.WEB_AUGMENTED,
-        "flare": RAGStrategy.FLARE,
-        "raptor": RAGStrategy.RAPTOR,
-        "agentic_chunking": RAGStrategy.AGENTIC_CHUNKING,
-        "colbert_late_interaction": RAGStrategy.COLBERT,
-    }
-    for pattern in patterns_pkg.ALL_RAG_PATTERNS:
-        strategy = canonical_ids[pattern.pattern_id]
+    for strategy, adapter in patterns_pkg.RAG_RUNTIME_ADAPTERS.items():
         cap = registry.get(strategy.value)
         assert cap is not None, f"Canonical RAG strategy '{strategy.value}' is not registered"
+        assert cap.runtime_adapter is adapter

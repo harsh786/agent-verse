@@ -1,8 +1,11 @@
 """Confluence Cloud/Server page ingestor via REST API v1."""
 from __future__ import annotations
+
 import re
-from typing import Any
+from typing import Any, cast
+
 import httpx
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,9 +25,11 @@ class ConfluenceIngestor:
         self._base = base_url.rstrip("/")
         self._auth = (user, token)
 
-    async def _fetch_pages(self, space_key: str, start: int = 0, limit: int = 50) -> list[dict]:
+    async def _fetch_pages(
+        self, space_key: str, start: int = 0, limit: int = 50
+    ) -> list[dict[str, Any]]:
         url = f"{self._base}/rest/api/content"
-        params = {
+        params: dict[str, str | int] = {
             "spaceKey": space_key, "type": "page", "status": "current",
             "expand": "body.storage,version,space,ancestors",
             "limit": limit, "start": start,
@@ -33,7 +38,7 @@ class ConfluenceIngestor:
             r = await c.get(url, params=params)
             r.raise_for_status()
             data = r.json()
-            return data.get("results", [])
+            return cast(list[dict[str, Any]], data.get("results", []))
 
     async def ingest_space(self, space_key: str, max_pages: int = 1000) -> list[dict[str, Any]]:
         chunks: list[dict[str, Any]] = []
@@ -82,5 +87,10 @@ class ConfluenceIngestor:
             if len(pages) < 50:
                 break
 
-        logger.info("confluence_space_ingested", space=space_key, pages=pages_processed, chunks=len(chunks))
+        logger.info(
+            "confluence_space_ingested",
+            space=space_key,
+            pages=pages_processed,
+            chunks=len(chunks),
+        )
         return chunks
