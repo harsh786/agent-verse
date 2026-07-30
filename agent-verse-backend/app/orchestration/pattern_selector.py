@@ -18,6 +18,7 @@ from app.orchestration.runtime_profile import (
     TimeSensitivity,
 )
 from app.orchestration.strategy_registry import StrategyRegistry
+from app.rag.contracts import RAGStrategy
 
 
 class PatternSelector:
@@ -35,21 +36,21 @@ class PatternSelector:
 
         # CRITICAL: High/critical risk always adds HITL + rollback
         if props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
-            safety = list(dict.fromkeys(safety + ["hitl", "rollback"]))
+            safety = list(dict.fromkeys([*safety, "hitl", "rollback"]))
             reasons["hitl"] = f"risk={props.risk.value}"
             reasons["rollback"] = f"reversibility={props.reversibility}"
             autonomy = "supervised"
 
         if props.risk == RiskLevel.CRITICAL:
-            safety = list(dict.fromkeys(safety + ["consensus_verification"]))
+            safety = list(dict.fromkeys([*safety, "consensus_verification"]))
             reasons["consensus_verification"] = "critical risk requires consensus"
 
         if props.complexity in (Complexity.COMPLEX, Complexity.EXPERT):
             # Add chain_of_thought only when available (not PLANNED in registry)
             if self._registry.is_available("chain_of_thought"):
-                reasoning = list(dict.fromkeys(reasoning + ["chain_of_thought"]))
+                reasoning = list(dict.fromkeys([*reasoning, "chain_of_thought"]))
                 reasons["chain_of_thought"] = f"complexity={props.complexity.value}"
-            reasoning = list(dict.fromkeys(reasoning + ["reflection"]))
+            reasoning = list(dict.fromkeys([*reasoning, "reflection"]))
             reasons["reflection"] = "complex goals benefit from reflection"
             max_iter = 25
 
@@ -61,19 +62,22 @@ class PatternSelector:
                 reasons["goal_tree"] = "expert complexity → parallel sub-goals"
 
         if props.requires_code and self._registry.is_available("self_refine"):
-            reasoning = list(dict.fromkeys(reasoning + ["self_refine"]))
+            reasoning = list(dict.fromkeys([*reasoning, "self_refine"]))
             reasons["self_refine"] = "coding tasks benefit from iterative refinement"
 
-        if props.is_generative or props.domain == Domain.CREATIVE:
-            if "self_refine" not in reasoning and self._registry.is_available("self_refine"):
-                reasoning = list(dict.fromkeys(reasoning + ["self_refine"]))
-                reasons["self_refine"] = (
-                    "generative/creative task — self-refinement improves quality"
-                )
+        if (
+            (props.is_generative or props.domain == Domain.CREATIVE)
+            and "self_refine" not in reasoning
+            and self._registry.is_available("self_refine")
+        ):
+            reasoning = list(dict.fromkeys([*reasoning, "self_refine"]))
+            reasons["self_refine"] = (
+                "generative/creative task — self-refinement improves quality"
+            )
 
         return AgentPatternConfig(
             reasoning=reasoning,
-            rag=["hybrid_rag"],
+            rag=[RAGStrategy.HYBRID.value],
             multi_agent=multi_agent,
             safety=safety,
             max_iterations=max_iter,
@@ -84,7 +88,7 @@ class PatternSelector:
         )
 
     def select_rag_strategy(self, props: GoalProperties) -> RAGStrategyConfig:
-         strategy = "hybrid_rag"
+         strategy = RAGStrategy.HYBRID.value
          sources = ["knowledge_base"]
          chunking = "semantic"
          embedding = "default"
@@ -96,9 +100,9 @@ class PatternSelector:
 
          if props.requires_web or props.time_sensitivity == TimeSensitivity.REALTIME:
              web_fallback = True
-             sources = list(dict.fromkeys(sources + ["web_search"]))
+             sources = list(dict.fromkeys([*sources, "web_search"]))
              # FLARE handles uncertainty-driven retrieval for web goals
-             strategy = "flare"
+             strategy = RAGStrategy.FLARE.value
 
          if props.kb_state in (KnowledgeState.EMPTY, KnowledgeState.SPARSE):
              web_fallback = True
@@ -108,9 +112,9 @@ class PatternSelector:
          if props.complexity == Complexity.EXPERT:
              # Expert goals use RAPTOR (hierarchical multi-level retrieval)
              # Override web strategy — RAPTOR subsumes FLARE for expert complexity
-             strategy = "raptor"
+             strategy = RAGStrategy.RAPTOR.value
              sources = list(
-                 dict.fromkeys(sources + ["long_term_memory", "knowledge_graph"])
+                 dict.fromkeys([*sources, "long_term_memory", "knowledge_graph"])
              )
              graph_strategy = "entity"
              reranker = "rrf"
@@ -118,26 +122,26 @@ class PatternSelector:
              min_relevance = 0.25
          elif props.complexity == Complexity.COMPLEX:
              # Complex goals use Fusion RAG (multi-query parallel retrieval)
-             strategy = "fusion_rag"
-             sources = list(dict.fromkeys(sources + ["long_term_memory"]))
+             strategy = RAGStrategy.FUSION.value
+             sources = list(dict.fromkeys([*sources, "long_term_memory"]))
              reranker = "rrf"
              max_tokens = 7000
-         elif strategy == "hybrid_rag":
+         elif strategy == RAGStrategy.HYBRID.value:
              # Simple goals with no specific signal: Corrective RAG (auto self-correction)
              # Don't override if a more specific strategy was already selected (e.g., flare)
-             strategy = "corrective_rag"
+             strategy = RAGStrategy.CORRECTIVE.value
 
          if props.requires_code:
              chunking = "ast"
              embedding = "code"
              # Code goals benefit from ColBERT late-interaction reranking
-             strategy = "colbert_late_interaction"
+             strategy = RAGStrategy.COLBERT.value
 
          if props.time_sensitivity == TimeSensitivity.REALTIME:
              max_tokens = 2000
              if not web_fallback:
                  # Realtime goals without web: Self-RAG decides what to retrieve
-                 strategy = "self_rag"
+                 strategy = RAGStrategy.SELF_RAG.value
 
          return RAGStrategyConfig(
              strategy=strategy,

@@ -45,8 +45,8 @@ def test_smart_context_fetch_returns_empty_without_embedder():
     result = asyncio.run(
         smart_context_fetch(
             step="find jira issues",
-            knowledge_store=None,  # No store
             tenant_ctx=ctx,
+            collection_ids=[],
         )
     )
     assert result == [] or isinstance(result, str)

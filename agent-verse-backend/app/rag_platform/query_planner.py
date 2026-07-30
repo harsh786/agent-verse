@@ -1,34 +1,20 @@
 """RAG Query Planner - select optimal retrieval strategy."""
+
 from __future__ import annotations
-from enum import Enum
+
 from dataclasses import dataclass, field
 from typing import Any
 
-
-class RAGStrategy(str, Enum):
-    DIRECT = "direct"           # Simple vector search
-    MULTI_HOP = "multi_hop"    # Multi-turn retrieval
-    HYDE = "hyde"               # Hypothetical Document Embeddings
-    GRAPH = "graph"             # Graph-expanded retrieval
-    MULTIMODAL = "multimodal"  # Search across all modalities
-    AUTO = "auto"               # Let the system decide
-    # Agentic strategies (Phase 5)
-    FUSION = "fusion_rag"           # Fusion RAG: multiple query variants
-    FLARE = "flare"                 # Forward-Looking Active REtrieval
-    RAPTOR = "raptor"               # Recursive Abstractive Processing for Tree-Organized Retrieval
-    CORRECTIVE = "corrective_rag"   # Corrective RAG with web fallback
-    SELF_RAG = "self_rag"           # Self-RAG with self-reflection tokens
-    SPECULATIVE = "speculative"     # Speculative retrieval with draft-then-verify
-    COLBERT = "colbert"             # ColBERT late-interaction retrieval
-    AGENTIC_CHUNKING = "agentic_chunking"  # Agentic chunking via LLM
+from app.rag.contracts import RAGStrategy
 
 
 @dataclass
 class RetrievalLeg:
     """A single retrieval attempt with its results."""
+
     strategy: RAGStrategy
     query: str
-    results: list[dict] = field(default_factory=list)
+    results: list[dict[str, Any]] = field(default_factory=list)
     score: float = 0.0
     latency_ms: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -37,11 +23,12 @@ class RetrievalLeg:
 @dataclass
 class RAGResult:
     """Full RAG retrieval result with all legs and synthesis."""
+
     query: str
     strategy_used: RAGStrategy
     legs: list[RetrievalLeg] = field(default_factory=list)
     answer: str = ""
-    citations: list[dict] = field(default_factory=list)
+    citations: list[dict[str, Any]] = field(default_factory=list)
     grounded: bool = True
     confidence: float = 0.0
     refused_claims: list[str] = field(default_factory=list)
@@ -64,10 +51,5 @@ class QueryPlanner:
         if any(kw in q_lower for kw in ["related to", "connected to", "depends on", "leads to"]):
             return RAGStrategy.GRAPH
 
-        # Multimodal indicators
-        if available_modalities and len(available_modalities) > 1:
-            if any(kw in q_lower for kw in ["image", "picture", "video", "chart", "diagram"]):
-                return RAGStrategy.MULTIMODAL
-
         # Default
-        return RAGStrategy.DIRECT
+        return RAGStrategy.NAIVE

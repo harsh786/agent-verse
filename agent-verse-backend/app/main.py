@@ -133,6 +133,20 @@ from app.providers.vault import (
     get_vault,
     resolve_connector_secret_ref_for_tenant,
 )
+from app.rag.agentic.patterns.web_augmented import (
+    build_safe_web_search_capability,
+    parse_allowed_domains,
+)
+from app.rag.contracts import RAGStrategy
+from app.rag.gateway import (
+    KnowledgeStoreCollectionAuthorizer,
+    ResolvedLLM,
+    RetrievalDependencies,
+    RetrievalGateway,
+    SQLCollectionAuthorizer,
+    TenantScopedGraphCapabilityAdapter,
+    core_strategy_capabilities,
+)
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
 from app.rpa.artifacts import get_artifact_store
@@ -143,6 +157,7 @@ from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
 from app.services.usage_service import UsageService
 from app.services.tenant_service import TenantService
+from app.tenancy.context import TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
@@ -592,6 +607,96 @@ def create_app(
         _model_router = None
         logger.warning("model_router_init_failed", error=str(_mr_exc))
 
+    async def _resolve_retrieval_llm(
+        tenant_context: TenantContext,
+        strategy: RAGStrategy,
+    ) -> ResolvedLLM | None:
+        del strategy
+        tenant_config: dict[str, Any] | None = None
+        config_store = getattr(app.state, "llm_config_store", None)
+        if config_store is not None:
+            tenant_config = await config_store.get_config(tenant_context.tenant_id)
+        if tenant_config is None:
+            tenant_config = getattr(app.state, "_llm_configs", {}).get(
+                tenant_context.tenant_id
+            )
+
+        if tenant_config is not None:
+            encrypted_key = str(tenant_config.get("encrypted_key") or "")
+            provider_name = str(tenant_config.get("provider") or "")
+            configured_model = str(
+                tenant_config.get("model")
+                or tenant_config.get("default_model")
+                or ""
+            ).strip()
+            if not encrypted_key or not provider_name:
+                return None
+            try:
+                from app.providers.registry import instantiate_configured_provider
+
+                api_key = get_vault().decrypt(encrypted_key)
+                provider = instantiate_configured_provider(
+                    provider_name,
+                    api_key=api_key,
+                    model=configured_model,
+                    base_url=str(tenant_config.get("base_url") or ""),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "tenant_retrieval_provider_resolution_failed",
+                    tenant_id=tenant_context.tenant_id,
+                    error=type(exc).__name__,
+                )
+                return None
+            if provider is None:
+                return None
+            model = configured_model
+            if not model:
+                provider_default = getattr(provider, "_default_model", "")
+                model = provider_default.strip() if isinstance(provider_default, str) else ""
+            return (
+                ResolvedLLM(
+                    provider=provider,
+                    model=model,
+                    provider_type=provider_name.strip().lower(),
+                )
+                if model
+                else None
+            )
+
+        provider_default = getattr(_app_provider, "_default_model", "")
+        model = provider_default.strip() if isinstance(provider_default, str) else ""
+        if not model and isinstance(_app_provider, FakeProvider):
+            model = "fake-provider"
+        if not model:
+            return None
+        return ResolvedLLM(
+            provider=_app_provider,
+            model=model,
+            provider_type=str(
+                getattr(_app_provider, "_agentverse_provider_type", "")
+            ),
+        )
+
+    _web_search_capability = build_safe_web_search_capability(
+        searxng_url=settings.searxng_url,
+        policy_services=(_policy_engine, _cost, _hitl),
+        allowed_domains=parse_allowed_domains(settings.web_search_allowed_domains),
+    )
+    _retrieval_gateway = RetrievalGateway(
+        RetrievalDependencies(
+            session_factory=None,
+            embedder=_embedder,
+            llm_resolver=_resolve_retrieval_llm,
+            graph_capability=None,
+            search_capability=_web_search_capability,
+            policy_services=(_policy_engine, _cost, _hitl),
+            cost_controller=_cost,
+            collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
+            strategy_capabilities=core_strategy_capabilities(),
+        )
+    )
+
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
 
@@ -880,7 +985,6 @@ def create_app(
 
             await _audit_log_db.sync_from_db()
             await _schedule_store_db.sync_from_db()
-            await _knowledge_store_db.sync_from_db()
 
             app.state.audit_log = _audit_log_db
             app.state.schedule_store = _schedule_store_db
@@ -923,13 +1027,33 @@ def create_app(
                 logger.warning("mfa_db_store_wire_failed", error=str(_mfa_exc))
 
             # Wire DB into KnowledgeGraphStore for persistent node/edge storage
+            _graph_capability = None
             try:
                 from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
                 _kg_store.set_db(db_factory)
+                _graph_capability = TenantScopedGraphCapabilityAdapter()
                 logger.info("knowledge_graph_db_wired")
                 # Per-tenant hydration is handled lazily in query_nodes() on first miss.
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
+
+            app.state.retrieval_gateway = RetrievalGateway(
+                RetrievalDependencies(
+                    session_factory=db_factory,
+                    embedder=app.state.embedder,
+                    llm_resolver=_resolve_retrieval_llm,
+                    graph_capability=_graph_capability,
+                    search_capability=_web_search_capability,
+                    policy_services=(
+                        _policy_engine,
+                        getattr(app.state, "redis_cost_controller", _cost),
+                        _hitl,
+                    ),
+                    cost_controller=getattr(app.state, "redis_cost_controller", _cost),
+                    collection_authorizer=SQLCollectionAuthorizer(),
+                    strategy_capabilities=core_strategy_capabilities(),
+                )
+            )
 
             # Wire DB into reflexion wirer singleton for cross-process persistence
             try:
@@ -1301,6 +1425,15 @@ def create_app(
             try:
                 yield
             finally:
+                _repo_tasks = list(
+                    getattr(app.state, "repository_ingestion_tasks", set())
+                )
+                for _repo_task in _repo_tasks:
+                    _repo_task.cancel()
+                if _repo_tasks:
+                    import asyncio as _repo_asyncio
+
+                    await _repo_asyncio.gather(*_repo_tasks, return_exceptions=True)
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
                     import contextlib
@@ -1380,6 +1513,9 @@ def create_app(
     app.state.nl_scheduler = _nl_sched
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
+    app.state.repository_ingestion_tasks = set()
+    app.state.retrieval_gateway = _retrieval_gateway
+    app.state.safe_web_search_capability = _web_search_capability
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
     # H-3: ExecutionMemory on app.state

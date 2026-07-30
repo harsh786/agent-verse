@@ -10,19 +10,24 @@ Inspired by speculative decoding applied to RAG:
   fast speculation → slow verification → confident answer
 """
 from __future__ import annotations
-import asyncio
+
 import json
-from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 _CANDIDATE_SYSTEM = """Generate a concise, direct answer to this question.
 Be specific and factual."""
 
-_VERIFY_SYSTEM = """Given a question, a candidate answer, and supporting context,
-score how well the context supports the answer.
-Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>}
-Score 0.9+ if context directly confirms the answer. Score below 0.5 if context contradicts or doesn't support."""
+_VERIFY_SYSTEM = (
+    "Given a question, a candidate answer, and supporting context,\n"
+    "score how well the context supports the answer.\n"
+    'Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>}\n'
+    "Score 0.9+ if context directly confirms the answer. Score below 0.5 if context "
+    "contradicts or doesn't support."
+)
 
 
 @dataclass
@@ -77,6 +82,8 @@ class SpeculativeRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 500,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Generate N candidates, verify each, return best-supported."""
@@ -93,7 +100,10 @@ class SpeculativeRAGPattern(RAGPattern):
             from app.reliability.circuit_breaker import CircuitBreaker
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
-                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+                self._circuit_breakers[_cb_key] = CircuitBreaker(
+                    failure_threshold=5,
+                    cooldown_seconds=30,
+                )
             cb: Any = self._circuit_breakers[_cb_key]
         except ImportError:
             cb = None
@@ -101,15 +111,17 @@ class SpeculativeRAGPattern(RAGPattern):
         # Step 1: Generate candidates sequentially to ensure deterministic provider ordering
         candidates: list[Candidate] = []
         for _ in range(self._n):
+            if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("Speculative RAG provider circuit is open")
+                break
             try:
-                if cb is not None and not cb.can_call():
-                    break
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_CANDIDATE_SYSTEM),
                         Message(role="user", content=query),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=max_tokens,
                     temperature=0.7,  # diversity
                 ))
@@ -121,11 +133,16 @@ class SpeculativeRAGPattern(RAGPattern):
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
 
         if not candidates:
             try:
                 from app.observability.logging import get_logger
-                get_logger(__name__).warning("speculative_rag_failed", error="no candidates generated")
+                get_logger(__name__).warning(
+                    "speculative_rag_failed",
+                    error="no candidates generated",
+                )
             except Exception:
                 pass
             return ""
@@ -139,6 +156,8 @@ class SpeculativeRAGPattern(RAGPattern):
                     context = await retrieve_fn(candidate.text[:200]) or ""
                     candidate.context_used = context[:500]
                 except Exception:
+                    if strict:
+                        raise
                     pass
 
             if not context:
@@ -146,11 +165,13 @@ class SpeculativeRAGPattern(RAGPattern):
                 verified.append(candidate)
                 continue
 
+            if cb is not None and not cb.can_call():
+                if strict:
+                    raise RuntimeError("Speculative RAG provider circuit is open")
+                candidate.score = 0.3
+                verified.append(candidate)
+                continue
             try:
-                if cb is not None and not cb.can_call():
-                    candidate.score = 0.3
-                    verified.append(candidate)
-                    continue
                 resp = await provider.complete(CompletionRequest(
                     messages=[
                         Message(role="system", content=_VERIFY_SYSTEM),
@@ -163,7 +184,7 @@ class SpeculativeRAGPattern(RAGPattern):
                             ),
                         ),
                     ],
-                    model="",
+                    model=model,
                     max_tokens=100,
                     temperature=0.0,
                     response_schema={
@@ -180,12 +201,16 @@ class SpeculativeRAGPattern(RAGPattern):
                 try:
                     d = json.loads(raw)
                     candidate.score = max(0.0, min(1.0, float(d.get("score", 0.3))))
-                    candidate.supported = bool(d.get("supported", candidate.score >= self._min_score))
+                    candidate.supported = bool(
+                        d.get("supported", candidate.score >= self._min_score)
+                    )
                 except Exception:
                     candidate.score = 0.3
             except Exception:
                 if cb is not None:
                     cb.record_failure()
+                if strict:
+                    raise
                 candidate.score = 0.3
             verified.append(candidate)
 

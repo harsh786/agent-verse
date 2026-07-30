@@ -1,4 +1,4 @@
-"""In-memory knowledge store with hybrid search (cosine 70% + trigram 30%).
+"""Tenant-scoped knowledge store with persisted PostgreSQL retrieval.
 
 In production this is backed by PostgreSQL + pgvector (HNSW index) and pg_trgm.
 This pure-Python implementation is used in tests and as a fallback.
@@ -7,15 +7,14 @@ Hybrid search formula:
   score = 0.7 * cosine_similarity(query_vec, chunk_vec)
          + 0.3 * trigram_overlap(query_text, chunk_text)
 
-When ``db_session_factory`` is supplied, writes are also persisted to
-PostgreSQL via fire-and-forget asyncio tasks. A ``hybrid_search_db()`` async
-method performs server-side hybrid search using pgvector + pg_trgm when a
-DB session is available.
+When ``db_session_factory`` is supplied, async ingestion and retrieval use the
+dimension-specific ``knowledge_chunks_*`` tables as their source of truth.
 """
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
+import json
 import math
 import uuid as _uuid
 from dataclasses import dataclass, field
@@ -27,8 +26,15 @@ from app.tenancy.context import TenantContext
 
 _VECTOR_WEIGHT = 0.7
 _TRIGRAM_WEIGHT = 0.3
+SUPPORTED_EMBEDDING_DIMENSIONS = (768, 1024, 1536, 3072)
 
 _log = get_logger(__name__)
+
+
+def _chunk_table(dimension: int) -> str:
+    if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
+        raise ValueError(f"Unsupported embedding dimension: {dimension}")
+    return f"knowledge_chunks_{dimension}"
 
 
 @dataclass
@@ -42,6 +48,10 @@ class HybridSearchResult:
     source_doc_id: str = ""
     page_number: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class EmbeddingProviderUnavailableError(RuntimeError):
+    """A vector ingestion request has no usable embedding provider."""
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -75,13 +85,12 @@ class _CollectionStore:
 
 
 class KnowledgeStore:
-    """In-memory implementation of the knowledge store.
+    """Knowledge store with an in-memory fallback and PostgreSQL source of truth.
 
     Each collection is namespaced by (tenant_id, collection_id).
 
-    When ``db_session_factory`` is provided, mutations are also persisted to
-    PostgreSQL via fire-and-forget asyncio tasks. DB failures are logged as
-    warnings and never raised to callers.
+    Synchronous mutation helpers are only available without a DB factory. All
+    persisted mutations use explicit awaited transaction boundaries.
     """
 
     def __init__(self, db_session_factory: Any = None) -> None:
@@ -92,17 +101,26 @@ class KnowledgeStore:
     def create_collection(
         self, collection: KnowledgeCollection, *, tenant_ctx: TenantContext
     ) -> str:
+        """Create a collection in the explicit in-memory development store."""
+        if self._db is not None:
+            raise RuntimeError("Use create_collection_async for a persisted KnowledgeStore")
         key = (tenant_ctx.tenant_id, collection.collection_id)
         self._data[key] = _CollectionStore(collection=collection)
-        if self._db is not None:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self._db_create_collection(collection, tenant_ctx.tenant_id)
-                )
-            except RuntimeError:
-                pass  # No running loop (e.g., in sync test context)
+        return collection.collection_id
+
+    async def create_collection_async(
+        self,
+        collection: KnowledgeCollection,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> str:
+        """Persist a collection before making it visible to the caller."""
+        if self._db is None:
+            return self.create_collection(collection, tenant_ctx=tenant_ctx)
+        await self._db_create_collection(collection, tenant_ctx.tenant_id)
+        self._data[(tenant_ctx.tenant_id, collection.collection_id)] = _CollectionStore(
+            collection=collection
+        )
         return collection.collection_id
 
     async def _db_create_collection(
@@ -110,23 +128,35 @@ class KnowledgeStore:
     ) -> None:
         if self._db is None:
             return
-        try:
-            from app.db.models.knowledge import KnowledgeCollection as KCModel
-            from app.db.rls import sqlalchemy_rls_context
+        from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    row = KCModel(
-                        id=collection.collection_id,
-                        tenant_id=tenant_id,
-                        name=collection.name,
-                        description=collection.description,
-                        embedder=collection.embedder,
-                        document_count=0,
-                    )
-                    session.add(row)
-        except Exception as exc:
-            _log.warning("DB create collection failed: %s", exc)
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            created_id = (
+                await session.execute(
+                    text(
+                        "INSERT INTO knowledge_collections "
+                        "(id, tenant_id, name, description, embedder, embedding_dim) "
+                        "SELECT :id, :tid, :name, :description, :embedder, 768 "
+                        "FROM tenants WHERE id = :tid AND is_active IS TRUE "
+                        "RETURNING id"
+                    ),
+                    {
+                        "id": collection.collection_id,
+                        "tid": tenant_id,
+                        "name": collection.name,
+                        "description": collection.description,
+                        "embedder": collection.embedder,
+                    },
+                )
+            ).scalar_one_or_none()
+            if created_id is None:
+                raise KeyError(f"Active tenant not found: {tenant_id}")
 
     def get_collection(
         self, collection_id: str, *, tenant_ctx: TenantContext
@@ -141,6 +171,439 @@ class KnowledgeStore:
             if tid == tenant_ctx.tenant_id
         ]
 
+    async def get_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> KnowledgeCollection | None:
+        """Read one active collection in the authenticated tenant scope."""
+        if self._db is None:
+            return self.get_collection(collection_id, tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT collection.id, collection.name, collection.description, "
+                        "collection.document_count, collection.embedder "
+                        "FROM knowledge_collections AS collection "
+                        "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
+                        "WHERE collection.id = :id AND collection.tenant_id = :tid "
+                        "AND collection.is_active IS TRUE AND tenant.is_active IS TRUE"
+                    ),
+                    {"id": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return KnowledgeCollection(
+            name=str(row[1]),
+            description=str(row[2] or ""),
+            collection_id=str(row[0]),
+            document_count=int(row[3] or 0),
+            embedder=str(row[4] or "voyage"),
+        )
+
+    async def list_collections_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> list[KnowledgeCollection]:
+        """List active collections without cross-tenant startup hydration."""
+        if self._db is None:
+            return self.list_collections(tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT collection.id, collection.name, collection.description, "
+                        "collection.document_count, collection.embedder "
+                        "FROM knowledge_collections AS collection "
+                        "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
+                        "WHERE collection.tenant_id = :tid AND collection.is_active IS TRUE "
+                        "AND tenant.is_active IS TRUE ORDER BY collection.created_at"
+                    ),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
+        return [
+            KnowledgeCollection(
+                name=str(row[1]),
+                description=str(row[2] or ""),
+                collection_id=str(row[0]),
+                document_count=int(row[3] or 0),
+                embedder=str(row[4] or "voyage"),
+            )
+            for row in rows
+        ]
+
+    async def delete_collection_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        """Delete one owned collection and its cascaded persisted resources."""
+        key = (tenant_ctx.tenant_id, collection_id)
+        if self._db is None:
+            return self._data.pop(key, None) is not None
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            deleted = (
+                await session.execute(
+                    text(
+                        "DELETE FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tenant_id RETURNING id"
+                    ),
+                    {"id": collection_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+        if deleted is None:
+            return False
+        self._data.pop(key, None)
+        return True
+
+    async def create_ingestion_job_async(
+        self,
+        *,
+        collection_id: str,
+        source_url: str,
+        source_type: str,
+        title: str,
+        tenant_ctx: TenantContext,
+    ) -> str:
+        """Create a durable ingestion job in the existing document-status table."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        job_id = _uuid.uuid4().hex
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            created = (
+                await session.execute(
+                    text("""
+                        INSERT INTO knowledge_documents
+                            (id, tenant_id, collection_id, title, source_url, source_type,
+                             content_hash, status, chunk_count, domain_metadata,
+                             job_source_hash)
+                        SELECT :id, :tenant_id, collection.id, :title, :source_url,
+                               :source_type, :content_hash, 'queued', 0,
+                               CAST(:metadata AS jsonb), :source_hash
+                        FROM knowledge_collections AS collection
+                        JOIN tenants AS tenant ON tenant.id = collection.tenant_id
+                        WHERE collection.id = :collection_id
+                          AND collection.tenant_id = :tenant_id
+                          AND collection.is_active IS TRUE
+                          AND tenant.is_active IS TRUE
+                        RETURNING id
+                    """),
+                    {
+                        "id": job_id,
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "collection_id": collection_id,
+                        "title": title,
+                        "source_url": source_url,
+                        "source_type": source_type,
+                        "content_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "source_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "metadata": json.dumps({"record_type": "ingestion_job"}),
+                    },
+                )
+            ).scalar_one_or_none()
+            if created is None:
+                raise KeyError(f"Collection {collection_id} not found")
+        return job_id
+
+    async def update_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        chunk_count: int,
+        error_message: str | None,
+        tenant_ctx: TenantContext,
+        lease_owner: str | None = None,
+    ) -> None:
+        """Persist a sanitized terminal or progress state for one ingestion job."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        if status not in {"queued", "running", "completed", "failed"}:
+            raise ValueError(f"Unsupported ingestion job status: {status}")
+        if status == "running":
+            job = await self.get_ingestion_job_async(job_id, tenant_ctx=tenant_ctx)
+            if job is None:
+                raise KeyError(f"Ingestion job not found: {job_id}")
+            claimed = await self.claim_ingestion_job_async(
+                job_id,
+                collection_id=str(job["collection_id"]),
+                source_url=str(job["source_url"]),
+                lease_owner=lease_owner or f"legacy-{job_id}",
+                lease_seconds=900,
+                tenant_ctx=tenant_ctx,
+            )
+            if not claimed:
+                raise RuntimeError(f"Ingestion job could not be claimed: {job_id}")
+            return
+        if status == "failed":
+            await self.fail_ingestion_job_async(
+                job_id,
+                lease_owner=lease_owner,
+                error_message=error_message or "Repository ingestion failed",
+                tenant_ctx=tenant_ctx,
+            )
+            return
+        if status == "queued":
+            return
+        raise RuntimeError("Repository completion must use the atomic chunk transaction")
+
+    async def claim_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        source_url: str,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        source_hash = hashlib.sha256(source_url.encode()).hexdigest()
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'running', lease_owner = :lease_owner,
+                        heartbeat_at = now(),
+                        lease_expires_at = now() + make_interval(secs => :lease_seconds),
+                        indexed_at = now(), error_message = NULL
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND collection_id = :collection_id
+                      AND source_type = 'repository'
+                      AND source_url = :source_url AND job_source_hash = :source_hash
+                      AND status = 'queued'
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "collection_id": collection_id,
+                    "source_url": source_url,
+                    "source_hash": source_hash,
+                    "lease_owner": lease_owner,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+        return bool(result.rowcount == 1)
+
+    async def heartbeat_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: int,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET heartbeat_at = now(),
+                        lease_expires_at = now() + make_interval(secs => :lease_seconds)
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND status = 'running' AND lease_owner = :lease_owner
+                      AND lease_expires_at > now()
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "lease_owner": lease_owner,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+        return bool(result.rowcount == 1)
+
+    async def fail_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str | None,
+        error_message: str,
+        tenant_ctx: TenantContext,
+    ) -> str | None:
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'failed', error_message = :error_message,
+                        lease_owner = NULL, lease_expires_at = NULL
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                      AND (
+                          status = 'queued'
+                          OR (status = 'running' AND lease_owner = :lease_owner)
+                      )
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "lease_owner": lease_owner,
+                    "error_message": error_message,
+                },
+            )
+            status = (
+                await session.execute(
+                    text(
+                        "SELECT status FROM knowledge_documents "
+                        "WHERE id = :id AND tenant_id = :tenant_id"
+                    ),
+                    {"id": job_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+        return str(status) if status is not None else None
+
+    async def get_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> dict[str, Any] | None:
+        """Read one durable ingestion job in the active tenant scope."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text("""
+                        SELECT id, collection_id, status, chunk_count,
+                               error_message, source_url
+                        FROM knowledge_documents
+                        WHERE id = :id AND tenant_id = :tenant_id
+                          AND domain_metadata->>'record_type' = 'ingestion_job'
+                    """),
+                    {"id": job_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": str(row[0]),
+            "collection_id": str(row[1]),
+            "status": str(row[2]),
+            "chunk_count": int(row[3] or 0),
+            "error_message": str(row[4]) if row[4] else None,
+            "source_url": str(row[5] or ""),
+        }
+
+    async def reconcile_stale_ingestion_jobs_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        stale_after_seconds: int,
+    ) -> int:
+        """Mark tenant-scoped running repository jobs interrupted after restart."""
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        if stale_after_seconds < 1:
+            raise ValueError("stale_after_seconds must be positive")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'failed',
+                        error_message = 'Repository ingestion interrupted',
+                        lease_owner = NULL, lease_expires_at = NULL
+                    WHERE tenant_id = :tenant_id
+                      AND source_type = 'repository'
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                      AND (
+                          (status = 'queued' AND created_at
+                              < now() - make_interval(secs => :stale_after_seconds))
+                          OR
+                          (status = 'running' AND lease_expires_at < now())
+                      )
+                """),
+                {
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "stale_after_seconds": stale_after_seconds,
+                },
+            )
+        return result.rowcount or 0
+
     def ingest_chunk(
         self,
         chunk: Chunk,
@@ -148,6 +611,9 @@ class KnowledgeStore:
         collection_id: str,
         tenant_ctx: TenantContext,
     ) -> None:
+        """Ingest one chunk into the explicit in-memory development store."""
+        if self._db is not None:
+            raise RuntimeError("Use ingest_chunks_async for a persisted KnowledgeStore")
         store = self._data.get((tenant_ctx.tenant_id, collection_id))
         if store is None:
             raise KeyError(
@@ -155,45 +621,26 @@ class KnowledgeStore:
             )
         store.chunks.append(chunk)
         store.collection.document_count = len({c.document_id for c in store.chunks})
-        if self._db is not None:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self._db_ingest_chunk(chunk, collection_id, tenant_ctx.tenant_id)
-                )
-            except RuntimeError:
-                pass
 
     async def _db_ingest_chunk(
         self, chunk: Chunk, collection_id: str, tenant_id: str
     ) -> None:
         if self._db is None:
             return
-        try:
-            import hashlib
-
-            from app.db.models.knowledge import Document
-            from app.db.rls import sqlalchemy_rls_context
-
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    row = Document(
-                        id=chunk.chunk_id,
-                        collection_id=collection_id,
-                        tenant_id=tenant_id,
-                        source="ingestion",
-                        content=chunk.content,
-                        content_hash=hashlib.sha256(
-                            chunk.content.encode()
-                        ).hexdigest(),
-                        embedding=chunk.embedding,  # pgvector column
-                        chunk_index=chunk.chunk_index,
-                        doc_metadata=chunk.metadata,
-                    )
-                    session.add(row)
-        except Exception as exc:
-            _log.warning("DB ingest chunk failed: %s", exc)
+        await self._persist_chunk(
+            chunk_id=chunk.chunk_id,
+            collection_id=collection_id,
+            tenant_id=tenant_id,
+            document_id=chunk.document_id,
+            content=chunk.content,
+            embedding=chunk.embedding,
+            metadata=dict(chunk.metadata),
+            chunk_index=chunk.chunk_index,
+            parent_chunk_id=chunk.parent_chunk_id,
+            chunk_level=chunk.chunk_level,
+            window_start=chunk.window_start,
+            window_end=chunk.window_end,
+        )
 
     def hybrid_search(
         self,
@@ -263,103 +710,108 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
         top_k: int = 5,
         metadata_filter: dict[str, Any] | None = None,
+        retrieval_mode: str = "hybrid",
     ) -> list[HybridSearchResult]:
-        """PostgreSQL hybrid search via the RRF-fused retrieval engine.
-
-        Delegates to ``app.rag.engine.hybrid_search`` which runs three parallel
-        retrieval legs (pgvector ANN + FTS + pg_trgm) and fuses them with
-        Reciprocal Rank Fusion.  Results are mapped back to ``HybridSearchResult``
-        for API compatibility.
-
-        Falls back to in-memory ``hybrid_search()`` if DB is not available or
-        if the engine call fails.
-        """
+        """Search persisted chunks via pgvector, FTS, and pg_trgm RRF fusion."""
         if self._db is None:
             return self.hybrid_search(
                 query, query_embedding, collection_id, tenant_ctx, top_k,
                 metadata_filter=metadata_filter,
             )
 
-        try:
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            from app.db.rls import sqlalchemy_rls_context
-            from app.rag.engine import RetrievalResult
-            from app.rag.engine import hybrid_search as _engine_search
+        from app.db.rls import sqlalchemy_rls_context
+        from app.rag.engine import RetrievalResult
+        from app.rag.engine import hybrid_search as _engine_search
 
-            # Determine embedding dimension for correct table routing.
-            embedding_dim: int | None = None
-            async with self._db() as session, sqlalchemy_rls_context(
-                session, tenant_ctx.tenant_id
-            ):
-                try:
-                    col_res = await session.execute(
-                        text(
-                            "SELECT embedding_dim FROM knowledge_collections "
-                            "WHERE id = :cid AND tenant_id = :tid"
-                        ),
-                        {"cid": collection_id, "tid": tenant_ctx.tenant_id},
-                    )
-                    col_row = col_res.fetchone()
-                    if col_row and col_row[0] in (768, 1024, 1536, 3072):
-                        embedding_dim = int(col_row[0])
-                except Exception:
-                    pass
-
-                engine_results: list[RetrievalResult] = await _engine_search(
-                    session=session,
-                    query=query,
-                    query_embedding=query_embedding or None,
-                    collection_id=collection_id,
-                    top_k=top_k,
-                    retrieval_mode="hybrid",
-                    embedding_dim=embedding_dim,
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
                 )
+            ).fetchone()
+            if dimension_row is None:
+                return []
+            embedding_dim = int(dimension_row[0])
+            _chunk_table(embedding_dim)
+            engine_results: list[RetrievalResult] = await _engine_search(
+                session=session,
+                query=query,
+                query_embedding=query_embedding or None,
+                collection_id=collection_id,
+                top_k=top_k,
+                retrieval_mode=retrieval_mode,
+                embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter,
+                strict=True,
+            )
 
-            # Post-filter by metadata (Python-side JSONB subset match)
-            if metadata_filter:
-                engine_results = [
-                    r for r in engine_results
-                    if all(r.source_metadata.get(k) == v for k, v in metadata_filter.items())
-                ]
-
-            return [
-                HybridSearchResult(
-                    chunk_id=r.chunk_id,
-                    content=r.content,
-                    score=r.score,
-                    vector_score=0.0,   # RRF fused — per-leg scores not exposed
-                    trigram_score=0.0,
-                    source_url=str(r.source_metadata.get("source_url", "") or ""),
-                    source_doc_id=str(r.source_metadata.get("source_doc_id", "") or ""),
-                    page_number=r.source_metadata.get("page_number"),
-                    metadata=r.source_metadata,
-                )
-                for r in engine_results
-            ]
-        except Exception as exc:
-            _log.warning("DB hybrid search failed, falling back to in-memory: %s", exc)
-            return self.hybrid_search(query, query_embedding, collection_id, tenant_ctx, top_k)
+        return [
+            HybridSearchResult(
+                chunk_id=result.chunk_id,
+                content=result.content,
+                score=result.score,
+                vector_score=0.0,
+                trigram_score=0.0,
+                source_url=str(result.source_metadata.get("source_url", "") or ""),
+                source_doc_id=str(result.source_metadata.get("source_doc_id", "") or ""),
+                page_number=result.source_metadata.get("page_number"),
+                metadata=result.source_metadata,
+            )
+            for result in engine_results
+        ]
 
     async def search(
         self,
         query: str,
         collection_id: str,
         top_k: int = 10,
+        *,
+        tenant_ctx: TenantContext,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Duck-typed search adapter for ``federated_search``.
+        """Return plain-dict results from the configured source of truth."""
+        if self._db is not None:
+            persisted = await self.hybrid_search_db(
+                query,
+                [],
+                collection_id,
+                tenant_ctx,
+                top_k=top_k,
+                metadata_filter=metadata_filter,
+                retrieval_mode="lexical",
+            )
+            return [
+                {
+                    "chunk_id": result.chunk_id,
+                    "content": result.content,
+                    "score": result.score,
+                    "metadata": result.metadata,
+                }
+                for result in persisted
+            ]
 
-        Runs the in-memory hybrid search (without embeddings) and returns
-        results as plain dicts compatible with the federated search pipeline.
-        This method satisfies the ``store.search(query, cid, top_k)`` protocol
-        expected by ``app.knowledge.federated_search.federated_search``.
-        """
-        # Build a minimal tenant context from collections we have in memory.
         results: list[dict[str, Any]] = []
-        for (_tid, cid), store in self._data.items():
+        for (stored_tenant_id, cid), store in self._data.items():
             if cid != collection_id:
                 continue
+            if stored_tenant_id != tenant_ctx.tenant_id:
+                continue
             for chunk in store.chunks:
+                if metadata_filter and not all(
+                    chunk.metadata.get(key) == value
+                    for key, value in metadata_filter.items()
+                ):
+                    continue
                 tri = _trigram_score(query, chunk.content)
                 results.append({
                     "chunk_id": chunk.chunk_id,
@@ -400,26 +852,71 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
         db: Any = None,
     ) -> int:
-        """Delete document from in-memory store and DB."""
-        count = self.delete_document(
-            document_id, collection_id=collection_id, tenant_ctx=tenant_ctx
-        )
+        """Delete a persisted document using its collection's vector dimension."""
         _db = db or self._db
-        if _db is not None:
-            try:
-                from sqlalchemy import text
-                async with _db() as session, session.begin():
-                    result = await session.execute(
-                        text(
-                            "DELETE FROM knowledge_chunks_1536 "
-                            "WHERE document_id = :did AND collection_id = :cid"
-                        ),
-                        {"did": document_id, "cid": collection_id},
-                    )
-                    count = max(count, result.rowcount or 0)
-            except Exception as exc:
-                _log.warning("delete_document_async_db_failed: %s", exc)
-        return count
+        if _db is None:
+            return self.delete_document(
+                document_id,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+            )
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            _db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if dimension_row is None:
+                return 0
+            table = _chunk_table(int(dimension_row[0]))
+            result = await session.execute(
+                text(
+                    f"DELETE FROM {table} WHERE document_id = :did "
+                    "AND collection_id = :cid AND tenant_id = :tid"
+                ),
+                {
+                    "did": document_id,
+                    "cid": collection_id,
+                    "tid": tenant_ctx.tenant_id,
+                },
+            )
+            deleted = result.rowcount or 0
+            if deleted:
+                await session.execute(
+                    text(f"""
+                        UPDATE knowledge_collections
+                        SET chunk_count = (
+                                SELECT count(*) FROM {table} WHERE collection_id = :cid
+                            ),
+                            document_count = (
+                                SELECT count(DISTINCT document_id) FROM {table}
+                                WHERE collection_id = :cid
+                            ),
+                            updated_at = now()
+                        WHERE id = :cid AND tenant_id = :tid
+                    """),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+
+        memory_deleted = self.delete_document(
+            document_id,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
+        )
+        return max(deleted, memory_deleted)
 
     async def ingest_document(
         self,
@@ -438,37 +935,43 @@ class KnowledgeStore:
         chunk_level: str = "leaf",
         window_start: int | None = None,
         window_end: int | None = None,
+        window_id: str | None = None,
+        hierarchy_level: int = 0,
+        is_proposition: bool = False,
+        strategy_metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Ingest a single content chunk with citation metadata.
-
-        Creates an embedding (if an embedder is provided), stores the chunk
-        in-memory, and persists to PostgreSQL with the citation fields
-        (source_url, source_type, source_doc_id, page_number, freshness_ttl_hours).
-
-        Returns the new chunk_id (UUID hex string).
-        """
-        import hashlib
-
+        """Embed and transactionally persist one canonical retrieval chunk."""
         chunk_id = _uuid.uuid4().hex
         embedding: list[float] = []
+        if self._db is not None and embedder is None:
+            raise EmbeddingProviderUnavailableError("Embedding provider is unavailable")
         if embedder is not None:
+            from app.providers.base import embed_texts
+
             try:
-                from app.providers.base import embed_texts
                 embeddings = await embed_texts([content], provider=embedder)
                 embedding = embeddings[0]
             except Exception as exc:
+                if self._db is not None:
+                    raise EmbeddingProviderUnavailableError(
+                        "Embedding provider is unavailable"
+                    ) from exc
                 _log.warning("ingest_document_embed_failed: %s", exc)
+        if self._db is not None and not embedding:
+            raise EmbeddingProviderUnavailableError("Embedding provider is unavailable")
 
+        document_id = source_doc_id or chunk_id
         merged_metadata = dict(metadata or {})
         merged_metadata.update({
             "source_url": source_url,
             "source_type": source_type,
-            "source_doc_id": source_doc_id,
+            "source_doc_id": document_id,
             "page_number": page_number,
+            "freshness_ttl_hours": freshness_ttl_hours,
         })
 
         chunk = Chunk(
-            document_id=source_doc_id or chunk_id,
+            document_id=document_id,
             content=content,
             embedding=embedding,
             chunk_index=0,
@@ -480,40 +983,384 @@ class KnowledgeStore:
             window_end=window_end,
         )
 
-        # In-memory storage
+        if self._db is not None:
+            await self._persist_chunk(
+                chunk_id=chunk_id,
+                collection_id=collection_id,
+                tenant_id=tenant_ctx.tenant_id,
+                document_id=document_id,
+                content=content,
+                embedding=embedding,
+                metadata=merged_metadata,
+                chunk_index=0,
+                freshness_ttl_hours=freshness_ttl_hours,
+                parent_chunk_id=parent_chunk_id,
+                chunk_level=chunk_level,
+                window_start=window_start,
+                window_end=window_end,
+                window_id=window_id,
+                hierarchy_level=hierarchy_level,
+                is_proposition=is_proposition,
+                strategy_metadata=strategy_metadata,
+            )
+
         store = self._data.get((tenant_ctx.tenant_id, collection_id))
         if store is not None:
             store.chunks.append(chunk)
-            store.collection.document_count = len({c.document_id for c in store.chunks})
-
-        # DB persistence with citation fields
-        if self._db is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self._db_ingest_with_citations(
-                        chunk_id=chunk_id,
-                        collection_id=collection_id,
-                        content=content,
-                        embedding=embedding,
-                        metadata=merged_metadata,
-                        tenant_id=tenant_ctx.tenant_id,
-                        source_url=source_url,
-                        source_type=source_type,
-                        source_doc_id=source_doc_id,
-                        page_number=page_number,
-                        freshness_ttl_hours=freshness_ttl_hours,
-                        content_hash=hashlib.sha256(content.encode()).hexdigest(),
-                        parent_chunk_id=parent_chunk_id,
-                        chunk_level=chunk_level,
-                        window_start=window_start,
-                        window_end=window_end,
-                    )
-                )
-            except RuntimeError:
-                pass  # No running loop (sync context)
+            store.collection.document_count = len({item.document_id for item in store.chunks})
 
         return chunk_id
+
+    async def ingest_chunks_async(
+        self,
+        chunks: list[Chunk],
+        *,
+        collection_id: str,
+        tenant_ctx: TenantContext,
+    ) -> list[str]:
+        """Persist all chunks for one ingestion unit in a single transaction."""
+        if not chunks:
+            collection = await self.get_collection_async(
+                collection_id,
+                tenant_ctx=tenant_ctx,
+            )
+            if collection is None:
+                raise KeyError(
+                    f"Collection {collection_id} not found for tenant {tenant_ctx.tenant_id}"
+                )
+            return []
+        if self._db is None:
+            for chunk in chunks:
+                self.ingest_chunk(chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
+            return [chunk.chunk_id for chunk in chunks]
+
+        records = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "document_id": chunk.document_id,
+                "content": chunk.content,
+                "embedding": chunk.embedding,
+                "metadata": dict(chunk.metadata),
+                "chunk_index": chunk.chunk_index,
+                "freshness_ttl_hours": None,
+                "parent_chunk_id": chunk.parent_chunk_id,
+                "chunk_level": chunk.chunk_level,
+                "window_start": chunk.window_start,
+                "window_end": chunk.window_end,
+                "window_id": None,
+                "hierarchy_level": 0,
+                "is_proposition": False,
+                "strategy_metadata": {},
+            }
+            for chunk in chunks
+        ]
+        await self._persist_chunks(
+            records,
+            collection_id=collection_id,
+            tenant_id=tenant_ctx.tenant_id,
+        )
+
+        cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if cached is not None:
+            cached.chunks.extend(chunks)
+            cached.collection.document_count = len(
+                {chunk.document_id for chunk in cached.chunks}
+            )
+        return [chunk.chunk_id for chunk in chunks]
+
+    async def ingest_repository_chunks_async(
+        self,
+        chunks: list[Chunk],
+        *,
+        job_id: str,
+        collection_id: str,
+        source_url: str,
+        lease_owner: str,
+        tenant_ctx: TenantContext,
+    ) -> list[str]:
+        """Commit repository chunks, counters, association, and completion atomically."""
+        if self._db is None:
+            raise RuntimeError("Repository ingestion requires a database")
+        if not chunks:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                completed = await session.execute(
+                    text("""
+                        UPDATE knowledge_documents AS job
+                        SET status = 'completed', chunk_count = 0,
+                            error_message = NULL, indexed_at = now(), heartbeat_at = NULL,
+                            lease_owner = NULL, lease_expires_at = NULL
+                        WHERE job.id = :job_id AND job.tenant_id = :tenant_id
+                          AND job.collection_id = :collection_id
+                          AND job.source_type = 'repository'
+                          AND job.source_url = :source_url
+                          AND job.job_source_hash = :source_hash
+                          AND job.status = 'running'
+                          AND job.lease_owner = :lease_owner
+                          AND job.lease_expires_at > now()
+                          AND job.domain_metadata->>'record_type' = 'ingestion_job'
+                          AND EXISTS (
+                              SELECT 1 FROM knowledge_collections AS collection
+                              WHERE collection.id = job.collection_id
+                                AND collection.tenant_id = job.tenant_id
+                                AND collection.is_active IS TRUE
+                          )
+                    """),
+                    {
+                        "job_id": job_id,
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "collection_id": collection_id,
+                        "source_url": source_url,
+                        "source_hash": hashlib.sha256(source_url.encode()).hexdigest(),
+                        "lease_owner": lease_owner,
+                    },
+                )
+                if completed.rowcount != 1:
+                    raise KeyError(f"Repository ingestion job not running: {job_id}")
+            return []
+        records = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "document_id": chunk.document_id,
+                "content": chunk.content,
+                "embedding": chunk.embedding,
+                "metadata": dict(chunk.metadata),
+                "chunk_index": chunk.chunk_index,
+                "freshness_ttl_hours": None,
+                "parent_chunk_id": chunk.parent_chunk_id,
+                "chunk_level": chunk.chunk_level,
+                "window_start": chunk.window_start,
+                "window_end": chunk.window_end,
+                "window_id": None,
+                "hierarchy_level": 0,
+                "is_proposition": False,
+                "strategy_metadata": {"ingestion_job_id": job_id},
+            }
+            for chunk in chunks
+        ]
+        await self._persist_chunks(
+            records,
+            collection_id=collection_id,
+            tenant_id=tenant_ctx.tenant_id,
+            completion_job_id=job_id,
+            completion_source_hash=hashlib.sha256(source_url.encode()).hexdigest(),
+            completion_lease_owner=lease_owner,
+        )
+        cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if cached is not None:
+            cached.chunks.extend(chunks)
+            cached.collection.document_count = len(
+                {chunk.document_id for chunk in cached.chunks}
+            )
+        return [chunk.chunk_id for chunk in chunks]
+
+    async def _persist_chunk(
+        self,
+        *,
+        chunk_id: str,
+        collection_id: str,
+        tenant_id: str,
+        document_id: str,
+        content: str,
+        embedding: list[float],
+        metadata: dict[str, Any],
+        chunk_index: int,
+        freshness_ttl_hours: int | None = None,
+        parent_chunk_id: str | None = None,
+        chunk_level: str = "leaf",
+        window_start: int | None = None,
+        window_end: int | None = None,
+        window_id: str | None = None,
+        hierarchy_level: int = 0,
+        is_proposition: bool = False,
+        strategy_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        await self._persist_chunks(
+            [
+                {
+                    "chunk_id": chunk_id,
+                    "document_id": document_id,
+                    "content": content,
+                    "embedding": embedding,
+                    "metadata": metadata,
+                    "chunk_index": chunk_index,
+                    "freshness_ttl_hours": freshness_ttl_hours,
+                    "parent_chunk_id": parent_chunk_id,
+                    "chunk_level": chunk_level,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    "window_id": window_id,
+                    "hierarchy_level": hierarchy_level,
+                    "is_proposition": is_proposition,
+                    "strategy_metadata": strategy_metadata or {},
+                }
+            ],
+            collection_id=collection_id,
+            tenant_id=tenant_id,
+        )
+
+    async def _persist_chunks(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        collection_id: str,
+        tenant_id: str,
+        completion_job_id: str | None = None,
+        completion_source_hash: str | None = None,
+        completion_lease_owner: str | None = None,
+    ) -> None:
+        if self._db is None:
+            return
+        if not records:
+            return
+        dimensions = {len(record["embedding"]) for record in records}
+        if len(dimensions) != 1:
+            raise ValueError("All chunks in an ingestion unit must use one embedding dimension")
+        dimension = dimensions.pop()
+        table = _chunk_table(dimension)
+        parameters = []
+        for record in records:
+            vector_literal = "[" + ",".join(
+                f"{value:.9g}" for value in record["embedding"]
+            ) + "]"
+            parameters.append(
+                {
+                    "id": record["chunk_id"],
+                    "collection_id": collection_id,
+                    "tenant_id": tenant_id,
+                    "document_id": record["document_id"],
+                    "content": record["content"],
+                    "content_hash": hashlib.sha256(record["content"].encode()).hexdigest(),
+                    "embedding": vector_literal,
+                    "chunk_index": record["chunk_index"],
+                    "metadata": json.dumps(record["metadata"]),
+                    "parent_chunk_id": record["parent_chunk_id"],
+                    "chunk_level": record["chunk_level"],
+                    "window_start": record["window_start"],
+                    "window_end": record["window_end"],
+                    "window_id": record["window_id"],
+                    "hierarchy_level": record["hierarchy_level"],
+                    "is_proposition": record["is_proposition"],
+                    "strategy_metadata": json.dumps(record["strategy_metadata"]),
+                    "ingestion_job_id": completion_job_id,
+                    "freshness_ttl_hours": record["freshness_ttl_hours"],
+                }
+            )
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            collection_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim, chunk_count "
+                        "FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tid AND is_active IS TRUE "
+                        "FOR UPDATE"
+                    ),
+                    {"id": collection_id, "tid": tenant_id},
+                )
+            ).fetchone()
+            if collection_row is None:
+                raise KeyError(f"Collection {collection_id} not found for tenant {tenant_id}")
+            stored_dimension = int(collection_row[0])
+            chunk_count = int(collection_row[1])
+            if chunk_count and stored_dimension != dimension:
+                raise ValueError(
+                    f"Collection {collection_id} uses {stored_dimension}-dimensional embeddings"
+                )
+            if not chunk_count and stored_dimension != dimension:
+                await session.execute(
+                    text(
+                        "UPDATE knowledge_collections SET embedding_dim = :dimension, "
+                        "updated_at = now() WHERE id = :id AND tenant_id = :tid"
+                    ),
+                    {"dimension": dimension, "id": collection_id, "tid": tenant_id},
+                )
+
+            await session.execute(
+                text(f"""
+                    INSERT INTO {table}
+                        (id, collection_id, tenant_id, document_id, content,
+                         content_hash, embedding, chunk_index, metadata,
+                         parent_chunk_id, chunk_level, window_start, window_end,
+                         window_id, hierarchy_level, is_proposition, strategy_metadata,
+                         expires_at, ingestion_job_id)
+                    VALUES
+                        (:id, :collection_id, :tenant_id, :document_id, :content,
+                         :content_hash, CAST(:embedding AS vector), :chunk_index,
+                         CAST(:metadata AS jsonb), :parent_chunk_id, :chunk_level,
+                         :window_start, :window_end, :window_id, :hierarchy_level,
+                         :is_proposition, CAST(:strategy_metadata AS jsonb),
+                         CASE WHEN CAST(:freshness_ttl_hours AS integer) IS NULL THEN NULL
+                              ELSE now() + (
+                                  CAST(:freshness_ttl_hours AS integer) * interval '1 hour'
+                              ) END, :ingestion_job_id)
+                """),
+                parameters,
+            )
+            await session.execute(
+                text(f"""
+                    UPDATE knowledge_collections
+                    SET chunk_count = (
+                            SELECT count(*) FROM {table} WHERE collection_id = :id
+                        ),
+                        document_count = (
+                            SELECT count(DISTINCT document_id) FROM {table}
+                            WHERE collection_id = :id
+                        ),
+                        total_size_bytes = (
+                            SELECT COALESCE(sum(octet_length(content)), 0)
+                            FROM {table} WHERE collection_id = :id
+                        ),
+                        last_indexed_at = now(),
+                        updated_at = now()
+                    WHERE id = :id AND tenant_id = :tid
+                """),
+                {"id": collection_id, "tid": tenant_id},
+            )
+            if completion_job_id is not None:
+                completed = await session.execute(
+                    text("""
+                        UPDATE knowledge_documents
+                        SET status = 'completed',
+                            chunk_count = :chunk_count,
+                            error_message = NULL,
+                            indexed_at = now(), heartbeat_at = NULL,
+                            lease_owner = NULL, lease_expires_at = NULL
+                        WHERE id = :job_id AND tenant_id = :tenant_id
+                          AND collection_id = :collection_id
+                          AND source_type = 'repository'
+                          AND job_source_hash = :source_hash
+                          AND status = 'running'
+                          AND lease_owner = :lease_owner
+                          AND lease_expires_at > now()
+                          AND domain_metadata->>'record_type' = 'ingestion_job'
+                    """),
+                    {
+                        "job_id": completion_job_id,
+                        "tenant_id": tenant_id,
+                        "collection_id": collection_id,
+                        "source_hash": completion_source_hash,
+                        "lease_owner": completion_lease_owner,
+                        "chunk_count": len(records),
+                    },
+                )
+                if completed.rowcount != 1:
+                    raise KeyError(f"Repository ingestion job not running: {completion_job_id}")
 
     async def _db_ingest_with_citations(
         self,
@@ -534,204 +1381,41 @@ class KnowledgeStore:
         chunk_level: str = "leaf",
         window_start: int | None = None,
         window_end: int | None = None,
+        window_id: str | None = None,
+        hierarchy_level: int = 0,
+        is_proposition: bool = False,
+        strategy_metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Persist a document chunk to the correct ``knowledge_chunks_{dim}`` table.
-
-        FIX 4.3: Writes to ``knowledge_chunks_{dim}`` instead of the legacy
-        ``documents`` table.  The embedding dimension is resolved by querying
-        ``knowledge_collections``; falls back to 1536 when unknown.
-
-        Citation fields (source_url, source_type, source_doc_id, page_number,
-        freshness_ttl_hours) are stored in the metadata JSONB column since the
-        dynamic-dimension tables do not have dedicated citation columns.
-
-        FIX 7: Embedding is formatted as an explicit PostgreSQL vector literal
-        ``[v1.000000,v2.000000,...]`` instead of Python's ``str(list)``.
-        """
-        if self._db is None:
-            return
-        try:
-            import json
-
-            from sqlalchemy import text
-
-            from app.db.rls import sqlalchemy_rls_context
-
-            # FIX 7: PostgreSQL vector literal — explicit 6 decimal places.
-            emb_str = (
-                "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
-                if embedding
-                else None
-            )
-
-            # Merge citation fields into metadata JSONB.
-            full_metadata = dict(metadata)
-            full_metadata.setdefault("source_url", source_url)
-            full_metadata.setdefault("source_type", source_type)
-            full_metadata.setdefault("source_doc_id", source_doc_id)
-            full_metadata.setdefault("page_number", page_number)
-            full_metadata.setdefault("freshness_ttl_hours", freshness_ttl_hours)
-
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    # FIX 4.3: Resolve embedding dimension → correct table.
-                    dim = 1536
-                    try:
-                        dim_res = await session.execute(
-                            text(
-                                "SELECT embedding_dim FROM knowledge_collections "
-                                "WHERE id = :cid AND tenant_id = :tid"
-                            ),
-                            {"cid": collection_id, "tid": tenant_id},
-                        )
-                        dim_row = dim_res.fetchone()
-                        if dim_row and dim_row[0] in (768, 1024, 1536, 3072):
-                            dim = int(dim_row[0])
-                    except Exception:
-                        pass
-
-                    table_name = f"knowledge_chunks_{dim}"
-                    try:
-                        await session.execute(
-                            text(f"""
-                                INSERT INTO {table_name}
-                                    (id, collection_id, tenant_id, content, content_hash,
-                                     embedding, chunk_index, metadata,
-                                     parent_chunk_id, chunk_level, window_start, window_end)
-                                VALUES
-                                    (:id, :cid, :tid, :content, :hash,
-                                     :emb::vector, 0, :meta::jsonb,
-                                     :parent_chunk_id, :chunk_level, :window_start, :window_end)
-                                ON CONFLICT (id) DO NOTHING
-                            """),
-                            {
-                                "id": chunk_id,
-                                "cid": collection_id,
-                                "tid": tenant_id,
-                                "content": content,
-                                "hash": content_hash,
-                                "emb": emb_str,
-                                "meta": json.dumps(full_metadata),
-                                "parent_chunk_id": parent_chunk_id,
-                                "chunk_level": chunk_level,
-                                "window_start": window_start,
-                                "window_end": window_end,
-                            },
-                        )
-                    except Exception:
-                        # Fallback: insert without parent/window columns (pre-migration)
-                        await session.execute(
-                            text(f"""
-                                INSERT INTO {table_name}
-                                    (id, collection_id, tenant_id, content, content_hash,
-                                     embedding, chunk_index, metadata)
-                                VALUES
-                                    (:id, :cid, :tid, :content, :hash,
-                                     :emb::vector, 0, :meta::jsonb)
-                                ON CONFLICT (id) DO NOTHING
-                            """),
-                            {
-                                "id": chunk_id,
-                                "cid": collection_id,
-                                "tid": tenant_id,
-                                "content": content,
-                                "hash": content_hash,
-                                "emb": emb_str,
-                                "meta": json.dumps(full_metadata),
-                            },
-                        )
-        except Exception as exc:
-            _log.warning("DB ingest with citations failed: %s", exc)
+        del content_hash
+        full_metadata = dict(metadata)
+        full_metadata.setdefault("source_url", source_url)
+        full_metadata.setdefault("source_type", source_type)
+        full_metadata.setdefault("source_doc_id", source_doc_id or chunk_id)
+        full_metadata.setdefault("page_number", page_number)
+        full_metadata.setdefault("freshness_ttl_hours", freshness_ttl_hours)
+        await self._persist_chunk(
+            chunk_id=chunk_id,
+            collection_id=collection_id,
+            tenant_id=tenant_id,
+            document_id=source_doc_id or chunk_id,
+            content=content,
+            embedding=embedding,
+            metadata=full_metadata,
+            chunk_index=0,
+            freshness_ttl_hours=freshness_ttl_hours,
+            parent_chunk_id=parent_chunk_id,
+            chunk_level=chunk_level,
+            window_start=window_start,
+            window_end=window_end,
+            window_id=window_id,
+            hierarchy_level=hierarchy_level,
+            is_proposition=is_proposition,
+            strategy_metadata=strategy_metadata,
+        )
 
     async def sync_from_db(self) -> int:
-        """Load collections and chunks from PostgreSQL into memory.
-
-        FIX 3: Replaced the hard document cap with cursor-based streaming in
-        batches of 1000 so all chunks are loaded regardless of total count.
-        Memory growth is bounded per-batch; the old safety cap silently dropped
-        data for large tenants and was removed.
-
-        Returns the number of new chunks loaded.
-        Returns 0 immediately when no ``db_session_factory`` is configured.
-        """
-        if self._db is None:
-            return 0
-        try:
-            from sqlalchemy import select
-
-            from app.db.models.knowledge import Document
-            from app.db.models.knowledge import KnowledgeCollection as KCModel
-            from app.db.models.tenant import Tenant
-            from app.rag.models import Chunk, KnowledgeCollection
-
-            loaded = 0
-            async with self._db() as session:
-                # Load collections — only for active tenants (no cap needed here
-                # as collection count is naturally bounded).
-                col_result = await session.execute(
-                    select(KCModel)
-                    .join(Tenant, KCModel.tenant_id == Tenant.id)
-                    .where(Tenant.is_active == True)  # noqa: E712
-                    .limit(10_000)
-                )
-                collections = col_result.scalars().all()
-                for c in collections:
-                    col = KnowledgeCollection(
-                        name=c.name,
-                        description=c.description or "",
-                        collection_id=c.id,
-                        document_count=c.document_count or 0,
-                        embedder=c.embedder or "voyage",
-                    )
-                    key = (c.tenant_id, c.id)
-                    if key not in self._data:
-                        self._data[key] = _CollectionStore(collection=col)
-
-                # FIX 3: Stream documents in batches of 1000 — no hard cap.
-                # Uses OFFSET pagination ordered by primary key for stable pages.
-                if collections:
-                    col_ids = [c.id for c in collections]
-                    batch_size = 1000
-                    offset = 0
-
-                    while True:
-                        batch_result = await session.execute(
-                            select(Document)
-                            .where(Document.collection_id.in_(col_ids))
-                            .order_by(Document.id)   # stable ordering for pagination
-                            .limit(batch_size)
-                            .offset(offset)
-                        )
-                        docs = batch_result.scalars().all()
-                        if not docs:
-                            break
-
-                        for d in docs:
-                            key = (d.tenant_id, d.collection_id)
-                            cstore = self._data.get(key)
-                            if cstore is not None:
-                                existing_ids = {c.chunk_id for c in cstore.chunks}
-                                if d.id not in existing_ids:
-                                    chunk = Chunk(
-                                        document_id=d.id,
-                                        content=d.content,
-                                        embedding=list(d.embedding) if d.embedding is not None else [],
-                                        chunk_index=d.chunk_index or 0,
-                                        chunk_id=d.id,
-                                        metadata=dict(d.doc_metadata or {}),
-                                    )
-                                    cstore.chunks.append(chunk)
-                                    loaded += 1
-
-                        offset += batch_size
-
-            _log.info(
-                "Synced %d chunks from DB into KnowledgeStore (streaming, no cap)", loaded
-            )
-            return loaded
-        except Exception as exc:
-            _log.warning("DB knowledge sync failed: %s", exc)
-            return 0
+        """Compatibility no-op; persisted metadata is read per tenant on demand."""
+        return 0
 
     async def expand_to_parents(
         self,
@@ -742,59 +1426,71 @@ class KnowledgeStore:
     ) -> list[Any]:
         """Expand child chunk IDs to their parent chunks for full-context retrieval.
 
-        Fetches the parent chunk for each child chunk ID.  When a child has no
-        parent (chunk_level == 'leaf'), the child itself is returned.  Falls
-        back to an empty list on any DB error.
+        Fetches the parent chunk for each child chunk ID. When a child has no
+        persisted parent, the child itself is returned.
         """
         if not child_chunk_ids:
             return []
         _db = db or self._db
         if _db is None:
             return []
-        try:
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            from app.db.rls import sqlalchemy_rls_context
+        from app.db.rls import sqlalchemy_rls_context
 
-            async with _db() as session, sqlalchemy_rls_context(
-                session, tenant_ctx.tenant_id
-            ):
-                rows = (
-                    await session.execute(
-                        text("""
-                            SELECT c.id, c.content,
-                                   COALESCE(c.metadata->>'source_url', '') AS source_url,
-                                   c.metadata
-                            FROM knowledge_chunks_1536 c
-                            INNER JOIN knowledge_chunks_1536 child
-                                ON child.parent_chunk_id = c.id
-                            WHERE child.id = ANY(:child_ids)
-                              AND c.collection_id = :cid
-                            UNION
-                            SELECT id, content,
-                                   COALESCE(metadata->>'source_url', '') AS source_url,
-                                   metadata
-                            FROM knowledge_chunks_1536
-                            WHERE id = ANY(:child_ids)
-                              AND collection_id = :cid
-                        """),
-                        {
-                            "child_ids": child_chunk_ids,
-                            "cid": collection_id,
-                        },
-                    )
-                ).fetchall()
+        async with (
+            _db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if dimension_row is None:
+                return []
+            table = _chunk_table(int(dimension_row[0]))
+            rows = (
+                await session.execute(
+                    text(f"""
+                        SELECT COALESCE(parent.id, child.id),
+                               COALESCE(parent.content, child.content),
+                               COALESCE(parent.metadata->>'source_url',
+                                        child.metadata->>'source_url', ''),
+                               COALESCE(parent.metadata, child.metadata)
+                        FROM {table} AS child
+                        LEFT JOIN {table} AS parent
+                          ON parent.id = child.parent_chunk_id
+                         AND parent.collection_id = child.collection_id
+                         AND parent.tenant_id = child.tenant_id
+                        WHERE child.id = ANY(:child_ids)
+                          AND child.collection_id = :cid
+                          AND child.tenant_id = :tid
+                    """),
+                    {
+                        "child_ids": child_chunk_ids,
+                        "cid": collection_id,
+                        "tid": tenant_ctx.tenant_id,
+                    },
+                )
+            ).fetchall()
 
-            return [
-                type("Chunk", (), {
-                    "chunk_id": str(r[0]),
-                    "content": str(r[1]),
-                    "source_url": str(r[2] or ""),
-                    "metadata": r[3] or {},
+        return [
+            type(
+                "Chunk",
+                (),
+                {
+                    "chunk_id": str(row[0]),
+                    "content": str(row[1]),
+                    "source_url": str(row[2] or ""),
+                    "metadata": row[3] or {},
                     "score": 0.8,
-                })()
-                for r in rows
-            ]
-        except Exception as exc:
-            _log.warning("expand_to_parents failed: %s", exc)
-            return []
+                },
+            )()
+            for row in rows
+        ]

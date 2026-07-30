@@ -153,8 +153,8 @@ async def test_graph_node_rag_retrieval_with_memory() -> None:
     assert state.status == GoalStatus.COMPLETE
 
 
-async def test_graph_node_plan_with_rag_context() -> None:
-    """Plan node injects RAG context into planner prompt when knowledge_store is set."""
+async def test_graph_with_collection_but_no_gateway_fails_closed() -> None:
+    """A collection-backed run cannot bypass a missing retrieval gateway."""
     p = FakeProvider(
         responses=[
             '{"steps": ["use context to answer"]}',
@@ -179,7 +179,8 @@ async def test_graph_node_plan_with_rag_context() -> None:
     g = AgentGraph(planner=p, executor=p, verifier=p, knowledge_store=ks)
     state = await g.run(goal="use context to answer", tenant_ctx=T)
     assert state is not None
-    assert state.status == GoalStatus.COMPLETE
+    assert state.status == GoalStatus.FAILED
+    assert state.context["rag_retrieval_status"] == "failed"
 
 
 async def test_graph_initial_context_tool_prompt_reaches_planner() -> None:

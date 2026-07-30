@@ -12,13 +12,11 @@ Covers all 8 required fixes:
 """
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
-
 
 # ---------------------------------------------------------------------------
 # Fix 1: Explicit tenant_id in all SQL queries
@@ -61,21 +59,22 @@ async def test_tenant_id_filter_explicit_in_all_queries() -> None:
         async def __aexit__(self, *_: object) -> None:
             pass
 
+    mock_session.begin = MagicMock(return_value=_FakeRLS())
+
     import app.db.rls as rls_mod
     original = getattr(rls_mod, "sqlalchemy_rls_context", None)
     rls_mod.sqlalchemy_rls_context = lambda *a, **kw: _FakeRLS()  # type: ignore[assignment]
 
     try:
         store = KnowledgeStore(db_session_factory=lambda: mock_session)
-        await store.hybrid_search_db(
+        results = await store.hybrid_search_db(
             query="test query",
             query_embedding=[0.1] * 768,
             collection_id=str(uuid4()),
             tenant_ctx=tenant_ctx,
             top_k=5,
         )
-    except Exception:
-        pass  # We only care about query structure, not result processing
+        assert results == []
     finally:
         if original is not None:
             rls_mod.sqlalchemy_rls_context = original
@@ -114,7 +113,7 @@ def test_embed_batch_defined_on_all_providers() -> None:
             f"{cls.__name__} is missing embed_batch(). "
             "Add it to support efficient batch embedding."
         )
-        assert callable(getattr(cls, "embed_batch")), (
+        assert callable(cls.embed_batch), (
             f"{cls.__name__}.embed_batch must be callable."
         )
 
@@ -214,30 +213,60 @@ async def test_federated_search_normalizes_scores() -> None:
 
     cid_a = str(uuid4())
     cid_b = str(uuid4())
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
     # Two collections return results with very different score scales
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
-        if cid == cid_a:
+    async def mock_execute(
+        tenant_context: TenantContext,
+        *,
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del query, top_k, filters
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+
+        assert tenant_context.tenant_id == "federated-tenant"
+        if collection_id == cid_a:
             # High-range scores (e.g. from a cosine similarity model ~0.9)
-            return [
-                {"content": f"doc_a_{i}", "score": 0.9 - i * 0.05, "content_hash": f"h_a_{i}"}
+            values = [
+                (f"doc_a_{i}", 0.9 - i * 0.05, f"h_a_{i}")
                 for i in range(3)
             ]
         else:
             # Low-range scores (e.g. from a BM25 model ~0.1)
-            return [
-                {"content": f"doc_b_{i}", "score": 0.1 + i * 0.02, "content_hash": f"h_b_{i}"}
+            values = [
+                (f"doc_b_{i}", 0.1 + i * 0.02, f"h_b_{i}")
                 for i in range(3)
             ]
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id=content_hash,
+                    chunk_id=content_hash,
+                    content=content,
+                    score=score,
+                    source=collection_id,
+                    metadata={"content_hash": content_hash},
+                )
+                for content, score, content_hash in values
+            ],
+        )
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
     results = await federated_search(
         query="test query",
         collection_ids=[cid_a, cid_b],
-        store=mock_store,
+        gateway=mock_gateway,
         top_k=6,
+        tenant_ctx=tenant_ctx,
     )
 
     assert len(results) > 0, "Should return results"
@@ -258,18 +287,45 @@ async def test_federated_search_deduplicates_results() -> None:
     cid_a = str(uuid4())
     cid_b = str(uuid4())
     shared_hash = "shared_content_hash_123"
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
-        return [{"content": "identical content", "score": 0.9, "content_hash": shared_hash}]
+    async def mock_execute(
+        tenant_context: TenantContext,
+        *,
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del tenant_context, query, top_k, filters
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id=shared_hash,
+                    chunk_id=shared_hash,
+                    content="identical content",
+                    score=0.9,
+                    source=collection_id,
+                    metadata={"content_hash": shared_hash},
+                )
+            ],
+        )
+
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
     results = await federated_search(
         query="test",
         collection_ids=[cid_a, cid_b],
-        store=mock_store,
+        gateway=mock_gateway,
         top_k=10,
+        tenant_ctx=tenant_ctx,
     )
 
     # The same content_hash must appear exactly once
@@ -280,31 +336,55 @@ async def test_federated_search_deduplicates_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_federated_search_handles_collection_error() -> None:
-    """A failing collection must not abort the entire search."""
+async def test_federated_search_propagates_collection_error() -> None:
+    """A collection failure must not become an empty successful response."""
     from app.knowledge.federated_search import federated_search
 
     cid_good = str(uuid4())
     cid_bad = str(uuid4())
+    from app.tenancy.context import PlanTier, TenantContext
+    tenant_ctx = TenantContext("federated-tenant", PlanTier.PROFESSIONAL, "key")
 
-    async def mock_search(query: str, cid: str, top_k: int) -> list[dict]:
-        if cid == cid_bad:
+    async def mock_execute(
+        tenant_context: TenantContext,
+        *,
+        query: str,
+        collection_id: str,
+        top_k: int,
+        strategy_id: str,
+        filters: dict,
+    ):
+        del tenant_context, query, top_k, filters
+        if collection_id == cid_bad:
             raise RuntimeError("Collection unavailable")
-        return [{"content": "good result", "score": 0.8, "content_hash": "good_hash"}]
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
-    mock_store = MagicMock()
-    mock_store.search = mock_search
+        return RAGExecutionResult(
+            requested_strategy_id=strategy_id,
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id="good_hash",
+                    chunk_id="good_hash",
+                    content="good result",
+                    score=0.8,
+                    source=collection_id,
+                    metadata={"content_hash": "good_hash"},
+                )
+            ],
+        )
 
-    results = await federated_search(
-        query="test",
-        collection_ids=[cid_good, cid_bad],
-        store=mock_store,
-        top_k=10,
-    )
+    mock_gateway = MagicMock()
+    mock_gateway.execute = mock_execute
 
-    # Still returns results from the working collection
-    assert len(results) == 1
-    assert results[0]["content"] == "good result"
+    with pytest.raises(RuntimeError, match="Collection unavailable"):
+        await federated_search(
+            query="test",
+            collection_ids=[cid_good, cid_bad],
+                gateway=mock_gateway,
+            top_k=10,
+            tenant_ctx=tenant_ctx,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -313,8 +393,8 @@ async def test_federated_search_handles_collection_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_embedder_none_raises_503() -> None:
-    """search_knowledge() must raise HTTP 503 when embedder is None (Fix 5)."""
+async def test_retrieval_gateway_none_raises_503() -> None:
+    """search_knowledge() must fail closed when no gateway is configured."""
     from fastapi import HTTPException
 
     from app.api.knowledge import search_knowledge
@@ -330,7 +410,7 @@ async def test_embedder_none_raises_503() -> None:
     mock_request.state.tenant = tenant_ctx
     mock_request.app.state.knowledge_store = KnowledgeStore()
     mock_request.app.state.semantic_cache = SemanticCache()
-    mock_request.app.state.embedder = None  # KEY: no embedder configured
+    mock_request.app.state.retrieval_gateway = None
 
     with pytest.raises(HTTPException) as exc_info:
         await search_knowledge(
@@ -339,12 +419,8 @@ async def test_embedder_none_raises_503() -> None:
             collection_id=str(uuid4()),
         )
 
-    assert exc_info.value.status_code == 503, (
-        f"Expected 503 when embedder=None, got {exc_info.value.status_code}"
-    )
-    assert "embedding" in exc_info.value.detail.lower(), (
-        "503 detail must mention embedding configuration"
-    )
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Retrieval service is unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -440,32 +516,22 @@ def test_secret_str_get_secret_value_works() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fix 7: sync_from_db() uses streaming cursor — no hard cap
+# Fix 7: sync_from_db() hydrates compatibility metadata only
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_streaming_cursor_no_hard_cap() -> None:
-    """sync_from_db() must stream all chunks without a LIMIT 100000 (Fix 7)."""
+async def test_sync_from_db_does_not_hydrate_legacy_documents() -> None:
+    """Production reads must never depend on legacy document hydration."""
     import inspect
 
     from app.rag.store import KnowledgeStore
 
     source = inspect.getsource(KnowledgeStore.sync_from_db)
 
-    # The old hard cap must be gone
-    assert "100_000" not in source, (
-        "sync_from_db() still contains LIMIT 100_000 hard cap. "
-        "Remove it and replace with streaming cursor batches."
-    )
-    assert "100000" not in source, (
-        "sync_from_db() still contains LIMIT 100000 hard cap."
-    )
-
-    # Streaming indicators must be present
-    assert "offset" in source.lower() or "batch" in source.lower(), (
-        "sync_from_db() must use offset-based streaming pagination."
-    )
+    assert "documents" not in source
+    assert "chunks.append" not in source
+    assert "per tenant on demand" in source.lower()
 
 
 @pytest.mark.asyncio

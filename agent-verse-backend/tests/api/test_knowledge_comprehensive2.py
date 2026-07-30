@@ -233,7 +233,7 @@ def test_ingest_repo_collection_not_found() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (202, 404, 503)
+    assert resp.status_code == 404
 
 
 def test_ingest_repo_queued() -> None:
@@ -255,7 +255,7 @@ def test_ingest_repo_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +395,7 @@ def test_ingest_slack_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    assert resp.status_code in (200, 202, 500, 503)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ def test_search_no_embedder_returns_503() -> None:
     assert resp.status_code == 503
 
 
-def test_search_with_embedder_empty_result() -> None:
+def test_search_with_embedder_but_no_gateway_fails_closed() -> None:
     embedder = _make_embedder()
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
     coll = client.post(
@@ -432,8 +432,7 @@ def test_search_with_embedder_empty_result() -> None:
         f"/knowledge/search?q=test+query&collection_id={coll_id}",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

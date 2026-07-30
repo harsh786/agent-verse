@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.rag.contracts import RAGStrategy, resolve_rag_strategy
 
 # ---------------------------------------------------------------------------
 # Legacy static workflow types (used by build_static_workflow / goal_service)
@@ -73,6 +74,7 @@ class WorkflowStep:
     status: str = "pending"   # pending|running|complete|failed
     result: str = ""
     error: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,18 +83,27 @@ class WorkflowPlan:
     steps: list[WorkflowStep] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict, goal: str) -> "WorkflowPlan":
-        steps = [
-            WorkflowStep(
-                id=s.get("id", f"s{i + 1}"),
-                description=s.get("description", ""),
-                tool=s.get("tool", ""),
-                depends_on=s.get("depends_on", []),
-                can_parallel=s.get("can_parallel", True),
-                estimated_minutes=s.get("estimated_minutes", 1),
+    def from_dict(cls, data: dict[str, Any], goal: str) -> WorkflowPlan:
+        steps: list[WorkflowStep] = []
+        for i, raw_step in enumerate(data.get("steps", [])):
+            step = dict(raw_step)
+            if step.get("tool") == "rag":
+                requested_strategy_id = str(
+                    step.get("strategy", RAGStrategy.HYBRID.value)
+                )
+                step["requested_strategy_id"] = requested_strategy_id
+                step["strategy"] = resolve_rag_strategy(requested_strategy_id).value
+            steps.append(
+                WorkflowStep(
+                    id=step.get("id", f"s{i + 1}"),
+                    description=step.get("description", ""),
+                    tool=step.get("tool", ""),
+                    depends_on=step.get("depends_on", []),
+                    can_parallel=step.get("can_parallel", True),
+                    estimated_minutes=step.get("estimated_minutes", 1),
+                    config=step,
+                )
             )
-            for i, s in enumerate(data.get("steps", []))
-        ]
         return cls(goal=goal, steps=steps)
 
     def execution_waves(self) -> list[list[WorkflowStep]]:
@@ -152,7 +163,8 @@ class WorkflowPlanner:
             except Exception:
                 pass
 
-        prompt = f"""You are a workflow orchestration engine. Given a goal, produce a parallel-aware execution plan.
+        prompt = f"""You are a workflow orchestration engine.
+Given a goal, produce a parallel-aware execution plan.
 
 Goal: {goal}{tool_summary}
 

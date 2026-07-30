@@ -16,9 +16,12 @@ Algorithm:
   5. Return response with critique metadata
 """
 from __future__ import annotations
+
 import json
-from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 _SHOULD_RETRIEVE_SYSTEM = """Decide if the following query requires external retrieval.
@@ -83,6 +86,32 @@ class SelfRAGPattern(RAGPattern):
             pass
         return True
 
+    async def _complete_with_breaker(
+        self,
+        *,
+        provider: Any,
+        request: Any,
+        breaker: Any,
+        strict: bool,
+    ) -> Any | None:
+        """Run one provider call with side-effect-free circuit blocking."""
+
+        if breaker is not None and not breaker.can_call():
+            if strict:
+                raise RuntimeError("Self-RAG provider circuit is open")
+            return None
+        try:
+            response = await provider.complete(request)
+        except Exception as exc:
+            if breaker is not None:
+                breaker.record_failure()
+            if strict:
+                raise RuntimeError("Self-RAG provider call failed") from exc
+            return None
+        if breaker is not None:
+            breaker.record_success()
+        return response
+
     async def execute(
         self,
         *,
@@ -90,6 +119,8 @@ class SelfRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
+        model: str = "",
+        strict: bool = False,
         **kwargs: Any,
     ) -> str:
         """Execute Self-RAG with critique tokens. Returns answer string."""
@@ -100,7 +131,7 @@ class SelfRAGPattern(RAGPattern):
             pass
         result = await self.execute_with_critique(
             query=query, provider=provider,
-            retrieve_fn=retrieve_fn, max_tokens=max_tokens,
+            retrieve_fn=retrieve_fn, max_tokens=max_tokens, model=model, strict=strict,
         )
         try:
             from app.observability.logging import get_logger
@@ -116,6 +147,8 @@ class SelfRAGPattern(RAGPattern):
         provider: Any,
         retrieve_fn: Callable[[str], Awaitable[str]] | None = None,
         max_tokens: int = 800,
+        model: str = "",
+        strict: bool = False,
     ) -> SelfRAGResult:
         """Execute Self-RAG. Returns SelfRAGResult with full critique metadata."""
         from app.providers.base import CompletionRequest, Message
@@ -125,55 +158,72 @@ class SelfRAGPattern(RAGPattern):
             from app.reliability.circuit_breaker import CircuitBreaker
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
-                self._circuit_breakers[_cb_key] = CircuitBreaker(failure_threshold=5, cooldown_seconds=30)
+                self._circuit_breakers[_cb_key] = CircuitBreaker(
+                    failure_threshold=5,
+                    cooldown_seconds=30,
+                )
             cb: Any = self._circuit_breakers[_cb_key]
         except ImportError:
             cb = None
 
         # Step 1: Decide if retrieval needed
-        should_retrieve = await self._should_retrieve(query, provider)
+        should_retrieve = await self._should_retrieve(
+            query,
+            provider,
+            model,
+            strict,
+            cb,
+        )
 
         context = ""
         if should_retrieve and retrieve_fn is not None:
             try:
                 context = await retrieve_fn(query) or ""
             except Exception:
+                if strict:
+                    raise
                 context = ""
 
         # Step 2: Generate response
-        try:
-            if context:
-                messages = [
-                    Message(role="system", content=_GENERATE_WITH_CONTEXT),
-                    Message(
-                        role="user",
-                        content=f"Context:\n{context[:1500]}\n\nQuestion: {query}",
-                    ),
-                ]
-            else:
-                messages = [Message(role="user", content=query)]
+        if context:
+            messages = [
+                Message(role="system", content=_GENERATE_WITH_CONTEXT),
+                Message(
+                    role="user",
+                    content=f"Context:\n{context[:1500]}\n\nQuestion: {query}",
+                ),
+            ]
+        else:
+            messages = [Message(role="user", content=query)]
 
-            if cb is not None and not cb.can_call():
-                return SelfRAGResult(answer="", retrieved=bool(context))
-            resp = await provider.complete(CompletionRequest(
+        resp = await self._complete_with_breaker(
+            provider=provider,
+            request=CompletionRequest(
                 messages=messages,
-                model="",
+                model=model,
                 max_tokens=max_tokens,
                 temperature=0.0,
-            ))
-            if cb is not None:
-                cb.record_success()
-            answer = (resp.content or "").strip()
-        except Exception:
-            if cb is not None:
-                cb.record_failure()
+            ),
+            breaker=cb,
+            strict=strict,
+        )
+        if resp is None:
             return SelfRAGResult(answer="", retrieved=bool(context))
+        answer = (resp.content or "").strip()
 
         # Step 3: Critique (only if we retrieved)
         is_relevant = is_supported = is_useful = True
         confidence = 0.7
         if context:
-            critique = await self._critique(query, answer, context, provider)
+            critique = await self._critique(
+                query,
+                answer,
+                context,
+                provider,
+                model,
+                strict,
+                cb,
+            )
             is_relevant = critique.get("is_relevant", True)
             is_supported = critique.get("is_supported", True)
             is_useful = critique.get("is_useful", True)
@@ -189,15 +239,23 @@ class SelfRAGPattern(RAGPattern):
             confidence=confidence,
         )
 
-    async def _should_retrieve(self, query: str, provider: Any) -> bool:
+    async def _should_retrieve(
+        self,
+        query: str,
+        provider: Any,
+        model: str = "",
+        strict: bool = False,
+        breaker: Any = None,
+    ) -> bool:
         from app.providers.base import CompletionRequest, Message
-        try:
-            resp = await provider.complete(CompletionRequest(
+        resp = await self._complete_with_breaker(
+            provider=provider,
+            request=CompletionRequest(
                 messages=[
                     Message(role="system", content=_SHOULD_RETRIEVE_SYSTEM),
                     Message(role="user", content=f"Query: {query[:300]}"),
                 ],
-                model="",
+                model=model,
                 max_tokens=100,
                 temperature=0.0,
                 response_schema={
@@ -207,22 +265,33 @@ class SelfRAGPattern(RAGPattern):
                         "reason": {"type": "string"},
                     },
                 },
-            ))
-            raw = (resp.content or "").strip()
-            try:
-                d = json.loads(raw)
-                return bool(d.get("should_retrieve", True))
-            except Exception:
-                return True  # default: retrieve
-        except Exception:
+            ),
+            breaker=breaker,
+            strict=strict,
+        )
+        if resp is None:
             return True
+        raw = (resp.content or "").strip()
+        try:
+            d = json.loads(raw)
+            return bool(d.get("should_retrieve", True))
+        except Exception:
+            return True  # default: retrieve
 
     async def _critique(
-        self, query: str, answer: str, context: str, provider: Any
-    ) -> dict:  # type: ignore[type-arg]
+        self,
+        query: str,
+        answer: str,
+        context: str,
+        provider: Any,
+        model: str = "",
+        strict: bool = False,
+        breaker: Any = None,
+    ) -> dict[str, Any]:
         from app.providers.base import CompletionRequest, Message
-        try:
-            resp = await provider.complete(CompletionRequest(
+        resp = await self._complete_with_breaker(
+            provider=provider,
+            request=CompletionRequest(
                 messages=[
                     Message(role="system", content=_CRITIQUE_SYSTEM),
                     Message(
@@ -234,7 +303,7 @@ class SelfRAGPattern(RAGPattern):
                         ),
                     ),
                 ],
-                model="",
+                model=model,
                 max_tokens=150,
                 temperature=0.0,
                 response_schema={
@@ -246,11 +315,15 @@ class SelfRAGPattern(RAGPattern):
                         "confidence": {"type": "number"},
                     },
                 },
-            ))
-            raw = (resp.content or "").strip()
-            try:
-                return json.loads(raw)
-            except Exception:
-                return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}
+            ),
+            breaker=breaker,
+            strict=strict,
+        )
+        if resp is None:
+            return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}
+        raw = (resp.content or "").strip()
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {"is_relevant": True, "is_supported": True, "is_useful": True, "confidence": 0.6}

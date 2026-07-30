@@ -25,6 +25,7 @@ class QueryReformulator:
         self,
         query: str,
         provider: Any = None,
+        model: str = "",
     ) -> list[str]:
         """LLM-driven reformulation. Falls back to rule-based."""
         if provider is None:
@@ -40,7 +41,7 @@ class QueryReformulator:
                     )),
                     Message(role="user", content=query),
                 ],
-                model="",
+                model=model,
                 max_tokens=150,
                 temperature=0.6,
             ))
@@ -52,4 +53,3 @@ class QueryReformulator:
             return rewrites[:self._max] if rewrites else self.reformulate(query)
         except Exception:
             return self.reformulate(query)
-

@@ -1,8 +1,6 @@
 """Comprehensive tests for app/rag/store.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-import asyncio
-import math
 import pytest
 
 from app.rag.models import Chunk, KnowledgeCollection
@@ -146,11 +144,21 @@ class TestKnowledgeStoreSearch:
         checkout_vec = [1.0] + [0.0] * 7
         login_vec = [0.0, 1.0] + [0.0] * 6
         store.ingest_chunk(
-            Chunk(document_id="d1", content="checkout payment processing", embedding=checkout_vec, chunk_index=0),
+            Chunk(
+                document_id="d1",
+                content="checkout payment processing",
+                embedding=checkout_vec,
+                chunk_index=0,
+            ),
             collection_id=col_id, tenant_ctx=_CTX
         )
         store.ingest_chunk(
-            Chunk(document_id="d2", content="login authentication", embedding=login_vec, chunk_index=0),
+            Chunk(
+                document_id="d2",
+                content="login authentication",
+                embedding=login_vec,
+                chunk_index=0,
+            ),
             collection_id=col_id, tenant_ctx=_CTX
         )
         return store, col_id
@@ -193,17 +201,12 @@ class TestKnowledgeStoreSearch:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_db_falls_back_to_memory_on_db_error(self):
-        """When DB raises, hybrid_search_db must fall back to in-memory."""
+    async def test_hybrid_search_db_propagates_db_error(self):
+        """A configured persisted read never substitutes memory on failure."""
         store = KnowledgeStore(db_session_factory=_FailingDB())
-        col_id = store.create_collection(KnowledgeCollection(name="db-err"), tenant_ctx=_CTX)
         v = [1.0] + [0.0] * 7
-        store.ingest_chunk(
-            Chunk(document_id="d1", content="db error test", embedding=v, chunk_index=0),
-            collection_id=col_id, tenant_ctx=_CTX
-        )
-        results = await store.hybrid_search_db("db error test", v, col_id, _CTX)
-        assert isinstance(results, list)
+        with pytest.raises(RuntimeError, match="DB failure"):
+            await store.hybrid_search_db("db error test", v, "collection", _CTX)
 
     @pytest.mark.asyncio
     async def test_hybrid_search_db_empty_embedding_falls_back(self):

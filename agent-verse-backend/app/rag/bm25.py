@@ -1,21 +1,17 @@
-"""True Okapi BM25 retrieval using rank_bm25 library.
-
-This replaces the PostgreSQL FTS approximation with proper BM25 scoring:
-  - IDF normalization (Okapi BM25 parameter k1=1.5, b=0.75)
-  - Works on in-memory chunk collections
-  - Used as an additional leg in hybrid retrieval when rank_bm25 is available
-  - Falls back gracefully to simple TF scoring when library is unavailable
-"""
+"""Application-side Okapi BM25 corpus scoring."""
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
 
 def _tokenize(text: str) -> list[str]:
-    """Tokenize text into lowercase alphanumeric words."""
-    return re.findall(r"\b[a-zA-Z0-9]+\b", text.lower())
+    """Tokenize complete text into lowercase Unicode-safe words."""
+
+    return re.findall(r"[^\W_]+", text.casefold())
 
 
 @dataclass
@@ -24,6 +20,80 @@ class BM25Hit:
     content: str
     score: float
     source_metadata: dict[str, Any]
+
+
+class BM25CorpusScorer:
+    """Accumulate corpus statistics, then score documents without retaining them."""
+
+    def __init__(self, query: str, k1: float = 1.5, b: float = 0.75) -> None:
+        self._k1 = k1
+        self._b = b
+        self._query_tokens = _tokenize(query)
+        self._query_terms = frozenset(self._query_tokens)
+        self._document_frequency: Counter[str] = Counter(
+            dict.fromkeys(self._query_terms, 0)
+        )
+        self._total_document_length = 0
+        self.document_count = 0
+
+    @property
+    def tracked_term_count(self) -> int:
+        return len(self._document_frequency)
+
+    @property
+    def document_frequency_terms(self) -> frozenset[str]:
+        return frozenset(self._document_frequency)
+
+    @property
+    def average_document_length(self) -> float:
+        return (
+            self._total_document_length / self.document_count
+            if self.document_count
+            else 0.0
+        )
+
+    def observe(self, content: str) -> None:
+        tokens = _tokenize(content)
+        self.document_count += 1
+        self._total_document_length += len(tokens)
+        observed_query_terms: set[str] = set()
+        for token in tokens:
+            if token in self._query_terms:
+                observed_query_terms.add(token)
+        self._document_frequency.update(observed_query_terms)
+
+    def score(self, content: str) -> float:
+        return self.score_tokens(_tokenize(content))
+
+    def score_tokens(self, document: list[str]) -> float:
+        if not self._query_tokens or not document or not self.document_count:
+            return 0.0
+        frequencies: Counter[str] = Counter()
+        for token in document:
+            if token in self._query_terms:
+                frequencies[token] += 1
+        average_length = self.average_document_length or 1.0
+        score = 0.0
+        for token in self._query_tokens:
+            frequency = frequencies[token]
+            if not frequency:
+                continue
+            document_frequency = self._document_frequency[token]
+            inverse_document_frequency = math.log(
+                1.0
+                + (self.document_count - document_frequency + 0.5)
+                / (document_frequency + 0.5)
+            )
+            denominator = frequency + self._k1 * (
+                1.0 - self._b + self._b * len(document) / average_length
+            )
+            score += (
+                inverse_document_frequency
+                * frequency
+                * (self._k1 + 1.0)
+                / denominator
+            )
+        return score
 
 
 class BM25Retriever:
@@ -36,21 +106,12 @@ class BM25Retriever:
         self._k1 = k1
         self._b = b
         self._chunks: list[dict[str, Any]] = []
-        self._bm25: Any = None
+        self._corpus: list[list[str]] = []
 
     def index(self, chunks: list[dict[str, Any]]) -> None:
         """Index a list of chunk dicts (must have 'content' and 'chunk_id')."""
         self._chunks = [c for c in chunks if c.get("content")]
-        corpus = [_tokenize(c["content"]) for c in self._chunks]
-        if not corpus:
-            self._bm25 = None
-            return
-        try:
-            from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
-
-            self._bm25 = BM25Okapi(corpus, k1=self._k1, b=self._b)
-        except ImportError:
-            self._bm25 = None
+        self._corpus = [_tokenize(str(c["content"])) for c in self._chunks]
 
     def search(self, query: str, top_k: int = 10) -> list[BM25Hit]:
         """Search indexed chunks using BM25 scoring.
@@ -64,25 +125,20 @@ class BM25Retriever:
         if not query_tokens:
             return []
 
-        if self._bm25 is not None:
-            scores: list[float] = list(self._bm25.get_scores(query_tokens))
-        else:
-            # Fallback: simple term-frequency scoring
-            scores = [
-                float(
-                    sum(
-                        1
-                        for qt in query_tokens
-                        if qt in _tokenize(c.get("content", ""))
-                    )
-                )
-                for c in self._chunks
-            ]
+        scorer = BM25CorpusScorer(query, k1=self._k1, b=self._b)
+        for chunk in self._chunks:
+            scorer.observe(str(chunk["content"]))
+        scores = [
+            scorer.score_tokens(document)
+            for document in self._corpus
+        ]
 
         ranked = sorted(
             enumerate(scores),
-            key=lambda x: x[1],
-            reverse=True,
+            key=lambda item: (
+                -item[1],
+                str(self._chunks[item[0]].get("chunk_id", item[0])),
+            ),
         )
         results: list[BM25Hit] = []
         for idx, score in ranked[:top_k]:
@@ -103,10 +159,6 @@ class BM25Retriever:
 
     @property
     def is_available(self) -> bool:
-        """True if rank_bm25 library is installed."""
-        try:
-            import rank_bm25  # noqa: F401  # type: ignore[import-untyped]
+        """The built-in scorer has no optional runtime dependency."""
 
-            return True
-        except ImportError:
-            return False
+        return True

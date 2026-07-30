@@ -1,6 +1,9 @@
-"""Fusion RAG pattern adapter — multi-query parallel retrieval with RRF fusion."""
+"""Fusion RAG pattern adapter for the canonical engine implementation."""
+
 from __future__ import annotations
+
 from typing import Any
+
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 
 
@@ -39,6 +42,7 @@ class FusionRAGPattern(RAGPattern):
         **kwargs: Any,
     ) -> list[Any]:
         from app.rag.engine import retrieve_fusion
+
         return await retrieve_fusion(
             session,
             query=query,
@@ -47,4 +51,10 @@ class FusionRAGPattern(RAGPattern):
             top_k=top_k,
             max_variants=max_variants,
             embedding_dim=embedding_dim,
+            embedder=kwargs.get("embedder"),
+            provider=kwargs.get("provider"),
+            model=str(kwargs.get("model", "")),
+            metadata_filter=kwargs.get("metadata_filter"),
+            strict=bool(kwargs.get("strict", False)),
+            search_operation=kwargs.get("search_operation"),
         )

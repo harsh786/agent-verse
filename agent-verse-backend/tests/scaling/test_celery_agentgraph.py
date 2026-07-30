@@ -3,9 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -14,9 +11,10 @@ import pytest
 class _FakeAgentState:
     """Minimal AgentState stub returned by the mock runner."""
 
-    class status:
+    class Status:
         value = "complete"
 
+    status = Status()
     iterations = 1
 
 
@@ -113,6 +111,8 @@ def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
     # Patching AgentLoop triggers monkey-patch detection → uses _FallbackLoop
     monkeypatch.setattr(_loop_mod, "AgentLoop", _FallbackLoop)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_LOOP", "true")
+    monkeypatch.setenv("ENVIRONMENT", "development")
 
     result = tasks.run_goal.run(
         "goal-fallback-1",
@@ -124,6 +124,65 @@ def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
 
     assert fallback_used, "Patched AgentLoop runner should have been used"
     assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
+
+
+def test_retrieval_capable_goal_never_uses_legacy_loop_on_graph_failure(
+    monkeypatch: Any,
+) -> None:
+    """Configured agents fail closed when canonical graph assembly fails."""
+    import uuid
+
+    import app.agent.graph as _graph_mod
+    from app.scaling import tasks
+
+    class BrokenGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            raise RuntimeError("private graph assembly secret")
+
+    monkeypatch.setattr(_graph_mod, "AgentGraph", BrokenGraph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+
+    result = tasks.run_goal.run(
+        f"goal-required-rag-{uuid.uuid4().hex}",
+        "tenant-1",
+        "knowledge-enabled goal",
+        "normal",
+        False,
+        agent_id="configured-agent",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "agentgraph_assembly_failed"
+    assert "secret" not in str(result)
+
+
+def test_unbound_production_goal_never_uses_legacy_loop_on_graph_failure(
+    monkeypatch: Any,
+) -> None:
+    import uuid
+
+    import app.agent.graph as _graph_mod
+    from app.scaling import tasks
+
+    class BrokenGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            raise RuntimeError("private graph assembly secret")
+
+    monkeypatch.setattr(_graph_mod, "AgentGraph", BrokenGraph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+    result = tasks.run_goal.run(
+        f"goal-unbound-{uuid.uuid4().hex}",
+        "tenant-1",
+        "unbound goal",
+        "normal",
+        False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "agentgraph_assembly_failed"
+    assert "secret" not in str(result)
 
 
 def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> None:
@@ -158,6 +217,185 @@ def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> 
     assert "dedup_cache" in kwargs, "dedup_cache must be passed"
     assert "rollback_engine" in kwargs, "rollback_engine must be passed"
     assert "guardrail_checker" in kwargs, "guardrail_checker must be passed"
+
+
+def test_eager_worker_injects_gateway_and_uses_it_for_knowledge(monkeypatch: Any) -> None:
+    """The eager Celery path calls the canonical worker gateway from AgentGraph."""
+    import asyncio
+    import uuid
+
+    import app.agent.graph as _graph_mod
+    from app.rag.contracts import RAGExecutionResult, RAGStrategy
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    gateway_calls: list[tuple[Any, dict[str, Any]]] = []
+    worker_dependencies: Any = None
+
+    class _Gateway:
+        def __init__(self, dependencies: Any) -> None:
+            self.dependencies = dependencies
+
+        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> RAGExecutionResult:
+            gateway_calls.append((tenant_ctx, kwargs))
+            return RAGExecutionResult(
+                requested_strategy_id=str(kwargs["strategy_id"]),
+                resolved_strategy_id=RAGStrategy.HYBRID,
+            )
+
+    class _Graph:
+        def __init__(self, **kwargs: Any) -> None:
+            self.gateway = kwargs.get("retrieval_gateway")
+            self._agent_collection_ids = []
+
+        async def run(self, *, tenant_ctx: Any, **kwargs: Any) -> _FakeAgentState:
+            assert self.gateway is not None
+            await self.gateway.execute(
+                tenant_ctx,
+                collection_id="collection-worker",
+                query="worker knowledge",
+                strategy_id=RAGStrategy.HYBRID,
+                top_k=3,
+                filters={},
+            )
+            return _FakeAgentState()
+
+    def build_worker_gateway(dependencies: Any) -> _Gateway:
+        nonlocal worker_dependencies
+        worker_dependencies = dependencies
+        return _Gateway(dependencies)
+
+    monkeypatch.setattr(tasks, "_build_worker_retrieval_gateway", build_worker_gateway)
+    monkeypatch.setattr(_graph_mod, "AgentGraph", _Graph)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+
+    result = tasks.run_goal.run(
+        f"goal-worker-gateway-{uuid.uuid4().hex}",
+        "tenant-1",
+        "answer from knowledge",
+        "normal",
+        False,
+    )
+
+    assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
+    assert gateway_calls
+    assert gateway_calls[0][0].tenant_id == "tenant-1"
+    assert worker_dependencies is not None
+    assert worker_dependencies.llm_resolver is not None
+    assert worker_dependencies.strategy_capabilities
+    assert worker_dependencies.collection_authorizer is not None
+    from app.rag.agentic.patterns.web_augmented import SafeWebSearchCapability
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+
+    assert isinstance(worker_dependencies.search_capability, SafeWebSearchCapability)
+    if worker_dependencies.session_factory is not None:
+        assert isinstance(
+            worker_dependencies.graph_capability,
+            TenantScopedGraphCapabilityAdapter,
+        )
+    else:
+        assert worker_dependencies.graph_capability is None
+    resolver = worker_dependencies.llm_resolver
+    resolved = asyncio.run(
+        resolver(
+            TenantContext("tenant-1", PlanTier.PROFESSIONAL, "worker-key"),
+            RAGStrategy.HYBRID,
+        )
+    )
+    assert resolved is not None
+    assert resolved.model == "fake-provider"
+    denied = asyncio.run(
+        resolver(
+            TenantContext("tenant-other", PlanTier.PROFESSIONAL, "worker-key"),
+            RAGStrategy.HYBRID,
+        )
+    )
+    assert denied is None
+
+
+def test_worker_loads_tenant_persisted_allow_and_domain_policy(monkeypatch: Any) -> None:
+    import asyncio
+
+    from app.governance.policies import Policy, PolicyEngine, PolicyResult
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def load(
+        self: PolicyEngine,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
+        assert strict
+        assert tenant_id == "tenant-worker"
+        self.add_policy(
+            Policy(
+                name="worker-web-domains",
+                tenant_id=tenant_id,
+                web_allowed_domains=["docs.example.com"],
+            )
+        )
+        return 1
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", load)
+    engine = asyncio.run(
+        tasks._load_worker_policy_engine(object(), "tenant-worker")
+    )
+    tenant = TenantContext("tenant-worker", PlanTier.ENTERPRISE, "key")
+
+    assert engine.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.ALLOW
+    assert engine.web_allowed_domains(tenant) == ("docs.example.com",)
+
+
+def test_worker_loads_tenant_web_deny_and_fails_closed_on_load_error(
+    monkeypatch: Any,
+) -> None:
+    import asyncio
+
+    from app.governance.policies import Policy, PolicyEngine, PolicyResult
+    from app.scaling import tasks
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def deny(
+        self: PolicyEngine,
+        db: Any,
+        tenant_id: str | None = None,
+        *,
+        strict: bool = False,
+    ) -> int:
+        self.add_policy(
+            Policy(name="deny-web", tenant_id=tenant_id or "", denied_tools=["web_search"])
+        )
+        return 1
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", deny)
+    tenant = TenantContext("tenant-worker", PlanTier.ENTERPRISE, "key")
+    denied = asyncio.run(
+        tasks._load_worker_policy_engine(object(), tenant.tenant_id)
+    )
+    assert denied.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.DENY
+
+    async def fail(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(PolicyEngine, "reload_from_db", fail)
+    failed = asyncio.run(
+        tasks._load_worker_policy_engine(object(), tenant.tenant_id)
+    )
+    assert failed.evaluate("web_search", tenant_ctx=tenant) is PolicyResult.DENY
+
+
+def test_worker_graph_capability_is_scoped_only_when_database_is_configured() -> None:
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+    from app.scaling import tasks
+
+    capability = tasks._build_worker_graph_capability(object())
+
+    assert isinstance(capability, TenantScopedGraphCapabilityAdapter)
+    assert not hasattr(capability, "session_factory")
+    assert not hasattr(capability, "store")
+    assert tasks._build_worker_graph_capability(None) is None
 
 
 def test_consolidate_memories_task_is_registered() -> None:

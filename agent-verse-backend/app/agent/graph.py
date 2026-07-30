@@ -65,6 +65,7 @@ from app.observability.metrics import (
 from app.pipeline.steps import smart_context_fetch
 from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
 from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
@@ -87,6 +88,10 @@ _DEFAULT_MAX_ITERATIONS = 100
 _HIGH_RISK_KEYWORDS = frozenset(
     ("deploy", "delete", "drop", "rm ", "prod", "production", "destroy", "wipe", "truncate")
 )
+
+
+class RetrievalEntryPointError(RuntimeError):
+    """A required, tenant-scoped retrieval leg failed."""
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +207,7 @@ class AgentGraph:
         exec_memory: ExecutionMemory | None = None,
         long_term_memory: LongTermMemoryStore | None = None,
         knowledge_store: KnowledgeStore | None = None,
+        retrieval_gateway: Any | None = None,
         mcp_client: Any | None = None,
         # Intelligence
         guardrail_checker: GuardrailChecker | None = None,
@@ -260,6 +266,7 @@ class AgentGraph:
         self._exec_memory = exec_memory
         self._long_term_memory = long_term_memory
         self._knowledge_store = knowledge_store
+        self._retrieval_gateway = retrieval_gateway
         self._mcp_client = mcp_client
         self._guardrail_checker = guardrail_checker
         self._eval_runner = eval_runner
@@ -377,10 +384,18 @@ class AgentGraph:
             _post_exec_target = "self_consistency"
             g.add_edge("self_consistency", "verify")
         if getattr(self, "_enable_self_refine", False):
-            g.add_edge("execute", "refine")
+            g.add_conditional_edges(
+                "execute",
+                self._route_after_execute,
+                {"failed": END, "continue": "refine"},
+            )
             g.add_edge("refine", _post_exec_target)
         else:
-            g.add_edge("execute", _post_exec_target)
+            g.add_conditional_edges(
+                "execute",
+                self._route_after_execute,
+                {"failed": END, "continue": _post_exec_target},
+            )
         # Reflection: reflect → plan edge so re-plan follows reflection
         if self._enable_reflection:
             g.add_edge("reflect", "plan")
@@ -545,7 +560,7 @@ class AgentGraph:
             _kb = getattr(self, "_knowledge_store", None)
             if _kb is not None:
                 inventory = SourceInventory(knowledge_store=_kb)
-                sources = inventory.build(tenant_ctx=agent_state.tenant_ctx)
+                sources = await inventory.build(tenant_ctx=agent_state.tenant_ctx)
                 agent_state.context["_source_inventory"] = sources.to_dict()
         except Exception:
             pass
@@ -565,9 +580,36 @@ class AgentGraph:
                 _rag_strategy = getattr(
                     getattr(_runtime_profile, "rag_strategy", None), "strategy", None
                 )
-        # Store for use in retrieval calls
-        if _rag_strategy and _rag_strategy not in ("direct", "hybrid", "auto", None):
-            agent_state.context["_active_rag_strategy"] = _rag_strategy
+        requested_strategy_id = str(
+            _rag_strategy
+            if _rag_strategy is not None
+            else agent_state.context.get(
+                "retrieval_strategy",
+                RAGStrategy.HYBRID.value,
+            )
+        )
+        try:
+            resolved_strategy = resolve_rag_strategy(requested_strategy_id)
+        except Exception as exc:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Invalid retrieval strategy"
+            agent_state.context["rag_retrieval_status"] = "failed"
+            failure_event = {
+                "type": "knowledge_retrieval_failed",
+                "collections_searched": list(self._agent_collection_ids[:3]),
+                "requested_strategy_id": requested_strategy_id,
+                "status": "failed",
+                "citations": [],
+                "resolved_strategy_ids": [],
+                "retrieval_legs": [],
+                "strategy_trace": [],
+            }
+            agent_state.events.append(failure_event)
+            await self._emit(failure_event)
+            raise RetrievalEntryPointError("Invalid retrieval strategy") from exc
+        agent_state.context["_requested_rag_strategy_id"] = requested_strategy_id
+        agent_state.context["_active_rag_strategy"] = resolved_strategy.value
+        agent_state.context["retrieval_strategy"] = resolved_strategy.value
 
         # N6e: chunking_strategy_selected SSE
         try:
@@ -578,22 +620,8 @@ class AgentGraph:
                     goal_id=agent_state.goal_id,
                     content_type="text",
                     strategy=_rag_strategy or "semantic",
-                    reason="RetrievalPlanner.select_strategy()",
+                    reason="configured canonical strategy",
                 ))
-        except Exception:
-            pass
-
-        # Select retrieval strategy using RetrievalPlanner heuristics
-        try:
-            from app.rag.engine import RetrievalPlanner
-            planner = RetrievalPlanner()
-            strategy = planner.select_strategy(agent_state.goal)
-            agent_state.context["retrieval_strategy"] = strategy
-            self._logger.debug(
-                "retrieval_strategy_selected",
-                strategy=strategy,
-                goal=agent_state.goal[:60],
-            )
         except Exception:
             pass
 
@@ -649,213 +677,130 @@ class AgentGraph:
                 ltm_text = "\n".join(f"- {m.content}" for m in ltm)
                 context_parts.append(f"[Domain knowledge]\n{ltm_text}")
 
-        # 3. KnowledgeStore hybrid search
-        # Uses agent's allowed_collection_ids if set; otherwise searches ALL tenant collections.
-        if self._knowledge_store is not None:
+        # 3. Required collection retrieval through the tenant-aware gateway.
+        search_collections = list(self._agent_collection_ids[:3])
+        if not search_collections and self._knowledge_store is not None:
+            all_collections = await self._knowledge_store.list_collections_async(
+                tenant_ctx=tenant_ctx
+            )
+            search_collections = [collection.collection_id for collection in all_collections[:3]]
+
+        if search_collections:
+            app_state = getattr(self._app_state, "state", self._app_state)
+            gateway = self._retrieval_gateway or getattr(
+                app_state, "retrieval_gateway", None
+            )
+            requested_strategy = str(
+                agent_state.context.get("_requested_rag_strategy_id")
+                or agent_state.context.get("retrieval_strategy")
+                or RAGStrategy.HYBRID.value
+            )
+            raw_top_k = agent_state.context.get("retrieval_top_k", 3)
+            retrieval_filters = agent_state.context.get("retrieval_filters", {})
+
             try:
-                # Determine which collections to search
-                search_collections = list(self._agent_collection_ids[:3])
-                if not search_collections:
-                    # Fall back to all tenant collections (up to 3)
-                    _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
-                    search_collections = [c.collection_id for c in _all_cols[:3]]
-
-                if search_collections:
-                    query_embedding: list[float] = []
-                    if self._embedder is not None:
-                        try:
-                            from app.providers.base import EmbedRequest
-                            _embed_resp = await self._embedder.embed(
-                                EmbedRequest(texts=[agent_state.goal])
-                            )
-                            if _embed_resp.embeddings:
-                                query_embedding = _embed_resp.embeddings[0]
-                        except Exception:
-                            pass
-                        # N6d: embedding_strategy_selected SSE
-                        try:
-                            if self._event_callback is not None and query_embedding:
-                                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
-                                _sse_es = RuntimeSSEEmitter()
-                                _emb_model = getattr(self._embedder, "model_id",
-                                                     getattr(self._embedder, "_model_id", "unknown")) or "unknown"
-                                await self._emit(_sse_es.embedding_strategy_selected(
-                                    goal_id=agent_state.goal_id,
-                                    model_id=_emb_model,
-                                    modality="text",
-                                    dimension=len(query_embedding) if query_embedding else 0,
-                                    cost_class="low",
-                                    reason="auto-selected embedder",
-                                ))
-                        except Exception:
-                            pass
-
-                    knowledge_contexts: list[str] = []
-                    knowledge_citations: list[dict[str, Any]] = []
-
-                    for collection_id in search_collections:
-                        results = await self._knowledge_store.hybrid_search_db(
-                            query=agent_state.goal,
-                            query_embedding=query_embedding,
-                            collection_id=collection_id,
-                            tenant_ctx=tenant_ctx,
-                            top_k=3,
-                        )
-                        for result in results:
-                            content = getattr(result, "content", str(result))
-                            score = getattr(result, "score", 0.0)
-                            source_url = getattr(result, "source_url", "")
-                            if content:
-                                knowledge_contexts.append(
-                                    f"[Collection: {collection_id}, score: {score:.2f}]\n"
-                                    f"{content[:300]}"
-                                )
-                                knowledge_citations.append({
-                                    "collection_id": collection_id,
-                                    "chunk_id": getattr(result, "chunk_id", ""),
-                                    "score": round(score, 4),
-                                    "source_url": source_url,
-                                    "excerpt": content[:200],
-                                })
-
-                    if knowledge_contexts:
-                        agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
-                        agent_state.context["rag_citations"] = knowledge_citations
-                        # Emit knowledge_retrieved event for the SSE stream
-                        agent_state.events.append({
-                            "type": "knowledge_retrieved",
-                            "collections_searched": search_collections,
-                            "chunks_found": len(knowledge_contexts),
-                            "citations": knowledge_citations[:5],
-                        })
-                        self._logger.info(
-                            "knowledge_store_rag_hit",
-                            collections=len(search_collections),
-                            chunks=len(knowledge_contexts),
-                            agent_collections=bool(self._agent_collection_ids),
-                        )
-            except Exception as _ks_exc:
-                self._logger.warning("knowledge_store_rag_failed", error=str(_ks_exc))
-
-        # Enhanced retrieval using RRF engine when DB session factory is available
-        if self._db_session_factory is not None and self._embedder is not None:
-            try:
-                from app.providers.base import EmbedRequest
-                from app.rag.engine import hybrid_search
-
-                _rrf_strategy = (
-                    agent_state.context.get("_active_rag_strategy")
-                    or agent_state.context.get("retrieval_strategy", "hybrid")
-                )
-                # Map RetrievalPlanner strategy to engine retrieval_mode
-                _mode = (
-                    _rrf_strategy
-                    if _rrf_strategy in ("hybrid", "lexical", "vector")
-                    else "hybrid"
-                )
-
-                _rrf_embed_resp = await self._embedder.embed(
-                    EmbedRequest(texts=[agent_state.goal])
-                )
-                _rrf_query_embedding: list[float] | None = (
-                    _rrf_embed_resp.embeddings[0] if _rrf_embed_resp.embeddings else None
-                )
-
-                # Determine collections to search (mirror KnowledgeStore logic)
-                _rrf_collections = list(self._agent_collection_ids[:2])
-                if not _rrf_collections and self._knowledge_store is not None:
-                    try:
-                        _all_cols = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
-                        _rrf_collections = [c.collection_id for c in _all_cols[:2]]
-                    except Exception:
-                        pass
-
-                if _rrf_collections:
-                    async with self._db_session_factory() as _rrf_session:
-                        for _rrf_cid in _rrf_collections:
-                            _rrf_results = await hybrid_search(
-                                _rrf_session,
-                                query=agent_state.goal,
-                                query_embedding=_rrf_query_embedding,
-                                collection_id=_rrf_cid,
-                                top_k=5,
-                                retrieval_mode=_mode,
-                            )
-                            if _rrf_results:
-                                _rrf_text = "\n\n".join(
-                                    f"[RRF:{r.score:.3f}|{','.join(r.retrieval_legs)}] "
-                                    f"{r.content[:300]}"
-                                    for r in _rrf_results[:3]
-                                )
-                                context_parts.append(
-                                    f"[RRF knowledge: {_rrf_cid}]\n{_rrf_text}"
-                                )
-                                self._logger.debug(
-                                    "rrf_engine_retrieval_hit",
-                                    collection=_rrf_cid,
-                                    results=len(_rrf_results),
-                                    strategy=_rrf_strategy,
-                                    mode=_mode,
-                                )
-            except Exception:
-                pass  # fall through — never block execution on retrieval enhancement
-
-        # N13: Dispatch advanced RAG strategies when profile selects them
-        _advanced_strategy = agent_state.context.get("_active_rag_strategy")
-        _use_advanced = bool(
-            _advanced_strategy
-            and _advanced_strategy not in ("hybrid", "direct", "lexical", "vector", "auto")
-        )
-        if _use_advanced and self._db_session_factory is not None:
-            try:
-                from app.rag.engine import retrieve as _engine_retrieve
-                # Reuse embedding computed in RRF section when available
-                try:
-                    _adv_embedding: list[float] | None = _rrf_query_embedding
-                except NameError:
-                    _adv_embedding = None
-                # Reuse collection list from RRF section when available
-                try:
-                    _adv_cid = _rrf_collections[0] if _rrf_collections else ""
-                except NameError:
-                    _adv_cid = ""
-                async with self._db_session_factory() as _adv_session:
-                    _adv_results = await _engine_retrieve(
-                        _adv_session,
+                if gateway is None:
+                    raise RuntimeError("Retrieval gateway is not configured")
+                if (
+                    not isinstance(raw_top_k, int)
+                    or isinstance(raw_top_k, bool)
+                    or raw_top_k < 1
+                ):
+                    raise ValueError("Invalid retrieval top_k")
+                if not isinstance(retrieval_filters, dict):
+                    raise TypeError("Invalid retrieval filters")
+                canonical_strategy = resolve_rag_strategy(requested_strategy)
+                agent_state.context["retrieval_strategy"] = canonical_strategy.value
+                agent_state.context["_active_rag_strategy"] = canonical_strategy.value
+                gateway_results: list[RAGExecutionResult] = []
+                for collection_id in search_collections:
+                    gateway_result = await gateway.execute(
+                        tenant_ctx,
+                        collection_id=collection_id,
                         query=agent_state.goal,
-                        query_embedding=_adv_embedding,
-                        collection_id=_adv_cid,
-                        top_k=8,
-                        strategy=_advanced_strategy,
-                        provider=self._planner,
-                        embedding_dim=None,
-                        long_term_memory=self._long_term_memory,
-                        tenant_ctx=agent_state.tenant_ctx,
-                        embedder=self._embedder,
+                        strategy_id=requested_strategy,
+                        top_k=raw_top_k,
+                        filters=retrieval_filters,
+                        execution_id=agent_state.goal_id,
                     )
-                if _adv_results:
-                    _adv_context = "\n\n".join(
-                        r.content[:600] for r in _adv_results[:5] if r.content
-                    )
-                    if _adv_context:
-                        context_parts = [_adv_context]
-                        agent_state.context["_rag_advanced_used"] = True
-                        agent_state.context["_rag_advanced_results"] = len(_adv_results)
-                        from app.observability.logging import get_logger
-                        get_logger(__name__).info(
-                            "advanced_rag_strategy_fired",
-                            strategy=_advanced_strategy,
-                            results=len(_adv_results),
-                            goal_id=agent_state.goal_id,
-                        )
-            except Exception as _adv_exc:
-                from app.observability.logging import get_logger
-                get_logger(__name__).warning(
-                    "advanced_rag_dispatch_failed",
-                    strategy=_advanced_strategy,
-                    error=str(_adv_exc)[:100],
+                    if not isinstance(gateway_result, RAGExecutionResult):
+                        raise TypeError("Retrieval gateway returned an invalid result")
+                    gateway_results.append(gateway_result)
+            except Exception as exc:
+                agent_state.status = GoalStatus.FAILED
+                agent_state.error_message = "Required retrieval failed"
+                agent_state.context["rag_retrieval_status"] = "failed"
+                failure_event = {
+                    "type": "knowledge_retrieval_failed",
+                    "collections_searched": search_collections,
+                    "requested_strategy_id": requested_strategy,
+                    "status": "failed",
+                    "citations": [],
+                    "resolved_strategy_ids": [],
+                    "retrieval_legs": [],
+                    "strategy_trace": [],
+                }
+                agent_state.events.append(failure_event)
+                await self._emit(failure_event)
+                self._logger.warning(
+                    "required_rag_retrieval_failed",
+                    error_type=type(exc).__name__,
+                    strategy=requested_strategy,
                 )
-                # Fall through to standard hybrid retrieval
+                raise RetrievalEntryPointError("Required retrieval failed") from exc
+
+            knowledge_citations = [
+                {
+                    **citation.model_dump(mode="json"),
+                    "collection_id": collection_id,
+                }
+                for collection_id, result in zip(
+                    search_collections, gateway_results, strict=True
+                )
+                for citation in result.citations
+            ]
+            retrieval_legs = [
+                leg.model_dump(mode="json")
+                for result in gateway_results
+                for leg in result.retrieval_legs
+            ]
+            strategy_trace = [
+                trace.model_dump(mode="json")
+                for result in gateway_results
+                for trace in result.strategy_trace
+            ]
+            resolved_strategy_ids = sorted(
+                {result.resolved_strategy_id.value for result in gateway_results}
+            )
+            knowledge_contexts = [
+                (
+                    f"[Collection: {citation['collection_id']}, "
+                    f"source: {citation['source']}, score: {citation['score']:.2f}]\n"
+                    f"{citation['content'][:600]}"
+                )
+                for citation in knowledge_citations
+            ]
+            context_parts.extend(knowledge_contexts)
+            agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
+            agent_state.context["rag_citations"] = knowledge_citations
+            agent_state.context["rag_requested_strategy_id"] = requested_strategy
+            agent_state.context["rag_resolved_strategy_ids"] = resolved_strategy_ids
+            agent_state.context["rag_retrieval_legs"] = retrieval_legs
+            agent_state.context["rag_strategy_trace"] = strategy_trace
+            agent_state.context["rag_retrieval_status"] = "complete"
+            agent_state.provenance.extend(knowledge_citations)
+            success_event = {
+                "type": "knowledge_retrieved",
+                "collections_searched": search_collections,
+                "chunks_found": len(knowledge_citations),
+                "citations": knowledge_citations,
+                "requested_strategy_id": requested_strategy,
+                "resolved_strategy_ids": resolved_strategy_ids,
+                "retrieval_legs": retrieval_legs,
+                "strategy_trace": strategy_trace,
+            }
+            agent_state.events.append(success_event)
+            await self._emit(success_event)
 
         rag_context = "\n\n".join(context_parts)
 
@@ -872,28 +817,9 @@ class AgentGraph:
                 latency_ms=0,
             )
             if self._event_callback is not None:
-                await self._event_callback(_rag_trace.to_sse_event())
+                await self._emit(_rag_trace.to_sse_event())
         except Exception:
             pass
-
-        # ── Web fallback when KB returns nothing ──────────────────────────────
-        if not context_parts and getattr(self, "_web_search_tool", None) is not None:
-            try:
-                web_results = await self._web_search_tool.search(agent_state.goal, num_results=3)
-                if web_results:
-                    web_context = "\n".join(
-                        f"[WEB] {r.get('snippet', r.get('body', r.get('content', '')))[:300]}"
-                        for r in web_results[:3]
-                    )
-                    context_parts.append(
-                        "[Web search — KB empty or returned no results]\n" + web_context
-                    )
-                    agent_state.context["web_search_active"] = True
-                    agent_state.context["web_search_auto"] = True
-                    rag_context = "\n\n".join(context_parts)
-            except Exception:
-                pass
-        # ── end web fallback ──────────────────────────────────────────────────
 
         # H21: Emit rag_strategy_selected SSE
         try:
@@ -939,6 +865,9 @@ class AgentGraph:
         if agent_state is None:
             return {}
 
+        if not agent_state.context.get("allow_rag_remediation", False):
+            return {}
+
         try:
             from app.rag.agentic.context_gap_detector import ContextGapDetector
             from app.rag.agentic.retriever_tool import RetrieverTool
@@ -946,17 +875,20 @@ class AgentGraph:
             feedback = agent_state.verification_feedback or ""
             detector = ContextGapDetector()
             missing_topic = detector.extract_missing_topic(feedback) or agent_state.goal[:100]
-
-            knowledge_store = getattr(self, "_knowledge_store", None)
-            tool = RetrieverTool(knowledge_store=knowledge_store, web_search_available=True)
-
+            app_state = getattr(self._app_state, "state", self._app_state)
+            gateway = self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
+            strategy = RAGStrategy(
+                str(agent_state.context.get("retrieval_strategy", RAGStrategy.HYBRID.value))
+            )
+            tool = RetrieverTool(retrieval_gateway=gateway)
             result = await tool.retrieve(
                 query=missing_topic,
                 tenant_ctx=agent_state.tenant_ctx,
-                strategy="auto",
+                strategy=strategy,
+                collection_ids=list(self._agent_collection_ids),
                 top_k=7,
                 min_confidence=0.2,
-                allow_web_fallback=True,
+                execution_id=agent_state.goal_id,
             )
 
             count = agent_state.context.get("remediation_count", 0) + 1
@@ -969,11 +901,33 @@ class AgentGraph:
             )
 
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-                get_logger(__name__).warning("rag_remediate_failed", error=str(exc))
-            except Exception:
-                pass
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Required retrieval remediation failed"
+            agent_state.context["rag_remediation_status"] = "failed"
+            event = {
+                "type": "knowledge_retrieval_failed",
+                "status": "failed",
+                "phase": "remediation",
+                "requested_strategy_id": str(
+                    agent_state.context.get(
+                        "retrieval_strategy",
+                        RAGStrategy.HYBRID.value,
+                    )
+                ),
+                "citations": [],
+                "resolved_strategy_ids": [],
+                "retrieval_legs": [],
+                "strategy_trace": [],
+            }
+            agent_state.events.append(event)
+            await self._emit(event)
+            self._logger.warning(
+                "rag_remediate_failed",
+                error_type=type(exc).__name__,
+            )
+            raise RetrievalEntryPointError(
+                "Required retrieval remediation failed"
+            ) from exc
 
         return {"agent_state": agent_state}
 
@@ -1677,12 +1631,15 @@ class AgentGraph:
                     exec_memory=self._exec_memory,
                     long_term_memory=self._long_term_memory,
                     knowledge_store=self._knowledge_store,
+                    retrieval_gateway=self._retrieval_gateway,
                     mcp_client=self._mcp_client,
                     eval_runner=self._eval_runner,
                     # Sub-agents don't recurse into goal trees
                     enable_goal_tree=False,
                     autonomy_mode=self._autonomy_mode,
                 )
+                graph._agent_collection_ids = list(self._agent_collection_ids)
+                graph._event_callback = self._event_callback
                 graph._parent_trace_context = otel_context.get_current()
                 return graph
 
@@ -1693,9 +1650,22 @@ class AgentGraph:
                     tenant_ctx=tenant_ctx,
                     parent_goal_id=agent_state.goal_id,
                     graph_factory=_sub_graph_factory,
+                    event_callback=self._event_callback,
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
+                    child_failures = [
+                        sub_goal
+                        for sub_goal in sub_goals
+                        if sub_goal.status is GoalStatus.FAILED
+                    ]
+                    for sub_goal in sub_goals:
+                        agent_state.provenance.extend(sub_goal.provenance)
+                    agent_state.context["child_retrieval_traces"] = [
+                        trace
+                        for sub_goal in sub_goals
+                        for trace in sub_goal.retrieval_trace
+                    ]
                     # Aggregate sub-goal results as steps so the verifier sees them
                     for sg in sub_goals:
                         step = StepResult(
@@ -1704,6 +1674,22 @@ class AgentGraph:
                             status=StepStatus.COMPLETE if not sg.error else StepStatus.FAILED,
                         )
                         agent_state.steps.append(step)
+                    if child_failures:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = "Nested retrieval failed"
+                        await self._emit(
+                            {
+                                "type": "nested_goal_failed",
+                                "failed_sub_goals": [
+                                    sub_goal.sub_goal_id
+                                    for sub_goal in child_failures
+                                ],
+                                "provenance": agent_state.provenance,
+                                "retrieval_trace": agent_state.context[
+                                    "child_retrieval_traces"
+                                ],
+                            }
+                        )
                     return {"agent_state": agent_state}
             except Exception as exc:
                 # Fall through to normal execution if goal-tree fails
@@ -2076,24 +2062,24 @@ class AgentGraph:
                 return "Duplicate step, returning cached result."
             self._dedup_cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
 
-        # 3b. Generate step embedding for semantic RAG retrieval (Task 2)
-        step_embedding: list[float] | None = None
-        if self._embedder is not None:
-            try:
-                from app.providers.base import EmbedRequest
-                _embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
-                if _embed_resp.embeddings:
-                    step_embedding = _embed_resp.embeddings[0]
-            except Exception:
-                pass  # embedder unavailable — RAG still works via keyword fallback
-
-        # 3c. Smart context fetch (per-step RAG)
+        # 3b. Smart context fetch (per-step RAG)
+        app_state = getattr(self._app_state, "state", self._app_state)
+        step_strategy = RAGStrategy(
+            str(state.context.get("retrieval_strategy", RAGStrategy.HYBRID.value))
+        )
         step_context = await smart_context_fetch(
             goal=state.goal,
             step=step,
             tenant_ctx=tenant_ctx,
-            knowledge_store=self._knowledge_store,
-            query_embedding=step_embedding,
+            retrieval_gateway=(
+                self._retrieval_gateway
+                or getattr(app_state, "retrieval_gateway", None)
+            ),
+            collection_ids=list(self._agent_collection_ids),
+            strategy=step_strategy,
+            top_k=int(state.context.get("retrieval_top_k", 3)),
+            filters=state.context.get("retrieval_filters", {}),
+            execution_id=state.goal_id,
         )
 
         # 4. Circuit breaker
@@ -2252,17 +2238,30 @@ class AgentGraph:
             from app.rag.agentic.search_directive_parser import SearchDirectiveParser
             _directive_parser = SearchDirectiveParser()
             _directives = _directive_parser.extract(step)
-            if _directives and self._knowledge_store is not None:
+            if _directives and self._agent_collection_ids:
                 from app.rag.agentic.retriever_tool import RetrieverTool
-                _retriever = RetrieverTool(knowledge_store=self._knowledge_store)
+                _retriever = RetrieverTool(
+                    retrieval_gateway=(
+                        self._retrieval_gateway
+                        or getattr(app_state, "retrieval_gateway", None)
+                    )
+                )
                 _directive_contexts: list[str] = []
                 for _directive in _directives:
-                    _strategy = _directive_parser.directive_to_strategy(_directive.source_type)
+                    _strategy = {
+                        "kb": RAGStrategy.HYBRID,
+                        "graph": RAGStrategy.GRAPH,
+                        "web": RAGStrategy.WEB_AUGMENTED,
+                    }.get(_directive.source_type)
+                    if _strategy is None:
+                        raise ValueError("Unsupported search directive source")
                     _retrieval = await _retriever.retrieve(
                         query=_directive.query,
                         tenant_ctx=tenant_ctx,
                         strategy=_strategy,
+                        collection_ids=list(self._agent_collection_ids),
                         top_k=3,
+                        execution_id=state.goal_id,
                     )
                     if _retrieval.chunks:
                         _directive_contexts.append(
@@ -2272,8 +2271,8 @@ class AgentGraph:
                 if _directive_contexts:
                     _directive_context_str = "\n\n".join(_directive_contexts)
                     context_parts.append(_directive_context_str)
-        except Exception:
-            pass
+        except ValueError:
+            raise
         # ── end search directives ──────────────────────────────────────────
 
         content = f"Step: {step}"
@@ -4140,7 +4139,8 @@ class AgentGraph:
             from app.rag.agentic.context_gap_detector import ContextGapDetector
             _gap_detector = ContextGapDetector()
             _remediation_count = agent_state.context.get("remediation_count", 0)
-            if (not agent_state.verification_success
+            if (agent_state.context.get("allow_rag_remediation", False)
+                    and not agent_state.verification_success
                     and _gap_detector.has_gap(agent_state.verification_feedback or "")
                     and _remediation_count < 2):
                 return "rag_remediate"
@@ -4151,6 +4151,10 @@ class AgentGraph:
         if self._enable_reflection:
             return "reflect"
         return "replan"
+
+    def _route_after_execute(self, state: GraphState) -> str:
+        agent_state: AgentState = state["agent_state"]
+        return "failed" if agent_state.status is GoalStatus.FAILED else "continue"
 
     # ------------------------------------------------------------------
     # Public interface
@@ -4276,6 +4280,17 @@ class AgentGraph:
                         return err_state
                     raise  # genuine governance denials surface to the caller
                 except Exception as exc:
+                    if isinstance(exc, RetrievalEntryPointError):
+                        failed_state = input_state.get("agent_state")
+                        if isinstance(failed_state, AgentState):
+                            if event_callback:
+                                await self._emit(
+                                    {
+                                        "type": "goal_failed",
+                                        "reason": failed_state.error_message,
+                                    }
+                                )
+                            return failed_state
                     import traceback as _tb
                     import logging as _logging
                     _logging.getLogger(__name__).warning(

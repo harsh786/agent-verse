@@ -15,11 +15,12 @@ Supported node types:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import re
 from typing import Any
 
 from app.observability.logging import get_logger
+from app.rag.contracts import RAGStrategy, resolve_rag_strategy
+from app.tenancy.context import TenantContext
 
 logger = get_logger(__name__)
 
@@ -180,8 +181,8 @@ async def execute_rag_node(
     node: dict[str, Any],
     context: dict[str, Any],
     *,
-    db_session: Any = None,
-    embedder: Any = None,
+    retrieval_gateway: Any,
+    tenant_ctx: TenantContext,
 ) -> dict[str, Any]:
     """
     Execute a RAG retrieval node.
@@ -190,12 +191,21 @@ async def execute_rag_node(
       collection_id: str   — knowledge collection to query
       query_template: str  — query with {{var}} context substitution
       top_k: int           — number of chunks to retrieve
-      strategy: str        — hybrid | lexical | vector
+      strategy: str        — one canonical RAG strategy ID
     """
     collection_id = node.get("collection_id", "")
     query_template = node.get("query_template", "{{goal}}")
     top_k = min(int(node.get("top_k", 5)), 20)
-    strategy = node.get("strategy", "hybrid")
+    requested_strategy_id = str(
+        node.get(
+            "requested_strategy_id",
+            node.get("strategy", RAGStrategy.HYBRID.value),
+        )
+    )
+    resolve_rag_strategy(requested_strategy_id)
+    filters = node.get("filters", {})
+    if not isinstance(filters, dict):
+        raise TypeError("RAG workflow filters must be an object")
 
     # Substitute context variables
     query = query_template
@@ -203,32 +213,31 @@ async def execute_rag_node(
         query = query.replace(f"{{{{{key}}}}}", str(value)[:200])
 
     if not collection_id:
-        return {"chunks": [], "query": query, "error": "no collection_id configured"}
+        raise ValueError("RAG workflow collection_id is required")
+    if retrieval_gateway is None:
+        raise RuntimeError("Retrieval gateway is not configured")
 
-    chunks = []
-    if db_session is not None:
-        try:
-            from app.rag.engine import hybrid_search
-
-            query_embedding = None
-            if embedder is not None:
-                with contextlib.suppress(Exception):
-                    query_embedding = await embedder.embed(query)
-
-            results = await hybrid_search(
-                session=db_session,
-                query=query,
-                query_embedding=query_embedding,
-                collection_id=collection_id,
-                top_k=top_k,
-                retrieval_mode=strategy,
-            )
-            chunks = [
-                {"content": r.content, "score": r.score, "legs": r.retrieval_legs}
-                for r in results
-            ]
-        except Exception as e:
-            logger.warning("rag_node_failed", error=str(e)[:80])
+    execute_kwargs: dict[str, Any] = {
+        "collection_id": str(collection_id),
+        "query": query,
+        "strategy_id": requested_strategy_id,
+        "top_k": top_k,
+        "filters": filters,
+    }
+    execution_id = str(context.get("goal_id") or context.get("execution_id") or "")
+    if execution_id:
+        execute_kwargs["execution_id"] = execution_id
+    result = await retrieval_gateway.execute(tenant_ctx, **execute_kwargs)
+    citations = [citation.model_dump(mode="json") for citation in result.citations]
+    chunks = [
+        {
+            "content": citation.content,
+            "score": citation.score,
+            "chunk_id": citation.chunk_id,
+            "source": citation.source,
+        }
+        for citation in result.citations
+    ]
 
     logger.info("rag_node_complete", chunks=len(chunks), collection=collection_id)
     return {
@@ -236,6 +245,11 @@ async def execute_rag_node(
         "query": query,
         "collection_id": collection_id,
         "context_text": "\n\n".join(str(c["content"]) for c in chunks[:top_k]),
+        "citations": citations,
+        "requested_strategy_id": result.requested_strategy_id,
+        "resolved_strategy_id": result.resolved_strategy_id.value,
+        "retrieval_legs": [leg.model_dump(mode="json") for leg in result.retrieval_legs],
+        "strategy_trace": [trace.model_dump(mode="json") for trace in result.strategy_trace],
     }
 
 

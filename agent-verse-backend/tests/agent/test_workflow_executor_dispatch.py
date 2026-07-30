@@ -3,6 +3,53 @@ import pytest
 
 
 class TestWorkflowExecutorDispatch:
+    @pytest.mark.asyncio
+    async def test_executor_threads_rag_config_and_gateway(self):
+        from app.agent.workflow_executor import WorkflowExecutor
+        from app.agent.workflow_planner import WorkflowPlan
+        from app.rag.contracts import RAGExecutionResult, RAGStrategy
+        from app.tenancy.context import PlanTier, TenantContext
+
+        calls = []
+
+        class Gateway:
+            async def execute(self, tenant_ctx, **kwargs):
+                calls.append((tenant_ctx, kwargs))
+                return RAGExecutionResult(
+                    requested_strategy_id="fusion",
+                    resolved_strategy_id=RAGStrategy.FUSION,
+                )
+
+        plan = WorkflowPlan.from_dict(
+            {
+                "steps": [
+                    {
+                        "id": "rag-1",
+                        "description": "policy",
+                        "tool": "rag",
+                        "collection_id": "collection-1",
+                        "strategy": "fusion",
+                        "top_k": 7,
+                        "filters": {"team": "legal"},
+                    }
+                ]
+            },
+            goal="policy",
+        )
+        tenant = TenantContext("t1", PlanTier.PROFESSIONAL, "k1")
+
+        result = await WorkflowExecutor(retrieval_gateway=Gateway()).execute(
+            plan,
+            tenant_ctx=tenant,
+        )
+
+        assert result["status"] == "complete"
+        assert calls[0][0] is tenant
+        assert calls[0][1]["collection_id"] == "collection-1"
+        assert calls[0][1]["strategy_id"] == "fusion"
+        assert calls[0][1]["top_k"] == 7
+        assert calls[0][1]["filters"] == {"team": "legal"}
+
     def test_workflow_executor_importable(self):
         from app.agent.workflow_executor import WorkflowExecutor
         assert WorkflowExecutor is not None
@@ -86,16 +133,17 @@ class TestWorkflowExecutorDispatch:
         assert result["delayed_seconds"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_rag_node_executes_without_db(self):
+    async def test_rag_node_requires_collection(self):
         from app.agent.workflow_nodes import execute_rag_node
-        result = await execute_rag_node(
-            {"collection_id": "", "query_template": "test query", "top_k": 5},
-            {},
-            db_session=None,
-            embedder=None,
-        )
-        assert "chunks" in result
-        assert isinstance(result["chunks"], list)
+        from app.tenancy.context import PlanTier, TenantContext
+
+        with pytest.raises(ValueError, match="collection_id"):
+            await execute_rag_node(
+                {"collection_id": "", "query_template": "test query", "top_k": 5},
+                {},
+                retrieval_gateway=object(),
+                tenant_ctx=TenantContext("t1", PlanTier.PROFESSIONAL, "k1"),
+            )
 
     @pytest.mark.asyncio
     async def test_skill_node_executes(self):

@@ -221,6 +221,38 @@ def _run_async(coro: Any) -> Any:
         loop.close()
 
 
+async def _load_worker_policy_engine(db_factory: Any, tenant_id: str) -> Any:
+    from app.governance.policies import Policy, PolicyEngine
+
+    engine = PolicyEngine()
+    try:
+        await engine.reload_from_db(db_factory, tenant_id=tenant_id, strict=True)
+    except Exception as exc:
+        logger.warning("worker_policy_load_failed_closed: %s", type(exc).__name__)
+        engine.add_policy(
+            Policy(
+                name="worker-policy-load-failed",
+                tenant_id=tenant_id,
+                denied_tools=["*"],
+            )
+        )
+    return engine
+
+
+def _build_worker_graph_capability(db_factory: Any) -> Any:
+    if db_factory is None:
+        return None
+    from app.rag.gateway import TenantScopedGraphCapabilityAdapter
+
+    return TenantScopedGraphCapabilityAdapter()
+
+
+def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
+    from app.rag.gateway import RetrievalGateway
+
+    return RetrievalGateway(dependencies)
+
+
 def _record_goal_duration_metric(
     status: str, *, started_monotonic: float, priority: str
 ) -> None:
@@ -740,25 +772,36 @@ def run_goal(
     _agent_autonomy_mode = "bounded-autonomous"
     _agent_max_iterations: int | None = None   # None = use graph default (100)
     _agent_system_prompt: str = ""
+    _agent_collection_ids: list[str] = []
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_config() -> tuple[str, int | None, str]:
+            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str]]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (await _sess.execute(
-                        _sa_text("SELECT autonomy_mode, max_iterations, system_prompt FROM agents WHERE id = :aid AND tenant_id = :tid LIMIT 1"),
+                        _sa_text(
+                            "SELECT autonomy_mode, max_iterations, system_prompt, "
+                            "allowed_collection_ids FROM agents "
+                            "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
+                        ),
                         {"aid": agent_id, "tid": tenant_id},
                     )).fetchone()
                     if row:
                         mode = str(row[0]) if row[0] else "bounded-autonomous"
                         iters = int(row[1]) if row[1] else None
                         sys_prompt = str(row[2]) if row[2] else ""
-                        return mode, iters, sys_prompt
-                    return "bounded-autonomous", None, ""
+                        collection_ids = list(row[3] or []) if len(row) > 3 else []
+                        return mode, iters, sys_prompt, collection_ids
+                    return "bounded-autonomous", None, "", []
 
-            _agent_autonomy_mode, _agent_max_iterations, _agent_system_prompt = _run_async(_lookup_agent_config())
+            (
+                _agent_autonomy_mode,
+                _agent_max_iterations,
+                _agent_system_prompt,
+                _agent_collection_ids,
+            ) = _run_async(_lookup_agent_config())
             logger.info("worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
                         goal_id, agent_id, _agent_autonomy_mode, _agent_max_iterations)
         except Exception as _ae:
@@ -843,9 +886,8 @@ def run_goal(
         try:
             from app.agent.graph import AgentGraph
             from app.governance.audit import AuditLog
-            from app.governance.cost import CostController
+            from app.governance.cost import CostController, RedisCostController
             from app.governance.hitl import HITLGateway
-            from app.governance.policies import PolicyEngine
             from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
             from app.memory.execution import ExecutionMemory
@@ -856,7 +898,7 @@ def run_goal(
             _audit = AuditLog(db_session_factory=db_factory)
             _hitl = HITLGateway()
             _cost = CostController()
-            _policy = PolicyEngine()
+            _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
             _ltm = LongTermMemoryStore()
             _eval = EvalRunner()
             _exec_mem = ExecutionMemory()
@@ -867,7 +909,12 @@ def run_goal(
             if _redis_url_cw:
                 try:
                     import redis.asyncio as _aioredis_cw
-                    _cost._redis = _aioredis_cw.from_url(_redis_url_cw, decode_responses=True)
+                    _cost = RedisCostController(
+                        redis=_aioredis_cw.from_url(
+                            _redis_url_cw,
+                            decode_responses=True,
+                        )
+                    )
                 except Exception:
                     pass
 
@@ -982,9 +1029,78 @@ def run_goal(
             try:
                 from app.rag.store import KnowledgeStore as _KnowledgeStore  # correct path
                 if db_factory is not None:
-                    _knowledge_store_worker = _KnowledgeStore(db_factory=db_factory)
+                    _knowledge_store_worker = _KnowledgeStore(
+                        db_session_factory=db_factory
+                    )
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
+
+            from app.core.config import get_settings
+            from app.rag.agentic.patterns.web_augmented import (
+                build_safe_web_search_capability,
+                parse_allowed_domains,
+            )
+            from app.rag.gateway import (
+                KnowledgeStoreCollectionAuthorizer,
+                ResolvedLLM,
+                RetrievalDependencies,
+                SQLCollectionAuthorizer,
+                core_strategy_capabilities,
+            )
+
+            async def _resolve_worker_retrieval_llm(
+                tenant_context: TenantContext,
+                strategy: Any,
+            ) -> ResolvedLLM | None:
+                del strategy
+                if tenant_context.tenant_id != tenant_id:
+                    return None
+                provider_default = getattr(provider, "_default_model", "")
+                model = (
+                    provider_default.strip()
+                    if isinstance(provider_default, str)
+                    else ""
+                )
+                if not model and isinstance(provider, FakeProvider):
+                    model = "fake-provider"
+                if not model:
+                    return None
+                return ResolvedLLM(
+                    provider=provider,
+                    model=model,
+                    provider_type=str(
+                        getattr(provider, "_agentverse_provider_type", "")
+                    ),
+                )
+
+            collection_authorizer = (
+                SQLCollectionAuthorizer()
+                if db_factory is not None
+                else KnowledgeStoreCollectionAuthorizer(_knowledge_store_worker)
+                if _knowledge_store_worker is not None
+                else SQLCollectionAuthorizer()
+            )
+            worker_settings = get_settings()
+            worker_web_search = build_safe_web_search_capability(
+                searxng_url=worker_settings.searxng_url,
+                policy_services=(_policy, _cost, _hitl),
+                allowed_domains=parse_allowed_domains(
+                    worker_settings.web_search_allowed_domains
+                ),
+            )
+            _retrieval_gateway_worker = _build_worker_retrieval_gateway(
+                RetrievalDependencies(
+                    session_factory=db_factory,
+                    embedder=_embedder_for_graph,
+                    llm_resolver=_resolve_worker_retrieval_llm,
+                    graph_capability=_build_worker_graph_capability(db_factory),
+                    search_capability=worker_web_search,
+                    policy_services=(_policy, _cost, _hitl),
+                    cost_controller=_cost,
+                    collection_authorizer=collection_authorizer,
+                    strategy_capabilities=core_strategy_capabilities(),
+                )
+            )
 
             _agent_runner = AgentGraph(
                 planner=provider,
@@ -1009,6 +1125,7 @@ def run_goal(
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
                 knowledge_store=_knowledge_store_worker,
+                retrieval_gateway=_retrieval_gateway_worker,
                 # Redis-backed checkpointer set by worker_init signal; None → MemorySaver
                 checkpointer=_WORKER_CHECKPOINTER,
                 # Phase 3 services — grounding, consensus, synthesis, calibration
@@ -1019,6 +1136,7 @@ def run_goal(
             )
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
+            _agent_runner._agent_collection_ids = list(_agent_collection_ids)
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:
@@ -1038,8 +1156,26 @@ def run_goal(
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
         except Exception as _ag_exc:
+            retrieval_required = bool(agent_id or _agent_collection_ids)
+            environment = os.getenv("ENVIRONMENT", "development")
+            legacy_fallback_allowed = (
+                environment != "production"
+                and os.getenv("ALLOW_LEGACY_AGENT_LOOP", "").lower() == "true"
+            )
+            if retrieval_required or not legacy_fallback_allowed:
+                sanitized = RuntimeError("Canonical AgentGraph assembly failed")
+                _run_async(mark_worker_failed(sanitized))
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                return {
+                    "status": "failed",
+                    "goal_id": goal_id,
+                    "reason": "agentgraph_assembly_failed",
+                    "message": "Canonical AgentGraph assembly failed",
+                }
             logger.warning(
-                "AgentGraph unavailable, falling back to AgentLoop: %s", _ag_exc
+                "AgentGraph unavailable for non-RAG development goal; "
+                "using legacy AgentLoop (error_type=%s)",
+                type(_ag_exc).__name__,
             )
 
     if _agent_runner is None:

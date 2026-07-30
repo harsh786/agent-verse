@@ -48,6 +48,7 @@ class WorkflowExecutor:
         mcp_client: Any = None,
         llm_provider: Any = None,
         embedder: Any = None,
+        retrieval_gateway: Any = None,
     ) -> None:
         self._provider = provider
         self._mcp_client = mcp_client
@@ -55,6 +56,7 @@ class WorkflowExecutor:
         # need LLM access (decision, etc.).  Falls back to provider if not given.
         self._llm_provider = llm_provider or provider
         self._embedder = embedder
+        self._retrieval_gateway = retrieval_gateway
 
     # ── new parallel DAG API ──────────────────────────────────────────────────
 
@@ -92,16 +94,19 @@ class WorkflowExecutor:
                 ]
                 wave_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                for step, result in zip(wave, wave_results):
-                    if isinstance(result, Exception):
-                        results[step.id] = {"status": "failed", "error": str(result)}
+                for step, wave_result in zip(wave, wave_results, strict=True):
+                    if isinstance(wave_result, BaseException):
+                        results[step.id] = {
+                            "status": "failed",
+                            "error": str(wave_result),
+                        }
                     else:
-                        results[step.id] = result
+                        results[step.id] = wave_result
 
                 # Check for non-ignorable failures
                 failed = [
-                    s for s, r in zip(wave, wave_results)
-                    if isinstance(r, Exception) or (
+                    s for s, r in zip(wave, wave_results, strict=True)
+                    if isinstance(r, BaseException) or (
                         isinstance(r, dict)
                         and r.get("status") == "failed"
                         and not r.get("continue_on_error")
@@ -135,7 +140,7 @@ class WorkflowExecutor:
         self,
         step: WorkflowStep,
         tenant_ctx: Any,
-        prior_results: dict,
+        prior_results: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute a single workflow step, falling back LLM → stub."""
         step.status = "running"
@@ -166,6 +171,7 @@ class WorkflowExecutor:
                 "collection_id": "",
                 "items_key": "items",
                 "max_iter": 10,
+                **step.config,
             }
             ctx: dict[str, Any] = {
                 "goal": step.description,
@@ -206,7 +212,10 @@ class WorkflowExecutor:
                 }
             elif node_type == "rag":
                 rag_result = await execute_rag_node(
-                    node_cfg, ctx, db_session=None, embedder=self._embedder
+                    node_cfg,
+                    ctx,
+                    retrieval_gateway=self._retrieval_gateway,
+                    tenant_ctx=tenant_ctx,
                 )
                 step.status = "complete"
                 step.result = rag_result.get("context_text", "")

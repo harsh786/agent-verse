@@ -1,12 +1,12 @@
 """Base class for RAG pattern adapters."""
 from __future__ import annotations
 
-import enum
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any
 
 
-class RAGPatternState(str, enum.Enum):
+class RAGPatternState(StrEnum):
     IMPLEMENTED = "implemented"
     PARTIAL = "partial"
     PLANNED = "planned"

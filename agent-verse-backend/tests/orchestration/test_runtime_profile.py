@@ -1,28 +1,27 @@
 """Tests for runtime flags and GoalRuntimeProfile contracts."""
 from __future__ import annotations
 
-import pytest
 from app.core.runtime_flags import RuntimeFlags, get_runtime_flags
 from app.orchestration.runtime_profile import (
-    Complexity,
-    RiskLevel,
-    Domain,
-    TimeSensitivity,
-    KnowledgeState,
-    GoalProperties,
     AgentPatternConfig,
-    RAGStrategyConfig,
-    ModelPlanConfig,
-    SecurityConfig,
-    MemoryCacheConfig,
-    EvalConfig,
-    GoalRuntimeProfile,
-    MultimodalRuntimeProfile,
-    SelfImprovementProfile,
+    Complexity,
     ContextRuntimeProfile,
+    Domain,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
     KnowledgeRuntimeProfile,
+    KnowledgeState,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    MultimodalRuntimeProfile,
+    RAGStrategyConfig,
+    RiskLevel,
+    SecurityConfig,
     SecurityRuntimeProfile,
+    SelfImprovementProfile,
 )
+from app.rag.contracts import RAGStrategy
 
 
 def test_flags_default_values():
@@ -77,6 +76,11 @@ def test_goal_runtime_profile_is_serializable():
     assert data["goal_id"] == "g1"
     assert data["security"]["hitl_required"] is True
     json.dumps(data)
+
+
+def test_rag_profile_defaults_use_canonical_strategy_ids() -> None:
+    assert AgentPatternConfig().rag == [RAGStrategy.HYBRID.value]
+    assert RAGStrategyConfig().strategy == RAGStrategy.HYBRID.value
 
 
 def test_high_risk_profile_flags():

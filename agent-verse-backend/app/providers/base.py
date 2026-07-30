@@ -85,7 +85,7 @@ class CompletionResponse:
 class EmbedRequest:
     texts: list[str]
     model: str = ""
-    input_type: str = "document"
+    input_type: Literal["query", "document"] = "document"
 
 
 @dataclass

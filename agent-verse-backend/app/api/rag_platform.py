@@ -1,107 +1,141 @@
 """RAG Platform API - unified retrieval with multiple strategies."""
+
 from __future__ import annotations
+
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from app.rag_platform.query_planner import RAGStrategy
+
+from app.orchestration.strategy_registry import get_strategy_registry
+from app.rag.contracts import (
+    RAGStrategy,
+    UnavailableRAGStrategyError,
+    UnknownRAGStrategyError,
+    resolve_rag_strategy,
+)
+from app.rag.gateway import CollectionNotFoundError
+from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
+from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/rag", tags=["rag-platform"])
 
 
-def _require_tenant(request: Request) -> Any:
+def _require_tenant(request: Request) -> TenantContext:
     ctx = getattr(request.state, "tenant", None)
-    if ctx is None:
+    if not isinstance(ctx, TenantContext):
         raise HTTPException(401, "Unauthorized")
     return ctx
 
 
 class RAGQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10_000)
-    collection_id: str | None = None
-    strategy: str = "auto"
+    collection_id: str = Field(..., min_length=1)
+    strategy: str = RAGStrategy.HYBRID.value
     top_k: int = Field(default=5, ge=1, le=20)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    execution_id: str = Field(default="", max_length=128)
+
+
+def _resolve_request_strategy(strategy_id: str) -> RAGStrategy:
+    """Resolve an API strategy ID and translate contract errors to stable HTTP responses."""
+
+    try:
+        strategy = resolve_rag_strategy(strategy_id)
+    except UnknownRAGStrategyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return strategy
+
+
+def _raise_retrieval_http_error(exc: Exception) -> None:
+    """Map gateway failures to stable responses without exposing internals."""
+
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, UnknownRAGStrategyError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, CollectionNotFoundError):
+        raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    if isinstance(exc, UnavailableRAGStrategyError):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(exc, RAGSynthesisError):
+        raise HTTPException(status_code=503, detail="Answer synthesis is unavailable") from exc
+    raise HTTPException(status_code=503, detail="Retrieval service is unavailable") from exc
 
 
 @router.post("/query")
 async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     """Execute a RAG query with the specified strategy."""
     tenant = _require_tenant(request)
-    from app.rag_platform.retriever import rag_retriever
-
-    provider = getattr(request.app.state, "_app_provider", None)
-    knowledge_store = getattr(request.app.state, "knowledge_store", None)
-
+    _resolve_request_strategy(body.strategy)
+    gateway = getattr(request.app.state, "retrieval_gateway", None)
+    if gateway is None:
+        raise HTTPException(status_code=503, detail="Retrieval service is unavailable")
+    retriever = RAGRetriever(gateway=gateway)
     try:
-        from app.knowledge_graph.store import kg_store
-
-        rag_retriever.set_dependencies(
-            provider=provider, knowledge_store=knowledge_store, kg_store=kg_store
+        result = await retriever.retrieve(
+            query=body.query,
+            tenant_ctx=tenant,
+            collection_id=body.collection_id,
+            strategy=body.strategy,
+            top_k=body.top_k,
+            filters=body.filters,
+            execution_id=body.execution_id,
         )
-    except ImportError:
-        rag_retriever.set_dependencies(provider=provider, knowledge_store=knowledge_store)
-
-    try:
-        strategy = RAGStrategy(body.strategy)
-    except ValueError:
-        strategy = RAGStrategy.AUTO
-
-    result = await rag_retriever.retrieve(
-        query=body.query,
-        tenant_id=tenant.tenant_id,
-        collection_id=body.collection_id,
-        strategy=strategy,
-        top_k=body.top_k,
-    )
+    except Exception as exc:
+        _raise_retrieval_http_error(exc)
 
     return {
-        "query": result.query,
-        "strategy_used": result.strategy_used.value,
+        "query": body.query,
+        "requested_strategy_id": result.requested_strategy_id,
+        "resolved_strategy_id": result.resolved_strategy_id.value,
+        "strategy_used": result.resolved_strategy_id.value,
         "answer": result.answer,
-        "citations": result.citations,
+        "citations": [citation.model_dump(mode="json") for citation in result.citations],
         "grounded": result.grounded,
-        "confidence": round(result.confidence, 3),
-        "retrieval_legs": [
-            {
-                "strategy": leg.strategy.value,
-                "result_count": len(leg.results),
-                "latency_ms": round(leg.latency_ms, 1),
-            }
-            for leg in result.legs
-        ],
+        "confidence": round(max((citation.score for citation in result.citations), default=0.0), 3),
+        "retrieval_legs": [leg.model_dump(mode="json") for leg in result.retrieval_legs],
+        "strategy_trace": [trace.model_dump(mode="json") for trace in result.strategy_trace],
     }
 
 
 @router.get("/strategies")
 async def list_strategies(request: Request) -> dict[str, Any]:
     """List available RAG strategies."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
+    registry = get_strategy_registry()
+    gateway = getattr(request.app.state, "retrieval_gateway", None)
+    strategies: list[dict[str, Any]] = []
+    for strategy in RAGStrategy:
+        capability = registry.get(strategy.value)
+        if capability is None:
+            raise RuntimeError(f"Canonical RAG strategy is not registered: {strategy.value}")
+        registry_available = registry.is_available(strategy.value)
+        readiness = None
+        if gateway is not None and hasattr(gateway, "readiness"):
+            readiness = await gateway.readiness(tenant, strategy_id=strategy)
+        capability_available = bool(readiness is not None and readiness.available)
+        unavailable_reason = (
+            "registry_not_certified"
+            if not registry_available
+            else readiness.reason
+            if readiness is not None
+            else "gateway_unavailable"
+        )
+        strategies.append(
+            {
+                "id": strategy.value,
+                "name": strategy.value.replace("_", " ").title(),
+                "description": capability.description,
+                "state": capability.state.value,
+                "registry_available": registry_available,
+                "capability_available": capability_available,
+                "available": registry_available and capability_available,
+                "unavailable_reason": (
+                    None if registry_available and capability_available else unavailable_reason
+                ),
+            }
+        )
     return {
-        "strategies": [
-            {"id": "auto", "name": "Auto", "description": "System selects best strategy"},
-            {
-                "id": "direct",
-                "name": "Direct Vector",
-                "description": "Simple embedding similarity search",
-            },
-            {
-                "id": "multi_hop",
-                "name": "Multi-Hop",
-                "description": "Multi-turn retrieval for complex questions",
-            },
-            {
-                "id": "hyde",
-                "name": "HyDE",
-                "description": "Hypothetical Document Embeddings for better recall",
-            },
-            {
-                "id": "graph",
-                "name": "GraphRAG",
-                "description": "Knowledge graph-expanded retrieval",
-            },
-            {
-                "id": "multimodal",
-                "name": "Multimodal",
-                "description": "Search across text, images, PDFs, and audio",
-            },
-        ]
+        "strategies": strategies,
     }
