@@ -4198,6 +4198,30 @@ class AgentGraph:
             record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
             return "max_iter"
 
+        # ── Stuck-loop detection ─────────────────────────────────────────────
+        # If the last 3 steps in the *current* execution round are all FAILED,
+        # force a replan rather than continuing the failing approach.
+        try:
+            if self._check_stuck_loop(agent_state, window=3):
+                agent_state.context["_stuck_loop_replan"] = True
+                self._logger.warning(
+                    "stuck_loop_detected",
+                    goal_id=agent_state.goal_id,
+                    consecutive_failures=3,
+                )
+                # Emit is async; record intent in context and let the execute
+                # node pick it up at start of next iteration via event_callback.
+                agent_state.context["_pending_events"] = agent_state.context.get(
+                    "_pending_events", []
+                ) + [{
+                    "type": "stuck_loop_detected",
+                    "goal_id": agent_state.goal_id,
+                    "message": "3 consecutive step failures — forcing replan",
+                }]
+                return "replan"
+        except Exception:
+            pass  # never crash routing
+
         # ── Stagnation detection ────────────────────────────────────────────
         # If the last 3 verification feedbacks are identical (agent keeps making
         # the same mistake) — stop immediately rather than burning all iterations.
@@ -4447,6 +4471,23 @@ class AgentGraph:
             event["ts"] = datetime.now(UTC).isoformat()
         if self._event_callback is not None:
             await self._event_callback(self._sanitize_event(event))
+
+    def _check_stuck_loop(
+        self,
+        state: AgentState,
+        window: int = 3,
+    ) -> bool:
+        """Return True when the last *window* steps are all FAILED.
+
+        Signals a stuck execution loop that should trigger an early replan rather
+        than burning the remaining iteration budget.
+        """
+        recent = [s for s in state.steps if hasattr(s, "status")][-window:]
+        if len(recent) < window:
+            return False
+        return all(
+            getattr(s, "status", None) == StepStatus.FAILED for s in recent
+        )
 
     async def _write_checkpoint(
         self, goal_id: str, step_index: int, state: Any, tenant_ctx: Any

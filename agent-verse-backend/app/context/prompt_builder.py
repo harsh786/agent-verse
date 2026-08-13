@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.context.citation_manager import Citation
+    pass
 
 
 _CHARS_PER_TOKEN = 4
+# When the assembled prompt exceeds this fraction of the context window we
+# run the PromptCompressor before returning to keep within model limits.
+_AUTO_COMPRESS_THRESHOLD = 0.85
 
 
 @dataclass
@@ -31,6 +34,25 @@ class PromptContextBundle:
 class PromptBuilder:
     def __init__(self, max_context_tokens: int = 6000) -> None:
         self._max_tokens = max_context_tokens
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Cheap token count estimate: 1 token ≈ 4 chars."""
+        return max(1, len(text) // _CHARS_PER_TOKEN)
+
+    def _auto_compress(self, text: str, model_max_tokens: int | None = None) -> str:
+        """Compress *text* if it exceeds _AUTO_COMPRESS_THRESHOLD of the context window."""
+        limit = model_max_tokens or self._max_tokens
+        threshold_chars = int(limit * _CHARS_PER_TOKEN * _AUTO_COMPRESS_THRESHOLD)
+        if len(text) <= threshold_chars:
+            return text
+        try:
+            from app.context.prompt_compressor import PromptCompressor
+            compressor = PromptCompressor(target_tokens=int(limit * _AUTO_COMPRESS_THRESHOLD))
+            compressed = compressor.compress(text)
+            return compressed
+        except Exception:
+            # Fallback: hard truncate
+            return text[:threshold_chars]
 
     def _truncate_chunks(self, chunks: list[dict[str, Any]], token_budget: int) -> str:
         parts = []
@@ -103,9 +125,8 @@ class PromptBuilder:
             sections.append(f"[Note: {notes}]")
 
         full = "\n\n".join(sections)
-        # Apply token budget to full prompt
-        max_chars = self._max_tokens * _CHARS_PER_TOKEN
-        return full[:max_chars] if len(full) > max_chars else full
+        # Auto-compress if prompt would overflow the context window
+        return self._auto_compress(full)
 
     def build_executor_context(self, bundle: PromptContextBundle, step: str = "") -> str:
         """Build per-step context for the executor LLM."""

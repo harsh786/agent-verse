@@ -24,6 +24,13 @@ _STRATEGY_TO_CHUNKER: dict[str, ChunkerBase] = {
     "table": TableChunker(),
     "record": TableChunker(),
     "region": SemanticChunker(),
+    # Advanced strategies — fall back to SemanticChunker for the flat-chunk pass;
+    # the orchestrator handles the real parent_child / sentence_window dispatch.
+    "parent_child": SemanticChunker(),
+    "sentence_window": SemanticChunker(),
+    "fixed": SemanticChunker(),
+    "agentic": SemanticChunker(),
+    "agentic_chunking": SemanticChunker(),
 }
 
 

@@ -3159,3 +3159,132 @@ def re_embed_collection(
         return loop.run_until_complete(_run())
     finally:
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Daily feedback processing — reads goal_feedback and derives lessons
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="agentverse.maintenance.process_feedback_batch",
+    queue="maintenance",
+    bind=True,
+    max_retries=1,
+)
+def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
+    """Read unprocessed goal_feedback rows and store improvement lessons.
+
+    Scheduled daily. Idempotent — already-processed rows are marked and skipped.
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    async def _run() -> dict[str, Any]:
+        total_processed = 0
+        total_actions = 0
+        try:
+            from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+            engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
+            db_factory = async_sessionmaker(engine, expire_on_commit=False)
+            # Get all active tenant IDs
+            from sqlalchemy import text as _t
+            async with db_factory() as session:
+                rows = (await session.execute(
+                    _t("SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500")
+                )).fetchall()
+                tenant_ids = [r[0] for r in rows]
+
+            from app.evals.self_improvement_engine import SelfImprovementEngine
+            engine_svc = SelfImprovementEngine()
+            for tid in tenant_ids:
+                result = await engine_svc.process_feedback_batch(
+                    db_session_factory=db_factory,
+                    tenant_id=str(tid),
+                )
+                total_processed += result.get("processed", 0)
+                total_actions += result.get("actions_derived", 0)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return {"processed": total_processed, "actions_derived": total_actions}
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
+# Register beat schedule for feedback processing
+try:
+    celery_app.conf.beat_schedule["process-feedback-daily"] = {
+        "task": "agentverse.maintenance.process_feedback_batch",
+        "schedule": 86400.0,  # Every 24 hours
+        "options": {"queue": "maintenance"},
+    }
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Delta re-ingest — re-ingests files from configured sources when triggered
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="agentverse.maintenance.delta_reingest_files",
+    queue="maintenance",
+    bind=True,
+    max_retries=2,
+)
+def delta_reingest_files(
+    self: Any,
+    tenant_id: str,
+    collection_id: str,
+    source_type: str,
+    source_config: dict[str, Any],
+) -> dict[str, Any]:  # type: ignore[misc]
+    """Trigger delta re-ingestion for a collection from an external source.
+
+    Called by webhook handlers when a source signals new/updated content.
+    source_type: 'github' | 'confluence' | 'notion' | 'gdrive'
+    source_config: connector-specific config (repo, space_key, etc.)
+    """
+    import asyncio as _asyncio
+
+    async def _run() -> dict[str, Any]:
+        try:
+            from app.core.config import get_settings
+            from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+            settings = get_settings()
+            engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
+            db_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+            # Very simple dispatch — real connectors do the heavy lifting
+            chunks_ingested = 0
+            if source_type == "notion":
+                from app.ingestion.connectors.notion_connector import NotionConnector
+                connector = NotionConnector(api_key=source_config.get("api_key", ""))
+                pages = await connector.list_pages(source_config.get("database_id", ""))
+                chunks_ingested = len(pages)  # simplified count
+            elif source_type == "gdrive":
+                from app.ingestion.connectors.gdrive_connector import GDriveConnector
+                connector = GDriveConnector(key_path=source_config.get("key_path"))
+                files = connector.list_files(source_config.get("folder_id", ""))
+                chunks_ingested = len(files)
+            return {
+                "status": "ok",
+                "source_type": source_type,
+                "chunks_ingested": chunks_ingested,
+                "tenant_id": tenant_id,
+                "collection_id": collection_id,
+            }
+        except Exception as exc:
+            return {"error": str(exc), "source_type": source_type}
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()

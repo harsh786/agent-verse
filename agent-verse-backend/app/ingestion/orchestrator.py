@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
 
 
+def _content_hash(text: str) -> str:
+    """SHA-256 of the UTF-8 content for chunk-level deduplication."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 @dataclass
 class IngestionResult:
     ingestion_id: str
@@ -64,12 +69,59 @@ class IngestionOrchestrator:
         except Exception:
             return chunks
 
-    def _chunk(self, content: str, ct: Any) -> list[str]:
-        """Dispatch to appropriate chunker based on content type strategy."""
+    def _chunk(self, content: str, ct: Any, strategy_override: str | None = None) -> list[str]:
+        """Dispatch to appropriate chunker. Supports advanced strategies.
+
+        If *strategy_override* is an advanced strategy (parent_child / sentence_window /
+        fixed) the orchestrator calls the dedicated implementation and flattens the
+        results to a plain list of strings so downstream code is unaffected.
+        """
+        effective_strategy = strategy_override or (
+            self._chunking_selector.select(ct) if ct is not None else "semantic"
+        )
+
+        # --- parent_child: produce child-chunk texts (parents stored separately) ---
+        if effective_strategy == "parent_child":
+            try:
+                from app.rag.parent_child_chunker import ParentChildChunker
+                pc_chunker = ParentChildChunker()
+                parent_chunks = pc_chunker.chunk(content)
+                texts: list[str] = [
+                    cc.content for pc in parent_chunks for cc in pc.children
+                    if cc.content.strip()
+                ]
+                if texts:
+                    return texts
+            except Exception:
+                pass  # fall through to semantic
+
+        # --- sentence_window: use window chunks directly ---
+        if effective_strategy == "sentence_window":
+            try:
+                from app.rag.sentence_window import SentenceWindowChunker
+                sw = SentenceWindowChunker()
+                sw_chunks = sw.chunk(content)
+                texts = [c.content for c in sw_chunks if c.content.strip()]
+                if texts:
+                    return texts
+            except Exception:
+                pass  # fall through to semantic
+
+        # --- fixed: fixed-size chunks via RAG SemanticChunker with 'fixed' strategy ---
+        if effective_strategy == "fixed":
+            try:
+                from app.rag.chunker import SemanticChunker as RagChunker
+                chunker_fixed = RagChunker(strategy="fixed")
+                texts = [c.content for c in chunker_fixed.chunk(content) if c.content.strip()]
+                if texts:
+                    return texts
+            except Exception:
+                pass
+
+        # --- Standard dispatch via chunker registry ---
         try:
             from app.ingestion.chunkers import get_chunker_for_strategy
-            strategy = self._chunking_selector.select(ct) if ct is not None else "semantic"
-            chunker = get_chunker_for_strategy(strategy)
+            chunker = get_chunker_for_strategy(effective_strategy)
             if chunker is not None:
                 chunks = chunker.chunk(content)
                 result = [
@@ -90,7 +142,6 @@ class IngestionOrchestrator:
                 pass
         # Fallback: paragraph split
         if ct is not None:
-            # Content-type specific fallbacks
             from app.ingestion.content_classifier import ContentType
             if ct == ContentType.CODE:
                 import re
