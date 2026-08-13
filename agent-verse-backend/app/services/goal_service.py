@@ -1571,6 +1571,15 @@ class GoalService:
                 await self._redis.publish(_channel, json.dumps(sanitized_event))
             except Exception:
                 pass  # Redis unavailable — in-process delivery still works
+        # Publish ephemeral token_chunk events to a *separate* lightweight channel
+        # so front-end SSE consumers can display live typing without polluting the
+        # main event log.  Only published when Redis is available.
+        if sanitized_event.get("type") == "token_chunk" and self._redis is not None and tenant_ctx is not None:
+            try:
+                _token_channel = f"goal_tokens:{tenant_ctx.tenant_id}:{goal_id}"
+                await self._redis.publish(_token_channel, json.dumps(sanitized_event))
+            except Exception:
+                pass
         # Also publish terminal events to the broader platform channel used by
         # other subscribers (notification service, billing hooks, etc.).
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:

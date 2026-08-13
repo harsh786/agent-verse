@@ -444,3 +444,105 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
         return completed[:10]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Re-ingestion webhooks — trigger delta ingestion from external sources
+# ---------------------------------------------------------------------------
+
+
+@router.post("/webhooks/github/push")
+async def github_push_webhook(request: Request) -> dict[str, Any]:
+    """Handle GitHub push events and queue re-ingestion of changed files.
+
+    Expects a GitHub webhook payload (push event). The tenant and collection
+    are resolved from the X-AgentVerse-Collection-Id header or query param.
+    """
+    payload = await request.json()
+    collection_id = (
+        request.headers.get("X-AgentVerse-Collection-Id")
+        or request.query_params.get("collection_id", "")
+    )
+    tenant_id = (
+        request.headers.get("X-AgentVerse-Tenant-Id")
+        or request.query_params.get("tenant_id", "")
+    )
+    if not collection_id or not tenant_id:
+        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
+
+    # Queue a delta re-ingest Celery task
+    try:
+        from app.scaling.tasks import delta_reingest_files
+        repo = payload.get("repository", {})
+        result = delta_reingest_files.delay(
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+            source_type="github",
+            source_config={
+                "repo": repo.get("full_name", ""),
+                "ref": payload.get("ref", ""),
+                "commits": payload.get("commits", []),
+            },
+        )
+        return {"status": "queued", "task_id": result.id, "source": "github"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@router.post("/webhooks/confluence/page-updated")
+async def confluence_page_webhook(request: Request) -> dict[str, Any]:
+    """Handle Confluence page_updated events and queue re-ingestion."""
+    payload = await request.json()
+    collection_id = (
+        request.headers.get("X-AgentVerse-Collection-Id")
+        or request.query_params.get("collection_id", "")
+    )
+    tenant_id = (
+        request.headers.get("X-AgentVerse-Tenant-Id")
+        or request.query_params.get("tenant_id", "")
+    )
+    if not collection_id or not tenant_id:
+        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
+
+    page_id = payload.get("page", {}).get("id", "")
+    space_key = payload.get("space", {}).get("key", "")
+    try:
+        from app.scaling.tasks import delta_reingest_files
+        result = delta_reingest_files.delay(
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+            source_type="confluence",
+            source_config={"page_id": page_id, "space_key": space_key},
+        )
+        return {"status": "queued", "task_id": result.id, "source": "confluence"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@router.post("/webhooks/notion/page-updated")
+async def notion_page_webhook(request: Request) -> dict[str, Any]:
+    """Handle Notion webhook events and queue re-ingestion of updated pages."""
+    payload = await request.json()
+    collection_id = (
+        request.headers.get("X-AgentVerse-Collection-Id")
+        or request.query_params.get("collection_id", "")
+    )
+    tenant_id = (
+        request.headers.get("X-AgentVerse-Tenant-Id")
+        or request.query_params.get("tenant_id", "")
+    )
+    if not collection_id or not tenant_id:
+        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
+
+    page_id = payload.get("entity", {}).get("id", "") or payload.get("page_id", "")
+    try:
+        from app.scaling.tasks import delta_reingest_files
+        result = delta_reingest_files.delay(
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+            source_type="notion",
+            source_config={"page_id": page_id},
+        )
+        return {"status": "queued", "task_id": result.id, "source": "notion"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}

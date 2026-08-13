@@ -98,6 +98,15 @@ async def dispatch_internal_task(
     goal_id = None
     if goal_service is not None:
         try:
+            # Inject W3C trace context so the receiving agent's spans are
+            # correlated with the dispatching agent's active trace.
+            _trace_ctx: dict[str, str] = {}
+            try:
+                from opentelemetry import propagate as _otel_propagate
+                _otel_propagate.inject(_trace_ctx)
+            except Exception:
+                pass
+
             result = await goal_service.submit_goal(
                 goal=goal,
                 tenant_ctx=tenant_ctx,
@@ -107,6 +116,10 @@ async def dispatch_internal_task(
                     "a2a_task_id": task_id,
                     "from_agent_id": from_agent_id,
                     "civilization_id": civilization_id,
+                    # Forward W3C trace headers to the child goal context so
+                    # the receiving agent can extract and continue the trace.
+                    "_w3c_traceparent": _trace_ctx.get("traceparent", ""),
+                    "_w3c_tracestate": _trace_ctx.get("tracestate", ""),
                     **context,
                 },
             )

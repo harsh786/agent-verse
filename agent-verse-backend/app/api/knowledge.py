@@ -2306,3 +2306,200 @@ async def sync_collection(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# New ingestion sources: Email, Notion, Google Drive
+# ---------------------------------------------------------------------------
+
+
+class EmailIngestRequest(BaseModel):
+    raw_email: str = Field(..., description="Raw RFC-5322 email string")
+    collection_id: str
+    source_identity: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NotionIngestRequest(BaseModel):
+    api_key: SecretStr = Field(..., description="Notion integration token")
+    page_id: str | None = None
+    database_id: str | None = None
+    collection_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GDriveIngestRequest(BaseModel):
+    folder_id: str = Field(..., description="Google Drive folder ID")
+    collection_id: str
+    service_account_key_json: str = Field(
+        ..., description="Service account key JSON as a string"
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/ingest/email")
+async def ingest_email(
+    body: EmailIngestRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Ingest a raw email message into a knowledge collection."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    try:
+        from app.ingestion.parsers.email_parser import EmailParser
+        from app.ingestion.orchestrator import IngestionOrchestrator
+
+        parser = EmailParser()
+        parts = parser.parse(body.raw_email)
+        content = "\n\n".join(parts)
+        meta = {**parser.parse_metadata(body.raw_email), **body.metadata}
+
+        orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+        result = await orch.ingest(
+            content,
+            content_type="text",
+            collection_id=body.collection_id,
+            tenant_ctx=tenant,
+            source_url=f"email:{meta.get('message_id', '')}",
+            metadata=meta,
+            source_identity=body.source_identity or meta.get("message_id", ""),
+            in_memory_only=False,
+        )
+        return {
+            "status": "ingested",
+            "chunks_created": result.chunks_created,
+            "source": "email",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/ingest/notion")
+async def ingest_notion(
+    body: NotionIngestRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Ingest Notion pages into a knowledge collection."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    if not body.page_id and not body.database_id:
+        raise HTTPException(status_code=400, detail="Either page_id or database_id is required")
+
+    try:
+        from app.ingestion.connectors.notion_connector import NotionConnector
+        from app.ingestion.orchestrator import IngestionOrchestrator
+
+        connector = NotionConnector(api_key=body.api_key.get_secret_value())
+        orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+
+        total_chunks = 0
+        if body.page_id:
+            content = await connector.fetch_page_content(body.page_id)
+            if content.strip():
+                res = await orch.ingest(
+                    content,
+                    content_type="text",
+                    collection_id=body.collection_id,
+                    tenant_ctx=tenant,
+                    source_url=f"notion:page:{body.page_id}",
+                    metadata={"notion_page_id": body.page_id, **body.metadata},
+                    in_memory_only=False,
+                )
+                total_chunks += res.chunks_created
+        elif body.database_id:
+            pages = await connector.list_pages(body.database_id)
+            for page in pages:
+                pid = page["id"]
+                content = await connector.fetch_page_content(pid)
+                if not content.strip():
+                    continue
+                res = await orch.ingest(
+                    content,
+                    content_type="text",
+                    collection_id=body.collection_id,
+                    tenant_ctx=tenant,
+                    source_url=f"notion:page:{pid}",
+                    metadata={"notion_page_id": pid, **body.metadata},
+                    in_memory_only=False,
+                )
+                total_chunks += res.chunks_created
+
+        return {"status": "ingested", "chunks_created": total_chunks, "source": "notion"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/ingest/gdrive-folder")
+async def ingest_gdrive_folder(
+    body: GDriveIngestRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Ingest all supported files from a Google Drive folder."""
+    tenant = _require_tenant(request)
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+
+    try:
+        import json as _json
+        import tempfile
+        import os
+
+        from app.ingestion.connectors.gdrive_connector import GDriveConnector
+        from app.ingestion.orchestrator import IngestionOrchestrator
+
+        # Write SA key to temp file so googleapiclient can read it
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(body.service_account_key_json)
+            key_path = f.name
+
+        try:
+            connector = GDriveConnector(key_path=key_path)
+            files = connector.list_files(body.folder_id)
+            orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+            total_chunks = 0
+            errors: list[str] = []
+            for file_meta in files:
+                fid = file_meta["id"]
+                fname = file_meta.get("name", fid)
+                mime = file_meta.get("mimeType", "")
+                try:
+                    content = connector.download_file(fid, mime)
+                    if not content.strip():
+                        continue
+                    res = await orch.ingest(
+                        content,
+                        content_type="auto",
+                        collection_id=body.collection_id,
+                        tenant_ctx=tenant,
+                        source_url=f"gdrive:{fid}",
+                        metadata={"gdrive_file_id": fid, "filename": fname, **body.metadata},
+                        in_memory_only=False,
+                    )
+                    total_chunks += res.chunks_created
+                except Exception as file_exc:
+                    errors.append(f"{fname}: {file_exc!s}")
+        finally:
+            os.unlink(key_path)
+
+        return {
+            "status": "ingested",
+            "chunks_created": total_chunks,
+            "source": "gdrive",
+            "files_processed": len(files),
+            "errors": errors,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

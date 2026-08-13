@@ -1,11 +1,12 @@
 """EmbeddingOrchestrator — selects embedding model per content type and tenant policy."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+import math
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-from app.embedding.model_registry import EmbeddingModelRegistry
 from app.embedding.dimension_policy import DimensionPolicy
+from app.embedding.model_registry import EmbeddingModelRegistry
 from app.ingestion.content_classifier import ContentType
 
 if TYPE_CHECKING:
@@ -32,6 +33,13 @@ _COST_BY_PLAN = {
     "enterprise": ["free", "low", "medium", "high"],
 }
 
+# Provider fallback order — used when the primary provider fails.
+# Each entry is a provider name; the orchestrator tries them in order.
+_FALLBACK_ORDER = ["anthropic", "openai", "voyage", "gemini", "fake"]
+
+# Default batch size for embed_batch()
+_DEFAULT_BATCH_SIZE = 32
+
 
 @dataclass
 class EmbeddingSelectionResult:
@@ -43,6 +51,14 @@ class EmbeddingSelectionResult:
     selection_reason: str = ""
 
 
+@dataclass
+class BatchEmbeddingResult:
+    embeddings: list[list[float]]
+    model_id: str
+    provider: str
+    errors: list[str] = field(default_factory=list)
+
+
 class EmbeddingOrchestrator:
     def __init__(self, registry: EmbeddingModelRegistry | None = None) -> None:
         self._registry = registry or EmbeddingModelRegistry.build_default()
@@ -51,7 +67,7 @@ class EmbeddingOrchestrator:
     def select(
         self,
         content_type: ContentType,
-        tenant_ctx: "Optional[TenantContext]" = None,
+        tenant_ctx: TenantContext | None = None,
         collection_size: int = 0,
     ) -> EmbeddingSelectionResult:
         modalities = _MODALITY_MAP.get(content_type, ["text"])
@@ -99,4 +115,82 @@ class EmbeddingOrchestrator:
             cost_class="free",
             provider="fake",
             selection_reason="no embedding model available",
+        )
+
+    async def embed_with_fallback(
+        self,
+        text: str,
+        providers: list[Any],
+        model_id: str = "",
+    ) -> list[float]:
+        """Embed *text* trying each provider in *providers* until one succeeds.
+
+        Providers are tried in the order given. On failure the next provider in
+        the list is attempted. Raises RuntimeError if all providers fail.
+        """
+        last_exc: Exception | None = None
+        for provider in providers:
+            try:
+                from app.providers.base import embed_texts as _embed
+                result = await _embed([text], provider=provider)
+                if result:
+                    return result[0]
+            except Exception as exc:
+                last_exc = exc
+                continue
+        raise RuntimeError(
+            f"All embedding providers failed. Last error: {last_exc}"
+        ) from last_exc
+
+    async def embed_batch(
+        self,
+        texts: list[str],
+        providers: list[Any],
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+    ) -> BatchEmbeddingResult:
+        """Embed *texts* in batches of *batch_size*, with provider fallback per batch.
+
+        Returns embeddings in the same order as *texts*. Failed batches are
+        retried with the next provider; errors for individual batches are
+        recorded in the result.
+        """
+        if not texts:
+            return BatchEmbeddingResult(embeddings=[], model_id="", provider="none")
+
+        all_embeddings: list[list[float]] = [[] for _ in texts]
+        errors: list[str] = []
+        num_batches = math.ceil(len(texts) / batch_size)
+        used_provider = "unknown"
+        used_model = ""
+
+        for batch_idx in range(num_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(texts))
+            batch_texts = texts[start:end]
+
+            batch_ok = False
+            for provider in providers:
+                try:
+                    from app.providers.base import embed_texts as _embed
+                    result = await _embed(batch_texts, provider=provider)
+                    for i, emb in enumerate(result):
+                        all_embeddings[start + i] = emb
+                    used_provider = getattr(provider, "provider_name", str(provider))
+                    batch_ok = True
+                    break
+                except Exception as exc:
+                    errors.append(f"batch_{batch_idx}: {exc!s}")
+                    continue
+
+            if not batch_ok:
+                # Fill with empty vectors so downstream code can handle gracefully
+                dim = 10
+                for i in range(len(batch_texts)):
+                    all_embeddings[start + i] = [0.0] * dim
+
+        return BatchEmbeddingResult(
+            embeddings=all_embeddings,
+            model_id=used_model,
+            provider=used_provider,
+            errors=errors,
         )

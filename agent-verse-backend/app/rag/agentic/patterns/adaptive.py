@@ -103,16 +103,38 @@ class AdaptiveRAGPattern(RAGPattern):
         provider: Any = None,
         embedding_dim: int | None = None,
         force_strategy: str | None = None,
+        use_llm_transform: bool = False,
         **kwargs: Any,
     ) -> list[Any]:
         strategy = force_strategy or RetrievalPlanner().select_strategy(query)
-        return await retrieve(
-            session,
-            query=query,
-            query_embedding=query_embedding,
-            collection_id=collection_id,
-            top_k=top_k,
-            strategy=strategy,
-            provider=provider,
-            embedding_dim=embedding_dim,
-        )
+
+        # For complex queries, optionally apply LLM query transformation and
+        # merge results from all expanded queries.
+        effective_queries = [query]
+        if use_llm_transform and provider is not None:
+            try:
+                from app.rag.agentic.llm_query_transformer import LLMQueryTransformer
+                transformer = LLMQueryTransformer(provider)
+                effective_queries = await transformer.transform(query)
+            except Exception:
+                effective_queries = [query]
+
+        all_results: list[Any] = []
+        seen_ids: set[str] = set()
+        for q in effective_queries:
+            results = await retrieve(
+                session,
+                query=q,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                top_k=top_k,
+                strategy=strategy,
+                provider=provider,
+                embedding_dim=embedding_dim,
+            )
+            for r in results:
+                r_id = getattr(r, "chunk_id", None) or str(getattr(r, "content", r))[:80]
+                if r_id not in seen_ids:
+                    seen_ids.add(r_id)
+                    all_results.append(r)
+        return all_results[:top_k]
