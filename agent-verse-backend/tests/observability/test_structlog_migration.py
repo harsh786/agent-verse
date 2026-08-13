@@ -10,7 +10,7 @@ MIGRATED_MODULES = [
     "app.rag.store",
     "app.governance.audit",
     "app.perception.browser_agent",
-    "app.agent.loop",
+    "app.agent.graph",
 ]
 
 

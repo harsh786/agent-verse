@@ -156,7 +156,7 @@ class TestResolveCheckpointer:
 
 # ── _make_agent_loop ──────────────────────────────────────────────────────────
 
-class TestMakeAgentLoop:
+class TestMakeAgentGraph:
     """Lines 233-239: AgentGraph construction failure."""
 
     def test_construction_failure_raises_runtime_error(self):
@@ -458,7 +458,7 @@ class TestGetMcpClient:
 
 # ── _make_agent_loop_for_tenant ───────────────────────────────────────────────
 
-class TestMakeAgentLoopForTenant:
+class TestMakeAgentGraphForTenant:
     """Lines 619-636, 647-657, 701-709, 719-722, 733-744."""
 
     def test_uses_fake_provider_by_default(self, monkeypatch):

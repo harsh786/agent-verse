@@ -141,6 +141,19 @@ export interface GoalRequest {
   image_url?: string;
   /** Override the tenant's default model for this goal (Gap 1) */
   model_override?: string;
+  strategy_override?: string;
+  auxiliary_strategies?: string[];
+  pattern_limits?: Partial<{
+    calls: number;
+    nodes: number;
+    edges: number;
+    depth: number;
+    fan_out: number;
+    rounds: number;
+    tokens: number;
+    duration_seconds: number;
+    cost_usd: number;
+  }>;
 }
 
 // ── Ghost Run types ───────────────────────────────────────────────────────────

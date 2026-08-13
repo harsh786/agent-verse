@@ -59,3 +59,46 @@ groups:
           summary: "HITL approval backlog"
           description: "More than 10 approvals waiting"
           runbook: "https://docs.agentverse.ai/runbooks/hitl-approval-backlog"
+
+  - name: agent_pattern_operations
+    rules:
+      - alert: CoordinationDeliveryLag
+        expr: agentverse_coordination_outbox_lag_seconds > 30
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Coordination delivery is delayed", runbook: "infra/runbooks/coordination-delivery-lag.md"}
+      - alert: CoordinationLeaseReclaims
+        expr: increase(agentverse_coordination_event_total{event="claim",status="failed"}[15m]) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Coordination leases are being reclaimed", runbook: "infra/runbooks/coordination-lease-reclaims.md"}
+      - alert: AgentPatternRunaway
+        expr: increase(agentverse_strategy_tokens_total[10m]) > 1000000
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Agent pattern limits are rising unexpectedly", runbook: "infra/runbooks/agent-pattern-runaway-limits.md"}
+      - alert: SandboxDenialOutage
+        expr: rate(agentverse_pattern_safety_total{kind="sandbox",status="denied"}[10m]) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Sandbox denials are elevated", runbook: "infra/runbooks/sandbox-denial-outage.md"}
+      - alert: MagenticStalls
+        expr: increase(agentverse_coordination_event_total{event="ledger",status="failed"}[15m]) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Magentic progress has stalled", runbook: "infra/runbooks/magentic-stalls-fallbacks.md"}
+      - alert: AuctionAnomalies
+        expr: increase(agentverse_coordination_event_total{event="bid",status="failed"}[15m]) > 3
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Auction allocation anomalies detected", runbook: "infra/runbooks/auction-anomalies.md"}
+      - alert: ReflexionQualityPoisoning
+        expr: rate(agentverse_pattern_safety_total{kind="memory",status="denied"}[30m]) > 0.2
+        for: 15m
+        labels: {severity: critical}
+        annotations: {summary: "Reflexion evidence quarantine is elevated", runbook: "infra/runbooks/reflexion-quality-poisoning.md"}
+      - alert: TenantPolicyAnomalies
+        expr: rate(agentverse_pattern_safety_total{kind="policy",status="denied"}[15m]) > 1
+        for: 10m
+        labels: {severity: critical}
+        annotations: {summary: "Policy or authorization anomalies detected", runbook: "infra/runbooks/tenant-policy-anomalies.md"}

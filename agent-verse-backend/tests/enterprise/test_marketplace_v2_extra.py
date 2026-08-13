@@ -273,6 +273,8 @@ class TestMarketplaceV2InMemory:
     async def test_list_templates_domain_filter_in_memory(self):
         """domain filter in-memory."""
         mp = MarketplaceV2()
+        # Mark builtins as already loaded so only our test entries appear
+        mp._builtin_cache_populated = True
         mp._cache["d1"] = {**_SAFE, "template_id": "d1", "domain": "legal"}
         mp._cache["d2"] = {**_SAFE, "template_id": "d2", "domain": "software"}
         result = await mp.list_templates(domain="legal")

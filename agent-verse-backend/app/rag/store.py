@@ -122,6 +122,7 @@ class KnowledgeStore:
         """Persist a collection before making it visible to the caller."""
         if self._db is None:
             return self.create_collection(collection, tenant_ctx=tenant_ctx)
+        # Persist to DB first (fail-closed). Only expose in-memory after success.
         await self._db_create_collection(collection, tenant_ctx.tenant_id)
         self._data[(tenant_ctx.tenant_id, collection.collection_id)] = _CollectionStore(
             collection=collection

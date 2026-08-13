@@ -1,24 +1,37 @@
 """PolicyCompiler + RuntimeEnforcer — P0 security gates."""
+
 from __future__ import annotations
-import pytest
-from app.policy_runtime.compiler import PolicyCompiler
-from app.policy_runtime.runtime_enforcer import RuntimeEnforcer
-from app.policy_runtime.constraint_model import RuntimeConstraints
+
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig, RiskLevel,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    RiskLevel,
+    SecurityConfig,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.policy_runtime.compiler import PolicyCompiler
+from app.policy_runtime.constraint_model import RuntimeConstraints
+from app.policy_runtime.runtime_enforcer import RuntimeEnforcer
+from app.tenancy.context import PlanTier, TenantContext
 
 
-def _make_profile(risk: RiskLevel = RiskLevel.LOW, compliance: list[str] | None = None) -> GoalRuntimeProfile:
+def _make_profile(
+    risk: RiskLevel = RiskLevel.LOW, compliance: list[str] | None = None
+) -> GoalRuntimeProfile:
     return GoalRuntimeProfile(
-        goal_id="g1", tenant_id="t1",
+        goal_id="g1",
+        tenant_id="t1",
         properties=GoalProperties(raw_goal="test", risk=risk),
-        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
+        agent_patterns=AgentPatternConfig(),
+        rag_strategy=RAGStrategyConfig(),
         model_plan=ModelPlanConfig(),
         security=SecurityConfig(compliance_tags=compliance or []),
-        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
+        memory_cache=MemoryCacheConfig(),
+        eval_config=EvalConfig(),
     )
 
 
@@ -53,19 +66,25 @@ def test_enterprise_plan_high_cost_limit() -> None:
     assert r.max_cost_usd == 500.0
 
 
-def test_enforcer_allows_unlisted_capability() -> None:
+def test_enforcer_denies_unlisted_capability() -> None:
     constraints = RuntimeConstraints(
-        allowed_capabilities=[], denied_capabilities=[], required_approvals=[],
-        max_cost_usd=10.0, audit_level="standard",
+        allowed_capabilities=[],
+        denied_capabilities=[],
+        required_approvals=[],
+        max_cost_usd=10.0,
+        audit_level="standard",
     )
     e = RuntimeEnforcer()
-    assert e.is_capability_allowed("tool:web_search", constraints) is True
+    assert e.is_capability_allowed("tool:web_search", constraints) is False
 
 
 def test_enforcer_blocks_denied_capability() -> None:
     constraints = RuntimeConstraints(
-        allowed_capabilities=[], denied_capabilities=["tool:shell"], required_approvals=[],
-        max_cost_usd=10.0, audit_level="standard",
+        allowed_capabilities=[],
+        denied_capabilities=["tool:shell"],
+        required_approvals=[],
+        max_cost_usd=10.0,
+        audit_level="standard",
     )
     e = RuntimeEnforcer()
     assert e.is_capability_allowed("tool:shell", constraints) is False
@@ -75,7 +94,10 @@ def test_enforcer_blocks_denied_capability() -> None:
 
 def test_policy_trace_records_decisions():
     from app.policy_runtime.policy_trace import PolicyTrace
+
     trace = PolicyTrace(goal_id="g1", tenant_id="t1")
     trace.record("audit_level", "forensic", "risk=critical", source="risk_level")
     assert len(trace.decisions) == 1
-    import json; json.dumps(trace.to_dict())
+    import json
+
+    json.dumps(trace.to_dict())

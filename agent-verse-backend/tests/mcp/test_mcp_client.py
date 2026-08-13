@@ -19,9 +19,17 @@ TENANT = TenantContext(
     api_key_id="mcp-key-1",
 )
 
-# Patch SSRF guard to allow localhost in tests (production blocks loopback)
-_ssrf_patcher = patch("app.mcp.client.assert_public_url")
-_ssrf_mock = _ssrf_patcher.start()
+# Patch SSRF guard to allow localhost in tests (production blocks loopback).
+# Use a module-scoped autouse fixture instead of a module-level start so the
+# patch is contained to this module and does NOT leak into other test files
+# (which would break the SSRF-blocking assertions in test_client_ssrf.py).
+@pytest.fixture(scope="module", autouse=True)
+def _bypass_ssrf():
+    patcher = patch("app.mcp.client.assert_public_url")
+    patcher.start()
+    yield
+    patcher.stop()
+
 
 class FakeRedis:
     def __init__(self) -> None:

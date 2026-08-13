@@ -1,25 +1,17 @@
-"""ModelOrchestrator — per-role model selection with budget-ratio downgrade.
+"""Canonical live model assignment owner for every agent role.
 
-STATUS: Implemented but not wired into graph.py production path.
-The graph uses ModelRouter (app/agent/model_router.py) for model selection.
-
-TODO (Phase 6): Wire ModelOrchestrator into goal_service.py graph construction
-as a replacement for the simpler ModelRouter, enabling:
-- Budget-ratio downgrade for high-cost goals
-- Provider failover across OpenAI/Anthropic/Groq
-- Role-specific quality/cost tradeoffs
-
-Until then, AIRouter (app/ai_router/router.py) handles tenant-level
-model policy (health, quotas) separately.
+Runtime profiles supply desired constraints. ModelOrchestrator resolves those constraints
+against provider health, budget consumption, latency, quality, and fallback policy. The legacy
+``ModelRouter`` remains a compatibility facade for callers on the previous interface.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.ai_router.cost_latency_quality_policy import CostLatencyQualityPolicy
 from app.ai_router.provider_health_policy import ProviderHealthPolicy
-from app.ai_router.role_policy import AgentRole, RolePolicy
+from app.ai_router.role_policy import RolePolicy
 
 if TYPE_CHECKING:
     from app.agent.pattern_config import PatternConfig
@@ -129,7 +121,7 @@ class ModelOrchestrator:
 
     def select_models(
         self,
-        config: "PatternConfig",
+        config: PatternConfig,
         budget_spent_ratio: float = 0.0,
     ) -> ModelRoleAssignment:
         from app.agent.pattern_config import Complexity, RiskLevel
@@ -166,7 +158,7 @@ class ModelOrchestrator:
             latency_class=latency_class,
         )
 
-    def select_for_content_type(self, content_type: "ContentType") -> MultimodalModelAssignment:
+    def select_for_content_type(self, content_type: ContentType) -> MultimodalModelAssignment:
         modality = _CONTENT_TYPE_MODALITY.get(content_type.value, "text")
         spec = _MULTIMODAL_MODELS.get(modality, _MULTIMODAL_MODELS["text"])
         return MultimodalModelAssignment(
@@ -199,13 +191,13 @@ class ModelOrchestratorAdapter:
 
     def __init__(
         self,
-        orchestrator: "ModelOrchestrator | None" = None,
+        orchestrator: ModelOrchestrator | None = None,
         *,
         default_tier: str = "medium",
     ) -> None:
         self._orchestrator = orchestrator or ModelOrchestrator()
         self._default_tier = default_tier
-        self._cached_assignment: "ModelRoleAssignment | None" = None
+        self._cached_assignment: ModelRoleAssignment | None = None
         self._last_budget_ratio: float = 0.0
 
     def update_from_profile(
@@ -216,7 +208,7 @@ class ModelOrchestratorAdapter:
         """Update model assignment from a GoalRuntimeProfile.
         Called by _node_plan when dynamic orchestration is active."""
         try:
-            from app.agent.pattern_config import PatternConfig, GoalProperties  # noqa: F401
+            from app.agent.pattern_config import GoalProperties, PatternConfig  # noqa: F401
             pattern_config = PatternConfig(
                 goal_properties=runtime_profile.properties,
                 model_planner=getattr(runtime_profile.model_plan, "planner", "") or "",

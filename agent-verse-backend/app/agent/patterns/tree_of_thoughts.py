@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.patterns.base import AgentPattern, PatternState
+from app.agent.reasoning_evidence import (
+    ReasoningEvidence,
+    ReasoningExecution,
+    opaque_evidence_id,
+)
 
 _GENERATE_SYSTEM = (
     "Generate a distinct reasoning approach for the given problem. "
@@ -26,7 +31,7 @@ _GENERATE_SYSTEM = (
 
 _EVALUATE_SYSTEM = (
     "Evaluate this reasoning thought for solving the given problem. "
-    'Respond with JSON: {"score": <0.0-1.0>, "promising": <true/false>, "reason": "<brief reason>"} '
+    'Respond with JSON containing "score", "promising", and a brief "reason". '
     "Score 0.9+ for excellent systematic approaches. Score below 0.5 for vague or wrong directions."
 )
 
@@ -43,7 +48,7 @@ class ThoughtNode:
     promising: bool = True
     reason: str = ""
     depth: int = 0
-    children: list["ThoughtNode"] = field(default_factory=list)
+    children: list[ThoughtNode] = field(default_factory=list)
 
     def cumulative_score(self) -> float:
         return self.score
@@ -61,6 +66,12 @@ class TreeOfThoughtsPattern(AgentPattern):
         self._n = n_thoughts
         self._max_depth = max_depth
         self._beam = beam_width
+        self._last_evidence = ReasoningEvidence(
+            strategy_id="tree_of_thoughts",
+            status="degraded",
+            call_count=0,
+            safe_rationale_summary="not executed",
+        )
 
     @property
     def pattern_id(self) -> str:
@@ -102,6 +113,14 @@ class TreeOfThoughtsPattern(AgentPattern):
         # Generate initial thoughts via N parallel calls
         thoughts = await self._generate_thoughts(problem, provider, max_tokens)
         if not thoughts:
+            self._last_evidence = ReasoningEvidence(
+                strategy_id=self.pattern_id,
+                status="degraded",
+                call_count=self._n + 1,
+                invalid_samples=self._n,
+                limit_reason="no_valid_candidates",
+                safe_rationale_summary="direct answer fallback after empty frontier",
+            )
             return await self._direct_answer(problem, provider, max_tokens)
 
         # Evaluate and prune in parallel
@@ -118,6 +137,14 @@ class TreeOfThoughtsPattern(AgentPattern):
         # Expand best thought(s) up to max_depth
         best_thought = promising[0] if promising else (evaluated[0] if evaluated else None)
         if best_thought is None:
+            self._last_evidence = ReasoningEvidence(
+                strategy_id=self.pattern_id,
+                status="degraded",
+                call_count=self._n + len(thoughts) + 1,
+                valid_samples=len(thoughts),
+                limit_reason="empty_frontier",
+                safe_rationale_summary="direct answer fallback after pruning",
+            )
             return await self._direct_answer(problem, provider, max_tokens)
 
         for _ in range(self._max_depth - 1):
@@ -129,8 +156,39 @@ class TreeOfThoughtsPattern(AgentPattern):
                     content=expanded, score=0.9, depth=best_thought.depth + 1
                 )
 
-        # Final answer from best path
-        return await self._expand_thought(problem, best_thought.content, provider, max_tokens)
+        selected = tuple(opaque_evidence_id(item.content) for item in promising)
+        selected_set = set(selected)
+        pruned = tuple(
+            opaque_evidence_id(item.content)
+            for item in evaluated
+            if opaque_evidence_id(item.content) not in selected_set
+        )
+        call_count = self._n + len(thoughts) + self._max_depth
+        self._last_evidence = ReasoningEvidence(
+            strategy_id=self.pattern_id,
+            status="completed",
+            call_count=call_count,
+            valid_samples=len(thoughts),
+            invalid_samples=self._n - len(thoughts),
+            selected_ids=selected,
+            pruned_ids=pruned,
+            scores=tuple(item.score for item in promising),
+            checkpoint_cursor={
+                "depth": self._max_depth,
+                "frontier_size": len(promising),
+                "nodes": len(evaluated),
+            },
+            safe_rationale_summary="bounded beam search selected highest scored candidates",
+        )
+
+        # Final answer is separate from private frontier evidence.
+        return await self._expand_thought(
+            problem, best_thought.content, provider, max_tokens
+        )
+
+    async def execute_with_evidence(self, **kwargs: Any) -> ReasoningExecution:
+        result = await self.execute(**kwargs)
+        return ReasoningExecution(result=result, evidence=self._last_evidence)
 
     async def _generate_thoughts(
         self, problem: str, provider: Any, max_tokens: int

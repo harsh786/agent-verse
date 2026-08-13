@@ -80,6 +80,16 @@ _COMPLEXITY_EXPERT = frozenset({
     "design",
     "forecast",
     "model",
+    "create",
+    "build",
+    "deploy",
+    "implement",
+    "architect",
+    "automate",
+    "migrate",
+    "refactor",
+    "pipeline",
+    "integrate",
 })
 _COMPLEXITY_COMPLEX = frozenset({
     "report",
@@ -92,6 +102,7 @@ _COMPLEXITY_COMPLEX = frozenset({
     "and then",
     "followed by",
     "step by step",
+    "summarize",
 })
 _STEP_SEPARATORS = re.compile(
     r"\band\b|\bthen\b|\bafter\b|\bfollowed by\b|\balso\b|\bnext\b", re.IGNORECASE
@@ -284,8 +295,9 @@ class GoalClassifier:
         if base.classifier_confidence > 0.85 or base.complexity != Complexity.MEDIUM:
             return base
         try:
-            from app.providers.base import CompletionRequest, Message
             import json
+
+            from app.providers.base import CompletionRequest, Message
 
             prompt = (
                 "Classify this goal. Return ONLY JSON:\n"

@@ -102,6 +102,7 @@ describe('KnowledgePage – Collections tab', () => {
     renderPage();
     await screen.findByTestId(`collection-card-${COLLECTION.collection_id}`);
     await userEvent.click(screen.getByTestId(`delete-collection-${COLLECTION.collection_id}`));
+    await userEvent.click(screen.getByRole('button', { name: /delete collection/i }));
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) => String(u).includes('col-1') && (i as RequestInit)?.method === 'DELETE')).toBe(true)
     );

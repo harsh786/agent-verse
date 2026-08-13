@@ -5,7 +5,7 @@ import httpx
 import pytest
 import respx
 
-from agentverse.streaming import stream_sse
+from agentverse.streaming import stream_coordination_sse, stream_sse
 
 BASE_URL = "http://localhost:8000"
 HEADERS = {"X-API-Key": "test-key"}
@@ -44,3 +44,32 @@ async def test_stream_sse_skips_malformed_json():
             events.append(evt)
     assert len(events) == 1
     assert events[0].type == "ok"
+
+
+async def test_coordination_stream_resumes_and_deduplicates():
+    event = '{"event_id":"e1","session_id":"s1","sequence":8,"event_type":"message","schema_version":1}'
+    body = f"id: 8\ndata: {event}\n\nid: 8\ndata: {event}\n\n"
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.get(f"{BASE_URL}/coordination/s1").mock(
+            return_value=httpx.Response(200, text=body)
+        )
+        events = [
+            item
+            async for item in stream_coordination_sse(
+                f"{BASE_URL}/coordination/s1", HEADERS, after_sequence=7
+            )
+        ]
+    assert [item.sequence for item in events] == [8]
+    assert route.calls.last.request.headers["Last-Event-ID"] == "7"
+
+
+async def test_coordination_stream_rejects_malformed_frames():
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(f"{BASE_URL}/coordination/s1").mock(
+            return_value=httpx.Response(200, text="data: not-json\n\n")
+        )
+        with pytest.raises(ValueError, match="malformed"):
+            async for _ in stream_coordination_sse(
+                f"{BASE_URL}/coordination/s1", HEADERS
+            ):
+                pass

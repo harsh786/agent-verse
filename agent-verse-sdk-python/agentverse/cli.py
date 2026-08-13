@@ -45,7 +45,7 @@ def run(goal: str, agent: str | None, wait: bool, dry_run: bool, output: str) ->
                 agent_id=agent,
                 dry_run=dry_run,
             )
-            goal_id = getattr(result, "goal_id", "") or result.goal_id if hasattr(result, "goal_id") else ""
+            goal_id = result.goal_id
             if output == "json":
                 data = result.model_dump() if hasattr(result, "model_dump") else result
                 click.echo(json.dumps(data, indent=2, default=str))
@@ -55,16 +55,16 @@ def run(goal: str, agent: str | None, wait: bool, dry_run: bool, output: str) ->
             if wait and not dry_run and goal_id:
                 click.echo(f"Waiting for goal {goal_id}...")
                 async for event in client.stream_goal(goal_id):
-                    etype = event.type if hasattr(event, "type") else event.get("type", "")
+                    etype = event.type
                     if etype in ("step_complete", "tool_call_complete"):
-                        payload = event.data if hasattr(event, "data") else event.get("payload", {})
+                        payload = event.data
                         step_desc = payload.get("description", "") if isinstance(payload, dict) else ""
                         click.echo(f"  > {step_desc}")
                     elif etype in ("goal_complete", "goal_finished"):
                         click.echo("Goal completed!")
                         break
                     elif etype in ("goal_failed", "goal_error"):
-                        payload = event.data if hasattr(event, "data") else event.get("payload", {})
+                        payload = event.data
                         reason = payload.get("reason", "unknown") if isinstance(payload, dict) else "unknown"
                         click.echo(f"Goal failed: {reason}", err=True)
                         sys.exit(1)
@@ -191,14 +191,9 @@ def list_connectors(output: str) -> None:
                 click.echo(f"{'ID':<36} {'Name':<25} {'Status':<10}")
                 click.echo("-" * 71)
                 for c in conns:
-                    if hasattr(c, "server_id"):
-                        sid = c.server_id or ""
-                        cname = c.name or ""
-                        cstatus = c.status or "unknown"
-                    else:
-                        sid = c.get("server_id", "")
-                        cname = c.get("name", "")
-                        cstatus = c.get("health_status", c.get("status", "unknown"))
+                    sid = c.server_id or ""
+                    cname = c.name or ""
+                    cstatus = c.status or "unknown"
                     click.echo(f"{sid:<36} {cname:<25} {cstatus:<10}")
 
     asyncio.run(_execute())
@@ -214,7 +209,7 @@ def register_connector(name: str, url: str, conn_type: str) -> None:
         client = _get_client()
         async with client:
             result = await client.register_connector(name=name, url=url, auth_type=conn_type)
-            server_id = result.server_id if hasattr(result, "server_id") else result.get("server_id", "")
+            server_id = result.server_id
             click.echo(f"Connector registered: {server_id}")
 
     asyncio.run(_execute())
@@ -236,9 +231,9 @@ def list_schedules() -> None:
                 click.echo("No schedules found.")
                 return
             for s in scheds:
-                sid = s.get("schedule_id", "")[:16] if isinstance(s, dict) else ""
-                ttype = s.get("trigger_type", "") if isinstance(s, dict) else ""
-                goal_text = s.get("goal_text", s.get("goal_template", ""))[:50] if isinstance(s, dict) else ""
+                sid = s.schedule_id[:16]
+                ttype = s.cron or ""
+                goal_text = s.goal_template[:50]
                 click.echo(f"  {sid} | {ttype} | {goal_text}")
 
     asyncio.run(_execute())
@@ -277,8 +272,8 @@ def logs(goal_id: str, follow: bool) -> None:
             if follow:
                 click.echo(f"Streaming events for goal {goal_id}...")
                 async for event in client.stream_goal(goal_id, timeout=300):
-                    etype = event.type if hasattr(event, "type") else event.get("type", "")
-                    payload = event.data if hasattr(event, "data") else event.get("payload", {})
+                    etype = event.type
+                    payload = event.data
                     ts = datetime.now().strftime("%H:%M:%S")
                     click.echo(f"[{ts}] {etype}: {json.dumps(payload)[:100]}")
                     if etype in ("goal_complete", "goal_failed"):

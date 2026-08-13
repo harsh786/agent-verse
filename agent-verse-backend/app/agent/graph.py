@@ -86,8 +86,16 @@ except ImportError:
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _DEFAULT_MAX_ITERATIONS = 100
 _HIGH_RISK_KEYWORDS = frozenset(
-    ("deploy", "delete", "drop", "rm ", "prod", "production", "destroy", "wipe", "truncate")
+    ("deploy", "delete", "drop", "prod", "production", "destroy", "wipe", "truncate")
 )
+_RM_COMMAND_PATTERN = re.compile(r"\brm\b")
+
+
+def _is_high_risk_step(step: str) -> bool:
+    lowered = step.lower()
+    return any(keyword in lowered for keyword in _HIGH_RISK_KEYWORDS) or bool(
+        _RM_COMMAND_PATTERN.search(lowered)
+    )
 
 
 class RetrievalEntryPointError(RuntimeError):
@@ -110,7 +118,7 @@ class GraphState(TypedDict, total=False):
     plan: list[str]          # current step list
     iteration: int           # current iteration count
     terminal_reason: str     # why the graph terminated
-    cot_reasoning: str       # chain-of-thought output from _node_think
+    reasoning_evidence: dict[str, Any]  # aggregate-only, privacy-safe evidence
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +256,7 @@ class AgentGraph:
         tool_reliability_store: Any = None,
         episodic_memory: Any = None,
         procedural_memory: Any = None,
+        runtime_profile: Any | None = None,
         **kwargs: Any,
     ) -> None:
         self._planner = planner
@@ -274,13 +283,27 @@ class AgentGraph:
         self._semantic_cache: Any = semantic_cache
         self._llm_response_cache: Any = llm_response_cache
         self._embedder: Any = embedder
-        self._enable_cot = enable_cot
-        self._enable_reflection = enable_reflection
+        self._runtime_profile = runtime_profile
+        selected_strategy_ids = set()
+        if runtime_profile is not None:
+            selected_strategy_ids = {
+                runtime_profile.primary_strategy.strategy_id,
+                *(
+                    item.strategy_id
+                    for item in runtime_profile.auxiliary_strategies
+                ),
+            }
+        self._enable_cot = enable_cot or "chain_of_thought" in selected_strategy_ids
+        self._enable_reflection = enable_reflection or "reflection" in selected_strategy_ids
         # C3 fix: pattern flags
-        self._enable_self_refine = enable_self_refine
-        self._enable_self_consistency = enable_self_consistency
-        self._enable_tree_of_thoughts = enable_tree_of_thoughts
-        self._enable_peer_review = enable_peer_review
+        self._enable_self_refine = enable_self_refine or "self_refine" in selected_strategy_ids
+        self._enable_self_consistency = (
+            enable_self_consistency or "self_consistency" in selected_strategy_ids
+        )
+        self._enable_tree_of_thoughts = (
+            enable_tree_of_thoughts or "tree_of_thoughts" in selected_strategy_ids
+        )
+        self._enable_peer_review = enable_peer_review or "peer_review" in selected_strategy_ids
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -326,6 +349,10 @@ class AgentGraph:
         self._state_lock = asyncio.Lock()
         from app.observability.logging import get_logger as _get_logger
         self._logger = _get_logger(__name__)
+
+    @property
+    def runtime_profile(self) -> Any | None:
+        return self._runtime_profile
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -474,72 +501,13 @@ class AgentGraph:
             except Exception:
                 pass
 
-        # Dynamic orchestration: build runtime profile
-        try:
-            from app.core.runtime_flags import get_runtime_flags
-            _init_rf = get_runtime_flags()
-            if _init_rf.dynamic_orchestration or _init_rf.enable_rag_strategy_routing:
-                # Skip if profile was already built by goal_service (present in execution_context)
-                if agent_state.context.get("_runtime_profile") is not None:
-                    pass  # Profile already set by goal_service — don't rebuild
-                else:
-                    from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
-                    builder = RuntimeProfileBuilder()
-                    profile, trace = await builder.build_with_trace(
-                        agent_state.goal,
-                        tenant_id=agent_state.tenant_ctx.tenant_id,
-                        goal_id=agent_state.goal_id,
-                    )
-                    agent_state.context["_runtime_profile"] = profile
-                    agent_state.context["_decision_trace"] = trace
-                    if self._event_callback is not None and (
-                        _init_rf.dynamic_orchestration or _init_rf.enable_pattern_sse_events
-                    ):
-                        from app.observability.runtime_decision_trace import RuntimeSSEEmitter
-                        emitter = RuntimeSSEEmitter()
-                        await self._event_callback(emitter.pattern_assembled(
-                            goal_id=agent_state.goal_id,
-                            complexity=profile.properties.complexity.value,
-                            risk=profile.properties.risk.value,
-                            patterns_active={
-                                "reasoning": profile.agent_patterns.reasoning,
-                                "rag": profile.rag_strategy.sources,
-                                "safety": (
-                                    [profile.security.guardrail_bundle]
-                                    if profile.security.guardrail_bundle else []
-                                ),
-                            },
-                            models={"planner": profile.model_plan.planner},
-                            selection_reasons={},
-                            assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0),
-                        ))
-                    # N6a: runtime_profile_selected SSE
-                    try:
-                        if self._event_callback is not None:
-                            _sse_rps = RuntimeSSEEmitter()
-                            await self._emit(_sse_rps.runtime_profile_selected(
-                                goal_id=agent_state.goal_id,
-                                profile_id=getattr(profile, "profile_id", "") or "",
-                                complexity=profile.properties.complexity.value,
-                                patterns=(
-                                    [profile.agent_patterns.reasoning]
-                                    if profile.agent_patterns.reasoning else ["react"]
-                                ),
-                                rag_strategy=profile.rag_strategy.strategy,
-                                assembly_latency_ms=getattr(profile, "assembly_latency_ms", 0.0) or 0.0,
-                            ))
-                    except Exception:
-                        pass
-        except Exception as _profile_exc:
-            from app.observability.logging import get_logger
-            get_logger(__name__).warning(
-                "runtime_profile_build_in_graph_failed", error=str(_profile_exc)
-            )
+        if self._runtime_profile is not None:
+            agent_state.context["_runtime_profile"] = self._runtime_profile
 
         # H23-H26: Security profiles — compute per-goal identity + action safety context
         try:
-            from app.security_runtime.identity_profile import IdentityResolver
             from app.security_runtime.governance_profile import GovernanceProfileSelector
+            from app.security_runtime.identity_profile import IdentityResolver
             _id_resolver = IdentityResolver()
             _identity = _id_resolver.resolve(tenant_ctx=agent_state.tenant_ctx)
             agent_state.context["_identity_scope"] = _identity.identity_scope.value
@@ -788,6 +756,20 @@ class AgentGraph:
             agent_state.context["rag_retrieval_legs"] = retrieval_legs
             agent_state.context["rag_strategy_trace"] = strategy_trace
             agent_state.context["rag_retrieval_status"] = "complete"
+            agent_state.context["retrieval_attempted"] = True
+            average_confidence = (
+                sum(float(item["score"]) for item in knowledge_citations)
+                / len(knowledge_citations)
+                if knowledge_citations
+                else 0.0
+            )
+            agent_state.context["runtime_retrieval_evidence"] = {
+                "source": "knowledge_base",
+                "confidence": average_confidence,
+            }
+            agent_state.context["retrieval_evidence_ref"] = (
+                f"goal:{agent_state.goal_id}:rag"
+            )
             agent_state.provenance.extend(knowledge_citations)
             success_event = {
                 "type": "knowledge_retrieved",
@@ -982,6 +964,19 @@ class AgentGraph:
             if refined and not refined.startswith("NO_CHANGES_NEEDED"):
                 last_step.output = refined
                 agent_state.context["refine_iterations"] = refine_iterations + 1
+            evidence_status = "completed" if refined else "degraded"
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                {
+                    "strategy_id": "self_refine",
+                    "adapter_version": "1.0.0",
+                    "status": evidence_status,
+                    "call_count": 1,
+                    "round": refine_iterations + 1,
+                    "changed": bool(
+                        refined and not refined.startswith("NO_CHANGES_NEEDED")
+                    ),
+                }
+            )
 
         except Exception as exc:
             try:
@@ -1013,11 +1008,38 @@ class AgentGraph:
             )
         except RuntimeError as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
-        return {"cot_reasoning": resp.content}
+        # The provider's private reasoning is intentionally discarded. Only
+        # aggregate execution evidence is checkpointed or exposed.
+        agent_state.context.setdefault("reasoning_evidence", []).append(
+            {
+                "strategy_id": "chain_of_thought",
+                "adapter_version": "1.0.0",
+                "status": "completed" if resp.content else "degraded",
+                "call_count": 1,
+                "safe_rationale_summary": "deliberate reasoning phase completed",
+            }
+        )
+        return {
+            "agent_state": agent_state,
+            "reasoning_evidence": agent_state.context["reasoning_evidence"][-1],
+        }
 
     async def _node_reflect(self, state: GraphState) -> dict[str, Any]:
         """Reflection node: diagnoses failure and populates verification_feedback."""
         agent_state: AgentState = state["agent_state"]
+        reflection_attempts = int(agent_state.context.get("reflection_attempts", 0))
+        max_reflections = self._max_reflection_rounds()
+        if reflection_attempts >= max_reflections:
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                {
+                    "strategy_id": "reflection",
+                    "adapter_version": "1.0.0",
+                    "status": "exhausted",
+                    "call_count": 0,
+                    "limit_reason": "reflection_round_limit",
+                }
+            )
+            return {"agent_state": agent_state}
         failed_steps = [s for s in agent_state.steps if s.status == StepStatus.FAILED]
         failed_summary = (
             "\n".join(f"- {s.description}: {s.error}" for s in failed_steps)
@@ -1047,7 +1069,26 @@ class AgentGraph:
             )
         except RuntimeError as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
-        agent_state.verification_feedback = resp.content
+        from app.agent.reasoning_evidence import critique_categories
+
+        categories = critique_categories(resp.content or "")
+        agent_state.context.setdefault(
+            "original_verification_evidence", agent_state.verification_feedback
+        )
+        agent_state.context["reflection_attempts"] = reflection_attempts + 1
+        agent_state.verification_feedback = (
+            "Reflection identified categories: " + ", ".join(categories)
+        )
+        agent_state.context.setdefault("reasoning_evidence", []).append(
+            {
+                "strategy_id": "reflection",
+                "adapter_version": "1.0.0",
+                "status": "completed",
+                "call_count": 1,
+                "critique_categories": list(categories),
+                "attempt": reflection_attempts + 1,
+            }
+        )
         return {"agent_state": agent_state}
 
     # ------------------------------------------------------------------
@@ -1065,9 +1106,16 @@ class AgentGraph:
             if not last_step.output:
                 return {"agent_state": agent_state}
             pattern = SelfConsistencyPattern(n_samples=3)
-            refined = await pattern.execute(
+            execution = await pattern.execute_with_evidence(
                 prompt=f"Goal: {agent_state.goal}\nCurrent answer: {last_step.output}",
                 provider=self._executor,
+                call_limit=self.runtime_profile.effective_limits.calls
+                if self.runtime_profile is not None
+                else None,
+            )
+            refined = str(execution.result)
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                execution.evidence.model_dump(mode="json")
             )
             if refined and refined != last_step.output:
                 last_step.output = refined
@@ -1088,9 +1136,13 @@ class AgentGraph:
         try:
             from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
             pattern = TreeOfThoughtsPattern(n_thoughts=3, max_depth=2)
-            answer = await pattern.execute(
+            execution = await pattern.execute_with_evidence(
                 problem=agent_state.goal,
                 provider=self._planner,
+            )
+            answer = str(execution.result)
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                execution.evidence.model_dump(mode="json")
             )
             if answer:
                 agent_state.context["tot_answer"] = answer
@@ -1114,17 +1166,34 @@ class AgentGraph:
             if not last_step.output:
                 return {"agent_state": agent_state}
             pattern = PeerReviewPattern(quality_threshold=0.7)
-            review = await pattern.execute(
+            role_assignments = (
+                dict(self.runtime_profile.model_role_assignments)
+                if self.runtime_profile is not None
+                else {}
+            )
+            # Legacy graphs still have distinct executor/verifier roles even
+            # when no runtime profile supplies concrete model identities.
+            # Preserve that logical separation; explicit profiles remain the
+            # source of truth and can reject an actual same-model assignment.
+            producer_identity = role_assignments.get("executor", "executor-role")
+            reviewer_identity = role_assignments.get("reviewer", "verifier-role")
+            execution = await pattern.execute_with_evidence(
                 output=last_step.output,
                 goal=agent_state.goal,
                 provider=self._verifier,
+                producer_identity=producer_identity,
+                reviewer_identity=reviewer_identity,
+            )
+            review = execution.result
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                execution.evidence.model_dump(mode="json")
             )
             agent_state.context["peer_review_score"] = review.quality_score
             agent_state.context["peer_review_approved"] = review.approved
-            agent_state.context["peer_review_critique"] = review.critique
             if not review.approved:
                 agent_state.verification_feedback = (
-                    f"[Peer Review Score: {review.quality_score:.2f}] {review.critique}"
+                    f"Peer review rejected output at score {review.quality_score:.2f}; "
+                    f"categories: {', '.join(execution.evidence.critique_categories)}"
                 )
                 agent_state.verification_success = False
         except Exception as exc:
@@ -1261,10 +1330,10 @@ class AgentGraph:
                 f"[Previous attempt feedback]\n{agent_state.verification_feedback}"
             )
 
-        # Inject chain-of-thought reasoning if available
-        cot_reasoning: str = state.get("cot_reasoning", "")
-        if cot_reasoning:
-            extra_parts.append(f"[Chain-of-thought reasoning]\n{cot_reasoning}")
+        if state.get("reasoning_evidence"):
+            extra_parts.append(
+                "[Reasoning mode]\nUse deliberate decomposition; private reasoning is not retained."
+            )
 
         # ── Skill selection ────────────────────────────────────────────────────
         try:
@@ -2031,13 +2100,14 @@ class AgentGraph:
     async def _execute_step(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
-        """12-step per-step pipeline mirroring AgentLoop._execute."""
+        """Run the canonical governed per-step execution pipeline."""
         tool_name = self._extract_tool_name(step)
 
         # H23-H26: Action safety profile — assess per-tool risk
         try:
             from app.security_runtime.action_safety_profile import (
-                ActionSafetyProfileSelector, ActionSafetyLevel,
+                ActionSafetyLevel,
+                ActionSafetyProfileSelector,
             )
             _asp_selector = ActionSafetyProfileSelector()
             _risk = state.context.get("_risk_level", "low")
@@ -2126,8 +2196,8 @@ class AgentGraph:
 
         # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
         try:
-            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
             from app.core.runtime_flags import get_runtime_flags as _ge_rtf
+            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
             _ge_flags = _ge_rtf()
             _runtime_profile = state.context.get("_runtime_profile")
             if (
@@ -2196,7 +2266,7 @@ class AgentGraph:
 
         # 7. HITL gate
         if not _hitl_already_requested and self._hitl_gateway is not None:
-            risk = "high" if any(kw in step.lower() for kw in _HIGH_RISK_KEYWORDS) else "low"
+            risk = "high" if _is_high_risk_step(step) else "low"
             if risk == "high":
                 req_id = str(self._hitl_gateway.request_approval(
                     goal_id=state.goal_id,
@@ -3106,7 +3176,9 @@ class AgentGraph:
                             # adversarial text designed to hijack the agent (tool poisoning).
                             if result.success and raw_result_output:
                                 try:
-                                    from app.agent.exfil_guard import check_tool_output_for_injection
+                                    from app.agent.exfil_guard import (
+                                        check_tool_output_for_injection,
+                                    )
                                     _injection_warning = check_tool_output_for_injection(
                                         tool_ref.name, raw_result_output
                                     )
@@ -3296,6 +3368,7 @@ class AgentGraph:
                         "ungrounded_claims": _ground_result.ungrounded_claims[:5],
                         "step": step,
                     })
+                state.context["grounding_checked"] = True
         except Exception as exc:
             # Log but don't block execution — fail-open only on grounding check errors
             self._logger.warning("grounding_check_error", error=str(exc)[:80])
@@ -3676,8 +3749,8 @@ class AgentGraph:
 
             # Dynamic orchestration: scorecard + self-improvement + reflexion
             try:
-                from app.evals.runtime_scorecard import RuntimeScorecard
                 from app.core.runtime_flags import get_runtime_flags as _nv_rtf
+                from app.evals.runtime_scorecard import RuntimeScorecard
                 _nv_flags = _nv_rtf()
                 _profile = agent_state.context.get("_runtime_profile")
                 if (
@@ -3685,7 +3758,26 @@ class AgentGraph:
                     and _profile is not None
                 ):
                     _scorecard = RuntimeScorecard()
-                    _scorecard_result = _scorecard.score(state=agent_state, profile=_profile)
+                    _guardrail_violations = sum(
+                        1
+                        for event in agent_state.events
+                        if isinstance(event, dict)
+                        and (
+                            event.get("action_level") == "DENY"
+                            or event.get("outcome") == "denied"
+                            or event.get("type") in {"tool_call_denied", "guardrail_rejected"}
+                        )
+                    )
+                    _scorecard_result = _scorecard.score(
+                        state=agent_state,
+                        profile=_profile,
+                        retrieval_result=agent_state.context.get(
+                            "runtime_retrieval_evidence"
+                        ),
+                        cost_usd=agent_state.context.get("total_cost_usd"),
+                        latency_ms=agent_state.context.get("_latency_ms"),
+                        guardrail_violations=_guardrail_violations,
+                    )
                     agent_state.context["scorecard"] = _scorecard_result.to_dict()
                     # Persist scorecard to eval_scorecards table
                     try:
@@ -3933,7 +4025,8 @@ class AgentGraph:
                         _v2_task.add_done_callback(self._background_tasks.discard)
             # N5: Record result in module-level ABTestingEngine for cross-goal A/B analysis
             try:
-                from app.optimization.ab_testing import ab_testing_engine as _abt_eng, ExperimentType
+                from app.optimization.ab_testing import ExperimentType
+                from app.optimization.ab_testing import ab_testing_engine as _abt_eng
                 if _abt_eng is not None and _eval_score is not None and tenant_ctx is not None:
                     import asyncio as _n5_asyncio
                     _abt_asyncio_task = _n5_asyncio.ensure_future(
@@ -4059,6 +4152,21 @@ class AgentGraph:
     # Routing (synchronous — LangGraph calls this synchronously)
     # ------------------------------------------------------------------
 
+    def _max_reflection_rounds(self) -> int:
+        return max(
+            0,
+            min(
+                2,
+                int(
+                    getattr(
+                        getattr(self._runtime_profile, "effective_limits", None),
+                        "rounds",
+                        2,
+                    )
+                ),
+            ),
+        )
+
     def _route(self, state: GraphState) -> str:
         agent_state: AgentState | None = state.get("agent_state")
         if agent_state is None:
@@ -4147,9 +4255,31 @@ class AgentGraph:
         except Exception:
             pass  # never crash routing
 
-        # Use reflection node on verify failure when reflection is enabled (Fix 2)
+        # This router only runs after verification, so a negative verification
+        # result is itself sufficient evidence to enter the bounded reflection
+        # path even when the verifier omitted explanatory text.
         if self._enable_reflection:
-            return "reflect"
+            reflection_attempts = int(
+                agent_state.context.get("reflection_attempts", 0)
+            )
+            if reflection_attempts < self._max_reflection_rounds():
+                return "reflect"
+            evidence = {
+                "strategy_id": "reflection",
+                "adapter_version": "1.0.0",
+                "status": "exhausted",
+                "call_count": 0,
+                "limit_reason": "reflection_round_limit",
+                "attempt": reflection_attempts,
+            }
+            prior = agent_state.context.setdefault("reasoning_evidence", [])
+            if not prior or prior[-1] != evidence:
+                prior.append(evidence)
+            agent_state.context["terminal_reason"] = "reflection_exhausted"
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Reflection round limit exhausted."
+            record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
+            return "max_iter"
         return "replan"
 
     def _route_after_execute(self, state: GraphState) -> str:
@@ -4291,7 +4421,6 @@ class AgentGraph:
                                     }
                                 )
                             return failed_state
-                    import traceback as _tb
                     import logging as _logging
                     _logging.getLogger(__name__).warning(
                         "agentgraph_run_exception type=%s msg=%r",

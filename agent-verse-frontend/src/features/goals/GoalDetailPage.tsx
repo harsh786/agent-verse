@@ -451,15 +451,13 @@ function TerminalLine({ event, onRetry, isRetrying }: {
 
   const label = (() => {
     switch (type) {
-      case "plan_ready": {
-        const steps = Array.isArray(event.steps) ? event.steps : [];
-        return steps.length > 0 ? `Plan ready (${steps.length} steps)` : "Plan ready";
-      }
+      case "goal_started": return "Goal started";
+      case "plan_ready": return "Plan ready";
       case "step_started": return `▶ ${step ?? "Step"}`;
       case "step_complete": return `✓ ${step ?? "Step complete"}`;
-      case "tool_call_complete": return `⚡ ${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} — ${event.success !== false ? "ok" : "error"}`;
-      case "tool_call_failed": return `✗ ${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} failed`;
-      case "verification_done": return `🔍 Verify — ${event.success === true ? "PASS" : "FAIL"}`;
+      case "tool_call_complete": return `${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} ${event.success !== false ? "succeeded" : "failed"}`;
+      case "tool_call_failed": return `${readStr(event.tool_name) ?? readStr(event.tool) ?? "Tool"} failed`;
+      case "verification_done": return `Verification ${event.success === true ? "passed" : "failed"}`;
       case "goal_complete": return "🎉 Goal complete";
       case "goal_failed": return "💥 Goal failed";
       default: return step ?? type.replace(/_/g, " ");
@@ -612,9 +610,13 @@ function TerminalPanel({
 
         {/* Live LLM streaming token */}
         {streamingToken && (
-          <div className="px-3 py-1.5 border-t border-[#30363d] mt-1">
+          <div
+            role="status"
+            aria-label="Live LLM output"
+            className="px-3 py-1.5 border-t border-[#30363d] mt-1"
+          >
             <p className="font-mono text-[10px] text-yellow-400 mb-1">
-              ⚙ generating: {streamingToken.step}
+              Generating: {streamingToken.step}
             </p>
             <p className="font-mono text-xs text-slate-300 whitespace-pre-wrap break-words">
               {streamingToken.cumulative}
@@ -1007,8 +1009,10 @@ export function GoalDetailPage() {
         {visibleTabs.map(({ tab, label, icon }) => (
           <button
             key={tab}
+            id={`goal-tab-${tab}`}
             ref={(el) => { tabRefs.current[tab] = el; }}
             role="tab"
+            aria-controls={`goal-tabpanel-${tab}`}
             aria-selected={activeTab === tab}
             tabIndex={activeTab === tab ? 0 : -1}
             onClick={() => selectTab(tab)}
@@ -1034,7 +1038,7 @@ export function GoalDetailPage() {
 
       {/* Results — ALWAYS shows something */}
       {activeTab === "results" && (
-        <div role="tabpanel" className="space-y-4">
+        <div id="goal-tabpanel-results" role="tabpanel" aria-labelledby="goal-tab-results" className="space-y-4">
           <RichResultPanel
             artifact={artifact}
             events={events}
@@ -1047,14 +1051,14 @@ export function GoalDetailPage() {
 
       {/* Evidence — built from events + artifact */}
       {activeTab === "evidence" && (
-        <div role="tabpanel">
+        <div id="goal-tabpanel-evidence" role="tabpanel" aria-labelledby="goal-tab-evidence">
           <EnhancedEvidencePanel artifact={artifact} events={events} />
         </div>
       )}
 
       {/* Execution — terminal-style */}
       {activeTab === "execution" && (
-        <div role="tabpanel" className="space-y-3">
+        <div id="goal-tabpanel-execution" role="tabpanel" aria-labelledby="goal-tab-execution" className="space-y-3">
           <TerminalPanel
             events={events}
             goalStatus={goal.status}
@@ -1068,7 +1072,7 @@ export function GoalDetailPage() {
 
       {/* Developer Log */}
       {activeTab === "events" && (
-        <div role="tabpanel" className="space-y-2">
+        <div id="goal-tabpanel-events" role="tabpanel" aria-labelledby="goal-tab-events" className="space-y-2">
           {eventsLoading
             ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)
             : eventLog.length === 0
@@ -1076,11 +1080,15 @@ export function GoalDetailPage() {
             : eventLog.map((ev, i) => (
               <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm">
                 <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-                  {(ev as any).created_at ? new Date((ev as any).created_at).toLocaleTimeString() : `#${i + 1}`}
+                  {(ev as any).created_at || (ev as any).ts
+                    ? new Date((ev as any).created_at ?? (ev as any).ts).toLocaleTimeString()
+                    : `#${i + 1}`}
                 </span>
                 <span className="font-medium">{(ev as any).type?.replace(/_/g, " ")}</span>
-                {(ev as any).payload?.message != null && (
-                  <span className="text-muted-foreground text-xs">{String((ev as any).payload.message)}</span>
+                {((ev as any).payload?.message ?? (ev as any).data?.message) != null && (
+                  <span className="text-muted-foreground text-xs">
+                    {String((ev as any).payload?.message ?? (ev as any).data?.message)}
+                  </span>
                 )}
               </div>
             ))
@@ -1090,7 +1098,7 @@ export function GoalDetailPage() {
 
       {/* Eval */}
       {activeTab === "eval" && (
-        <div role="tabpanel" className="space-y-4">
+        <div id="goal-tabpanel-eval" role="tabpanel" aria-labelledby="goal-tab-eval" className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold">Evaluation Scorecard</h3>
@@ -1156,7 +1164,7 @@ export function GoalDetailPage() {
 
       {/* Explain */}
       {activeTab === "explain" && (
-        <div role="tabpanel">
+        <div id="goal-tabpanel-explain" role="tabpanel" aria-labelledby="goal-tab-explain">
           <GoalExplainPanel goalId={goalId!} />
         </div>
       )}

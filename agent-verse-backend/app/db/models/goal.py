@@ -73,6 +73,14 @@ class Goal(Base):
     rag_strategy_used: Mapped[str] = mapped_column(
         String(64), nullable=False, default="", server_default=""
     )
+    runtime_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strategy_registry_revision: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    runtime_profile_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    rejected_strategies: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
 
     steps: Mapped[list[GoalStep]] = relationship(
         "GoalStep",

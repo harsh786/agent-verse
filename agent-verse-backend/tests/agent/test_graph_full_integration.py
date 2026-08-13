@@ -83,7 +83,8 @@ def test_scorecard_computed_on_complete_state(tenant_ctx):
     scorecard = RuntimeScorecard()
     result = scorecard.score(state=state, profile=profile)
     assert result.overall_score >= 0.0
-    assert len(result.scores) == 9  # all 9 dimensions
+    assert set(result.dimension_status) == set(result.weights)
+    assert result.scores == {"goal_success": 1.0}
 
 
 def test_self_improvement_actions_after_failed_state(tenant_ctx):

@@ -80,7 +80,7 @@ describe('GoalDiffPage component', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderPage();
     // There should be at least one text input for the second goal ID
-    const inputs = screen.queryAllByRole('textbox');
+    const inputs = screen.queryAllByRole('combobox');
     expect(inputs.length).toBeGreaterThan(0);
   });
 
@@ -111,7 +111,7 @@ describe('GoalDiffPage component', () => {
     renderPage('goal-a');
 
     // Fill in the second goal ID input
-    const inputs = screen.getAllByRole('textbox');
+    const inputs = screen.getAllByRole('combobox');
     const goalBInput = inputs.find(
       (el) => (el as HTMLInputElement).value !== 'goal-a'
     ) ?? inputs[inputs.length - 1];

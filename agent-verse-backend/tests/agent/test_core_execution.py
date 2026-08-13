@@ -1,12 +1,44 @@
 # tests/agent/test_core_execution.py
-"""Core execution: ContextPipeline in _node_plan, GuardrailEnforcer, directive parsing, web fallback."""
+"""Core execution context, guardrail, directive, and retrieval contracts."""
 from __future__ import annotations
+
 import pytest
-from app.providers.fake import FakeProvider
-from app.tenancy.context import TenantContext, PlanTier
-from app.agent.state import AgentState, GoalStatus
+
+from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.rag.models import Chunk, KnowledgeCollection
 from app.rag.store import KnowledgeStore
-from app.rag.models import KnowledgeCollection, Chunk
+from app.tenancy.context import PlanTier, TenantContext
+
+
+class StoreGateway:
+    """Test gateway that keeps core-execution tests on the canonical boundary."""
+
+    def __init__(self, store: KnowledgeStore) -> None:
+        self.store = store
+
+    async def execute(self, tenant_ctx, **kwargs):
+        rows = await self.store.search(
+            kwargs["query"],
+            kwargs["collection_id"],
+            kwargs["top_k"],
+            tenant_ctx=tenant_ctx,
+            metadata_filter=kwargs["filters"],
+        )
+        return RAGExecutionResult(
+            requested_strategy_id=str(kwargs["strategy_id"]),
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[
+                RAGCitation(
+                    citation_id=f"citation-{row['chunk_id']}",
+                    chunk_id=row["chunk_id"],
+                    content=row["content"],
+                    score=row["score"],
+                    source=str(row.get("metadata", {}).get("source_url", "knowledge_base")),
+                    metadata=row.get("metadata", {}),
+                )
+                for row in rows
+            ],
+        )
 
 
 @pytest.fixture
@@ -34,7 +66,7 @@ async def test_context_pipeline_builds_planner_context(tenant_ctx, loaded_store)
     from app.context.context_pipeline import ContextPipeline
     from app.rag.agentic.retriever_tool import RetrieverTool
 
-    retriever = RetrieverTool(knowledge_store=loaded_store)
+    retriever = RetrieverTool(retrieval_gateway=StoreGateway(loaded_store))
     retrieval = await retriever.retrieve(
         query="dynamic orchestration",
         tenant_ctx=tenant_ctx,
@@ -151,7 +183,7 @@ def test_search_directive_maps_to_retrieval_strategy():
 async def test_per_step_retrieval_returns_context(tenant_ctx, loaded_store):
     """Per-step retrieval must return KB context for relevant queries."""
     from app.rag.agentic.retriever_tool import RetrieverTool
-    tool = RetrieverTool(knowledge_store=loaded_store)
+    tool = RetrieverTool(retrieval_gateway=StoreGateway(loaded_store))
     result = await tool.retrieve(
         query="dynamic orchestration",
         tenant_ctx=tenant_ctx,
@@ -164,8 +196,10 @@ async def test_per_step_retrieval_returns_context(tenant_ctx, loaded_store):
 async def test_per_step_retrieval_with_empty_kb(tenant_ctx):
     """Per-step retrieval with empty KB must return structured result, not empty string."""
     from app.rag.agentic.retriever_tool import RetrieverTool
-    tool = RetrieverTool(knowledge_store=KnowledgeStore())
-    result = await tool.retrieve(query="anything", tenant_ctx=tenant_ctx)
+    tool = RetrieverTool(retrieval_gateway=StoreGateway(KnowledgeStore()))
+    result = await tool.retrieve(
+        query="anything", tenant_ctx=tenant_ctx, collection_ids=["missing"]
+    )
     # MUST never be empty string — always structured
     assert result is not None
     assert result.source != ""
@@ -176,27 +210,16 @@ async def test_per_step_retrieval_with_empty_kb(tenant_ctx):
 
 async def test_web_fallback_triggered_when_kb_empty(tenant_ctx):
     """When KB is empty and web is available, RetrieverTool uses web fallback."""
-    web_calls = []
-
-    async def mock_web_search(query, top_k=3):
-        web_calls.append(query)
-        return [{"content": f"Web result for: {query}", "url": "https://web.example.com"}]
-
     from app.rag.agentic.retriever_tool import RetrieverTool
-    tool = RetrieverTool(
-        knowledge_store=KnowledgeStore(),  # empty KB
-        web_search_fn=mock_web_search,
-        web_search_available=True,
-    )
-    result = await tool.retrieve(
-        query="current Python version",
-        tenant_ctx=tenant_ctx,
-        strategy="auto",
-        allow_web_fallback=True,
-    )
-    assert result.source in ("web", "parametric")
-    if result.source == "web":
-        assert len(web_calls) > 0  # web was actually called
+    tool = RetrieverTool(retrieval_gateway=StoreGateway(KnowledgeStore()))
+    with pytest.raises(TypeError, match="Fallback"):
+        await tool.retrieve(
+            query="current Python version",
+            tenant_ctx=tenant_ctx,
+            strategy="auto",
+            collection_ids=["missing"],
+            allow_web_fallback=True,
+        )
 
 
 async def test_retriever_fallback_chain_order(tenant_ctx):

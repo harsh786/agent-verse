@@ -319,24 +319,12 @@ async def _call_tool_inner(
                 resp = await client.post("/rest/api/3/search/jql", json=payload)
                 resp.raise_for_status()
             except Exception as _search_err:
-                # Fall back to GET endpoint which is more widely supported
-                try:
-                    resp = await client.get(
-                        "/rest/api/3/search",
-                        params={
-                            "jql": jql,
-                            "maxResults": arguments.get("max_results", 50),
-                            "fields": ",".join(arguments.get("fields", default_fields)),
-                        },
-                    )
-                    resp.raise_for_status()
-                except Exception as _get_err:
-                    return {
-                        "error": f"Jira search failed: {_search_err} | GET fallback: {_get_err}",
-                        "jql_used": jql,
-                        "total": 0,
-                        "issues": [],
-                    }
+                return {
+                    "error": f"Jira search failed: {_search_err}",
+                    "jql_used": jql,
+                    "total": 0,
+                    "issues": [],
+                }
             data = resp.json()
             issues = data.get("issues", [])
             return {

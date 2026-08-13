@@ -8,7 +8,7 @@ import pytest
 import respx
 
 from agentverse.client import AgentVerseClient
-from agentverse.exceptions import AuthError, GoalFailedError, GoalTimeoutError, NotFoundError
+from agentverse.exceptions import AuthError, GoalFailedError, NotFoundError
 from agentverse.models import GoalStatus
 
 BASE_URL = "http://localhost:8000"

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 
 async def test_goal_service_builds_profile_when_flag_enabled(signed_up_client):
     """With DYNAMIC_ORCHESTRATION=true, goal submission attaches a runtime profile."""

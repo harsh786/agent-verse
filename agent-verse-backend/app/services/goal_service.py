@@ -1,7 +1,7 @@
 """GoalService — in-memory goal lifecycle management.
 
 Responsible for:
-  - Accepting goal submissions and launching AgentLoop as asyncio background tasks
+  - Accepting goal submissions and launching AgentGraph as asyncio background tasks
   - Tracking goal status and appending SSE events
   - Fanning out events to all live SSE subscribers via per-goal asyncio.Queue
   - Delegating audit-log queries and HITL approval to governance components
@@ -40,13 +40,13 @@ from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
 from app.observability.metrics import record_goal_duration, record_goal_started
 from app.providers.fake import FakeProvider
-from app.services.goal_queue import GoalTaskQueue
-from app.services.result_artifacts import build_result_artifact
-from app.tenancy.context import PlanTier, TenantContext
 
 # Sub-module imports — part of ongoing decomposition to reduce God-class size
 # See: app/services/goal_events.py, goal_metrics.py, goal_lifecycle.py
 from app.services.goal_lifecycle import GoalTransition, is_valid_transition  # noqa: F401
+from app.services.goal_queue import GoalTaskQueue
+from app.services.result_artifacts import build_result_artifact
+from app.tenancy.context import PlanTier, TenantContext
 
 # Module-level OTel tracer — no-ops cleanly when no exporter is configured.
 _tracer = trace.get_tracer(__name__)
@@ -82,6 +82,7 @@ class GoalRecord:
     agent_id: str | None = None
     workflow_mode: str = "single_agent"
     execution_context: dict[str, Any] = field(default_factory=dict)
+    runtime_profile: Any | None = field(default=None, repr=False)
     events: list[dict[str, Any]] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     subscribers: list[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=list)
@@ -112,7 +113,6 @@ def _resolve_checkpointer(app_state: Any) -> Any:
       3. Sync RedisSaver (same URL)
       4. MemorySaver with a WARNING about durability loss
     """
-    import logging as _logging
     import os
     cp = getattr(app_state, "langgraph_checkpointer", None)
     if cp is not None and not isinstance(cp, MemorySaver):
@@ -268,7 +268,7 @@ def _fake_provider() -> Any:
     )
 
 
-def _build_dedup_cache(redis: Any) -> "DeduplicationCache | Any":
+def _build_dedup_cache(redis: Any) -> DeduplicationCache | Any:
     """Build the best available dedup cache: Redis-backed when Redis is available."""
     from app.reliability.dedup import DeduplicationCache as _DedupCache
     try:
@@ -651,7 +651,12 @@ class GoalService:
             return {}
 
     def _make_agent_loop_for_tenant(
-        self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
+        self,
+        tenant_ctx: TenantContext,
+        app_state: Any,
+        *,
+        agent_id: str | None = None,
+        runtime_profile: Any | None = None,
     ) -> Any:
         """Build an AgentGraph using the tenant's configured LLM provider AND all
         governance/RAG/memory services from app.state.
@@ -661,7 +666,6 @@ class GoalService:
         from app.agent.graph import AgentGraph
         from app.core.config import get_provider_env
         from app.intelligence.guardrails import GuardrailChecker
-        from app.reliability.dedup import DeduplicationCache
         from app.reliability.result_processor import ResultProcessor
         from app.reliability.rollback import RollbackEngine
 
@@ -862,31 +866,7 @@ class GoalService:
         _enable_self_consistency = bool(_agent_config.get("enable_self_consistency", False))
         _enable_tree_of_thoughts = bool(_agent_config.get("enable_tree_of_thoughts", False))
         _enable_peer_review = bool(_agent_config.get("enable_peer_review", False))
-        _enable_supervisor = bool(_agent_config.get("enable_supervisor", False))
-        _enable_debate = bool(_agent_config.get("enable_debate", False))
-        # Also check execution_context runtime_profile for assembler-selected patterns
-        try:
-            _all_goals = list(self._goals.values())
-            _latest = _all_goals[-1] if _all_goals else None
-            if _latest is not None:
-                _rp = _latest.execution_context.get("runtime_profile", {})
-                _reasoning_str = str(
-                    _rp.get("agent_patterns", {}).get("reasoning", "")
-                )
-                _enable_self_refine = _enable_self_refine or "self_refine" in _reasoning_str
-                _enable_self_consistency = (
-                    _enable_self_consistency or "self_consistency" in _reasoning_str
-                )
-                _enable_tree_of_thoughts = (
-                    _enable_tree_of_thoughts or "tree_of_thoughts" in _reasoning_str
-                )
-                _enable_peer_review = _enable_peer_review or "peer_review" in _reasoning_str
-                _enable_supervisor = _enable_supervisor or "supervisor" in _reasoning_str
-                _enable_debate = _enable_debate or "debate" in _reasoning_str
-        except Exception:
-            pass
-
-        graph = AgentGraph(
+        graph_services = dict(
             planner=provider,
             executor=provider,
             verifier=provider,
@@ -938,6 +918,16 @@ class GoalService:
             episodic_memory=getattr(app_state, "episodic_memory", None),
             procedural_memory=getattr(app_state, "procedural_memory", None),
         )
+        if runtime_profile is not None:
+            from app.orchestration.graph_factory import GraphFactory
+
+            graph = GraphFactory().create(
+                runtime_profile,
+                graph_services,
+                agent_config=_agent_config,
+            )
+        else:
+            graph = AgentGraph(**graph_services)
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
         # Store agent system prompt so callers can inject it into initial_context
@@ -970,11 +960,11 @@ class GoalService:
 
         return graph
 
-    def _select_models_for_tenant(self, tenant_ctx: "TenantContext") -> dict[str, str]:
+    def _select_models_for_tenant(self, tenant_ctx: TenantContext) -> dict[str, str]:
         """Use AI Router to select optimal models for each role."""
         try:
-            from app.ai_router.router import ai_router
             from app.ai_router.models import TaskType
+            from app.ai_router.router import ai_router
 
             selections: dict[str, str] = {}
             for task_type, role_name, need_tools in [
@@ -1000,6 +990,7 @@ class GoalService:
         goal_id: str,
         tenant_ctx: Any,
         db_session: Any = None,
+        agent_config: dict[str, Any] | None = None,
     ) -> dict:
         """Build GoalRuntimeProfile and persist to goals.execution_context."""
         from app.core.runtime_flags import get_runtime_flags
@@ -1010,28 +1001,91 @@ class GoalService:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
             builder = RuntimeProfileBuilder()
             profile, trace = await builder.build_with_trace(
-                goal, tenant_id=tenant_ctx.tenant_id, goal_id=goal_id
+                goal,
+                tenant_id=tenant_ctx.tenant_id,
+                goal_id=goal_id,
+                agent_config=agent_config,
+            )
+            from app.orchestration.strategy_certification import RolloutController
+
+            rollout = RolloutController(
+                shadow=flags.strategy_runtime_v2_shadow,
+                allowlist=flags.strategy_runtime_v2_tenant_allowlist,
+                kill_switch=flags.strategy_runtime_v2_kill_switch,
+            ).choose(
+                tenant_ctx.tenant_id,
+                {
+                    "strategy": profile.agent_patterns.reasoning[0],
+                    "topology": profile.agent_patterns.reasoning,
+                    "readiness": "legacy_unverified",
+                    "cost": profile.model_plan.cost_class,
+                    "latency": profile.model_plan.latency_class,
+                },
+                {
+                    "strategy": profile.primary_strategy.strategy_id,
+                    "topology": [
+                        profile.primary_strategy.strategy_id,
+                        *(item.strategy_id for item in profile.auxiliary_strategies),
+                    ],
+                    "readiness": profile.readiness_snapshot_ref,
+                    "cost": profile.effective_limits.cost_usd,
+                    "latency": profile.effective_limits.duration_seconds,
+                },
             )
             profile_data = {
+                "profile_object": profile,
                 "runtime_profile": profile.to_dict(),
                 "decision_trace": trace.to_dict(),
                 "profile_id": profile.profile_id,
                 "assembly_latency_ms": profile.assembly_latency_ms,
+                "strategy_runtime_path": rollout.path,
+                "strategy_runtime_shadow_comparison": rollout.shadow_comparison,
             }
             # Persist to goal.execution_context in Postgres
             if db_session is not None:
                 try:
                     import json
+
                     from sqlalchemy import text
                     await db_session.execute(
                         text("""
                             UPDATE goals
                             SET execution_context = COALESCE(execution_context, '{}'::jsonb)
-                                || :profile_data::jsonb
+                                || CAST(:profile_data AS jsonb),
+                                runtime_profile_id = :profile_id,
+                                runtime_profile_version = :profile_version,
+                                strategy_registry_revision = :registry_revision,
+                                runtime_profile_snapshot = CAST(:profile_snapshot AS jsonb),
+                                rejected_strategies = CAST(:rejected_strategies AS jsonb),
+                                patterns_used = CAST(:patterns_used AS jsonb),
+                                rag_strategy_used = :rag_strategy
                             WHERE id = :goal_id AND tenant_id = :tenant_id
                         """),
                         {
                             "profile_data": json.dumps(profile_data),
+                            "profile_id": profile.profile_id,
+                            "profile_version": profile.profile_version,
+                            "registry_revision": profile.registry_revision,
+                            "profile_snapshot": json.dumps(profile.to_dict()),
+                            "rejected_strategies": json.dumps(
+                                [
+                                    {
+                                        "strategy_id": item.strategy_id,
+                                        "reason_code": item.reason_code,
+                                    }
+                                    for item in profile.rejected_alternatives
+                                ]
+                            ),
+                            "patterns_used": json.dumps(
+                                [
+                                    profile.primary_strategy.strategy_id,
+                                    *(
+                                        item.strategy_id
+                                        for item in profile.auxiliary_strategies
+                                    ),
+                                ]
+                            ),
+                            "rag_strategy": profile.rag_strategy.strategy,
                             "goal_id": goal_id,
                             "tenant_id": tenant_ctx.tenant_id,
                         }
@@ -1042,6 +1096,8 @@ class GoalService:
                         "runtime_profile_persist_failed",
                         error=str(db_exc), goal_id=goal_id,
                     )
+            if rollout.path == "v2":
+                profile_data["profile_object"] = profile
             return profile_data
         except Exception as exc:
             from app.observability.logging import get_logger
@@ -1050,35 +1106,26 @@ class GoalService:
             )
             return {}
 
-    async def _check_readiness(self, goal: str, tenant_ctx: Any) -> tuple[bool, str]:
-        """Check if platform is ready to execute this goal (behind feature flag)."""
+    async def _check_readiness(self, runtime_profile: Any) -> tuple[bool, str]:
+        """Check the exact runtime profile selected for this goal.
+
+        A readiness implementation error is itself a blocking readiness failure. This keeps
+        production from executing a strategy whose dependencies were not verified.
+        """
         from app.core.runtime_flags import get_runtime_flags
         if not getattr(get_runtime_flags(), "readiness_gate", False):
             return True, ""
         try:
-            from app.runtime_readiness.readiness_gate import ReadinessGate
             from app.runtime_readiness.dependency_health import DependencyHealth
+            from app.runtime_readiness.readiness_gate import ReadinessGate
             health = DependencyHealth.all_healthy()
             gate = ReadinessGate(health)
-            from app.orchestration.runtime_profile import (
-                GoalRuntimeProfile, GoalProperties as GProps, AgentPatternConfig,
-                RAGStrategyConfig, ModelPlanConfig, SecurityConfig,
-                MemoryCacheConfig, EvalConfig,
-            )
-            profile = GoalRuntimeProfile(
-                goal_id="",
-                tenant_id=getattr(tenant_ctx, "tenant_id", "unknown"),
-                properties=GProps(raw_goal=goal[:100]),
-                agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
-                model_plan=ModelPlanConfig(), security=SecurityConfig(),
-                memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
-            )
-            result = gate.check(profile)
+            result = gate.check(runtime_profile)
             if not result.ready:
                 return False, f"Platform not ready: {result.blocking_deps}"
             return True, ""
-        except Exception:
-            return True, ""   # fail open — never block goals on readiness errors
+        except Exception as exc:
+            return False, f"Readiness check failed: {type(exc).__name__}"
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -1584,16 +1631,62 @@ class GoalService:
             await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
 
         cfg_data = persistence_config or {}
-        config = PersistenceConfig(
-            max_attempts=cfg_data.get("max_attempts", 10),
-            iterations_per_attempt=cfg_data.get("iterations_per_attempt", 15),
-            base_backoff_seconds=cfg_data.get("base_backoff_seconds", 30.0),
-            max_backoff_seconds=cfg_data.get("max_backoff_seconds", 600.0),
-            strategy_switch_after=cfg_data.get("strategy_switch_after", 2),
-            escalate_after_failures=cfg_data.get("escalate_after_failures", 6),
-            total_timeout_seconds=cfg_data.get("total_timeout_seconds", 0.0),
-            decompose_on_failure=cfg_data.get("decompose_on_failure", True),
-        )
+        if record is not None and record.runtime_profile is not None:
+            admitted = PersistenceConfig.from_runtime_profile(record.runtime_profile)
+            config = PersistenceConfig(
+                max_attempts=min(
+                    int(cfg_data.get("max_attempts", admitted.max_attempts)),
+                    admitted.max_attempts,
+                ),
+                iterations_per_attempt=min(
+                    int(
+                        cfg_data.get(
+                            "iterations_per_attempt", admitted.iterations_per_attempt
+                        )
+                    ),
+                    admitted.iterations_per_attempt,
+                ),
+                base_backoff_seconds=float(
+                    cfg_data.get("base_backoff_seconds", admitted.base_backoff_seconds)
+                ),
+                max_backoff_seconds=float(
+                    cfg_data.get("max_backoff_seconds", admitted.max_backoff_seconds)
+                ),
+                strategy_switch_after=int(
+                    cfg_data.get("strategy_switch_after", admitted.strategy_switch_after)
+                ),
+                escalate_after_failures=int(
+                    cfg_data.get(
+                        "escalate_after_failures", admitted.escalate_after_failures
+                    )
+                ),
+                total_timeout_seconds=min(
+                    float(
+                        cfg_data.get(
+                            "total_timeout_seconds", admitted.total_timeout_seconds
+                        )
+                    ),
+                    admitted.total_timeout_seconds,
+                ),
+                decompose_on_failure=bool(
+                    cfg_data.get("decompose_on_failure", admitted.decompose_on_failure)
+                ),
+                strategy_id=admitted.strategy_id,
+                strategy_version=admitted.strategy_version,
+                profile_id=admitted.profile_id,
+                profile_version=admitted.profile_version,
+            )
+        else:
+            config = PersistenceConfig(
+                max_attempts=cfg_data.get("max_attempts", 10),
+                iterations_per_attempt=cfg_data.get("iterations_per_attempt", 15),
+                base_backoff_seconds=cfg_data.get("base_backoff_seconds", 30.0),
+                max_backoff_seconds=cfg_data.get("max_backoff_seconds", 600.0),
+                strategy_switch_after=cfg_data.get("strategy_switch_after", 2),
+                escalate_after_failures=cfg_data.get("escalate_after_failures", 6),
+                total_timeout_seconds=cfg_data.get("total_timeout_seconds", 0.0),
+                decompose_on_failure=cfg_data.get("decompose_on_failure", True),
+            )
 
         engine = GoalPersistenceEngine(
             config=config,
@@ -1603,10 +1696,17 @@ class GoalService:
         def agent_factory() -> Any:
             # Set agent knowledge collection IDs for graph RAG
             _persist_record = self._goals.get(goal_id)
+            _persist_profile_kwargs = (
+                {"runtime_profile": _persist_record.runtime_profile}
+                if _persist_record is not None
+                and _persist_record.runtime_profile is not None
+                else {}
+            )
             loop = self._make_agent_loop_for_tenant(
                 tenant_ctx,
                 self._app_state,
                 agent_id=_persist_record.agent_id if _persist_record is not None else None,
+                **_persist_profile_kwargs,
             )
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
@@ -1651,6 +1751,7 @@ class GoalService:
                 agent_factory=agent_factory,
                 tenant_ctx=tenant_ctx,
                 event_callback=callback,
+                goal_id=goal_id,
             )
             if not success:
                 # All attempts exhausted
@@ -1688,7 +1789,7 @@ class GoalService:
 
         When ISOLATED_AGENT_EXECUTION=true the execution is routed through the
         ExecutionEnvironmentScheduler instead of running in-process.  All core
-        agent behaviour (AgentGraph / AgentLoop logic, guardrails, governance,
+        agent behaviour (AgentGraph, guardrails, governance,
         RAG, memory, HITL, etc.) is unchanged — only the *where* changes.
         """
         with _tracer.start_as_current_span("goal.execute") as span:
@@ -1739,10 +1840,16 @@ class GoalService:
             # ── End isolation routing ────────────────────────────────────────
 
             record = self._goals.get(goal_id)
+            _profile_kwargs = (
+                {"runtime_profile": record.runtime_profile}
+                if record is not None and record.runtime_profile is not None
+                else {}
+            )
             loop = self._make_agent_loop_for_tenant(
                 tenant_ctx,
                 self._app_state,
                 agent_id=record.agent_id if record is not None else None,
+                **_profile_kwargs,
             )
             # Store graph instance on record so HITL resume can re-invoke from checkpoint
             if record is not None:
@@ -1899,7 +2006,6 @@ class GoalService:
             _runtime_profile = record.execution_context.get("runtime_profile", {})
             _hitl_state = record.execution_context.get("hitl_state", {})
         try:
-            from app.core.runtime_flags import RuntimeFlags
             _rf = flags
             _feature_flags = {
                 "isolated_agent_execution": _rf.isolated_agent_execution,
@@ -2014,12 +2120,12 @@ class GoalService:
                 mcp_client=self._get_mcp_client(),
                 retrieval_gateway=getattr(app_state, "retrieval_gateway", None),
             )
-            await executor.run(
-                plan=plan,
-                goal=goal_text,
-                tenant_ctx=tenant_ctx,
+            await executor.execute(
+                plan,
+                tenant_ctx,
                 tool_context=tool_context,
                 event_callback=callback,
+                goal=goal_text,
             )
             await self._dispatch_event(goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx)
         except asyncio.CancelledError:
@@ -2207,8 +2313,8 @@ class GoalService:
 
             # AI Router model selection — record in execution_context for observability
             try:
-                from app.ai_router.router import ai_router
                 from app.ai_router.models import TaskType
+                from app.ai_router.router import ai_router
                 planner_model = ai_router.select_model(TaskType.PLANNING, tenant_ctx.tenant_id)
                 if planner_model:
                     record.execution_context["ai_router_planner"] = (
@@ -2221,9 +2327,13 @@ class GoalService:
             # Dynamic orchestration: build runtime profile and embed in execution_context
             try:
                 _profile_data = await self._build_runtime_profile(
-                    goal, goal_id=goal_id, tenant_ctx=tenant_ctx
+                    goal,
+                    goal_id=goal_id,
+                    tenant_ctx=tenant_ctx,
+                    agent_config=record.execution_context.get("strategy_runtime"),
                 )
                 if _profile_data:
+                    record.runtime_profile = _profile_data.get("profile_object")
                     record.execution_context["runtime_profile"] = _profile_data.get("runtime_profile", {})
                     record.execution_context["decision_trace"] = _profile_data.get("decision_trace", {})
                     record.execution_context["profile_id"] = _profile_data.get("profile_id", "")
@@ -2368,8 +2478,10 @@ class GoalService:
                             "workflow_mode": record.workflow_mode,
                             "created_at": record.created_at,
                         }
-                    persistence_mode = (execution_context or {}).get(
-                        "persistence_mode", False
+                    persistence_mode = (
+                        record.runtime_profile.agent_patterns.persistence_mode
+                        if record.runtime_profile is not None
+                        else (execution_context or {}).get("persistence_mode", False)
                     )
                     persistence_cfg = (execution_context or {}).get(
                         "persistence_config", {}
@@ -2635,7 +2747,8 @@ class GoalService:
         state = getattr(record, "agent_state", None)
         if state is None:
             # Reconstruct minimal state from record data
-            from app.agent.state import GoalStatus as _GS, AgentState as _AS
+            from app.agent.state import AgentState as _AS
+            from app.agent.state import GoalStatus as _GS
             try:
                 goal_status = _GS(record.status.value)
             except (ValueError, AttributeError):
@@ -2900,25 +3013,24 @@ class GoalService:
                 import redis.asyncio as _aioredis
                 async with _aioredis.from_url(
                     self._redis_url_for_pubsub, decode_responses=True
-                ) as _pubsub_client:
-                    async with _pubsub_client.pubsub() as pubsub:
-                        channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
-                        await pubsub.subscribe(channel)
-                        async for message in pubsub.listen():
-                            if message.get("type") != "message":
-                                continue
-                            try:
-                                event = json.loads(message["data"])
-                                yield event
-                                # Stop streaming at terminal events
-                                if event.get("type") in (
-                                    "goal_complete",
-                                    "goal_failed",
-                                    "goal_cancelled",
-                                ):
-                                    break
-                            except Exception:
-                                continue
+                ) as _pubsub_client, _pubsub_client.pubsub() as pubsub:
+                    channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
+                    await pubsub.subscribe(channel)
+                    async for message in pubsub.listen():
+                        if message.get("type") != "message":
+                            continue
+                        try:
+                            event = json.loads(message["data"])
+                            yield event
+                            # Stop streaming at terminal events
+                            if event.get("type") in (
+                                "goal_complete",
+                                "goal_failed",
+                                "goal_cancelled",
+                            ):
+                                break
+                        except Exception:
+                            continue
             except Exception as exc:
                 _svc_logger.warning(
                     "cross_replica_sse_failed",

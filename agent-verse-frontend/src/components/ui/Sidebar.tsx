@@ -78,6 +78,7 @@ export function Sidebar() {
         { to: "/skills",        icon: Sparkles,     label: "Skills"        },
         { to: "/models",        icon: Brain,        label: "Model Registry" },
         { to: "/collaboration", icon: Users,        label: "Collaboration" },
+        { to: "/coordination",  icon: Hash,         label: "Coordination" },
       ],
     },
     {
@@ -275,7 +276,7 @@ export function Sidebar() {
                         "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
                         "hover:bg-muted/60 focus-visible:bg-muted/60",
                         isActive
-                          ? "bg-primary/10 text-primary font-medium border-l-2 border-primary"
+                          ? "bg-primary/10 text-blue-700 dark:text-blue-300 font-medium border-l-2 border-primary"
                           : "text-muted-foreground border-l-2 border-transparent"
                       )
                     }

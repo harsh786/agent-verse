@@ -175,12 +175,6 @@ def test_graph_module_imports_guardrails_flag():
     assert getattr(_graph_mod, "guardrails_engine", None) is not None
 
 
-def test_loop_module_imports_guardrails_flag():
-    """The _LOOP_GUARDRAILS_AVAILABLE flag must be True when modules are present."""
-    import app.agent.loop as _loop_mod
-    assert getattr(_loop_mod, "_LOOP_GUARDRAILS_AVAILABLE", False) is True
-
-
 # ---------------------------------------------------------------------------
 # Test 5: GoalService._select_models_for_tenant returns correct format
 # ---------------------------------------------------------------------------

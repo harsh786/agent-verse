@@ -1,8 +1,8 @@
 # tests/orchestration/test_named_profiles.py
 """All spec-named profile classes must exist at the exact spec-required location."""
 from __future__ import annotations
+
 import json
-import pytest
 
 
 def test_multimodal_runtime_profile_importable():

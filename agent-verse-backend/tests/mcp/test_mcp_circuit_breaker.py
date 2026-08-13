@@ -55,6 +55,16 @@ class FakeRedis:
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+# Bypass SSRF guard for this module — tests use mock hostnames that cannot
+# resolve. Scoped to module so it doesn't leak into other test files.
+@pytest.fixture(scope="module", autouse=True)
+def _bypass_ssrf():
+    patcher = patch("app.mcp.client.assert_public_url")
+    patcher.start()
+    yield
+    patcher.stop()
+
+
 @pytest.fixture
 def registry():
     return MCPRegistry(redis=FakeRedis())

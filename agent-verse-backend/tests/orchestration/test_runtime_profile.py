@@ -1,6 +1,10 @@
 """Tests for runtime flags and GoalRuntimeProfile contracts."""
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
 from app.core.runtime_flags import RuntimeFlags, get_runtime_flags
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
@@ -20,7 +24,11 @@ from app.orchestration.runtime_profile import (
     SecurityConfig,
     SecurityRuntimeProfile,
     SelfImprovementProfile,
+    StrategyRejection,
+    StrategySelection,
 )
+from app.orchestration.strategy_adapters import ExecutionTier
+from app.orchestration.strategy_contracts import PatternLimits
 from app.rag.contracts import RAGStrategy
 
 
@@ -121,3 +129,105 @@ def test_named_spec_profiles_importable():
     json.dumps(kp.to_dict())
     srp = SecurityRuntimeProfile(guardrail_bundle="strict", identity_scope="agent")
     json.dumps(srp.to_dict())
+
+
+def _limits(**overrides: int | float) -> PatternLimits:
+    values: dict[str, int | float] = {
+        "calls": 10,
+        "nodes": 20,
+        "edges": 30,
+        "depth": 4,
+        "fan_out": 3,
+        "rounds": 5,
+        "tokens": 10_000,
+        "duration_seconds": 60,
+        "cost_usd": 1.0,
+    }
+    values.update(overrides)
+    return PatternLimits.model_validate(values)
+
+
+def test_goal_runtime_profile_v2_has_authoritative_strategy_snapshot() -> None:
+    deadline = datetime.now(UTC) + timedelta(minutes=5)
+    profile = GoalRuntimeProfile(
+        goal_id="g-v2",
+        tenant_id="t-v2",
+        properties=GoalProperties(raw_goal="research safely"),
+        agent_patterns=AgentPatternConfig(),
+        rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(),
+        security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(),
+        eval_config=EvalConfig(),
+        registry_revision="sha256:catalogue-v2",
+        primary_strategy=StrategySelection("react", "1.0.0"),
+        auxiliary_strategies=(StrategySelection("guardrails", "1.0.0"),),
+        execution_tier=ExecutionTier.LOCAL,
+        effective_limits=_limits(),
+        readiness_snapshot_ref="readiness:r1",
+        policy_snapshot_ref="policy:p1",
+        budget_snapshot_ref="budget:b1",
+        deadline=deadline,
+        selected_alternatives=(StrategySelection("react", "1.0.0"),),
+        rejected_alternatives=(StrategyRejection("debate", "incompatible_tier"),),
+        model_role_assignments=(("planner", "model-a"),),
+    )
+
+    assert profile.profile_version == 2
+    assert profile.primary_strategy.strategy_id == "react"
+    assert profile.to_dict()["execution_tier"] == "local"
+    assert profile.to_dict()["effective_limits"]["calls"] == 10
+
+
+def test_goal_runtime_profile_v2_rejects_expired_deadline_and_duplicate_primary() -> None:
+    kwargs = {
+        "goal_id": "g-invalid",
+        "tenant_id": "t-invalid",
+        "properties": GoalProperties(raw_goal="goal"),
+        "agent_patterns": AgentPatternConfig(),
+        "rag_strategy": RAGStrategyConfig(),
+        "model_plan": ModelPlanConfig(),
+        "security": SecurityConfig(),
+        "memory_cache": MemoryCacheConfig(),
+        "eval_config": EvalConfig(),
+        "deadline": datetime.now(UTC) - timedelta(seconds=1),
+    }
+    with pytest.raises(ValueError, match="deadline must be in the future"):
+        GoalRuntimeProfile(**kwargs)
+
+    kwargs["deadline"] = datetime.now(UTC) + timedelta(minutes=1)
+    kwargs["primary_strategy"] = StrategySelection("react", "1.0.0")
+    kwargs["auxiliary_strategies"] = (StrategySelection("react", "1.0.0"),)
+    with pytest.raises(ValueError, match="primary strategy cannot be auxiliary"):
+        GoalRuntimeProfile(**kwargs)
+
+
+def test_goal_runtime_profile_is_top_level_immutable_and_enforces_tenant_limits() -> None:
+    profile = GoalRuntimeProfile(
+        goal_id="g-frozen",
+        tenant_id="t-frozen",
+        properties=GoalProperties(raw_goal="goal"),
+        agent_patterns=AgentPatternConfig(),
+        rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(),
+        security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(),
+        eval_config=EvalConfig(),
+    )
+    with pytest.raises(AttributeError):
+        profile.primary_strategy = StrategySelection("reflection", "1.0.0")
+
+    with pytest.raises(ValueError, match="effective limit exceeds tenant ceiling: calls"):
+        GoalRuntimeProfile(
+            goal_id="g-ceiling",
+            tenant_id="t-ceiling",
+            properties=GoalProperties(raw_goal="goal"),
+            agent_patterns=AgentPatternConfig(),
+            rag_strategy=RAGStrategyConfig(),
+            model_plan=ModelPlanConfig(),
+            security=SecurityConfig(),
+            memory_cache=MemoryCacheConfig(),
+            eval_config=EvalConfig(),
+            effective_limits=_limits(calls=11),
+            tenant_limit_ceiling=_limits(calls=10),
+        )

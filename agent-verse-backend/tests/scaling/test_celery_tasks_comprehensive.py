@@ -1,7 +1,7 @@
 """Comprehensive tests for app/scaling/tasks.py — targeting 70%+ coverage.
 
 Focuses on testable pure functions and the run_goal_dlq task.
-The core run_goal task requires heavy mocking of the Celery/AgentLoop machinery.
+The core run_goal task requires heavy mocking of the Celery/AgentGraph machinery.
 """
 from __future__ import annotations
 

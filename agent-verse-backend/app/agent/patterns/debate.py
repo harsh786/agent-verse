@@ -15,7 +15,10 @@ class DebatePattern(AgentPattern):
 
     @property
     def description(self) -> str:
-        return "Debate: adversarial multi-agent debate for quality — implemented in app.agent.debate"
+        return (
+            "Debate: adversarial multi-agent debate for quality"
+            " — implemented in app.agent.debate"
+        )
 
     @property
     def node_name(self) -> str:

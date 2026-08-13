@@ -168,7 +168,7 @@ def test_register_connector_bearer() -> None:
         "/connectors",
         json={
             "name": "github",
-            "url": "http://mcp.github.com/mcp",
+            "url": "https://api.github.com/mcp",
             "auth_type": "bearer",
             "auth_config": {"token": "ghp_test123"},
             "description": "GitHub MCP",
@@ -187,7 +187,7 @@ def test_register_connector_api_key_auth() -> None:
         "/connectors",
         json={
             "name": "jira",
-            "url": "http://mcp.jira.com/mcp",
+            "url": "https://mcp.atlassian.com/v1/mcp",
             "auth_type": "api_key",
             "auth_config": {"api_key": "jira-key-123", "header_name": "X-Jira-Key"},
         },
@@ -202,7 +202,7 @@ def test_register_connector_no_auth() -> None:
         "/connectors",
         json={
             "name": "public-mcp",
-            "url": "http://mcp.public.com/mcp",
+            "url": "https://api.github.com/public-mcp",
             "auth_type": "none",
             "auth_config": {},
         },
@@ -245,7 +245,7 @@ def test_update_connector_success() -> None:
         f"/connectors/{server_id}",
         json={
             "name": "github-updated",
-            "url": "http://mcp.github.com/mcp",
+            "url": "https://api.github.com/mcp",
             "auth_type": "bearer",
             "auth_config": {"token": "<redacted>"},
         },

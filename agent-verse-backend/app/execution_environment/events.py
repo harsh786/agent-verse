@@ -70,7 +70,7 @@ def make_forwarding_callback(
 ) -> GoalEventCallback:
     """Return an async callback that wraps events and forwards them downstream.
 
-    The returned callback can be passed directly to AgentLoop.run() or
+    The returned callback can be passed directly to AgentGraph.run() or
     AgentGraph.run() in place of the original GoalService callback — it adds
     isolation metadata without breaking the existing SSE event contract.
     """

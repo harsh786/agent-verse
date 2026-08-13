@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "operations": [
+    "get_camel_state",
+    "get_generative_agent_state",
+    "get_swarm_topology",
+    "get_auction_state",
+    "submit_sealed_auction_bid"
+  ],
+  "events": [
+    "camel.inception_completed.v1",
+    "camel.turn_appended.v1",
+    "camel.terminated.v1",
+    "generative.observation_recorded.v1",
+    "generative.reflection_created.v1",
+    "generative.time_advanced.v1",
+    "swarm.advertisement_published.v1",
+    "swarm.claim_acquired.v1",
+    "swarm.claim_reclaimed.v1",
+    "swarm.converged.v1",
+    "auction.announced.v1",
+    "auction.bid_sealed.v1",
+    "auction.scored.v1",
+    "auction.allocated.v1",
+    "auction.settled.v1"
+  ],
+  "product_states": [
+    "loading", "empty", "active", "paused", "reconnecting", "backpressured",
+    "completed", "failed", "cancelled", "unauthorized"
+  ],
+  "security": {
+    "sealed_bid_content_never_returned": true,
+    "governor_only_authority": true,
+    "fencing_tokens_required": true,
+    "tenant_scoped": true,
+    "private_reasoning_excluded": true
+  },
+  "accessibility": {
+    "topology_has_list_equivalent": true,
+    "status_not_color_only": true,
+    "live_updates_announced": true,
+    "commands_keyboard_operable": true
+  }
+}

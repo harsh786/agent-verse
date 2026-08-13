@@ -1,0 +1,3 @@
+export function CodeExecutionView({ executions }: { executions: Array<Record<string, unknown>> }) {
+  return <section aria-labelledby="code-heading"><h3 id="code-heading" className="font-semibold">Governed code</h3><ul className="mt-3 space-y-2">{executions.map((execution, index) => <li key={String(execution.execution_id ?? index)} className="rounded-md border p-3"><div className="flex justify-between font-mono text-xs"><span>{String(execution.language ?? 'unknown')}</span><span>{String(execution.state ?? 'unknown')} · exit {String(execution.exit_code ?? '—')}</span></div><pre className="mt-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">{String(execution.stdout_summary ?? execution.stderr_summary ?? 'No output')}</pre></li>)}</ul></section>;
+}

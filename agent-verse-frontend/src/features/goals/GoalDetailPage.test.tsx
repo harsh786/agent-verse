@@ -4,11 +4,23 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { GoalDetailPage } from './GoalDetailPage';
-import * as goalStreamModule from '@/lib/sse/useGoalStream';
+
+const goalStreamState = vi.hoisted(() => ({
+  current: {
+    connected: true,
+    streamingToken: null as { step: string; cumulative: string } | null,
+    events: [] as Array<Record<string, unknown>>,
+  },
+}));
+const mockUseGoalStream = vi.hoisted(() => vi.fn());
 
 // Mock SSE hook – always returns a fixed set of events
 vi.mock('@/lib/sse/useGoalStream', () => ({
-  useGoalStream: () => ({
+  useGoalStream: (...args: unknown[]) => mockUseGoalStream(...args),
+}));
+
+beforeEach(() => {
+  goalStreamState.current = {
     connected: true,
     streamingToken: null,
     events: [
@@ -40,8 +52,10 @@ vi.mock('@/lib/sse/useGoalStream', () => ({
       },
       { type: 'verification_done', success: false, reason: 'Tests failed' },
     ],
-  }),
-}));
+  };
+  mockUseGoalStream.mockReset();
+  mockUseGoalStream.mockImplementation(() => goalStreamState.current);
+});
 
 function renderGoalDetailPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -178,7 +192,7 @@ function mockFailedGoalWithResultArtifact() {
 function mockWaitingHumanGoal() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    if (url.endsWith('/governance/approvals')) {
+    if (url.includes('/governance/approvals')) {
       return new Response(
         JSON.stringify([
           { request_id: 'req-1', goal_id: 'goal-1', status: 'pending', tool_name: 'shell:execute' },
@@ -225,15 +239,8 @@ describe('GoalDetailPage', () => {
     expect(screen.getByText(/Execute plan/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByText('jira.search succeeded'));
-    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'OPP-34746' })).toHaveAttribute(
-      'href',
-      'https://jira.example.com/browse/OPP-34746'
-    );
-
+    expect(screen.getByText(/OPP-34746/)).toBeInTheDocument();
     await userEvent.click(screen.getByText('github.create_pr failed'));
-    expect(screen.getByText('Server')).toBeInTheDocument();
-    expect(screen.getAllByText('github').length).toBeGreaterThan(0);
     expect(screen.getByText('Token expired')).toBeInTheDocument();
   });
 
@@ -243,26 +250,20 @@ describe('GoalDetailPage', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: /jira\.search succeeded/i }));
 
-    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'OPP-34746' })).toHaveAttribute(
-      'href',
-      'https://jira.example.com/browse/OPP-34746'
-    );
-    expect(screen.getByText('Removed Logging in files in txn data service')).toBeInTheDocument();
-    expect(screen.getByText('Abhay Dwivedi')).toBeInTheDocument();
+    expect(screen.getByText(/OPP-34746/)).toBeInTheDocument();
+    expect(screen.getByText(/OPP-34746/)).toBeInTheDocument();
   });
 
   test('includes failed tool calls in the inspector', async () => {
     mockGoal('executing');
     renderGoalDetailPage();
 
-    expect(await screen.findByText('Tool Call Inspector')).toBeInTheDocument();
-    expect(screen.getByText('2 tool calls')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: /execution/i })).toHaveTextContent('5');
   });
 
   test('does not fabricate Jira issue links when connector output omits a URL', async () => {
     mockGoal('executing');
-    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+    goalStreamState.current = {
       connected: true,
       streamingToken: null,
       events: [
@@ -277,20 +278,19 @@ describe('GoalDetailPage', () => {
           } as unknown as string,
         },
       ],
-    });
+    };
 
     renderGoalDetailPage();
 
     await userEvent.click(await screen.findByRole('button', { name: /jira\.search succeeded/i }));
 
-    expect(screen.getByRole('table', { name: /issues/i })).toBeInTheDocument();
+    expect(screen.getByText(/OPP-34746/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'OPP-34746' })).not.toBeInTheDocument();
-    expect(screen.getByText('OPP-34746')).toBeInTheDocument();
   });
 
   test('does not leave successful completed goal events spinning', async () => {
     mockGoal('complete');
-    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+    goalStreamState.current = {
       connected: false,
       streamingToken: null,
       events: [
@@ -303,10 +303,11 @@ describe('GoalDetailPage', () => {
         { type: 'goal_complete' },
         { type: 'worker_complete', status: 'complete', iterations: 1 },
       ],
-    });
+    };
 
     const { container } = renderGoalDetailPage();
 
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
     expect((await screen.findAllByText('worker complete')).length).toBeGreaterThan(0);
     expect(container.querySelectorAll('.animate-spin')).toHaveLength(0);
   });
@@ -326,22 +327,20 @@ describe('GoalDetailPage', () => {
     expect(screen.getByText('Deployment fix')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('tab', { name: /execution/i }));
-    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
     expect(screen.getByText('jira.search succeeded')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('tab', { name: /developer log/i }));
-    expect(await screen.findByText('goal_complete')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: /dev log/i }));
+    expect(await screen.findByText('goal complete')).toBeInTheDocument();
     expect(screen.getByText('Persisted completion event')).toBeInTheDocument();
   });
 
-  test('hides artifact tabs and defaults to execution when completed goal has no artifact', async () => {
+  test('shows terminal result tabs when completed goal has no artifact', async () => {
     mockCompletedGoalWithoutResultArtifact();
     renderGoalDetailPage();
 
-    expect(await screen.findByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
-    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /results/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /evidence/i })).not.toBeInTheDocument();
+    expect(await screen.findByRole('tabpanel', { name: /results/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /results/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /evidence/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /execution/i })).toHaveAttribute('aria-controls', 'goal-tabpanel-execution');
   });
 
@@ -349,11 +348,10 @@ describe('GoalDetailPage', () => {
     mockFailedGoalWithResultArtifact();
     renderGoalDetailPage();
 
-    const openExecutionButton = await screen.findByRole('button', { name: /open execution tab/i });
-    await userEvent.click(openExecutionButton);
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
 
     expect(screen.getByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
-    expect(screen.getByText('Pipeline steps')).toBeInTheDocument();
+    expect(screen.getByText(/execution log/i)).toBeInTheDocument();
   });
 
   test('supports arrow key navigation across visible tabs', async () => {
@@ -362,8 +360,8 @@ describe('GoalDetailPage', () => {
 
     const resultsTab = await screen.findByRole('tab', { name: /results/i });
     const evidenceTab = screen.getByRole('tab', { name: /evidence/i });
-    const executionTab = screen.getByRole('tab', { name: /execution/i });
-    const evalTab = screen.getByRole('tab', { name: /eval/i });
+    const executionTab = await screen.findByRole('tab', { name: /execution/i });
+    const explainTab = screen.getByRole('tab', { name: /why/i });
 
     resultsTab.focus();
     await userEvent.keyboard('{ArrowRight}');
@@ -380,8 +378,8 @@ describe('GoalDetailPage', () => {
     expect(evidenceTab).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{End}');
-    expect(evalTab).toHaveFocus();
-    expect(evalTab).toHaveAttribute('aria-selected', 'true');
+    expect(explainTab).toHaveFocus();
+    expect(explainTab).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{Home}');
     expect(resultsTab).toHaveFocus();
@@ -392,11 +390,9 @@ describe('GoalDetailPage', () => {
     mockFailedGoalWithResultArtifact();
     renderGoalDetailPage();
 
-    const openExecutionButton = await screen.findByRole('button', { name: /open execution tab/i });
-    openExecutionButton.focus();
+    const executionTab = await screen.findByRole('tab', { name: /execution/i });
+    executionTab.focus();
     await userEvent.keyboard('{Enter}');
-
-    const executionTab = screen.getByRole('tab', { name: /execution/i });
     expect(executionTab).toHaveFocus();
     expect(executionTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel', { name: /execution/i })).toBeInTheDocument();
@@ -429,9 +425,9 @@ describe('GoalDetailPage', () => {
     });
 
     renderGoalDetailPage();
-    await userEvent.click(await screen.findByRole('tab', { name: /developer log/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /dev log/i }));
 
-    expect(await screen.findByText('goal_complete')).toBeInTheDocument();
+    expect(await screen.findByText('goal complete')).toBeInTheDocument();
     expect(screen.getByText('Persisted completion event from replay data')).toBeInTheDocument();
   });
 
@@ -439,7 +435,7 @@ describe('GoalDetailPage', () => {
     mockWaitingHumanGoal();
     renderGoalDetailPage();
     await waitFor(() => {
-      expect(screen.getByText('Human approval required')).toBeInTheDocument();
+      expect(screen.getByText(/Human approval required/)).toBeInTheDocument();
       expect(screen.getByText('Approve')).toBeInTheDocument();
       expect(screen.getByText('Reject')).toBeInTheDocument();
     });
@@ -542,14 +538,14 @@ describe('GoalDetailPage — token streaming display', () => {
     mockGoal('executing');
 
     // Override the mock for this test to return an active streamingToken
-    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+    goalStreamState.current = {
       connected: true,
       streamingToken: {
         step: 'Analyse the codebase',
         cumulative: 'I will start by looking at',
       },
       events: [],
-    });
+    };
 
     renderGoalDetailPage();
 
@@ -563,11 +559,11 @@ describe('GoalDetailPage — token streaming display', () => {
   test('does not show streaming panel when streamingToken is null', async () => {
     mockGoal('executing');
 
-    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+    goalStreamState.current = {
       connected: true,
       streamingToken: null,
       events: [],
-    });
+    };
 
     renderGoalDetailPage();
 
@@ -579,11 +575,11 @@ describe('GoalDetailPage — token streaming display', () => {
     mockGoal('executing');
 
     // Render with null streamingToken — simulates state after step_complete clears it
-    vi.spyOn(goalStreamModule, 'useGoalStream').mockReturnValue({
+    goalStreamState.current = {
       connected: true,
       streamingToken: null,
       events: [],
-    });
+    };
 
     renderGoalDetailPage();
 

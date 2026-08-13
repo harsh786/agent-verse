@@ -269,7 +269,15 @@ class Society:
                         "reason": decision.reason,
                         "confidence": min(1.0, decision.confidence * (0.5 + rep * 0.5)),
                     }
-                # Router returned None or low confidence — fall through to reputation fallback
+                # Router returned an external agent (not a local member) — return as-is
+                if decision.agent_id:
+                    return {
+                        "agent_id": decision.agent_id,
+                        "mode": decision.mode,
+                        "reason": decision.reason,
+                        "confidence": decision.confidence,
+                    }
+                # Router returned agent_id=None — fall through to reputation fallback
                 logger.info(
                     "society_router_no_match",
                     reason=getattr(decision, "reason", "low_confidence"),

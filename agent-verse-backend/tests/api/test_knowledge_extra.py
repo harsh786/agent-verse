@@ -228,7 +228,7 @@ class TestUrlIngest:
                 "/knowledge/ingest/url",
                 json={
                     "collection_id": cid,
-                    "url": "https://docs.example.com/guide",
+                    "url": "https://docs.python.org/3/guide",
                     "source_type": "web",
                 },
                 headers=_H,

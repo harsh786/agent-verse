@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { SettingsPage } from './SettingsPage';
@@ -11,12 +12,14 @@ Object.defineProperty(navigator, 'clipboard', {
   writable: true,
 });
 
-function renderSettingsPage() {
+function renderSettingsPage(tab = 'profile') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <QueryClientProvider client={queryClient}>
-      <SettingsPage />
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={[`/settings?tab=${tab}`]}>
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
 }
 
@@ -89,7 +92,7 @@ describe('SettingsPage – Profile section', () => {
     makeSettingsFetch({});
     renderSettingsPage();
     await waitFor(() => expect(screen.getByText('Profile')).toBeInTheDocument());
-    expect(screen.getByText('LLM Provider')).toBeInTheDocument();
+    expect(screen.getByText('LLM Providers')).toBeInTheDocument();
     expect(screen.getByText('API Keys')).toBeInTheDocument();
   });
 });
@@ -111,9 +114,9 @@ describe('SettingsPage – LLM Provider section', () => {
 
   test('displays current LLM provider and model', async () => {
     makeSettingsFetch({
-      llmConfig: { provider: 'anthropic', model: 'claude-opus-4-5', api_key: 'sk-test' },
+      llmConfig: { provider: 'anthropic', default_model: 'claude-opus-4-5', masked_key: '****' },
     });
-    renderSettingsPage();
+    renderSettingsPage('llm');
     await waitFor(() => expect(screen.getByText('anthropic')).toBeInTheDocument());
     expect(screen.getByText('claude-opus-4-5')).toBeInTheDocument();
   });
@@ -122,7 +125,7 @@ describe('SettingsPage – LLM Provider section', () => {
     makeSettingsFetch({
       llmConfig: { provider: 'openai', model: 'gpt-4o', api_key: '' },
     });
-    renderSettingsPage();
+    renderSettingsPage('llm');
     await waitFor(() => expect(screen.getByText('openai')).toBeInTheDocument());
     // Click Edit for LLM Provider (first Edit button on the page)
     const editButtons = await screen.findAllByRole('button', { name: /^edit$/i });
@@ -160,7 +163,7 @@ describe('SettingsPage – LLM Provider section', () => {
       return new Response(null, { status: 404 });
     });
 
-    renderSettingsPage();
+    renderSettingsPage('llm');
     await waitFor(() => expect(screen.getByText('openai')).toBeInTheDocument());
     const editButtons = await screen.findAllByRole('button', { name: /^edit$/i });
     await userEvent.click(editButtons[0]);
@@ -176,9 +179,9 @@ describe('SettingsPage – LLM Provider section', () => {
 
   test('shows api key as masked when set', async () => {
     makeSettingsFetch({
-      llmConfig: { provider: 'openai', model: 'gpt-4o', api_key: 'sk-secret' },
+      llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****' },
     });
-    renderSettingsPage();
+    renderSettingsPage('llm');
     await waitFor(() => expect(screen.getByText('••••••••')).toBeInTheDocument());
   });
 });
@@ -200,7 +203,7 @@ describe('SettingsPage – API Keys section', () => {
 
   test('shows empty API keys state message', async () => {
     makeSettingsFetch({ apiKeys: [] });
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() =>
       expect(screen.getByText(/no api keys/i)).toBeInTheDocument()
     );
@@ -217,13 +220,13 @@ describe('SettingsPage – API Keys section', () => {
         },
       ],
     });
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText('production')).toBeInTheDocument());
   });
 
   test('shows create key input when "+ New Key" is clicked', async () => {
     makeSettingsFetch({ apiKeys: [] });
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText(/no api keys/i)).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: /\+ new key/i }));
     expect(screen.getByPlaceholderText(/key name/i)).toBeInTheDocument();
@@ -263,7 +266,7 @@ describe('SettingsPage – API Keys section', () => {
       }
     );
 
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText(/no api keys/i)).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: /\+ new key/i }));
     await userEvent.type(screen.getByPlaceholderText(/key name/i), 'staging');
@@ -303,7 +306,7 @@ describe('SettingsPage – API Keys section', () => {
       return new Response(null, { status: 404 });
     });
 
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText(/no api keys/i)).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: /\+ new key/i }));
     await userEvent.type(screen.getByPlaceholderText(/key name/i), 'test-key');
@@ -340,10 +343,11 @@ describe('SettingsPage – API Keys section', () => {
       }
     );
 
-    renderSettingsPage();
+    renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText('prod-key')).toBeInTheDocument());
-    // The delete button has title="Delete" and contains Trash2 icon
+    // Open the destructive confirmation, then confirm the deletion.
     await userEvent.click(screen.getByTitle('Delete'));
+    await userEvent.click(await screen.findByRole('button', { name: /^delete key$/i }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(

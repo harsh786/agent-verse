@@ -53,6 +53,7 @@ import { SchedulesPage } from "@/features/schedules/SchedulesPage";
 import { KnowledgePage } from "@/features/knowledge/KnowledgePage";
 import { GovernancePage } from "@/features/governance/GovernancePage";
 import { CollaborationPage } from "@/features/collaboration/CollaborationPage";
+import { CoordinationRunPage } from "@/features/coordination/CoordinationRunPage";
 import { ObservabilityPage } from "@/features/observability/ObservabilityPage";
 import { CostDashboardPage } from "@/features/observability/CostDashboardPage";
 import { EvalPage } from "@/features/eval/EvalPage";
@@ -203,6 +204,7 @@ export default function App() {
         <Route path="knowledge"             element={rb("Knowledge",          <KnowledgePage />)} />
         <Route path="governance"            element={rb("Governance",         <GovernancePage />)} />
         <Route path="collaboration"         element={rb("Collaboration",      <CollaborationPage />)} />
+        <Route path="coordination/:sessionId?" element={rb("Coordination",    <CoordinationRunPage />)} />
         <Route path="observability"         element={rb("Observability",      <ObservabilityPage />)} />
         <Route path="observability/cost"    element={rb("Cost Dashboard",     <CostDashboardPage />)} />
         <Route path="eval"                  element={rb("Evaluations",        <EvalPage />)} />

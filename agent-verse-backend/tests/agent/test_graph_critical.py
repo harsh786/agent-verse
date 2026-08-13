@@ -78,13 +78,13 @@ def test_analytics_uses_correct_event_type():
         "Old 'tool_call' event type string must be removed from analytics"
 
 
-def test_graph_state_has_cot_reasoning():
-    """GraphState TypedDict must include cot_reasoning field."""
+def test_graph_state_has_privacy_safe_reasoning_evidence():
+    """GraphState exposes bounded evidence instead of private model reasoning."""
     from app.agent.graph import GraphState
     # total=False means all keys are optional; just check the annotation is present
     annotations = GraphState.__annotations__
-    assert "cot_reasoning" in annotations, \
-        "GraphState must declare cot_reasoning field"
+    assert "reasoning_evidence" in annotations
+    assert "cot_reasoning" not in annotations
 
 
 def test_toolcall_imported_in_graph_module():

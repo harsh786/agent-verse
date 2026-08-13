@@ -345,25 +345,29 @@ async def test_list_templates_filter_by_domain() -> None:
     for i, domain in enumerate(["sales", "hr", "sales"]):
         await marketplace.publish_template(
             data={
-                "template_id": f"tpl-{i}",
+                "template_id": f"tpl-domain-{i}",
                 "name": f"T{i}",
-                "slug": f"t-{i}",
+                "slug": f"t-domain-{i}",
                 "domain": domain,
                 "description": "d",
                 "template_config": {},
                 "required_connectors": [],
+                "visibility": "public",  # must be public to appear in unpersonalised listing
             },
             tenant_ctx=T_A,
             run_security_review=False,
         )
     result = await marketplace.list_templates(domain="sales")
-    assert result["total"] == 2
-    assert all(t["domain"] == "sales" for t in result["templates"])
+    sales_templates = [t for t in result["templates"] if t.get("id", "").startswith("tpl-domain-")]
+    assert len(sales_templates) == 2
+    assert all(t["domain"] == "sales" for t in sales_templates)
 
 
 @pytest.mark.asyncio
 async def test_list_templates_filter_by_search() -> None:
     marketplace = MarketplaceV2(db_factory=None)
+    # Skip builtin cache loading so only test-published templates appear
+    marketplace._builtin_cache_populated = True
     await marketplace.publish_template(
         data={
             "template_id": "tpl-unique",
@@ -374,6 +378,7 @@ async def test_list_templates_filter_by_search() -> None:
             "tags": ["invoice", "finance"],
             "template_config": {},
             "required_connectors": [],
+            "visibility": "public",
         },
         tenant_ctx=T_A,
         run_security_review=False,
@@ -388,6 +393,7 @@ async def test_list_templates_filter_by_search() -> None:
             "tags": [],
             "template_config": {},
             "required_connectors": [],
+            "visibility": "public",
         },
         tenant_ctx=T_A,
         run_security_review=False,
@@ -400,6 +406,8 @@ async def test_list_templates_filter_by_search() -> None:
 @pytest.mark.asyncio
 async def test_list_templates_pagination() -> None:
     marketplace = MarketplaceV2(db_factory=None)
+    # Skip builtin cache loading so only test-published templates appear
+    marketplace._builtin_cache_populated = True
     for i in range(5):
         await marketplace.publish_template(
             data={
@@ -410,6 +418,7 @@ async def test_list_templates_pagination() -> None:
                 "description": f"Template number {i}",
                 "template_config": {},
                 "required_connectors": [],
+                "visibility": "public",
             },
             tenant_ctx=T_A,
             run_security_review=False,

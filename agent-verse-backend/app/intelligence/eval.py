@@ -12,7 +12,7 @@ Each dimension scored 0.0-1.0. Average ≥ 0.70 = pass.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 PASS_THRESHOLD = 0.70
 
@@ -32,6 +32,16 @@ class EvalScorecard:
     scores: dict[str, float]
     goal: str = ""
     iterations: int = 0
+    primary_strategy_id: str = "unknown"
+    primary_strategy_version: str = "unknown"
+    auxiliary_strategy_versions: dict[str, str] = field(default_factory=dict)
+    profile_id: str = "unknown"
+    profile_version: int = 0
+    strategy_execution_id: str = "legacy"
+    evaluator_version: str = "eval-runner-v1"
+    evidence_completeness: dict[str, bool] = field(default_factory=dict)
+    correlation_id: str = ""
+    causation_id: str = ""
 
     def average_score(self) -> float:
         if not self.scores:

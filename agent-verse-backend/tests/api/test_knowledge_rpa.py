@@ -60,6 +60,15 @@ def _make_client():
 
 class TestRpaUrlIngest:
 
+    @pytest.fixture(autouse=True)
+    def _stub_embed(self):
+        """Provide zero-cost embeddings so tests don't hit the 503 'no embedder' guard."""
+        async def _fake_embed(texts: list[str], embedder: object) -> list[list[float]]:
+            return [[0.0] * 768 for _ in texts]
+
+        with patch("app.api.knowledge._embed_texts_or_http", _fake_embed):
+            yield
+
     def test_empty_urls_returns_400(self):
         client = _make_client()
         resp = client.post(
@@ -248,30 +257,34 @@ class TestAgentLoopKnowledgeRetrieval:
         on agent_state.events with citation metadata."""
         from app.agent.graph import AgentGraph
         from app.agent.state import AgentState
-        from app.rag.store import HybridSearchResult
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
-        # Create a mock knowledge store that returns a result
-        mock_result = HybridSearchResult(
+        citation_obj = RAGCitation(
+            citation_id="cit-1",
             chunk_id="chunk-abc",
             content="Deployment requires two approvals from senior engineers.",
             score=0.88,
-            vector_score=0.9,
-            trigram_score=0.8,
-            source_url="https://docs.example.com/deploy",
+            source="https://docs.example.com/deploy",
+        )
+        gateway_result = RAGExecutionResult(
+            requested_strategy_id="hybrid",
+            resolved_strategy_id=RAGStrategy.HYBRID,
+            citations=[citation_obj],
         )
 
         mock_store = MagicMock()
-        mock_store.list_collections = MagicMock(return_value=[
+        mock_store.list_collections_async = AsyncMock(return_value=[
             MagicMock(collection_id="col-1")
         ])
-        mock_store.hybrid_search_db = AsyncMock(return_value=[mock_result])
+        mock_gateway = AsyncMock()
+        mock_gateway.execute = AsyncMock(return_value=gateway_result)
 
-        # Minimal AgentGraph — only knowledge_store matters for this test
         graph = AgentGraph(
             planner=AsyncMock(),
             executor=AsyncMock(),
             verifier=AsyncMock(),
             knowledge_store=mock_store,
+            retrieval_gateway=mock_gateway,
         )
 
         tenant_ctx = MagicMock()
@@ -285,7 +298,6 @@ class TestAgentLoopKnowledgeRetrieval:
 
         await graph._node_rag_retrieval(state)
 
-        # The knowledge_retrieved event should be in agent_state.events
         knowledge_events = [
             e for e in agent_state.events
             if e.get("type") == "knowledge_retrieved"
@@ -297,11 +309,11 @@ class TestAgentLoopKnowledgeRetrieval:
         assert "citations" in event
         assert event["chunks_found"] >= 1
 
-        # Citation should contain useful metadata
+        # Citation should contain useful metadata (RAGCitation fields + collection_id)
         citation = event["citations"][0]
         assert "collection_id" in citation
         assert "score" in citation
-        assert "excerpt" in citation
+        assert "content" in citation  # RAGCitation uses 'content', not 'excerpt'
 
     @pytest.mark.asyncio
     async def test_rag_skips_gracefully_without_knowledge_store(self):
@@ -343,35 +355,40 @@ class TestAgentLoopKnowledgeRetrieval:
         collections (up to 3)."""
         from app.agent.graph import AgentGraph
         from app.agent.state import AgentState
-        from app.rag.store import HybridSearchResult
+        from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
 
         class FakeCollection:
             def __init__(self, cid: str):
                 self.collection_id = cid
 
         collections = [FakeCollection(f"col-{i}") for i in range(5)]
-
         call_log: list[str] = []
 
-        async def mock_search(query, query_embedding, collection_id, tenant_ctx, top_k=3):
+        async def mock_execute(tenant_ctx, *, collection_id: str, **kwargs) -> RAGExecutionResult:
             call_log.append(collection_id)
-            return [HybridSearchResult(
-                chunk_id=f"chunk-{collection_id}",
-                content=f"Content from {collection_id}",
-                score=0.75,
-                vector_score=0.75,
-                trigram_score=0.75,
-            )]
+            return RAGExecutionResult(
+                requested_strategy_id="hybrid",
+                resolved_strategy_id=RAGStrategy.HYBRID,
+                citations=[RAGCitation(
+                    citation_id=f"cit-{collection_id}",
+                    chunk_id=f"chunk-{collection_id}",
+                    content=f"Content from {collection_id}",
+                    score=0.75,
+                    source=f"source-{collection_id}",
+                )],
+            )
 
         mock_store = MagicMock()
-        mock_store.list_collections = MagicMock(return_value=collections)
-        mock_store.hybrid_search_db = mock_search
+        mock_store.list_collections_async = AsyncMock(return_value=collections)
+        mock_gateway = AsyncMock()
+        mock_gateway.execute = mock_execute
 
         graph = AgentGraph(
             planner=AsyncMock(),
             executor=AsyncMock(),
             verifier=AsyncMock(),
             knowledge_store=mock_store,
+            retrieval_gateway=mock_gateway,
         )
         # NO agent_collection_ids set → should search all tenant collections
 

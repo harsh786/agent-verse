@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agent.patterns.base import AgentPattern, PatternState
+from app.agent.reasoning_evidence import ReasoningEvidence, ReasoningExecution
 
 _SELF_REFINE_SYSTEM = """You are a quality reviewer. Given a task and an output, either:
 1. Return the improved output (better quality, more complete, more accurate)
@@ -86,3 +87,50 @@ class SelfRefinePattern(AgentPattern):
         except Exception:
             pass
         return last_output
+
+    async def execute_with_evidence(
+        self,
+        *,
+        last_output: str,
+        task: str,
+        provider: Any,
+        current_iteration: int = 0,
+        max_tokens: int = 2000,
+        round_limit: int | None = None,
+        **kwargs: Any,
+    ) -> ReasoningExecution:
+        effective_limit = self._max_iterations
+        if round_limit is not None:
+            effective_limit = min(effective_limit, round_limit)
+        if current_iteration >= effective_limit:
+            return ReasoningExecution(
+                result=last_output,
+                evidence=ReasoningEvidence(
+                    strategy_id=self.pattern_id,
+                    status="exhausted",
+                    call_count=0,
+                    limit_reason="round_limit",
+                    checkpoint_cursor={"round": current_iteration},
+                    safe_rationale_summary="refinement round limit reached",
+                ),
+            )
+        result = await self.execute(
+            last_output=last_output,
+            task=task,
+            provider=provider,
+            current_iteration=current_iteration,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        return ReasoningExecution(
+            result=result,
+            evidence=ReasoningEvidence(
+                strategy_id=self.pattern_id,
+                status="completed",
+                call_count=1,
+                checkpoint_cursor={"round": current_iteration + 1},
+                safe_rationale_summary=(
+                    "output refined" if result != last_output else "no change required"
+                ),
+            ),
+        )

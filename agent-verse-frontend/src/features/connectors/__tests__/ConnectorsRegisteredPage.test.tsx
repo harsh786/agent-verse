@@ -585,9 +585,9 @@ describe('Remove connector', () => {
         status: 204,
       },
     ]);
-    vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /remove/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^remove$/i }));
     await waitFor(() => {
       const deleteCalled = vi.mocked(globalThis.fetch).mock.calls.some(([u, i]) =>
         String(u).includes('s-jira-001') && (i as RequestInit)?.method === 'DELETE'

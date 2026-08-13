@@ -59,7 +59,6 @@ def test_scorecard_all_9_dimensions(tenant_ctx: TenantContext) -> None:
     scorecard = RuntimeScorecard()
     result = scorecard.score(state=state, profile=profile)
 
-    assert len(result.scores) == 9
     expected_dims = {
         "goal_success",
         "rag_quality",
@@ -71,7 +70,10 @@ def test_scorecard_all_9_dimensions(tenant_ctx: TenantContext) -> None:
         "retrieval_confidence",
         "tool_success_rate",
     }
-    assert set(result.scores.keys()) == expected_dims
+    assert set(result.dimension_status) == expected_dims
+    assert set(result.scores) == {"goal_success", "latency", "cost_efficiency"}
+    assert result.dimension_status["rag_quality"] == "not_applicable"
+    assert result.dimension_status["safety"] == "unavailable"
     assert 0.0 <= result.overall_score <= 1.0
 
 
@@ -320,6 +322,8 @@ def test_agent_scorer_grounding(tenant_ctx: TenantContext) -> None:
     scorer = AgentScorer()
     state = _make_state(tenant_ctx)
     state.ungrounded_claims = []
+    assert scorer.score_grounding(state) is None
+    state.context["grounding_checked"] = True
     assert scorer.score_grounding(state) == 1.0
 
     state.ungrounded_claims = ["claim1", "claim2"]

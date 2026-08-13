@@ -37,7 +37,7 @@ describe('AuthPage', () => {
     renderAuthPage();
 
     await userEvent.type(screen.getByLabelText(/tenant id/i), 'tenant-1');
-    await userEvent.type(screen.getByLabelText(/api key/i), 'bad-key');
+    await userEvent.type(screen.getByLabelText(/^api key$/i), 'bad-key');
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Invalid tenant ID or API key.');

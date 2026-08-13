@@ -161,6 +161,7 @@ describe('GovernancePage — Policies tab', () => {
     renderGovernancePage();
     await waitFor(() => expect(screen.getByText('block-shell')).toBeInTheDocument());
     await userEvent.click(screen.getByTestId('delete-policy-pol-1'));
+    await userEvent.click(screen.getByRole('button', { name: /delete policy/i }));
     await waitFor(() => expect(deleteCalled).toBe(true));
   });
 

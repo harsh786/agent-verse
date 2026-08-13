@@ -383,7 +383,7 @@ def main() -> int:
     import asyncio
 
     async def _run() -> dict[str, Any]:
-        from app.agent.loop import AgentLoop
+        from app.agent.graph import AgentGraph
         from app.agent.state import GoalStatus
         from app.tenancy.context import PlanTier, TenantContext
 
@@ -392,7 +392,7 @@ def main() -> int:
         executor = _build_provider(llm_key, "executor")
         verifier = _build_provider(llm_key, "verifier")
 
-        loop = AgentLoop(
+        loop = AgentGraph(
             planner=planner,
             executor=executor,
             verifier=verifier,

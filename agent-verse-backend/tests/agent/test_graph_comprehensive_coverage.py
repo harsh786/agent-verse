@@ -72,7 +72,9 @@ async def test_node_reflect_generates_feedback_from_failed_steps() -> None:
     result = await graph._node_reflect(state)
 
     updated: AgentState = result["agent_state"]
-    assert updated.verification_feedback == "Try a different approach: use API instead."
+    assert updated.verification_feedback == "Reflection identified categories: quality"
+    assert "Try a different approach" not in updated.verification_feedback
+    assert updated.context["reasoning_evidence"][-1]["attempt"] == 1
 
 
 @pytest.mark.asyncio
@@ -87,7 +89,9 @@ async def test_node_reflect_uses_error_message_when_no_failed_steps() -> None:
     state = {"agent_state": agent_state, "tenant_ctx": T}
     result = await graph._node_reflect(state)
 
-    assert result["agent_state"].verification_feedback == "Replan around the error."
+    assert result["agent_state"].verification_feedback == (
+        "Reflection identified categories: quality"
+    )
 
 
 @pytest.mark.asyncio
@@ -103,7 +107,9 @@ async def test_node_reflect_with_model_router() -> None:
     result = await graph._node_reflect(state)
 
     mock_router.model_for.assert_called_with("reflection")
-    assert result["agent_state"].verification_feedback == "Reflect response"
+    assert result["agent_state"].verification_feedback == (
+        "Reflection identified categories: quality"
+    )
 
 
 # ===========================================================================
@@ -470,6 +476,7 @@ def test_route_returns_max_iter_when_iterations_exceeded() -> None:
     graph = _make_graph()
     agent_state = _make_agent_state()
     agent_state.verification_success = False
+    agent_state.verification_feedback = "execution failed"
     agent_state.context["verification_retry"] = True
 
     state = {"agent_state": agent_state, "tenant_ctx": T, "iteration": 101}  # > default 100
@@ -496,6 +503,7 @@ def test_route_returns_reflect_when_reflection_enabled() -> None:
     graph = _make_graph(enable_reflection=True)
     agent_state = _make_agent_state()
     agent_state.verification_success = False
+    agent_state.verification_feedback = "execution failed"
     agent_state.context["verification_retry"] = True
 
     state = {"agent_state": agent_state, "tenant_ctx": T, "iteration": 1}
@@ -1002,17 +1010,19 @@ async def test_execute_step_bulkhead_full_returns_message() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_node_think_generates_cot_reasoning() -> None:
-    """_node_think calls the planner and returns cot_reasoning."""
-    planner = FakeProvider(responses=["I need to first understand the goal, then plan."])
+async def test_node_think_generates_privacy_safe_reasoning_evidence() -> None:
+    """_node_think discards private reasoning and returns aggregate evidence."""
+    private_reasoning = "I need to first understand the goal, then plan."
+    planner = FakeProvider(responses=[private_reasoning])
     graph = _make_graph(planner=planner, enable_cot=True)
 
     agent_state = _make_agent_state("complex goal")
     state = {"agent_state": agent_state, "tenant_ctx": T}
     result = await graph._node_think(state)
 
-    assert "cot_reasoning" in result
-    assert result["cot_reasoning"] == "I need to first understand the goal, then plan."
+    assert "cot_reasoning" not in result
+    assert private_reasoning not in str(result)
+    assert result["reasoning_evidence"]["status"] == "completed"
 
 
 # ===========================================================================
@@ -1272,4 +1282,6 @@ async def test_node_reflect_model_router_exception_falls_back() -> None:
     state = {"agent_state": agent_state, "tenant_ctx": T}
     result = await graph._node_reflect(state)
     # Should still complete with reflection response
-    assert result["agent_state"].verification_feedback == "Reflection response"
+    assert result["agent_state"].verification_feedback == (
+        "Reflection identified categories: quality"
+    )

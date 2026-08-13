@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
-class PatternState(str, enum.Enum):
+class PatternState(enum.StrEnum):
     IMPLEMENTED = "implemented"
     PARTIAL = "partial"
     PLANNED = "planned"

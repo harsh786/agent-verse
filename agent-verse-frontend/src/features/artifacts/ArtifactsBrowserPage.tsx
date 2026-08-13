@@ -447,7 +447,12 @@ export function ArtifactsBrowserPage() {
 
   // Client-side sort for the current page (server handles filter/search/offset)
   const filtered = useMemo(() => {
-    const list = [...artifacts];
+    const normalizedSearch = search.toLowerCase();
+    const list = artifacts.filter((artifact) => {
+      const matchesType = typeFilter === "all" || artifact.artifact_type === typeFilter;
+      const searchable = `${artifact.name ?? ""} ${artifact.content_type ?? ""}`.toLowerCase();
+      return matchesType && (!normalizedSearch || searchable.includes(normalizedSearch));
+    });
     switch (sort) {
       case "newest": list.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()); break;
       case "oldest": list.sort((a, b) => new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime()); break;
@@ -455,7 +460,7 @@ export function ArtifactsBrowserPage() {
       case "smallest": list.sort((a, b) => (a.size_bytes ?? 0) - (b.size_bytes ?? 0)); break;
     }
     return list;
-  }, [artifacts, sort]);
+  }, [artifacts, search, sort, typeFilter]);
 
   const grouped = useMemo(() => {
     if (!groupByGoal) return null;

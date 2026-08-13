@@ -9,8 +9,13 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+from pydantic import BaseModel
+
+from app.orchestration.strategy_adapters import ExecutionTier
+from app.orchestration.strategy_contracts import PatternLimits
 from app.rag.contracts import RAGStrategy
 
 
@@ -151,7 +156,41 @@ class EvalConfig:
     creates_regression_case_on_failure: bool = True
 
 
-@dataclass
+def default_pattern_limits() -> PatternLimits:
+    return PatternLimits(
+        calls=100,
+        nodes=100,
+        edges=200,
+        depth=10,
+        fan_out=10,
+        rounds=25,
+        tokens=100_000,
+        duration_seconds=3600,
+        cost_usd=10.0,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StrategySelection:
+    strategy_id: str
+    adapter_version: str
+
+    def __post_init__(self) -> None:
+        if not self.strategy_id or not self.adapter_version:
+            raise ValueError("strategy selection fields cannot be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyRejection:
+    strategy_id: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if not self.strategy_id or not self.reason_code:
+            raise ValueError("strategy rejection fields cannot be empty")
+
+
+@dataclass(frozen=True)
 class GoalRuntimeProfile:
     """Complete execution profile assembled before graph execution starts."""
 
@@ -169,6 +208,46 @@ class GoalRuntimeProfile:
     feature_flag_active: bool = True
     # C5 fix: actual tenant plan so GuardrailEnforcer doesn't hardcode PROFESSIONAL
     tenant_plan: str = "professional"
+    profile_version: int = 2
+    registry_revision: str = "legacy-unversioned"
+    primary_strategy: StrategySelection = field(
+        default_factory=lambda: StrategySelection("react", "1.0.0")
+    )
+    auxiliary_strategies: tuple[StrategySelection, ...] = ()
+    execution_tier: ExecutionTier = ExecutionTier.LOCAL
+    effective_limits: PatternLimits = field(default_factory=default_pattern_limits)
+    tenant_limit_ceiling: PatternLimits | None = None
+    readiness_snapshot_ref: str = "legacy-unverified"
+    policy_snapshot_ref: str = "legacy-unversioned"
+    budget_snapshot_ref: str = "legacy-unversioned"
+    deadline: datetime | None = None
+    selected_alternatives: tuple[StrategySelection, ...] = ()
+    rejected_alternatives: tuple[StrategyRejection, ...] = ()
+    model_role_assignments: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.profile_version != 2:
+            raise ValueError("profile_version must be 2")
+        if self.deadline is not None:
+            if self.deadline.tzinfo is None or self.deadline.utcoffset() != UTC.utcoffset(
+                self.deadline
+            ):
+                raise ValueError("deadline must be UTC-aware")
+            if self.deadline <= datetime.now(UTC):
+                raise ValueError("deadline must be in the future")
+        auxiliary_ids = [item.strategy_id for item in self.auxiliary_strategies]
+        if self.primary_strategy.strategy_id in auxiliary_ids:
+            raise ValueError("primary strategy cannot be auxiliary")
+        if len(auxiliary_ids) != len(set(auxiliary_ids)):
+            raise ValueError("auxiliary strategies must be unique")
+        if len(dict(self.model_role_assignments)) != len(self.model_role_assignments):
+            raise ValueError("model role assignments must be unique")
+        if self.tenant_limit_ceiling is not None:
+            for field_name in PatternLimits.model_fields:
+                effective = getattr(self.effective_limits, field_name)
+                ceiling = getattr(self.tenant_limit_ceiling, field_name)
+                if effective > ceiling:
+                    raise ValueError(f"effective limit exceeds tenant ceiling: {field_name}")
 
     def to_dict(self) -> dict[str, Any]:
         import dataclasses
@@ -179,7 +258,11 @@ class GoalRuntimeProfile:
             if dataclasses.is_dataclass(obj):
                 values = dataclasses.asdict(obj)  # type: ignore[arg-type]
                 return {k: _convert(v) for k, v in values.items()}
+            if isinstance(obj, BaseModel):
+                return _convert(obj.model_dump(mode="json"))
             if isinstance(obj, list):
+                return [_convert(i) for i in obj]
+            if isinstance(obj, tuple):
                 return [_convert(i) for i in obj]
             if isinstance(obj, dict):
                 return {k: _convert(v) for k, v in obj.items()}

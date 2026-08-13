@@ -8,6 +8,12 @@ from dataclasses import asdict
 from typing import Any
 
 from app.agent.sanitization import sanitize_event
+from app.agent.structured_executor import (
+    ExecutionCheckpoint,
+    StepExecutionError,
+    StructuredPlanExecutor,
+)
+from app.agent.structured_plan import StructuredPlan, StructuredStep
 from app.agent.tool_context import ToolContext, ToolRef
 from app.agent.workflow_nodes import (
     execute_decision_node,
@@ -22,6 +28,8 @@ from app.agent.workflow_planner import (
     _StaticWorkflowPlan,
     _StaticWorkflowStep,
 )
+from app.orchestration.runtime_profile import default_pattern_limits
+from app.orchestration.strategy_contracts import PatternLimits
 from app.tenancy.context import TenantContext
 
 WorkflowEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -62,8 +70,15 @@ class WorkflowExecutor:
 
     async def execute(
         self,
-        plan: WorkflowPlan,
+        plan: WorkflowPlan | StructuredPlan | _StaticWorkflowPlan,
         tenant_ctx: Any,
+        *,
+        limits: PatternLimits | None = None,
+        cancelled: asyncio.Event | None = None,
+        prior_checkpoint: ExecutionCheckpoint | None = None,
+        tool_context: ToolContext | None = None,
+        event_callback: WorkflowEventCallback | None = None,
+        goal: str = "",
     ) -> dict[str, Any]:
         """Execute a workflow plan with parallel waves.
 
@@ -71,55 +86,64 @@ class WorkflowExecutor:
           ``status``, ``steps_executed``, ``waves``, ``results``, ``summary``.
         """
         results: dict[str, Any] = {}
-        waves = plan.execution_waves()
+        canonical_plan = self._canonical_plan(plan)
+        waves = canonical_plan.execution_waves()
+        if event_callback is not None:
+            await self._emit(
+                event_callback,
+                {
+                    "type": "workflow_planned",
+                    "goal": goal,
+                    "steps": [asdict(step) for step in canonical_plan.steps],
+                },
+            )
 
-        for wave in waves:
-            if len(wave) == 1:
-                step = wave[0]
-                result = await self._execute_step(step, tenant_ctx, prior_results=results)
-                results[step.id] = result
-                if result.get("status") == "failed" and not result.get("continue_on_error"):
-                    return {
-                        "status": "failed",
-                        "failed_step": step.id,
-                        "reason": result.get("error", "step failed"),
-                        "completed_steps": list(results.keys()),
-                        "results": results,
-                    }
+        async def run_step(step: StructuredStep) -> dict[str, Any]:
+            if event_callback is not None:
+                await self._emit(
+                    event_callback,
+                    {"type": "workflow_step_started", **asdict(step)},
+                )
+            if step.connector_name is not None or step.intent:
+                result = await self._run_step(
+                    step,
+                    tenant_ctx=tenant_ctx,
+                    tool_context=tool_context,
+                    previous_outputs=results,
+                )
             else:
-                # Parallel execution via asyncio.gather
-                tasks = [
-                    self._execute_step(step, tenant_ctx, prior_results=results)
-                    for step in wave
-                ]
-                wave_results = await asyncio.gather(*tasks, return_exceptions=True)
+                result = await self._execute_step(
+                    step, tenant_ctx, prior_results=results
+                )
+            results[step.id] = result
+            if event_callback is not None:
+                await self._emit(
+                    event_callback,
+                    {
+                        "type": "workflow_step_complete",
+                        **asdict(step),
+                        "output": result,
+                    },
+                )
+            if result.get("status") == "failed" and not result.get("continue_on_error"):
+                raise RuntimeError(result.get("error", "step failed"))
+            return result
 
-                for step, wave_result in zip(wave, wave_results, strict=True):
-                    if isinstance(wave_result, BaseException):
-                        results[step.id] = {
-                            "status": "failed",
-                            "error": str(wave_result),
-                        }
-                    else:
-                        results[step.id] = wave_result
-
-                # Check for non-ignorable failures
-                failed = [
-                    s for s, r in zip(wave, wave_results, strict=True)
-                    if isinstance(r, BaseException) or (
-                        isinstance(r, dict)
-                        and r.get("status") == "failed"
-                        and not r.get("continue_on_error")
-                    )
-                ]
-                if failed:
-                    return {
-                        "status": "failed",
-                        "failed_steps": [s.id for s in failed],
-                        "reason": "Wave execution failure",
-                        "completed_steps": list(results.keys()),
-                        "results": results,
-                    }
+        try:
+            await StructuredPlanExecutor().execute(
+                canonical_plan,
+                run_step,
+                limits=limits or default_pattern_limits(),
+                cancelled=cancelled or asyncio.Event(),
+                prior_checkpoint=prior_checkpoint,
+            )
+        except StepExecutionError as exc:
+            return {
+                "status": "failed",
+                "reason": str(exc),
+                "completed_steps": list(results),
+                "results": results,
+            }
 
         # Synthesize final result from all complete step outputs
         final_outputs = [
@@ -136,9 +160,45 @@ class WorkflowExecutor:
             "summary": "\n\n".join(filter(None, final_outputs)),
         }
 
+    @staticmethod
+    def _canonical_plan(
+        plan: WorkflowPlan | StructuredPlan | _StaticWorkflowPlan,
+    ) -> StructuredPlan:
+        if isinstance(plan, StructuredPlan):
+            return plan.validate()
+        if isinstance(plan, _StaticWorkflowPlan):
+            return StructuredPlan(
+                steps=[
+                    StructuredStep(
+                        id=step.step_id,
+                        description=step.intent,
+                        connector_name=step.connector_name,
+                        agent_id=step.agent_id,
+                        intent=step.intent,
+                        depends_on=list(step.input_from),
+                        requires_approval=step.requires_approval,
+                    )
+                    for step in plan.steps
+                ]
+            ).validate()
+        return StructuredPlan(
+            steps=[
+                StructuredStep(
+                    id=step.id,
+                    description=step.description or step.tool or step.id,
+                    tool=step.tool or None,
+                    depends_on=list(step.depends_on),
+                    can_parallel=step.can_parallel,
+                    estimated_minutes=step.estimated_minutes,
+                    config=dict(step.config),
+                )
+                for step in plan.steps
+            ]
+        ).validate()
+
     async def _execute_step(
         self,
-        step: WorkflowStep,
+        step: WorkflowStep | StructuredStep,
         tenant_ctx: Any,
         prior_results: dict[str, Any],
     ) -> dict[str, Any]:
@@ -308,37 +368,20 @@ class WorkflowExecutor:
     async def run(
         self,
         *,
-        plan: _StaticWorkflowPlan,
+        plan: StructuredPlan | _StaticWorkflowPlan,
         goal: str,
         tenant_ctx: TenantContext,
         tool_context: ToolContext | None = None,
         event_callback: WorkflowEventCallback,
     ) -> None:
-        """Execute a static :class:`_StaticWorkflowPlan` sequentially with SSE events."""
-        await self._emit(
-            event_callback,
-            {
-                "type": "workflow_planned",
-                "goal": goal,
-                "steps": [asdict(step) for step in plan.steps],
-            },
+        """Compatibility forwarding method over the canonical bounded DAG executor."""
+        await self.execute(
+            plan,
+            tenant_ctx,
+            tool_context=tool_context,
+            event_callback=event_callback,
+            goal=goal,
         )
-
-        outputs: dict[str, Any] = {}
-        for step in plan.steps:
-            step_dict = asdict(step)
-            await self._emit(event_callback, {"type": "workflow_step_started", **step_dict})
-            output = await self._run_step(
-                step,
-                tenant_ctx=tenant_ctx,
-                tool_context=tool_context,
-                previous_outputs=outputs,
-            )
-            outputs[step.step_id] = output
-            await self._emit(
-                event_callback,
-                {"type": "workflow_step_complete", **step_dict, "output": output},
-            )
 
     async def _emit(
         self, event_callback: WorkflowEventCallback, event: dict[str, Any]
@@ -347,7 +390,7 @@ class WorkflowExecutor:
 
     async def _run_step(
         self,
-        step: _StaticWorkflowStep,
+        step: StructuredStep | _StaticWorkflowStep,
         *,
         tenant_ctx: TenantContext,
         tool_context: ToolContext | None,
@@ -390,7 +433,9 @@ class WorkflowExecutor:
         }
 
     def _find_matching_tool(
-        self, step: _StaticWorkflowStep, tool_context: ToolContext | None
+        self,
+        step: StructuredStep | _StaticWorkflowStep,
+        tool_context: ToolContext | None,
     ) -> ToolRef | None:
         if tool_context is None or step.connector_name is None:
             return None
@@ -421,7 +466,8 @@ _INTENT_TOOL_TOKENS: dict[str, tuple[str, ...]] = {
 
 
 def _arguments_for_step(
-    step: _StaticWorkflowStep, previous_outputs: dict[str, Any]
+    step: StructuredStep | _StaticWorkflowStep,
+    previous_outputs: dict[str, Any],
 ) -> dict[str, Any]:
     if step.intent == "fetch_open_issues":
         return {"jql": "statusCategory != Done ORDER BY updated DESC"}
@@ -440,6 +486,9 @@ def _arguments_for_step(
     return {}
 
 
-def _summarize_inputs(step: _StaticWorkflowStep, previous_outputs: dict[str, Any]) -> str:
+def _summarize_inputs(
+    step: StructuredStep | _StaticWorkflowStep,
+    previous_outputs: dict[str, Any],
+) -> str:
     inputs = {step_id: previous_outputs.get(step_id) for step_id in step.input_from}
     return f"Workflow inputs: {inputs}"

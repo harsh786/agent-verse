@@ -32,6 +32,7 @@ from typing import Any
 from opentelemetry import trace
 
 from app.execution_environment.models import (
+    CodeCancellationReceipt,
     ExecutionEnvelope,
     ExecutionFailureReason,
     ExecutionRequest,
@@ -93,6 +94,9 @@ class ExecutionEnvironmentScheduler:
     @property
     def runner(self) -> BaseRunner:
         return self._runner
+
+    async def cancel(self, workload_id: str, reason: str) -> CodeCancellationReceipt:
+        return await self._runner.cancel(workload_id, reason)
 
     async def schedule(
         self,

@@ -1,0 +1,12 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: coordination-api-pod-kill
+  namespace: agentverse-test
+spec:
+  action: pod-kill
+  mode: one
+  duration: 30s
+  selector:
+    namespaces: [agentverse-test]
+    labelSelectors: {app: agentverse-backend}

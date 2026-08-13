@@ -21,6 +21,9 @@ from agentverse.models import (
     AgentCreateRequest,
     Connector,
     ConnectorRegisterRequest,
+    CoordinationLayerPage,
+    CoordinationEvent,
+    CoordinationMessagePage,
     CostMetrics,
     Goal,
     GoalEvent,
@@ -31,7 +34,7 @@ from agentverse.models import (
     Schedule,
     SimulationResult,
 )
-from agentverse.streaming import stream_sse
+from agentverse.streaming import stream_coordination_sse, stream_sse
 
 _TERMINAL_STATUSES = {GoalStatus.COMPLETED, GoalStatus.FAILED, GoalStatus.CANCELLED}
 _POLL_INTERVAL = 2.0  # seconds between status polls
@@ -97,7 +100,7 @@ class AgentVerseClient:
             )
         return self._http
 
-    async def _request(self, method: str, path: str, *, json: dict | None = None) -> dict:
+    async def _request(self, method: str, path: str, *, json: dict | None = None) -> Any:
         """Low-level request helper used by agent CRUD methods."""
         import json as json_lib
 
@@ -107,6 +110,19 @@ class AgentVerseClient:
         resp = await self._client().request(method, path, **kw)
         self._raise_for_status(resp)
         return resp.json()  # type: ignore[no-any-return]
+
+    async def _coordination_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        response = await self._client().request(method, path, json=json, headers=headers)
+        self._raise_for_status(response)
+        return response.json()  # type: ignore[no-any-return]
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code == 401:
@@ -131,6 +147,9 @@ class AgentVerseClient:
         dry_run: bool = False,
         agent_id: str | None = None,
         context: dict[str, Any] | None = None,
+        strategy_override: str | None = None,
+        auxiliary_strategies: list[str] | None = None,
+        pattern_limits: dict[str, int | float] | None = None,
     ) -> Goal:
         """Submit a new goal for autonomous execution."""
         payload = GoalSubmitRequest(
@@ -139,10 +158,128 @@ class AgentVerseClient:
             dry_run=dry_run,
             agent_id=agent_id,
             context=context or {},
+            strategy_override=strategy_override,
+            auxiliary_strategies=auxiliary_strategies or [],
+            pattern_limits=pattern_limits,
         )
         resp = await self._client().post("/goals", content=payload.model_dump_json())
         self._raise_for_status(resp)
         return Goal.model_validate(resp.json())
+
+    # ------------------------------------------------------------------
+    # Coordination sessions
+    # ------------------------------------------------------------------
+
+    async def list_coordination_messages(
+        self, session_id: str, *, after_sequence: int = 0, limit: int = 100
+    ) -> CoordinationMessagePage:
+        response = await self._client().get(
+            f"/api/v1/coordination/sessions/{session_id}/messages",
+            params={"after_sequence": after_sequence, "limit": limit},
+        )
+        self._raise_for_status(response)
+        return CoordinationMessagePage.model_validate(response.json())
+
+    async def get_magentic_ledger(self, session_id: str) -> dict[str, Any]:
+        return await self._coordination_request(
+            "GET", f"/api/v1/coordination/sessions/{session_id}/ledger"
+        )
+
+    async def list_moa_layers(
+        self, session_id: str, *, after_layer: int = -1, limit: int = 50
+    ) -> CoordinationLayerPage:
+        response = await self._client().get(
+            f"/api/v1/coordination/sessions/{session_id}/moa/layers",
+            params={"after_layer": after_layer, "limit": limit},
+        )
+        self._raise_for_status(response)
+        return CoordinationLayerPage.model_validate(response.json())
+
+    async def _get_coordination_view(self, session_id: str, suffix: str) -> dict[str, Any]:
+        return await self._coordination_request(
+            "GET", f"/api/v1/coordination/sessions/{session_id}/{suffix}"
+        )
+
+    async def get_camel_state(self, session_id: str) -> dict[str, Any]:
+        return await self._get_coordination_view(session_id, "camel")
+
+    async def get_generative_state(self, session_id: str) -> dict[str, Any]:
+        return await self._get_coordination_view(session_id, "generative")
+
+    async def get_swarm_topology(self, session_id: str) -> dict[str, Any]:
+        return await self._get_coordination_view(session_id, "swarm")
+
+    async def get_auction_state(self, session_id: str) -> dict[str, Any]:
+        return await self._get_coordination_view(session_id, "auction")
+
+    async def create_handoff(
+        self, session_id: str, request: dict[str, Any], *, idempotency_key: str
+    ) -> dict[str, Any]:
+        return await self._coordination_request(
+            "POST",
+            f"/api/v1/coordination/sessions/{session_id}/handoffs",
+            json=request,
+            idempotency_key=idempotency_key,
+        )
+
+    async def transition_handoff(
+        self,
+        session_id: str,
+        handoff_id: str,
+        action: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        acceptance_token: str | None = None,
+        result_reference: str | None = None,
+    ) -> dict[str, Any]:
+        if action not in {"accept", "reject", "cancel"}:
+            raise ValueError("action must be accept, reject, or cancel")
+        return await self._coordination_request(
+            "POST",
+            f"/api/v1/coordination/sessions/{session_id}/handoffs/{handoff_id}/{action}",
+            json={
+                "expected_version": expected_version,
+                "acceptance_token": acceptance_token,
+                "result_reference": result_reference,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    async def submit_sealed_bid(
+        self,
+        session_id: str,
+        *,
+        bidder_id: str,
+        bid_version: int,
+        ciphertext: str,
+        nonce: str,
+        signature: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return await self._coordination_request(
+            "POST",
+            f"/api/v1/coordination/sessions/{session_id}/auction/bids",
+            json={
+                "bidder_id": bidder_id,
+                "bid_version": bid_version,
+                "ciphertext": ciphertext,
+                "nonce": nonce,
+                "signature": signature,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def stream_coordination_events(
+        self, session_id: str, *, after_sequence: int = 0, timeout: float | None = None
+    ) -> AsyncIterator[CoordinationEvent]:
+        url = f"{self._base_url}/api/v1/coordination/sessions/{session_id}/events"
+        return stream_coordination_sse(
+            url,
+            self._default_headers(),
+            after_sequence=after_sequence,
+            timeout=timeout,
+        )
 
     async def get_goal(self, goal_id: str) -> Goal:
         """Fetch current state of a goal by ID."""
@@ -164,16 +301,12 @@ class AgentVerseClient:
         """
         try:
             async for event in self.stream_goal(goal_id, timeout=timeout):
-                etype = event.type if hasattr(event, "type") else event.get("type", "")
+                etype = event.type
                 if etype in ("goal_complete", "goal_finished"):
                     return await self.get_goal(goal_id)
                 elif etype in ("goal_failed", "goal_error"):
                     goal = await self.get_goal(goal_id)
-                    reason = (
-                        event.data.get("reason", "unknown")
-                        if hasattr(event, "data")
-                        else event.get("reason", "unknown")
-                    )
+                    reason = event.data.get("reason", "unknown")
                     raise GoalFailedError(goal_id, reason)
         except (TimeoutError, asyncio.TimeoutError):
             goal = await self.get_goal(goal_id)

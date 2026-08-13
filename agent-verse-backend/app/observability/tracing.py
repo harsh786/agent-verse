@@ -11,6 +11,13 @@ from typing import Any
 
 from app.observability.logging import get_logger
 
+_SAFE_PATTERN_ATTRIBUTE_KEYS = frozenset(
+    {
+        "event", "family", "strategy", "phase", "status", "correlation_id",
+        "causation_id", "classification", "limit_type", "fallback_reason",
+    }
+)
+
 
 # Module-level in-memory exporter; populated by _add_console_span_processor
 _in_memory_exporter: Any = None
@@ -67,10 +74,21 @@ def get_tracer(name: str) -> Any:
         return _NoOpTracer()
 
 
+def safe_pattern_attributes(**attributes: object) -> dict[str, str | int | float | bool]:
+    """Return a bounded trace-attribute map that cannot contain tenant or content data."""
+    safe: dict[str, str | int | float | bool] = {}
+    for key, value in attributes.items():
+        if key not in _SAFE_PATTERN_ATTRIBUTE_KEYS or value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            safe[f"agentverse.{key}"] = value
+    return safe
+
+
 class _NoOpTracer:
     """Fallback tracer when opentelemetry is unavailable (tests, minimal envs)."""
 
-    def start_as_current_span(self, name: str, **_kwargs: Any) -> Any:  # noqa: ANN401
+    def start_as_current_span(self, name: str, **_kwargs: Any) -> Any:
         return _NoOpSpanContext()
 
 
@@ -81,10 +99,10 @@ class _NoOpSpanContext:
     def __exit__(self, *_: object) -> None:
         pass
 
-    def set_attribute(self, key: str, value: object) -> None:  # noqa: ARG002
+    def set_attribute(self, key: str, value: object) -> None:
         pass
 
-    def record_exception(self, exc: Exception) -> None:  # noqa: ARG002
+    def record_exception(self, exc: Exception) -> None:
         pass
 
 

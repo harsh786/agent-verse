@@ -15,7 +15,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 
 class MockServer:
@@ -122,7 +122,7 @@ class MockServer:
 
         self._app = self._make_app()
         config = uvicorn.Config(
-            self._app,
+            cast(Any, self._app),
             host="127.0.0.1",
             port=self.port,
             log_level="error",

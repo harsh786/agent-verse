@@ -190,13 +190,9 @@ async def _jql_from_goal_or_step(text: str) -> str:
         return "assignee = currentUser() AND created >= -26w ORDER BY created DESC"
     named_assignee = _named_assignee_from_text(text)
     if named_assignee:
-        # Jira Cloud requires account IDs in JQL, not display names.
-        # Try to resolve the display name to an account ID via the Jira user API.
-        # Fall back to displayName search which works on some Jira instances.
-        account_id = await _resolve_jira_account_id(named_assignee)
-        if account_id:
-            return f'assignee = "{account_id}" ORDER BY created DESC'
-        # Fallback: displayName quoted search (works on Jira Server / some Cloud)
+        # Keep synthesized arguments deterministic. Connector execution may
+        # resolve this display name with tenant-scoped Jira credentials, but
+        # argument repair must not depend on a developer machine's environment.
         return f'assignee = "{named_assignee}" ORDER BY created DESC'
     if "last 6 months" in lower:
         return "created >= -26w ORDER BY created DESC"

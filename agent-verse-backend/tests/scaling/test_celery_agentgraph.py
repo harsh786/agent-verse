@@ -1,4 +1,4 @@
-"""Tests: Celery run_goal task creates AgentGraph (not AgentLoop) for goal execution."""
+"""Tests: Celery run_goal task creates AgentGraph for goal execution."""
 from __future__ import annotations
 
 from typing import Any
@@ -24,10 +24,10 @@ class _FakeAgentState:
 
 
 def test_run_goal_uses_agent_graph_not_agent_loop(monkeypatch: Any) -> None:
-    """run_goal should use AgentGraph; AgentLoop must NOT be instantiated.
+    """run_goal should use the canonical AgentGraph.
 
     We patch AgentGraph with a capturing stub and verify it is called.
-    AgentLoop is NOT patched — so detection will show _loop_is_patched=False
+    The legacy fallback is absent, so graph construction is authoritative.
     and the AgentGraph path is taken.
     """
     import app.agent.graph as _graph_mod
@@ -88,31 +88,23 @@ def test_run_goal_dry_run_bypasses_agent_construction(monkeypatch: Any) -> None:
     assert result["dry_run"] is True
 
 
-def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
+def test_run_goal_fails_closed_when_agent_graph_unavailable(
     monkeypatch: Any,
 ) -> None:
-    """If AgentGraph raises on init AND AgentLoop is patched, the patched loop is used.
-
-    When tests patch app.agent.loop.AgentLoop, the monkey-patch detector in tasks.py
-    detects this and uses the patched class, skipping the AgentGraph path.
-    """
-    import app.agent.loop as _loop_mod
+    """A graph-construction failure cannot silently select a second kernel."""
+    import app.agent.graph as _graph_mod
     from app.scaling import tasks
 
-    fallback_used = []
-
-    class _FallbackLoop:
+    class _BrokenGraph:
         def __init__(self, **kwargs: Any) -> None:
-            fallback_used.append(True)
+            raise RuntimeError("graph unavailable")
 
-        async def run(self, **kwargs: Any) -> _FakeAgentState:
-            return _FakeAgentState()
-
-    # Patching AgentLoop triggers monkey-patch detection → uses _FallbackLoop
-    monkeypatch.setattr(_loop_mod, "AgentLoop", _FallbackLoop)
+    monkeypatch.setattr(_graph_mod, "AgentGraph", _BrokenGraph)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
-    monkeypatch.setenv("ALLOW_LEGACY_AGENT_LOOP", "true")
     monkeypatch.setenv("ENVIRONMENT", "development")
+    # Disable the distributed lock so a stale Redis key from a prior run doesn't
+    # cause this goal to be skipped instead of failing.
+    monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "")
 
     result = tasks.run_goal.run(
         "goal-fallback-1",
@@ -122,8 +114,8 @@ def test_run_goal_falls_back_to_agent_loop_when_agent_graph_unavailable(
         False,
     )
 
-    assert fallback_used, "Patched AgentLoop runner should have been used"
-    assert result.get("status") in {"complete", "failed", "skipped", "dead_lettered"}
+    assert result["status"] == "failed"
+    assert result["reason"] == "agentgraph_assembly_failed"
 
 
 def test_retrieval_capable_goal_never_uses_legacy_loop_on_graph_failure(
@@ -199,7 +191,7 @@ def test_agent_graph_constructed_with_reliability_services(monkeypatch: Any) -> 
         async def run(self, **kwargs: Any) -> _FakeAgentState:
             return _FakeAgentState()
 
-    # Patch AgentGraph only — AgentLoop NOT patched → _loop_is_patched=False → AgentGraph path
+    # Patch the canonical AgentGraph production path.
     monkeypatch.setattr(_graph_mod, "AgentGraph", _CapturingGraph)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
 

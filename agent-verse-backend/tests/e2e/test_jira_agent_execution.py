@@ -193,8 +193,17 @@ def _stream_events(client: TestClient, goal_id: str) -> list[dict[str, Any]]:
     for block in response.text.strip().split("\n\n"):
         if not block:
             continue
-        assert block.startswith("data: ")
-        events.append(cast(dict[str, Any], json.loads(block.removeprefix("data: "))))
+        # SSE blocks may have event:/id: prefix lines before the data: line
+        data_line = next(
+            (line for line in block.splitlines() if line.startswith("data: ")),
+            None,
+        )
+        if data_line is None:
+            continue
+        try:
+            events.append(cast(dict[str, Any], json.loads(data_line.removeprefix("data: "))))
+        except (json.JSONDecodeError, ValueError):
+            pass
     return events
 
 
@@ -365,7 +374,7 @@ class DeterministicJiraHITLGoalService(GoalService):
     def _make_agent_loop_for_tenant(
         self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
     ) -> AgentGraph:
-        return AgentGraph(
+        graph = AgentGraph(
             planner=FakeProvider(
                 responses=['{"steps": ["Create a new Jira issue for the bug report"]}']
             ),
@@ -386,10 +395,14 @@ class DeterministicJiraHITLGoalService(GoalService):
                 responses=['{"success": true, "reason": "Issue creation requested"}']
             ),
             mcp_client=self._get_mcp_client(),
-            hitl_gateway=HITLGateway(),
+            hitl_gateway=HITLGateway(timeout_seconds=0.1),
             result_processor=ResultProcessor(),
             autonomy_mode="supervised",
         )
+        # Use a very short HITL timeout so the goal completes quickly in tests
+        # without waiting 300 s for an approval that never arrives.
+        graph._hitl_timeout = 0.1
+        return graph
 
 
 @pytest.mark.asyncio
@@ -566,7 +579,7 @@ def test_jira_write_high_tool_triggers_hitl_approval() -> None:
         assert goal_resp.status_code == 202
         goal_id = goal_resp.json()["goal_id"]
 
-        # Wait for goal to reach terminal state (write_high does not block)
+        # Wait for goal to reach terminal state (HITL timeout is 0.1s so it completes quickly)
         goal = _wait_for_terminal_goal(client, goal_id)
         assert goal["status"] in {
             GoalStatus.COMPLETE.value,

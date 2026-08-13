@@ -34,6 +34,9 @@ def _make_app_disabled():
 def _signup(app):
     """Sign up a new tenant and return (client, headers). Skip on failure."""
     client = TestClient(app, raise_server_exceptions=False)
+    # Keep a single AnyIO portal/event loop for all requests made by the test.
+    # Asyncpg pooled connections are bound to the loop that created them.
+    client.__enter__()
     r = client.post(
         "/tenants/signup",
         json={"name": "CivTest", "email": "civ@test.com"},
@@ -108,16 +111,24 @@ def test_civilization_list():
 
 def test_civilization_get_detail():
     app = _make_app_enabled()
-    c, h = _signup(app)
-    if not h:
-        pytest.skip("signup failed")
-    create = c.post("/civilizations", json={"name": "My Civ"}, headers=h)
-    if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
-    civ_id = create.json()["id"]
-    resp = c.get(f"/civilizations/{civ_id}", headers=h)
-    assert resp.status_code == 200
-    assert resp.json()["id"] == civ_id
+    # Keep all requests on TestClient's single portal/event loop. Calling a
+    # non-context-managed client repeatedly can create a fresh loop per request,
+    # which is incompatible with pooled asyncpg connections.
+    with TestClient(app, raise_server_exceptions=False) as c:
+        signup = c.post(
+            "/tenants/signup",
+            json={"name": "CivTest", "email": "civ@test.com"},
+        )
+        if signup.status_code not in (200, 201):
+            pytest.skip("signup failed")
+        h = {"X-API-Key": signup.json().get("api_key", "")}
+        create = c.post("/civilizations", json={"name": "My Civ"}, headers=h)
+        if create.status_code not in (200, 201):
+            pytest.skip("create failed — DB likely unavailable")
+        civ_id = create.json()["id"]
+        resp = c.get(f"/civilizations/{civ_id}", headers=h)
+        assert resp.status_code == 200
+        assert resp.json()["id"] == civ_id
 
 
 def test_civilization_get_nonexistent_returns_404_or_503():

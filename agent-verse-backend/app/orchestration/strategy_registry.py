@@ -1,14 +1,36 @@
 """StrategyRegistry — canonical catalogue of every orchestration strategy.
 Every pattern from the architecture docs must be registered here with its state.
 """
+
 from __future__ import annotations
 
 import enum
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
+from types import MappingProxyType
 from typing import Any
 
+from app.orchestration.strategy_adapters import (
+    AdapterDescriptor,
+    ExecutionTier,
+    code_reasoning_descriptor,
+    core_execution_descriptor,
+    durable_coordination_descriptor,
+    local_agent_graph_descriptor,
+    local_reasoning_descriptor,
+    rag_adapter_descriptor,
+    workflow_adapter_descriptor,
+)
+from app.orchestration.strategy_contracts import (
+    PatternLimits,
+    StrategyCostLevel,
+    StrategyFamily,
+    StrategyLatencyClass,
+    StrategyLifecycleState,
+    StrategyRiskLevel,
+    StrategySpec,
+)
 from app.rag.catalogue import (
     RAG_CAPABILITY_CATALOGUE,
     RAG_RUNTIME_CAPABILITIES,
@@ -25,6 +47,7 @@ from app.rag.contracts import (
 
 class StrategyState(str, enum.Enum):  # noqa: UP042
     IMPLEMENTED = "implemented"
+    CERTIFIED = "certified"
     PARTIAL = "partial"
     PLANNED = "planned"
     DISABLED = "disabled"
@@ -45,16 +68,305 @@ class StrategyCapability:
     state: StrategyState
     adapter_path: str = ""
     description: str = ""
-    required_deps: list[str] = field(default_factory=list)
-    optional_deps: list[str] = field(default_factory=list)
+    required_deps: list[str] | tuple[str, ...] = field(default_factory=list)
+    optional_deps: list[str] | tuple[str, ...] = field(default_factory=list)
     cost_class: str = "medium"
     latency_class: str = "interactive"
     risk_class: str = "low"
-    compatible_goal_properties: dict[str, Any] = field(default_factory=dict)
+    compatible_goal_properties: Mapping[str, Any] = field(default_factory=dict)
     runtime_adapter: type[RAGRuntimeAdapter] | None = field(
         default=None,
         repr=False,
     )
+    adapter_descriptor: AdapterDescriptor | None = field(default=None, repr=False)
+    execution_tier: ExecutionTier = ExecutionTier.CROSS_CUTTING
+    bundle_components: tuple[str, ...] = ()
+    canonical_owner_id: str = ""
+    _spec: StrategySpec | None = field(default=None, init=False, repr=False)
+    _sealed: bool = field(default=False, init=False, repr=False)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError(f"Strategy capability is sealed: {self.strategy_id}")
+        object.__setattr__(self, name, value)
+
+    def _seal(self) -> None:
+        object.__setattr__(self, "_sealed", True)
+
+    @property
+    def spec(self) -> StrategySpec:
+        if self._spec is None:
+            raise RuntimeError(f"Strategy capability is not finalized: {self.strategy_id}")
+        return self._spec
+
+    @property
+    def default_limits(self) -> PatternLimits:
+        return self.spec.default_limits
+
+    @property
+    def adapter_version(self) -> str:
+        return self.spec.adapter_version
+
+    @property
+    def state_schema_version(self) -> int:
+        return self.spec.state_schema_version
+
+    @property
+    def adapter_factory(self) -> Callable[[], Any] | None:
+        if self.adapter_descriptor is None:
+            return None
+        return self.adapter_descriptor.create_adapter
+
+    @property
+    def readiness_requirements(self) -> tuple[str, ...]:
+        return self.spec.readiness_requirements
+
+    @property
+    def compatible_strategies(self) -> tuple[str, ...]:
+        return self.spec.compatible_strategies
+
+    @property
+    def excluded_strategies(self) -> tuple[str, ...]:
+        return self.spec.excluded_strategies
+
+    @property
+    def compatibility_metadata(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return self.spec.compatible_strategies, self.spec.excluded_strategies
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyResolution:
+    requested_id: str
+    canonical_id: str
+    capability: StrategyCapability
+
+    @property
+    def was_aliased(self) -> bool:
+        return self.requested_id != self.canonical_id
+
+
+DEFAULT_STRATEGY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("cot", "chain_of_thought"),
+    ("zero_shot_cot", "chain_of_thought"),
+    ("plan_and_execute", "plan_execute"),
+)
+
+
+DEFAULT_PATTERN_LIMITS = PatternLimits(
+    calls=32,
+    nodes=64,
+    edges=128,
+    depth=8,
+    fan_out=8,
+    rounds=16,
+    tokens=64_000,
+    duration_seconds=600,
+    cost_usd=5.0,
+)
+
+LOCAL_REASONING_LIMITS: dict[str, PatternLimits] = {
+    "constitutional_ai": PatternLimits(
+        calls=2,
+        nodes=1,
+        edges=0,
+        depth=1,
+        fan_out=1,
+        rounds=1,
+        tokens=8_000,
+        duration_seconds=60,
+        cost_usd=0.20,
+    ),
+    "few_shot_cot": PatternLimits(
+        calls=3,
+        nodes=0,
+        edges=0,
+        depth=1,
+        fan_out=1,
+        rounds=1,
+        tokens=6_000,
+        duration_seconds=60,
+        cost_usd=0.08,
+    ),
+    "graph_of_thoughts": PatternLimits(
+        calls=24,
+        nodes=24,
+        edges=48,
+        depth=4,
+        fan_out=4,
+        rounds=6,
+        tokens=24_000,
+        duration_seconds=180,
+        cost_usd=0.40,
+    ),
+    "least_to_most": PatternLimits(
+        calls=10,
+        nodes=8,
+        edges=12,
+        depth=8,
+        fan_out=1,
+        rounds=8,
+        tokens=12_000,
+        duration_seconds=120,
+        cost_usd=0.20,
+    ),
+    "rewoo": PatternLimits(
+        calls=12,
+        nodes=12,
+        edges=24,
+        depth=6,
+        fan_out=4,
+        rounds=8,
+        tokens=12_000,
+        duration_seconds=180,
+        cost_usd=0.30,
+    ),
+    "lats": PatternLimits(
+        calls=32,
+        nodes=32,
+        edges=31,
+        depth=6,
+        fan_out=4,
+        rounds=24,
+        tokens=32_000,
+        duration_seconds=240,
+        cost_usd=0.60,
+    ),
+    "llm_compiler": PatternLimits(
+        calls=16,
+        nodes=16,
+        edges=32,
+        depth=8,
+        fan_out=4,
+        rounds=8,
+        tokens=16_000,
+        duration_seconds=180,
+        cost_usd=0.35,
+    ),
+}
+
+CODE_REASONING_LIMITS: dict[str, PatternLimits] = {
+    "program_of_thought": PatternLimits(
+        calls=3,
+        nodes=1,
+        edges=0,
+        depth=1,
+        fan_out=1,
+        rounds=1,
+        tokens=8_000,
+        duration_seconds=30,
+        cost_usd=0.15,
+    ),
+    "codeact": PatternLimits(
+        calls=24,
+        nodes=8,
+        edges=7,
+        depth=8,
+        fan_out=1,
+        rounds=8,
+        tokens=24_000,
+        duration_seconds=240,
+        cost_usd=0.80,
+    ),
+}
+
+
+_CATEGORY_FAMILIES = {
+    StrategyCategory.AGENT: StrategyFamily.REASONING,
+    StrategyCategory.RAG: StrategyFamily.RAG,
+    StrategyCategory.SAFETY: StrategyFamily.SAFETY,
+    StrategyCategory.MEMORY: StrategyFamily.MEMORY,
+    StrategyCategory.OPTIMISATION: StrategyFamily.OPTIMIZATION,
+}
+
+
+def _freeze_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(_freeze_metadata(item) for item in value)
+    return value
+
+
+def _finalize_capability(capability: StrategyCapability) -> None:
+    if capability._sealed:
+        return
+
+    capability.required_deps = tuple(str(value) for value in capability.required_deps)
+    capability.optional_deps = tuple(str(value) for value in capability.optional_deps)
+    capability.bundle_components = tuple(capability.bundle_components)
+    capability.compatible_goal_properties = _freeze_metadata(capability.compatible_goal_properties)
+    lifecycle_state = StrategyLifecycleState(capability.state.value)
+    runtime_requirement = (
+        "strategy_runner" if capability.adapter_descriptor is not None else "registry_contract"
+    )
+    readiness_requirements = tuple(dict.fromkeys([*capability.required_deps, runtime_requirement]))
+    capability.canonical_owner_id = capability.canonical_owner_id or capability.strategy_id
+    capability._spec = StrategySpec(
+        strategy_id=capability.strategy_id,
+        adapter_version="1.0.0",
+        family=_CATEGORY_FAMILIES[capability.category],
+        risk=StrategyRiskLevel(capability.risk_class),
+        cost=StrategyCostLevel(capability.cost_class),
+        latency=StrategyLatencyClass(capability.latency_class),
+        state_schema_version=1,
+        lifecycle_state=lifecycle_state,
+        default_limits=LOCAL_REASONING_LIMITS.get(
+            capability.strategy_id,
+            CODE_REASONING_LIMITS.get(capability.strategy_id, DEFAULT_PATTERN_LIMITS),
+        ),
+        dependencies=tuple(capability.required_deps),
+        compatible_strategies=tuple(
+            str(value)
+            for value in capability.compatible_goal_properties.get("compatible_strategies", ())
+        ),
+        excluded_strategies=tuple(
+            str(value)
+            for value in capability.compatible_goal_properties.get("excluded_strategies", ())
+        ),
+        readiness_requirements=readiness_requirements,
+    )
+    capability._seal()
+
+
+def _validate_adapter_descriptor(capability: StrategyCapability) -> None:
+    descriptor = capability.adapter_descriptor
+    is_strong_state = capability.state in {
+        StrategyState.IMPLEMENTED,
+        StrategyState.CERTIFIED,
+    }
+    if descriptor is None:
+        if is_strong_state:
+            raise ValueError(
+                "Implemented or certified strategy requires an executable "
+                f"adapter descriptor: {capability.strategy_id}"
+            )
+        return
+
+    if capability.execution_tier is not descriptor.execution_tier:
+        raise ValueError(
+            "Strategy capability execution tier mismatch: "
+            f"{capability.strategy_id} "
+            f"({capability.execution_tier.value} != {descriptor.execution_tier.value})"
+        )
+
+    try:
+        adapter = descriptor.create_adapter()
+        adapter_strategy_id = adapter.strategy_id
+    except Exception as exc:
+        if is_strong_state:
+            message = (
+                "Implemented or certified strategy requires an executable "
+                f"adapter descriptor: {capability.strategy_id}"
+            )
+        else:
+            message = f"invalid adapter descriptor: {capability.strategy_id}"
+        raise ValueError(message) from exc
+
+    if adapter_strategy_id != capability.strategy_id:
+        raise ValueError(
+            "Strategy adapter strategy ID mismatch: "
+            f"{capability.strategy_id} != {adapter_strategy_id}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,11 +404,49 @@ def _readiness_from_available_dependencies(
 
 
 class StrategyRegistry:
-    def __init__(self, entries: list[StrategyCapability]) -> None:
-        self._by_id: dict[str, StrategyCapability] = {e.strategy_id: e for e in entries}
+    def __init__(
+        self,
+        entries: list[StrategyCapability],
+        *,
+        aliases: Iterable[tuple[str, str]] = DEFAULT_STRATEGY_ALIASES,
+    ) -> None:
+        self._by_id: dict[str, StrategyCapability] = {}
+        for entry in entries:
+            if entry.strategy_id in self._by_id:
+                raise ValueError(f"Duplicate strategy ID: {entry.strategy_id}")
+            _validate_adapter_descriptor(entry)
+            _finalize_capability(entry)
+            self._by_id[entry.strategy_id] = entry
+
+        self._aliases: dict[str, str] = {}
+        for alias, canonical_id in aliases:
+            if alias in self._aliases:
+                raise ValueError(f"Duplicate strategy alias: {alias}")
+            if alias in self._by_id:
+                raise ValueError(f"Strategy alias conflicts with a canonical strategy ID: {alias}")
+            if canonical_id not in self._by_id:
+                raise ValueError(f"Unknown canonical strategy ID: {canonical_id}")
+            self._aliases[alias] = canonical_id
 
     def get(self, strategy_id: str) -> StrategyCapability | None:
         return self._by_id.get(strategy_id)
+
+    def resolve(self, strategy_id: str) -> StrategyResolution:
+        canonical_id = self._aliases.get(strategy_id, strategy_id)
+        capability = self._by_id.get(canonical_id)
+        if capability is None:
+            raise LookupError(f"Unknown strategy: {strategy_id}")
+        return StrategyResolution(strategy_id, canonical_id, capability)
+
+    def resolve_adapter(self, strategy_id: str) -> AdapterDescriptor:
+        try:
+            resolution = self.resolve(strategy_id)
+        except LookupError as exc:
+            raise LookupError(f"Unknown adapter descriptor: {strategy_id}") from exc
+        descriptor = resolution.capability.adapter_descriptor
+        if descriptor is None or not descriptor.is_executable:
+            raise LookupError(f"Unknown adapter descriptor: {strategy_id}")
+        return descriptor
 
     def list_all(self) -> list[StrategyCapability]:
         return list(self._by_id.values())
@@ -123,13 +473,15 @@ class StrategyRegistry:
             results = [r for r in results if r.latency_class == latency_class]
         return results
 
-    def is_available(
-        self, strategy_id: str, *, available_deps: set[str] | None = None
-    ) -> bool:
-        cap = self.get(strategy_id)
-        if cap is None:
+    def is_available(self, strategy_id: str, *, available_deps: set[str] | None = None) -> bool:
+        try:
+            cap = self.resolve(strategy_id).capability
+        except LookupError:
             return False
-        if cap.category is StrategyCategory.RAG and cap.state is not StrategyState.IMPLEMENTED:
+        if cap.category is StrategyCategory.RAG and cap.state not in {
+            StrategyState.IMPLEMENTED,
+            StrategyState.CERTIFIED,
+        }:
             return False
         if cap.state in (StrategyState.PLANNED, StrategyState.DISABLED):
             return False
@@ -144,7 +496,7 @@ class StrategyRegistry:
         if (
             capability is None
             or capability.category is not StrategyCategory.RAG
-            or capability.state is not StrategyState.IMPLEMENTED
+            or capability.state not in {StrategyState.IMPLEMENTED, StrategyState.CERTIFIED}
             or capability.runtime_adapter is None
         ):
             raise LookupError(f"RAG strategy has no implemented adapter: {strategy_id}")
@@ -187,17 +539,18 @@ class StrategyRegistry:
         adapter_path = f"{adapter.__module__}:{adapter.__name__}"
         strategy = RAGStrategy(strategy_id)
         raw_trace = adapter.probe_trace()
-        trace = raw_trace.model_copy(
-            update={"action": f"identity_contract_{raw_trace.action}"}
-        )
+        trace = raw_trace.model_copy(update={"action": f"identity_contract_{raw_trace.action}"})
         if adapter.strategy is not strategy or trace.strategy is not strategy:
             raise TypeError(f"RAG adapter probe strategy mismatch: {strategy_id}")
-        if not trace.action.strip() or not RAGStrategyContractProbe(
-            strategy_id=strategy_id,
-            adapter_path=adapter_path,
-            available=True,
-            trace=trace,
-        ).evidence.strip():
+        if (
+            not trace.action.strip()
+            or not RAGStrategyContractProbe(
+                strategy_id=strategy_id,
+                adapter_path=adapter_path,
+                available=True,
+                trace=trace,
+            ).evidence.strip()
+        ):
             raise ValueError(f"RAG adapter probe returned no evidence: {strategy_id}")
         if missing:
             trace = trace.model_copy(
@@ -232,9 +585,7 @@ def build_default_registry(
     PLAN = StrategyState.PLANNED  # noqa: N806
 
     runtime_capabilities = (
-        RAG_RUNTIME_CAPABILITIES
-        if rag_runtime_capabilities is None
-        else rag_runtime_capabilities
+        RAG_RUNTIME_CAPABILITIES if rag_runtime_capabilities is None else rag_runtime_capabilities
     )
     entries: list[StrategyCapability] = [
         # ── Agent Patterns (26 from doc-4) ──────────────────────────────────
@@ -242,7 +593,7 @@ def build_default_registry(
             "react",
             A,
             IMPL,
-            "app.agent.graph:AgentGraph",
+            "app.agent.patterns.core_execution:ReActStrategyAdapter",
             "ReAct loop",
             [],
             [],
@@ -254,7 +605,7 @@ def build_default_registry(
             "plan_execute",
             A,
             IMPL,
-            "app.agent.graph:AgentGraph",
+            "app.agent.patterns.core_execution:PlanExecuteStrategyAdapter",
             "Plan then execute",
             [],
             [],
@@ -265,7 +616,7 @@ def build_default_registry(
         StrategyCapability(
             "chain_of_thought",
             A,
-            PART,
+            IMPL,
             "app.agent.graph:AgentGraph",
             "CoT reasoning",
             [],
@@ -275,10 +626,16 @@ def build_default_registry(
             "low",
         ),
         StrategyCapability(
-            "zero_shot_cot", A, PART, "", "Zero-shot CoT", [], [], "low", "interactive", "low"
-        ),
-        StrategyCapability(
-            "few_shot_cot", A, PLAN, "", "Few-shot CoT", [], [], "medium", "interactive", "low"
+            "few_shot_cot",
+            A,
+            IMPL,
+            "app.agent.patterns.few_shot_cot:FewShotCoTAdapter",
+            "Few-shot CoT",
+            ["provider", "checkpoint_store", "reasoning_example_source"],
+            [],
+            "medium",
+            "interactive",
+            "low",
         ),
         StrategyCapability(
             "reflection",
@@ -343,10 +700,10 @@ def build_default_registry(
         StrategyCapability(
             "graph_of_thoughts",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.graph_of_thoughts:GraphOfThoughtsAdapter",
             "Graph-structured thought",
-            [],
+            ["provider", "checkpoint_store"],
             [],
             "high",
             "batch",
@@ -355,10 +712,10 @@ def build_default_registry(
         StrategyCapability(
             "least_to_most",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.least_to_most:LeastToMostAdapter",
             "Decompose least to most complex",
-            [],
+            ["provider", "checkpoint_store"],
             [],
             "medium",
             "interactive",
@@ -367,10 +724,10 @@ def build_default_registry(
         StrategyCapability(
             "rewoo",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.rewoo:ReWOOAdapter",
             "Reasoning without observation",
-            [],
+            ["provider", "checkpoint_store", "governed_tool_dispatcher"],
             [],
             "medium",
             "interactive",
@@ -379,10 +736,10 @@ def build_default_registry(
         StrategyCapability(
             "program_of_thought",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.program_of_thought:ProgramOfThoughtAdapter",
             "Programs to solve tasks",
-            [],
+            ["code_interpreter", "production_sandbox", "artifact_store", "checkpoint_store"],
             [],
             "medium",
             "interactive",
@@ -391,10 +748,10 @@ def build_default_registry(
         StrategyCapability(
             "codeact",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.codeact:CodeActAdapter",
             "Code execution as action",
-            ["code_interpreter"],
+            ["code_interpreter", "production_sandbox", "artifact_store", "checkpoint_store"],
             [],
             "medium",
             "interactive",
@@ -437,12 +794,36 @@ def build_default_registry(
             "low",
         ),
         StrategyCapability(
+            "group_chat",
+            A,
+            IMPL,
+            "app.coordination.group_chat.adapter:GroupChatAdapter",
+            "Durable shared-transcript group chat",
+            ["checkpoint_store", "coordination_outbox", "transcript_store"],
+            [],
+            "high",
+            "interactive",
+            "medium",
+        ),
+        StrategyCapability(
+            "magentic",
+            A,
+            IMPL,
+            "app.coordination.magentic.adapter:MagenticAdapter",
+            "Ledger-driven bounded multi-agent coordination",
+            ["checkpoint_store", "coordination_outbox", "progress_ledger"],
+            [],
+            "high",
+            "interactive",
+            "medium",
+        ),
+        StrategyCapability(
             "mixture_of_agents",
             A,
-            PLAN,
-            "",
-            "Ensemble of agents",
-            [],
+            IMPL,
+            "app.coordination.moa.adapter:MoAAdapter",
+            "Diverse layered proposal aggregation",
+            ["checkpoint_store", "coordination_outbox", "moa_repository"],
             [],
             "high",
             "batch",
@@ -464,15 +845,48 @@ def build_default_registry(
             "peer_review", A, IMPL, "", "Peer agent review", [], [], "high", "batch", "low"
         ),
         StrategyCapability(
-            "camel", A, PLAN, "", "Communicative agents", [], [], "high", "batch", "low"
+            "camel",
+            A,
+            IMPL,
+            "app.coordination.camel.adapter:CamelAdapter",
+            "Bounded communicative agents",
+            ["checkpoint_store", "transcript_store"],
+            [],
+            "high",
+            "batch",
+            "medium",
+        ),
+        StrategyCapability(
+            "decentralized_swarm",
+            A,
+            IMPL,
+            "app.coordination.swarm.adapter:DecentralizedSwarmAdapter",
+            "Governor-constrained peer coordination",
+            ["checkpoint_store", "coordination_outbox", "lease_store"],
+            [],
+            "high",
+            "batch",
+            "high",
+        ),
+        StrategyCapability(
+            "market_auction",
+            A,
+            IMPL,
+            "app.coordination.auction.adapter:MarketAuctionAdapter",
+            "Sealed deterministic work allocation",
+            ["checkpoint_store", "coordination_outbox", "auction_repository"],
+            [],
+            "high",
+            "batch",
+            "high",
         ),
         StrategyCapability(
             "babyagi",
             A,
-            PLAN,
-            "",
-            "Task creation and prioritization",
-            [],
+            IMPL,
+            "app.agent.patterns.babyagi:BabyAGIAdapter",
+            "Bounded durable task creation and prioritization",
+            ["checkpoint_store", "coordination_outbox"],
             [],
             "high",
             "batch",
@@ -481,25 +895,34 @@ def build_default_registry(
         StrategyCapability(
             "autogpt",
             A,
-            PLAN,
-            "",
-            "Autonomous long-horizon",
-            [],
+            IMPL,
+            "app.agent.patterns.autogpt:AutoGPTAdapter",
+            "Bounded gated autonomous execution",
+            ["checkpoint_store", "policy_runtime", "production_sandbox"],
             [],
             "high",
             "batch",
             "medium",
         ),
         StrategyCapability(
-            "lats", A, PLAN, "", "LLM Monte Carlo tree search", [], [], "high", "batch", "low"
+            "lats",
+            A,
+            IMPL,
+            "app.agent.patterns.lats:LATSAdapter",
+            "LLM Monte Carlo tree search",
+            ["provider", "checkpoint_store", "governed_tool_dispatcher"],
+            [],
+            "high",
+            "batch",
+            "low",
         ),
         StrategyCapability(
             "llm_compiler",
             A,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.llm_compiler:LLMCompilerAdapter",
             "Parallel task compilation",
-            [],
+            ["provider", "checkpoint_store", "governed_tool_dispatcher"],
             [],
             "medium",
             "interactive",
@@ -665,29 +1088,32 @@ def build_default_registry(
         StrategyCapability(
             "constitutional_ai",
             S,
-            PLAN,
-            "",
+            IMPL,
+            "app.agent.patterns.constitutional_ai:ConstitutionalAIAdapter",
             "Constitutional AI critique",
-            [],
+            ["policy_runtime", "provider"],
             [],
             "medium",
             "batch",
             "medium",
         ),
         StrategyCapability(
-            "voyager", A, PLAN, "", "Skill-learning agent", [], [], "high", "batch", "low"
+            "voyager", A, IMPL, "app.agent.patterns.voyager:VoyagerAdapter",
+            "Governed evidence-only skill-learning agent",
+            ["checkpoint_store", "memory_repository", "production_sandbox"], [],
+            "high", "batch", "medium",
         ),
         StrategyCapability(
             "generative_agents",
             A,
-            PLAN,
-            "",
-            "Memory-driven simulation",
-            [],
+            IMPL,
+            "app.coordination.generative.adapter:GenerativeAgentsAdapter",
+            "Memory-grounded bounded simulation",
+            ["checkpoint_store", "memory_repository"],
             [],
             "high",
             "batch",
-            "low",
+            "medium",
         ),
         # ── RAG Patterns (17 from doc-4 + raft) ──────────────────────────────
         StrategyCapability(
@@ -1129,38 +1555,38 @@ def build_default_registry(
             M,
             PART,
             "app.knowledge_graph.store:KnowledgeGraphStore",
-             "KG memory",
-             [],
-             [],
-             "medium",
-             "interactive",
-             "low",
-         ),
+            "KG memory",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
+        ),
         StrategyCapability(
-             "episodic_memory",
-             M,
-             IMPL,
-             "app.memory.episodic:EpisodicMemoryStore",
-             "Past experience recall — stores goal outcomes for contextual planning",
-             [],
-             [],
-             "medium",
-             "interactive",
-             "low",
-         ),
+            "episodic_memory",
+            M,
+            IMPL,
+            "app.memory.episodic:EpisodicMemoryStore",
+            "Past experience recall — stores goal outcomes for contextual planning",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
+        ),
         StrategyCapability(
-             "procedural_memory",
-             M,
-             IMPL,
-             "app.memory.procedural:ProceduralMemoryStore",
-             "Learned tool-use patterns — suggests proven tool sequences for goal types",
-             [],
-             [],
-             "medium",
-             "interactive",
-             "low",
-         ),
-         # ── Optimisation Patterns (11 from doc-4) ────────────────────────────
+            "procedural_memory",
+            M,
+            IMPL,
+            "app.memory.procedural:ProceduralMemoryStore",
+            "Learned tool-use patterns — suggests proven tool sequences for goal types",
+            [],
+            [],
+            "medium",
+            "interactive",
+            "low",
+        ),
+        # ── Optimisation Patterns (11 from doc-4) ────────────────────────────
         StrategyCapability(
             "model_routing",
             O,
@@ -1307,8 +1733,86 @@ def build_default_registry(
             capability.state = IMPL
             capability.adapter_path = f"{adapter.__module__}:{adapter.__name__}"
             capability.runtime_adapter = adapter
+            capability.adapter_descriptor = rag_adapter_descriptor(
+                RAGStrategy(capability.strategy_id), adapter
+            )
+            capability.execution_tier = ExecutionTier.RAG
         elif capability.state not in (PLAN, StrategyState.DISABLED):
             capability.state = PART
+
+    local_agent_graph_strategies = {
+        "react",
+        "plan_execute",
+        "chain_of_thought",
+        "reflection",
+        "reflexion",
+        "self_refine",
+        "self_consistency",
+        "tree_of_thoughts",
+        "peer_review",
+        "loop_until",
+        "wave_execution",
+        "scratchpad",
+    }
+    local_reasoning_strategies = frozenset(LOCAL_REASONING_LIMITS)
+    code_reasoning_strategies = frozenset(CODE_REASONING_LIMITS)
+    durable_coordination_strategies = frozenset(
+        {
+            "consensus",
+            "consensus_verification",
+            "autogpt",
+            "babyagi",
+            "camel",
+            "decentralized_swarm",
+            "debate",
+            "goal_tree",
+            "group_chat",
+            "magentic",
+            "mixture_of_agents",
+            "generative_agents",
+            "market_auction",
+            "supervisor",
+            "voyager",
+        }
+    )
+    for capability in entries:
+        if capability.strategy_id in {"react", "plan_execute"}:
+            capability.adapter_descriptor = core_execution_descriptor(capability.strategy_id)
+            capability.execution_tier = ExecutionTier.LOCAL
+        elif capability.strategy_id in local_agent_graph_strategies:
+            capability.adapter_descriptor = local_agent_graph_descriptor(capability.strategy_id)
+            capability.execution_tier = ExecutionTier.LOCAL
+        elif capability.strategy_id in local_reasoning_strategies:
+            capability.adapter_descriptor = local_reasoning_descriptor(capability.strategy_id)
+            capability.execution_tier = ExecutionTier.LOCAL
+        elif capability.strategy_id in code_reasoning_strategies:
+            capability.adapter_descriptor = code_reasoning_descriptor(capability.strategy_id)
+            capability.execution_tier = ExecutionTier.SANDBOX
+        elif capability.strategy_id in durable_coordination_strategies:
+            capability.adapter_descriptor = durable_coordination_descriptor(capability.strategy_id)
+            capability.execution_tier = ExecutionTier.DISTRIBUTED
+        elif capability.strategy_id == "workflow_dag":
+            capability.adapter_descriptor = workflow_adapter_descriptor()
+            capability.execution_tier = ExecutionTier.WORKFLOW
+
+        if capability.strategy_id == "loop_engineering":
+            capability.state = PART
+            capability.adapter_descriptor = None
+            capability.bundle_components = ("loop_until", "wave_execution")
+        elif capability.state in {StrategyState.IMPLEMENTED, StrategyState.CERTIFIED} and (
+            capability.adapter_descriptor is None
+        ):
+            capability.state = PART
+
+    ownership = {
+        "session_memory": "execution_memory",
+        "execution_memory": "execution_memory",
+    }
+    for capability in entries:
+        capability.canonical_owner_id = ownership.get(
+            capability.strategy_id,
+            capability.strategy_id,
+        )
 
     return StrategyRegistry(entries)
 

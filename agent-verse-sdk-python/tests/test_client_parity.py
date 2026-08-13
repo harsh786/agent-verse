@@ -82,6 +82,25 @@ def test_sdk_has_get_goal_replay():
     assert hasattr(AgentVerseClient, "get_goal_replay")
 
 
+@pytest.mark.parametrize(
+    "method",
+    [
+        "list_coordination_messages",
+        "get_magentic_ledger",
+        "list_moa_layers",
+        "get_camel_state",
+        "get_generative_state",
+        "get_swarm_topology",
+        "get_auction_state",
+        "create_handoff",
+        "transition_handoff",
+        "submit_sealed_bid",
+    ],
+)
+def test_sdk_has_coordination_surface(method):
+    assert hasattr(AgentVerseClient, method)
+
+
 # ---------------------------------------------------------------------------
 # Model import tests — new models must be importable from agentverse
 # ---------------------------------------------------------------------------
@@ -301,3 +320,59 @@ async def test_delete_schedule_calls_delete_endpoint(client, mock_router):
     )
     result = await client.delete_schedule("sched-42")
     assert result is None
+
+
+async def test_submit_goal_includes_strategy_controls(client, mock_router):
+    route = mock_router.post("/goals").mock(
+        return_value=httpx.Response(
+            202,
+            json={"goal_id": "g-1", "goal": "coordinate", "status": "pending", "created_at": _NOW},
+        )
+    )
+    await client.submit_goal(
+        "coordinate",
+        strategy_override="magentic_one",
+        auxiliary_strategies=["mixture_of_agents"],
+        pattern_limits={"max_rounds": 4},
+    )
+    assert route.calls.last.request.content
+    body = route.calls.last.request.content.decode()
+    assert '"strategy_override":"magentic_one"' in body
+    assert '"max_rounds":4' in body
+
+
+async def test_coordination_reads_and_idempotent_commands(client, mock_router):
+    mock_router.get("/api/v1/coordination/sessions/s-1/messages").mock(
+        return_value=httpx.Response(200, json={"items": [], "next_sequence": 7, "has_more": False})
+    )
+    page = await client.list_coordination_messages("s-1", after_sequence=7)
+    assert page.next_sequence == 7
+
+    route = mock_router.post("/api/v1/coordination/sessions/s-1/handoffs/h-1/cancel").mock(
+        return_value=httpx.Response(200, json={"handoff_id": "h-1", "state": "cancelled", "version": 2})
+    )
+    result = await client.transition_handoff(
+        "s-1", "h-1", "cancel", expected_version=1, idempotency_key="idem-cancel-1"
+    )
+    assert result["state"] == "cancelled"
+    assert route.calls.last.request.headers["Idempotency-Key"] == "idem-cancel-1"
+
+
+async def test_sealed_bid_returns_public_receipt(client, mock_router):
+    route = mock_router.post("/api/v1/coordination/sessions/s-1/auction/bids").mock(
+        return_value=httpx.Response(
+            200,
+            json={"receipt_id": "r-1", "bidder_id": "a-1", "bid_version": 1},
+        )
+    )
+    receipt = await client.submit_sealed_bid(
+        "s-1",
+        bidder_id="a-1",
+        bid_version=1,
+        ciphertext="opaque",
+        nonce="n" * 16,
+        signature="s" * 32,
+        idempotency_key="idem-bid-1",
+    )
+    assert receipt["receipt_id"] == "r-1"
+    assert route.calls.last.request.headers["Idempotency-Key"] == "idem-bid-1"

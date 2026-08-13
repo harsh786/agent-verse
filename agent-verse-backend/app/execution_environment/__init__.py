@@ -2,7 +2,7 @@
 
 This package implements a containment and blast-radius-reduction layer for
 agent workloads.  It does NOT change agent behaviour — the same AgentGraph /
-AgentLoop code runs inside the isolated environment.
+AgentGraph code runs inside the isolated environment.
 
 Architecture
 ------------

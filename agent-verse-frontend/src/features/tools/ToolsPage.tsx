@@ -132,6 +132,7 @@ function CodeEditor({
   return (
     <div className="border-0 overflow-hidden">
       <CodeMirror
+        aria-label="Code"
         value={value}
         height="280px"
         theme={isDark ? oneDark : undefined}
@@ -170,6 +171,10 @@ function CodeEditor({
 
 const CODE_HISTORY_KEY = 'av_code_history';
 
+function newClientId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function CodeRunner() {
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState<Language>('python');
@@ -187,7 +192,7 @@ function CodeRunner() {
     onSuccess: (r) => {
       setResult(r);
       const entry: HistoryEntry = {
-        id: crypto.randomUUID(),
+        id: newClientId(),
         language,
         snippet: code,
         label: code.slice(0, 60),
@@ -640,7 +645,7 @@ function EmailComposer() {
     onSuccess: () => {
       toast({ kind: 'success', message: 'Email sent successfully.' });
       const newSent: SentItem = {
-        id: crypto.randomUUID(),
+        id: newClientId(),
         to,
         subject,
         preview: body.slice(0, 60),

@@ -230,14 +230,15 @@ async def test_node_rag_retrieval_exec_memory_fallback_on_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_node_think_returns_cot_reasoning() -> None:
+async def test_node_think_returns_privacy_safe_reasoning_evidence() -> None:
     graph = _make_graph(enable_cot=True)
     graph._event_callback = None
     agent_state = AgentState(goal="Analyze slow queries", tenant_ctx=T)
     state = _make_state(agent_state=agent_state)
     result = await graph._node_think(state)
-    assert "cot_reasoning" in result
-    assert isinstance(result["cot_reasoning"], str)
+    assert "cot_reasoning" not in result
+    assert result["reasoning_evidence"]["strategy_id"] == "chain_of_thought"
+    assert result["reasoning_evidence"]["call_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -249,7 +250,7 @@ async def test_node_think_with_model_router() -> None:
     agent_state = AgentState(goal="Optimize queries", tenant_ctx=T)
     state = _make_state(agent_state=agent_state)
     result = await graph._node_think(state)
-    assert "cot_reasoning" in result
+    assert "reasoning_evidence" in result
     graph._model_router.model_for.assert_called_with("think")
 
 

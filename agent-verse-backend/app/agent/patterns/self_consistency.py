@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Any
 
 from app.agent.patterns.base import AgentPattern, PatternState
+from app.agent.reasoning_evidence import ReasoningEvidence, ReasoningExecution
 
 
 def _normalize(text: str) -> str:
@@ -79,7 +80,29 @@ class SelfConsistencyPattern(AgentPattern):
         **kwargs: Any,
     ) -> str:
         """Run prompt N times, return majority-vote answer."""
+        execution = await self.execute_with_evidence(
+            prompt=prompt,
+            provider=provider,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        return str(execution.result)
+
+    async def execute_with_evidence(
+        self,
+        *,
+        prompt: str,
+        provider: Any,
+        system_prompt: str = "You are a helpful assistant. Think step by step.",
+        max_tokens: int = 1000,
+        call_limit: int | None = None,
+        **kwargs: Any,
+    ) -> ReasoningExecution:
+        """Return the answer and aggregate-only voting evidence."""
         from app.providers.base import CompletionRequest, Message
+
+        sample_count = self._n if call_limit is None else min(self._n, call_limit)
 
         async def _one_sample() -> str:
             try:
@@ -99,11 +122,30 @@ class SelfConsistencyPattern(AgentPattern):
                 return ""
 
         # Run all N samples in parallel
-        responses = await asyncio.gather(*[_one_sample() for _ in range(self._n)])
+        responses = await asyncio.gather(*[_one_sample() for _ in range(sample_count)])
         valid = [r for r in responses if r]
-        if not valid:
-            return ""
-        return _most_common(valid)
+        result = _most_common(valid) if valid else ""
+        quorum = 0
+        if valid:
+            quorum = Counter(_normalize(item) for item in valid).most_common(1)[0][1]
+        limited = sample_count < self._n
+        return ReasoningExecution(
+            result=result,
+            evidence=ReasoningEvidence(
+                strategy_id=self.pattern_id,
+                status=(
+                    "exhausted"
+                    if limited
+                    else ("completed" if valid else "degraded")
+                ),
+                call_count=sample_count,
+                valid_samples=len(valid),
+                invalid_samples=sample_count - len(valid),
+                quorum=quorum,
+                limit_reason="call_limit" if limited else None,
+                safe_rationale_summary="majority vote over valid bounded samples",
+            ),
+        )
 
     def vote(self, responses: list[str]) -> str:
         """Public method to vote on externally-collected responses."""

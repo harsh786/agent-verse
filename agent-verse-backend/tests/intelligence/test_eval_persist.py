@@ -1,11 +1,12 @@
 """Test that eval scores actually persist to DB using the real schema."""
-import pytest
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.agent.state import AgentState, GoalStatus
 from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.eval import EvalScorecard
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _make_tenant() -> TenantContext:
@@ -22,7 +23,12 @@ def _make_state() -> AgentState:
     state.goal_id = "goal-eval-001"
     state.status = GoalStatus.COMPLETE
     state.iterations = 3
-    state.context = {"total_cost_usd": 0.05}
+    state.context = {
+        "total_cost_usd": 0.05,
+        "strategy_execution_id": "execution-1",
+        "correlation_id": "correlation-1",
+        "causation_id": "causation-1",
+    }
     state.steps = []
     state.verification_success = True
     return state
@@ -53,7 +59,7 @@ async def test_score_and_persist_writes_correct_schema():
     def fake_db():
         return fake_session
 
-    scorecard = await runner.score_and_persist(state, tenant, db=fake_db)
+    await runner.score_and_persist(state, tenant, db=fake_db)
 
     assert "scores" in captured.get("sql", ""), (
         "INSERT must use 'scores' JSON column, not individual score columns. "
@@ -71,6 +77,13 @@ async def test_score_and_persist_writes_correct_schema():
     avg = params.get("avg")
     assert isinstance(avg, float), f"average_score must be float, got {type(avg)}"
     assert 0.0 <= avg <= 1.0, f"average_score must be in [0,1], got {avg}"
+    assert "strategy_execution_id" in captured["sql"]
+    assert "evaluator_version" in captured["sql"]
+    assert params["strategy_execution_id"] == "execution-1"
+    assert params["evaluator_version"] == EvalRunner.EVALUATOR_VERSION
+    assert "ON CONFLICT (tenant_id, goal_id, strategy_execution_id, evaluator_version)" in (
+        " ".join(captured["sql"].split())
+    )
 
 
 @pytest.mark.asyncio

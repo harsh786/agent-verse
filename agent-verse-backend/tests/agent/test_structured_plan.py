@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.structured_plan import StructuredPlan, StructuredStep
-
+from app.agent.structured_plan import PlanValidationError, StructuredPlan, StructuredStep
 
 # ── parsing ───────────────────────────────────────────────────────────────────
 
@@ -75,7 +74,10 @@ def test_parse_empty_string_returns_empty_plan() -> None:
 
 def test_parse_tool_null_is_none() -> None:
     """A step with ``tool: null`` must have ``step.tool is None``."""
-    text = '{"steps": [{"id": "s1", "description": "do thing", "tool": null, "depends_on": [], "risk": "read"}]}'
+    text = (
+        '{"steps": [{"id": "s1", "description": "do thing", "tool": null, '
+        '"depends_on": [], "risk": "read"}]}'
+    )
     plan = StructuredPlan.from_llm_response(text)
     assert len(plan.steps) == 1
     assert plan.steps[0].tool is None
@@ -134,6 +136,52 @@ def test_execution_waves_empty_plan() -> None:
     """An empty plan produces no waves."""
     plan = StructuredPlan(steps=[])
     assert plan.execution_waves() == []
+
+
+def test_validate_rejects_duplicate_step_ids() -> None:
+    plan = StructuredPlan(
+        steps=[
+            StructuredStep(id="a", description="first"),
+            StructuredStep(id="a", description="second"),
+        ]
+    )
+    with pytest.raises(PlanValidationError, match="duplicate"):
+        plan.validate()
+
+
+def test_validate_rejects_unknown_dependencies() -> None:
+    plan = StructuredPlan(
+        steps=[StructuredStep(id="a", description="first", depends_on=["missing"])]
+    )
+    with pytest.raises(PlanValidationError, match="unknown"):
+        plan.validate()
+
+
+def test_validate_rejects_cycles() -> None:
+    plan = StructuredPlan(
+        steps=[
+            StructuredStep(id="a", description="first", depends_on=["b"]),
+            StructuredStep(id="b", description="second", depends_on=["a"]),
+        ]
+    )
+    with pytest.raises(PlanValidationError, match="cycle"):
+        plan.validate()
+
+
+def test_validate_rejects_self_dependencies() -> None:
+    plan = StructuredPlan(
+        steps=[StructuredStep(id="a", description="first", depends_on=["a"])]
+    )
+    with pytest.raises(PlanValidationError, match="itself"):
+        plan.validate()
+
+
+def test_validate_rejects_non_positive_loop_limit() -> None:
+    plan = StructuredPlan(
+        steps=[StructuredStep(id="a", description="first", max_loop_iter=0)]
+    )
+    with pytest.raises(PlanValidationError, match="loop limit"):
+        plan.validate()
 
 
 # ── to_step_list ──────────────────────────────────────────────────────────────

@@ -117,3 +117,19 @@ config:
   otlpEndpoint: "http://otel-collector:4317"
   metricsEnabled: "true"
   semanticCacheEnabled: "true"
+
+# Fail-closed staged rollout controls. Empty allowlists and disabled family flags admit no
+# pattern canary traffic until signed certification evidence is supplied.
+agentPatternRollout:
+  tenantAllowlist: []
+  familyFlags:
+    reasoning: false
+    rag: false
+    multiAgent: false
+    memory: false
+  adapterVersionPins: {}
+  killSwitch: false
+  cohortPercentage: 0
+  minimumSamples: 300
+  internalObservationHours: 24
+  cohortObservationHours: 72

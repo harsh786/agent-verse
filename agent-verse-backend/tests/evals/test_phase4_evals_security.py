@@ -18,6 +18,7 @@ def test_runtime_scorecard_latency_cost_distinct():
     state.status = GoalStatus.COMPLETE
     state.iterations = 5
     state.context["_latency_ms"] = 45_000  # 45 seconds → latency penalty
+    state.context["total_cost_usd"] = 0.05  # cost set → cost_efficiency is computed
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
         properties=GoalProperties(raw_goal="test"),

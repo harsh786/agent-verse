@@ -43,11 +43,15 @@ import signal
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from app.execution_environment.health import HealthStatus, RunnerHealthCheck
 from app.execution_environment.models import (
+    CodeCancellationReceipt,
     ExecutionFailureReason,
+    ExecutionKind,
     ExecutionRequest,
     ExecutionResult,
     RunnerType,
@@ -143,6 +147,8 @@ class LocalSubprocessRunner(BaseRunner):
 
     def __init__(self) -> None:
         self._health = LocalSubprocessHealthCheck()
+        self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._cancellations: dict[str, CodeCancellationReceipt] = {}
 
     @property
     def runner_type(self) -> str:
@@ -151,6 +157,32 @@ class LocalSubprocessRunner(BaseRunner):
     @property
     def health_check(self) -> RunnerHealthCheck:
         return self._health
+
+    async def cancel(self, workload_id: str, reason: str) -> CodeCancellationReceipt:
+        del reason
+        cached = self._cancellations.get(workload_id)
+        if cached is not None:
+            return cached
+        requested = datetime.now(UTC)
+        proc = self._processes.get(workload_id)
+        terminated = proc is None or proc.returncode is not None
+        if proc is not None and proc.returncode is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except TimeoutError:
+                _kill_process_group(proc)
+                await proc.wait()
+            terminated = proc.returncode is not None
+        receipt = CodeCancellationReceipt(
+            workload_id=workload_id,
+            requested_at=requested,
+            acknowledged_at=datetime.now(UTC),
+            process_group_terminated=terminated,
+            cleanup_state="complete" if terminated else "quarantined",
+        )
+        self._cancellations[workload_id] = receipt
+        return receipt
 
     async def run(
         self,
@@ -191,7 +223,23 @@ class LocalSubprocessRunner(BaseRunner):
             # envelope JSON blob to minimise /proc/<pid>/environ exposure.
             clean_env["_ISOLATED_WORKER_LLM_KEY"] = envelope.scoped_llm_api_key
 
-        cmd = [sys.executable, "-m", "app.execution_environment.worker_entrypoint"]
+        module = (
+            "app.execution_environment.code_worker"
+            if envelope.execution_kind is ExecutionKind.CODE_INTERPRETER
+            else "app.execution_environment.worker_entrypoint"
+        )
+        package_root = str(Path(__file__).resolve().parents[2])
+        isolated_bootstrap = (
+            "import runpy,sys;"
+            f"sys.path.insert(0,{package_root!r});"
+            f"runpy.run_module({module!r},run_name='__main__')"
+        )
+        cmd = [sys.executable, "-I", "-c", isolated_bootstrap]
+        workload_id = (
+            envelope.code_workload.workload_id
+            if envelope.code_workload is not None
+            else envelope.attempt_id
+        )
 
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -203,6 +251,7 @@ class LocalSubprocessRunner(BaseRunner):
                 # New session — process group leader; killed via killpg on timeout
                 start_new_session=True,
             )
+            self._processes[workload_id] = proc
 
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
@@ -332,6 +381,14 @@ class LocalSubprocessRunner(BaseRunner):
             capsule_id=capsule_id,
             exit_code=exit_code if proc is not None else None,
             execution_time_ms=(time.monotonic() - t_start) * 1000,
+            code_observation=(
+                __import__(
+                    "app.execution_environment.models",
+                    fromlist=["CodeExecutionObservation"],
+                ).CodeExecutionObservation.model_validate(result_dict["code_observation"])
+                if isinstance(result_dict.get("code_observation"), dict)
+                else None
+            ),
         )
 
 

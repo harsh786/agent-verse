@@ -15,7 +15,10 @@ class LoopEngineeringPattern(AgentPattern):
 
     @property
     def description(self) -> str:
-        return "Loop-Engineering: adaptive retry + loop control — implemented in app.agent.graph:_execute_step_with_loop"
+        return (
+            "Loop-Engineering: adaptive retry + loop control"
+            " — implemented in app.agent.graph:_execute_step_with_loop"
+        )
 
     @property
     def node_name(self) -> str:

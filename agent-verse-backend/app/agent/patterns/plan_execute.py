@@ -15,7 +15,10 @@ class PlanExecutePattern(AgentPattern):
 
     @property
     def description(self) -> str:
-        return "Plan-and-Execute: upfront planning then sequential execution — implemented in app.agent.graph:AgentGraph"
+        return (
+            "Plan-and-Execute: upfront planning then sequential execution"
+            " — implemented in app.agent.graph:AgentGraph"
+        )
 
     @property
     def node_name(self) -> str:

@@ -52,6 +52,7 @@ def test_agent_scorer_penalizes_failed_tools():
 def test_agent_scorer_grounding_no_claims():
     scorer = AgentScorer()
     state = _make_state(); state.ungrounded_claims = []
+    state.context["grounding_checked"] = True  # checked; nothing flagged
     assert scorer.score_grounding(state) == 1.0
 
 
@@ -68,7 +69,9 @@ def test_scorecard_has_all_9_dimensions():
     result = scorecard.score(state=state, profile=_make_profile())
     required = {"goal_success", "rag_quality", "safety", "latency", "cost_efficiency",
                 "grounding", "citation_quality", "retrieval_confidence", "tool_success_rate"}
-    missing = required - set(result.scores.keys())
+    # dimension_status always contains all 9 tracked dimensions regardless of applicability.
+    # scores only contains dimensions that were measured (had a computable value).
+    missing = required - set(result.dimension_status.keys())
     assert not missing, f"Missing scorecard dimensions: {sorted(missing)}"
 
 

@@ -681,7 +681,9 @@ def test_ingest_url_fetch_failure() -> None:
     with patch("httpx.AsyncClient", return_value=mock_client):
         resp = client.post(
             "/knowledge/ingest/url",
-            json={"collection_id": coll_id, "url": "https://fail.example.com", "source_type": "web"},
+            # Use a publicly resolvable host so this reaches the mocked fetch
+            # instead of being rejected by the SSRF guard during DNS validation.
+            json={"collection_id": coll_id, "url": "https://docs.python.org/failure", "source_type": "web"},
             headers=H,
         )
     assert resp.status_code == 500
@@ -701,7 +703,8 @@ def test_ingest_url_empty_content_raises_422() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with patch("app.api.knowledge.assert_public_url"), \
+         patch("httpx.AsyncClient", return_value=mock_client):
         resp = client.post(
             "/knowledge/ingest/url",
             json={"collection_id": coll_id, "url": "https://empty.example.com", "source_type": "web"},
@@ -725,13 +728,14 @@ def test_ingest_url_with_embedder_chunks_content() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/url",
-                json={"collection_id": coll_id, "url": "https://long.example.com", "source_type": "web"},
-                headers=H,
-            )
+    with patch("app.api.knowledge.assert_public_url"), \
+         patch("httpx.AsyncClient", return_value=mock_client), \
+         patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
+        resp = client.post(
+            "/knowledge/ingest/url",
+            json={"collection_id": coll_id, "url": "https://long.example.com", "source_type": "web"},
+            headers=H,
+        )
     assert resp.status_code in (200, 201, 500)
 
 
@@ -749,13 +753,15 @@ def test_ingest_url_short_content_fallback_chunk() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch("app.knowledge.chunker_v2.chunk_by_tokens", return_value=[]):
-            resp = client.post(
-                "/knowledge/ingest/url",
-                json={"collection_id": coll_id, "url": "https://short.example.com", "source_type": "web"},
-                headers=H,
-            )
+    with patch("app.api.knowledge.assert_public_url"), \
+         patch("httpx.AsyncClient", return_value=mock_client), \
+         patch("app.knowledge.chunker_v2.chunk_by_tokens", return_value=[]), \
+         patch("app.api.knowledge._embed_texts_or_http", new=_make_embed_texts_mock()):
+        resp = client.post(
+            "/knowledge/ingest/url",
+            json={"collection_id": coll_id, "url": "https://short.example.com", "source_type": "web"},
+            headers=H,
+        )
     assert resp.status_code in (200, 201, 422, 500)
 
 

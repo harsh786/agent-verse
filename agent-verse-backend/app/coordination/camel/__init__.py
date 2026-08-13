@@ -1,0 +1,1 @@
+"""Bounded CAMEL role collaboration."""

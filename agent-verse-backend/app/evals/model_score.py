@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.orchestration.runtime_profile import GoalRuntimeProfile
     from app.agent.state import AgentState
+    from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 
 class ModelScorer:
@@ -23,7 +23,9 @@ class ModelScorer:
             latency_score = 0.1
         return 0.5 * cost_score + 0.5 * latency_score
 
-    def score_cost(self, profile: "GoalRuntimeProfile", state: "AgentState") -> float:
+    def score_cost(
+        self, profile: GoalRuntimeProfile, state: AgentState
+    ) -> float | None:
         """Score cost efficiency: how much below budget the goal executed."""
         max_cost = getattr(profile.model_plan, "max_cost_usd", 0.10) or 0.10
         # N4 fix: cost is stored in state.context["total_cost_usd"], not a direct attribute
@@ -33,8 +35,8 @@ class ModelScorer:
                           getattr(state, "total_cost_usd", 0.0)  # fallback to attr
                           ) or 0.0
         )
-        if actual_cost <= 0:
-            return 0.8  # no cost data → neutral
+        if "total_cost_usd" not in _cost_ctx and not hasattr(state, "total_cost_usd"):
+            return 0.8
         ratio = actual_cost / max_cost
         if ratio <= 0.3:
             return 1.0
@@ -44,11 +46,11 @@ class ModelScorer:
             return 0.6
         return max(0.0, 1.0 - (ratio - 1.0) * 0.5)
 
-    def score_latency(self, state: "AgentState") -> float:
+    def score_latency(self, state: AgentState) -> float | None:
         """Score latency: faster execution = higher score."""
         latency_ms = float(state.context.get("_latency_ms", 0) or 0)
-        if latency_ms <= 0:
-            return 0.75  # no latency data → neutral
+        if "_latency_ms" not in state.context:
+            return 0.75
         if latency_ms < 5_000:
             return 1.0
         if latency_ms < 15_000:

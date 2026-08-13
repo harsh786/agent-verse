@@ -52,6 +52,24 @@ class Evaluation(Base):
     scores: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     average_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    primary_strategy_id: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    primary_strategy_version: Mapped[str] = mapped_column(
+        Text, nullable=False, default="unknown"
+    )
+    auxiliary_strategy_versions: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    profile_id: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    profile_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    strategy_execution_id: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluator_version: Mapped[str] = mapped_column(
+        Text, nullable=False, default="eval-runner-v1"
+    )
+    evidence_completeness: Mapped[dict[str, bool]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    causation_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

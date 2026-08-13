@@ -13,6 +13,38 @@ os.environ.setdefault("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
 os.environ.setdefault("ENVIRONMENT", "development")
 
 
+def _docker_available() -> bool:
+    """Return True if a Docker daemon is reachable."""
+    try:
+        import docker
+        docker.from_env().ping()
+        return True
+    except Exception:
+        return False
+
+
+_DOCKER_OK: bool = _docker_available()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip tests that require Docker or OPENAI_API_KEY when unavailable."""
+    import os
+    openai_key_set = bool(os.getenv("OPENAI_API_KEY"))
+    skip_docker = pytest.mark.skip(reason="Docker daemon not available")
+    skip_openai = pytest.mark.skip(reason="OPENAI_API_KEY not set")
+    for item in items:
+        try:
+            import pathlib
+            src = pathlib.Path(str(item.fspath)).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if not _DOCKER_OK and ("testcontainers" in src or "DockerContainer" in src):
+            item.add_marker(skip_docker, append=False)
+        # Skip real-API integration tests when the API key is absent
+        if not openai_key_set and 'os.getenv("OPENAI_API_KEY"' in src:
+            item.add_marker(skip_openai, append=False)
+
+
 @pytest.fixture
 def app():
     from app.main import create_app
