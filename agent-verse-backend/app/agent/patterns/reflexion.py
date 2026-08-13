@@ -80,17 +80,18 @@ class ReflexionPattern(AgentPattern):
             )
         return True
 
-    def recall_lessons(self, *, tenant_id: str, limit: int = 5) -> list[dict]:
+    def recall_lessons(self, *, tenant_id: str, limit: int = 5) -> list[dict[str, Any]]:
         """Recall recent failure lessons for a tenant."""
-        return self._get_store().recall(tenant_id=tenant_id, limit=limit)
+        result: list[dict[str, Any]] = self._get_store().recall(tenant_id=tenant_id, limit=limit)
+        return result
 
-    def format_for_context(self, lessons: list[dict]) -> str:
+    def format_for_context(self, lessons: list[dict[str, Any]]) -> str:
         """Format lessons as a context block for the planner prompt."""
         if not lessons:
             return ""
         lines = ["[Reflexion lessons from past failures — avoid these mistakes:]"]
-        for i, l in enumerate(lessons[:5], 1):
+        for i, item in enumerate(lessons[:5], 1):
             lines.append(
-                f"  {i}. {l['lesson']} (class: {l.get('failure_class', 'unknown')})"
+                f"  {i}. {item['lesson']} (class: {item.get('failure_class', 'unknown')})"
             )
         return "\n".join(lines)

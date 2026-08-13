@@ -143,15 +143,16 @@ def test_main_dry_run_succeeds_with_valid_envelope() -> None:
     assert result_events[-1]["success"] is True
 
 
-def test_main_dry_run_never_touches_agent_loop() -> None:
-    """Dry-run must short-circuit before any AgentLoop is constructed."""
-    import app.agent.loop as loop_mod
-    original_loop_class = loop_mod.AgentLoop
-    loop_constructed = []
+def test_main_dry_run_never_touches_agent_graph() -> None:
+    """Dry-run must short-circuit before the execution graph is constructed."""
+    import app.agent.graph as graph_mod
 
-    class TrackingLoop(original_loop_class):  # type: ignore[valid-type]
+    original_graph_class = graph_mod.AgentGraph
+    graph_constructed = []
+
+    class TrackingGraph(original_graph_class):  # type: ignore[valid-type]
         def __init__(self, **kwargs):  # type: ignore[override]
-            loop_constructed.append(True)
+            graph_constructed.append(True)
             super().__init__(**kwargs)
 
     envelope = build_envelope(
@@ -160,7 +161,7 @@ def test_main_dry_run_never_touches_agent_loop() -> None:
     payload = {**envelope.to_dict(), "signature": envelope.signature}
     encoded = base64.b64encode(json.dumps(payload).encode()).decode()
 
-    with patch.object(loop_mod, "AgentLoop", TrackingLoop):
+    with patch.object(graph_mod, "AgentGraph", TrackingGraph):
         _run_main_with_env({"_ISOLATED_WORKER_ENVELOPE": encoded})
 
-    assert len(loop_constructed) == 0, "AgentLoop must NOT be constructed during dry-run"
+    assert graph_constructed == []

@@ -7,10 +7,14 @@ isolated runner without pulling in the full app dependency tree.
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -50,6 +54,101 @@ class AuditLevel(enum.StrEnum):
     STANDARD = "standard"
     VERBOSE = "verbose"
     MINIMAL = "minimal"
+
+
+class ExecutionKind(enum.StrEnum):
+    AGENT_GOAL = "agent_goal"
+    CODE_INTERPRETER = "code_interpreter"
+
+
+class CodeLanguage(enum.StrEnum):
+    PYTHON_3_12 = "python_3_12"
+
+
+class CodeWorkloadMode(enum.StrEnum):
+    PROGRAM_OF_THOUGHT = "program_of_thought"
+    CODEACT = "codeact"
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+class _FrozenCodeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+
+class CodeExecutionWorkload(_FrozenCodeModel):
+    workload_id: str = Field(min_length=1)
+    mode: CodeWorkloadMode
+    language: Literal[CodeLanguage.PYTHON_3_12] = CodeLanguage.PYTHON_3_12
+    source: str = Field(min_length=1, max_length=32 * 1024)
+    stdin_json: JsonValue | None = None
+    expected_output_schema: dict[str, JsonValue]
+    requested_artifacts: tuple[str, ...] = Field(default=(), max_length=16)
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("requested_artifacts")
+    @classmethod
+    def validate_artifact_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("requested artifact names must be unique")
+        for name in value:
+            if not name or name.startswith(("/", ".")) or ".." in name.split("/"):
+                raise ValueError("requested artifact must be a safe relative path")
+        return value
+
+    @model_validator(mode="after")
+    def validate_digest_and_sizes(self) -> CodeExecutionWorkload:
+        expected = hashlib.sha256(self.source.encode()).hexdigest()
+        if self.source_sha256 != expected:
+            raise ValueError("source_sha256 does not match source")
+        if len(self.source.encode()) > 32 * 1024:
+            raise ValueError("source byte limit exceeded")
+        if (
+            self.stdin_json is not None
+            and len(canonical_json(self.stdin_json).encode()) > 64 * 1024
+        ):
+            raise ValueError("stdin JSON byte limit exceeded")
+        return self
+
+    @classmethod
+    def create(cls, **values: Any) -> CodeExecutionWorkload:
+        source = str(values.get("source", ""))
+        values["source_sha256"] = hashlib.sha256(source.encode()).hexdigest()
+        return cls.model_validate(values)
+
+
+class CodeExecutionObservation(_FrozenCodeModel):
+    workload_id: str = Field(min_length=1)
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    exit_code: int | None
+    terminal_state: Literal["completed", "failed", "cancelled", "timed_out", "denied"]
+    stdout: str
+    stderr: str
+    stdout_truncated: bool
+    stderr_truncated: bool
+    result_json: JsonValue | None
+    artifact_refs: tuple[str, ...]
+    cpu_time_ms: int = Field(ge=0)
+    wall_time_ms: int = Field(ge=0)
+    peak_memory_bytes: int = Field(ge=0)
+    denial_codes: tuple[str, ...]
+    observation_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CodeCancellationReceipt(_FrozenCodeModel):
+    workload_id: str = Field(min_length=1)
+    requested_at: datetime
+    acknowledged_at: datetime
+    process_group_terminated: bool
+    cleanup_state: Literal["complete", "quarantined", "failed"]
+
+    @model_validator(mode="after")
+    def validate_timestamps(self) -> CodeCancellationReceipt:
+        if self.acknowledged_at < self.requested_at:
+            raise ValueError("acknowledged_at precedes requested_at")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +259,9 @@ class ExecutionEnvelope:
     agent_id: str = ""
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
+    execution_kind: ExecutionKind = ExecutionKind.AGENT_GOAL
+    code_workload: CodeExecutionWorkload | None = None
+
     # --- Goal + context ---
     goal_text: str = ""
     execution_context: dict[str, Any] = field(default_factory=dict)
@@ -201,6 +303,13 @@ class ExecutionEnvelope:
     issued_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     signature: str = ""  # HMAC-SHA256 over canonical fields, set by envelope.py
 
+    def __post_init__(self) -> None:
+        if self.execution_kind is ExecutionKind.AGENT_GOAL:
+            if not self.goal_text or self.code_workload is not None:
+                raise ValueError("agent_goal requires goal_text and forbids code_workload")
+        elif self.goal_text or self.code_workload is None:
+            raise ValueError("code_interpreter requires code_workload and forbids goal_text")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "tenant_id": self.tenant_id,
@@ -208,6 +317,12 @@ class ExecutionEnvelope:
             "attempt_id": self.attempt_id,
             "agent_id": self.agent_id,
             "correlation_id": self.correlation_id,
+            "execution_kind": self.execution_kind.value,
+            "code_workload": (
+                self.code_workload.model_dump(mode="json")
+                if self.code_workload is not None
+                else None
+            ),
             "goal_text": self.goal_text,
             "execution_context": self.execution_context,
             "agent_config": self.agent_config,
@@ -228,6 +343,7 @@ class ExecutionEnvelope:
             "cost_limit_usd": self.cost_limit_usd,
             "feature_flags": self.feature_flags,
             "issued_at": self.issued_at,
+            "signature": self.signature,
             # NOTE: scoped_* credentials are intentionally excluded from to_dict()
             # to prevent accidental logging or serialisation.
         }
@@ -313,6 +429,7 @@ class ExecutionResult:
     timeout_hit: bool = False
     resource_limit_hit: bool = False
     cleanup_status: str = "ok"
+    code_observation: CodeExecutionObservation | None = None
     artifacts: list[ExecutionArtifact] = field(default_factory=list)
     completed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -338,6 +455,11 @@ class ExecutionResult:
             "timeout_hit": self.timeout_hit,
             "resource_limit_hit": self.resource_limit_hit,
             "cleanup_status": self.cleanup_status,
+            "code_observation": (
+                self.code_observation.model_dump(mode="json")
+                if self.code_observation is not None
+                else None
+            ),
             "completed_at": self.completed_at,
             "artifacts": [
                 {

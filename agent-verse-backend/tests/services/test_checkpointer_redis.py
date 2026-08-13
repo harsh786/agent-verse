@@ -31,7 +31,7 @@ def test_resolve_checkpointer_uses_app_state_first():
     assert result is saver, "Must return the provided app_state checkpointer unchanged"
 
 
-def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog):
+def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog, capsys):
     """When no Redis is available, a warning is logged about durability loss."""
     from app.services.goal_service import _resolve_checkpointer
     from langgraph.checkpoint.memory import MemorySaver
@@ -44,10 +44,12 @@ def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog):
             result = _resolve_checkpointer(app_state)
 
     assert isinstance(result, MemorySaver)
-    assert any(
-        "LOST" in r.message or "memory" in r.message.lower() or "RESTART" in r.message
-        for r in caplog.records
-    ), "Must warn about state loss when falling back to MemorySaver"
+    # structlog may write to stdout rather than Python logging; check both.
+    all_output = caplog.text + capsys.readouterr().out
+    keywords = ("LOST", "RESTART", "memory", "MemorySaver")
+    assert any(kw.lower() in all_output.lower() for kw in keywords), (
+        "Must warn about state loss when falling back to MemorySaver"
+    )
 
 
 def test_resolve_checkpointer_prefers_redis_over_memory():
@@ -65,7 +67,7 @@ def test_resolve_checkpointer_prefers_redis_over_memory():
         assert result is not None
 
 
-def test_memory_saver_warning_contains_impact():
+def test_memory_saver_warning_contains_impact(capsys):
     """MemorySaver warning must include LOST or RESTART so operators notice."""
     import io
     from app.services.goal_service import _resolve_checkpointer
@@ -85,6 +87,8 @@ def test_memory_saver_warning_contains_impact():
     finally:
         logger.removeHandler(handler)
 
+    # structlog may emit to stdout rather than the stdlib logger handler
+    output += capsys.readouterr().out
     assert (
         "RESTART" in output or "LOST" in output or "memory" in output.lower()
     ), f"Warning must mention restart/loss; got: {output!r}"

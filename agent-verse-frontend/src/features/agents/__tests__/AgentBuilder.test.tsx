@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 const agentsListSrc: string = (await import('../AgentsListPage.tsx?raw')).default;
 const agentCreateSrc: string = (await import('../AgentCreatePage.tsx?raw')).default;
 const agentDetailSrc: string = (await import('../AgentDetailPage.tsx?raw')).default;
+const apiClientSrc: string = (await import('../../../lib/api/client.ts?raw')).default;
 
 describe('Agent Builder Frontend', () => {
   it('AgentsListPage renders agent rows as clickable', () => {
@@ -45,7 +46,7 @@ describe('Agent Builder Frontend', () => {
 
   it('AgentDetailPage has readiness check', () => {
     expect(agentDetailSrc).toContain('checkReadiness');
-    expect(agentDetailSrc).toContain('/readiness');
+    expect(apiClientSrc).toContain('/agents/${id}/readiness');
     expect(agentDetailSrc).toContain('Check Readiness');
   });
 

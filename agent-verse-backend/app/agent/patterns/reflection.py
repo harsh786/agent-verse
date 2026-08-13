@@ -15,7 +15,10 @@ class ReflectionPattern(AgentPattern):
 
     @property
     def description(self) -> str:
-        return "Reflection: post-execution self-critique — implemented in app.agent.graph:_node_reflect"
+        return (
+            "Reflection: post-execution self-critique"
+            " — implemented in app.agent.graph:_node_reflect"
+        )
 
     @property
     def node_name(self) -> str:

@@ -1,0 +1,398 @@
+"""SQLAlchemy metadata for the canonical durable coordination runtime."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
+
+from app.db.models import Base
+
+TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "coordination_sessions": (
+        "civilization_id",
+        "goal_id",
+        "state",
+        "policy_snapshot",
+        "budget_snapshot",
+        "deadline",
+        "cancellation_requested_at",
+        "cancellation_reason",
+        "next_sequence",
+    ),
+    "strategy_executions": (
+        "session_id",
+        "goal_id",
+        "adapter_id",
+        "adapter_version",
+        "state_schema_version",
+        "profile_snapshot",
+        "state",
+        "result",
+        "cost",
+        "idempotency_key",
+        "deadline",
+        "attempt",
+        "prior_execution_id",
+    ),
+    "context_messages": (
+        "session_id",
+        "sequence",
+        "sender_agent_id",
+        "recipient_agent_ids",
+        "message_type",
+        "content",
+        "provenance",
+        "classification",
+        "idempotency_key",
+        "expires_at",
+        "encrypted_content_reference",
+        "artifact_reference",
+        "clearance_decision",
+        "taint_chain",
+        "source_digest",
+        "compacts_from_sequence",
+        "compacts_to_sequence",
+        "trust_label",
+    ),
+    "progress_ledger_revisions": ("session_id", "objective", "state"),
+    "work_items": ("session_id", "state", "dependencies"),
+    "handoffs": (
+        "session_id",
+        "source_agent_id",
+        "target_agent_id",
+        "state",
+        "civilization_id",
+        "target_membership_snapshot",
+        "connector_allowlist",
+        "classification",
+        "result_reference",
+        "acceptance_token_digest",
+        "transition_audit",
+        "schema_version",
+        "idempotency_key",
+        "deadline",
+    ),
+    "claims": (
+        "work_item_id",
+        "owner_agent_id",
+        "lease_id",
+        "fencing_token",
+        "heartbeat_at",
+        "lease_expires_at",
+        "state",
+        "claim_attempt",
+        "reclaim_count",
+        "convergence_digest",
+    ),
+    "agent_bids": (
+        "work_item_id",
+        "bidder_agent_id",
+        "sealed",
+        "score",
+        "auction_id",
+        "bid_version",
+        "governor_attestation",
+        "sealed_payload",
+        "nonce",
+        "signature",
+        "commitment",
+        "eligible",
+        "invalid_reason",
+    ),
+    "allocations": (
+        "session_id",
+        "work_item_id",
+        "state",
+        "auction_id",
+        "fairness_adjustment",
+        "explanation",
+        "winner_lease_id",
+        "winner_fencing_token",
+        "rebid_round",
+        "fallback_state",
+        "settlement_state",
+        "idempotency_key",
+    ),
+    "thought_nodes": ("session_id", "execution_id", "safe_summary", "depth"),
+    "thought_edges": ("session_id", "execution_id", "source_node_id", "target_node_id"),
+    "strategy_artifacts": (
+        "session_id",
+        "execution_id",
+        "artifact_type",
+        "content_reference",
+    ),
+    "strategy_checkpoints": ("session_id", "execution_id", "sequence", "state_reference"),
+    "event_inbox": ("event_id", "consumer_name", "state", "fencing_token"),
+    "approval_grants": ("session_id", "action_digest", "nonce_digest", "state"),
+    "budget_accounts": ("session_id", "ceiling", "reserved", "committed"),
+    "budget_reservations": ("session_id", "account_id", "amount", "state"),
+    "budget_entries": ("session_id", "account_id", "entry_type", "amount"),
+    "coordination_events": (
+        "session_id",
+        "sequence",
+        "schema_version",
+        "event_type",
+        "occurred_at",
+        "correlation_id",
+        "causation_id",
+        "idempotency_key",
+        "classification",
+        "expires_at",
+        "payload",
+    ),
+    "coordination_outbox": (
+        "event_id",
+        "session_id",
+        "stream",
+        "payload",
+        "state",
+        "attempt_count",
+        "available_at",
+        "claim_owner",
+        "claimed_at",
+        "published_at",
+        "last_error",
+    ),
+    "coordination_dead_letters": ("event_id", "session_id", "payload", "replay_status"),
+    "coordination_consumptions": ("event_id", "consumer_name", "outcome", "consumed_at"),
+    "moa_layers": (
+        "session_id",
+        "strategy_execution_id",
+        "layer_index",
+        "aggregator_deployment_id",
+        "deployment_ids",
+        "quorum",
+        "aggregate_reference",
+        "explanation",
+        "idempotency_key",
+    ),
+    "moa_proposals": (
+        "session_id",
+        "strategy_execution_id",
+        "layer_index",
+        "participant_id",
+        "provider_id",
+        "model_family",
+        "deployment_id",
+        "region",
+        "failure_domain",
+        "prompt_input_references",
+        "proposal_reference",
+        "safe_excerpt",
+        "evidence_references",
+        "predecessor_proposal_ids",
+        "valid",
+        "rejection_reason",
+        "tokens",
+        "latency_ms",
+        "cost_usd",
+        "quality_score",
+        "attempt",
+        "idempotency_key",
+    ),
+    "camel_dialogue_state": (
+        "session_id",
+        "execution_id",
+        "role_contracts",
+        "contract_digest",
+        "phase",
+        "turn_count",
+        "termination_checks",
+        "idempotency_key",
+    ),
+    "generative_agent_state": (
+        "session_id",
+        "execution_id",
+        "persona_id",
+        "persona_version",
+        "simulation_time",
+        "reflection_cursor",
+        "plan_cursor",
+        "event_count",
+        "state",
+        "idempotency_key",
+    ),
+    "swarm_gossip_messages": (
+        "session_id",
+        "civilization_id",
+        "event_id",
+        "origin_agent_id",
+        "origin_credential_digest",
+        "message_type",
+        "payload_digest",
+        "hops_remaining",
+        "expires_at",
+        "idempotency_key",
+    ),
+    "task_auctions": (
+        "session_id",
+        "work_item_id",
+        "round_number",
+        "state",
+        "deadline",
+        "scoring_policy_version",
+        "announcement",
+        "unseal_authority",
+        "unsealed_at",
+        "winner_agent_id",
+        "winner_fencing_token",
+        "idempotency_key",
+    ),
+}
+
+INTEGER_COLUMNS = frozenset(
+    {
+        "next_sequence",
+        "sequence",
+        "schema_version",
+        "state_schema_version",
+        "fencing_token",
+        "depth",
+        "attempt",
+        "attempt_count",
+        "compacts_from_sequence",
+        "compacts_to_sequence",
+        "layer_index",
+        "quorum",
+        "tokens",
+        "latency_ms",
+        "quality_score",
+        "claim_attempt",
+        "reclaim_count",
+        "bid_version",
+        "winner_fencing_token",
+        "rebid_round",
+        "turn_count",
+        "persona_version",
+        "reflection_cursor",
+        "plan_cursor",
+        "event_count",
+        "hops_remaining",
+        "round_number",
+    }
+)
+NULLABLE_COLUMNS = frozenset(
+    {
+        "cancellation_reason",
+        "prior_execution_id",
+        "result_reference",
+        "encrypted_content_reference",
+        "artifact_reference",
+        "compacts_from_sequence",
+        "compacts_to_sequence",
+        "aggregate_reference",
+        "rejection_reason",
+        "convergence_digest",
+        "invalid_reason",
+        "auction_id",
+        "winner_lease_id",
+        "fallback_state",
+        "settlement_state",
+        "winner_agent_id",
+        "unsealed_at",
+        "winner_fencing_token",
+    }
+)
+NUMERIC_COLUMNS = frozenset(
+    {
+        "score",
+        "cost",
+        "ceiling",
+        "reserved",
+        "committed",
+        "amount",
+        "fairness_adjustment",
+    }
+)
+BOOLEAN_COLUMNS = frozenset({"sealed", "valid", "eligible"})
+JSON_COLUMNS = frozenset(
+    {
+        "policy_snapshot",
+        "budget_snapshot",
+        "profile_snapshot",
+        "result",
+        "content",
+        "recipient_agent_ids",
+        "provenance",
+        "dependencies",
+        "payload",
+        "target_membership_snapshot",
+        "connector_allowlist",
+        "transition_audit",
+        "taint_chain",
+        "deployment_ids",
+        "explanation",
+        "prompt_input_references",
+        "evidence_references",
+        "predecessor_proposal_ids",
+        "role_contracts",
+        "termination_checks",
+        "announcement",
+    }
+)
+DATETIME_COLUMNS = frozenset(
+    {
+        "deadline",
+        "cancellation_requested_at",
+        "expires_at",
+        "occurred_at",
+        "available_at",
+        "claimed_at",
+        "published_at",
+        "consumed_at",
+        "heartbeat_at",
+        "lease_expires_at",
+        "simulation_time",
+        "unsealed_at",
+    }
+)
+
+
+def _domain_column(name: str) -> sa.Column[Any]:
+    nullable = name in NULLABLE_COLUMNS
+    if name in INTEGER_COLUMNS:
+        return sa.Column(name, sa.BigInteger(), nullable=nullable, server_default="0")
+    if name in NUMERIC_COLUMNS:
+        return sa.Column(name, sa.Numeric(18, 6), nullable=False, server_default="0")
+    if name in BOOLEAN_COLUMNS:
+        return sa.Column(name, sa.Boolean(), nullable=False, server_default=sa.false())
+    if name in JSON_COLUMNS:
+        return sa.Column(name, JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb"))
+    if name in DATETIME_COLUMNS:
+        return sa.Column(name, sa.DateTime(timezone=True), nullable=True)
+    return sa.Column(name, sa.Text(), nullable=nullable)
+
+
+COORDINATION_TABLES: dict[str, sa.Table] = {}
+for _table_name, _domain_columns in TABLE_COLUMNS.items():
+    COORDINATION_TABLES[_table_name] = sa.Table(
+        _table_name,
+        Base.metadata,
+        sa.Column("id", sa.String(32), primary_key=True),
+        sa.Column(
+            "tenant_id",
+            sa.String(32),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        *(_domain_column(column_name) for column_name in _domain_columns),
+        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Index(f"ix_{_table_name}_tenant", "tenant_id"),
+    )
+
+
+__all__ = ["COORDINATION_TABLES", "TABLE_COLUMNS"]

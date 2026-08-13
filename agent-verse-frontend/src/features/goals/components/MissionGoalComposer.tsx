@@ -48,6 +48,21 @@ interface ModelsResponse {
   models?: ModelInfo[];
 }
 
+const LIMIT_FIELDS = [
+  ['calls', 'Calls'], ['nodes', 'Nodes'], ['edges', 'Edges'], ['depth', 'Depth'],
+  ['fan_out', 'Fan-out'], ['rounds', 'Rounds'], ['tokens', 'Tokens'],
+  ['duration_seconds', 'Duration (s)'], ['cost_usd', 'Cost (USD)'],
+] as const;
+
+type LimitName = (typeof LIMIT_FIELDS)[number][0];
+
+interface StrategyOption {
+  strategy_id: string;
+  derived_state: string;
+  ready?: boolean;
+  certified?: boolean;
+}
+
 export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -60,6 +75,8 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
   const [showOptions, setShowOptions] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [strategyOverride, setStrategyOverride] = useState('');
+  const [patternLimits, setPatternLimits] = useState<Partial<Record<LimitName, string>>>({});
 
   const { data: agents = [] } = useQuery({
     queryKey: ['agents-composer'],
@@ -78,6 +95,11 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
       apiFetch<ModelsResponse>('/models?capability=text_generation&limit=1').catch(() => null),
     staleTime: 5 * 60_000,
   });
+  const { data: strategyCatalogue } = useQuery({
+    queryKey: ['strategy-catalogue'],
+    queryFn: () => apiFetch<{ strategies: StrategyOption[] }>('/strategies'),
+    staleTime: 5 * 60_000,
+  });
 
   const submit = useMutation({
     mutationFn: () => {
@@ -87,12 +109,19 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
         agentId !== 'auto' ? agentId :
         defaultAgentId !== 'auto' ? defaultAgentId :
         undefined;
+      const limits = Object.fromEntries(
+        Object.entries(patternLimits)
+          .filter(([, value]) => value !== '')
+          .map(([name, value]) => [name, Number(value)]),
+      );
       return goalsApi.submit({
         goal,
         dry_run: dryRun,
         agent_id: resolvedAgentId,
         workflow_mode: workflowMode,
         attachments: attachments.length > 0 ? attachments : undefined,
+        ...(strategyOverride ? { strategy_override: strategyOverride } : {}),
+        ...(Object.keys(limits).length > 0 ? { pattern_limits: limits } : {}),
       });
     },
     onSuccess: (res) => {
@@ -251,6 +280,30 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
                 ))}
               </div>
             </div>
+
+            <div className="flex items-center gap-3">
+              <label htmlFor="strategy-override" className="w-20 shrink-0 text-xs text-muted-foreground">Runtime</label>
+              <select id="strategy-override" value={strategyOverride} onChange={(event) => setStrategyOverride(event.target.value)} className="flex-1 rounded-lg border border-input bg-background px-3 py-1.5 text-xs">
+                <option value="">Automatic strategy</option>
+                {(strategyCatalogue?.strategies ?? []).map((strategy) => (
+                  <option key={strategy.strategy_id} value={strategy.strategy_id} disabled={strategy.ready === false}>
+                    {strategy.strategy_id} · {strategy.derived_state} · {strategy.ready === false ? 'not ready' : 'ready'} · {strategy.certified ? 'certified' : 'uncertified'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <fieldset>
+              <legend className="text-xs text-muted-foreground">Optional execution limits</legend>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {LIMIT_FIELDS.map(([name, label]) => (
+                  <label key={name} className="text-[11px] text-muted-foreground">
+                    {label}
+                    <input type="number" min="0" step={name === 'cost_usd' ? '0.01' : '1'} value={patternLimits[name] ?? ''} onChange={(event) => setPatternLimits((current) => ({ ...current, [name]: event.target.value }))} className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs text-foreground" />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
 
             {/* Dry run */}
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.agent.structured_plan import StructuredPlan
 from app.agent.workflow_planner import (
     WorkflowPlan,
     WorkflowPlanner,
@@ -251,14 +252,13 @@ async def test_workflow_planner_invalid_json_falls_back() -> None:
 
 
 async def test_workflow_planner_json_without_steps_falls_back() -> None:
-    # When LLM returns JSON without "steps" key, from_dict returns an empty plan
-    # (no exception raised, so fallback is NOT triggered — empty plan is returned).
+    # A JSON object without steps is malformed planner output. The canonical
+    # planner contract remains StructuredPlan, including fallback paths.
     fake = FakeProvider(responses=['{"other_key": "value"}'])
     planner = WorkflowPlanner(provider=fake)
     plan = await planner.plan("My goal", _CTX)
-    # from_dict with missing "steps" key returns an empty WorkflowPlan (not heuristic fallback)
-    assert isinstance(plan, WorkflowPlan)
-    assert plan.goal == "My goal"
+    assert isinstance(plan, StructuredPlan)
+    assert len(plan.steps) == 0
 
 
 async def test_workflow_planner_with_tool_context() -> None:
@@ -290,6 +290,7 @@ async def test_workflow_planner_tool_context_exception_handled() -> None:
 async def test_heuristic_plan_structure() -> None:
     planner = WorkflowPlanner(provider=None)
     plan = planner._heuristic_plan("Specific goal text")
-    assert plan.goal == "Specific goal text"
+    assert isinstance(plan, StructuredPlan)
     assert plan.steps[0].id == "s1"
+    assert plan.steps[0].description == "Specific goal text"
     assert plan.steps[0].estimated_minutes == 5

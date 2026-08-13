@@ -2,7 +2,16 @@
 
 from agentverse.client import AgentVerseClient
 from agentverse.exceptions import AgentVerseError, AuthError, GoalFailedError, GoalTimeoutError
-from agentverse.models import Agent, Connector, Goal, GoalEvent, GoalStatus
+from agentverse.models import (
+    Agent,
+    Connector,
+    CoordinationLayerPage,
+    CoordinationEvent,
+    CoordinationMessagePage,
+    Goal,
+    GoalEvent,
+    GoalStatus,
+)
 
 __all__ = [
     "AgentVerseClient",
@@ -11,6 +20,9 @@ __all__ = [
     "GoalStatus",
     "Agent",
     "Connector",
+    "CoordinationLayerPage",
+    "CoordinationEvent",
+    "CoordinationMessagePage",
     "AgentVerseError",
     "AuthError",
     "GoalFailedError",

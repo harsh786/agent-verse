@@ -18,6 +18,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return val in ("true", "1", "yes", "on") if val else default
 
 
+def _env_set(name: str) -> frozenset[str]:
+    return frozenset(
+        item.strip() for item in os.getenv(name, "").split(",") if item.strip()
+    )
+
+
 @dataclass
 class RuntimeFlags:
     # P0 flags
@@ -54,6 +60,9 @@ class RuntimeFlags:
     isolated_execution_required: bool = False
     isolated_execution_local_runner: bool = False
     isolated_execution_kubernetes_runner: bool = False
+    strategy_runtime_v2_shadow: bool = False
+    strategy_runtime_v2_tenant_allowlist: frozenset[str] = frozenset()
+    strategy_runtime_v2_kill_switch: bool = False
 
     @classmethod
     def from_env(cls) -> RuntimeFlags:
@@ -82,6 +91,13 @@ class RuntimeFlags:
             isolated_execution_required=_bool_env("ISOLATED_EXECUTION_REQUIRED"),
             isolated_execution_local_runner=_bool_env("ISOLATED_EXECUTION_LOCAL_RUNNER"),
             isolated_execution_kubernetes_runner=_bool_env("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
+            strategy_runtime_v2_shadow=_bool_env("STRATEGY_RUNTIME_V2_SHADOW"),
+            strategy_runtime_v2_tenant_allowlist=_env_set(
+                "STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"
+            ),
+            strategy_runtime_v2_kill_switch=_bool_env(
+                "STRATEGY_RUNTIME_V2_KILL_SWITCH"
+            ),
         )
 
 
@@ -113,6 +129,13 @@ def get_runtime_flags() -> RuntimeFlags:
         isolated_execution_required=_env_bool("ISOLATED_EXECUTION_REQUIRED"),
         isolated_execution_local_runner=_env_bool("ISOLATED_EXECUTION_LOCAL_RUNNER"),
         isolated_execution_kubernetes_runner=_env_bool("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
+        strategy_runtime_v2_shadow=_env_bool("STRATEGY_RUNTIME_V2_SHADOW"),
+        strategy_runtime_v2_tenant_allowlist=_env_set(
+            "STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"
+        ),
+        strategy_runtime_v2_kill_switch=_env_bool(
+            "STRATEGY_RUNTIME_V2_KILL_SWITCH"
+        ),
     )
     # Master flag enables all granular flags
     if flags.dynamic_orchestration:

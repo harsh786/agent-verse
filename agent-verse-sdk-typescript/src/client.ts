@@ -5,6 +5,9 @@ import type {
   ConnectorSpec,
   ConnectorTestResult,
   ConsentRecord,
+  CoordinationLayerPage,
+  CoordinationEvent,
+  CoordinationMessagePage,
   CostMetrics,
   CreateAgentRequest,
   CreateScheduleRequest,
@@ -14,17 +17,20 @@ import type {
   GoalEvent,
   GoalMetrics,
   GoalTimeline,
+  HandoffTransitionRequest,
   GoldenTask,
   Memory,
   RolloutGateResult,
   Schedule,
   SearchResult,
+  SealedBidRequest,
   SimulationResult,
   SubmitGoalOptions,
   ToolReliabilityStats,
   UpdateAgentRequest,
 } from './types.js';
 import { AgentVerseError, AuthError, GoalFailedError, GoalTimeoutError, NotFoundError } from './errors.js';
+import { parseSseStream } from './streaming.js';
 
 export class AgentVerseClient {
   private readonly baseUrl: string;
@@ -42,11 +48,16 @@ export class AgentVerseClient {
     };
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const res = await fetch(url, {
       method,
-      headers: this.headers,
+      headers: { ...this.headers, ...extraHeaders },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
@@ -70,6 +81,9 @@ export class AgentVerseClient {
       agent_id: options.agent_id,
       persistence_mode: options.persistence_mode ?? false,
       workflow_mode: options.workflow_mode ?? 'single_agent',
+      strategy_override: options.strategy_override,
+      auxiliary_strategies: options.auxiliary_strategies ?? [],
+      pattern_limits: options.pattern_limits,
     });
   }
 
@@ -147,28 +161,121 @@ export class AgentVerseClient {
     const url = `${this.baseUrl}/goals/${goalId}/stream`;
     const res = await fetch(url, { headers: this.headers });
     if (!res.ok || !res.body) throw new AgentVerseError(`Stream failed: ${res.status}`);
+    for await (const frame of parseSseStream<GoalEvent>(res)) yield frame.data;
+  }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+  // ── Coordination sessions ───────────────────────────────────────────────
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split('\n\n');
-      buffer = frames.pop() ?? '';
-      for (const frame of frames) {
-        for (const line of frame.split('\n')) {
-          if (line.startsWith('data: ')) {
-            try {
-              yield JSON.parse(line.slice(6)) as GoalEvent;
-            } catch {
-              // skip malformed
-            }
-          }
-        }
-      }
+  async listCoordinationMessages(
+    sessionId: string,
+    options: { afterSequence?: number; limit?: number } = {},
+  ): Promise<CoordinationMessagePage> {
+    const query = new URLSearchParams({
+      after_sequence: String(options.afterSequence ?? 0),
+      limit: String(options.limit ?? 100),
+    });
+    return this.request('GET', `/api/v1/coordination/sessions/${sessionId}/messages?${query}`);
+  }
+
+  async getMagenticLedger(sessionId: string): Promise<Record<string, unknown>> {
+    return this.coordinationView(sessionId, 'ledger');
+  }
+
+  async listMoaLayers(
+    sessionId: string,
+    options: { afterLayer?: number; limit?: number } = {},
+  ): Promise<CoordinationLayerPage> {
+    const query = new URLSearchParams({
+      after_layer: String(options.afterLayer ?? -1),
+      limit: String(options.limit ?? 50),
+    });
+    return this.request('GET', `/api/v1/coordination/sessions/${sessionId}/moa/layers?${query}`);
+  }
+
+  private coordinationView(sessionId: string, suffix: string): Promise<Record<string, unknown>> {
+    return this.request('GET', `/api/v1/coordination/sessions/${sessionId}/${suffix}`);
+  }
+
+  async getCamelState(sessionId: string): Promise<Record<string, unknown>> {
+    return this.coordinationView(sessionId, 'camel');
+  }
+
+  async getGenerativeState(sessionId: string): Promise<Record<string, unknown>> {
+    return this.coordinationView(sessionId, 'generative');
+  }
+
+  async getSwarmTopology(sessionId: string): Promise<Record<string, unknown>> {
+    return this.coordinationView(sessionId, 'swarm');
+  }
+
+  async getAuctionState(sessionId: string): Promise<Record<string, unknown>> {
+    return this.coordinationView(sessionId, 'auction');
+  }
+
+  async createHandoff(
+    sessionId: string,
+    request: Record<string, unknown>,
+    idempotencyKey: string,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      'POST',
+      `/api/v1/coordination/sessions/${sessionId}/handoffs`,
+      request,
+      { 'Idempotency-Key': idempotencyKey },
+    );
+  }
+
+  async transitionHandoff(
+    sessionId: string,
+    handoffId: string,
+    action: 'accept' | 'reject' | 'cancel',
+    request: HandoffTransitionRequest,
+    idempotencyKey: string,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      'POST',
+      `/api/v1/coordination/sessions/${sessionId}/handoffs/${handoffId}/${action}`,
+      request,
+      { 'Idempotency-Key': idempotencyKey },
+    );
+  }
+
+  async submitSealedBid(
+    sessionId: string,
+    request: SealedBidRequest,
+    idempotencyKey: string,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      'POST',
+      `/api/v1/coordination/sessions/${sessionId}/auction/bids`,
+      request,
+      { 'Idempotency-Key': idempotencyKey },
+    );
+  }
+
+  async *streamCoordinationEvents(
+    sessionId: string,
+    afterSequence = 0,
+    options: { signal?: AbortSignal } = {},
+  ): AsyncGenerator<CoordinationEvent> {
+    const path = `/api/v1/coordination/sessions/${sessionId}/events?after_sequence=${afterSequence}`;
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      headers: { ...this.headers, 'Last-Event-ID': String(afterSequence) },
+      signal: options.signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new AgentVerseError(`Coordination stream failed: ${response.status}`);
+    }
+    const seen = new Set<string>();
+    let cursor = afterSequence;
+    for await (const frame of parseSseStream<CoordinationEvent>(response, {
+      signal: options.signal,
+      strict: true,
+    })) {
+      if (seen.has(frame.data.event_id) || frame.data.sequence <= cursor) continue;
+      seen.add(frame.data.event_id);
+      cursor = frame.data.sequence;
+      yield frame.data;
     }
   }
 

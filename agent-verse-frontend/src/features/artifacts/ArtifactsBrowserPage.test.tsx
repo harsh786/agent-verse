@@ -76,8 +76,8 @@ describe('ArtifactsBrowserPage', () => {
     renderPage();
     await waitFor(() => screen.getByText('report.json'));
     await userEvent.type(screen.getByLabelText(/search artifacts/i), 'screenshot');
-    expect(screen.queryByText('report.json')).not.toBeInTheDocument();
-    expect(screen.getByText('screenshot.png')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('screenshot.png')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('report.json')).not.toBeInTheDocument());
   });
 
   test('type filter pills render', async () => {

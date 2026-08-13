@@ -1,6 +1,21 @@
 """Tests for HIGH-3: builtin_handler process-local registry survives Redis round-trip."""
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_builtin_registry():
+    """Restore _BUILTIN_HANDLER_REGISTRY to its pre-module state after all
+    tests in this file run.  Without this, server IDs registered here (e.g.
+    'srv-a', 'srv-b') leak into subsequent test modules and cause
+    discover_tools() to treat ordinary mock servers as builtin handlers."""
+    from app.mcp.registry import _BUILTIN_HANDLER_REGISTRY
+    before = dict(_BUILTIN_HANDLER_REGISTRY)
+    yield
+    _BUILTIN_HANDLER_REGISTRY.clear()
+    _BUILTIN_HANDLER_REGISTRY.update(before)
+
 
 def test_builtin_handler_survives_registry_round_trip():
     """Built-in handler must be recoverable after Redis serialization."""

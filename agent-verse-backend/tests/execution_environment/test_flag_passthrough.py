@@ -49,14 +49,14 @@ def test_settings_isolated_execution_default_false() -> None:
     assert s.isolated_execution_kubernetes_runner is False
 
 
-async def test_agent_loop_runs_unchanged_when_flags_off() -> None:
-    """AgentLoop behaviour is identical to before — flags off means zero change."""
-    from app.agent.loop import AgentLoop
+async def test_agent_graph_runs_unchanged_when_flags_off() -> None:
+    """The canonical graph runs in process when isolation flags are disabled."""
+    from app.agent.graph import AgentGraph
     from app.agent.state import GoalStatus
     from app.providers.fake import FakeProvider
     from app.tenancy.context import PlanTier, TenantContext
 
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=FakeProvider(responses=['{"steps": ["Step 1: Do the thing"]}']),
         executor=FakeProvider(responses=["Done"]),
         verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
@@ -141,8 +141,8 @@ async def test_goal_service_does_not_use_isolation_when_flag_off(
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
 
     # Patch _make_agent_loop_for_tenant to return a known FakeProvider loop
-    from app.agent.loop import AgentLoop
-    fake_loop = AgentLoop(
+    from app.agent.graph import AgentGraph
+    fake_loop = AgentGraph(
         planner=FakeProvider(responses=['{"steps": ["step1"]}']),
         executor=FakeProvider(responses=["ok"]),
         verifier=FakeProvider(responses=['{"success": true, "reason": "done"}']),

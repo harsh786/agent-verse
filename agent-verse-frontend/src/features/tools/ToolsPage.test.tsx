@@ -4,7 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { toolsApi } from '@/lib/api/client';
 import { ToolsPage } from './ToolsPage';
+
+const requestUrl = (input: RequestInfo | URL): string =>
+  input instanceof Request ? input.url : String(input);
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -52,16 +56,12 @@ describe('ToolsPage', () => {
   });
 
   test('runs code and shows stdout on success', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).includes('/tools/execute-code'))
-        return new Response(
-          JSON.stringify({ stdout: 'hello world\n', stderr: '', exit_code: 0, success: true, timed_out: false, execution_time_ms: 42 }),
-          { status: 200 }
-        );
-      return new Response('[]', { status: 200 });
+    vi.spyOn(toolsApi, 'executeCode').mockResolvedValue({
+      stdout: 'hello world\n', stderr: '', exit_code: 0, success: true,
+      timed_out: false, execution_time_ms: 42,
     });
     renderPage();
-    await userEvent.type(screen.getByLabelText(/^code$/i), "print('hello world')");
+    await userEvent.click(screen.getByTitle(/load template/i));
     await userEvent.click(screen.getByRole('button', { name: /run code/i }));
     // stdout is in a <pre> tag, not the textarea — use getAllByText and check for pre
     const elements = await screen.findAllByText(/hello world/);
@@ -71,32 +71,24 @@ describe('ToolsPage', () => {
   });
 
   test('shows stderr section when code has errors', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).includes('/tools/execute-code'))
-        return new Response(
-          JSON.stringify({ stdout: '', stderr: 'SyntaxError: invalid syntax', exit_code: 1, success: false, timed_out: false, execution_time_ms: 12 }),
-          { status: 200 }
-        );
-      return new Response('[]', { status: 200 });
+    vi.spyOn(toolsApi, 'executeCode').mockResolvedValue({
+      stdout: '', stderr: 'SyntaxError: invalid syntax', exit_code: 1, success: false,
+      timed_out: false, execution_time_ms: 12,
     });
     renderPage();
-    await userEvent.type(screen.getByLabelText(/^code$/i), 'invalid{{{{');
+    await userEvent.click(screen.getByTitle(/load template/i));
     await userEvent.click(screen.getByRole('button', { name: /run code/i }));
     expect(await screen.findByText(/SyntaxError/)).toBeInTheDocument();
     expect(screen.getByText(/stderr/i)).toBeInTheDocument();
   });
 
   test('adds to execution history after run', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).includes('/tools/execute-code'))
-        return new Response(
-          JSON.stringify({ stdout: 'ok', stderr: '', exit_code: 0, success: true, timed_out: false, execution_time_ms: 5 }),
-          { status: 200 }
-        );
-      return new Response('[]', { status: 200 });
+    vi.spyOn(toolsApi, 'executeCode').mockResolvedValue({
+      stdout: 'ok', stderr: '', exit_code: 0, success: true,
+      timed_out: false, execution_time_ms: 5,
     });
     renderPage();
-    await userEvent.type(screen.getByLabelText(/^code$/i), 'print("ok")');
+    await userEvent.click(screen.getByTitle(/load template/i));
     await userEvent.click(screen.getByRole('button', { name: /run code/i }));
     await screen.findByText('ok');
     expect(screen.getByText(/execution history/i)).toBeInTheDocument();
@@ -104,7 +96,7 @@ describe('ToolsPage', () => {
 
   test('switches to file manager tab and shows workspace', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).includes('/tools/files'))
+      if (requestUrl(input).includes('/tools/files'))
         return new Response(
           JSON.stringify([{ name: 'hello.py', path: 'hello.py', type: 'file', size_bytes: 22, modified_at: 0 }]),
           { status: 200 }
@@ -120,7 +112,7 @@ describe('ToolsPage', () => {
 
   test('file manager shows empty state when no files', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).includes('/tools/files'))
+      if (requestUrl(input).includes('/tools/files'))
         return new Response('[]', { status: 200 });
       return new Response('[]', { status: 200 });
     });
@@ -131,7 +123,7 @@ describe('ToolsPage', () => {
 
   test('email composer posts correct body to /tools/email/send', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      if (String(input).includes('/tools/email/send') && init?.method === 'POST')
+      if (requestUrl(input).includes('/tools/email/send') && init?.method === 'POST')
         return new Response(JSON.stringify({ success: true, status: 'sent' }), { status: 200 });
       return new Response('[]', { status: 200 });
     });
@@ -143,7 +135,7 @@ describe('ToolsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /send email/i }));
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(
-        ([u, i]) => String(u).includes('/tools/email/send') && (i as RequestInit)?.method === 'POST'
+        ([u, i]) => requestUrl(u).includes('/tools/email/send') && (i as RequestInit)?.method === 'POST'
       );
       expect(call).toBeTruthy();
       const body = JSON.parse(String((call![1] as RequestInit).body));
@@ -161,7 +153,7 @@ describe('ToolsPage', () => {
 
   test('sent items appear after successful send', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      if (String(input).includes('/tools/email/send') && init?.method === 'POST')
+      if (requestUrl(input).includes('/tools/email/send') && init?.method === 'POST')
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       return new Response('[]', { status: 200 });
     });

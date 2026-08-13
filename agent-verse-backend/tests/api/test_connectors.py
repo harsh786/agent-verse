@@ -69,7 +69,7 @@ def test_register_connector_returns_201() -> None:
         "/connectors",
         json={
             "name": "github",
-            "url": "http://localhost:9000",
+            "url": "https://api.github.com",
             "auth_type": "bearer",
             "auth_config": {"token": "ghp_xxx"},
         },
@@ -88,7 +88,7 @@ async def test_register_connector_stores_secret_refs_not_raw_values() -> None:
         "/connectors",
         json={
             "name": "github",
-            "url": "http://localhost:9000",
+            "url": "https://api.github.com",
             "auth_type": "bearer",
             "auth_config": {"token": "ghp_secret"},
         },
@@ -123,7 +123,7 @@ async def test_register_connector_stores_sensitive_custom_header_refs() -> None:
         "/connectors",
         json={
             "name": "custom",
-            "url": "https://custom.example.com/mcp",
+            "url": "https://api.github.com/mcp",
             "auth_type": "custom_header",
             "auth_config": auth_config,
         },
@@ -470,7 +470,7 @@ def test_test_connector_reports_auth_failure(monkeypatch: Any) -> None:
     reg = AsyncMock()
     reg.get.return_value = MCPServerConfig(
         name="myservice",
-        url="https://myservice.example.com",
+        url="https://api.github.com/myservice",
         auth_type="api_key",
         auth_config={"header_name": "X-API-Key", "api_key": "secret"},
     )
@@ -556,7 +556,7 @@ def test_test_connector_uses_mcp_initialize_for_mcp_endpoint(monkeypatch: Any) -
     reg = AsyncMock()
     reg.get.return_value = MCPServerConfig(
         name="myservice",
-        url="https://myservice.example.com/api",
+        url="https://api.github.com/myservice",
         auth_type="basic",
         auth_config={"username": "user@example.com", "password": "token"},
     )
@@ -565,7 +565,7 @@ def test_test_connector_uses_mcp_initialize_for_mcp_endpoint(monkeypatch: Any) -
 
     assert resp.status_code == 200
     assert resp.json()["reachable"] is True
-    assert seen.get("url") == "https://myservice.example.com/api"
+    assert seen.get("url") == "https://api.github.com/myservice"
     assert seen.get("method") == "GET"
 
 

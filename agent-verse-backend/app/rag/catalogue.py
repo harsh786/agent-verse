@@ -149,6 +149,7 @@ class RAGCapabilityCatalogueEntry:
     strategy: RAGStrategy
     adapter_path: str
     required_dependencies: tuple[RAGRuntimeDependency, ...]
+    adapter_version: str = "1.0.0"
     readiness_predicate: ReadinessPredicate = _required_dependencies_ready
 
     @property

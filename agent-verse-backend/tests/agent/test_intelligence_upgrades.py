@@ -175,13 +175,15 @@ async def test_node_plan_uses_planning_model():
         model_router=router, enable_cot=False, enable_reflection=False,
     )
     tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
-    agent_state = AgentState(goal="test goal", tenant_ctx=tenant)
+    agent_state = AgentState(
+        goal="Analyze architecture, compare alternatives, and design migration",
+        tenant_ctx=tenant,
+    )
     state = {
         "agent_state": agent_state,
         "tenant_ctx": tenant,
         "rag_context": "",
         "iteration": 0,
-        "cot_reasoning": "",
     }
     await graph._node_plan(state)
     assert len(captured_requests) >= 1
@@ -194,8 +196,8 @@ async def test_node_plan_uses_planning_model():
 
 
 @pytest.mark.asyncio
-async def test_node_think_produces_cot_reasoning():
-    """_node_think returns cot_reasoning in state dict."""
+async def test_node_think_produces_safe_reasoning_evidence():
+    """_node_think never returns or checkpoints private provider reasoning."""
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
@@ -211,13 +213,14 @@ async def test_node_think_produces_cot_reasoning():
     agent_state = AgentState(goal="do complex task", tenant_ctx=tenant)
     state = {"agent_state": agent_state, "tenant_ctx": tenant, "rag_context": "", "iteration": 0}
     result = await graph._node_think(state)
-    assert "cot_reasoning" in result
-    assert result["cot_reasoning"] == thinking_text
+    assert "cot_reasoning" not in result
+    assert thinking_text not in str(result)
+    assert result["reasoning_evidence"]["strategy_id"] == "chain_of_thought"
 
 
 @pytest.mark.asyncio
-async def test_node_plan_uses_cot_reasoning():
-    """_node_plan injects cot_reasoning into the planner user message."""
+async def test_node_plan_uses_safe_deliberation_directive():
+    """_node_plan uses aggregate evidence without replaying private reasoning."""
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
@@ -242,11 +245,16 @@ async def test_node_plan_uses_cot_reasoning():
         "tenant_ctx": tenant,
         "rag_context": "",
         "iteration": 0,
-        "cot_reasoning": "Step-by-step: need tool A then tool B",
+        "reasoning_evidence": {
+            "strategy_id": "chain_of_thought",
+            "status": "completed",
+            "call_count": 1,
+        },
     }
     await graph._node_plan(state)
     user_msgs = [m.content for m in captured_messages if m.role == "user"]
-    assert any("Step-by-step" in str(m) for m in user_msgs)
+    assert any("private reasoning is not retained" in str(m) for m in user_msgs)
+    assert all("tool A then tool B" not in str(m) for m in user_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +293,10 @@ async def test_node_reflect_sets_verification_feedback():
     assert "agent_state" in result
     updated = result["agent_state"]
     assert updated.verification_feedback
-    assert "ROOT_CAUSE" in updated.verification_feedback or "FIX" in updated.verification_feedback
+    assert updated.verification_feedback == "Reflection identified categories: accuracy"
+    assert reflection not in updated.verification_feedback
+    evidence = updated.context["reasoning_evidence"][-1]
+    assert evidence["critique_categories"] == ["accuracy"]
 
 
 # ---------------------------------------------------------------------------

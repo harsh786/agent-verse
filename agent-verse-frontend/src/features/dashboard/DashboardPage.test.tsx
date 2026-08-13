@@ -52,7 +52,7 @@ describe('DashboardPage', () => {
   test('shows Mission Control page title and subtitle', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderDashboardPage();
-    expect(screen.getByText('Mission Control')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Mission Control' })).toBeInTheDocument();
   });
 
   test('renders goal entries in activity feed when goals exist', async () => {

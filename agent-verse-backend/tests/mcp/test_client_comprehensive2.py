@@ -39,6 +39,18 @@ from app.tenancy.context import PlanTier, TenantContext
 T = TenantContext(tenant_id="tenant-1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
 
 
+@pytest.fixture(autouse=True)
+def _bypass_ssrf(monkeypatch):
+    """Disable SSRF hostname-resolution guard for MCP client tests.
+    Sub-domains of example.com (e.g. a.example.com, srv.example.com) do not
+    resolve in the test environment, causing the SSRF guard to fail-closed.
+    Tests in this module mock httpx and don't make real network calls, so the
+    guard is redundant here.
+    """
+    import app.mcp.client as _mcp_client
+    monkeypatch.setattr(_mcp_client, "assert_public_url", lambda *_a, **_kw: None)
+
+
 def _make_registry(cfg: MCPServerConfig | None = None) -> MCPRegistry:
     registry = MagicMock(spec=MCPRegistry)
     registry.get = AsyncMock(return_value=cfg)

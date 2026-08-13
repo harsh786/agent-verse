@@ -9,7 +9,13 @@ from __future__ import annotations
 import pytest
 
 from app.execution_environment.envelope import build_envelope, verify_envelope
-from app.execution_environment.models import NetworkPolicy, RunnerType
+from app.execution_environment.models import (
+    CodeExecutionWorkload,
+    CodeWorkloadMode,
+    ExecutionKind,
+    NetworkPolicy,
+    RunnerType,
+)
 
 
 def test_hmac_covers_network_policy() -> None:
@@ -128,3 +134,23 @@ def test_hmac_skipping_expiry_check() -> None:
     assert verify_envelope(old_envelope, max_age_seconds=0), (
         "With max_age_seconds=0 the expiry check should be skipped"
     )
+
+
+def test_hmac_covers_every_code_workload_field() -> None:
+    workload = CodeExecutionWorkload.create(
+        workload_id="workload",
+        mode=CodeWorkloadMode.PROGRAM_OF_THOUGHT,
+        source="result = 4",
+        stdin_json={"input": 2},
+        expected_output_schema={"type": "integer"},
+        requested_artifacts=("result.json",),
+    )
+    envelope = build_envelope(
+        tenant_id="tenant",
+        goal_id="goal",
+        execution_kind=ExecutionKind.CODE_INTERPRETER,
+        code_workload=workload,
+    )
+    assert verify_envelope(envelope)
+    envelope.code_workload = workload.model_copy(update={"stdin_json": {"input": 3}})
+    assert not verify_envelope(envelope)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.loop import AgentLoop
+from app.agent.graph import AgentGraph
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway
@@ -31,13 +31,13 @@ async def test_audit_trail_records_all_tool_calls() -> None:
         '{"success": true, "reason": "done"}',
     ])
     audit = AuditLog()
-    loop = AgentLoop(
+    graph = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
         audit_log=audit,
     )
-    state = await loop.run(
+    state = await graph.run(
         goal="list repos and create ticket", tenant_ctx=TENANT
     )
     # Two steps → two audit entries recorded by the loop
@@ -56,16 +56,18 @@ async def test_cost_controller_tracks_usage() -> None:
         '{"success": true, "reason": "done"}',
     ])
     cost = CostController()
-    loop = AgentLoop(
+    graph = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
         cost_controller=cost,
     )
-    state = await loop.run(goal="test cost tracking", tenant_ctx=TENANT)
+    state = await graph.run(goal="test cost tracking", tenant_ctx=TENANT)
     assert state.status.value in {"complete", "failed"}
-    # The loop charges 0.01 USD per step; one step → 0.01 tracked
-    assert cost.goal_total(state.goal_id, tenant_ctx=TENANT) == pytest.approx(0.01)
+    # The canonical graph records actual token-priced cost, not a synthetic flat fee.
+    recorded = cost.goal_total(state.goal_id, tenant_ctx=TENANT)
+    assert recorded > 0
+    assert recorded == pytest.approx(state.context["total_cost_usd"])
 
 
 # ── HITL full lifecycle ───────────────────────────────────────────────────────
@@ -159,7 +161,7 @@ async def test_policy_engine_most_restrictive_wins() -> None:
 # ── Permission matrix per-tool ────────────────────────────────────────────────
 
 async def test_permission_matrix_deny_blocks_execution() -> None:
-    """Governance check: a DENY rule causes the loop to raise PermissionError."""
+    """Governance check: a DENY rule causes the graph to raise PermissionError."""
     provider = FakeProvider(responses=[
         '{"steps": ["call restricted_tool to do something"]}',
         "should not reach here",
@@ -170,14 +172,14 @@ async def test_permission_matrix_deny_blocks_execution() -> None:
         PermissionRule(tool_name="restricted_tool", level=ActionLevel.DENY),
         tenant_ctx=TENANT,
     )
-    loop = AgentLoop(
+    graph = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
         permission_matrix=matrix,
     )
     with pytest.raises(PermissionError, match="restricted_tool"):
-        await loop.run(goal="trigger deny rule", tenant_ctx=TENANT)
+        await graph.run(goal="trigger deny rule", tenant_ctx=TENANT)
 
 
 # ── PolicyEngine wired into AgentGraph blocks execution ───────────────────────

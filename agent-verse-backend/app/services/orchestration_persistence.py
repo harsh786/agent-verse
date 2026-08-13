@@ -7,11 +7,11 @@ Degrades gracefully to in-memory when DB is not available.
 from __future__ import annotations
 
 import uuid
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.evals.runtime_scorecard import ScorecardResult
     from app.agent.state import AgentState
+    from app.evals.runtime_scorecard import ScorecardResult
     from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 
@@ -34,9 +34,9 @@ class OrchestrationPersistence:
 
     async def persist_scorecard(
         self,
-        scorecard: "ScorecardResult",
+        scorecard: ScorecardResult,
         *,
-        profile: "GoalRuntimeProfile",
+        profile: GoalRuntimeProfile,
         db: Any = None,
     ) -> None:
         """Persist RuntimeScorecard to eval_scorecards table."""
@@ -45,21 +45,41 @@ class OrchestrationPersistence:
             return
         try:
             import json
+
             from sqlalchemy import text
 
+            identity = ":".join(
+                (
+                    profile.tenant_id,
+                    scorecard.goal_id,
+                    scorecard.strategy_execution_id,
+                    scorecard.evaluator_version,
+                )
+            )
             async with effective_db() as session, session.begin():
                 await session.execute(
                     text("""
                         INSERT INTO eval_scorecards
                             (id, goal_id, tenant_id, overall_score, scores,
-                             improvement_suggestions, profile_id, created_at)
+                             improvement_suggestions, profile_id, profile_version,
+                             primary_strategy_id, primary_strategy_version,
+                             auxiliary_strategy_versions, strategy_execution_id,
+                             evaluator_version, dimension_status, evidence_references,
+                             coverage, correlation_id, created_at)
                         VALUES
                             (:id, :goal_id, :tenant_id, :overall_score,
-                             :scores::jsonb, :suggestions::jsonb, :profile_id, NOW())
-                        ON CONFLICT DO NOTHING
+                             :scores::jsonb, :suggestions::jsonb, :profile_id,
+                             :profile_version, :primary_strategy_id,
+                             :primary_strategy_version, :auxiliary_strategy_versions::jsonb,
+                             :strategy_execution_id, :evaluator_version,
+                             :dimension_status::jsonb, :evidence_references::jsonb,
+                             :coverage, :correlation_id, NOW())
+                        ON CONFLICT
+                            (tenant_id, goal_id, strategy_execution_id, evaluator_version)
+                        DO NOTHING
                     """),
                     {
-                        "id": uuid.uuid4().hex,
+                        "id": uuid.uuid5(uuid.NAMESPACE_URL, identity).hex,
                         "goal_id": scorecard.goal_id,
                         "tenant_id": profile.tenant_id,
                         "overall_score": scorecard.overall_score,
@@ -68,6 +88,18 @@ class OrchestrationPersistence:
                             getattr(scorecard, "improvement_suggestions", [])
                         ),
                         "profile_id": getattr(profile, "profile_id", None),
+                        "profile_version": scorecard.profile_version,
+                        "primary_strategy_id": scorecard.primary_strategy_id,
+                        "primary_strategy_version": scorecard.primary_strategy_version,
+                        "auxiliary_strategy_versions": json.dumps(
+                            scorecard.auxiliary_strategy_versions
+                        ),
+                        "strategy_execution_id": scorecard.strategy_execution_id,
+                        "evaluator_version": scorecard.evaluator_version,
+                        "dimension_status": json.dumps(scorecard.dimension_status),
+                        "evidence_references": json.dumps(scorecard.evidence_references),
+                        "coverage": scorecard.coverage,
+                        "correlation_id": scorecard.correlation_id,
                     },
                 )
         except Exception as exc:
@@ -77,7 +109,7 @@ class OrchestrationPersistence:
 
     async def persist_reflexion_lesson(
         self,
-        state: "AgentState",
+        state: AgentState,
         *,
         db: Any = None,
     ) -> None:
@@ -127,7 +159,7 @@ class OrchestrationPersistence:
 
     async def persist_regression_case(
         self,
-        regression_candidate: dict,
+        regression_candidate: dict[str, Any],
         *,
         db: Any = None,
     ) -> None:
@@ -137,27 +169,54 @@ class OrchestrationPersistence:
             return
         try:
             import json
-            import uuid as _uuid
+
             from sqlalchemy import text
 
+            strategy_id = str(regression_candidate.get("strategy_id", "unknown"))
+            strategy_version = str(
+                regression_candidate.get("strategy_version", "unknown")
+            )
+            profile_version = int(regression_candidate.get("profile_version", 0))
+            evaluator_version = str(
+                regression_candidate.get("evaluator_version", "unknown")
+            )
+            identity = ":".join(
+                (
+                    str(regression_candidate.get("tenant_id", "unknown")),
+                    str(regression_candidate.get("goal_id", "")),
+                    strategy_id,
+                    strategy_version,
+                    str(profile_version),
+                    evaluator_version,
+                )
+            )
             async with effective_db() as session, session.begin():
                 await session.execute(
                     text("""
-                        INSERT INTO eval_scorecards
-                            (id, goal_id, tenant_id, overall_score, scores,
-                             improvement_suggestions, profile_id, created_at)
-                        VALUES (:id, :goal_id, :tenant_id, :score, :scores::jsonb,
-                                :suggestions::jsonb, :profile_id, NOW())
-                        ON CONFLICT DO NOTHING
+                        INSERT INTO regression_cases
+                            (id, tenant_id, goal_id, strategy_id, strategy_version,
+                             profile_version, evaluator_version, dataset_version,
+                             evidence, created_at)
+                        VALUES (:id, :tenant_id, :goal_id, :strategy_id,
+                                :strategy_version, :profile_version, :evaluator_version,
+                                :dataset_version, :evidence::jsonb, NOW())
+                        ON CONFLICT
+                            (tenant_id, goal_id, strategy_id, strategy_version,
+                             profile_version, evaluator_version)
+                        DO NOTHING
                     """),
                     {
-                        "id": _uuid.uuid4().hex,
+                        "id": uuid.uuid5(uuid.NAMESPACE_URL, identity).hex,
                         "goal_id": regression_candidate.get("goal_id", ""),
                         "tenant_id": regression_candidate.get("tenant_id", "unknown"),
-                        "score": regression_candidate.get("score", 0.0),
-                        "scores": json.dumps(regression_candidate.get("scores", {})),
-                        "suggestions": json.dumps(["regression_case"]),
-                        "profile_id": regression_candidate.get("profile_id"),
+                        "strategy_id": strategy_id,
+                        "strategy_version": strategy_version,
+                        "profile_version": profile_version,
+                        "evaluator_version": evaluator_version,
+                        "dataset_version": regression_candidate.get(
+                            "dataset_version", "default-v1"
+                        ),
+                        "evidence": json.dumps(regression_candidate),
                     },
                 )
         except Exception as exc:

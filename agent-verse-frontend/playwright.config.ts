@@ -40,6 +40,11 @@ export default defineConfig({
   },
 
   projects: [
+    {
+      name: 'program-13',
+      testMatch: ['**/coordination-accessibility.spec.ts', '**/coordination-responsive.spec.ts'],
+      use: { ...devices['Desktop Chrome'] },
+    },
     // Smoke test - fast, critical paths only
     {
       name: 'smoke-live',

@@ -1,7 +1,7 @@
 """Fake in-process runner — used for unit tests and when no real runner is configured.
 
-This runner does NOT provide OS-level process isolation.  It runs the existing
-AgentLoop directly in the current asyncio event loop, which makes it suitable
+This runner does NOT provide OS-level process isolation. It runs the canonical
+AgentGraph directly in the current asyncio event loop, which makes it suitable
 for:
   - Unit tests verifying envelope construction and routing
   - CI environments without Docker or Kubernetes
@@ -20,12 +20,14 @@ import contextlib
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app.execution_environment.envelope import verify_envelope
 from app.execution_environment.events import make_forwarding_callback
 from app.execution_environment.health import AlwaysHealthyCheck, RunnerHealthCheck
 from app.execution_environment.models import (
+    CodeCancellationReceipt,
     ExecutionFailureReason,
     ExecutionRequest,
     ExecutionResult,
@@ -40,14 +42,14 @@ logger = logging.getLogger(__name__)
 class FakeRunner(BaseRunner):
     """In-process fake runner.
 
-    Runs the existing :class:`~app.agent.loop.AgentLoop` or any pre-configured
+    Runs :class:`~app.agent.graph.AgentGraph` or any pre-configured
     agent runner directly in the current process.  Isolation semantics are
     contract-validated but not OS-enforced.
 
     Args:
         agent_loop_factory: Optional callable that accepts the envelope and
             returns an object with a ``run(goal, tenant_ctx, ...)`` coroutine.
-            When ``None``, the runner constructs a minimal :class:`AgentLoop`
+            When ``None``, the runner constructs a minimal :class:`AgentGraph`
             with independent :class:`FakeProvider` instances per role (one
             instance per role — no shared state between planner/executor/verifier).
     """
@@ -63,6 +65,17 @@ class FakeRunner(BaseRunner):
     @property
     def health_check(self) -> RunnerHealthCheck:
         return AlwaysHealthyCheck(runner_type=RunnerType.FAKE.value)
+
+    async def cancel(self, workload_id: str, reason: str) -> CodeCancellationReceipt:
+        del reason
+        now = datetime.now(UTC)
+        return CodeCancellationReceipt(
+            workload_id=workload_id,
+            requested_at=now,
+            acknowledged_at=now,
+            process_group_terminated=True,
+            cleanup_state="complete",
+        )
 
     async def run(
         self,
@@ -214,17 +227,17 @@ class FakeRunner(BaseRunner):
         if self._factory is not None:
             return self._factory(envelope)
 
-        # Default: AgentLoop with separate FakeProvider per role (G-41).
+        # Default: AgentGraph with separate FakeProvider per role (G-41).
         # Each provider is given enough responses to handle up to 5 replanning
         # iterations without exhausting its response queue.
-        from app.agent.loop import AgentLoop
+        from app.agent.graph import AgentGraph
         from app.providers.fake import FakeProvider
 
         _plan_resp = ['{"steps": ["Execute the goal autonomously"]}'] * 5
         _exec_resp = ["Goal executed in isolated environment"] * 5
         _verify_resp = ['{"success": true, "reason": "Completed"}'] * 5
 
-        return AgentLoop(
+        return AgentGraph(
             planner=FakeProvider(responses=_plan_resp),
             executor=FakeProvider(responses=_exec_resp),
             verifier=FakeProvider(responses=_verify_resp),

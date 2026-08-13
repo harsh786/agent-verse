@@ -23,6 +23,21 @@ _CTX = TenantContext(tenant_id="tid-civ", plan=PlanTier.ENTERPRISE, api_key_id="
 _VALID_KEY = "av_civ_test_key"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_db_factory(monkeypatch):
+    """Prevent _get_db's lazy import fallback from resolving a live Postgres session
+    factory (colima may be running). Without this, "no DB" tests leak state across
+    cases and see rows created by other tests."""
+    import app.db.session as session_mod
+
+    def _raise(*_a, **_kw):
+        raise RuntimeError("no db configured for this test module")
+
+    monkeypatch.setattr(session_mod, "get_session_factory", _raise)
+    yield
+    # monkeypatch restores automatically on teardown
+
+
 def _make_app(civilization_enabled: bool = True, db=None, redis=None) -> FastAPI:
     app = FastAPI()
 

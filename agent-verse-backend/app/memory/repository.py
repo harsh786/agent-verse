@@ -1,0 +1,218 @@
+"""Async canonical memory repository protocol and in-memory reference adapter."""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import uuid
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Protocol
+
+from app.coordination.store import OptimisticConflictError
+from app.memory.contracts import (
+    MemoryFeedback,
+    MemoryRecallHit,
+    MemoryRecallRequest,
+    MemoryRecord,
+    MemoryWriteRequest,
+)
+
+Embedder = Callable[[str], Awaitable[tuple[float, ...]]]
+
+
+class MemoryRepository(Protocol):
+    async def write(self, request: MemoryWriteRequest) -> MemoryRecord: ...
+    async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]: ...
+    async def feedback(self, feedback: MemoryFeedback) -> MemoryRecord: ...
+    async def update_lifecycle(
+        self, tenant_id: str, memory_id: str, *, state: str, expected_version: int
+    ) -> MemoryRecord: ...
+
+
+class InMemoryMemoryRepository:
+    def __init__(self, *, embedder: Embedder | None = None, maximum_records: int = 10_000) -> None:
+        self._embedder = embedder
+        self._maximum = maximum_records
+        self._records: dict[tuple[str, str], MemoryRecord] = {}
+        self._commands: dict[tuple[str, str], MemoryRecord] = {}
+        self._feedback: dict[tuple[str, str, str], MemoryFeedback] = {}
+        self._lock = asyncio.Lock()
+
+    async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
+        command = (request.tenant_id, request.idempotency_key)
+        async with self._lock:
+            prior = self._commands.get(command)
+            if prior is not None:
+                return prior
+            if len(self._records) >= self._maximum:
+                raise RuntimeError("memory repository capacity exceeded")
+            embedding = await self._embedder(request.content) if self._embedder else None
+            if embedding is not None and len(embedding) != 1536:
+                raise ValueError("memory embedder returned incompatible dimension")
+            now = datetime.now(UTC)
+            identifier = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{request.tenant_id}:{request.memory_kind}:{request.idempotency_key}",
+            ).hex
+            quarantined = any(
+                marker in request.content.casefold()
+                for marker in ("ignore previous instructions", "reveal secret", "override policy")
+            )
+            sensitive = request.classification in {"confidential", "restricted"}
+            record = MemoryRecord(
+                memory_id=identifier,
+                tenant_id=request.tenant_id,
+                memory_kind=request.memory_kind,
+                content_ref=f"memory://encrypted/{identifier}"
+                if sensitive
+                else f"memory://{identifier}",
+                safe_summary=("[REDACTED]" if sensitive else request.content[:4_000]),
+                source_goal_id=request.source_goal_id,
+                source_execution_id=request.source_execution_id,
+                evidence_refs=request.evidence_refs,
+                classification=request.classification,
+                confidence=request.confidence,
+                lifecycle_state="quarantined"
+                if quarantined or not request.evidence_refs
+                else "active",
+                version=1,
+                embedding_model="memory-embedding-v1",
+                embedding_dimension=1536,
+                embedding=embedding,
+                created_at=now,
+                updated_at=now,
+                retention_policy_id=request.retention_policy_id,
+                idempotency_key=request.idempotency_key,
+            )
+            self._records[(record.tenant_id, record.memory_id)] = record
+            self._commands[command] = record
+            return record
+
+    async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]:
+        query_embedding = await self._embedder(request.query) if self._embedder else None
+        ranked: list[MemoryRecallHit] = []
+        for record in self._records.values():
+            if (
+                record.tenant_id != request.tenant_id
+                or record.memory_kind not in request.memory_kinds
+            ):
+                continue
+            if record.classification not in request.allowed_data_classes:
+                continue
+            allowed_states = {"active"}
+            if request.include_disputed:
+                allowed_states.add("disputed")
+            if (
+                record.lifecycle_state not in allowed_states
+                or record.confidence < request.min_confidence
+            ):
+                continue
+            if record.expires_at is not None and record.expires_at <= request.as_of:
+                continue
+            semantic = _similarity(
+                query_embedding, record.embedding, request.query, record.safe_summary
+            )
+            age_days = max(0, (request.as_of - record.updated_at).days)
+            recency = max(0, 10_000 - age_days * 100)
+            final = (
+                semantic * 5
+                + recency * 2
+                + record.confidence * 2
+                + record.outcome_score
+                + record.effectiveness_score
+            ) // 9
+            ranked.append(
+                MemoryRecallHit(
+                    record=record,
+                    semantic_score=semantic,
+                    recency_score=recency,
+                    outcome_score=record.outcome_score,
+                    effectiveness_score=record.effectiveness_score,
+                    final_score=final,
+                    applicability_reason="semantic and lifecycle eligible",
+                    provenance_status="verified" if record.evidence_refs else "missing",
+                )
+            )
+        ordered = sorted(ranked, key=lambda item: (-item.final_score, item.record.memory_id))
+        selected: list[MemoryRecallHit] = []
+        tokens = 0
+        for hit in ordered:
+            size = max(1, len(hit.record.safe_summary.split()))
+            if tokens + size > request.token_budget:
+                continue
+            selected.append(hit)
+            tokens += size
+            if len(selected) >= request.top_k:
+                break
+        return tuple(selected)
+
+    async def feedback(self, feedback: MemoryFeedback) -> MemoryRecord:
+        key = (feedback.tenant_id, feedback.memory_id, feedback.execution_id)
+        async with self._lock:
+            record_key = (feedback.tenant_id, feedback.memory_id)
+            record = self._records.get(record_key)
+            if record is None:
+                raise KeyError("memory not found")
+            if key in self._feedback:
+                return record
+            helpful = record.helpful_count + int(feedback.was_helpful)
+            harmful = record.harmful_count + int(feedback.was_harmful)
+            updated = record.model_copy(
+                update={
+                    "recall_count": record.recall_count + int(feedback.was_used),
+                    "helpful_count": helpful,
+                    "harmful_count": harmful,
+                    "effectiveness_score": max(-10_000, min(10_000, (helpful - harmful) * 1000)),
+                    "outcome_score": feedback.outcome_score,
+                    "version": record.version + 1,
+                    "updated_at": feedback.recorded_at,
+                    "lifecycle_state": "quarantined"
+                    if feedback.was_harmful
+                    else record.lifecycle_state,
+                }
+            )
+            self._feedback[key] = feedback
+            self._records[record_key] = updated
+            return updated
+
+    async def update_lifecycle(
+        self, tenant_id: str, memory_id: str, *, state: str, expected_version: int
+    ) -> MemoryRecord:
+        async with self._lock:
+            key = (tenant_id, memory_id)
+            record = self._records.get(key)
+            if record is None:
+                raise KeyError("memory not found")
+            if record.version != expected_version:
+                raise OptimisticConflictError("stale memory version")
+            updated = record.model_copy(
+                update={
+                    "lifecycle_state": state,
+                    "version": record.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            validated = MemoryRecord.model_validate(updated.model_dump())
+            self._records[key] = validated
+            return validated
+
+
+def _similarity(
+    query: tuple[float, ...] | None,
+    candidate: tuple[float, ...] | None,
+    query_text: str,
+    candidate_text: str,
+) -> int:
+    if query is not None and candidate is not None:
+        numerator = sum(left * right for left, right in zip(query, candidate, strict=True))
+        denominator = math.sqrt(sum(value * value for value in query)) * math.sqrt(
+            sum(value * value for value in candidate)
+        )
+        return max(0, min(10_000, int((numerator / denominator if denominator else 0) * 10_000)))
+    left = set(query_text.casefold().split())
+    right = set(candidate_text.casefold().split())
+    return len(left & right) * 10_000 // max(1, len(left | right))
+
+
+__all__ = ["InMemoryMemoryRepository", "MemoryRepository"]

@@ -9,6 +9,10 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agentverse}"
 TARGET_COLOR="${1:-}"
+OBSERVATION_WINDOW_SECONDS="${OBSERVATION_WINDOW_SECONDS:-259200}"
+EVIDENCE_FILE="${AGENT_PATTERN_EVIDENCE_FILE:-}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BACKEND_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
 if [[ -z "$TARGET_COLOR" ]]; then
   echo "Usage: $0 <blue|green|status>" >&2
@@ -35,6 +39,16 @@ if [[ "$TARGET_COLOR" == "$CURRENT_COLOR" ]]; then
   echo "Traffic is already routing to $TARGET_COLOR. Nothing to do."
   exit 0
 fi
+
+if [[ -z "$EVIDENCE_FILE" ]]; then
+  echo "ERROR: AGENT_PATTERN_EVIDENCE_FILE is required; rollout decision is hold." >&2
+  exit 2
+fi
+
+echo "Evaluating signed agent-pattern canary evidence..."
+cd "$BACKEND_DIR"
+uv run python scripts/check_agent_pattern_canary.py \
+  --environment "${AGENTVERSE_ENVIRONMENT:-staging}" --evidence "$EVIDENCE_FILE"
 
 # 1. Scale up the target color if it has 0 replicas
 TARGET_REPLICAS=$(kubectl get deployment "agentverse-backend-${TARGET_COLOR}" \
@@ -76,10 +90,10 @@ kubectl patch service agentverse-backend -n "$NAMESPACE" \
 kubectl annotate service agentverse-backend -n "$NAMESPACE" \
   "agentverse.ai/active-color=${TARGET_COLOR}" --overwrite
 
-# 5. Scale down old color
-echo "Scaling down $CURRENT_COLOR deployment..."
+# 5. Keep the previous color warm throughout the observation and rollback window.
+echo "Keeping $CURRENT_COLOR warm for at least ${OBSERVATION_WINDOW_SECONDS}s for rollback."
 kubectl scale deployment "agentverse-backend-${CURRENT_COLOR}" \
-  --replicas=0 -n "$NAMESPACE"
+  --replicas=1 -n "$NAMESPACE"
 
 echo ""
 echo "Traffic switched: $CURRENT_COLOR -> $TARGET_COLOR"

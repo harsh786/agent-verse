@@ -68,4 +68,41 @@ describe('AgentVerseClient', () => {
     const agents = await client.listAgents();
     expect(agents[0].agent_id).toBe('a1');
   });
+
+  it('submits strategy controls with goals', async () => {
+    mockFetch.mockResolvedValueOnce(ok({ goal_id: 'g1', goal: 'test', status: 'planning' }));
+    const client = makeClient();
+    await client.submitGoal('coordinate', {
+      strategy_override: 'magentic_one',
+      auxiliary_strategies: ['mixture_of_agents'],
+      pattern_limits: { max_rounds: 4 },
+    });
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toMatchObject({
+      strategy_override: 'magentic_one',
+      auxiliary_strategies: ['mixture_of_agents'],
+      pattern_limits: { max_rounds: 4 },
+    });
+  });
+
+  it('reads transcript pages and sends idempotency headers for handoffs', async () => {
+    mockFetch
+      .mockResolvedValueOnce(ok({ items: [], next_sequence: 7, has_more: false }))
+      .mockResolvedValueOnce(ok({ handoff_id: 'h1', state: 'cancelled', version: 2 }));
+    const client = makeClient();
+    const page = await client.listCoordinationMessages('s1', { afterSequence: 7 });
+    expect(page.next_sequence).toBe(7);
+    await client.transitionHandoff('s1', 'h1', 'cancel', { expected_version: 1 }, 'idem-1');
+    expect(mockFetch.mock.calls[1][1].headers).toMatchObject({ 'Idempotency-Key': 'idem-1' });
+  });
+
+  it('submits sealed bids without exposing secret fields in the receipt', async () => {
+    mockFetch.mockResolvedValueOnce(ok({ receipt_id: 'r1', bidder_id: 'a1', bid_version: 1 }));
+    const receipt = await makeClient().submitSealedBid(
+      's1',
+      { bidder_id: 'a1', bid_version: 1, ciphertext: 'opaque', nonce: 'n'.repeat(16), signature: 's'.repeat(32) },
+      'bid-idem-1',
+    );
+    expect(receipt).toEqual({ receipt_id: 'r1', bidder_id: 'a1', bid_version: 1 });
+    expect(mockFetch.mock.calls[0][1].headers).toMatchObject({ 'Idempotency-Key': 'bid-idem-1' });
+  });
 });

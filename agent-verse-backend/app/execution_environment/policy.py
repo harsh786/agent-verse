@@ -20,7 +20,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.execution_environment.models import ExecutionEnvelope, ExecutionFailureReason
+from app.execution_environment.code_validation import CodeWorkloadValidator
+from app.execution_environment.models import (
+    ExecutionEnvelope,
+    ExecutionFailureReason,
+    ExecutionKind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +73,27 @@ def evaluate_policy(envelope: ExecutionEnvelope) -> PolicyDecision:
             message="Envelope missing goal_id.",
         )
 
-    if not envelope.goal_text:
+    if envelope.execution_kind is ExecutionKind.AGENT_GOAL and not envelope.goal_text:
         return PolicyDecision(
             allowed=False,
             failure_reason=ExecutionFailureReason.POLICY_DENIED,
             message="Envelope missing goal_text.",
         )
+
+    if envelope.execution_kind is ExecutionKind.CODE_INTERPRETER:
+        if envelope.goal_text or envelope.code_workload is None:
+            return PolicyDecision(
+                allowed=False,
+                failure_reason=ExecutionFailureReason.POLICY_DENIED,
+                message="Code execution payload is missing or ambiguous.",
+            )
+        violations = CodeWorkloadValidator().validate(envelope.code_workload)
+        if violations:
+            return PolicyDecision(
+                allowed=False,
+                failure_reason=ExecutionFailureReason.POLICY_DENIED,
+                message="Code policy denied: " + ",".join(item.code for item in violations),
+            )
 
     # Resource limit sanity checks
     rl = policy.resource_limits

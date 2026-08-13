@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "operations": [
+    "get_magentic_ledger",
+    "list_magentic_ledger_revisions",
+    "submit_magentic_human_review",
+    "list_moa_layers",
+    "get_moa_layer"
+  ],
+  "magentic_events": [
+    "magentic.ledger_revised.v1", "magentic.stall_detected.v1",
+    "magentic.replan_started.v1", "magentic.replan_completed.v1",
+    "magentic.participant_selected.v1", "magentic.awaiting_human.v1",
+    "magentic.satisfaction_verified.v1"
+  ],
+  "moa_events": [
+    "moa.layer_planned.v1", "moa.proposal_completed.v1",
+    "moa.proposal_rejected.v1", "moa.quorum_met.v1", "moa.quorum_failed.v1",
+    "moa.aggregate_completed.v1", "moa.degraded.v1"
+  ],
+  "product_states": [
+    "loading", "empty", "planning", "executing", "stalled", "replanning",
+    "awaiting_human", "collecting", "aggregating", "degraded", "completed",
+    "failed", "cancelled", "unauthorized"
+  ],
+  "accessibility": {
+    "revision_changes_announced": true,
+    "stall_reason_text": true,
+    "proposal_validity_not_color_only": true,
+    "keyboard_human_review": true,
+    "responsive_layer_table": true
+  },
+  "pagination": {
+    "ledger_cursor": "next_version",
+    "layer_cursor": "next_layer"
+  }
+}

@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 
 from app.core.errors import NotFoundError
 from app.observability.logging import get_logger as _get_logger
+from app.orchestration.strategy_contracts import PatternLimits
 from app.tenancy.context import TenantContext
 
 _logger = _get_logger(__name__)
@@ -74,6 +75,9 @@ class GoalRequest(BaseModel):
     model_override: str | None = Field(
         None, description="Override the tenant's default model for this goal"
     )
+    strategy_override: str | None = Field(None, min_length=1, max_length=100)
+    auxiliary_strategies: list[str] = Field(default_factory=list, max_length=20)
+    pattern_limits: PatternLimits | None = None
 
 
 def _build_multimodal_goal_text(
@@ -118,7 +122,6 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     idempotency_key = request.headers.get("Idempotency-Key")
     if idempotency_key:
         try:
-            from app.reliability.idempotency import IdempotencyStore
             _idem = getattr(request.app.state, "idempotency_store", None)
             if _idem is not None:
                 is_new = await _idem.check_and_set(
@@ -140,6 +143,30 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
 
     # Build execution_context with persistence settings when enabled
     exec_ctx: dict[str, Any] = {}
+    if body.strategy_override is not None or body.auxiliary_strategies or body.pattern_limits:
+        registry = getattr(request.app.state, "strategy_registry", None)
+        try:
+            primary = body.strategy_override or "react"
+            if registry is not None:
+                primary_resolution = registry.resolve(primary)
+                if primary_resolution.capability.adapter_descriptor is None:
+                    raise LookupError(primary)
+                for auxiliary in body.auxiliary_strategies:
+                    registry.resolve(auxiliary)
+            exec_ctx["strategy_runtime"] = {
+                "primary_strategy": primary,
+                "auxiliary_strategies": body.auxiliary_strategies,
+                "limits": (
+                    body.pattern_limits.model_dump(mode="json")
+                    if body.pattern_limits is not None
+                    else None
+                ),
+            }
+        except (LookupError, ValueError) as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Invalid strategy selection",
+            ) from exc
     if body.persistence_mode:
         exec_ctx["persistence_mode"] = True
         exec_ctx["persistence_config"] = body.persistence_config.model_dump()
@@ -182,6 +209,21 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 max_parallel=body.supervisor_max_parallel,
             )
             result = await supervisor.run(goal=body.goal, tenant_ctx=tenant)
+            if isinstance(result, dict):
+                sub_goal_ids = [str(value) for value in result.get("sub_goal_ids", [])]
+                return {
+                    "id": str(result.get("parent_goal_id", "")),
+                    "goal_id": str(result.get("parent_goal_id", "")),
+                    "status": "multi_agent",
+                    "mode": "supervisor",
+                    "success": bool(result.get("success", True)),
+                    "synthesized_result": str(
+                        result.get("synthesized_result", result.get("synthesis", ""))
+                    ),
+                    "sub_goal_ids": sub_goal_ids,
+                    "sub_tasks": list(result.get("sub_tasks", [])),
+                    "goal": body.goal,
+                }
             return {
                 "id": "",
                 "goal_id": "",
@@ -189,6 +231,7 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 "mode": "supervisor",
                 "success": result.success,
                 "synthesized_result": result.synthesized_result,
+                "sub_goal_ids": [task.task_id for task in result.tasks],
                 "sub_tasks": [
                     {
                         "task_id": t.task_id,
@@ -345,6 +388,28 @@ async def get_goal(request: Request, goal_id: str) -> dict[str, Any]:
     except NotFoundError as exc:
         raise _not_found_response(request, exc) from exc
     return result
+
+
+@router.get("/{goal_id}/explain")
+async def explain_goal(request: Request, goal_id: str) -> dict[str, Any]:
+    tenant = _require_tenant(request)
+    try:
+        goal = await _goal_service(request).get_goal(goal_id=goal_id, tenant_ctx=tenant)
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
+    context = goal.get("execution_context", {})
+    profile = context.get("runtime_profile", {}) if isinstance(context, dict) else {}
+    return {
+        "goal_id": goal_id,
+        "profile_version": profile.get("profile_version"),
+        "selected_strategy": profile.get("primary_strategy"),
+        "auxiliary_strategies": profile.get("auxiliary_strategies", []),
+        "rejected_strategies": profile.get("rejected_alternatives", []),
+        "readiness": profile.get("readiness_snapshot_ref"),
+        "limits": profile.get("effective_limits", {}),
+        "safe_trace": context.get("safe_trace", {}),
+        "cost_usd": context.get("cost_usd", 0.0),
+    }
 
 
 @router.post("/{goal_id}/cancel")

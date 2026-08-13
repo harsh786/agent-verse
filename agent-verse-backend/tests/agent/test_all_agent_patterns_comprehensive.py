@@ -510,7 +510,7 @@ class TestPatternSelector:
             requires_code=True,
         )
         config = selector.select_rag_strategy(props)
-        assert config.strategy == "colbert_late_interaction"
+        assert config.strategy == "colbert"
 
     def test_select_rag_strategy_expert_returns_raptor(self) -> None:
         from app.orchestration.runtime_profile import GoalProperties, Complexity

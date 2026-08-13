@@ -195,10 +195,110 @@ PROMPT_TOKENS_SAVED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+_STRATEGY_FAMILIES = frozenset(
+    {"reasoning", "rag", "multi_agent", "safety", "memory", "optimization", "unknown"}
+)
+_STRATEGIES = frozenset(
+    {
+        "react", "plan_and_execute", "parallel_execution", "reflection", "reflexion",
+        "tree_of_thoughts", "graph_of_thoughts", "least_to_most", "rewoo",
+        "program_of_thought", "codeact", "constitutional_ai", "babyagi", "autogpt",
+        "voyager", "magentic_one", "mixture_of_agents", "camel", "generative_agents",
+        "decentralized_swarm", "market_auction", "unknown",
+    }
+)
+_COORDINATION_EVENTS = frozenset(
+    {
+        "session", "handoff", "message", "speaker", "claim", "ledger", "bid",
+        "allocation", "checkpoint", "fallback", "outbox", "unknown",
+    }
+)
+
+STRATEGY_EXECUTION_TOTAL = Counter(
+    "agentverse_strategy_execution_total",
+    "Strategy executions by bounded family, strategy, and status.",
+    labelnames=("family", "strategy", "status"),
+    registry=REGISTRY,
+)
+STRATEGY_DURATION = Histogram(
+    "agentverse_strategy_duration_seconds",
+    "Strategy execution latency by bounded dimensions.",
+    labelnames=("family", "strategy", "status"),
+    registry=REGISTRY,
+)
+STRATEGY_COST_TOTAL = Counter(
+    "agentverse_strategy_cost_usd_total",
+    "Strategy cost by bounded dimensions.",
+    labelnames=("family", "strategy"),
+    registry=REGISTRY,
+)
+STRATEGY_TOKENS_TOTAL = Counter(
+    "agentverse_strategy_tokens_total",
+    "Strategy token consumption by bounded dimensions.",
+    labelnames=("family", "strategy"),
+    registry=REGISTRY,
+)
+COORDINATION_EVENT_TOTAL = Counter(
+    "agentverse_coordination_event_total",
+    "Coordination lifecycle events by bounded type and status.",
+    labelnames=("event", "status"),
+    registry=REGISTRY,
+)
+COORDINATION_HANDOFF_DURATION = Histogram(
+    "agentverse_coordination_handoff_duration_seconds",
+    "Accepted handoff latency.",
+    labelnames=("status",),
+    registry=REGISTRY,
+)
+COORDINATION_OUTBOX_LAG = Gauge(
+    "agentverse_coordination_outbox_lag_seconds",
+    "Age of the oldest undelivered coordination event.",
+    registry=REGISTRY,
+)
+COORDINATION_ACTIVE_LEASES = Gauge(
+    "agentverse_coordination_active_leases",
+    "Current fenced coordination leases.",
+    labelnames=("kind",),
+    registry=REGISTRY,
+)
+PATTERN_SAFETY_TOTAL = Counter(
+    "agentverse_pattern_safety_total",
+    "Bounded safety outcomes for sandbox, policy, fallback, and memory checks.",
+    labelnames=("kind", "status"),
+    registry=REGISTRY,
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """Return (body, content_type) for the metrics endpoint."""
     return _generate_latest(REGISTRY), CONTENT_TYPE_LATEST
+
+
+def record_strategy_execution(
+    *, family: str, strategy: str, status: str, duration_seconds: float,
+    cost_usd: float, tokens: int,
+) -> None:
+    """Record a strategy outcome without accepting cardinality-bearing identifiers."""
+    family_label = _normalize_exact_label(family, _STRATEGY_FAMILIES)
+    strategy_label = _normalize_exact_label(strategy, _STRATEGIES)
+    status_label = _normalize_status_label(status)
+    labels = {"family": family_label, "strategy": strategy_label, "status": status_label}
+    STRATEGY_EXECUTION_TOTAL.labels(**labels).inc()
+    STRATEGY_DURATION.labels(**labels).observe(_non_negative(duration_seconds))
+    STRATEGY_COST_TOTAL.labels(family=family_label, strategy=strategy_label).inc(
+        _non_negative(cost_usd)
+    )
+    STRATEGY_TOKENS_TOTAL.labels(family=family_label, strategy=strategy_label).inc(
+        _non_negative(float(tokens))
+    )
+
+
+def record_coordination_event(event: str, status: str) -> None:
+    """Record a coordination event using an enumerated event vocabulary."""
+    COORDINATION_EVENT_TOTAL.labels(
+        event=_normalize_exact_label(event, _COORDINATION_EVENTS),
+        status=_normalize_status_label(status),
+    ).inc()
 
 
 # ── Recording helpers ─────────────────────────────────────────────────────────

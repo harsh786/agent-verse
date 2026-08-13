@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.structured_plan import StructuredPlan, StructuredStep
 from app.rag.contracts import RAGStrategy, resolve_rag_strategy
 
 # ---------------------------------------------------------------------------
@@ -26,19 +27,20 @@ class _StaticWorkflowPlan:
     steps: list[_StaticWorkflowStep]
 
 
-def build_static_workflow(goal: str) -> _StaticWorkflowPlan:
+def build_static_workflow(goal: str) -> StructuredPlan:
     """Build a deterministic connector-targeted workflow from goal keywords."""
     goal_lower = goal.casefold()
-    steps: list[_StaticWorkflowStep] = []
+    steps: list[StructuredStep] = []
 
     def add_step(connector_name: str, intent: str, input_from: list[str]) -> None:
         steps.append(
-            _StaticWorkflowStep(
-                step_id=f"step_{len(steps) + 1}",
+            StructuredStep(
+                id=f"step_{len(steps) + 1}",
+                description=intent,
                 connector_name=connector_name,
                 agent_id=None,
                 intent=intent,
-                input_from=list(input_from),
+                depends_on=list(input_from),
                 requires_approval=False,
             )
         )
@@ -47,16 +49,16 @@ def build_static_workflow(goal: str) -> _StaticWorkflowPlan:
         add_step("jira", "fetch_open_issues", [])
 
     if "confluence" in goal_lower:
-        jira_step_ids = [step.step_id for step in steps if step.connector_name == "jira"]
+        jira_step_ids = [step.id for step in steps if step.connector_name == "jira"]
         add_step("confluence", "create_summary_page", jira_step_ids[-1:])
 
     if "mail" in goal_lower or "email" in goal_lower:
-        add_step("email", "send_summary_email", [step.step_id for step in steps])
+        add_step("email", "send_summary_email", [step.id for step in steps])
 
     if any(keyword in goal_lower for keyword in ("browser", "rpa", "website", "ui")):
         add_step("rpa", "browser_automation", [])
 
-    return _StaticWorkflowPlan(steps=steps)
+    return StructuredPlan(steps=steps).validate()
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +151,7 @@ class WorkflowPlanner:
         goal: str,
         tenant_ctx: Any,
         tool_context: Any = None,
-    ) -> WorkflowPlan:
+    ) -> StructuredPlan:
         """Generate a parallel-aware workflow plan from a natural language goal."""
         if self._provider is None:
             return self._heuristic_plan(goal)
@@ -206,23 +208,36 @@ Return ONLY the JSON, no other text."""
             json_match = re.search(r'\{.*\}', text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
-                return WorkflowPlan.from_dict(data, goal=goal)
+                legacy_plan = WorkflowPlan.from_dict(data, goal=goal)
+                return StructuredPlan(
+                    steps=[
+                        StructuredStep(
+                            id=step.id,
+                            description=step.description,
+                            tool=step.tool or None,
+                            depends_on=list(step.depends_on),
+                            can_parallel=step.can_parallel,
+                            estimated_minutes=step.estimated_minutes,
+                            config=dict(step.config),
+                        )
+                        for step in legacy_plan.steps
+                    ]
+                ).validate()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("workflow_planner_llm_failed: %s", exc)
 
         return self._heuristic_plan(goal)
 
-    def _heuristic_plan(self, goal: str) -> WorkflowPlan:
+    def _heuristic_plan(self, goal: str) -> StructuredPlan:
         """Fallback heuristic plan when LLM unavailable."""
-        return WorkflowPlan(
-            goal=goal,
-            steps=[WorkflowStep(
+        return StructuredPlan(
+            steps=[StructuredStep(
                 id="s1",
                 description=goal,
-                tool="",
+                tool=None,
                 depends_on=[],
                 can_parallel=False,
                 estimated_minutes=5,
             )]
-        )
+        ).validate()

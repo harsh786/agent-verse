@@ -1,4 +1,9 @@
 import "@testing-library/jest-dom";
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
+import "@/lib/i18n";
+
+afterEach(() => cleanup());
 
 // React Flow (and other DOM-measuring libraries) need ResizeObserver in jsdom.
 // Provide a no-op stub when the environment does not include a real implementation.
@@ -29,4 +34,12 @@ if (typeof window.matchMedia === "undefined") {
 
 if (typeof Element.prototype.scrollIntoView === "undefined") {
   Element.prototype.scrollIntoView = () => undefined;
+}
+
+// CodeMirror measures DOM ranges; jsdom does not implement these layout APIs.
+if (typeof Range.prototype.getClientRects === "undefined") {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+}
+if (typeof Range.prototype.getBoundingClientRect === "undefined") {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
 }

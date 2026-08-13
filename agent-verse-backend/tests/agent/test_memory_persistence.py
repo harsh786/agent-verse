@@ -52,6 +52,7 @@ async def test_score_and_persist_calls_db():
     state.verification_feedback = ""
 
     T = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+    state.tenant_ctx = T
 
     # Build a proper async context manager that score_and_persist can use
     _executed: list[tuple] = []

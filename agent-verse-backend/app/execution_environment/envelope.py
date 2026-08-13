@@ -46,9 +46,11 @@ from typing import Any
 
 from app.execution_environment.models import (
     AuditLevel,
+    CodeExecutionWorkload,
     ExecutionEnvelope,
     ExecutionEnvironmentPolicy,
     ExecutionEnvironmentSpec,
+    ExecutionKind,
     ExecutionResourceLimits,
     FilesystemPolicy,
     NetworkPolicy,
@@ -128,6 +130,12 @@ def _canonical_bytes(envelope: ExecutionEnvelope) -> bytes:
         "attempt_id": envelope.attempt_id,
         "agent_id": envelope.agent_id,
         "issued_at": envelope.issued_at,
+        "execution_kind": envelope.execution_kind.value,
+        "code_workload": (
+            envelope.code_workload.model_dump(mode="json")
+            if envelope.code_workload is not None
+            else None
+        ),
         # Goal
         "goal_text": envelope.goal_text,
         "dry_run": envelope.dry_run,
@@ -227,7 +235,9 @@ def build_envelope(
     *,
     tenant_id: str,
     goal_id: str,
-    goal_text: str,
+    goal_text: str = "",
+    execution_kind: ExecutionKind = ExecutionKind.AGENT_GOAL,
+    code_workload: CodeExecutionWorkload | None = None,
     agent_id: str = "",
     execution_context: dict[str, Any] | None = None,
     agent_config: dict[str, Any] | None = None,
@@ -262,6 +272,8 @@ def build_envelope(
         attempt_id=uuid.uuid4().hex,
         agent_id=agent_id,
         correlation_id=uuid.uuid4().hex,
+        execution_kind=execution_kind,
+        code_workload=code_workload,
         goal_text=goal_text,
         execution_context=execution_context or {},
         agent_config=agent_config or {},
@@ -281,3 +293,72 @@ def build_envelope(
         scoped_redis_prefix=scoped_redis_prefix,
     )
     return sign_envelope(envelope)
+
+
+def envelope_from_dict(data: dict[str, Any]) -> ExecutionEnvelope:
+    """Reconstruct a signed envelope at the worker trust boundary."""
+    policy_data = dict(data.get("policy") or {})
+    limit_data = dict(policy_data.get("resource_limits") or {})
+    spec_data = dict(data.get("spec") or {})
+    workload_data = data.get("code_workload")
+    return ExecutionEnvelope(
+        tenant_id=str(data.get("tenant_id", "")),
+        goal_id=str(data.get("goal_id", "")),
+        attempt_id=str(data.get("attempt_id", "")),
+        agent_id=str(data.get("agent_id", "")),
+        correlation_id=str(data.get("correlation_id", "")),
+        execution_kind=ExecutionKind(str(data.get("execution_kind", "agent_goal"))),
+        code_workload=(
+            CodeExecutionWorkload.model_validate(workload_data)
+            if isinstance(workload_data, dict)
+            else None
+        ),
+        goal_text=str(data.get("goal_text", "")),
+        execution_context=dict(data.get("execution_context") or {}),
+        agent_config=dict(data.get("agent_config") or {}),
+        runtime_profile=dict(data.get("runtime_profile") or {}),
+        tool_context=dict(data.get("tool_context") or {}),
+        dry_run=bool(data.get("dry_run", False)),
+        sandbox_mode=bool(data.get("sandbox_mode", False)),
+        workflow_mode=str(data.get("workflow_mode", "single_agent")),
+        priority=str(data.get("priority", "normal")),
+        policy=ExecutionEnvironmentPolicy(
+            network_policy=NetworkPolicy(policy_data.get("network_policy", "deny_all")),
+            filesystem_policy=FilesystemPolicy(
+                policy_data.get("filesystem_policy", "read_only_root")
+            ),
+            resource_limits=ExecutionResourceLimits(
+                cpu_cores=float(limit_data.get("cpu_cores", 1.0)),
+                memory_mb=int(limit_data.get("memory_mb", 512)),
+                wall_clock_seconds=int(limit_data.get("wall_clock_seconds", 1800)),
+                output_bytes=int(limit_data.get("output_bytes", 10_485_760)),
+                artifact_bytes=int(limit_data.get("artifact_bytes", 52_428_800)),
+                max_processes=int(limit_data.get("max_processes", 64)),
+            ),
+            allowed_capabilities=list(policy_data.get("allowed_capabilities") or []),
+            denied_capabilities=list(policy_data.get("denied_capabilities") or []),
+            egress_allowlist=list(policy_data.get("egress_allowlist") or []),
+            allow_host_path_mounts=bool(policy_data.get("allow_host_path_mounts", False)),
+            allow_privileged=bool(policy_data.get("allow_privileged", False)),
+            audit_level=AuditLevel(policy_data.get("audit_level", "standard")),
+        ),
+        spec=ExecutionEnvironmentSpec(
+            runner_type=RunnerType(spec_data.get("runner_type", "fake")),
+            image=str(spec_data.get("image", "")),
+            image_tag=str(spec_data.get("image_tag", "")),
+            labels=dict(spec_data.get("labels") or {}),
+        ),
+        hitl_state=dict(data.get("hitl_state") or {}),
+        cost_limit_usd=float(data.get("cost_limit_usd", 0.0)),
+        feature_flags=dict(data.get("feature_flags") or {}),
+        issued_at=str(data.get("issued_at", "")),
+        signature=str(data.get("signature", "")),
+    )
+
+
+__all__ = [
+    "build_envelope",
+    "envelope_from_dict",
+    "sign_envelope",
+    "verify_envelope",
+]

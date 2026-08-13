@@ -1,0 +1,4 @@
+export function AuctionBidView({ state }: { state: { items?: Array<Record<string, unknown>>; sealed_bid_count?: number } }) {
+  const items = state.items ?? [];
+  return <section aria-labelledby="auction-heading"><div className="flex justify-between"><h3 id="auction-heading" className="font-semibold">Auction outcome</h3><span className="text-xs text-muted-foreground">{String(state.sealed_bid_count ?? 0)} sealed</span></div><div className="mt-3 overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-muted-foreground"><th className="py-2">Winner</th><th>Score</th><th>Fairness</th></tr></thead><tbody>{items.map((item, index) => <tr className="border-b" key={String(item.allocation_id ?? index)}><td className="py-2 font-mono">{String(item.winner_id ?? item.agent_id ?? 'pending')}</td><td>{String(item.score ?? '—')}</td><td>{String(item.fairness_adjustment ?? '—')}</td></tr>)}</tbody></table></div></section>;
+}

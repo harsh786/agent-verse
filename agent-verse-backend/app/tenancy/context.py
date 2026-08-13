@@ -25,36 +25,36 @@ class PlanLimits:
 
 PLAN_LIMITS: dict[PlanTier, PlanLimits] = {
     PlanTier.FREE: PlanLimits(
-        requests_per_minute=10_000,       # unlimited for local dev
-        goals_per_day=100_000,            # unlimited for local dev
-        max_agents=1_000,                 # unlimited for local dev
-        max_api_keys=100,                 # unlimited for local dev
-        max_knowledge_collections=100,    # unlimited for local dev
-        goal_timeout_seconds=86400,       # 24 hours
+        requests_per_minute=60,
+        goals_per_day=25,
+        max_agents=3,
+        max_api_keys=2,
+        max_knowledge_collections=1,
+        goal_timeout_seconds=3600,
     ),
     PlanTier.STARTER: PlanLimits(
-        requests_per_minute=10_000,
-        goals_per_day=100_000,
-        max_agents=1_000,
-        max_api_keys=100,
-        max_knowledge_collections=100,
-        goal_timeout_seconds=86400,       # 24 hours
+        requests_per_minute=120,
+        goals_per_day=100,
+        max_agents=10,
+        max_api_keys=5,
+        max_knowledge_collections=10,
+        goal_timeout_seconds=7200,
     ),
     PlanTier.PROFESSIONAL: PlanLimits(
-        requests_per_minute=10_000,
-        goals_per_day=100_000,
-        max_agents=1_000,
-        max_api_keys=100,
-        max_knowledge_collections=100,
-        goal_timeout_seconds=86400,       # 24 hours
+        requests_per_minute=600,
+        goals_per_day=1_000,
+        max_agents=50,
+        max_api_keys=20,
+        max_knowledge_collections=50,
+        goal_timeout_seconds=28_800,
     ),
     PlanTier.ENTERPRISE: PlanLimits(
         requests_per_minute=10_000,
-        goals_per_day=100_000,
+        goals_per_day=50_000,
         max_agents=1_000,
         max_api_keys=100,
-        max_knowledge_collections=100,
-        goal_timeout_seconds=86400,       # 24 hours
+        max_knowledge_collections=200,
+        goal_timeout_seconds=86_400,
     ),
 }
 

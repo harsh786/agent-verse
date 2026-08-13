@@ -91,7 +91,8 @@ class TestRuntimeScorecard:
             "goal_success", "rag_quality", "safety", "latency", "cost_efficiency",
             "grounding", "citation_quality", "retrieval_confidence", "tool_success_rate",
         }
-        assert set(result.scores.keys()) == expected_keys
+        # dimension_status always has all 9; scores only has measured ones.
+        assert set(result.dimension_status.keys()) >= expected_keys
 
     def test_score_complete_goal_has_high_goal_success(self) -> None:
         from app.evals.runtime_scorecard import RuntimeScorecard

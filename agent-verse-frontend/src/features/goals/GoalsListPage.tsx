@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   Search,
   XCircle,
@@ -47,6 +48,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function GoalsListPage() {
+  const { t } = useTranslation();
   const tenantId = useAuthStore((s) => s.tenantId);
 
   const [pageSize, setPageSize] = useState(25);
@@ -187,7 +189,7 @@ export function GoalsListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Goals</h1>
+           <h1 className="text-2xl font-bold">{t("nav.goals")}</h1>
           <p className="text-muted-foreground text-sm mt-1">Submit and track autonomous agent goals</p>
         </div>
       </div>

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.orchestration.goal_classifier import GoalClassifier
 from app.orchestration.runtime_profile import (
     Complexity,

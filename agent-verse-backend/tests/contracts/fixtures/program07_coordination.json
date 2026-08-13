@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "operations": {
+    "create_handoff": "create_handoff_api_v1_coordination_sessions__session_id__handoffs_post",
+    "accept_handoff": "accept_handoff_api_v1_coordination_sessions__session_id__handoffs__handoff_id__accept_post",
+    "reject_handoff": "reject_handoff_api_v1_coordination_sessions__session_id__handoffs__handoff_id__reject_post",
+    "cancel_handoff": "cancel_handoff_api_v1_coordination_sessions__session_id__handoffs__handoff_id__cancel_post",
+    "get_handoff": "get_handoff_api_v1_coordination_sessions__session_id__handoffs__handoff_id__get",
+    "list_messages": "list_messages_api_v1_coordination_sessions__session_id__messages_get",
+    "replay_events": "replay_coordination_events"
+  },
+  "handoff_states": [
+    "requested", "accepted", "rejected", "expired", "executing", "completed", "failed", "cancelled"
+  ],
+  "events": [
+    "handoff.requested.v1", "handoff.accepted.v1", "handoff.rejected.v1",
+    "handoff.expired.v1", "handoff.executing.v1", "handoff.completed.v1",
+    "handoff.failed.v1", "handoff.cancelled.v1",
+    "transcript.message_appended.v1", "transcript.compacted.v1",
+    "group_chat.speaker_selected.v1", "group_chat.awaiting_human.v1",
+    "group_chat.resumed.v1", "group_chat.completed.v1"
+  ],
+  "create_handoff_request": {
+    "civilization_id": "civilization-1",
+    "source_agent_id": "agent-source",
+    "target_agent_id": "agent-target",
+    "task_summary": "Perform a bounded review",
+    "remaining_budget_usd": 1.25,
+    "deadline": "2026-08-13T00:00:00Z",
+    "acceptance_token": "one-time-token-1234",
+    "context_message_ids": ["message-1"],
+    "artifact_refs": ["artifact://1"],
+    "classification": "confidential"
+  },
+  "product_states": [
+    "loading", "empty", "active", "awaiting_human", "completed", "failed",
+    "cancelled", "expired", "reconnecting", "backpressured", "unauthorized"
+  ],
+  "accessibility": {
+    "live_region_events": true,
+    "keyboard_submit": true,
+    "focus_returns_to_composer": true,
+    "speaker_identity_not_color_only": true,
+    "terminal_state_announced": true
+  },
+  "message_fields": [
+    "message_id", "sequence", "sender_agent_id", "message_type", "classification",
+    "trust_label", "provenance_chain", "source_digest", "clearance_decision",
+    "compacts_from_sequence", "compacts_to_sequence", "idempotency_key"
+  ],
+  "transport": {
+    "pagination_cursor": "next_sequence",
+    "sse_resume_header": "Last-Event-ID",
+    "websocket_path": "/api/v1/coordination/sessions/{session_id}/group-chat/ws",
+    "idempotency_header": "Idempotency-Key"
+  }
+}

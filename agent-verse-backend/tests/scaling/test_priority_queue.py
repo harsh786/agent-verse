@@ -187,7 +187,7 @@ def test_run_goal_updates_submitted_goal_status_and_events(monkeypatch: Any) -> 
         status = SimpleNamespace(value="complete")
         iterations = 2
 
-    class FakeAgentLoop:
+    class FakeAgentGraph:
         def __init__(self, **kwargs: Any) -> None:
             pass
 
@@ -230,7 +230,7 @@ def test_run_goal_updates_submitted_goal_status_and_events(monkeypatch: Any) -> 
             assert tenant_ctx.tenant_id == "tenant-1"
             appended_events.append(dict(event))
 
-    monkeypatch.setattr("app.agent.loop.AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr("app.agent.graph.AgentGraph", FakeAgentGraph)
     monkeypatch.setattr("app.services.goal_service.GoalService", FakeGoalService)
     monkeypatch.setattr("app.services.event_store.EventStore", FakeEventStore)
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: object())
@@ -273,7 +273,7 @@ def test_run_goal_updates_submitted_goal_status_and_events(monkeypatch: Any) -> 
 def test_run_goal_records_duration_metric_on_worker_failure(monkeypatch: Any) -> None:
     duration_metrics: list[dict[str, Any]] = []
 
-    class FakeAgentLoop:
+    class FakeAgentGraph:
         def __init__(self, **kwargs: Any) -> None:
             pass
 
@@ -306,7 +306,7 @@ def test_run_goal_records_duration_metric_on_worker_failure(monkeypatch: Any) ->
         ) -> None:
             pass
 
-    monkeypatch.setattr("app.agent.loop.AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr("app.agent.graph.AgentGraph", FakeAgentGraph)
     monkeypatch.setattr("app.services.goal_service.GoalService", FakeGoalService)
     monkeypatch.setattr("app.services.event_store.EventStore", FakeEventStore)
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: object())

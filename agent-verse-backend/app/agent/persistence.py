@@ -10,6 +10,7 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +44,16 @@ class AttemptRecord:
     iterations_used: int = 0
     cost_usd: float = 0.0
     tools_tried: list[str] = field(default_factory=list)
+    goal_id: str = ""
+    strategy_execution_id: str = ""
+    strategy_id: str = "react"
+    strategy_version: str = "1.0.0"
+    profile_id: str = "legacy"
+    profile_version: int = 1
+    transition_reason: str = "started"
+    checkpoint_reference: str = ""
+    terminal_evidence: dict[str, Any] = field(default_factory=dict)
+    idempotency_key: str = ""
 
 
 @dataclass
@@ -50,7 +61,7 @@ class PersistenceConfig:
     """Configuration for the persistent retry engine."""
     # How many full goal attempts before giving up permanently
     max_attempts: int = 10
-    # Iterations per attempt (passed to AgentGraph/AgentLoop)
+    # Iterations per attempt (passed to AgentGraph)
     iterations_per_attempt: int = 15
     # Seconds to wait between attempts (base for exponential backoff)
     base_backoff_seconds: float = 30.0
@@ -66,12 +77,31 @@ class PersistenceConfig:
     total_timeout_seconds: float = 0.0
     # Whether to decompose goal into sub-goals after repeated failure
     decompose_on_failure: bool = True
+    strategy_id: str = "react"
+    strategy_version: str = "1.0.0"
+    profile_id: str = "legacy"
+    profile_version: int = 1
+
+    @classmethod
+    def from_runtime_profile(cls, profile: Any) -> PersistenceConfig:
+        """Derive retry ceilings and strategy identity from the admitted profile."""
+        patterns = profile.agent_patterns
+        limits = profile.effective_limits
+        return cls(
+            max_attempts=min(patterns.max_persistence_attempts, limits.rounds),
+            iterations_per_attempt=min(patterns.max_iterations, limits.rounds),
+            total_timeout_seconds=float(limits.duration_seconds),
+            strategy_id=profile.primary_strategy.strategy_id,
+            strategy_version=profile.primary_strategy.adapter_version,
+            profile_id=profile.profile_id,
+            profile_version=profile.profile_version,
+        )
 
 
 class GoalPersistenceEngine:
     """Manages persistent goal execution with intelligent retry strategies.
 
-    Wraps an AgentGraph/AgentLoop and retries the goal using different
+    Wraps an AgentGraph and retries the goal using different
     strategies until success, human escalation, or permanent failure.
     """
 
@@ -124,10 +154,10 @@ class GoalPersistenceEngine:
         """Exponential backoff with jitter: base * 2^attempt ± 20% jitter."""
         raw = self._config.base_backoff_seconds * (2 ** (attempt_number - 1))
         capped = min(raw, self._config.max_backoff_seconds)
-        # Add 0–20% additive jitter to avoid thundering herd
+        # Add 0-20% additive jitter to avoid thundering herd
         import random
         jitter = capped * random.uniform(0, 0.2)
-        return max(1.0, capped + jitter)
+        return float(max(1.0, capped + jitter))
 
     def _build_enriched_goal(
         self,
@@ -179,20 +209,38 @@ class GoalPersistenceEngine:
         strategy: str,
         enriched_goal: str,
         backoff: int,
+        strategy_id: str = "react",
+        strategy_version: str = "1.0.0",
+        profile_id: str = "legacy",
+        profile_version: int = 1,
+        strategy_execution_id: str = "",
+        idempotency_key: str = "",
     ) -> str:
         """Write attempt start record to DB. Returns attempt record ID."""
-        attempt_id = str(uuid.uuid4())
+        stable_key = idempotency_key or f"goal-attempt:{tenant_id}:{goal_id}:{attempt_num}"
+        attempt_id = uuid.uuid5(uuid.NAMESPACE_URL, stable_key).hex
         if self._db is None:
             return attempt_id
         try:
             from sqlalchemy import text as _t
             async with self._db() as session:
-                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
-                await session.execute(_t("""
+                await session.execute(
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": tenant_id},
+                )
+                result = await session.execute(_t("""
                     INSERT INTO goal_attempts
                         (id, goal_id, tenant_id, attempt_number, strategy,
-                         enriched_goal, started_at, backoff_seconds)
-                    VALUES (:id, :goal, :tenant, :num, :strat, :goal_text, NOW(), :backoff)
+                         enriched_goal, started_at, backoff_seconds,
+                         strategy_execution_id, strategy_id, strategy_version,
+                         profile_id, profile_version, transition_reason,
+                         budget_consumed, terminal_evidence, idempotency_key, version)
+                    VALUES (:id, :goal, :tenant, :num, :strat, :goal_text, NOW(), :backoff,
+                            NULLIF(:execution, ''), :strategy_id, :strategy_version,
+                            :profile_id, :profile_version, 'started',
+                            '{}'::jsonb, '{}'::jsonb, :idempotency_key, 1)
+                    ON CONFLICT (tenant_id, goal_id, attempt_number) DO NOTHING
+                    RETURNING id
                 """), {
                     "id": attempt_id,
                     "goal": goal_id,
@@ -201,8 +249,27 @@ class GoalPersistenceEngine:
                     "strat": strategy,
                     "goal_text": enriched_goal[:2000],
                     "backoff": backoff,
+                    "execution": strategy_execution_id,
+                    "strategy_id": strategy_id,
+                    "strategy_version": strategy_version,
+                    "profile_id": profile_id,
+                    "profile_version": profile_version,
+                    "idempotency_key": stable_key,
                 })
+                accepted_id = result.scalar_one_or_none()
+                if accepted_id is not None:
+                    await session.commit()
+                    return str(accepted_id)
+                existing = await session.execute(
+                    _t(
+                        "SELECT id FROM goal_attempts "
+                        "WHERE tenant_id=:tenant AND goal_id=:goal AND attempt_number=:num"
+                    ),
+                    {"tenant": tenant_id, "goal": goal_id, "num": attempt_num},
+                )
+                existing_id = str(existing.scalar_one())
                 await session.commit()
+                return existing_id
         except Exception as exc:
             logger.warning("attempt_write_failed", error=str(exc))
         return attempt_id
@@ -215,28 +282,45 @@ class GoalPersistenceEngine:
         failure_reason: str,
         iterations: int,
         cost_usd: float,
+        checkpoint_reference: str = "",
+        terminal_evidence: dict[str, Any] | None = None,
     ) -> None:
         """Update attempt record with completion data."""
         if self._db is None or not attempt_id:
             return
         try:
+            import json
+
             from sqlalchemy import text as _t
             async with self._db() as session:
-                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+                await session.execute(
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": tenant_id},
+                )
                 await session.execute(_t("""
                     UPDATE goal_attempts
                     SET ended_at = NOW(),
                         succeeded = :ok,
                         failure_reason = :reason,
                         iterations_used = :iters,
-                        cost_usd = :cost
-                    WHERE id = :id
+                        cost_usd = :cost,
+                        transition_reason = :transition_reason,
+                        checkpoint_reference = NULLIF(:checkpoint_reference, ''),
+                        budget_consumed = CAST(:budget_consumed AS jsonb),
+                        terminal_evidence = CAST(:terminal_evidence AS jsonb),
+                        version = version + 1
+                    WHERE id = :id AND tenant_id = :tenant
                 """), {
                     "id": attempt_id,
+                    "tenant": tenant_id,
                     "ok": succeeded,
                     "reason": failure_reason[:500] if failure_reason else "",
                     "iters": iterations,
                     "cost": cost_usd,
+                    "transition_reason": "completed" if succeeded else "failed",
+                    "checkpoint_reference": checkpoint_reference,
+                    "budget_consumed": json.dumps({"cost_usd": cost_usd}),
+                    "terminal_evidence": json.dumps(terminal_evidence or {}),
                 })
                 await session.commit()
         except Exception as exc:
@@ -255,7 +339,7 @@ class GoalPersistenceEngine:
 
         Args:
             goal: The original goal text
-            agent_factory: Callable that returns a fresh AgentGraph/AgentLoop per attempt
+            agent_factory: Callable that returns a fresh AgentGraph per attempt
             tenant_ctx: TenantContext
             event_callback: Async callback for SSE events
             goal_id: Optional goal ID for DB persistence writes
@@ -268,12 +352,10 @@ class GoalPersistenceEngine:
         last_failure = ""
         tenant_id = getattr(tenant_ctx, "tenant_id", "")
 
-        async def emit(event: dict) -> None:
+        async def emit(event: dict[str, Any]) -> None:
             if event_callback and config.emit_retry_events:
-                try:
+                with contextlib.suppress(Exception):
                     await event_callback(event)
-                except Exception:
-                    pass
 
         for attempt_number in range(1, config.max_attempts + 1):
             # Check total timeout
@@ -313,11 +395,21 @@ class GoalPersistenceEngine:
             attempt = AttemptRecord(
                 attempt_number=attempt_number,
                 strategy=strategy,
+                goal_id=goal_id,
+                strategy_id=config.strategy_id,
+                strategy_version=config.strategy_version,
+                profile_id=config.profile_id,
+                profile_version=config.profile_version,
+                idempotency_key=f"goal-attempt:{tenant_id}:{goal_id}:{attempt_number}",
             )
             self._attempts.append(attempt)
 
             enriched_goal = self._build_enriched_goal(goal, strategy, last_failure)
-            backoff_used = 0 if attempt_number == 1 else int(self._backoff_seconds(attempt_number - 1))
+            backoff_used = (
+                0
+                if attempt_number == 1
+                else int(self._backoff_seconds(attempt_number - 1))
+            )
 
             # Write attempt start to DB
             _db_attempt_id = await self._write_attempt_start(
@@ -327,6 +419,12 @@ class GoalPersistenceEngine:
                 strategy=str(strategy),
                 enriched_goal=enriched_goal,
                 backoff=backoff_used,
+                strategy_id=attempt.strategy_id,
+                strategy_version=attempt.strategy_version,
+                profile_id=attempt.profile_id,
+                profile_version=attempt.profile_version,
+                strategy_execution_id=attempt.strategy_execution_id,
+                idempotency_key=attempt.idempotency_key,
             )
 
             await emit({
@@ -344,7 +442,6 @@ class GoalPersistenceEngine:
                 else:
                     agent = agent_factory  # Already an agent instance
 
-                attempt_start = time.monotonic()
                 state = await agent.run(
                     goal=enriched_goal,
                     tenant_ctx=tenant_ctx,
@@ -354,8 +451,18 @@ class GoalPersistenceEngine:
                 attempt.iterations_used = getattr(state, "iterations", 0)
                 attempt.cost_usd = getattr(state, "context", {}).get("total_cost_usd", 0.0)
                 attempt.success = getattr(state, "verification_success", False) or (
-                    str(getattr(state, "status", "")).lower() in ("complete", "completed", "success")
+                    str(getattr(state, "status", "")).lower()
+                    in ("complete", "completed", "success")
                 )
+                attempt.checkpoint_reference = str(
+                    getattr(state, "context", {}).get("checkpoint_reference", "")
+                )
+                attempt.terminal_evidence = {
+                    "status": str(getattr(state, "status", "")),
+                    "verification_success": bool(
+                        getattr(state, "verification_success", False)
+                    ),
+                }
 
                 # Write attempt end to DB
                 await self._write_attempt_end(
@@ -365,6 +472,8 @@ class GoalPersistenceEngine:
                     failure_reason=attempt.failure_reason,
                     iterations=attempt.iterations_used,
                     cost_usd=attempt.cost_usd,
+                    checkpoint_reference=attempt.checkpoint_reference,
+                    terminal_evidence=attempt.terminal_evidence,
                 )
 
                 if attempt.success:

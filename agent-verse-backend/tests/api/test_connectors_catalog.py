@@ -174,7 +174,7 @@ def test_connector_test_endpoint_unknown_type_does_generic_check():
 
     resp = client.post("/connectors", json={
         "name": "unknown-service",
-        "url": "http://localhost:9999/api",
+        "url": "https://api.github.com/unknown-service",
         "auth_type": "bearer",
         "auth_config": {"token": "t"},
     })

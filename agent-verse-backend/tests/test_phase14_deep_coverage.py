@@ -336,7 +336,7 @@ def test_rag_query_returns_structured_result():
 
 def test_rag_all_strategies_accessible():
     client = _make_full_app()
-    for strategy in ["direct", "graph", "hyde", "auto"]:
+    for strategy in ["naive", "hybrid", "hyde", "graph"]:
         resp = client.post(
             "/rag/query",
             json={"query": "test", "strategy": strategy},

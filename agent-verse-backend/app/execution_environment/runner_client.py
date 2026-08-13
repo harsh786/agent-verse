@@ -11,6 +11,7 @@ from typing import Any
 
 from app.execution_environment.health import RunnerHealthCheck
 from app.execution_environment.models import (
+    CodeCancellationReceipt,
     ExecutionRequest,
     ExecutionResult,
 )
@@ -50,4 +51,9 @@ class BaseRunner(ABC):
             isolation metadata.  Must never raise — all errors must be captured
             in the ``ExecutionResult``.
         """
+        ...
+
+    @abstractmethod
+    async def cancel(self, workload_id: str, reason: str) -> CodeCancellationReceipt:
+        """Terminate a workload and return an idempotent cleanup receipt."""
         ...

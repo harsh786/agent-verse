@@ -1,0 +1,4342 @@
+{
+  "capabilities": [
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "autogpt",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "policy_runtime",
+        "production_sandbox",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "policy_runtime",
+        "production_sandbox"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "babyagi",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "camel",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "transcript_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "transcript_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": true,
+        "frontend": true,
+        "python_sdk": true,
+        "typescript_sdk": true
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "chain_of_thought",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "codeact",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 24,
+        "cost_usd": 0.8,
+        "depth": 8,
+        "duration_seconds": 240,
+        "edges": 7,
+        "fan_out": 1,
+        "nodes": 8,
+        "rounds": 8,
+        "tokens": 24000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "code_interpreter",
+        "production_sandbox",
+        "artifact_store",
+        "checkpoint_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "code_interpreter",
+        "production_sandbox",
+        "artifact_store",
+        "checkpoint_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "consensus",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "debate",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "decentralized_swarm",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "lease_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "lease_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": true,
+        "frontend": true,
+        "python_sdk": true,
+        "typescript_sdk": true
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "few_shot_cot",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 3,
+        "cost_usd": 0.08,
+        "depth": 1,
+        "duration_seconds": 60,
+        "edges": 0,
+        "fan_out": 1,
+        "nodes": 0,
+        "rounds": 1,
+        "tokens": 6000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "reasoning_example_source",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store",
+        "reasoning_example_source"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "generative_agents",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "memory_repository",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "memory_repository"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": true,
+        "frontend": true,
+        "python_sdk": true,
+        "typescript_sdk": true
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "goal_tree",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "graph_of_thoughts",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 24,
+        "cost_usd": 0.4,
+        "depth": 4,
+        "duration_seconds": 180,
+        "edges": 48,
+        "fan_out": 4,
+        "nodes": 24,
+        "rounds": 6,
+        "tokens": 24000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "group_chat",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "transcript_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "transcript_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "intent_router",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "lats",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 0.6,
+        "depth": 6,
+        "duration_seconds": 240,
+        "edges": 31,
+        "fan_out": 4,
+        "nodes": 32,
+        "rounds": 24,
+        "tokens": 32000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "least_to_most",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 10,
+        "cost_usd": 0.2,
+        "depth": 8,
+        "duration_seconds": 120,
+        "edges": 12,
+        "fan_out": 1,
+        "nodes": 8,
+        "rounds": 8,
+        "tokens": 12000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "llm_compiler",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 16,
+        "cost_usd": 0.35,
+        "depth": 8,
+        "duration_seconds": 180,
+        "edges": 32,
+        "fan_out": 4,
+        "nodes": 16,
+        "rounds": 8,
+        "tokens": 16000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "loop_engineering",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "loop_until",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "magentic",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "progress_ledger",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "progress_ledger"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "market_auction",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "auction_repository",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "auction_repository"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": true,
+        "frontend": true,
+        "python_sdk": true,
+        "typescript_sdk": true
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "meta_agent_planner",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "mixture_of_agents",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "moa_repository",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "coordination_outbox",
+        "moa_repository"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": true,
+        "frontend": true,
+        "python_sdk": true,
+        "typescript_sdk": true
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "peer_review",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "persistence_strategy",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "plan_execute",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "program_of_thought",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 3,
+        "cost_usd": 0.15,
+        "depth": 1,
+        "duration_seconds": 30,
+        "edges": 0,
+        "fan_out": 1,
+        "nodes": 1,
+        "rounds": 1,
+        "tokens": 8000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "code_interpreter",
+        "production_sandbox",
+        "artifact_store",
+        "checkpoint_store",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "code_interpreter",
+        "production_sandbox",
+        "artifact_store",
+        "checkpoint_store"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "react",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "reflection",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "reflexion",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "rewoo",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 12,
+        "cost_usd": 0.3,
+        "depth": 6,
+        "duration_seconds": 180,
+        "edges": 24,
+        "fan_out": 4,
+        "nodes": 12,
+        "rounds": 8,
+        "tokens": 12000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "provider",
+        "checkpoint_store",
+        "governed_tool_dispatcher"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "scratchpad",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "self_consistency",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "self_refine",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "skill_selector",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "structured_planning",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "partial",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "supervisor",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "tree_of_thoughts",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "voyager",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "checkpoint_store",
+        "memory_repository",
+        "production_sandbox",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "checkpoint_store",
+        "memory_repository",
+        "production_sandbox"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "wave_execution",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "workflow_dag",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "reasoning",
+      "implementation_state": "implemented",
+      "learning_phase": 2,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "01-11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "adaptive",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "agentic",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "agentic_chunking",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "colbert",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "colbert_library",
+        "colbert_checkpoint",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "colbert_library",
+        "colbert_checkpoint"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "corrective",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "flare",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "fusion",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "graph",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "graph",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "graph"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "hybrid",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "hyde",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "modular",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "multi_hop",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "naive",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "raft",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "raft_service",
+        "raft_model",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "raft_service",
+        "raft_model"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "raptor",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "self_rag",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "speculative",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "web_augmented",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "web",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "web"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "budget_control",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "context_budgeting",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "cost_optimisation",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "embedding_routing",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "latency_optimisation",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "llm_response_cache",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "model_ab_testing",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "model_routing",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "prompt_ab_testing",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "prompt_compression",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "semantic_cache",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "embedder",
+        "registry_contract"
+      ],
+      "required_dependencies": [
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "token_optimisation",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "optimization",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "circuit_breaker",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "consensus_verification",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "implemented",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "strategy_runner"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "constitutional_ai",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "implemented",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 2,
+        "cost_usd": 0.2,
+        "depth": 1,
+        "duration_seconds": 60,
+        "edges": 0,
+        "fan_out": 1,
+        "nodes": 1,
+        "rounds": 1,
+        "tokens": 8000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "policy_runtime",
+        "provider",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "policy_runtime",
+        "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "data_classification",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "exfiltration_guard",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "grounding_checker",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "guardrails",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "hitl",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "permission_matrix",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "plan_verification",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "policy_compiler",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "provenance_verification",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "rollback",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "partial",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "sandbox",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "safety",
+      "implementation_state": "planned",
+      "learning_phase": 5,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "10",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "episodic_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "execution_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "knowledge_graph_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "long_term_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "procedural_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "prospective_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "planned",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "reflexion_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "semantic_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "embedder",
+        "registry_contract"
+      ],
+      "required_dependencies": [
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "session_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "working_memory",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "memory",
+      "implementation_state": "partial",
+      "learning_phase": 6,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "11",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "registry_contract"
+      ],
+      "required_dependencies": [],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    }
+  ],
+  "generated_from": "sealed runtime registry plus certification evidence",
+  "schema_version": 1
+}

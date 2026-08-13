@@ -2,21 +2,25 @@
 from __future__ import annotations
 
 import pytest
+
 from app.agent.state import AgentState, GoalStatus, StepResult
 from app.evals.goal_score import GoalScorer
 from app.evals.rag_score import RAGScorer
-from app.evals.safety_score import SafetyScorer
-from app.evals.model_score import ModelScorer
-from app.evals.agent_score import AgentScorer
-from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
 from app.evals.regression_gate import RegressionGate
+from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
+from app.evals.safety_score import SafetyScorer
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
 )
 from app.rag.agentic.retriever_tool import RetrievalResult
-from app.tenancy.context import TenantContext, PlanTier
-
+from app.tenancy.context import PlanTier, TenantContext
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,9 +102,9 @@ def test_rag_scorer_high_confidence_kb() -> None:
     assert score == pytest.approx(0.95, abs=1e-6)
 
 
-def test_rag_scorer_none_returns_mid() -> None:
+def test_rag_scorer_none_is_unavailable() -> None:
     scorer = RAGScorer()
-    assert scorer.score(None) == 0.5
+    assert scorer.score(None) is None
 
 
 def test_rag_scorer_parametric_penalized() -> None:
@@ -137,7 +141,47 @@ def test_scorecard_has_nine_dimensions() -> None:
         "goal_success", "rag_quality", "safety", "latency", "cost_efficiency",
         "grounding", "citation_quality", "retrieval_confidence", "tool_success_rate",
     }
-    assert set(result.scores.keys()) == expected_keys
+    assert set(result.dimension_status) == expected_keys
+    assert set(result.scores).issubset(expected_keys)
+    assert result.dimension_status["rag_quality"] == "not_applicable"
+    assert result.dimension_status["retrieval_confidence"] == "not_applicable"
+    assert result.dimension_status["cost_efficiency"] == "unavailable"
+    assert result.dimension_status["latency"] == "unavailable"
+
+
+def test_scorecard_omits_unavailable_dimensions_from_denominator() -> None:
+    sc = RuntimeScorecard()
+    state = _make_state(status=GoalStatus.COMPLETE)
+    result = sc.score(state=state, profile=_make_profile())
+    assert "cost_efficiency" not in result.scores
+    assert "latency" not in result.scores
+    assert result.coverage < 1.0
+    assert result.overall_score == pytest.approx(
+        sum(result.scores[name] * result.weights[name] for name in result.scores)
+        / sum(result.weights[name] for name in result.scores),
+        abs=1e-3,
+    )
+
+
+def test_scorecard_measures_supplied_cost_latency_and_retrieval() -> None:
+    state = _make_state(status=GoalStatus.COMPLETE)
+    state.context["grounding_checked"] = True
+    state.cited_answer = "Answer [1]"
+    state.provenance = [{"confidence": 0.9}]
+    result = RuntimeScorecard().score(
+        state=state,
+        profile=_make_profile(),
+        retrieval_result=_make_retrieval("knowledge_base", 0.9),
+        cost_usd=0.02,
+        latency_ms=2500.0,
+        guardrail_violations=0,
+    )
+    for name in (
+        "rag_quality", "retrieval_confidence", "cost_efficiency", "latency", "safety"
+    ):
+        assert result.dimension_status[name] == "measured"
+        assert name in result.scores
+    assert result.coverage == 1.0
 
 
 def test_scorecard_json_serializable() -> None:

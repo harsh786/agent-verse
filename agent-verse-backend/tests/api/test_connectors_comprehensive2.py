@@ -84,7 +84,7 @@ def _register_connector(client: TestClient, name: str = "My Connector") -> dict:
         "/connectors",
         json={
             "name": name,
-            "url": "https://connector.example.com/mcp",
+            "url": "https://api.github.com/mcp",
             "auth_type": "none",
             "description": "Test connector",
         },
@@ -295,7 +295,7 @@ def test_register_with_oauth_auth_type() -> None:
         "/connectors",
         json={
             "name": "OAuth Connector",
-            "url": "https://oauth.example.com/mcp",
+            "url": "https://api.github.com/oauth-mcp",
             "auth_type": "oauth",
             "auth_config": {"client_id": "my_client"},
         },
@@ -310,7 +310,7 @@ def test_register_with_basic_auth_type() -> None:
         "/connectors",
         json={
             "name": "Basic Auth Connector",
-            "url": "https://basic.example.com/mcp",
+            "url": "https://api.github.com/basic-mcp",
             "auth_type": "basic",
             "auth_config": {"username": "user", "password": "pass"},
         },
@@ -352,7 +352,7 @@ def test_update_connector_success() -> None:
         f"/connectors/{server_id}",
         json={
             "name": "Updated Name",
-            "url": "https://updated.example.com/mcp",
+            "url": "https://api.github.com/updated-mcp",
             "auth_type": "none",
         },
         headers={"X-API-Key": _VALID_KEY},

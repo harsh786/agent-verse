@@ -3,6 +3,8 @@ CRITICAL rules: safety rules can only ADD, never remove.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     Complexity,
@@ -21,9 +23,31 @@ from app.orchestration.strategy_registry import StrategyRegistry
 from app.rag.contracts import RAGStrategy
 
 
+@dataclass(frozen=True, slots=True)
+class PatternCandidate:
+    strategy_id: str
+    score: float
+    reason_code: str
+
+
 class PatternSelector:
     def __init__(self, registry: StrategyRegistry) -> None:
         self._registry = registry
+
+    def score_reasoning_candidates(
+        self,
+        props: GoalProperties,
+    ) -> tuple[PatternCandidate, ...]:
+        """Return ranked candidates; profile composition owns final acceptance."""
+        selected = self.select_agent_patterns(props)
+        return tuple(
+            PatternCandidate(
+                strategy_id=strategy_id,
+                score=max(0.0, 1.0 - index * 0.1),
+                reason_code=selected.selection_reasons.get(strategy_id, "selected"),
+            )
+            for index, strategy_id in enumerate(selected.reasoning)
+        )
 
     def select_agent_patterns(self, props: GoalProperties) -> AgentPatternConfig:
         reasoning: list[str] = ["react"]
@@ -52,6 +76,13 @@ class PatternSelector:
                 reasons["chain_of_thought"] = f"complexity={props.complexity.value}"
             reasoning = list(dict.fromkeys([*reasoning, "reflection"]))
             reasons["reflection"] = "complex goals benefit from reflection"
+            if (
+                props.time_sensitivity != TimeSensitivity.REALTIME
+                and props.domain == Domain.ANALYTICAL
+                and self._registry.is_available("self_consistency")
+            ):
+                reasoning.append("self_consistency")
+                reasons["self_consistency"] = "complex analytical goal"
             max_iter = 25
 
         if props.complexity == Complexity.EXPERT:
@@ -60,6 +91,12 @@ class PatternSelector:
             if self._registry.is_available("goal_tree"):
                 multi_agent = ["goal_tree"]
                 reasons["goal_tree"] = "expert complexity → parallel sub-goals"
+            if (
+                props.time_sensitivity != TimeSensitivity.REALTIME
+                and self._registry.is_available("tree_of_thoughts")
+            ):
+                reasoning.append("tree_of_thoughts")
+                reasons["tree_of_thoughts"] = "expert search-space reasoning"
 
         if props.requires_code and self._registry.is_available("self_refine"):
             reasoning = list(dict.fromkeys([*reasoning, "self_refine"]))
@@ -74,6 +111,16 @@ class PatternSelector:
             reasons["self_refine"] = (
                 "generative/creative task — self-refinement improves quality"
             )
+
+        if (
+            props.is_generative
+            and props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+            and self._registry.is_available("peer_review")
+        ):
+            reasoning.append("peer_review")
+            reasons["peer_review"] = "high-impact generated output requires review"
+
+        reasoning = list(dict.fromkeys(reasoning))
 
         return AgentPatternConfig(
             reasoning=reasoning,

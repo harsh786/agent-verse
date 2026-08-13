@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.loop import AgentLoop
+from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.audit import AuditLog
@@ -37,7 +37,7 @@ async def test_goal_reaches_complete_status() -> None:
         "step 2 output",
         '{"success": true, "reason": "Goal completed"}',
     ])
-    loop = AgentLoop(planner=provider, executor=provider, verifier=provider)
+    loop = AgentGraph(planner=provider, executor=provider, verifier=provider)
     events: list[dict] = []
 
     async def capture(e: dict) -> None:
@@ -64,7 +64,7 @@ async def test_goal_with_full_pipeline() -> None:
     rp = ResultProcessor()
     memory = ExecutionMemory()
 
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -91,7 +91,7 @@ async def test_replan_on_verification_failure_then_succeed() -> None:
         "attempt 2 output",                      # Execute
         '{"success": true, "reason": "Now done"}',       # Pass verification
     ])
-    loop = AgentLoop(planner=provider, executor=provider, verifier=provider)
+    loop = AgentGraph(planner=provider, executor=provider, verifier=provider)
     state = await loop.run(goal="replan test", tenant_ctx=TENANT)
     assert state.status == GoalStatus.COMPLETE
     assert state.iterations == 2
@@ -105,7 +105,7 @@ async def test_max_iterations_exceeded() -> None:
         "output",
         '{"success": false, "reason": "always failing"}',
     ] * 20)
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=always_fail,
         executor=always_fail,
         verifier=always_fail,
@@ -127,7 +127,7 @@ async def test_cost_budget_exceeded() -> None:
     # Budget of 0.0 USD means any cost estimate (0.01) will be rejected immediately
     cost = CostController(BudgetConfig(per_goal_usd=0.0))
 
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -155,7 +155,7 @@ async def test_circuit_breaker_open_skips_step() -> None:
         breaker.record_failure()
 
     # The loop checks circuit_breakers["llm"] by convention
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -177,7 +177,7 @@ async def test_hitl_request_created_for_high_risk_step() -> None:
         '{"success": true, "reason": "done"}',
     ])
     hitl = HITLGateway()
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -201,7 +201,7 @@ async def test_result_processor_redacts_secrets() -> None:
         '{"success": true, "reason": "done"}',
     ])
     rp = ResultProcessor()
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -224,7 +224,7 @@ async def test_execution_memory_records_winning_plan() -> None:
         '{"success": true, "reason": "done"}',
     ])
     memory = ExecutionMemory()
-    loop = AgentLoop(
+    loop = AgentGraph(
         planner=provider,
         executor=provider,
         verifier=provider,
@@ -254,7 +254,7 @@ async def test_tenant_isolation() -> None:
         '{"steps": ["step"]}', "output", '{"success": true, "reason": "done"}',
         '{"steps": ["step"]}', "output", '{"success": true, "reason": "done"}',
     ])
-    loop = AgentLoop(planner=provider, executor=provider, verifier=provider)
+    loop = AgentGraph(planner=provider, executor=provider, verifier=provider)
 
     state_a = await loop.run(goal="tenant a goal", tenant_ctx=tenant_a)
     state_b = await loop.run(goal="tenant b goal", tenant_ctx=tenant_b)

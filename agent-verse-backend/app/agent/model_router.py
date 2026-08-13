@@ -12,7 +12,6 @@ task-type model is not configured.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,27 +105,15 @@ class ModelRouter:
     def from_provider_name(cls, provider_name: str) -> ModelRouter:
         return cls(provider_name=provider_name)
 
-    # Simple goal keywords → use cheaper model tier
-    _SIMPLE_PATTERNS = re.compile(
-        r"\b(list|show|get|find|search|what is|who is|when|count|how many|"
-        r"check status|ping|describe|summarize in one|give me the)\b",
-        re.IGNORECASE,
-    )
-    _COMPLEX_PATTERNS = re.compile(
-        r"\b(create|build|deploy|implement|design|architect|automate|"
-        r"migrate|refactor|analyze and|generate report|compare|"
-        r"multi.step|workflow|pipeline|integrate)\b",
-        re.IGNORECASE,
-    )
-
     def complexity_tier(self, goal: str) -> str:
-        """
-        Classify goal complexity: 'simple' | 'medium' | 'complex'
-        Used to downgrade the model for cheap goals to save cost.
-        """
-        if self._COMPLEX_PATTERNS.search(goal):
+        """Compatibility facade over the canonical orchestration classifier."""
+        from app.orchestration.goal_classifier import GoalClassifier
+        from app.orchestration.runtime_profile import Complexity
+
+        complexity = GoalClassifier().classify_fast(goal).complexity
+        if complexity in {Complexity.COMPLEX, Complexity.EXPERT}:
             return "complex"
-        if self._SIMPLE_PATTERNS.search(goal):
+        if complexity is Complexity.SIMPLE:
             return "simple"
         return "medium"
 

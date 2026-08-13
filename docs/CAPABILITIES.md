@@ -1257,3 +1257,108 @@ Scheduling, memory, multi-agent orchestration, RPA, collaboration, compliance, S
 
 *AgentVerse — The operating system for autonomous enterprise AI.*  
 *Multi-tenant · Governance-first · 227 connectors · Zero hardcoded workflows*
+
+<!-- BEGIN GENERATED STRATEGY RUNTIME -->
+## Strategy Runtime (generated)
+
+Generated from executable registry metadata and evidence-derived state. Do not edit.
+
+| Capability | Version | Registry state | Production state | Readiness |
+|---|---:|---|---|---|
+| `autogpt` | `1.0.0` | implemented | partial | checkpoint_store, policy_runtime, production_sandbox, strategy_runner |
+| `babyagi` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, strategy_runner |
+| `camel` | `1.0.0` | implemented | partial | checkpoint_store, transcript_store, strategy_runner |
+| `chain_of_thought` | `1.0.0` | implemented | partial | strategy_runner |
+| `codeact` | `1.0.0` | implemented | partial | code_interpreter, production_sandbox, artifact_store, checkpoint_store, strategy_runner |
+| `consensus` | `1.0.0` | implemented | partial | strategy_runner |
+| `debate` | `1.0.0` | implemented | partial | strategy_runner |
+| `decentralized_swarm` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, lease_store, strategy_runner |
+| `few_shot_cot` | `1.0.0` | implemented | partial | provider, checkpoint_store, reasoning_example_source, strategy_runner |
+| `generative_agents` | `1.0.0` | implemented | partial | checkpoint_store, memory_repository, strategy_runner |
+| `goal_tree` | `1.0.0` | implemented | partial | strategy_runner |
+| `graph_of_thoughts` | `1.0.0` | implemented | partial | provider, checkpoint_store, strategy_runner |
+| `group_chat` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, transcript_store, strategy_runner |
+| `intent_router` | `1.0.0` | partial | partial | registry_contract |
+| `lats` | `1.0.0` | implemented | partial | provider, checkpoint_store, governed_tool_dispatcher, strategy_runner |
+| `least_to_most` | `1.0.0` | implemented | partial | provider, checkpoint_store, strategy_runner |
+| `llm_compiler` | `1.0.0` | implemented | partial | provider, checkpoint_store, governed_tool_dispatcher, strategy_runner |
+| `loop_engineering` | `1.0.0` | partial | partial | registry_contract |
+| `loop_until` | `1.0.0` | implemented | partial | strategy_runner |
+| `magentic` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, progress_ledger, strategy_runner |
+| `market_auction` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, auction_repository, strategy_runner |
+| `meta_agent_planner` | `1.0.0` | partial | partial | registry_contract |
+| `mixture_of_agents` | `1.0.0` | implemented | partial | checkpoint_store, coordination_outbox, moa_repository, strategy_runner |
+| `peer_review` | `1.0.0` | implemented | partial | strategy_runner |
+| `persistence_strategy` | `1.0.0` | partial | partial | registry_contract |
+| `plan_execute` | `1.0.0` | implemented | partial | strategy_runner |
+| `program_of_thought` | `1.0.0` | implemented | partial | code_interpreter, production_sandbox, artifact_store, checkpoint_store, strategy_runner |
+| `react` | `1.0.0` | implemented | partial | strategy_runner |
+| `reflection` | `1.0.0` | implemented | partial | strategy_runner |
+| `reflexion` | `1.0.0` | partial | partial | registry_contract |
+| `rewoo` | `1.0.0` | implemented | partial | provider, checkpoint_store, governed_tool_dispatcher, strategy_runner |
+| `scratchpad` | `1.0.0` | implemented | partial | strategy_runner |
+| `self_consistency` | `1.0.0` | implemented | partial | strategy_runner |
+| `self_refine` | `1.0.0` | implemented | partial | strategy_runner |
+| `skill_selector` | `1.0.0` | partial | partial | registry_contract |
+| `structured_planning` | `1.0.0` | partial | partial | registry_contract |
+| `supervisor` | `1.0.0` | implemented | partial | strategy_runner |
+| `tree_of_thoughts` | `1.0.0` | implemented | partial | strategy_runner |
+| `voyager` | `1.0.0` | implemented | partial | checkpoint_store, memory_repository, production_sandbox, strategy_runner |
+| `wave_execution` | `1.0.0` | implemented | partial | strategy_runner |
+| `workflow_dag` | `1.0.0` | implemented | partial | strategy_runner |
+| `adaptive` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `agentic` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `agentic_chunking` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `colbert` | `1.0.0` | implemented | partial | database, embedder, colbert_library, colbert_checkpoint, strategy_runner |
+| `corrective` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `flare` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `fusion` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `graph` | `1.0.0` | implemented | partial | database, embedder, graph, strategy_runner |
+| `hybrid` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `hyde` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `modular` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `multi_hop` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `naive` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `raft` | `1.0.0` | implemented | partial | database, embedder, raft_service, raft_model, strategy_runner |
+| `raptor` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `self_rag` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `speculative` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `web_augmented` | `1.0.0` | implemented | partial | database, embedder, web, strategy_runner |
+| `budget_control` | `1.0.0` | partial | partial | registry_contract |
+| `circuit_breaker` | `1.0.0` | partial | partial | registry_contract |
+| `consensus_verification` | `1.0.0` | implemented | partial | strategy_runner |
+| `constitutional_ai` | `1.0.0` | implemented | partial | policy_runtime, provider, strategy_runner |
+| `context_budgeting` | `1.0.0` | planned | partial | registry_contract |
+| `cost_optimisation` | `1.0.0` | partial | partial | registry_contract |
+| `data_classification` | `1.0.0` | planned | partial | registry_contract |
+| `embedding_routing` | `1.0.0` | partial | partial | registry_contract |
+| `exfiltration_guard` | `1.0.0` | partial | partial | registry_contract |
+| `grounding_checker` | `1.0.0` | partial | partial | registry_contract |
+| `guardrails` | `1.0.0` | partial | partial | registry_contract |
+| `hitl` | `1.0.0` | partial | partial | registry_contract |
+| `latency_optimisation` | `1.0.0` | planned | partial | registry_contract |
+| `llm_response_cache` | `1.0.0` | partial | partial | registry_contract |
+| `model_ab_testing` | `1.0.0` | planned | partial | registry_contract |
+| `model_routing` | `1.0.0` | partial | partial | registry_contract |
+| `permission_matrix` | `1.0.0` | partial | partial | registry_contract |
+| `plan_verification` | `1.0.0` | planned | partial | registry_contract |
+| `policy_compiler` | `1.0.0` | planned | partial | registry_contract |
+| `prompt_ab_testing` | `1.0.0` | planned | partial | registry_contract |
+| `prompt_compression` | `1.0.0` | partial | partial | registry_contract |
+| `provenance_verification` | `1.0.0` | planned | partial | registry_contract |
+| `rollback` | `1.0.0` | partial | partial | registry_contract |
+| `sandbox` | `1.0.0` | planned | partial | registry_contract |
+| `semantic_cache` | `1.0.0` | partial | partial | embedder, registry_contract |
+| `token_optimisation` | `1.0.0` | partial | partial | registry_contract |
+| `episodic_memory` | `1.0.0` | partial | partial | registry_contract |
+| `execution_memory` | `1.0.0` | partial | partial | registry_contract |
+| `knowledge_graph_memory` | `1.0.0` | partial | partial | registry_contract |
+| `long_term_memory` | `1.0.0` | partial | partial | registry_contract |
+| `procedural_memory` | `1.0.0` | partial | partial | registry_contract |
+| `prospective_memory` | `1.0.0` | planned | partial | registry_contract |
+| `reflexion_memory` | `1.0.0` | partial | partial | registry_contract |
+| `semantic_memory` | `1.0.0` | partial | partial | embedder, registry_contract |
+| `session_memory` | `1.0.0` | partial | partial | registry_contract |
+| `working_memory` | `1.0.0` | partial | partial | registry_contract |
+
+<!-- END GENERATED STRATEGY RUNTIME -->

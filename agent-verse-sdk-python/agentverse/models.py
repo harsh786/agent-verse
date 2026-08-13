@@ -67,6 +67,30 @@ class GoalSubmitRequest(BaseModel):
     dry_run: bool = False
     agent_id: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
+    strategy_override: str | None = None
+    auxiliary_strategies: list[str] = Field(default_factory=list)
+    pattern_limits: dict[str, int | float] | None = None
+
+
+class CoordinationMessagePage(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    next_sequence: int = 0
+    has_more: bool = False
+
+
+class CoordinationLayerPage(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    next_layer: int = -1
+    has_more: bool = False
+
+
+class CoordinationEvent(BaseModel):
+    event_id: str
+    session_id: str
+    sequence: int = Field(gt=0)
+    schema_version: int = Field(default=1, gt=0)
+    event_type: str
+    payload: dict[str, Any] | None = None
 
 
 class AgentCreateRequest(BaseModel):

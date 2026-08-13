@@ -105,11 +105,27 @@ def test_mock_server_goal_auto_completes():
     """Mock server must auto-complete goals for SDK testing."""
     import inspect
     import sys
-    sys.path.insert(0, "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python")
-    from agentverse import mock_server
-    src = inspect.getsource(mock_server)
-    assert "_auto_complete" in src or "auto_complete" in src, \
-        "Mock server must auto-advance goal status to complete"
+    sdk_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python"
+    sys.path.insert(0, sdk_path)
+    # Clear any cached agentverse modules so the local SDK path takes priority
+    # over the installed venv package (which may lack mock_server when imported
+    # earlier by the application during other test collection).
+    for key in list(sys.modules.keys()):
+        if key == "agentverse" or key.startswith("agentverse."):
+            del sys.modules[key]
+    try:
+        from agentverse import mock_server
+        src = inspect.getsource(mock_server)
+        assert "_auto_complete" in src or "auto_complete" in src, \
+            "Mock server must auto-advance goal status to complete"
+    finally:
+        # Restore: remove sdk_path so it doesn't pollute subsequent tests
+        if sdk_path in sys.path:
+            sys.path.remove(sdk_path)
+        for key in list(sys.modules.keys()):
+            if key == "agentverse" or key.startswith("agentverse."):
+                del sys.modules[key]
+
 
 
 def test_migration_0034_filename_correct():

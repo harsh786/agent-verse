@@ -1,12 +1,20 @@
 """Tests: EvalRunner exposes all 7 dimensions in score_dimensions and DIMENSIONS."""
 from __future__ import annotations
 
-import pytest
-
-from app.intelligence.eval_runner import EvalRunner
 from app.agent.state import AgentState, GoalStatus
-from app.tenancy.context import TenantContext, PlanTier
-
+from app.intelligence.eval_runner import EvalRunner
+from app.orchestration.runtime_profile import (
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
+    StrategySelection,
+)
+from app.tenancy.context import PlanTier, TenantContext
 
 ALL_7_DIMENSIONS = {
     "task_completion",
@@ -107,3 +115,39 @@ def test_tool_relevance_dimension_present():
     runner = EvalRunner()
     scorecard = runner.score(state=_make_state(), tenant_ctx=_ctx())
     assert "tool_relevance" in scorecard.scores
+
+
+def test_scorecard_contains_versioned_strategy_provenance():
+    state = _make_state()
+    profile = GoalRuntimeProfile(
+        goal_id="g1",
+        tenant_id="t1",
+        properties=GoalProperties(raw_goal="test goal"),
+        agent_patterns=AgentPatternConfig(),
+        rag_strategy=RAGStrategyConfig(),
+        model_plan=ModelPlanConfig(),
+        security=SecurityConfig(),
+        memory_cache=MemoryCacheConfig(),
+        eval_config=EvalConfig(),
+        primary_strategy=StrategySelection("react", "1.0.0"),
+        auxiliary_strategies=(StrategySelection("reflection", "1.0.0"),),
+    )
+    state.context.update({
+        "_runtime_profile": profile,
+        "strategy_execution_id": "execution-1",
+        "correlation_id": "correlation-1",
+        "causation_id": "causation-1",
+    })
+
+    scorecard = EvalRunner().score(state=state, tenant_ctx=_ctx())
+
+    assert scorecard.primary_strategy_id == "react"
+    assert scorecard.primary_strategy_version == "1.0.0"
+    assert scorecard.auxiliary_strategy_versions == {"reflection": "1.0.0"}
+    assert scorecard.profile_id == profile.profile_id
+    assert scorecard.profile_version == 2
+    assert scorecard.strategy_execution_id == "execution-1"
+    assert scorecard.evaluator_version == EvalRunner.EVALUATOR_VERSION
+    assert scorecard.correlation_id == "correlation-1"
+    assert scorecard.causation_id == "causation-1"
+    assert set(scorecard.evidence_completeness) == ALL_7_DIMENSIONS

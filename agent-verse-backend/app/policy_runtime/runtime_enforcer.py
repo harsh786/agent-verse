@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from app.policy_runtime.constraint_model import RuntimeConstraints
 
 
@@ -6,9 +7,7 @@ class RuntimeEnforcer:
     def is_capability_allowed(self, capability_id: str, constraints: RuntimeConstraints) -> bool:
         if capability_id in constraints.denied_capabilities:
             return False
-        if constraints.allowed_capabilities:
-            return capability_id in constraints.allowed_capabilities
-        return True
+        return capability_id in constraints.allowed_capabilities
 
     def requires_approval(self, constraints: RuntimeConstraints) -> bool:
         return bool(constraints.required_approvals)

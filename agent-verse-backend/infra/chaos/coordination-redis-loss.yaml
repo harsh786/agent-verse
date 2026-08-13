@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: coordination-redis-loss
+  namespace: agentverse-test
+spec:
+  action: partition
+  mode: fixed
+  value: "1"
+  duration: 60s
+  selector:
+    namespaces: [agentverse-test]
+    labelSelectors: {app: agentverse-backend}
+  direction: to
+  target:
+    mode: one
+    selector:
+      namespaces: [agentverse-test]
+      labelSelectors: {app: redis}

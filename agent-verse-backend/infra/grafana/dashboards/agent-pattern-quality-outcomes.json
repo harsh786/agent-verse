@@ -1,0 +1,14 @@
+{
+  "uid": "agent-pattern-quality-outcomes",
+  "title": "Agent Pattern Quality and Outcomes",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "panels": [
+    {"id": 1, "title": "Success rate", "type": "timeseries", "targets": [{"expr": "sum by (strategy) (rate(agentverse_strategy_execution_total{status=\"success\"}[15m])) / clamp_min(sum by (strategy) (rate(agentverse_strategy_execution_total[15m])), 0.001)"}]},
+    {"id": 2, "title": "Cost by family", "type": "timeseries", "targets": [{"expr": "sum by (family) (rate(agentverse_strategy_cost_usd_total[15m]))"}]},
+    {"id": 3, "title": "Tokens by strategy", "type": "timeseries", "targets": [{"expr": "sum by (strategy) (rate(agentverse_strategy_tokens_total[15m]))"}]},
+    {"id": 4, "title": "Policy denials", "type": "timeseries", "targets": [{"expr": "sum(rate(agentverse_pattern_safety_total{kind=\"policy\",status=\"denied\"}[15m]))"}]},
+    {"id": 5, "title": "Allocation failures", "type": "timeseries", "targets": [{"expr": "sum(rate(agentverse_coordination_event_total{event=\"allocation\",status=\"failed\"}[15m]))"}]},
+    {"id": 6, "title": "Memory quarantine", "type": "timeseries", "targets": [{"expr": "sum(rate(agentverse_pattern_safety_total{kind=\"memory\",status=\"denied\"}[15m]))"}]}
+  ]
+}

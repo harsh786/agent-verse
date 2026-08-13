@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from agentverse.models import GoalEvent
+from agentverse.models import CoordinationEvent, GoalEvent
 
 
 async def stream_sse(
@@ -43,3 +43,35 @@ async def stream_sse(
                     ts=datetime.now(UTC),
                     data=payload,
                 )
+
+
+async def stream_coordination_sse(
+    url: str,
+    headers: dict[str, str],
+    *,
+    after_sequence: int = 0,
+    timeout: float | None = None,
+) -> AsyncIterator[CoordinationEvent]:
+    """Yield persisted coordination events once, resuming strictly after a cursor."""
+    request_headers = dict(headers)
+    request_headers["Last-Event-ID"] = str(after_sequence)
+    seen: set[str] = set()
+    cursor = after_sequence
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+        async with client.stream("GET", url, headers=request_headers) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                if not raw_line.startswith("data: "):
+                    continue
+                payload_text = raw_line[6:].strip()
+                if not payload_text or payload_text == "[DONE]":
+                    break
+                try:
+                    event = CoordinationEvent.model_validate_json(payload_text)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise ValueError("malformed coordination SSE event") from exc
+                if event.event_id in seen or event.sequence <= cursor:
+                    continue
+                seen.add(event.event_id)
+                cursor = event.sequence
+                yield event

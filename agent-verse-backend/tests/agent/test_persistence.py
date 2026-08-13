@@ -1,10 +1,38 @@
 """Tests for GoalPersistenceEngine — agent retry and persistence logic."""
 from __future__ import annotations
 import asyncio
+from types import SimpleNamespace
+
 import pytest
 from app.agent.persistence import (
     GoalPersistenceEngine, PersistenceConfig, RetryStrategy, AttemptRecord
 )
+from app.orchestration.runtime_profile import default_pattern_limits
+
+
+def test_runtime_profile_owns_persistence_limits_and_strategy_identity() -> None:
+    profile = SimpleNamespace(
+        agent_patterns=SimpleNamespace(
+            max_persistence_attempts=9,
+            max_iterations=20,
+        ),
+        effective_limits=default_pattern_limits().model_copy(
+            update={"rounds": 4, "duration_seconds": 120}
+        ),
+        primary_strategy=SimpleNamespace(
+            strategy_id="plan_execute", adapter_version="1.0.0"
+        ),
+        profile_id="profile-v2",
+        profile_version=2,
+    )
+
+    config = PersistenceConfig.from_runtime_profile(profile)
+
+    assert config.max_attempts == 4
+    assert config.iterations_per_attempt == 4
+    assert config.total_timeout_seconds == 120
+    assert config.strategy_id == "plan_execute"
+    assert config.profile_id == "profile-v2"
 
 
 def make_config(**kwargs) -> PersistenceConfig:

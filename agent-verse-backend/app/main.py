@@ -56,6 +56,16 @@ from app.api.auth import router as auth_router
 from app.api.civilization import router as civilization_router
 from app.api.collab import router as collab_router
 from app.api.connectors import router as connectors_router
+from app.api.coordination import router as coordination_router
+from app.api.coordination_auction import router as coordination_auction_router
+from app.api.coordination_camel import router as coordination_camel_router
+from app.api.coordination_generative import router as coordination_generative_router
+from app.api.coordination_group_chat import router as coordination_group_chat_router
+from app.api.coordination_handoffs import router as coordination_handoffs_router
+from app.api.coordination_magentic import router as coordination_magentic_router
+from app.api.coordination_moa import router as coordination_moa_router
+from app.api.coordination_swarm import router as coordination_swarm_router
+from app.api.coordination_transcript import router as coordination_transcript_router
 from app.api.costs import router as costs_router
 from app.api.enterprise import (
     compliance_router,
@@ -67,6 +77,7 @@ from app.api.enterprise import (
     router as enterprise_router,
 )
 from app.api.goals import router as goals_router
+from app.api.strategies import router as strategies_router
 from app.api.governance import router as governance_router
 from app.api.guardrails import router as guardrails_router
 from app.api.insights import router as insights_router
@@ -896,7 +907,94 @@ def create_app(
             from app.db.session import get_session_factory
 
             db_factory = get_session_factory()
+            app.state.db_session_factory = db_factory
             event_store = EventStore(db_factory)
+            from app.coordination.service import CoordinationService
+            from app.coordination.store import CoordinationStore
+
+            app.state.coordination_service = CoordinationService(
+                CoordinationStore(db_factory)
+            )
+            from app.coordination.auction.repository import (
+                PostgresAuctionRepository,
+                PostgresSealedBidInbox,
+            )
+            from app.coordination.camel.repository import PostgresCamelRepository
+            from app.coordination.generative.repository import (
+                PostgresGenerativeRepository,
+            )
+            from app.coordination.handoffs.membership import (
+                DatabaseHandoffMembership,
+                DatabaseSessionAuthorizer,
+            )
+            from app.coordination.handoffs.repository import PostgresHandoffRepository
+            from app.coordination.handoffs.service import HandoffService
+            from app.coordination.ledger.repository import (
+                PostgresProgressLedgerRepository,
+            )
+            from app.coordination.moa.repository import PostgresMoARepository
+            from app.coordination.replay import SequenceReplay
+            from app.coordination.store import PostgresReplayRepository
+            from app.coordination.swarm.repository import PostgresSwarmRepository
+            from app.coordination.transcript.repository import PostgresTranscriptRepository
+            from app.coordination.transcript.service import TranscriptService
+
+            app.state.transcript_service = TranscriptService(
+                PostgresTranscriptRepository(db_factory)
+            )
+            app.state.handoff_service = HandoffService(
+                PostgresHandoffRepository(db_factory),
+                membership=DatabaseHandoffMembership(lambda: db_factory),
+            )
+            app.state.camel_repository = PostgresCamelRepository(db_factory)
+            app.state.generative_repository = PostgresGenerativeRepository(db_factory)
+            app.state.swarm_repository = PostgresSwarmRepository(db_factory)
+            app.state.auction_repository = PostgresAuctionRepository(db_factory)
+            app.state.auction_bid_inbox = PostgresSealedBidInbox(db_factory)
+            app.state.coordination_session_authorizer = DatabaseSessionAuthorizer(
+                lambda: db_factory
+            )
+            app.state.coordination_replay = SequenceReplay(
+                PostgresReplayRepository(db_factory)
+            )
+            app.state.progress_ledger_repository = PostgresProgressLedgerRepository(
+                db_factory
+            )
+            app.state.moa_repository = PostgresMoARepository(db_factory)
+            from app.routing_runtime.decision_store import PostgresDecisionStore
+            from app.routing_runtime.embedding_router import (
+                EmbeddingRouter as CanonicalEmbeddingRouter,
+            )
+            from app.routing_runtime.model_router import ModelRouter as CanonicalModelRouter
+            from app.routing_runtime.skill_router import SkillRouter as CanonicalSkillRouter
+
+            app.state.routing_decision_store = PostgresDecisionStore(db_factory)
+            app.state.canonical_model_router = CanonicalModelRouter(
+                decision_store=app.state.routing_decision_store
+            )
+            app.state.canonical_skill_router = CanonicalSkillRouter(
+                decision_store=app.state.routing_decision_store
+            )
+            app.state.canonical_embedding_router = CanonicalEmbeddingRouter(
+                decision_store=app.state.routing_decision_store
+            )
+            from app.memory.postgres_repository import PostgresMemoryRepository
+
+            app.state.memory_repository = PostgresMemoryRepository(db_factory)
+            from app.memory.reflexion import ReflexionService
+
+            app.state.reflexion_service = ReflexionService(
+                repository=app.state.memory_repository
+            )
+            from app.intelligence.improvement_action_executor import (
+                ImprovementActionExecutor,
+            )
+            from app.intelligence.learning_experiments import LearningExperimentService
+            from app.memory.prospective import ProspectiveMemoryService
+
+            app.state.prospective_memory_service = ProspectiveMemoryService()
+            app.state.learning_experiment_service = LearningExperimentService()
+            app.state.improvement_action_executor = ImprovementActionExecutor(handlers={})
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -1531,11 +1629,95 @@ def create_app(
     app.state.settings = settings
     app.state.manage_pools = manage_pools
     app.state.health = registry
-    app.state.embedder = _embedder
+    # Respect a pre-configured embedder (e.g. injected by tests) rather than
+    # overwriting it with None when no real provider API key is available.
+    if getattr(app.state, "embedder", None) is None:
+        app.state.embedder = _embedder
     app.state.model_router = _model_router
     # Core services
     app.state.tenant_service = _tenant_svc
     app.state.goal_service = _goal_svc
+    from app.orchestration.graph_factory import GraphFactory
+    from app.orchestration.strategy_certification import CertificationEvaluator
+    from app.orchestration.strategy_readiness import ReadinessEvaluator
+    from app.orchestration.strategy_registry import build_default_registry
+    from app.orchestration.strategy_runner import StrategyRunner
+
+    app.state.strategy_registry = build_default_registry()
+    app.state.strategy_readiness = ReadinessEvaluator()
+    app.state.strategy_certification = CertificationEvaluator()
+    app.state.strategy_runner = StrategyRunner(app.state.strategy_registry)
+    app.state.graph_factory = GraphFactory()
+    from app.routing_runtime.decision_store import InMemoryDecisionStore
+    from app.routing_runtime.embedding_router import EmbeddingRouter as CanonicalEmbeddingRouter
+    from app.routing_runtime.model_router import ModelRouter as CanonicalModelRouter
+    from app.routing_runtime.skill_router import SkillRouter as CanonicalSkillRouter
+
+    app.state.routing_decision_store = InMemoryDecisionStore()
+    app.state.canonical_model_router = CanonicalModelRouter(
+        decision_store=app.state.routing_decision_store
+    )
+    app.state.canonical_skill_router = CanonicalSkillRouter(
+        decision_store=app.state.routing_decision_store
+    )
+    app.state.canonical_embedding_router = CanonicalEmbeddingRouter(
+        decision_store=app.state.routing_decision_store
+    )
+    from app.memory.repository import InMemoryMemoryRepository
+
+    app.state.memory_repository = InMemoryMemoryRepository()
+    from app.memory.reflexion import ReflexionService
+
+    app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
+    from app.intelligence.improvement_action_executor import ImprovementActionExecutor
+    from app.intelligence.learning_experiments import LearningExperimentService
+    from app.memory.prospective import ProspectiveMemoryService
+
+    app.state.prospective_memory_service = ProspectiveMemoryService()
+    app.state.learning_experiment_service = LearningExperimentService()
+    app.state.improvement_action_executor = ImprovementActionExecutor(handlers={})
+    from app.coordination.auction.repository import (
+        InMemoryAuctionRepository,
+        InMemorySealedBidInbox,
+    )
+    from app.coordination.camel.repository import InMemoryCamelRepository
+    from app.coordination.generative.repository import InMemoryGenerativeRepository
+    from app.coordination.handoffs.membership import (
+        DatabaseHandoffMembership,
+        InMemorySessionAuthorizer,
+    )
+    from app.coordination.handoffs.repository import InMemoryHandoffRepository
+    from app.coordination.handoffs.service import HandoffService
+    from app.coordination.ledger.repository import InMemoryProgressLedgerRepository
+    from app.coordination.magentic.human_review import MagenticHumanReviewService
+    from app.coordination.moa.repository import InMemoryMoARepository
+    from app.coordination.service import CoordinationService
+    from app.coordination.store import InMemoryCoordinationStore
+    from app.coordination.swarm.repository import InMemorySwarmRepository
+    from app.coordination.transcript.repository import InMemoryTranscriptRepository
+    from app.coordination.transcript.service import TranscriptService
+
+    _transcript_repository = InMemoryTranscriptRepository()
+    _coordination_store = InMemoryCoordinationStore()
+    app.state.coordination_service = CoordinationService(_coordination_store)
+    app.state.transcript_service = TranscriptService(_transcript_repository)
+    app.state.handoff_service = HandoffService(
+        InMemoryHandoffRepository(),
+        membership=DatabaseHandoffMembership(
+            lambda: getattr(app.state, "db_session_factory", None)
+        ),
+    )
+    app.state.coordination_session_authorizer = InMemorySessionAuthorizer(
+        _coordination_store
+    )
+    app.state.progress_ledger_repository = InMemoryProgressLedgerRepository()
+    app.state.moa_repository = InMemoryMoARepository()
+    app.state.camel_repository = InMemoryCamelRepository()
+    app.state.generative_repository = InMemoryGenerativeRepository()
+    app.state.swarm_repository = InMemorySwarmRepository()
+    app.state.auction_repository = InMemoryAuctionRepository()
+    app.state.auction_bid_inbox = InMemorySealedBidInbox()
+    app.state.magentic_human_review = MagenticHumanReviewService()
     app.state._app_provider = _app_provider
     app.state.mcp_registry = _mcp_registry
     app.state.mcp_client = _mcp_client
@@ -1696,6 +1878,17 @@ def create_app(
     app.include_router(system_router)
     app.include_router(tenants_router)
     app.include_router(goals_router)
+    app.include_router(strategies_router)
+    app.include_router(coordination_router)
+    app.include_router(coordination_handoffs_router)
+    app.include_router(coordination_transcript_router)
+    app.include_router(coordination_group_chat_router)
+    app.include_router(coordination_magentic_router)
+    app.include_router(coordination_moa_router)
+    app.include_router(coordination_camel_router)
+    app.include_router(coordination_generative_router)
+    app.include_router(coordination_swarm_router)
+    app.include_router(coordination_auction_router)
     app.include_router(connectors_router)
     # Native tools (code execution, file ops, email)
     app.include_router(tools_router)

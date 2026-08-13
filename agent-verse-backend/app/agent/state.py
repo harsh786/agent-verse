@@ -97,5 +97,5 @@ class AgentState:
     cited_answer: str = ""
     provenance: list[dict[str, Any]] = field(default_factory=list)
 
-    # Agent Runtime 2.0 — execution trace (populated by AgentLoop.run, not checkpointed)
+    # Agent Runtime 2.0 - execution trace (populated by AgentGraph.run)
     run_trace: Any = None

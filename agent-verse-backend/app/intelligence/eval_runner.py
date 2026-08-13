@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import text
 
 from app.agent.state import AgentState, GoalStatus
+from app.db.rls import sqlalchemy_rls_context
 from app.intelligence.eval import EvalScorecard
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
@@ -17,8 +18,10 @@ from app.tenancy.context import TenantContext
 class EvalRunner:
     """Scores a completed AgentState on the 7 evaluation dimensions."""
 
+    EVALUATOR_VERSION = "eval-runner-v2"
+
     # All 7 scoring dimensions produced by this runner
-    DIMENSIONS: list[str] = [
+    DIMENSIONS: ClassVar[list[str]] = [
         "task_completion",
         "efficiency",
         "accuracy",
@@ -33,7 +36,7 @@ class EvalRunner:
         """Return all 7 dimension names scored by this runner."""
         return self.DIMENSIONS
 
-    def _score_tool_relevance(self, steps: list, iterations: int) -> float:
+    def _score_tool_relevance(self, steps: list[Any], iterations: int) -> float:
         """Score tool call efficiency: redundant/failed calls lower the score.
 
         Returns a float in [0.0, 1.0].
@@ -44,7 +47,7 @@ class EvalRunner:
         if not steps:
             return 0.5
 
-        all_calls: list = []
+        all_calls: list[Any] = []
         for s in steps:
             all_calls.extend(getattr(s, "tool_calls", None) or [])
 
@@ -68,6 +71,9 @@ class EvalRunner:
 
     def score(self, *, state: AgentState, tenant_ctx: TenantContext) -> EvalScorecard:
         """Produce a scorecard for a completed goal run."""
+
+        if state.tenant_ctx.tenant_id != tenant_ctx.tenant_id:
+            raise PermissionError("evaluation tenant does not match goal tenant")
 
         # 1. task_completion — did the goal reach COMPLETE?
         task_completion = 1.0 if state.status == GoalStatus.COMPLETE else 0.0
@@ -138,6 +144,30 @@ class EvalRunner:
         # 7. tool_relevance — NEW: efficiency/quality of tool usage
         tool_relevance = self._score_tool_relevance(state.steps, state.iterations)
 
+        context = state.context if isinstance(state.context, dict) else {}
+        profile = context.get("_runtime_profile")
+        profile_tenant = getattr(profile, "tenant_id", tenant_ctx.tenant_id)
+        if profile_tenant != tenant_ctx.tenant_id:
+            raise PermissionError("runtime profile tenant does not match goal tenant")
+        primary = getattr(profile, "primary_strategy", None)
+        auxiliaries = getattr(profile, "auxiliary_strategies", ()) or ()
+        strategy_execution_id = str(
+            context.get("strategy_execution_id")
+            or context.get("execution_id")
+            or f"legacy:{state.goal_id}"
+        )
+        evidence_completeness = {
+            "task_completion": state.status in {GoalStatus.COMPLETE, GoalStatus.FAILED},
+            "efficiency": state.iterations > 0 or "total_cost_usd" in context,
+            "accuracy": bool(state.verification_feedback) or state.verification_success,
+            "safety": isinstance(getattr(state, "events", None), list),
+            "coherence": bool(state.steps),
+            "sla": "execution_started_at" in context or state.iterations > 0,
+            "tool_relevance": any(
+                bool(getattr(step, "tool_calls", None)) for step in state.steps
+            ),
+        }
+
         return EvalScorecard(
             goal_id=state.goal_id,
             scores={
@@ -151,9 +181,25 @@ class EvalRunner:
             },
             goal=state.goal,
             iterations=state.iterations,
+            primary_strategy_id=str(getattr(primary, "strategy_id", "unknown")),
+            primary_strategy_version=str(
+                getattr(primary, "adapter_version", "unknown")
+            ),
+            auxiliary_strategy_versions={
+                str(item.strategy_id): str(item.adapter_version) for item in auxiliaries
+            },
+            profile_id=str(getattr(profile, "profile_id", "unknown")),
+            profile_version=int(getattr(profile, "profile_version", 0)),
+            strategy_execution_id=strategy_execution_id,
+            evaluator_version=self.EVALUATOR_VERSION,
+            evidence_completeness=evidence_completeness,
+            correlation_id=str(context.get("correlation_id", "")),
+            causation_id=str(context.get("causation_id", "")),
         )
 
-    async def _score_coherence(self, goal: str, steps: list, provider: Any) -> float:
+    async def _score_coherence(
+        self, goal: str, steps: list[Any], provider: Any
+    ) -> float:
         """Use LLM to rate how logically coherent the steps are relative to the goal.
 
         Returns a float in [0.0, 1.0].  Conservative default 0.7 on any error.
@@ -181,7 +227,7 @@ class EvalRunner:
     async def _score_accuracy(
         self,
         goal: str,
-        steps: list,
+        steps: list[Any],
         verification_feedback: str,
         verification_success: bool,
         provider: Any,
@@ -270,26 +316,60 @@ class EvalRunner:
         scorecard = await self.score_async(state=state, tenant_ctx=tenant_ctx, provider=provider)
 
         if db is not None:
-            eval_id = uuid.uuid4().hex
+            identity = ":".join(
+                (
+                    tenant_ctx.tenant_id,
+                    state.goal_id,
+                    scorecard.strategy_execution_id,
+                    scorecard.evaluator_version,
+                )
+            )
+            eval_id = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
             try:
                 async with db() as session, session.begin():
-                    await session.execute(
-                        text("""
+                    async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+                        await session.execute(
+                            text("""
                             INSERT INTO evaluations
-                                (id, goal_id, tenant_id, scores, average_score, passed, created_at)
+                                (id, goal_id, tenant_id, scores, average_score, passed,
+                                 primary_strategy_id, primary_strategy_version,
+                                 auxiliary_strategy_versions, profile_id, profile_version,
+                                 strategy_execution_id, evaluator_version,
+                                 evidence_completeness, correlation_id, causation_id, created_at)
                             VALUES
-                                (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed, NOW())
-                            ON CONFLICT (id) DO NOTHING
-                        """),
-                        {
+                                (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
+                                 :primary_strategy_id, :primary_strategy_version,
+                                 CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
+                                 :profile_version, :strategy_execution_id, :evaluator_version,
+                                 CAST(:evidence_completeness AS jsonb), :correlation_id,
+                                 :causation_id, NOW())
+                            ON CONFLICT
+                                (tenant_id, goal_id, strategy_execution_id, evaluator_version)
+                            DO NOTHING
+                            """),
+                            {
                             "id": eval_id,
                             "gid": state.goal_id,
                             "tid": tenant_ctx.tenant_id,
                             "scores": json.dumps(scorecard.scores),
                             "avg": round(scorecard.average_score(), 6),
                             "passed": scorecard.passed(),
-                        },
-                    )
+                            "primary_strategy_id": scorecard.primary_strategy_id,
+                            "primary_strategy_version": scorecard.primary_strategy_version,
+                            "auxiliary_strategy_versions": json.dumps(
+                                scorecard.auxiliary_strategy_versions
+                            ),
+                            "profile_id": scorecard.profile_id,
+                            "profile_version": scorecard.profile_version,
+                            "strategy_execution_id": scorecard.strategy_execution_id,
+                            "evaluator_version": scorecard.evaluator_version,
+                            "evidence_completeness": json.dumps(
+                                scorecard.evidence_completeness
+                            ),
+                            "correlation_id": scorecard.correlation_id,
+                            "causation_id": scorecard.causation_id,
+                            },
+                        )
             except Exception as exc:
                 get_logger(__name__).warning("eval_persist_failed", error=str(exc))
 

@@ -77,7 +77,7 @@ async def test_complex_multi_agent_goal_emits_events_in_dependency_order() -> No
     goal = await svc.get_goal(result["goal_id"], tenant_ctx=_CTX)
     events = await svc.get_events(result["goal_id"], tenant_ctx=_CTX)
     completed_step_ids = [
-        event["step_id"]
+        event["id"]  # step schema: 'id' (was 'step_id')
         for event in events
         if event["type"] == "workflow_step_complete"
     ]
@@ -85,7 +85,7 @@ async def test_complex_multi_agent_goal_emits_events_in_dependency_order() -> No
     assert goal["status"] == GoalStatus.COMPLETE.value
     assert completed_step_ids == ["step_1", "step_2", "step_3"]
     assert events[1]["type"] == "workflow_planned"
-    assert [step["input_from"] for step in events[1]["steps"]] == [
+    assert [step["depends_on"] for step in events[1]["steps"]] == [
         [],
         ["step_1"],
         ["step_1", "step_2"],

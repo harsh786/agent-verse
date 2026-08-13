@@ -69,6 +69,7 @@ async def test_reflection_activates_on_failure(tenant_ctx: TenantContext) -> Non
         "Reflected: need to check credentials first",
         '{"steps": ["check credentials", "retry call"]}',
         "Credentials valid, API returned data",
+        "API retry succeeded",
         '{"success": true, "reason": "done"}',
     ]
     prov = FakeProvider(responses=responses)

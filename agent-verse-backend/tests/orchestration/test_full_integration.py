@@ -1,10 +1,10 @@
 """Full pipeline: GoalClassifier → PatternAssembler → PatternConfig.to_sse_event()."""
 from __future__ import annotations
-import pytest
+
+from app.agent.dynamic_graph import DynamicGraphAssembler
 from app.agent.goal_classifier import goal_classifier
 from app.agent.pattern_assembler import pattern_assembler
-from app.agent.dynamic_graph import DynamicGraphAssembler
-from app.agent.pattern_config import Complexity, RiskLevel, GoalProperties
+from app.agent.pattern_config import Complexity, RiskLevel
 from app.providers.fake import FakeProvider
 
 

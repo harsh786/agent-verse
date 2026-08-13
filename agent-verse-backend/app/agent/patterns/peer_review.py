@@ -13,6 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.patterns.base import AgentPattern, PatternState
+from app.agent.reasoning_evidence import (
+    ReasoningEvidence,
+    ReasoningExecution,
+    critique_categories,
+)
 
 _PEER_REVIEW_SYSTEM = """You are a rigorous quality reviewer for an AI agent's output.
 Evaluate the output against the goal and respond with a JSON object:
@@ -22,7 +27,8 @@ Evaluate the output against the goal and respond with a JSON object:
   "suggestions": ["<improvement 1>", "<improvement 2>"],
   "approved": <true if quality_score >= 0.7, else false>
 }
-Be objective and specific. If the output is excellent, score 0.9+. If incomplete or wrong, score below 0.5."""
+Be objective and specific. If the output is excellent, score 0.9+.
+If incomplete or wrong, score below 0.5."""
 
 _REVIEW_SCHEMA = {
     "type": "object",
@@ -44,7 +50,7 @@ class PeerReviewResult:
     raw_response: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict, raw: str = "") -> "PeerReviewResult":
+    def from_dict(cls, d: dict[str, Any], raw: str = "") -> PeerReviewResult:
         score = float(d.get("quality_score", 0.5))
         return cls(
             quality_score=max(0.0, min(1.0, score)),
@@ -55,7 +61,7 @@ class PeerReviewResult:
         )
 
     @classmethod
-    def from_raw(cls, raw: str) -> "PeerReviewResult":
+    def from_raw(cls, raw: str) -> PeerReviewResult:
         """Parse from possibly-non-JSON response."""
         import json
 
@@ -100,7 +106,7 @@ class PeerReviewPattern(AgentPattern):
     @property
     def description(self) -> str:
         return (
-            "Peer Review: a separate reviewer LLM scores output quality (0–1), "
+            "Peer Review: a separate reviewer LLM scores output quality (0-1), "
             "provides critique and improvement suggestions, and approves/rejects. "
             f"Approval threshold: {self._threshold}."
         )
@@ -146,9 +152,59 @@ class PeerReviewPattern(AgentPattern):
             )
             raw = (resp.content or "").strip()
             return PeerReviewResult.from_raw(raw)
-        except Exception as exc:
+        except Exception:
             return PeerReviewResult(
                 quality_score=0.5,
-                critique=f"Review failed: {exc!s}",
+                critique="review unavailable",
                 approved=False,
             )
+
+    async def execute_with_evidence(
+        self,
+        *,
+        output: str,
+        goal: str,
+        provider: Any,
+        producer_identity: str,
+        reviewer_identity: str,
+        max_tokens: int = 600,
+        **kwargs: Any,
+    ) -> ReasoningExecution:
+        if not reviewer_identity or reviewer_identity == producer_identity:
+            return ReasoningExecution(
+                result=PeerReviewResult(
+                    quality_score=0.0,
+                    critique="independent reviewer unavailable",
+                    approved=False,
+                ),
+                evidence=ReasoningEvidence(
+                    strategy_id=self.pattern_id,
+                    status="rejected",
+                    call_count=0,
+                    approved=False,
+                    limit_reason="reviewer_not_independent",
+                    safe_rationale_summary="independent reviewer identity is required",
+                ),
+            )
+        review = await self.execute(
+            output=output,
+            goal=goal,
+            provider=provider,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        categories = critique_categories(review.critique)
+        return ReasoningExecution(
+            result=review,
+            evidence=ReasoningEvidence(
+                strategy_id=self.pattern_id,
+                status="completed" if review.approved else "degraded",
+                call_count=1,
+                scores=(review.quality_score,),
+                critique_categories=categories,
+                approved=review.approved,
+                safe_rationale_summary=(
+                    "independent review categories: " + ", ".join(categories)
+                ),
+            ),
+        )

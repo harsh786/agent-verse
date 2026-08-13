@@ -1,13 +1,68 @@
 """Structured execution plan — parses LLM output into topologically sortable steps."""
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 
-def _safe_eval_condition(expr: str, context: dict) -> bool:
+class PlanValidationError(ValueError):
+    """Raised before execution when a structured plan is unsafe or inconsistent."""
+
+
+_ALLOWED_CONDITION_NODES = (
+    ast.Expression,
+    ast.BoolOp,
+    ast.And,
+    ast.Or,
+    ast.UnaryOp,
+    ast.Not,
+    ast.Compare,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.In,
+    ast.NotIn,
+    ast.Name,
+    ast.Load,
+    ast.Attribute,
+    ast.Subscript,
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Call,
+)
+
+_ALLOWED_STRING_METHODS = frozenset({"endswith", "startswith"})
+
+
+def _validate_condition(expr: str) -> None:
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError as exc:
+        raise PlanValidationError("invalid condition expression") from exc
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_CONDITION_NODES):
+            raise PlanValidationError("invalid condition expression")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise PlanValidationError("invalid condition expression")
+        if isinstance(node, ast.Call) and (
+            not isinstance(node.func, ast.Attribute)
+            or node.func.attr not in _ALLOWED_STRING_METHODS
+            or node.keywords
+            or len(node.args) != 1
+            or not isinstance(node.args[0], ast.Constant)
+            or not isinstance(node.args[0].value, str)
+        ):
+            raise PlanValidationError("invalid condition expression")
+
+
+def _safe_eval_condition(expr: str, context: dict[str, Any]) -> bool:
     """Evaluate a condition expression safely using simpleeval or restricted eval.
 
     Only allows: comparisons, boolean ops, attribute access on step objects,
@@ -18,17 +73,17 @@ def _safe_eval_condition(expr: str, context: dict) -> bool:
 
     try:
         # Try simpleeval first (safer AST-based evaluator)
-        import simpleeval
+        import simpleeval  # type: ignore[import-not-found]
         evaluator = simpleeval.EvalWithCompoundTypes(names=context)
         return bool(evaluator.eval(expr))
     except ImportError:
         pass
 
     # Fallback: validate expression before eval using allowlist pattern
-    SAFE_PATTERN = re.compile(
+    safe_pattern = re.compile(
         r'^[\w\s\.\[\]\'\"=!<>&|+\-\*/%\(\),]+$'
     )
-    if not SAFE_PATTERN.match(expr):
+    if not safe_pattern.match(expr):
         import logging
         logging.getLogger(__name__).warning(
             "unsafe_eval_expression_rejected: %s", expr[:100]
@@ -42,7 +97,7 @@ def _safe_eval_condition(expr: str, context: dict) -> bool:
         "True": True, "False": False, "None": None,
     }
     try:
-        return bool(eval(expr, {"__builtins__": safe_builtins}, context))  # noqa: S307
+        return bool(eval(expr, {"__builtins__": safe_builtins}, context))
     except Exception:
         return True  # Default to True on eval error
 
@@ -58,6 +113,13 @@ class StructuredStep:
     depends_on: list[str] = field(default_factory=list)
     risk: str = "read"
     expected_output: str = ""
+    connector_name: str | None = None
+    agent_id: str | None = None
+    intent: str = ""
+    requires_approval: bool = False
+    can_parallel: bool = True
+    estimated_minutes: int = 1
+    config: dict[str, Any] = field(default_factory=dict)
     # P1.1: Conditional execution and loop fields
     condition: str | None = None          # Python expr: "s1.status == 'complete'"
     loop_until: str | None = None         # Python expr: "output.startswith('SUCCESS')"
@@ -65,10 +127,19 @@ class StructuredStep:
     iterations_used: int = 0            # Tracks how many times we've looped
     # Runtime state (populated during execution)
     status: str = "pending"             # pending | running | complete | failed | skipped
+    result: str = ""
     output: str = ""
     error: str | None = None
 
-    def should_execute(self, step_results: dict[str, "StructuredStep"]) -> bool:
+    @property
+    def step_id(self) -> str:
+        return self.id
+
+    @property
+    def input_from(self) -> list[str]:
+        return self.depends_on
+
+    def should_execute(self, step_results: dict[str, StructuredStep]) -> bool:
         """Evaluate condition field. Returns True if step should run."""
         if self.condition is None:
             return True
@@ -130,7 +201,9 @@ class StructuredPlan:
                             steps.append(
                                 StructuredStep(id=f"s{len(steps) + 1}", description=raw)
                             )
-                    return cls(steps=steps)
+                    plan = cls(steps=steps)
+                    plan.validate()
+                    return plan
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
@@ -150,7 +223,48 @@ class StructuredPlan:
             if line:
                 steps.append(StructuredStep(id=f"s{i + 1}", description=line))
 
-        return cls(steps=steps)
+        plan = cls(steps=steps)
+        plan.validate()
+        return plan
+
+    def validate(self) -> StructuredPlan:
+        """Validate identifiers, dependencies, loops, conditions, and acyclicity."""
+        ids = [step.id for step in self.steps]
+        if len(ids) != len(set(ids)):
+            raise PlanValidationError("duplicate step id")
+        known_ids = set(ids)
+        for step in self.steps:
+            if not step.id or not step.description:
+                raise PlanValidationError("step id and description are required")
+            if step.id in step.depends_on:
+                raise PlanValidationError("step cannot depend on itself")
+            unknown = set(step.depends_on) - known_ids
+            if unknown:
+                raise PlanValidationError(f"unknown dependencies: {sorted(unknown)}")
+            if step.max_loop_iter <= 0:
+                raise PlanValidationError("loop limit must be positive")
+            if step.condition:
+                _validate_condition(step.condition)
+            if step.loop_until:
+                _validate_condition(step.loop_until)
+
+        indegree = {step.id: len(set(step.depends_on)) for step in self.steps}
+        dependents: dict[str, list[str]] = {step_id: [] for step_id in known_ids}
+        for step in self.steps:
+            for dependency in set(step.depends_on):
+                dependents[dependency].append(step.id)
+        ready = [step_id for step_id, count in indegree.items() if count == 0]
+        visited = 0
+        while ready:
+            current = ready.pop()
+            visited += 1
+            for dependent in dependents[current]:
+                indegree[dependent] -= 1
+                if indegree[dependent] == 0:
+                    ready.append(dependent)
+        if visited != len(self.steps):
+            raise PlanValidationError("dependency cycle detected")
+        return self
 
     def execution_waves(self) -> list[list[StructuredStep]]:
         """Return steps grouped into topological execution waves.
@@ -159,6 +273,7 @@ class StructuredPlan:
         execute in parallel.  Each successive wave depends on all prior waves
         having completed.
         """
+        self.validate()
         if not self.steps:
             return []
 
@@ -166,22 +281,8 @@ class StructuredPlan:
         remaining = list(self.steps)
         waves: list[list[StructuredStep]] = []
 
-        # Guard against infinite loops caused by cycles or missing dep IDs.
-        max_iterations = len(self.steps) + 1
-        iterations = 0
-
         while remaining:
-            iterations += 1
-            if iterations > max_iterations:
-                # Cycle detected — dump everything into a final wave.
-                waves.append(remaining)
-                break
-
             wave = [s for s in remaining if all(dep in completed for dep in s.depends_on)]
-            if not wave:
-                # No forward progress possible — dump remaining as last wave.
-                waves.append(remaining)
-                break
 
             waves.append(wave)
             completed.update(s.id for s in wave)

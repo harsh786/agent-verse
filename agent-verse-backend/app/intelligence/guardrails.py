@@ -22,6 +22,7 @@ from typing import Any
 _INJECTION_PHRASES = [
     "ignore all previous instructions",
     "ignore your previous instructions",
+    "ignore previous instructions",
     "disregard previous",
     "forget your instructions",
     "you are now",
@@ -69,7 +70,11 @@ def _detect_base64_injection(text: str) -> list[str]:
     for word in text.split():
         if len(word) >= 16 and re.match(r'^[A-Za-z0-9+/=]+$', word):
             try:
-                decoded = base64.b64decode(word.rstrip("=") + "==").decode("utf-8", errors="ignore").lower()
+                decoded = (
+                    base64.b64decode(word.rstrip("=") + "==")
+                    .decode("utf-8", errors="ignore")
+                    .lower()
+                )
                 if any(phrase in decoded for phrase in _INJECTION_PHRASES):
                     issues.append("base64-encoded injection phrase detected")
                     break
@@ -189,7 +194,11 @@ class GuardrailChecker:
         issues: list[str] = []
 
         # Registry check (skip for always-allowed tools and when registry empty)
-        if self._known_tools and tool_name not in _ALWAYS_ALLOWED and tool_name not in self._known_tools:
+        if (
+            self._known_tools
+            and tool_name not in _ALWAYS_ALLOWED
+            and tool_name not in self._known_tools
+        ):
             issues.append(f"Unknown tool '{tool_name}' not in known-tools registry")
 
         # Recursive injection / dangerous pattern scan over all arg values

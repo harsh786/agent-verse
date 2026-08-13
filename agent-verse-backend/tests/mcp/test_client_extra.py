@@ -18,6 +18,19 @@ from app.mcp.client import (
     _jsonrpc,
 )
 from app.mcp.registry import MCPRegistry, MCPServerConfig
+
+
+# Bypass SSRF guard for this module — tests use mock hostnames (example.com,
+# api.example.com) that cannot resolve, but the SSRF guard runs before the
+# mocked HTTP client. Scoped to module so it doesn't leak into other tests.
+@pytest.fixture(scope="module", autouse=True)
+def _bypass_ssrf():
+    patcher = patch("app.mcp.client.assert_public_url")
+    patcher.start()
+    yield
+    patcher.stop()
+
+
 from app.tenancy.context import PlanTier, TenantContext
 
 

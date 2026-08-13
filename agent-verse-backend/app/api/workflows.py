@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.rag.contracts import UnknownRAGStrategyError
+from app.rag.contracts import UnavailableRAGStrategyError, UnknownRAGStrategyError
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -550,6 +550,14 @@ async def run_workflow(
                 failed_ids = {
                     str(result.get("failed_step", "")),
                     *[str(value) for value in result.get("failed_steps", [])],
+                    # Also derive failed step IDs from the per-step results dict
+                    # (WorkflowExecutor returns these when StepExecutionError fires)
+                    *[
+                        step_id
+                        for step_id, step_result in (result.get("results") or {}).items()
+                        if isinstance(step_result, dict)
+                        and step_result.get("status") == "failed"
+                    ],
                 }
                 failed_rag_steps = [
                     step
@@ -593,10 +601,19 @@ async def run_workflow(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+        except UnavailableRAGStrategyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "workflow_retrieval_failed",
+                    "reason": "Retrieval service is unavailable",
+                    "strategy_trace": [{"strategy": str(exc), "action": "workflow_retrieval", "status": "failed"}],
+                },
+            ) from exc
         except HTTPException:
             raise
         except Exception:
-            pass  # Fall through to GoalService
+            pass  # Operational error — fall through to GoalService
 
     # ── GoalService fallback ──────────────────────────────────────────────────
     goal_service = getattr(request.app.state, "goal_service", None)

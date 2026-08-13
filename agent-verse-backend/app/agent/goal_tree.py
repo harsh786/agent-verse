@@ -202,10 +202,8 @@ async def execute_goal_tree(
             if sg in remaining:
                 remaining.remove(sg)
 
-    if any(sub_goal.status is GoalStatus.FAILED for sub_goal in results):
-        return results
-
-    # LLM synthesis step: merge sub-goal results into one coherent answer
+    # Always produce a terminal synthesis record.  Partial failures are evidence
+    # the parent verifier must see, rather than an alternate return shape.
     sub_results = [
         {
             "goal": sg.description,

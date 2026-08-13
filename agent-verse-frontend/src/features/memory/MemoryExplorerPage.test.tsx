@@ -105,6 +105,7 @@ describe('MemoryExplorerPage', () => {
     renderPage();
     await screen.findByText(/API key rotates monthly/);
     await userEvent.click(screen.getByRole('button', { name: /delete memory/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
     await waitFor(() => {
       const delCall = fetchSpy.mock.calls.find(
         ([u, i]) => /\/memory\/m1$/.test(String(u)) && (i as RequestInit)?.method === 'DELETE'

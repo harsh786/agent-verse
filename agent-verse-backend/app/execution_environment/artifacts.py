@@ -1,26 +1,106 @@
-"""Artifact management for the execution environment.
+"""Tenant-scoped durable artifacts for isolated execution."""
 
-STATUS: STUB — actual MinIO/S3 upload not yet implemented.
-``make_artifact()`` computes a checksum and returns an ``ExecutionArtifact``
-reference, but does NOT upload content to object storage.  The returned
-``storage_url`` will be empty until the upload integration is added.
-
-To implement:
-1. Inject a MinIO/S3 client (from ``app.rpa.artifacts.get_artifact_store()``).
-2. Call ``artifact_store.upload(content, name, goal_id, tenant_id)``.
-3. Set ``storage_url`` to the returned presigned or internal URL.
-4. Remove this warning comment once implemented.
-"""
 from __future__ import annotations
 
 import hashlib
-import logging
+import inspect
+import posixpath
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
+from typing import Any, Protocol
 
 from app.execution_environment.models import ExecutionArtifact
 
-logger = logging.getLogger(__name__)
+
+class ExecutionArtifactStore(Protocol):
+    async def put(
+        self,
+        *,
+        tenant_id: str,
+        goal_id: str,
+        workload_id: str,
+        name: str,
+        content: AsyncIterator[bytes],
+        maximum_bytes: int,
+    ) -> ExecutionArtifact: ...
+
+    async def delete_workload(self, *, tenant_id: str, workload_id: str) -> None: ...
+
+
+def validate_artifact_name(name: str) -> str:
+    normalized = posixpath.normpath(name.replace("\\", "/"))
+    path = PurePosixPath(normalized)
+    if (
+        not name
+        or path.is_absolute()
+        or normalized in {".", ".."}
+        or ".." in path.parts
+        or any(part.startswith(".") for part in path.parts)
+    ):
+        raise ValueError("artifact name must be a visible relative workspace path")
+    return normalized
+
+
+class DurableExecutionArtifactStore:
+    """Adapter over the application's object store; never returns an empty reference."""
+
+    def __init__(self, backend: Any) -> None:
+        self._backend = backend
+        self._workload_artifacts: dict[tuple[str, str], list[str]] = {}
+
+    async def put(
+        self,
+        *,
+        tenant_id: str,
+        goal_id: str,
+        workload_id: str,
+        name: str,
+        content: AsyncIterator[bytes],
+        maximum_bytes: int,
+    ) -> ExecutionArtifact:
+        safe_name = validate_artifact_name(name)
+        if not tenant_id or not goal_id or not workload_id or maximum_bytes <= 0:
+            raise ValueError("artifact identity and maximum_bytes are required")
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in content:
+            size += len(chunk)
+            if size > maximum_bytes:
+                raise ValueError("artifact size limit exceeded")
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        object_name = f"{tenant_id}/{workload_id}/{safe_name}"
+        stored = self._backend.write_bytes(
+            goal_id=goal_id, name=object_name, content=payload
+        )
+        if inspect.isawaitable(stored):
+            stored = await stored
+        storage_ref = str(getattr(stored, "uri", "") or getattr(stored, "path", ""))
+        if not storage_ref:
+            raise RuntimeError("artifact backend returned no durable reference")
+        artifact_id = str(getattr(stored, "artifact_id", "") or uuid.uuid4().hex)
+        self._workload_artifacts.setdefault((tenant_id, workload_id), []).append(artifact_id)
+        return ExecutionArtifact(
+            artifact_id=artifact_id,
+            goal_id=goal_id,
+            tenant_id=tenant_id,
+            name=safe_name,
+            size_bytes=size,
+            storage_url=storage_ref,
+            checksum_sha256=hashlib.sha256(payload).hexdigest(),
+            created_at=datetime.now(UTC).isoformat(),
+        )
+
+    async def delete_workload(self, *, tenant_id: str, workload_id: str) -> None:
+        for artifact_id in self._workload_artifacts.pop((tenant_id, workload_id), []):
+            delete = getattr(self._backend, "delete", None)
+            if delete is None:
+                continue
+            result = delete(artifact_id=artifact_id)
+            if inspect.isawaitable(result):
+                await result
 
 
 def make_artifact(
@@ -32,44 +112,30 @@ def make_artifact(
     mime_type: str = "application/octet-stream",
     storage_url: str = "",
 ) -> ExecutionArtifact:
-    """Create an :class:`ExecutionArtifact` reference for a raw content blob.
-
-    .. warning::
-        This function does NOT persist ``content`` to object storage.
-        ``storage_url`` defaults to ``""`` unless the caller provides one.
-        Call ``artifact_store.upload()`` and pass the returned URL explicitly.
-    """
-    if not name:
-        raise ValueError("artifact name must be non-empty")
-    if not goal_id or not tenant_id:
-        raise ValueError("goal_id and tenant_id must be non-empty")
-    if not content:
-        logger.warning(
-            "make_artifact called with empty content name=%s goal_id=%s", name, goal_id
-        )
-
-    checksum = hashlib.sha256(content).hexdigest()
-
-    if not storage_url:
-        logger.warning(
-            "make_artifact returning stub artifact with empty storage_url "
-            "name=%s goal_id=%s — upload not yet implemented",
-            name, goal_id,
-        )
-
+    safe_name = validate_artifact_name(name)
+    if not goal_id or not tenant_id or not storage_url:
+        raise ValueError("goal_id, tenant_id, and durable storage_url are required")
     return ExecutionArtifact(
         artifact_id=uuid.uuid4().hex,
         goal_id=goal_id,
         tenant_id=tenant_id,
-        name=name,
+        name=safe_name,
         mime_type=mime_type,
         size_bytes=len(content),
         storage_url=storage_url,
-        checksum_sha256=checksum,
+        checksum_sha256=hashlib.sha256(content).hexdigest(),
         created_at=datetime.now(UTC).isoformat(),
     )
 
 
 def validate_artifact_size(artifact: ExecutionArtifact, limit_bytes: int) -> bool:
-    """Return True if the artifact is within the configured size limit."""
-    return artifact.size_bytes <= limit_bytes
+    return 0 <= artifact.size_bytes <= limit_bytes
+
+
+__all__ = [
+    "DurableExecutionArtifactStore",
+    "ExecutionArtifactStore",
+    "make_artifact",
+    "validate_artifact_name",
+    "validate_artifact_size",
+]

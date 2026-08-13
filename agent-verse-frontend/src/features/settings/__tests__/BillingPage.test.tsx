@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import BillingPage from '../BillingPage';
 
 // Mock the auth store to provide a stable apiKey
@@ -23,18 +24,22 @@ function makeQc() {
 describe('BillingPage', () => {
   it('renders without crashing', () => {
     render(
-      <QueryClientProvider client={makeQc()}>
-        <BillingPage />
-      </QueryClientProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={makeQc()}>
+          <BillingPage />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
     expect(screen.getByText('Billing & Usage')).toBeTruthy();
   });
 
   it('shows upgrade button for non-enterprise plans', () => {
     render(
-      <QueryClientProvider client={makeQc()}>
-        <BillingPage />
-      </QueryClientProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={makeQc()}>
+          <BillingPage />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
     // Upgrade button visible for free plan (default)
     expect(screen.queryByText('Upgrade Plan')).toBeTruthy();

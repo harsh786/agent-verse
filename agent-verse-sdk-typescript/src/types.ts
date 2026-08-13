@@ -44,6 +44,44 @@ export interface SubmitGoalOptions {
   agent_id?: string;
   persistence_mode?: boolean;
   workflow_mode?: string;
+  strategy_override?: string;
+  auxiliary_strategies?: string[];
+  pattern_limits?: Record<string, number>;
+}
+
+export interface CoordinationMessagePage {
+  items: Array<Record<string, unknown>>;
+  next_sequence: number;
+  has_more: boolean;
+}
+
+export interface CoordinationLayerPage {
+  items: Array<Record<string, unknown>>;
+  next_layer: number;
+  has_more: boolean;
+}
+
+export interface CoordinationEvent {
+  event_id: string;
+  session_id: string;
+  sequence: number;
+  schema_version: number;
+  event_type: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface HandoffTransitionRequest {
+  expected_version: number;
+  acceptance_token?: string;
+  result_reference?: string;
+}
+
+export interface SealedBidRequest {
+  bidder_id: string;
+  bid_version: number;
+  ciphertext: string;
+  nonce: string;
+  signature: string;
 }
 
 export interface CreateAgentRequest {

@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.orchestration.pattern_selector import PatternSelector
 from app.orchestration.runtime_profile import (
     Complexity,
+    Domain,
     GoalProperties,
     KnowledgeState,
     RiskLevel,
@@ -55,6 +56,37 @@ def test_complex_goal_patterns():
     assert rag.reranker == "rrf"
     assert rag.strategy == RAGStrategy.FUSION.value
     assert mem.use_long_term_memory is True
+
+
+def test_reasoning_candidate_matrix_and_realtime_exclusions() -> None:
+    selector = _selector()
+    analytical = selector.select_agent_patterns(
+        _props(complexity=Complexity.COMPLEX, domain=Domain.ANALYTICAL)
+    )
+    expert = selector.select_agent_patterns(
+        _props(complexity=Complexity.EXPERT, domain=Domain.ANALYTICAL)
+    )
+    realtime = selector.select_agent_patterns(
+        _props(
+            complexity=Complexity.EXPERT,
+            domain=Domain.ANALYTICAL,
+            time_sensitivity=TimeSensitivity.REALTIME,
+        )
+    )
+    reviewed = selector.select_agent_patterns(
+        _props(is_generative=True, risk=RiskLevel.HIGH)
+    )
+
+    assert "self_consistency" in analytical.reasoning
+    assert "tree_of_thoughts" in expert.reasoning
+    assert "self_consistency" not in realtime.reasoning
+    assert "tree_of_thoughts" not in realtime.reasoning
+    assert "peer_review" in reviewed.reasoning
+    for strategy_id in ("self_consistency", "tree_of_thoughts", "peer_review"):
+        selected = expert if strategy_id == "tree_of_thoughts" else (
+            reviewed if strategy_id == "peer_review" else analytical
+        )
+        assert strategy_id in selected.selection_reasons
 
 
 # ---------------------------------------------------------------------------

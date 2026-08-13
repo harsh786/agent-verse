@@ -38,6 +38,15 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
+_AGENT_PATTERN_AUDIT_ACTIONS = frozenset(
+    {
+        "approval_issued", "approval_consumed", "policy_compiled", "budget_mutated",
+        "replay_requested", "redrive_requested", "key_rotated", "context_disclosed",
+        "memory_quarantined", "memory_deleted", "bid_unseal", "governor_authority_changed",
+        "feature_flag_changed", "rollout_decided", "audit_accessed", "break_glass",
+    }
+)
+
 
 @dataclass
 class AuditRecord:
@@ -123,6 +132,60 @@ class AuditV3:
         n = self._sequence.get(tenant_id, 0) + 1
         self._sequence[tenant_id] = n
         return n
+
+    async def append_security_event(
+        self,
+        *,
+        tenant_id: str,
+        object_id: str,
+        action: str,
+        actor: str,
+        object_digest: str,
+        version_digest: str,
+        reason: str,
+        correlation_id: str,
+        causation_id: str,
+        outcome: str,
+    ) -> AuditRecord:
+        """Append a complete, privacy-preserving governance event to the existing chain."""
+        if action not in _AGENT_PATTERN_AUDIT_ACTIONS:
+            raise ValueError(f"unsupported audited action: {action}")
+        required = {
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+            "actor": actor,
+            "object_digest": object_digest,
+            "version_digest": version_digest,
+            "reason": reason,
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+            "outcome": outcome,
+        }
+        if any(not value.strip() for value in required.values()):
+            raise ValueError("audit security-event fields must be non-empty")
+        return await self.append(
+            tenant_id=tenant_id,
+            goal_id=object_id,
+            action=action,
+            actor=actor,
+            metadata={
+                "object_digest": object_digest,
+                "version_digest": version_digest,
+                "reason_digest": _hash_dict(reason),
+                "correlation_id": correlation_id,
+                "causation_id": causation_id,
+                "outcome": outcome,
+                "timestamp_source": "utc_system_clock",
+            },
+        )
+
+    @staticmethod
+    def authorize_break_glass(approvers: tuple[str, ...]) -> tuple[str, str]:
+        """Require dual control before break-glass authority can be exercised."""
+        distinct = tuple(dict.fromkeys(item.strip() for item in approvers if item.strip()))
+        if len(distinct) < 2:
+            raise PermissionError("break-glass requires two distinct approvers")
+        return distinct[0], distinct[1]
 
     async def append(
         self,
@@ -384,6 +447,19 @@ class AuditV3:
                 ],
                 indent=2,
             )
+
+    def export_worm_bundle(self, tenant_id: str) -> str:
+        """Export chain evidence with a deterministic manifest for immutable retention."""
+        records = json.loads(self.export_records(tenant_id))
+        manifest = {
+            "tenant_digest": f"sha256:{_hash_dict(tenant_id)}",
+            "record_count": len(records),
+            "chain_tip": self._chain_tips.get(tenant_id, "genesis"),
+            "retention_lock": "compliance",
+            "records": records,
+        }
+        manifest["manifest_digest"] = f"sha256:{_hash_dict(manifest)}"
+        return json.dumps(manifest, sort_keys=True)
 
 
 
