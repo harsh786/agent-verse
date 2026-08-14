@@ -185,5 +185,9 @@ disallow_untyped_defs = false
 module = ["asyncpg.*", "pgvector.*", "openai.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["PIL.*", "pytesseract.*", "pdf2image.*"]
+ignore_missing_imports = true
+
 [tool.uv.sources]
 agentverse-sdk = { path = "../agent-verse-sdk-python" }
