@@ -162,6 +162,91 @@ POST /api/v1/goals
 | **Reflect / Replan loop** | After verify fails, feeds diagnosis back to plan | 4 |
 | **Memory write / Audit / Cost record** | After graph exits (success or failure) | 5 |
 
+### All cross-cutting systems and when they fire
+
+The following systems fire at specific points during every goal execution. They are wired into `AgentGraph` at construction time and are always present regardless of which pattern is selected.
+
+| System | Where it fires | What it does |
+|---|---|---|
+| **Guardrails** (`GuardrailChecker`) | `initialize` node (goal scan) + after every tool output | Scans goal text for policy violations before execution starts; scans each tool result before it enters agent state |
+| **Grounding checker** (`grounding_checker`) | `initialize` node | Validates that factual claims in the goal can be grounded; flags hallucination risk |
+| **Semantic cache** (`SemanticCache`) | Before every Planner LLM call; after plan produced | Deduplicates identical LLM calls by embedding similarity — avoids re-running expensive planning for near-duplicate goals |
+| **Tool deduplication cache** (`DeduplicationCache`) | Before every tool call inside `_execute_step()` | Prevents identical tool invocations within the same goal execution |
+| **Permission matrix** (`PermissionMatrix`) | Before every tool call | Checks whether the tool is permitted for this tenant + agent + tool combination |
+| **Policy engine** (`PolicyEngine`) | Before every tool call (Redis pub/sub for real-time propagation) | Evaluates active policies: tool allow/deny lists, rate limits, data classification rules |
+| **Cost controller** (`CostController`) | Before every LLM call + before every tool call | Checks per-call token budget and per-goal cost budget; blocks execution if exceeded |
+| **Circuit breaker** (`CircuitBreaker`) | Wraps every LLM provider call (`call_with_circuit_breaker`) | Opens after N consecutive failures; raises `PermissionError` to prevent cascading LLM failures |
+| **Bulkhead** (`RedisBulkheadRegistry`) | Before every tool call (`_execute_step`) | Enforces per-tenant concurrency limits — prevents one tenant from monopolising worker threads |
+| **HITL gateway** (`HITLGateway`) | Before tool execution for high-risk steps (keywords: `deploy`, `delete`, `prod`, `payment`, etc.) | Pauses execution and queues an approval request; execution resumes only after human approval or timeout |
+| **Rollback engine** (`RollbackEngine`) | Tool execution is registered before call; on failure triggers rollback | Registers each reversible tool call; on downstream failure calls compensating actions |
+| **Audit log** (`AuditLog`) | After every tool call + after verify + at goal completion/failure | Appends an immutable append-only audit entry with tenant_id, goal_id, tool, input hash, output hash, timestamp |
+| **Execution memory** (`ExecutionMemory`) | `initialize` node (recall) + `execute` node | Recalls past execution plans for similar goals (short-term, per-goal scope); injects as planner context |
+| **Long-term memory** (`LongTermMemoryStore`) | `initialize` node (recall Reflexion lessons) + Phase 5 (store) | Recalls lessons from past failures/successes (cross-session); stores new lessons after goal completion |
+| **Reflexion pattern** (`ReflexionPattern`) | If enabled: stores lessons during reflect node; recalled at initialize | Stores structured lesson (what went wrong, what to do differently) for future use |
+| **Eval runner** (`EvalRunner`) | Wired into `_execute_step()` — scores step outputs against quality criteria | Runs automated evaluation on step outputs; score stored in `reasoning_evidence` |
+| **Self-optimizer** (`SelfOptimizer`) | Fires on RPA/browser task failures (`analyze_rpa_failure`) | Analyzes failure patterns and adjusts prompt strategy for subsequent attempts |
+| **Output sanitizer** | Before every SSE event emit + before every tool result is stored | Strips PII, secrets, and malicious content from all outputs before they leave the agent boundary |
+| **OTel tracer** (`_tracer`) | Every major operation (spans for goal.submit, goal.execute, each node) | Distributed traces sent to OTLP collector (Jaeger); every LLM call, tool call, and node transition is a child span |
+| **ContextPipeline** (re-ranker) | In `plan` node, after RAG retrieval | Re-ranks and trims retrieved chunks using `RerankStrategy`; produces separate planner / executor / verifier context windows |
+| **FLARE** (uncertainty-triggered retrieval) | Inside `_execute_step()`, when executor output contains uncertainty markers | Re-triggers targeted retrieval mid-execution when the model is uncertain about a fact |
+
+### Governance decision flow within a single tool call
+
+Every tool call in the ReAct loop passes through this gate sequence before the tool is actually invoked:
+
+```
+Executor LLM generates Thought → Tool call intent
+
+  1. Output sanitizer     → strip secrets/PII from tool inputs
+  2. GuardrailChecker     → policy violation check on tool + input
+  3. PermissionMatrix     → tenant+agent allowed to call this tool?
+  4. PolicyEngine         → active policy rules (allow/deny/rate-limit)
+  5. CostController       → within per-call and per-goal budget?
+  6. CircuitBreaker       → provider healthy? (not open-circuited)
+  7. Bulkhead             → within per-tenant concurrency limit?
+  8. DeduplicationCache   → identical call already made this execution?
+  9. ToolRiskAssessor     → is this a high-risk step?
+     ├── HIGH-RISK → HITLGateway.request_approval() → PAUSE
+     └── normal    → proceed
+ 10. RollbackEngine.register() → log compensating action
+ 11. MCP tool execution  → actual tool call
+ 12. Output sanitizer     → strip secrets/PII from tool output
+ 13. GuardrailChecker     → scan tool output for policy violations
+ 14. AuditLog.record()    → immutable audit entry
+ 15. CostController.record() → log actual token + call costs
+ 16. EvalRunner.score()   → optional quality score on step output
+```
+
+If any gate (steps 2–8) rejects the call, execution is terminated with a structured error and the goal status is set to `FAILED`. The rollback engine fires compensating actions for any previously registered tool calls.
+
+### Agent improvement loop (cross-session learning)
+
+```
+Goal N completes (success or partial failure)
+        │
+        ▼
+LongTermMemoryStore.extract_from_goal(agent_state)
+  • Extracts: what worked, what failed, which tool patterns were effective
+  • Reflexion lessons: structured {situation, action, outcome, lesson}
+  • Stored in pgvector with embedding for future semantic recall
+        │
+        ▼
+SelfOptimizer.analyze_failure() (on RPA/complex task failures)
+  • Adjusts prompt strategy weights for next attempt
+        │
+Goal N+1 starts
+        │
+        ▼
+LongTermMemoryStore.recall(goal_text, k=5)
+  • Retrieves top-K semantically similar past lessons
+  • Injected into planner context BEFORE planning starts
+        │
+        ▼
+Planner benefits from past experience without being retrained
+```
+
+This gives AgentVerse a **continual learning loop** that improves without model fine-tuning — each goal makes the next similar goal cheaper and more reliable.
+
 ### E2E timeline: simple vs. complex goal
 
 ```
@@ -186,6 +271,8 @@ Critical goal: "Delete all test records from production DB"
 ```
 
 ---
+
+
 
 
 
