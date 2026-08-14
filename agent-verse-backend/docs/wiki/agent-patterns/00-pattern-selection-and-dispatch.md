@@ -207,8 +207,152 @@ POST /api/v1/goals
 ╚═════════════════════════════════════════════════════════════════════════╝
 ```
 
+### Full Activity Diagram
 
-### When does each component fire? (summary table)
+```mermaid
+flowchart TD
+    START([POST /api/v1/goals]) --> P1_RATE[① Rate Limiter\nconcurrent + daily limits]
+    P1_RATE --> P1_DEDUP{② Goal\nDeduplication\nredis hash}
+    P1_DEDUP -- duplicate found --> RETURN_DUP([Return existing goal_id])
+    P1_DEDUP -- new goal --> P1_RECORD[③ Create GoalRecord\nstatus=PENDING]
+    P1_RECORD --> P1_AIROUTER[④ AI Router\nselect model_id for PLANNING]
+
+    P1_AIROUTER --> PS_START
+
+    subgraph PS_START ["⑤ Pattern Selection — build_with_trace()"]
+        direction TB
+        CL1[classify_fast\nkeyword scan &lt;1ms] --> CL1_OUT{confidence\n≤ 0.85 AND\nMEDIUM?}
+        CL1_OUT -- yes → CL2[classify_with_llm\n~200ms]
+        CL1_OUT -- no → PA
+        CL2 --> PA[PatternAssembler\n19 rules → PatternConfig]
+        PA --> DGA[DynamicGraphAssembler\nPatternConfig → GoalRuntimeProfile]
+        DGA --> SSE_PATTERN[SSE: pattern_assembled]
+    end
+
+    PS_START --> P1_QUEUE[⑥ Celery task enqueued\nper-plan queue]
+    P1_QUEUE --> HTTP_202([HTTP 202 Accepted\ngoal_id returned])
+
+    P1_QUEUE --> P2_GF
+
+    subgraph P2_GF ["Phase 2 — Graph Construction ~1-5ms"]
+        direction TB
+        GF[GraphFactory.create\nprofile → boolean flags] --> AG[AgentGraph.__init__\n20 cross-cutting services wired]
+        AG --> BUILD[AgentGraph._build\nconditional LangGraph compile\nonly active nodes registered]
+    end
+
+    P2_GF --> N_INIT
+
+    subgraph LANGGRAPH ["Phase 3 — LangGraph Execution"]
+        direction TB
+
+        N_INIT["NODE: initialize\n──────────────\n☑ GuardrailChecker.check_goal\n☑ GroundingChecker\n☑ ExecutionMemory.recall\n☑ LongTermMemory.recall lessons\n☑ OTel span started"]
+
+        N_INIT --> N_RAG["NODE: rag_retrieval\n──────────────\n☑ RAG strategy selected from profile\n   hybrid_rag | web_rag | agentic_rag\n   FLARE | RAPTOR | fusion_rag | corrective_rag\n☑ KnowledgeStore.hybrid_search\n☑ Chunks + citations stored\n☑ SSE: knowledge_retrieved"]
+
+        N_RAG --> COT_CHECK{chain_of_thought\npattern active?}
+        COT_CHECK -- yes --> N_THINK["NODE: think\n──────────────\n☑ SemanticCache check\n☑ Planner LLM #1\n   CHAIN_OF_THOUGHT_SYSTEM prompt\n☑ CoT stored in reasoning_evidence"]
+        COT_CHECK -- no --> TOT_CHECK
+
+        N_THINK --> TOT_CHECK{tree_of_thoughts\npattern active?}
+        TOT_CHECK -- yes --> N_TOT["NODE: tree_of_thoughts\n──────────────\n☑ TreeOfThoughtsPattern\n   n_thoughts=3, max_depth=2\n☑ Best branch → planner context"]
+        TOT_CHECK -- no --> N_PLAN
+
+        N_TOT --> N_PLAN
+
+        N_PLAN["NODE: plan — PLANNER LLM #1\n──────────────\n☑ ContextPipeline: rerank + trim chunks\n☑ SemanticCache check\n☑ Planner LLM: goal + RAG + lessons → steps\n☑ CircuitBreaker wraps LLM call\n☑ SSE: plan_created"]
+
+        N_PLAN --> N_EXEC
+
+        subgraph N_EXEC ["NODE: execute — EXECUTOR LLM #2 — ReAct loop per step"]
+            direction TB
+            LLM_THOUGHT[Executor LLM → Thought + tool intent] --> GATE
+
+            subgraph GATE ["TOOL GOVERNANCE GATE (every call)"]
+                direction TB
+                G1[① OutputSanitizer — strip PII from inputs] --> G2
+                G2[② GuardrailChecker — policy violation?] --> G3
+                G3[③ PermissionMatrix — tool allowed?] --> G4
+                G4[④ PolicyEngine — allow/deny/rate-limit] --> G5
+                G5[⑤ CostController — within budget?] --> G6
+                G6[⑥ CircuitBreaker — provider healthy?] --> G7
+                G7[⑦ Bulkhead — concurrency limit ok?] --> G8
+                G8[⑧ DeduplicationCache — identical call?] --> G9
+                G9{⑨ ToolRiskAssessor\nhigh-risk step?}
+                G9 -- HIGH-RISK --> HITL[HITLGateway\nrequest_approval → PAUSE]
+                HITL -- approved --> G10
+                G9 -- normal --> G10
+                G10[⑩ RollbackEngine.register\nlog compensating action]
+            end
+
+            GATE --> TOOL_EXEC[MCP Tool Execution]
+            TOOL_EXEC --> POST1[⑪ OutputSanitizer — strip PII from output]
+            POST1 --> POST2[⑫ GuardrailChecker — scan output]
+            POST2 --> POST3[⑬ AuditLog.record — immutable entry]
+            POST3 --> POST4[⑭ CostController.record — log costs]
+            POST4 --> POST5[⑮ EvalRunner.score — quality score]
+            POST5 --> FLARE_CHECK{⑯ FLARE — output\nuncertain?}
+            FLARE_CHECK -- yes → re-retrieve --> N_RAG
+            FLARE_CHECK -- no --> OBSERVE[Executor observes result\nnext Thought]
+            OBSERVE --> MORE_STEPS{more steps\nin plan?}
+            MORE_STEPS -- yes --> LLM_THOUGHT
+            MORE_STEPS -- no --> EXEC_DONE[SSE: step_completed]
+        end
+
+        EXEC_DONE --> REFINE_CHECK{self_refine\npattern active?}
+        REFINE_CHECK -- yes --> N_REFINE["NODE: refine\n☑ LLM iterates on output\n☑ Stops on NO_CHANGES_NEEDED"]
+        REFINE_CHECK -- no --> SC_CHECK
+
+        N_REFINE --> SC_CHECK{self_consistency\npattern active?}
+        SC_CHECK -- yes --> N_SC["NODE: self_consistency\n☑ SelfConsistencyPattern n=3\n☑ Majority vote answer"]
+        SC_CHECK -- no --> N_VERIFY
+
+        N_SC --> N_VERIFY
+
+        N_VERIFY["NODE: verify — VERIFIER LLM #3\n──────────────\n☑ ContextPipeline verifier context\n☑ Verifier LLM: goal satisfied?\n☑ CircuitBreaker wraps call\n☑ AuditLog.record verification\n☑ SSE: verification_complete"]
+
+        N_VERIFY --> PR_CHECK{peer_review\npattern active?}
+        PR_CHECK -- yes --> N_PR["NODE: peer_review\n☑ PeerReviewPattern quality_threshold=0.7\n☑ Independent LLM review"]
+        PR_CHECK -- no --> ROUTE
+
+        N_PR --> ROUTE
+
+        ROUTE{_route\ndecision}
+        ROUTE -- complete --> DONE([✓ Goal COMPLETE])
+        ROUTE -- replan --> N_PLAN
+        ROUTE -- reflect --> N_REFLECT["NODE: reflect\n☑ LLM diagnoses failure\n☑ Updates verification_feedback\n☑ Increments reflection_attempts"]
+        N_REFLECT --> N_PLAN
+        ROUTE -- rag_remediate --> N_RAG
+        ROUTE -- max_iterations --> TIMEOUT([✗ Goal TIMEOUT FAILED])
+    end
+
+    LANGGRAPH --> P4
+
+    subgraph P4 ["Phase 4 — Post-Execution & Agent Improvement"]
+        direction LR
+        SUC_PATH["SUCCESS PATH\n──────────────\n☑ LongTermMemory.extract_from_goal\n☑ SelfOptimizer.analyze_success\n☑ EvalRunner final summary\n☑ SemanticCache.store plan"]
+        FAIL_PATH["FAILURE PATH\n──────────────\n☑ RollbackEngine.rollback\n☑ LongTermMemory.store_failure\n☑ SelfOptimizer.analyze_failure"]
+        ALWAYS_PATH["ALWAYS\n──────────────\n☑ AuditLog final entry\n☑ CostController total\n☑ GoalRecord → COMPLETED/FAILED\n☑ Concurrent counter--\n☑ Dedup entry cleared\n☑ SSE goal_completed/failed\n☑ OTel root span closed"]
+    end
+
+    DONE --> SUC_PATH
+    TIMEOUT --> FAIL_PATH
+    SUC_PATH --> ALWAYS_PATH
+    FAIL_PATH --> ALWAYS_PATH
+    ALWAYS_PATH --> STREAM_END([SSE stream closes])
+
+    style PS_START fill:#1a3a5c,stroke:#4a9ede,color:#e8f4fd
+    style P2_GF fill:#1a3a5c,stroke:#4a9ede,color:#e8f4fd
+    style LANGGRAPH fill:#0d2b1e,stroke:#3a8a5c,color:#e8f4fd
+    style N_EXEC fill:#1a2b1e,stroke:#4a8a6c,color:#e8f4fd
+    style GATE fill:#2b1a1a,stroke:#8a4a4a,color:#fde8e8
+    style P4 fill:#2b2b1a,stroke:#8a8a3a,color:#fdfde8
+    style DONE fill:#1a3a1a,stroke:#3a8a3a,color:#e8fde8
+    style TIMEOUT fill:#3a1a1a,stroke:#8a3a3a,color:#fde8e8
+    style RETURN_DUP fill:#2b2b2b,stroke:#6a6a6a,color:#e8e8e8
+    style STREAM_END fill:#1a1a3a,stroke:#4a4a8a,color:#e8e8fd
+```
+
+
 
 | Component | When | Phase |
 |---|---|---|
