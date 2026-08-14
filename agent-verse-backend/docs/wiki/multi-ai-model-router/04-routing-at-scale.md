@@ -371,3 +371,15 @@ with tracer.start_as_current_span("select_model") as span:
 ```
 
 This enables Jaeger trace waterfall showing: routing decision (1ms) → provider call (500ms) → response parsing (2ms), making it trivial to identify which provider is causing P99 latency spikes.
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Social Media Analytics SaaS (OpenAI Latency Spike, Auto-Reroute)**
+
+> A social media analytics platform processes 800,000 agent goals per day with peaks of 120 req/sec during morning reporting windows. The routing layer contributes a measured 1.4ms P99 overhead — negligible against 600ms average provider latency. One Tuesday morning, OpenAI API P99 climbed from 1.2s to 8.4s due to a partial `us-east-1` outage. The `ProviderHealthPolicy` recorded 23 consecutive failures within 68 seconds, tripping the OpenAI circuit breaker to OPEN. Redis pub/sub propagated the OPEN state to all 6 API replicas within 8ms. Within 90 seconds of the spike beginning, 100% of affected traffic was rerouted to Anthropic's `claude-haiku-3-5`. Goal completion rate remained at 98.7% throughout the incident; users experienced a 4-second window of elevated latency but zero errors — the Redis health-sync mechanism was the sole reason no goals were lost.
+
+**Real-World Example 2 — Enterprise Document Processor (Multi-Tenant Model Pinning at Volume)**
+
+> A document-processing platform serves 20 enterprise tenants, each with contractual or regulatory requirements for which LLM provider handles their data. Three healthcare tenants require all goals to use Anthropic-only models (`ModelRoutePolicy: force_provider=anthropic`); two EU-based tenants require EU-hosted models (`require_region=eu`); five tenants have volume-pricing agreements pinning them to `gpt-4o`. At 200,000 goals/day, the routing layer reads each tenant's `ModelRoutePolicy` from a Redis-cached dict in under 0.05ms per request and applies the constraint before scoring candidates. When one healthcare tenant's `force_provider=anthropic` policy conflicted with Anthropic's circuit being HALF-OPEN after a probe failure, the router returned a `409 Conflict` error rather than silently falling back to OpenAI — preserving the compliance guarantee. The tenant's goals queued for 43 seconds until the circuit recovered; no PHI was routed to an unapproved provider.

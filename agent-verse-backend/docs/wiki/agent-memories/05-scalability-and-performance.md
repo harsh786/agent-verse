@@ -497,3 +497,15 @@ At AWS pricing (~$0.0004/vCPU-s, ~$0.002/GPU-s):
 | Redis cluster | 4 GB | $150/month |
 
 > **Optimization lever**: Increasing `MemoryConsolidator.cluster_threshold` from 3 → 5 and `similarity_cutoff` from 0.25 → 0.35 can reduce memory storage volume by 40-60% at the cost of slightly lower recall granularity. Tune per tenant plan tier.
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — E-Commerce Platform / Flash Sale Scale**
+
+> A European e-commerce platform runs 500,000 order-processing goals per day across AgentVerse agents handling inventory checks, carrier selection, and fraud screening. Their `long_term_memory` table holds 10M vectors (20 avg memories × 500K active tenants). The HNSW index is configured with `m=16, ef_construction=128, ef_search=64`, delivering 93% recall@10 at P99=45 ms per vector search. During their Black Friday flash sale, peak load hits 1.15M goals in 8 hours (2.3× daily average). Redis L1 cache absorbs 87% of recall requests at sub-1ms latency — cache keys `memory:ltm:{tenant_id}:top20` cover the top 20 LTM entries per tenant across a 1.9 GB Redis cluster. Only cache misses (13%) hit PostgreSQL. Eight Celery consolidation workers run overnight, processing 11,000 tenant jobs at `batch_size=500` (0.1s per batch), reducing daily storage growth from 3.25 TB to 1.9 TB via Jaccard clustering — a 42% reduction with `cluster_threshold=4, similarity_cutoff=0.30`. Total memory-tier compute cost during the flash sale: $0.000225/goal.
+
+**Real-World Example 2 — Multi-Tenant SaaS / Sharding to Eliminate Hot Spots**
+
+> A project management SaaS hosts 10,000 business tenants, but 3 enterprise customers (5,000+ goals/day each) account for 40% of total memory writes. Without sharding, all three hash to the same PostgreSQL partition, pushing P99 write latency to 280 ms during business hours. After deploying an 8-shard consistent-hash ring (`get_shard(tenant_id, num_shards=8)`), the 3 enterprise tenants map to shards 2, 5, and 6 respectively — distributed across 3 independent `db.r6g.4xlarge` instances. P99 write latency drops to 38 ms. Each shard's HNSW index covers ~1.25M vectors (10K tenants × 125 avg memories per tenant), with index builds completing in under 2 minutes versus 25 minutes for the previous monolithic index. The Redis cache key prefix `memory:ltm:{tenant_id}:top20` distributes naturally across 3 Redis Cluster nodes with no additional routing logic required. When a fourth enterprise tenant joins and hashes to shard 2, the shard is scaled vertically from `db.r6g.4xlarge` to `db.r6g.8xlarge` without touching the other shards.

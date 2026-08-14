@@ -366,3 +366,15 @@ Based on production data from real AgentVerse deployments:
 | Set per-tenant cost alerts at 80% of limit | Prevents accidental overruns |
 
 <!-- Sources: app/observability/cost_breakdown.py, app/observability/alert_router.py, app/observability/slo_tracker.py, app/observability/health.py, app/observability/metrics.py -->
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Startup Model Routing Misconfiguration (Cost Spike from $0.08 to $0.45/Goal)**
+
+> A seed-stage startup accidentally deployed a model routing config that mapped all three agent roles — planner, executor, and verifier — to `gpt-4o` instead of only the planner. Cost-per-goal climbed from the expected $0.08 to $0.45 within 35 minutes, a 5.6× spike. The `agentverse_cost_usd_total` Prometheus counter triggered a WARNING Slack alert when rolling cost exceeded $0.36/goal average. The developer ran `GET /goals/{id}/cost` on three recent goals and immediately identified the issue: all three showed executor calls to `gpt-4o` ($0.038/call × 8 calls = $0.30/goal) versus the expected `claude-haiku-3-5` at $0.002/call. The model routing config was corrected and redeployed in 12 minutes; cost normalized to $0.09/goal within 20 minutes of the fix. Total overspend during the 47-minute window: $18.40 — contained before reaching the monthly budget alert threshold.
+
+**Real-World Example 2 — 2 AM P99 Latency Incident (pgvector Index Rebuild Root Cause)**
+
+> **02:14 UTC** — PagerDuty fires: `agentverse_goal_duration_seconds_p99 > 30s` sustained 5 minutes. On-call engineer opens the Runbook. **02:17** — Jaeger search by time range: all RAG spans show `vector_search: 7.9s` vs the normal 12ms. Span attribute `index_status: rebuilding` stands out. **02:19** — Postgres slow query log confirms a `VACUUM ANALYZE` triggered at 02:12 on the 20M-row `chunks` table, causing an HNSW index rebuild; live queries fell back to sequential scan. **02:22** — Engineer runs `pg_cancel_backend()` to abort the VACUUM; HNSW index finishes rebuilding in 88 seconds. **02:25** — P99 retrieval latency returns to 24ms; goal P99 drops from 32s to 1.6s. **02:27** — Incident resolved, 13 minutes from alert to recovery. Post-incident actions: `VACUUM ANALYZE` rescheduled to the 03:00–04:00 maintenance window; a new alert rule added for `agentverse_retrieval_latency_ms > 1,000ms` sustained 60 seconds to catch index rebuilds before they cascade to goal latency.

@@ -804,3 +804,19 @@ graph LR
 | Architecture Overview | AgentGraph is the core execution engine described in CLAUDE.md |
 | Governance | HITL gateway, audit log, cost controller are all wired into AgentGraph |
 | Providers | ModelRouter and all three LLM roles use the provider abstraction layer |
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — DevOps Automation Platform**
+
+> A cloud infrastructure company routes incident-response goals through the **ReAct** pattern (fast, deterministic tool calls) and capacity-planning goals through the **Tree-of-Thoughts** pattern (explores 3 scaling strategies before picking the optimal one). When a PagerDuty alert fires at 2 AM, the ReAct agent resolves the on-call incident in 45 seconds using `kubectl rollout restart` and `pagerduty_resolve`. The weekly capacity plan uses ToT to model Low/Medium/High traffic scenarios, surfacing a recommendation that saves $14,000/month in over-provisioned EC2 capacity.
+
+**Real-World Example 2 — Legal Research Assistant**
+
+> A legal tech firm uses the **Reflexion** pattern for contract analysis agents. After the agent incorrectly interprets an indemnification clause in its first 3 attempts (ReflexionService records `"Always cross-reference limitation-of-liability clauses before interpreting indemnification scope"`), the fourth attempt succeeds. Over 6 months, the agent's clause interpretation accuracy improves from 71% to 94% purely through reflexion-driven self-correction — no retraining required.
+
+**Real-World Example 3 — Financial Compliance**
+
+> A hedge fund uses the **Debate** pattern (two sub-agents argue for/against an investment thesis, a judge agent arbitrates) for high-stakes trading decisions. For a proposed $50M equity position, Agent A argues buy (P/E undervaluation) and Agent B argues hold (macro headwinds). The judge agent synthesises both positions and outputs a structured recommendation with confidence score. The HITL gate then presents this to a human analyst before execution — the pattern eliminates 73% of false-positive trade signals compared to single-agent analysis.

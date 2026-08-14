@@ -331,4 +331,8 @@ For a 3-step goal with 3 RAG chunks and 5 tools: approximately **2,400–4,000 t
 LLM call, comfortably within an 8K context window. After 10 steps, accumulated history
 reaches 5,000 tokens — the oldest steps are trimmed to stay within budget.
 
+**Real-World Example 2 — Sales CRM Agent**
+
+> A sales CRM agent receives the goal "create a follow-up email for deal ACME-2024-Q3". The Planner LLM receives: `PLANNER_SYSTEM` (~80 tokens) + goal text (~25 tokens) + 4 memory chunks from `ExecutionMemory` about past ACME interactions (1,200 tokens) + 2 RAG chunks from the ACME company profile collection (600 tokens) + 8 CRM tool schemas (`jira.get_deal`, `crm.list_contacts`, `email.draft`, `email.send`, `crm.get_deal_history`, `crm.get_contacts`, `crm.update_deal`, `calendar.schedule`) (640 tokens). The Planner also receives a Verifier success-criteria hint injected as planning context: "email must reference deal value $485,000 and the Q3 close date". Total Planner context: ~2,545 tokens — well within the 8K limit. The resulting 3-step plan (fetch deal → fetch contact history → draft email) keeps each Executor call under 3,500 tokens because `ContextBudgetManager` scopes the history chunks to ACME only, preventing unrelated past deals from consuming the context budget. The Verifier's `retry: false` condition is pre-seeded: if the drafted email omits the deal value, the failure reason "email missing deal value $485,000" is injected as explicit feedback into the replanning cycle.
+
 <!-- Sources: app/agent/prompts.py, app/agent/graph.py, app/agent/tool_calls.py -->

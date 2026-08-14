@@ -395,3 +395,7 @@ All metrics emitted via OTel to `app/observability/rag_trace.py`.
 | Large enterprise | 5M/day | 5M docs (25B chunks) | 10-node PG cluster, corpus sharding, dedicated embed servers |
 | Platform provider | 50M/day | Multi-tenant, 50B+ chunks | Multi-region PG, shard-by-tenant, dedicated Redis |
 | Hyperscale | 1B/day | 100B+ chunks | Custom pgvector deployment, embedding CDN, aggressive caching |
+
+**Real-World Example 3 — Financial News Terminal (2,000 Queries/Minute with Semantic Cache)**
+
+> A financial data provider runs a news intelligence terminal used by 500 power-user analysts submitting approximately 2,000 queries per minute during peak market hours (09:30–11:00 EST). The system indexes 200 million news chunks from 3,000 wire services updated in real time. Semantic cache L1 (Redis LRU, 256 entries/tenant) achieves a 42% hit rate at peak — analysts frequently ask semantically equivalent questions like "What is the latest Fed statement on rates?" versus "Fed interest rate decision today?", returning cached results in under 5ms at zero retrieval cost. The remaining 58% (approximately 1,160 queries/minute) reach the HNSW index: with `ef_search=100` on the 200M-chunk corpus, pgvector delivers P99 latency of 28ms across a 3-node read-replica cluster. Total infrastructure cost at peak runs $0.0031/query ($372/hour), down from $0.0082/query ($984/hour) before semantic caching was enabled — a 62% cost reduction that recovered the Redis infrastructure cost in under 3 days.

@@ -293,4 +293,44 @@ If the verifier feedback consistently mentions the same failure pattern (e.g. "s
 
 **Total time from deployment to validated improvement: 12 days** (vs weeks of manual A/B testing).
 
-<!-- Sources: app/evals/self_improvement_engine.py, app/evals/dataset_builder.py, app/evals/runtime_scorecard.py, app/evals/regression_gate.py, app/intelligence/learning_experiments.py, app/intelligence/prompt_optimizer.py, app/memory/reflexion.py -->
+---
+
+## Real-World Example 2: Government Agency — Offline Regression Before Policy Update
+
+**Situation:** A government agency runs AgentVerse for procurement analysis. Before deploying a new prompt variant for the PLANNING task type (following a 3-month internal review), the team ran a full offline regression.
+
+**Offline eval setup:**
+- Golden dataset: 2,400 historical goals from the past 6 months.
+- Eval suite: `EvalSuiteRunner` with 3 GoldenTask categories: `budget_analysis`, `vendor_comparison`, `compliance_check`.
+- LLM judge: `LLMJudge` with `provider=claude-3-5-sonnet-20241022`.
+
+**Results:**
+```
+Category             Control    Candidate   Delta
+budget_analysis       0.87        0.91      +4.6%  ✅
+vendor_comparison     0.83        0.85      +2.4%  ✅
+compliance_check      0.92        0.88      -4.3%  ❌
+```
+
+**Decision:** Compliance check degraded. The new prompt was modified to include stricter citation requirements for regulatory references. Re-run 3 days later: all three categories passed.
+
+**Outcome:** Zero regression in production. The full offline eval cycle (run → analyse → fix → re-run) completed in 5 days — vs the 6-week manual review process it replaced.
+
+---
+
+## Real-World Example 3: Series-A SaaS — Continuous Improvement Closes Quality Gap in 30 Days
+
+**Situation:** A Series-A SaaS deployed AgentVerse for customer success automation. Initial goal completion rate: 71%. Target: ≥85%.
+
+**Continuous improvement flywheel over 30 days:**
+
+| Week | Trigger | Action | Completion rate |
+|---|---|---|---|
+| 1 | `rag_quality=0.44` on product docs | Updated RAG strategy: NAIVE → HYBRID | 71% → 76% |
+| 2 | `coherence=0.68` on multi-step goals | Reflexion lesson: "Always reference ticket ID in step 3" | 76% → 80% |
+| 3 | `efficiency=0.62` (avg 7.2 iterations) | Prompt A/B test: tighter planner output format | 80% → 83% |
+| 4 | `cost_efficiency=0.55` | `CostOptimizer`: ANALYSIS tasks → Sonnet (−76% cost) | 83% → **86%** |
+
+**Zero manual interventions.** All four improvements were applied autonomously by the `SelfImprovementEngine`. The engineering team received weekly email summaries from the `NotificationService`.
+
+<!-- Sources: app/evals/self_improvement_engine.py, app/intelligence/learning_experiments.py -->

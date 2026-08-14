@@ -340,6 +340,18 @@ runtime_scope = RuntimeScope(
 This composite object is passed to every layer of the agent loop. No layer needs to
 re-derive context — it's computed once at goal start and flows through.
 
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Healthcare SaaS**
+
+> A healthcare SaaS deploys AgentVerse for two hospital customers, Hospital A and Hospital B, on a shared Postgres instance. Tenant scope enforced via RLS ensures Hospital A's 2.3 million patient records are completely invisible to Hospital B's API keys — no application-level WHERE clause required. Within Hospital A, the triage bot agent is configured with `allowed_tools=["symptom_lookup", "appointment_check", "escalate_to_human"]` out of the 50 tools available on the full platform, while a clinician research agent uses a broader set including lab-results APIs. Collection scope limits the triage bot to `collections=["ha_triage_protocols", "ha_appointment_system"]`, preventing retrieval from the shared drug reference database (`pharma_db_global`) that it has no clinical mandate to access. A prompt injection attack instructing the triage bot to "access patient records from Hospital B" fails at three independent layers — tenant RLS, agent tool scope, and collection scope — before any data is touched.
+
+**Real-World Example 2 — DevOps Platform**
+
+> A DevOps automation platform issues two API keys to different automation workflows. The CI pipeline integration key carries `roles=("viewer",)` — it can read goal results and agent status but cannot create Jira tickets, trigger deployments, or modify agent configurations. A separate deployment agent key carries `roles=("operator",)` with connector scope `connectors=["kubernetes_prod", "github_releases"]`. At runtime, the deployment agent's goal composes both the key's operator role and the agent's connector whitelist into a single `RuntimeScope` object. The policy engine then applies the most restrictive union: the operator role permits write operations, but the global `no_destructive_overnight` policy (`blocked_hours_utc=(22, 6)`) blocks any `kubectl delete` call between 22:00–06:00 UTC regardless of role. A misconfigured agent prompt attempting `kubectl delete namespace production` at 02:00 UTC fails at the policy scope layer before the connector scope or RBAC check is even evaluated.
+
 <!-- Sources: app/tenancy/context.py, app/tenancy/rbac.py, app/tenancy/entitlements.py,
      app/governance/permissions.py, app/governance/policies.py, app/governance/cost.py,
      app/db/rls.py, app/mcp/registry.py, app/knowledge/store.py, app/memory/ -->

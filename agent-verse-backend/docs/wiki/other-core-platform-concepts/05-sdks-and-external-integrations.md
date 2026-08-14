@@ -533,3 +533,28 @@ stream to the browser. This keeps the API key secure.
 **User experience:** After typing a request, users see each agent step appear
 in real-time (typically 3-8 steps over 15-60 seconds), with tool calls shown
 as "Searching Jira...", "Opening PR...", etc.
+
+---
+
+### RWE 2: Platform Engineering — CI/CD Infrastructure Review and Nightly Security Audit
+
+**Context:** A platform engineering team (8 engineers supporting 340 AWS resources)
+wants automated infrastructure impact assessments on every PR merge, and a nightly
+SOC2-compliant security audit across all resource groups.
+
+**CI/CD integration (GitHub Action):** On every merge to `main`, the workflow calls
+the AgentVerse GitHub Action with goal: `"Review infrastructure changes in this PR
+and identify blast radius for: {diff}"`. The action polls via SSE, receives the 6-step
+analysis (VPC impact, IAM scope, cost delta, rollback plan, compliance flags), and
+posts the structured result as a PR comment. Average round-trip: 87 seconds.
+
+**Nightly audit (Python SDK):** A cron job submits 200 security audit goals (one per
+AWS resource group) concurrently via `asyncio.gather()`, streaming results as they
+complete. All 200 goals finish in 4.2 minutes total. The `agentverse` CLI supports
+ad-hoc queries: `agentverse goals submit --goal "Check if IAM role arn:aws:iam::123456789:role/DataPipeline has overly permissive S3 access"`. Structured JSON output is
+accepted as SOC2 audit evidence, saving 3 weeks of manual documentation per annual
+audit cycle — approximately $18,000 in consultant fees.
+
+**Real-World Example 3 — TypeScript SDK for Customer-Facing AI Feature**
+
+> A product team embeds AgentVerse into their SaaS dashboard using the TypeScript SDK. When a user clicks "Explain this anomaly", the frontend calls `agentverseClient.submitGoal()` and opens an SSE stream. The React component renders streaming tokens as they arrive (P50 time-to-first-token: 380ms). If the goal takes more than 8 seconds, the client shows a progress indicator driven by `step_started` / `step_completed` SSE events. The entire feature required 47 lines of TypeScript — the SDK abstracts all auth, retry, and streaming complexity. User satisfaction with the AI explanation feature: 4.6/5 stars across 12,000 sessions.

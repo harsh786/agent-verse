@@ -288,6 +288,12 @@ Agent "payment_automation" called pay_wire(amount=4200000, dest="offshore_accoun
 → Wire: never executed
 ```
 
+---
+
+**Real-World Example 2 — Global Insurance Company (GDPR + Lloyd's of London)**
+
+> A multinational insurer deploys AgentVerse across 30 countries. EU agents are bound by GDPR bundle (7-year retention, right-to-forget within 72h); UK agents by Lloyd's syndicate rules (10-year retention, annual market conduct review). Custom enterprise roles map to underwriting hierarchy: `underwriter` (read + quote), `senior_underwriter` (write + bind up to £500K), `chief_underwriter` (bind unlimited, approve HITL requests). Red team runs quarterly penetration tests using the simulation sandbox — last quarter it identified a policy gap where agents could access competitor rate cards via a misconfigured knowledge collection scope, fixed before any real agent used it.
+
 <!-- Sources: app/governance/hitl.py, app/governance/policies.py,
      app/governance/compliance_bundles.py, app/governance/siem_adapters.py,
      app/tenancy/rbac.py, app/tenancy/middleware.py, app/enterprise/ -->

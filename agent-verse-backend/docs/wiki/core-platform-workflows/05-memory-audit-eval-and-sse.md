@@ -364,3 +364,15 @@ The EvalRunner scoring LLM call is the most expensive post-execution operation. 
 **Cause:** LLM provider is `FakeProvider` (no real LLM configured). `FakeProvider.complete()` returns a hardcoded success response that the eval parser interprets as 0-scored.
 
 **Fix:** Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for real eval scoring, or add custom `FakeProvider` responses that include evaluation scores in the test setup.
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Dev Tools SaaS / Code Review Agent Completion**
+
+> A developer tooling company's code review agent completes the goal "Review PR #4892: refactor authentication middleware" after executing 6 tool calls across GitHub and a static analysis API over 47 seconds total. On `GoalStatus.COMPLETE`, the post-execution pipeline fires in parallel: ① `ExecutionMemory.write()` records the full 6-step trace (tool calls, outcomes, RAG context) in 4 ms; ② `LongTermMemoryStore.update()` extracts a durable learning — `"Auth middleware PRs require checking OWASP A02 injection patterns in custom validators"` — and writes it with a 1536-dim embedding in 18 ms; ③ `EvalRunner.score()` grades the run at `overall=0.88` (grounding_accuracy=1.0, plan_quality=0.70 due to one redundant diff fetch) and defers the LLM scoring call to a `maintenance` Celery task completing within 45 seconds; ④ `AuditLog.seal()` writes `goal_completed` with `ip_address`, hashed `api_key_id`, and `request_id` in 3 ms. The parallel pipeline completes in **22 ms** before `_dispatch_event("goal_completed")` fires. The PR author's browser receives the SSE event `{status: "complete", duration_ms: 47200, cost_usd: 0.031}` within 28 ms of the agent finishing — the React component re-renders the goal card from "Running" to "Complete" with the evaluation score badge.
+
+**Real-World Example 2 — Customer Support Platform / Ticket Resolution SSE Delivery**
+
+> A B2B SaaS support platform uses AgentVerse agents to autonomously resolve Tier-1 tickets. When the agent resolves ticket #TKT-20491 after retrieving relevant documentation and posting a solution, `GoalService._dispatch_event("goal_completed")` publishes `{"goal_id": "goal-tkt-20491", "status": "complete", "duration_ms": 12400, "cost_usd": 0.018}` to Redis channel `goal_events:support-platform-prod:goal-tkt-20491` in ~1 ms. The API pod serving the support dashboard's active SSE stream receives the pub/sub message, puts it on the asyncio.Queue for the browser subscriber, and FastAPI flushes the SSE frame in ~3 ms. The React frontend `EventSource` receives the event, calls `queryClient.invalidateQueries(["goals", "goal-tkt-20491"])`, and re-renders the ticket card to "Resolved" in ~12 ms — **total end-to-end latency: 185 ms** including 170 ms network round-trip for a customer's browser in London. Concurrently, `AuditLog.seal()` writes `{event_type: "goal_completed", tool_name: "goal_completed", outcome: "complete", action_level: INFO, api_key_id: "sha256:def456"}` — the authoritative SOC2 record proving that the AI agent (not a human support rep) marked the ticket resolved, satisfying the platform's AI action attribution audit requirement.

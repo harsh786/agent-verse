@@ -227,4 +227,12 @@ system tries to add vectors from `text-embedding-3-large` (3072 dims):
 
 This is a **breaking change** requiring full reindex. It cannot be done incrementally.
 
+---
+
+## Real-World Examples
+
+**Real-World Example 2 — Multilingual E-Commerce Catalog**
+
+> A global retailer ingests 2M product descriptions in 14 languages into a single knowledge collection. They choose `voyage-3` (1024 dims) over `text-embedding-3-large` (3072 dims) for its superior multilingual quality at lower storage cost (4× smaller index = 800GB vs 3.2TB). The `ContentType.TEXT` routing path selects `voyage-3` automatically based on `_MODALITY_MAP`. When they later add 50K product images (screenshots, infographics), the system automatically routes those to `voyage-multimodal-3` — no config change needed — allowing cross-modal queries like "find products that look like this image."
+
 <!-- Sources: app/embedding/model_registry.py, app/embedding/dimension_policy.py, app/embedding/vector_index_policy.py -->

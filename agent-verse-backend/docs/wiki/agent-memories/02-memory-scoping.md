@@ -396,3 +396,9 @@ These invariant tests are in `tests/memory/test_isolation.py` and run as part of
 
 <!-- Sources: app/memory/working_memory.py:73-77, app/memory/repository.py:35-65 -->
 
+---
+
+**Real-World Example 2 — Enterprise Tenant Cross-Contamination Attempt (What Actually Happens)**
+
+> MegaRetail Corp (`tenant_id="megaRetail-prod"`) and GlobalLogistics Ltd (`tenant_id="globalLogistics-prod"`) both run agents on the same AgentVerse cluster. A MegaRetail developer builds a custom internal analytics script that calls `LongTermMemoryStore.recall()` directly — bypassing the `TenantMiddleware` — and accidentally omits the `TenantContext` argument, passing `tenant_id=None`. At the application layer, the `TenantContext` dataclass is a typed object (not a raw string), so the missing argument raises a `TypeError` before the query reaches the database. If the developer instead forges a raw SQL call without setting the session GUC, PostgreSQL evaluates the RLS policy `tenant_id = current_setting('app.tenant_id')` — since no `SET LOCAL app.tenant_id` was issued in the transaction, `current_setting` raises `ERROR: unrecognized configuration parameter "app.tenant_id"`, and the query fails with `sqlalchemy.exc.ProgrammingError` before returning a single row from any tenant. No GlobalLogistics data is ever exposed. The failed attempt is logged as `WARN memory_recall_missing_tenant_context` with the caller's stack trace, and surfaced in the governance dashboard as an anomaly event within 30 seconds — giving the security team a complete audit trail of the misconfigured script.
+

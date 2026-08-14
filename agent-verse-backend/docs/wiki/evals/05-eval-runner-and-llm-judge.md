@@ -328,3 +328,15 @@ For RAFT goal executions, `EvalRunner` dimension weights should be adjusted:
 - [02 — Safety, Accuracy and SLA Evals](./02-safety-accuracy-and-sla-evals.md) — `SafetyScorer`, latency dims
 - [04 — Tool, Model and Agent Evals](./04-tool-model-and-agent-evals.md) — `AgentScorer`, `ModelScorer`, `RuntimeScorecard`
 - [RAG — RAFT Pattern](../rag/07-advanced-patterns.md) — RAFT strategy implementation
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Insurance Claims Processing (Weekly Regression Gate)**
+
+> A mid-sized insurance company runs 1,800 claims-processing goals per day through their AgentVerse agent. Every Friday, their CI pipeline triggers an `EvalSuiteRunner` against a 500-task golden dataset with `LLMJudge` backed by GPT-4o. Each `GoldenTask` checks that the correct coverage decision appears in the output (`expected_output_contains: ["approved", "Tier 2", "prior_auth_required"]`) and that the `formulary_lookup` tool was called. The deployment pipeline has a hard regression gate: if overall `LLMJudge` pass rate drops more than 3 percentage points from the previous week's baseline (e.g., from 94.2% to below 91.2%), the deploy is blocked and the team is paged. Over 8 months, this gate caught 3 deployments that would have degraded coverage-decision accuracy by 4–9 points before they reached production.
+
+**Real-World Example 2 — Legal Tech Startup (Continuous Online Evaluation)**
+
+> A legal research startup runs continuous online evaluation: a 5% random sample of all production goals is routed through `EvalRunner.score_async()` in the background alongside normal execution. The `LLMJudge` scores each sampled goal on `accuracy` and `coherence`, checking whether cited case law references appear in the agent output and flagging any score below 0.70. When a prompt regression caused the agent to hallucinate non-existent case citations in 12% of outputs, the continuous eval surface triggered a Slack alert within 97 seconds — before any customer filed a support ticket. The team rolled back the prompt change and the accuracy score recovered from 0.61 to 0.89 within 20 minutes of the fix landing.

@@ -279,4 +279,76 @@ A production-ready Grafana dashboard for AgentVerse should include these panels:
 | **LLM** | Token usage by model | `rate(agentverse_llm_tokens_used_total[5m])` |
 | **LLM** | P99 LLM latency | `histogram_quantile(0.99, ...)` |
 
-<!-- Sources: app/observability/metrics.py, app/observability/slo_tracker.py, app/observability/alert_router.py -->
+---
+
+## Real-World Example 2: E-commerce Platform — SLO Budget Burn Alert
+
+**Situation:** A high-GMV e-commerce platform runs AgentVerse for automated customer service. Their SLO: 99.5% of goals complete within 8 seconds. Monthly error budget: 0.5% × 30 days × 24h = 3.6 hours.
+
+**SLO budget burn alert triggered on 2026-06-18:**
+```
+ALERT: slo_budget_burn_rate_critical
+  slo:               goal_completion_p99_latency_8s
+  burn_rate_1h:      14.2×   (14.2× faster than sustainable)
+  burn_rate_6h:      3.1×
+  budget_consumed:   68%  (after only 18 days of 30)
+  alert_channel:     #platform-oncall
+  runbook:           https://wiki.internal/runbooks/latency-slo
+```
+
+**Investigation via Prometheus:**
+```promql
+# Which agent type is causing the burn?
+histogram_quantile(0.99,
+  rate(agentverse_goal_duration_seconds_bucket{
+    tenant_id="ecommerce-001"
+  }[5m])
+) by (agent_id)
+```
+→ `returns-processing-agent` p99: **22.4s** (vs 8s SLA).
+
+**Root cause:** The returns agent was making 4 sequential tool calls to a 3PL warehouse API that had degraded to 5.2s/call.
+
+**Fix:** Tool calls parallelised where order permits. 3PL API added to circuit breaker with 2s timeout + local cache fallback.
+
+**Outcome:** p99 latency: 22.4s → 6.1s. SLO budget burn stopped. Monthly budget consumption normalised to 12%.
+
+---
+
+## Real-World Example 3: SaaS Multi-Tenant — Per-Tenant SLO Dashboards
+
+**Situation:** An AgentVerse SaaS provider offers different SLA tiers to their customers. Enterprise customers have a 5s p99 SLA; Starter customers have 30s.
+
+**Per-tenant metric cardinality strategy:**
+```python
+# app/observability/metrics.py — tenant label in all histograms
+GOAL_DURATION.labels(
+    tenant_id=tenant_ctx.tenant_id,
+    plan=tenant_ctx.plan,          # "enterprise" | "starter" | "free"
+    agent_id=state.agent_id,
+    task_type=state.task_type.value,
+).observe(elapsed_seconds)
+```
+
+**Prometheus alerting rules by plan:**
+```yaml
+- alert: EnterpriseSlaBreach
+  expr: |
+    histogram_quantile(0.99,
+      rate(agentverse_goal_duration_seconds_bucket{plan="enterprise"}[5m])
+    ) > 5
+  for: 2m
+  annotations:
+    summary: "Enterprise SLA breached (p99 > 5s)"
+
+- alert: StarterSlaBreach
+  expr: |
+    histogram_quantile(0.99,
+      rate(agentverse_goal_duration_seconds_bucket{plan="starter"}[5m])
+    ) > 30
+  for: 5m
+```
+
+**Outcome:** Per-tenant Grafana dashboards let the support team instantly answer "Is my tenant's SLA being met right now?" without touching the database. MTTR for SLA-related support tickets: 45 minutes → 8 minutes.
+
+<!-- Sources: app/observability/metrics.py, app/observability/slo_tracker.py -->

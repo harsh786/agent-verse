@@ -173,3 +173,15 @@ New query arrives
 - [Ingestion Pipeline](../ingestion-pipeline.md) — how documents become chunks become vectors
 - [Embedding System](../embedding-system.md) — model selection, cost tiers, fallback
 - [Agent Patterns](../agent-patterns/00-pattern-selection-and-dispatch.md) — how RAG patterns are selected per goal
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — E-Commerce Product Assistant (Pattern Selection by Query Type)**
+
+> A fashion e-commerce platform's product assistant routes query types to different RAG patterns automatically via the `PatternAssembler`. Simple catalog lookups ("Is the Adidas Ultraboost available in size 10, black?") hit **Naive RAG** at 35ms against 4 million product SKUs. Complex comparison queries ("Compare the 5 best running shoes under $150 for overpronation") trigger **Fusion RAG**: 5 parallel retrieval runs generate diverse candidate sets, RRF merges them, and the LLM produces a cited comparison in 2.1 seconds. Archival policy questions ("What was the return policy for holiday 2021 purchases?") route to **Self-RAG with CRAG fallback**: the agent detects that the initially retrieved 2021 policy chunk has a low grading score (the policy was superseded), triggers a corrective hop to archived policy documents, and returns the historically correct answer with a "historical policy" disclaimer — preventing a customer service escalation.
+
+**Real-World Example 2 — Hospital Clinical Decision Support (Query Type → RAG Pattern Mapping)**
+
+> A hospital system's clinical decision support tool routes queries based on `PatternAssembler` signals. Objective reference queries ("What is the normal range for serum creatinine in adults?") use **Hybrid RAG** at 80ms against 50,000 clinical reference articles — fast, grounded, no LLM-invented values for objective thresholds. Multi-step drug interaction queries ("Can a warfarin patient take ibuprofen alongside metformin?") trigger **Multi-hop RAG**: three sequential retrieval hops — (1) warfarin + NSAID interactions, (2) ibuprofen + anticoagulation risk, (3) NSAID + metformin renal contraindication — synthesised into one answer with 7 source citations in 3.4 seconds. Rare disease queries with sparse internal documentation ("Management options for paraneoplastic cerebellar degeneration?") activate **Web-Augmented RAG**, pulling current guidelines from PubMed and labelling external provenance in the audit log so clinicians know which content came from outside the hospital's vetted corpus.

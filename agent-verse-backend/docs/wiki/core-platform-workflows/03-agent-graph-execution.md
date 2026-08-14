@@ -353,3 +353,55 @@ Total execution time: **2.9 seconds** for a 4-step goal involving two external A
 | `max_iterations` guard | 100 iterations | Configurable per-tenant |
 
 At 1M goals/day, 100 Celery workers processing 10 goals/second each, the AgentGraph accounts for ~85% of total execution time — almost all of it is LLM API latency and external tool calls.
+
+---
+
+## Real-World Example 1: DevOps Agent — Deploy Microservice to Staging
+
+**Situation:** A SaaS company uses AgentVerse to automate Kubernetes deployments. The goal: *"Deploy order-service:v2.4.1 to staging and run smoke tests."*
+
+**Graph execution trace:**
+```
+INITIALISE  → goal loaded, tenant config applied, checkpointer = AsyncRedisSaver
+PLAN        → Planner LLM: 4 steps
+               1. Pull current staging deployment
+               2. Update image tag via kubectl set image
+               3. Wait for rollout readiness (30s poll)
+               4. Run smoke test suite via pytest --marker=smoke
+EXECUTE [1] → tool: kubectl.get_deployment (staging, order-service)  ✓ 980ms
+VERIFY  [1] → success: current image tag confirmed ≠ v2.4.1
+EXECUTE [2] → tool: kubectl.set_image (order-service=order-service:v2.4.1)  ✓ 1.2s
+VERIFY  [2] → success: rollout command accepted
+EXECUTE [3] → tool: kubectl.rollout_status (timeout=120s)  ✓ 34s
+VERIFY  [3] → success: "successfully rolled out"
+EXECUTE [4] → tool: pytest_runner.run (--marker=smoke)  ✓ 42s
+VERIFY  [4] → success: 47 passed, 0 failed
+COMPLETE    → total: 4 steps, 0 retries, 80s
+```
+
+**Key graph behaviour observed:** Step 3 exceeded 30 seconds (the LLM's initial estimate), but the verifier correctly parsed the `kubectl rollout status` output and returned `success=True`. No replan was triggered.
+
+---
+
+## Real-World Example 2: Financial Agent — Replan After Tool Failure
+
+**Situation:** Investment research agent. Goal: *"Fetch Q3 2026 earnings for MSFT, AAPL, GOOGL and produce a comparison table."*
+
+**Graph execution trace (replan triggered):**
+```
+PLAN        → 3 steps: fetch MSFT, fetch AAPL+GOOGL, produce table
+EXECUTE [1] → tool: bloomberg.get_earnings(MSFT, Q3-2026)  ✗ 503 ServiceUnavailable
+VERIFY  [1] → failure: "Bloomberg API returned 503 — retry or use alternative"
+REPLAN      → Planner LLM: 4 steps (revised)
+               1. Fetch MSFT from SEC EDGAR (alternative)
+               2. Fetch AAPL from SEC EDGAR
+               3. Fetch GOOGL from SEC EDGAR
+               4. Produce comparison table
+EXECUTE [1] → tool: sec_edgar.get_filing(MSFT, 10-Q, Q3-2026)  ✓ 2.1s
+... (steps 2–4 succeed)
+COMPLETE    → total: 4 steps, 1 replan, 12s
+```
+
+**Key graph behaviour:** The graph's `decide_next_edge` function detected `step.failed = True` and routed to REPLAN instead of EXECUTE. The second plan used a fallback data source the LLM knew about from its tool schemas. Zero human intervention required.
+
+<!-- Sources: app/agent/graph.py, app/agent/loop.py, app/agent/state.py -->

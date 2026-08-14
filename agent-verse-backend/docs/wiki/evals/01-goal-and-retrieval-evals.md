@@ -233,4 +233,51 @@ This is why the `AttributionVerifier` is positioned as a **fast heuristic** (Jac
 
 `coherence_score = (1.0 + 1.0 + 0.9) / 3 = 0.97`. The agent remembered the order number without the user repeating it — that's what coherence measures.
 
-<!-- Sources: app/evals/goal_score.py, app/evals/rag_score.py, app/evals/attribution_verifier.py, app/evals/multi_turn_eval.py, app/evals/dataset_builder.py, app/evals/runtime_scorecard.py -->
+---
+
+## Real-World Example 2: E-commerce Search Agent — Retrieval Quality Degradation
+
+**Situation:** An e-commerce platform uses AgentVerse to power product search. After migrating 2M product embeddings from `text-embedding-ada-002` to `text-embedding-3-small`, the `RAGScorer` started flagging degraded retrieval on accessory queries.
+
+**Eval signals observed:**
+```python
+# RAGScorer outputs on 500 production goals after migration
+avg_retrieval_confidence_before = 0.81
+avg_retrieval_confidence_after  = 0.68   # -16%
+avg_rag_quality_before          = 0.79
+avg_rag_quality_after           = 0.61   # -23%
+```
+
+**Root cause:** `text-embedding-3-small` clusters fashion accessories differently — "women's belt" and "men's belt" landed in separate clusters, breaking queries like "leather belt" that previously matched both.
+
+**Resolution via `EvalDatasetBuilder`:**
+- 140 failing goals auto-captured as regression cases.
+- Re-embedding experiment run with `text-embedding-3-large`: `rag_quality` restored to 0.78.
+- Migration approved for `text-embedding-3-large` only (not `small`).
+
+**Outcome:** Re-embedding 2M vectors with `text-embedding-3-large` took 4 hours. Search relevance metric (DCG@10) restored to pre-migration levels within 6 hours.
+
+---
+
+## Real-World Example 3: Healthcare Documentation Agent — Multi-Turn Coherence
+
+**Situation:** A healthcare SaaS uses AgentVerse for clinical note summarisation. The `MultiTurnEvaluator` revealed that patient names were being dropped between conversation turns in 12% of multi-step summaries.
+
+**`MultiTurnEvaluator` findings:**
+```python
+MultiTurnScore(
+    entity_retention=0.76,    # target: >0.90
+    context_coherence=0.81,
+    topic_consistency=0.92,
+    reference_precision=0.78,
+    overall=0.82
+)
+```
+
+**Root cause:** The executor prompt didn't include patient name in the `step_context` string — it was relying on the model to remember it from the initial goal.
+
+**Fix:** The `PromptBuilder.build_executor_context()` was updated to always inject the goal's primary entity (patient name, order ID, etc.) as a pinned first line of the step context.
+
+**Outcome:** Entity retention rose to 0.93 after the fix. `SelfImprovementEngine` promoted the prompt change after 100-goal A/B test confirmed improvement.
+
+<!-- Sources: app/evals/goal_score.py, app/evals/rag_score.py, app/evals/multi_turn_eval.py -->

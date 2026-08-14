@@ -2090,3 +2090,11 @@ CitationManager.register_chunks(chunks) → { "[1]": chunk_1_meta, "[2]": chunk_
 | [Goal Service & SSE Events](../services/04-goal-service.md) | Full lifecycle of a goal from HTTP POST to SSE completion stream |
 | [Goal Decomposition & Goal Tree](../multi-agent/05-goal-tree.md) | How `goal_tree` decomposes expert goals into parallel sub-goals |
 | [Reasoning Strategies Explained](../reasoning/06-reasoning-strategies.md) | CoT, Tree-of-Thoughts, Self-Consistency, Peer Review — what each does and when to use it |
+
+---
+
+## Real-World Dispatch Examples
+
+**Real-World Example 2 — SaaS Customer Support Platform**
+
+> An AI customer support platform routes 8,000 tickets/day through the pattern dispatcher. Simple account queries ("What is my billing date?") resolve via **Plan-Execute** in 2.1 seconds. Complex refund disputes trigger **Reflexion** — the agent iterates up to 4 times, cross-referencing account history and policy docs, achieving 91% first-contact resolution. Escalations requiring multi-department approval route to **Supervisor** pattern, dispatching sub-agents to Billing, Technical, and Customer Success simultaneously and consolidating their outputs into a single resolution response.

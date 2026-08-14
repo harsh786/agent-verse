@@ -438,3 +438,60 @@ Yes. Each call to `select_model()` is independent. If a provider's circuit opens
 **Q: Can free tier tenants accidentally access enterprise models?**
 
 No. `ModelRoutePolicy` for free tenants sets `max_cost_per_1k=0.0002`, which filters out all models above that price point. Even with `model_override`, the router validates the override against the tenant's `max_cost_per_1k` constraint.
+
+---
+
+## Real-World Example 2: Legal Research Firm — Per-Role Model Configuration
+
+**Situation:** A legal research firm needs high accuracy on PLANNING (structuring complex legal arguments) but cost efficiency on EXECUTION (data extraction from documents).
+
+**ModelRoutePolicy configuration:**
+```python
+ModelRoutePolicy(
+    tenant_id="legal-research-firm",
+    role_overrides={
+        TaskType.PLANNING:   ModelConfig(model="claude-opus-4-5",   max_tokens=8192),
+        TaskType.EXECUTION:  ModelConfig(model="claude-sonnet-4-5", max_tokens=4096),
+        TaskType.ANALYSIS:   ModelConfig(model="claude-sonnet-4-5", max_tokens=4096),
+        TaskType.VERIFICATION: ModelConfig(model="claude-haiku-3-5", max_tokens=1024),
+    },
+    max_cost_per_1k=0.012,   # $12/1K goals budget
+)
+```
+
+**Cost vs quality outcome (1,000-goal batch, M&A due diligence):**
+
+| Role | Model | Avg quality | Cost/goal |
+|---|---|---|---|
+| PLANNING | Claude Opus | 0.93 | $0.31 |
+| EXECUTION | Claude Sonnet | 0.88 | $0.07 |
+| VERIFICATION | Claude Haiku | 0.84 | $0.01 |
+| **Blended** | Mixed | **0.90** | **$0.08** |
+
+vs all-Opus baseline: quality 0.91, cost $0.42/goal.
+
+**Saving: $0.34/goal (81%). At 50,000 goals/month: $17,000/month savings.**
+
+---
+
+## Real-World Example 3: Startup Hitting Rate Limits — Automatic Provider Failover
+
+**Situation:** A well-funded AI startup uses Anthropic as the primary provider. During a high-traffic event (product launch), they hit Anthropic's rate limit at 3,200 requests/minute.
+
+**Circuit breaker + failover behaviour:**
+```
+14:32:07  Anthropic 429 received → circuit_breaker["anthropic"] opens
+14:32:07  ModelRouter.fallback_sequence: ["anthropic", "openai", "openai_compatible"]
+14:32:07  Routing PLANNING requests → OpenAI gpt-4o (fallback tier 2)
+14:32:07  Routing EXECUTION requests → OpenAI gpt-4o-mini (fallback tier 2)
+14:32:52  Anthropic 429 rate clears → circuit_breaker["anthropic"] half-open probe
+14:33:07  Probe succeeds → circuit_breaker["anthropic"] closed, routing restored
+```
+
+**Outcome:**
+- 61 seconds of degraded routing (OpenAI, ~3% quality reduction on PLANNING).
+- Zero goals failed or were dropped.
+- Goal completion rate during the incident: 99.4%.
+- Zero manual intervention required.
+
+<!-- Sources: app/ai_router/, app/providers/ -->

@@ -316,3 +316,31 @@ Each `close_issue` call uses the `jira:close_issue` inverse tool registered in
 ```
 
 No orphaned GitHub issues, no manual cleanup needed.
+
+---
+
+### RWE 2: Marketing Automation with Non-Rollbackable Email Send
+
+**Context:** A marketing automation agent is tasked with "send newsletter to 50,000
+subscribers". The email-send tool is classified as non-rollbackable in
+`tool_inverses.py` — `"send_email": None` — because emails cannot be unsent after
+delivery to an external SMTP relay.
+
+**What happens:** The rollback engine detects the non-rollbackable tool during
+planning and inserts an HITL approval gate (`HITLGateway.request_approval()`) before
+the send step. The agent runs content creation (5 steps), generates a draft, and
+pauses at the gate. During review, a human notices the draft used the wrong sender
+name. Rollback fires: it executes compensating actions for the 5 prior rollbackable
+steps (`create_draft → delete_draft`, `create_template → delete_template`, etc.),
+clears those cost ledger entries, and pauses for re-confirmation before retrying.
+
+**Outcome:** Zero accidentally-sent emails with wrong content. The bulkhead ensures
+this large goal (50K subscriber list, ~200 API calls) occupies a single concurrency
+slot in the `email_service` bulkhead, leaving the remaining 9 slots free for other
+marketing goals running in parallel. Without rollback, the draft artefacts would have
+cumulated: 3 orphaned templates and 1 draft costing $0.14 in Sendgrid storage fees
+daily — trivial individually but $51/year across 1,000 similar campaigns.
+
+**Real-World Example 3 — API Gateway During Traffic Spike**
+
+> A B2B SaaS company's embedding API (Voyage AI) starts returning 429 errors after a sudden 10× traffic spike at month-end (all clients running reports simultaneously). The circuit breaker opens after 5 consecutive errors (threshold reached in 12 seconds), causing fast-fail for 30 seconds. During that window, the deduplication layer prevents 3,400 duplicate embedding requests from queuing up. The bulkhead limits the embedding subsystem to 10 concurrent calls, so the 10 in-flight requests complete while 3,390 are cleanly failed-fast and retried after the circuit recovers. P99 goal completion latency: 8.2 seconds during the incident vs. 45-second hangs without circuit breaker.

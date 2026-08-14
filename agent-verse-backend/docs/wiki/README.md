@@ -45,8 +45,10 @@
 | Hallucination Handling | [hallucination-handling/](hallucination-handling/) | 6 | Grounding, tool validation, NLI, consensus, observability feedback loop |
 | Core Platform Workflows | [core-platform-workflows/](core-platform-workflows/) | 6 | Startup, queue routing, AgentGraph execution, tool execution, SSE |
 | Other Core Concepts | [other-core-platform-concepts/](other-core-platform-concepts/) | 6 | MCP, providers, reliability, Celery/Postgres/Redis, SDKs |
+| RPA Automation | [rpa-automation/](rpa-automation/) | 6 | Playwright sessions, 13 RPA tools, credential injection, artifact storage, security |
+| Token & Cost Optimization | [token-optimization/](token-optimization/) | 6 | Token budgeting, model selection, caching, latency optimizer, A/B testing |
 
-**Total: 18 categories · 98 files · ~44,000 lines of documentation**
+**Total: 20 categories · 133 files · ~50,400 lines of documentation**
 
 ---
 

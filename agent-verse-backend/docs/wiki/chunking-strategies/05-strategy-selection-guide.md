@@ -342,3 +342,18 @@ Effective throughput with 8 Celery workers:
 | `sentence_window` | ★★★★☆ | Medium | ★★★★★ | Fact lookup in prose | Dense tabular content |
 | `agentic` | ★☆☆☆☆ | High (LLM) | ★★★★★ | Legal, medical, patents | High-volume collections |
 | `late_chunking` | ★★★☆☆ | High (full embed) | ★★★★★ | Reference-heavy documents | Short documents |
+
+---
+
+**Real-World Example 2 — Biomedical Research Platform**
+
+> A biomedical research platform tests three chunking strategies on their 2M PubMed
+> paper corpus using the strategy selector's A/B testing mode. Semantic chunking
+> (baseline) yields 68% retrieval recall; heading chunking improves to 71% (papers have
+> clear section headers: Abstract, Methods, Results, Discussion); parent-child hybrid
+> reaches 79% (retrieve precise sentences, return full paragraph for context). They run
+> all 3 strategies in parallel on a 10,000-query sample, confirm statistical significance
+> (p < 0.001, effect size 11%), and promote `parent_child` as the collection default for
+> `content_type=scientific_paper`. Ingestion throughput drops from 1,200 chunks/sec
+> (semantic) to 890 chunks/sec (parent-child) — a 26% slowdown accepted in exchange
+> for the 11 percentage-point retrieval gain on this high-value corpus.

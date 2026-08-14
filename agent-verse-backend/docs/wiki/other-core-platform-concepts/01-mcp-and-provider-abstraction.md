@@ -366,3 +366,30 @@ configured in `SSRF_ALLOWLIST_CIDRS`.
 
 **Outcome:** 100% on-premise. Zero data leaves the firm's network. Full audit
 log of every LLM call via `app/governance/audit.py`.
+
+---
+
+### RWE 2: Enterprise with On-Premise Internal Tooling — Zero Agent Code Changes
+
+**Context:** An enterprise deploys AgentVerse alongside three on-premise internal
+tools: JIRA Data Center (v9.x, VPN-only), Confluence Data Center, and a private
+GitLab instance. All three use custom OAuth2 flows incompatible with cloud-hosted
+credential managers.
+
+**Implementation:** The platform team registers 3 custom MCP servers (one per tool),
+each a Python FastAPI microservice implementing `/tools` and `/tools/{name}` MCP
+endpoints with PKCE OAuth flows. They call `MCPRegistry.register_server()` once per
+server at startup — configs are stored in Redis under
+`mcp:servers:{tenant_id}:{server_id}`. Agents discover all 3 tools automatically via
+`MCPRegistry.list_tools()`, scoped per tenant. When the team later adds a 4th MCP
+server (internal Slack), zero agent code changes are required — the new server is
+registered and immediately available to all future goals.
+
+**Outcome:** The previous JIRA integration required 1,800 lines of custom connector
+code; the MCP equivalent is 120 lines. The PKCE `oauth.py` flow handles token refresh
+every 45 minutes automatically. All 4 tool servers process ~8,000 tool calls/day
+with P99 latency of 340ms — well within the agent loop's 2-second tool timeout.
+
+**Real-World Example 3 — AI Startup Switching LLM Providers**
+
+> A Series A AI startup uses Anthropic Claude as their primary provider. When Anthropic announces a 48-hour maintenance window, they configure `FakeProvider` to serve deterministic responses during the window, then switch to OpenAI as a fallback via the `LLMProvider` abstraction — all in a 5-line config change. After the maintenance window, they switch back to Claude without any code changes. Total downtime for end-users: 0 seconds. The `FakeProvider` also runs in all 847 CI test cases, meaning zero API costs and 100% test determinism.

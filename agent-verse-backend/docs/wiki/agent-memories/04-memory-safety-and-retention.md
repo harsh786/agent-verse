@@ -399,3 +399,15 @@ For every new feature that writes to the memory system, verify:
 | ☐ | Test asserts that a failed memory write does NOT fail the parent goal |
 
 <!-- Sources: app/memory/repository.py:45-100, app/memory/contracts.py:1-120 -->
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — EU SaaS Company / GDPR Right-to-Forget**
+
+> A Berlin-based HR automation company receives a GDPR Article 17 erasure request from a former employee whose job search data was processed by their AgentVerse agents over 14 months. The compliance team calls `DELETE /api/v1/memory` with `tenant_id="hr-saas-prod"` and `user_ref="emp-9921"`. The GDPR purge sequence fires across 6 tables: 234 episodic episodes, 47 long-term memories (including `"Candidate emp-9921 prefers async communication channels"`), 12 KG triples (`(emp-9921, "employment_status", "active")`), all reflexion records referencing the employee, and pending prospective intentions are cancelled. The operation completes in 1.3 seconds and returns `erasure_receipt_id: "gdpr-erasure-efa429c"`. A post-erasure verification query confirms 0 rows across all 6 memory tables. The audit log retains only the `gdpr_erasure` event itself — legally required for 7 years — with `rows_deleted_per_table` in the metadata but no recoverable content.
+
+**Real-World Example 2 — Financial Services / Regulatory Legal Hold**
+
+> A UK investment bank is notified by the FCA of an investigation into trading-research agent activity from Q3 2024. The compliance team calls `apply_legal_hold(tenant_id="trading-research-prod", hold_id="FCA-2024-INV-0042")`. All 2,841 memory records for this tenant have their `expires_at` set to `NULL` and `retention_policy_id` updated to `"legal-hold"` — overriding the standard 90-day `ExecutionMemory` TTL and the 1-year `LongTermMemory` TTL. An `AuditEvent(event_type="legal_hold_applied", metadata={"hold_id": "FCA-2024-INV-0042"})` is written immediately. When the bank's nightly TTL sweep job runs, it queries the `legal_holds` table before any deletion and skips all 2,841 records tagged with `hold_id="FCA-2024-INV-0042"`. Eighteen months later, when the investigation closes, `release_legal_hold()` restores the original retention policies, and the records expire on their next scheduled TTL sweep.
