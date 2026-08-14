@@ -157,15 +157,14 @@ New query arrives
 
 | Page | Content |
 |---|---|
-| [01-naive-and-hybrid-rag.md](./01-naive-and-hybrid-rag.md) | Naive RAG, Hybrid RAG, HyDE — the three foundational patterns |
-| [02-multi-hop-and-graph-rag.md](./02-multi-hop-and-graph-rag.md) | Multi-Hop RAG, Graph RAG — cross-document reasoning |
-| [03-corrective-and-self-rag.md](./03-corrective-and-self-rag.md) | Corrective RAG, Self-RAG — hallucination prevention with critiques |
-| [04-flare-and-raptor.md](./04-flare-and-raptor.md) | FLARE, RAPTOR — active retrieval and hierarchical summarization |
-| [05-fusion-and-speculative.md](./05-fusion-and-speculative.md) | Fusion RAG, Speculative RAG — parallel multi-query strategies |
-| [06-agentic-patterns.md](./06-agentic-patterns.md) | Agentic RAG, Agentic Chunking, Web-Augmented — LLM-driven retrieval |
-| [07-advanced-patterns.md](./07-advanced-patterns.md) | Adaptive, Modular, ColBERT, RAFT — specialised and composable |
-| [08-at-scale.md](./08-at-scale.md) | Scalability at 1M req/s, 1TB+ documents, latency budgets |
-| [09-integration-guide.md](./09-integration-guide.md) | Embeddings, chunking, guardrails, governance working together |
+| [01-naive-and-hybrid-rag.md](./01-naive-and-hybrid-rag.md) | Naive RAG, Hybrid RAG, HyDE — the three foundational patterns with RWEs: SaaS support chatbot (500K/day), legal research platform (50M docs), academic paper search (200M papers) |
+| [02-multi-hop-and-graph-rag.md](./02-multi-hop-and-graph-rag.md) | Multi-Hop RAG, Graph RAG — cross-document reasoning with RWEs: PE due diligence, healthcare network analysis, supply chain risk, pharma drug interaction graph, financial fraud detection |
+| [03-corrective-and-multi-hop.md](./03-corrective-and-multi-hop.md) | Corrective RAG — hallucination prevention with grading; RWE: pharma regulatory (500K FDA docs), multi-jurisdiction compliance |
+| [04-flare-and-raptor.md](./04-flare-and-raptor.md) | FLARE, RAPTOR, Self-RAG — active retrieval, hierarchical summarization, critique tokens; RWEs: medical AI discharge summaries (500K/day), investment research (50TB), legal AI assistant |
+| [06-agentic-patterns.md](./06-agentic-patterns.md) | Fusion, Speculative, Agentic, Agentic Chunking, Web-Augmented; RWEs: patent search (10M patents), e-commerce at 500M queries/day, Wikipedia-scale proposition indexing, financial news intelligence |
+| [07-advanced-patterns.md](./07-advanced-patterns.md) | Adaptive, Modular, ColBERT, RAFT; RWEs: Big 4 consulting ($3.5M/year savings), regulatory compliance pipeline, GitHub code search, biomedical search, insurance claims (96% cost reduction) |
+| [08-at-scale.md](./08-at-scale.md) | Scalability at 1M req/s, 1TB+ documents, latency budgets, caching ($234K/month savings) |
+| [09-integration-guide.md](./09-integration-guide.md) | Embeddings, chunking (7 strategies), guardrails, governance working together; Goldman Sachs 10-K compliance example |
 
 ---
 
