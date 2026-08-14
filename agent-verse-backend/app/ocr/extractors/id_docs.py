@@ -4,6 +4,12 @@ from __future__ import annotations
 import re
 
 from app.ocr.models import DocumentType, ExtractedField
+from app.ocr.validators import (
+    mask_aadhaar,
+    normalize_date,
+    validate_aadhaar,
+    validate_pan,
+)
 
 _HIGH_CONF = 0.9
 _MED_CONF = 0.6
@@ -47,12 +53,18 @@ class IdDocExtractor:
         fields: dict[str, ExtractedField] = {}
         val, conf = _first_match(r"([A-Z]{5}\d{4}[A-Z])", text)
         if val:
-            fields["pan_number"] = ExtractedField(name="pan_number", value=val, confidence=conf)
+            is_valid = validate_pan(val)
+            fields["pan_number"] = ExtractedField(
+                name="pan_number", value=val, confidence=conf, is_valid=is_valid
+            )
         val, conf = _label_value("Name", text)
         if val:
             fields["name"] = ExtractedField(name="name", value=val, confidence=conf)
         val, conf = _first_match(r"(\d{2}/\d{2}/\d{4})", text)
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["date_of_birth"] = ExtractedField(
                 name="date_of_birth", value=val, confidence=conf
             )
@@ -62,13 +74,19 @@ class IdDocExtractor:
         fields: dict[str, ExtractedField] = {}
         val, conf = _first_match(r"(\d{4}\s\d{4}\s\d{4})", text)
         if val:
+            is_valid = validate_aadhaar(val)
+            masked = mask_aadhaar(val)
             fields["aadhaar_number"] = ExtractedField(
-                name="aadhaar_number", value=val, confidence=conf
+                name="aadhaar_number", value=val, confidence=conf,
+                is_valid=is_valid, masked_value=masked
             )
         val, conf = _label_value("DOB", text)
         if not val:
             val, conf = _first_match(r"(\d{2}/\d{2}/\d{4})", text)
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["date_of_birth"] = ExtractedField(
                 name="date_of_birth", value=val, confidence=conf
             )
@@ -83,12 +101,14 @@ class IdDocExtractor:
             )
         dates = re.findall(r"\d{2}/\d{2}/\d{4}", text)
         if dates:
+            dob_val = normalize_date(dates[0]) or dates[0]
             fields["date_of_birth"] = ExtractedField(
-                name="date_of_birth", value=dates[0], confidence=_HIGH_CONF
+                name="date_of_birth", value=dob_val, confidence=_HIGH_CONF
             )
         if len(dates) > 1:
+            exp_val = normalize_date(dates[1]) or dates[1]
             fields["expiry_date"] = ExtractedField(
-                name="expiry_date", value=dates[1], confidence=_HIGH_CONF
+                name="expiry_date", value=exp_val, confidence=_HIGH_CONF
             )
         return fields
 
@@ -104,6 +124,9 @@ class IdDocExtractor:
             fields["name"] = ExtractedField(name="name", value=val, confidence=conf)
         val, conf = _label_value("Valid Till", text)
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["valid_to"] = ExtractedField(name="valid_to", value=val, confidence=conf)
         return fields
 
@@ -120,6 +143,9 @@ class IdDocExtractor:
             fields["name"] = ExtractedField(name="name", value=val, confidence=conf)
         val, conf = _first_match(r"(\d{2}/\d{2}/\d{4})", text)
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["date_of_birth"] = ExtractedField(
                 name="date_of_birth", value=val, confidence=conf
             )

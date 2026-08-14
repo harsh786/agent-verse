@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from app.ocr.models import DocumentType, ExtractedField
+from app.ocr.validators import normalize_date, validate_gstin
 
 _HIGH_CONF = 0.9
 _MED_CONF = 0.6
@@ -52,6 +53,9 @@ class FinancialExtractor:
             )
         val, conf = _first_match(r"(\d{2}[/-]\d{2}[/-]\d{4})", text)
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["invoice_date"] = ExtractedField(name="invoice_date", value=val, confidence=conf)
         val, conf = _first_match(r"Total[:\s]+(?:Rs\.?|INR)?\s*([\d,]+\.?\d*)", text)
         if val:
@@ -100,7 +104,10 @@ class FinancialExtractor:
         # GSTIN: 15-char alphanumeric
         val, conf = _first_match(r"(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d])", text, flags=0)
         if val:
-            fields["gstin"] = ExtractedField(name="gstin", value=val, confidence=conf)
+            is_valid = validate_gstin(val)
+            fields["gstin"] = ExtractedField(
+                name="gstin", value=val, confidence=conf, is_valid=is_valid
+            )
         val, conf = _label_value("Legal Name", text)
         if not val:
             val, conf = _label_value("Trade Name", text)
@@ -144,6 +151,9 @@ class FinancialExtractor:
             r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s-]+\d{4})", text
         )
         if val:
+            normalized = normalize_date(val)
+            if normalized:
+                val = normalized
             fields["pay_period"] = ExtractedField(name="pay_period", value=val, confidence=conf)
         return fields
 

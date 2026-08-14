@@ -27,6 +27,8 @@ class ExtractedField:
     name: str
     value: str
     confidence: float  # 0.0-1.0
+    is_valid: bool = True
+    masked_value: str | None = None
 
 
 @dataclass
