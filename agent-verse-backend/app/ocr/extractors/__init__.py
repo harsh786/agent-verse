@@ -1,9 +1,11 @@
 """Extractor registry — get_extractor(doc_type) factory."""
 from __future__ import annotations
 
-from app.ocr.extractors.base import OcrExtractor
+from typing import Any
+
+from app.ocr.extractors.base import OcrExtractor as OcrExtractor  # re-export
 from app.ocr.extractors.financial import FinancialExtractor
-from app.ocr.extractors.general import GeneralExtractor
+from app.ocr.extractors.general import GeneralExtractor, LlmStructuredExtractor
 from app.ocr.extractors.id_docs import IdDocExtractor
 from app.ocr.models import DocumentType
 
@@ -26,9 +28,12 @@ _FINANCIAL_TYPES = {
 }
 
 
-def get_extractor(document_type: DocumentType) -> OcrExtractor:
+def get_extractor(document_type: DocumentType, provider: Any = None) -> Any:
     if document_type in _ID_TYPES:
         return IdDocExtractor(document_type)
     if document_type in _FINANCIAL_TYPES:
         return FinancialExtractor(document_type)
+    # For GENERAL type, use LLM extraction if provider available
+    if document_type == DocumentType.GENERAL and provider is not None:
+        return LlmStructuredExtractor(provider)
     return GeneralExtractor()
