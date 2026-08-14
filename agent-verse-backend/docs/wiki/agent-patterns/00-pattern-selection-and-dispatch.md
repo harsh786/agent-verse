@@ -300,7 +300,7 @@ flowchart TD
         SCACHE_P -- HIT --> PLAN_HIT[Cached plan reused\nSSE: plan_created from cache]
         SCACHE_P -- MISS --> PLANNOD
 
-        PLANNOD[NODE: plan Planner LLM\n_model_router.model_for_goal planning goal Layer 2\nupdate_from_profile sync runtime model assignments\nPromptBuilder.build_planner_context bundle\nProceduralMemory.recall step templates\nVoyagerSkillStore.recall reusable sub-skills\nLLM Planner model: goal + RAG + lessons to step list\nCircuitBreaker wraps LLM call fail-fast on errors\nSSE: plan_created\nOTel span: agentverse.plan]
+        PLANNOD[NODE: plan Planner LLM\n_model_router.model_for_goal planning goal Layer 2\nupdate_from_profile sync runtime model assignments\nPromptBuilder.build_planner_context bundle\nProceduralMemory.recall step templates\nVoyagerSkillStore.recall reusable sub-skills\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached plan skip LLM call\n  MISS: call LLM then cache result\nLLM Planner model: goal + RAG + lessons to step list\nCircuitBreaker wraps LLM call fail-fast on errors\nSSE: plan_created\nOTel span: agentverse.plan]
 
         PLAN_HIT --> LLM2
         PLANNOD --> LLM2
@@ -319,6 +319,8 @@ flowchart TD
             RISKQ{9 ToolRiskAssessor\nhigh-risk: deploy delete prod?}
             RISKQ -- HIGH-RISK --> HITL[HITLGateway.request_approval\nPAUSE emit SSE: hitl_approval_required\nwait for human approval webhook]
             HITL -- approved --> ROLLREG
+            HITL -- rejected or timeout --> HITL_FAIL[HITL FAILED\nApprovalStatus REJECTED or TIMED_OUT 300s\nPermissionError raised step cannot proceed]
+            HITL_FAIL --> FAILPATH
             RISKQ -- normal --> ROLLREG
             ROLLREG[10 RollbackEngine.register compensating action\ntool_inverses.py maps undo operation] --> TOOLEXEC
             TOOLEXEC[MCP Tool Execution\nOTel span: agentverse.tool.call\ntool_name input_hash duration model tracked] --> P11SANIT
@@ -348,11 +350,11 @@ flowchart TD
 
         SC --> CTXPIPE_V
 
-        CTXPIPE_V[ContextPipeline.run VERIFIER role\n1 Rerank goal + final output focus\n2 PromptBudget.fit 2000 tok verifier budget\n  keep goal+output drop RAG chunks\n3 CitationManager inject citation map\n4 OutputContractBuilder verification schema]
+        CTXPIPE_V[ContextPipeline.run VERIFIER role\n1 Rerank goal + final output focus\n2 PromptBudget.fit 2000 tok verifier budget\n  keep goal+output drop RAG chunks\n3 ContextualEnricher doc context header per chunk\n4 CitationManager inject citation map\n5 OutputContractBuilder verification schema]
 
         CTXPIPE_V --> VERIFYNOD
 
-        VERIFYNOD[NODE: verify Verifier LLM\n_model_router.model_for verification Layer 2\nPromptBuilder.build_verifier_context bundle\nLLM Verifier model: did we satisfy original goal?\nProvenanceLedger.verify_citations check cited chunks exist\nCircuitBreaker wraps LLM call\nAuditLog.record verification result\nSSE: verification_complete\nOTel span: agentverse.verify]
+        VERIFYNOD[NODE: verify Verifier LLM\n_model_router.model_for verification Layer 2\nPromptBuilder.build_verifier_context bundle\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached verification skip LLM call\n  MISS: call LLM then cache result\nLLM Verifier model: did we satisfy original goal?\nProvenanceLedger.verify_citations check cited chunks exist\nCircuitBreaker wraps LLM call\nAuditLog.record verification result\nSSE: verification_complete\nOTel span: agentverse.verify]
 
         VERIFYNOD --> PROVLED[ProvenanceLedger.finalize\nmap each claim to source chunk\nmap chunk to IngestionProvenance\nfull lineage: answer to raw document\nProvenanceVerifier.verify citations valid\nProvenanceExport citation graph built]
 
