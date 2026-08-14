@@ -21,7 +21,7 @@ class DocumentType(StrEnum):
 class ExtractedField:
     name: str
     value: str
-    confidence: float  # 0.0–1.0
+    confidence: float  # 0.0-1.0
 
 
 @dataclass

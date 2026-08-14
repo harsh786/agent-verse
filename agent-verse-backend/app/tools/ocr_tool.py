@@ -41,7 +41,7 @@ class OcrDocumentTool:
         image_base64: str = "",
         pdf_base64: str = "",
         provider: Any = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         image_bytes, pdf_bytes = self._resolve_input(
             file_path=file_path,
             image_base64=image_base64,

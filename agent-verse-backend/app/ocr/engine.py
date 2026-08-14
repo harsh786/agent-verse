@@ -75,18 +75,20 @@ class OcrEngine:
         """Convert input bytes to a list of PIL Images."""
         if image_bytes:
             try:
-                from PIL import Image  # type: ignore[import-untyped]
+                from PIL import Image
 
-                return [Image.open(io.BytesIO(image_bytes))]
+                img: Any = Image.open(io.BytesIO(image_bytes))
+                return [img]
             except Exception as exc:
                 _log.warning("Failed to open image bytes: %s", exc)
                 return []
 
         if pdf_bytes:
             try:
-                from pdf2image import convert_from_bytes  # type: ignore[import-untyped]
+                from pdf2image import convert_from_bytes
 
-                return convert_from_bytes(pdf_bytes)
+                pages: list[Any] = convert_from_bytes(pdf_bytes)
+                return pages
             except ImportError:
                 _log.debug("pdf2image not installed; skipping PDF rendering")
                 return []
@@ -104,7 +106,7 @@ class OcrEngine:
     ) -> tuple[str, float, str]:
         """Run OCR on a single page image. Returns (text, confidence, engine_name)."""
         try:
-            import pytesseract  # type: ignore[import-untyped]
+            import pytesseract
 
             data = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -118,7 +120,7 @@ class OcrEngine:
             if avg_conf >= CONFIDENCE_THRESHOLD:
                 text = " ".join(
                     t
-                    for t, c in zip(data.get("text", []), data.get("conf", []))
+                    for t, c in zip(data.get("text", []), data.get("conf", []), strict=False)
                     if isinstance(c, (int, float)) and c >= 0 and t.strip()
                 )
                 return text, avg_conf, "tesseract"
@@ -154,9 +156,10 @@ class OcrEngine:
                             "Extract all text from this image. "
                             "Return only the extracted text, no commentary."
                         ),
+                        image_data=img_b64,
                     )
                 ],
-                image_base64=img_b64,
+                model="gpt-4o",  # provider will use its own configured model
             )
             response = await provider.complete(req)
             return response.content, 0.85, "llm_vision"

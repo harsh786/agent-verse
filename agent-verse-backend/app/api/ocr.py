@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -45,7 +46,7 @@ class OcrResponse(BaseModel):
 )
 async def extract_document(
     request: Request,
-    file: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),  # noqa: B008
 ) -> OcrResponse:
     """Extract text and structured fields from an image or PDF document.
 
@@ -55,10 +56,8 @@ async def extract_document(
     """
     # Get provider from app state if available
     provider: Any = None
-    try:
+    with contextlib.suppress(Exception):
         provider = getattr(request.app.state, "provider", None)
-    except Exception:
-        pass
 
     try:
         if file is not None:
