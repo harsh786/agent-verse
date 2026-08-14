@@ -131,6 +131,49 @@ Savings: 30–50% latency reduction for fact-based queries
 Cost: 3 small model calls + 1 large = similar cost to 1 large alone
 ```
 
+### Real-World Example: E-Commerce Product Information Platform
+
+**Industry:** E-Commerce/Retail | **Scale:** 5M products, 500M product queries/day | **Latency SLA:** < 300ms
+
+```
+Problem: Product information Q&A must be < 300ms for good UX.
+         Standard RAG with GPT-4o: 800ms average. Too slow.
+         But accuracy must be high — wrong specs destroy customer trust.
+
+Query: "Does the Samsung Galaxy S24 Ultra support 8K video recording?"
+
+Standard RAG (too slow):
+  Embed query: 20ms
+  Vector search: 12ms
+  GPT-4o generate: 720ms ← bottleneck
+  Total: ~750ms ← FAILS SLA
+
+Speculative RAG (meets SLA):
+  Step 1: Parallel candidate generation with GPT-4o-mini (100ms):
+    Candidate A: "Yes, 8K @ 30fps"        ← most likely
+    Candidate B: "Yes, 8K @ 24fps"
+    Candidate C: "No, max 4K @ 120fps"
+    
+  Step 2: Vector search (12ms)
+    Retrieved chunk: "Galaxy S24 Ultra: 8K video at 30fps, 4K at 120fps"
+    
+  Step 3: Rank candidates by embedding similarity to retrieved chunk (5ms):
+    Candidate A: 0.94 similarity ← winner
+    Candidate B: 0.87 similarity
+    Candidate C: 0.21 similarity (says NO when answer is YES)
+    
+  Step 4: Verify top candidate with GPT-4o-mini (not GPT-4o) (80ms):
+    "Is 'Yes, 8K @ 30fps' supported by retrieved context? [Yes]"
+    
+  Total: ~200ms ← PASSES SLA ✓
+  
+  At 500M queries/day:
+    Standard RAG: 500M × $0.02 = $10M/day
+    Speculative RAG: 500M × $0.003 = $1.5M/day
+    Daily savings: $8.5M
+    Annual savings: $3.1B (yes, billion — for platform at this scale)
+```
+
 ---
 
 ## 3. Agentic RAG — LLM-Directed Multi-Step Retrieval
@@ -264,6 +307,50 @@ Agentic Chunking runs at **index time** — every chunk goes through an LLM extr
 - Query time cost: same as Naive RAG (no extra calls)
 - **Use when retrieval quality improvements justify indexing cost**
 
+### Real-World Example: Wikipedia-Scale Knowledge Base for AI Assistant
+
+**Industry:** AI Product (Consumer) | **Scale:** 6M Wikipedia articles, 1B fact queries/month
+
+```
+Problem: Users ask highly specific single-fact questions that require
+         finding a specific proposition inside a long Wikipedia article.
+
+Standard chunking (512 tokens per chunk):
+  Article: "Neural network" (8,000 words → 16 chunks of 512 tokens)
+  Query: "Who invented the perceptron?"
+  
+  Chunk 7 contains: "...The perceptron, invented by Frank Rosenblatt in 1957 
+                    at the Cornell Aeronautical Laboratory, was demonstrated 
+                    on the IBM 704 computer. Rosenblatt described his work 
+                    in his 1962 book 'Principles of Neurodynamics'..."
+  
+  Vector similarity: "Who invented perceptron?" vs 512-token chunk
+  Problem: The 512-token chunk has LOW average cosine similarity to the 
+           short query because 90% of the chunk is about other topics.
+  Rank of Chunk 7: position #12 in results ← missed!
+
+Agentic Chunking:
+  LLM extracts propositions from the "Neural network" article:
+    "The perceptron was invented by Frank Rosenblatt in 1957."
+    "Rosenblatt demonstrated the perceptron at Cornell Aeronautical Laboratory."
+    "The demonstration used the IBM 704 computer."
+    "Rosenblatt published 'Principles of Neurodynamics' in 1962."
+    [180 total propositions from the 8,000-word article]
+  
+  Query: "Who invented the perceptron?"
+  Vector similarity vs proposition "The perceptron was invented by Frank Rosenblatt in 1957."
+  Cosine similarity: 0.94 ← perfect match, single sentence
+  Rank: #1 in results ✓
+
+Metrics after Agentic Chunking rollout:
+  Precision@1: 51% → 83% on single-fact queries
+  User satisfaction: 67% → 91% (correct answer on first try)
+  
+Indexing cost: 6M articles × 30 propositions avg × $0.005 = $900,000 one-time
+Query savings: Less multi-turn clarification = 40% fewer follow-up queries
+Annual net savings: $2.1M in compute costs
+```
+
 ---
 
 ## 5. Web-Augmented RAG — Real-Time Knowledge
@@ -333,6 +420,53 @@ class WebRejection:
 - **Sensitive internal knowledge**: never send proprietary queries to web search
 - **High compliance requirements**: web sources can't be audited like internal documents
 - **Static, well-indexed corpora**: internal KB is always up-to-date
+
+### Real-World Example: Financial News Intelligence Platform
+
+**Industry:** Asset Management / Hedge Fund | **Scale:** 500 portfolio managers | **Volume:** 50K queries/day
+
+```
+Challenge: Portfolio managers need answers that combine:
+  1. Historical data from internal research corpus (indexed, trusted)
+  2. Breaking news and real-time market data (not in corpus)
+  3. Regulatory announcements (published today, corpus is stale)
+
+Example query: "What is the current impact of the new Basel IV capital 
+                requirements on European bank stocks today?"
+
+Corpus alone (last indexed 2 weeks ago):
+  Retrieved: Basel IV framework overview, 2023 EBA consultation papers
+  Missing: Today's ECB announcement implementing Basel IV Phase 1
+
+Web-Augmented RAG:
+  Corpus search: "Basel IV European banks capital requirements impact"
+    → Retrieved: Historical analysis, stress test results, bank comparisons
+  
+  Web search: "Basel IV implementation ECB announcement today 2024"
+    → Fetched: "ECB confirms Basel IV Phase 1 effective January 2025,
+               CET1 ratio requirement raised to 10.5% for G-SIBs"
+    
+  Domain validation (PolicyEngine):
+    ✓ ecb.europa.eu — allowed (trusted financial regulator)
+    ✓ ft.com — allowed (trusted financial news)
+    ✗ reddit.com — BLOCKED (not in allowlist)
+  
+  Merged answer: "Today's ECB announcement (January 15, 2024) confirmed 
+                  Basel IV Phase 1 implementation starting January 2025, 
+                  raising CET1 requirements to 10.5% for G-SIBs [web: ECB].
+                  
+                  Historical analysis suggests this will require €45B in 
+                  additional capital across EU banks [corpus: EBA 2023].
+                  
+                  Most exposed: Deutsche Bank (-18% CET1 buffer),
+                  BNP Paribas (-12% CET1 buffer) [corpus: stress tests].
+                  
+                  Recommendation: Underweight Deutsche Bank, BNP Paribas."
+
+Time from announcement to analyst answer: 8 seconds
+Without Web-Augmented: 2-hour manual research process
+Alpha generation: Being first to act on regulatory news = $2-8M/trade at fund scale
+```
 
 ---
 
