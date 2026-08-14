@@ -8,7 +8,186 @@ outline: deep
 
 > **This is the brain of AgentVerse.** Every goal that enters the platform — from "What is the capital of France?" to "Delete all records from the production database" — passes through a deterministic, sub-millisecond pipeline that decides which reasoning strategies, RAG techniques, multi-agent topologies, and safety gates to activate. Getting this selection wrong costs money (over-engineered simple tasks), quality (under-equipped complex tasks), or — in the worst case — causes irreversible damage to production systems.
 
-## Overview
+---
+
+## End-to-End Execution Flow: From HTTP Request to Final Answer
+
+This is the full lifecycle of a goal in AgentVerse — the sequence every goal follows from the moment the client POSTs it to when the SSE stream closes. Understanding this flow answers questions like: *"When does RAG happen? When is the pattern selected? When do LLMs fire?"*
+
+```
+POST /api/v1/goals
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Phase 1 — HTTP + Pre-flight (sync, < 5 ms)                             │
+│                                                                         │
+│  GoalService.submit_goal()                                              │
+│  ├── Plan limit check (Redis, per-tenant daily + concurrent)           │
+│  ├── Goal deduplication (Redis hash — same goal already running?)      │
+│  ├── Goal record created (status = PENDING)                            │
+│  ├── AI Router model selection (TaskType.PLANNING → model_id logged)   │
+│  ├── ★ RuntimeProfileBuilder.build_with_trace() ← PATTERN SELECTION   │
+│  │     (< 2 ms Tier-1 / ≤ 250 ms if LLM classifier fires)            │
+│  └── Celery task enqueued (per-plan queue: free/starter/professional)  │
+│                                                                         │
+│  HTTP 202 Accepted → { goal_id, status: "pending" }                   │
+└─────────────────────────────────────────────────────────────────────────┘
+        │  (Celery task picked up by worker)
+        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Phase 2 — Pattern Selection inside build_with_trace() [DETAIL]         │
+│                                                                         │
+│  A) GoalClassifier.classify_fast()   < 1 ms                            │
+│     • Keyword scan on goal text                                         │
+│     • → GoalProperties { complexity, domain, risk, requires_web, ... } │
+│     • If confidence ≤ 0.85 AND complexity == MEDIUM →                  │
+│  B) GoalClassifier.classify_with_llm()  ~200 ms  (optional)            │
+│     • LLM refines ambiguous classification                             │
+│     • → GoalProperties (more accurate)                                 │
+│                                                                         │
+│  C) PatternAssembler.assemble(props, agent_config)                     │
+│     • 19 rules run over GoalProperties → accumulate patterns           │
+│     • → PatternConfig { reasoning_patterns, rag_patterns, safety, ... }│
+│                                                                         │
+│  D) DynamicGraphAssembler.assemble()                                   │
+│     • PatternConfig → GoalRuntimeProfile                               │
+│     • SSE event "pattern_assembled" emitted to client                  │
+└─────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Phase 3 — Graph Construction (sync, ~1–5 ms)                           │
+│                                                                         │
+│  GraphFactory.create(profile, services)                                 │
+│  • profile.reasoning_patterns → boolean flags                          │
+│    ("chain_of_thought" → enable_cot=True, etc.)                        │
+│  • AgentGraph.__init__() wires all services                            │
+│  • AgentGraph._build() compiles the LangGraph StateGraph               │
+│    (only nodes matching active flags are registered)                   │
+└─────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Phase 4 — LangGraph Execution (async, seconds to minutes)              │
+│                                                                         │
+│  Node execution order (active nodes only):                             │
+│                                                                         │
+│  [initialize]                                                          │
+│     • AgentState populated, memory loaded, tools registered            │
+│     • Reflexion lessons injected from LongTermMemoryStore              │
+│     │                                                                   │
+│  [rag_retrieval]  ← RAG HAPPENS HERE (before planning)                │
+│     • Reads rag_patterns from runtime profile                          │
+│     • Executes the selected RAG strategy (hybrid_rag, web_augmented,   │
+│       agentic_rag, FLARE, RAPTOR, fusion_rag, corrective_rag …)        │
+│     • Stores retrieved_chunks + citations in AgentState.context        │
+│     • Emits SSE "knowledge_retrieved" event                            │
+│     │                                                                   │
+│  [think]  (if chain_of_thought)                                        │
+│     • LLM #1 (Planner) called with CHAIN_OF_THOUGHT_SYSTEM prompt      │
+│     • Produces deliberate pre-planning reasoning                       │
+│     │                                                                   │
+│  [tree_of_thoughts]  (if tree_of_thoughts)                             │
+│     • TreeOfThoughtsPattern: explores N solution branches              │
+│     • Best branch answer injected into planning context                │
+│     │                                                                   │
+│  [plan]  ← PLANNER LLM                                                │
+│     • ContextPipeline: re-ranks + trims retrieved chunks               │
+│     • LLM #1 (Planner) called: goal + RAG context → step list         │
+│     • SemanticCache checked first (dedupes identical LLM calls)        │
+│     • Emits SSE "plan_created" event                                   │
+│     │                                                                   │
+│  [execute]  ← EXECUTOR LLM (loop per step)                            │
+│     • For each step: LLM #2 (Executor) generates Thought → tool call   │
+│     • Tool called via MCP client (guardrails checked first)            │
+│     • Tool result observed, next Thought generated (ReAct loop)        │
+│     • HITL gateway consulted for high-risk tool calls                  │
+│     • Cost controller checks per-call budget                           │
+│     • Emits SSE "step_completed" per step                              │
+│     │                                                                   │
+│  [refine]  (if self_refine)                                            │
+│     • LLM call with current output → iterative refinement              │
+│     • Stops when response starts with NO_CHANGES_NEEDED                │
+│     │                                                                   │
+│  [self_consistency]  (if self_consistency)                             │
+│     • SelfConsistencyPattern: samples N=3 responses                   │
+│     • Majority vote replaces step output                               │
+│     │                                                                   │
+│  [verify]  ← VERIFIER LLM                                             │
+│     • LLM #3 (Verifier) checks: did we satisfy the original goal?     │
+│     • → "complete" | "replan" | "reflect" | "rag_remediate"           │
+│     • Emits SSE "verification_complete" event                          │
+│     │                                                                   │
+│  [peer_review]  (if peer_review)                                       │
+│     • PeerReviewPattern: independent LLM review of quality            │
+│     │                                                                   │
+│  [_route()]  → branching decision                                      │
+│     ├── complete → END (success)                                       │
+│     ├── replan → [plan] (new iteration)                                │
+│     ├── reflect → [reflect] → [plan] (failure diagnosis + replan)     │
+│     ├── rag_remediate → [rag_retrieval again] → [plan]                │
+│     └── max_iterations → END (timeout)                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Phase 5 — Post-execution & Cleanup (async)                             │
+│                                                                         │
+│  • LongTermMemoryStore.store_lesson() — saves what worked/failed       │
+│  • CostController.record() — persists token + tool costs               │
+│  • AuditLog.append() — immutable audit entry                           │
+│  • GoalRecord updated (status = COMPLETED or FAILED)                   │
+│  • Deduplication entry cleared (next identical goal can run)           │
+│  • Concurrent-goal counter decremented (Redis)                         │
+│  • SSE "goal_completed" event emitted → client stream closes           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### When does each component fire? (summary table)
+
+| Component | When | Phase |
+|---|---|---|
+| **Rate limiter / dedup check** | Immediately on POST, before goal is created | 1 |
+| **GoalClassifier (Tier-1 keyword)** | During `build_with_trace()`, synchronous | 1 |
+| **GoalClassifier (Tier-2 LLM)** | Only if confidence ≤ 0.85 AND complexity == MEDIUM | 1 |
+| **PatternAssembler (19 rules)** | During `build_with_trace()`, after classification | 1 |
+| **GraphFactory / AgentGraph compile** | After profile is built, before Celery task runs | 3 |
+| **RAG retrieval** | **First** thing in the LangGraph, before any LLM planning | 4 |
+| **Chain-of-Thought (think node)** | After RAG, before planning (only if CoT pattern active) | 4 |
+| **Planner LLM** | After RAG (and optionally CoT/ToT), produces step list | 4 |
+| **Executor LLM** | Once per step in the ReAct loop | 4 |
+| **Tool calls (MCP)** | Inside the ReAct loop, one per Executor Thought | 4 |
+| **Verifier LLM** | After all steps complete, checks goal completion | 4 |
+| **Self-refine / Self-consistency / Peer review** | After execute, before verify | 4 |
+| **Reflect / Replan loop** | After verify fails, feeds diagnosis back to plan | 4 |
+| **Memory write / Audit / Cost record** | After graph exits (success or failure) | 5 |
+
+### E2E timeline: simple vs. complex goal
+
+```
+Simple goal: "What is the capital of France?"
+  Phase 1:  < 2 ms   (Tier-1 classify → react + guardrails only)
+  Phase 3:  < 2 ms   (minimal graph, no optional nodes)
+  Phase 4:  ~300 ms  (RAG → plan → execute 1 step → verify)
+  Total:    ~500 ms
+
+Complex expert goal: "Analyze Q3 data, identify anomalies, write report"
+  Phase 1:  < 2 ms   (Tier-1 classify, EXPERT → full pattern set)
+  Phase 3:  ~3 ms    (full graph with 6 optional nodes compiled)
+  Phase 4:  30–120 s (RAG → think → ToT → plan → execute N steps
+                      → self_consistency → verify → [reflect → plan] × K)
+  Total:    30–120 s
+
+Critical goal: "Delete all test records from production DB"
+  Phase 1:  < 2 ms   (CRITICAL risk detected immediately)
+  Phase 3:  ~3 ms    (HITL gateway wired, rollback engine wired)
+  Phase 4:  PAUSED   (HITL gateway blocks until human approves)
+  After approval: execute with rollback, consensus_verification
+```
+
+---
+
+
 
 When a client submits a goal, AgentVerse does **not** run the same LangGraph every time. Instead, [`GoalService`](https://github.com/harsh786/agent-verse/blob/main/agent-verse-backend/app/services/goal_service.py#L1001) instantiates a [`RuntimeProfileBuilder`](https://github.com/harsh786/agent-verse/blob/main/agent-verse-backend/app/orchestration/runtime_profile_builder.py) that orchestrates a 7-stage pipeline:
 
