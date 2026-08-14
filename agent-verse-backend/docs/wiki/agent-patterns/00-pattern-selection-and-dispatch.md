@@ -18,130 +18,195 @@ This is the full lifecycle of a goal in AgentVerse — the sequence every goal f
 POST /api/v1/goals
         │
         ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Phase 1 — HTTP + Pre-flight (sync, < 5 ms)                             │
-│                                                                         │
-│  GoalService.submit_goal()                                              │
-│  ├── Plan limit check (Redis, per-tenant daily + concurrent)           │
-│  ├── Goal deduplication (Redis hash — same goal already running?)      │
-│  ├── Goal record created (status = PENDING)                            │
-│  ├── AI Router model selection (TaskType.PLANNING → model_id logged)   │
-│  ├── ★ RuntimeProfileBuilder.build_with_trace() ← PATTERN SELECTION   │
-│  │     (< 2 ms Tier-1 / ≤ 250 ms if LLM classifier fires)            │
-│  └── Celery task enqueued (per-plan queue: free/starter/professional)  │
-│                                                                         │
-│  HTTP 202 Accepted → { goal_id, status: "pending" }                   │
-└─────────────────────────────────────────────────────────────────────────┘
-        │  (Celery task picked up by worker)
+╔═════════════════════════════════════════════════════════════════════════╗
+║  PHASE 1 — HTTP + Pre-flight  (sync, < 5 ms)                           ║
+╠═════════════════════════════════════════════════════════════════════════╣
+║  GoalService.submit_goal()                                              ║
+║                                                                         ║
+║  ① Rate limiter          → check daily + concurrent goal limits (Redis)║
+║  ② Goal deduplication    → identical goal already running? return it   ║
+║  ③ Goal record created   → status = PENDING                           ║
+║  ④ AI Router             → select model_id for TaskType.PLANNING       ║
+║                                                                         ║
+║  ⑤ ★ PATTERN SELECTION (RuntimeProfileBuilder.build_with_trace())     ║
+║     │                                                                   ║
+║     ├─ GoalClassifier.classify_fast()         <1 ms (keyword scan)    ║
+║     │    → GoalProperties { complexity, domain, risk, reversibility…} ║
+║     │                                                                   ║
+║     ├─ GoalClassifier.classify_with_llm()     ~200 ms (OPTIONAL)      ║
+║     │    only if confidence ≤ 0.85 AND complexity == MEDIUM           ║
+║     │                                                                   ║
+║     ├─ PatternAssembler.assemble()            <0.5 ms                 ║
+║     │    19 rules fired over GoalProperties → PatternConfig           ║
+║     │    { reasoning_patterns, rag_patterns, safety_patterns … }      ║
+║     │                                                                   ║
+║     └─ DynamicGraphAssembler.assemble()       <0.5 ms                 ║
+║          PatternConfig → GoalRuntimeProfile                           ║
+║          SSE event "pattern_assembled" emitted to client              ║
+║                                                                         ║
+║  ⑥ Celery task enqueued  → per-plan queue (free/starter/enterprise)   ║
+║                                                                         ║
+║  HTTP 202 Accepted → { goal_id, status: "pending" }                   ║
+╚═════════════════════════════════════════════════════════════════════════╝
+        │  (Celery worker picks up task)
         ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Phase 2 — Pattern Selection inside build_with_trace() [DETAIL]         │
-│                                                                         │
-│  A) GoalClassifier.classify_fast()   < 1 ms                            │
-│     • Keyword scan on goal text                                         │
-│     • → GoalProperties { complexity, domain, risk, requires_web, ... } │
-│     • If confidence ≤ 0.85 AND complexity == MEDIUM →                  │
-│  B) GoalClassifier.classify_with_llm()  ~200 ms  (optional)            │
-│     • LLM refines ambiguous classification                             │
-│     • → GoalProperties (more accurate)                                 │
-│                                                                         │
-│  C) PatternAssembler.assemble(props, agent_config)                     │
-│     • 19 rules run over GoalProperties → accumulate patterns           │
-│     • → PatternConfig { reasoning_patterns, rag_patterns, safety, ... }│
-│                                                                         │
-│  D) DynamicGraphAssembler.assemble()                                   │
-│     • PatternConfig → GoalRuntimeProfile                               │
-│     • SSE event "pattern_assembled" emitted to client                  │
-└─────────────────────────────────────────────────────────────────────────┘
+╔═════════════════════════════════════════════════════════════════════════╗
+║  PHASE 2 — Graph Construction  (sync, ~1–5 ms)                         ║
+╠═════════════════════════════════════════════════════════════════════════╣
+║  GraphFactory.create(profile, services)                                 ║
+║  • reasoning_patterns → boolean flags (enable_cot, enable_reflection…)║
+║  • AgentGraph.__init__() wires all 20 cross-cutting services           ║
+║  • AgentGraph._build() compiles LangGraph (conditional node wiring)   ║
+╚═════════════════════════════════════════════════════════════════════════╝
         │
         ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Phase 3 — Graph Construction (sync, ~1–5 ms)                           │
-│                                                                         │
-│  GraphFactory.create(profile, services)                                 │
-│  • profile.reasoning_patterns → boolean flags                          │
-│    ("chain_of_thought" → enable_cot=True, etc.)                        │
-│  • AgentGraph.__init__() wires all services                            │
-│  • AgentGraph._build() compiles the LangGraph StateGraph               │
-│    (only nodes matching active flags are registered)                   │
-└─────────────────────────────────────────────────────────────────────────┘
+╔═════════════════════════════════════════════════════════════════════════╗
+║  PHASE 3 — LangGraph Execution  (async, ms → minutes)                  ║
+╠═════════════════════════════════════════════════════════════════════════╣
+║                                                                         ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: initialize                                                │   ║
+║  │  • AgentState created, tenant context injected                  │   ║
+║  │  • GuardrailChecker.check_goal() → scan goal for violations    │   ║
+║  │  • GroundingChecker → validate factual claims are groundable   │   ║
+║  │  • ExecutionMemory.recall() → past plans for similar goals     │   ║
+║  │  • LongTermMemoryStore.recall() → Reflexion lessons injected   │   ║
+║  │  • OTel span: "graph.initialize" started                       │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: rag_retrieval  ← RAG FIRES BEFORE PLANNING              │   ║
+║  │  • rag_patterns from runtime profile selects strategy:         │   ║
+║  │    hybrid_rag | web_augmented_rag | agentic_rag | FLARE        │   ║
+║  │    | RAPTOR | fusion_rag | corrective_rag                      │   ║
+║  │  • KnowledgeStore.hybrid_search() → pgvector + BM25           │   ║
+║  │  • Retrieved chunks + citations stored in AgentState.context  │   ║
+║  │  • SSE "knowledge_retrieved" event emitted                     │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: think  (only if chain_of_thought pattern active)         │   ║
+║  │  • SemanticCache checked → skip if near-duplicate LLM call     │   ║
+║  │  • LLM #1 (Planner) called with CHAIN_OF_THOUGHT_SYSTEM prompt │   ║
+║  │  • CoT reasoning stored in reasoning_evidence                  │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: tree_of_thoughts  (only if tree_of_thoughts active)      │   ║
+║  │  • TreeOfThoughtsPattern(n_thoughts=3, max_depth=2)            │   ║
+║  │  • Explores N solution branches before planning                │   ║
+║  │  • Best answer injected into planner context                   │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: plan  ← PLANNER LLM                                      │   ║
+║  │  • ContextPipeline: re-rank + trim retrieved chunks            │   ║
+║  │    (separate windows for planner / executor / verifier)        │   ║
+║  │  • SemanticCache checked → skip LLM if cached plan exists      │   ║
+║  │  • LLM #1 (Planner): goal + RAG context + lessons → step list  │   ║
+║  │  • CircuitBreaker wraps LLM call (fail-fast on provider errors) │   ║
+║  │  • SSE "plan_created" event emitted                            │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: execute  ← EXECUTOR LLM  (ReAct loop, once per step)    │   ║
+║  │                                                                  │   ║
+║  │  For each step in the plan:                                     │   ║
+║  │  ─────────────────────────────────────────────────────────      │   ║
+║  │  [A] LLM #2 (Executor) → Thought + tool call intent           │   ║
+║  │                                                                  │   ║
+║  │  [B] TOOL GOVERNANCE GATE (every tool call):                   │   ║
+║  │      1. OutputSanitizer   → strip PII/secrets from inputs      │   ║
+║  │      2. GuardrailChecker  → policy violation on tool+input     │   ║
+║  │      3. PermissionMatrix  → tenant+agent allowed for this tool?│   ║
+║  │      4. PolicyEngine      → active allow/deny/rate-limit rules │   ║
+║  │      5. CostController    → within per-call + per-goal budget? │   ║
+║  │      6. CircuitBreaker    → provider healthy (not open)?       │   ║
+║  │      7. Bulkhead          → within per-tenant concurrency?     │   ║
+║  │      8. DeduplicationCache→ identical call already made?       │   ║
+║  │      9. ToolRiskAssessor  → high-risk step? (deploy/delete…)   │   ║
+║  │         └── HIGH-RISK → HITLGateway → PAUSE for human approval│   ║
+║  │     10. RollbackEngine.register() → log compensating action    │   ║
+║  │                                                                  │   ║
+║  │  [C] MCP tool execution (actual tool call)                     │   ║
+║  │                                                                  │   ║
+║  │  [D] POST-TOOL PROCESSING:                                     │   ║
+║  │     11. OutputSanitizer   → strip PII/secrets from output      │   ║
+║  │     12. GuardrailChecker  → scan tool output for violations    │   ║
+║  │     13. AuditLog.record() → immutable audit entry              │   ║
+║  │     14. CostController.record() → log actual costs             │   ║
+║  │     15. EvalRunner.score() → quality score on step output      │   ║
+║  │     16. FLARE check → mid-exec uncertainty? re-trigger RAG     │   ║
+║  │                                                                  │   ║
+║  │  [E] Executor observes result → next Thought (ReAct loop)      │   ║
+║  │  [F] SSE "step_completed" event emitted                        │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: refine  (only if self_refine active)                     │   ║
+║  │  • LLM iterates on execute output                              │   ║
+║  │  • Stops when response starts with NO_CHANGES_NEEDED           │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: self_consistency  (only if self_consistency active)      │   ║
+║  │  • SelfConsistencyPattern(n_samples=3) → majority vote         │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: verify  ← VERIFIER LLM                                   │   ║
+║  │  • ContextPipeline verifier context injected                   │   ║
+║  │  • LLM #3 (Verifier): did we satisfy the original goal?        │   ║
+║  │  • CircuitBreaker wraps LLM call                               │   ║
+║  │  • → "complete" | "replan" | "reflect" | "rag_remediate"       │   ║
+║  │  • AuditLog.record() → verification result logged              │   ║
+║  │  • SSE "verification_complete" event emitted                   │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  NODE: peer_review  (only if peer_review active)                │   ║
+║  │  • PeerReviewPattern(quality_threshold=0.7)                    │   ║
+║  │  • Independent LLM review of output quality                    │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  _route() → branching decision                                  │   ║
+║  │  ├── complete        → END (success path)                      │   ║
+║  │  ├── replan          → [plan] (new iteration, max_iterations)  │   ║
+║  │  ├── reflect         → [reflect] → diagnosis → [plan]         │   ║
+║  │  │     NODE: reflect: LLM diagnoses failure, updates          │   ║
+║  │  │     verification_feedback, increments reflection_attempts   │   ║
+║  │  ├── rag_remediate   → [rag_retrieval] → [plan]               │   ║
+║  │  └── max_iterations  → END (timeout, status=FAILED)           │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+╚═════════════════════════════════════════════════════════════════════════╝
         │
         ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Phase 4 — LangGraph Execution (async, seconds to minutes)              │
-│                                                                         │
-│  Node execution order (active nodes only):                             │
-│                                                                         │
-│  [initialize]                                                          │
-│     • AgentState populated, memory loaded, tools registered            │
-│     • Reflexion lessons injected from LongTermMemoryStore              │
-│     │                                                                   │
-│  [rag_retrieval]  ← RAG HAPPENS HERE (before planning)                │
-│     • Reads rag_patterns from runtime profile                          │
-│     • Executes the selected RAG strategy (hybrid_rag, web_augmented,   │
-│       agentic_rag, FLARE, RAPTOR, fusion_rag, corrective_rag …)        │
-│     • Stores retrieved_chunks + citations in AgentState.context        │
-│     • Emits SSE "knowledge_retrieved" event                            │
-│     │                                                                   │
-│  [think]  (if chain_of_thought)                                        │
-│     • LLM #1 (Planner) called with CHAIN_OF_THOUGHT_SYSTEM prompt      │
-│     • Produces deliberate pre-planning reasoning                       │
-│     │                                                                   │
-│  [tree_of_thoughts]  (if tree_of_thoughts)                             │
-│     • TreeOfThoughtsPattern: explores N solution branches              │
-│     • Best branch answer injected into planning context                │
-│     │                                                                   │
-│  [plan]  ← PLANNER LLM                                                │
-│     • ContextPipeline: re-ranks + trims retrieved chunks               │
-│     • LLM #1 (Planner) called: goal + RAG context → step list         │
-│     • SemanticCache checked first (dedupes identical LLM calls)        │
-│     • Emits SSE "plan_created" event                                   │
-│     │                                                                   │
-│  [execute]  ← EXECUTOR LLM (loop per step)                            │
-│     • For each step: LLM #2 (Executor) generates Thought → tool call   │
-│     • Tool called via MCP client (guardrails checked first)            │
-│     • Tool result observed, next Thought generated (ReAct loop)        │
-│     • HITL gateway consulted for high-risk tool calls                  │
-│     • Cost controller checks per-call budget                           │
-│     • Emits SSE "step_completed" per step                              │
-│     │                                                                   │
-│  [refine]  (if self_refine)                                            │
-│     • LLM call with current output → iterative refinement              │
-│     • Stops when response starts with NO_CHANGES_NEEDED                │
-│     │                                                                   │
-│  [self_consistency]  (if self_consistency)                             │
-│     • SelfConsistencyPattern: samples N=3 responses                   │
-│     • Majority vote replaces step output                               │
-│     │                                                                   │
-│  [verify]  ← VERIFIER LLM                                             │
-│     • LLM #3 (Verifier) checks: did we satisfy the original goal?     │
-│     • → "complete" | "replan" | "reflect" | "rag_remediate"           │
-│     • Emits SSE "verification_complete" event                          │
-│     │                                                                   │
-│  [peer_review]  (if peer_review)                                       │
-│     • PeerReviewPattern: independent LLM review of quality            │
-│     │                                                                   │
-│  [_route()]  → branching decision                                      │
-│     ├── complete → END (success)                                       │
-│     ├── replan → [plan] (new iteration)                                │
-│     ├── reflect → [reflect] → [plan] (failure diagnosis + replan)     │
-│     ├── rag_remediate → [rag_retrieval again] → [plan]                │
-│     └── max_iterations → END (timeout)                                 │
-└─────────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Phase 5 — Post-execution & Cleanup (async)                             │
-│                                                                         │
-│  • LongTermMemoryStore.store_lesson() — saves what worked/failed       │
-│  • CostController.record() — persists token + tool costs               │
-│  • AuditLog.append() — immutable audit entry                           │
-│  • GoalRecord updated (status = COMPLETED or FAILED)                   │
-│  • Deduplication entry cleared (next identical goal can run)           │
-│  • Concurrent-goal counter decremented (Redis)                         │
-│  • SSE "goal_completed" event emitted → client stream closes           │
-└─────────────────────────────────────────────────────────────────────────┘
+╔═════════════════════════════════════════════════════════════════════════╗
+║  PHASE 4 — Post-execution & Agent Improvement  (async)                  ║
+╠═════════════════════════════════════════════════════════════════════════╣
+║  SUCCESS path:                                                          ║
+║  • LongTermMemoryStore.extract_from_goal() → save lessons (pgvector)  ║
+║  • SelfOptimizer.analyze_success() → adjust strategy weights          ║
+║  • EvalRunner final summary → quality score stored                    ║
+║  • SemanticCache.store() → cache plan for future near-identical goals  ║
+║                                                                         ║
+║  FAILURE path:                                                          ║
+║  • RollbackEngine.rollback() → execute compensating actions           ║
+║  • LongTermMemoryStore.store_failure_lesson() → what went wrong       ║
+║  • SelfOptimizer.analyze_failure() → RPA/complex task analysis        ║
+║                                                                         ║
+║  ALWAYS (success or failure):                                           ║
+║  • AuditLog.append() → final immutable audit entry                    ║
+║  • CostController.record_total() → total goal cost persisted          ║
+║  • GoalRecord updated → status = COMPLETED | FAILED                   ║
+║  • Concurrent-goal counter decremented (Redis)                        ║
+║  • Goal deduplication entry cleared                                   ║
+║  • SSE "goal_completed" or "goal_failed" → client stream closes       ║
+║  • OTel root span closed → full distributed trace available in Jaeger ║
+╚═════════════════════════════════════════════════════════════════════════╝
 ```
+
 
 ### When does each component fire? (summary table)
 
