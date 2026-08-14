@@ -24,7 +24,15 @@
 ### Core Agent System
 | Page | What it covers |
 |---|---|
-| [Agent Patterns](agent-patterns.md) | All 25+ agent execution patterns (ReAct, Reflexion, ToT, LATS, CAMEL, BabyAGI, CodeAct, ReWOO…) + AgentGraph lifecycle |
+| [Agent Patterns Overview](agent-patterns.md) | All 28 patterns summary with selection guide |
+| **[Agent Patterns Deep-Dive →](agent-patterns/README.md)** | **Complete sub-document library — real-world examples + full ecosystem integration** |
+| ↳ [Core Execution Patterns](agent-patterns/01-core-execution-patterns.md) | Plan-Execute, ReAct, Workflow — with real DevOps/customer-support examples |
+| ↳ [Self-Improvement Patterns](agent-patterns/02-self-improvement-patterns.md) | Reflection, Reflexion, Self-Refine, Self-Consistency — with learning loops |
+| ↳ [Multi-Agent Patterns](agent-patterns/03-multi-agent-patterns.md) | Supervisor, Debate, Consensus, Peer Review — with investment analysis examples |
+| ↳ [Tree & Search Patterns](agent-patterns/04-tree-and-search-patterns.md) | ToT, GoT, LATS, Goal Tree — with pricing strategy and migration examples |
+| ↳ [Code & Execution Patterns](agent-patterns/05-code-and-execution-patterns.md) | CodeAct, Program of Thought, Loop Engineering — with data analysis examples |
+| ↳ [Decomposition Patterns](agent-patterns/06-decomposition-and-planning-patterns.md) | ReWOO, LLM Compiler, Least-to-Most, Few-Shot CoT — with parallel planning |
+| ↳ [Autonomous Patterns](agent-patterns/07-autonomous-and-constitutional-patterns.md) | AutoGPT, BabyAGI, Voyager, Constitutional AI — with skill libraries |
 | [Platform Workflows](platform-workflows.md) | Full request lifecycle (submit → queue → execute → SSE), two-phase service wiring, Celery topology |
 | [Multi-Agent & Civilization](multi-agent-civilization.md) | A2A dispatch, HMAC signing, W3C trace propagation, coordination patterns (CAMEL/Swarm/GroupChat/MAGENTIC/MOA/Auction) |
 
