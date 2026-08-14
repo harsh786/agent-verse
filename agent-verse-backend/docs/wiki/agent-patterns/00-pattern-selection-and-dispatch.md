@@ -77,7 +77,7 @@ POST /api/v1/goals
 ║      _model_router init from model_role_assignments                    ║
 ║      resolves think/planning/execution/verification/reflection roles   ║
 ║      at execution time per LangGraph node                              ║
-║  • AgentGraph._build() compiles LangGraph (conditional node wiring)   ║
+║  • AgentGraph._build() compiles conditional LangGraph StateGraph   ║
 ╚═════════════════════════════════════════════════════════════════════════╝
         │
         ▼
@@ -103,7 +103,7 @@ POST /api/v1/goals
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  EMBEDDING: EmbeddingOrchestrator.embed(query)                  │   ║
 ║  │  • EmbeddingPolicySelector → model by cost class               │   ║
-║  │       (free | standard | premium) + modality                   │   ║
+║  │       free/standard/premium + modality                   │   ║
 ║  │  • embed_with_fallback() → provider fallback chain             │   ║
 ║  │  → query_embedding float32 vector                               │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
@@ -134,7 +134,7 @@ POST /api/v1/goals
 ║  │  NODE: think  (only if chain_of_thought pattern active)         │   ║
 ║  │  • SemanticCache L1+L2 checked (cosine sim ≥ 0.92)            │   ║
 ║  │       L1: in-memory LRU 256 entries TTL 300s                   │   ║
-║  │       L2: pgvector persistent brotli-compressed                │   ║
+║  │       L2: pgvector persistent (pgvector brotli-compressed)                │   ║
 ║  │    → HIT: use cached CoT reasoning, skip LLM                   │   ║
 ║  │    → MISS: call LLM, store result in L1+L2                     │   ║
 ║  │  • _model_router.model_for("think")  ◄ LAYER 2 ROUTING        │   ║
@@ -215,7 +215,7 @@ POST /api/v1/goals
 ║  │              REJECTED / TIMED_OUT → PermissionError raised     │   ║
 ║  │                                   → goal FAILS                 │   ║
 ║  │     10. RollbackEngine.register() → log compensating action    │   ║
-║  │                                                                  │   ║
+║  │          tool_inverses.py maps undo per tool                    │   ║
 ║  │  [C] MCP tool execution (actual tool call)                     │   ║
 ║  │       OTel span: "agentverse.tool.call"                        │   ║
 ║  │       (tool_name, input_hash, duration, model tracked)         │   ║
