@@ -21,6 +21,37 @@
 
 ## Deep-Dive Technical Documentation
 
+## 📚 Deep-Dive Topic Libraries (Folder-Based)
+
+> Each category below is a fully-expanded folder with 4–6 deep-dive files covering architecture, workflow diagrams, real-world examples, scalability at millions of requests, latency analysis, and cross-component integration.
+
+| Category | Folder | Files | Description |
+|---|---|---|---|
+| Agent Memories | [agent-memories/](agent-memories/) | 6 | 11 memory types, scoping, write/recall flows, safety, scalability |
+| Knowledge & KG | [knowledge-and-kg/](knowledge-and-kg/) | 6 | Collections, graph nodes/edges, vector+lexical indexes, graph vs vector decision |
+| Ingestion | [ingestion/](ingestion/) | 6 | All parsers, connectors, media, pipeline, failure handling |
+| Retrieval Strategies | [retrieval-strategies/](retrieval-strategies/) | 6 | Hybrid search, advanced retrieval, reranking, multi-hop, evaluation |
+| Embeddings | [embeddings/](embeddings/) | 5 | Provider abstraction, types, drift detection, scalability |
+| Prompt Builder | [prompt-builder/](prompt-builder/) | 4 | Planner/executor/verifier prompts, context injection, safety |
+| Agent Improvement | [agent-improvement/](agent-improvement/) | 5 | Eval-driven, prompt optimization, reflexion, regression detection |
+| Evals | [evals/](evals/) | 4 | Goal/retrieval/safety evals, judge models, online vs offline |
+| Observability | [observability/](observability/) | 5 | Logging, metrics/SLOs, distributed tracing, cost, incident workflows |
+| Guardrails | [guardrails/](guardrails/) | 4 | Injection detection, content safety, output validation, HITL |
+| Governance | [governance/](governance/) | 6 | RBAC, policy engine, cost control, audit trail, enterprise controls |
+| Scopes | [scopes/](scopes/) | 3 | Scope types, enforcement layers, data-leakage prevention |
+| Multimodal | [multimodal/](multimodal/) | 5 | Text/PDF/code, visual, audio/video/browser, visual context in planning |
+| Multi AI Model Router | [multi-ai-model-router/](multi-ai-model-router/) | 5 | Role-based routing, cost/latency/quality, provider fallback, scale |
+| Chunking Strategies | [chunking-strategies/](chunking-strategies/) | 6 | Fixed/token, semantic/heading, code/table, specialized, selection guide |
+| Hallucination Handling | [hallucination-handling/](hallucination-handling/) | 6 | Grounding, tool validation, NLI, consensus, observability feedback loop |
+| Core Platform Workflows | [core-platform-workflows/](core-platform-workflows/) | 6 | Startup, queue routing, AgentGraph execution, tool execution, SSE |
+| Other Core Concepts | [other-core-platform-concepts/](other-core-platform-concepts/) | 6 | MCP, providers, reliability, Celery/Postgres/Redis, SDKs |
+
+**Total: 18 categories · 98 files · ~44,000 lines of documentation**
+
+---
+
+## Reference Documentation (Single-Page)
+
 ### Core Agent System
 | Page | What it covers |
 |---|---|

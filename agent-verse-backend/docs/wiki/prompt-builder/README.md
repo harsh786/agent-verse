@@ -134,5 +134,6 @@ RAG chunks first, then memory entries, then older step history.
 | [01-planner-executor-verifier-prompts.md](./01-planner-executor-verifier-prompts.md) | Deep dive on each role: structure, real examples, token budget |
 | [02-context-injection.md](./02-context-injection.md) | RAG, memory, tools, visual, feedback injection mechanics |
 | [03-prompt-safety-and-optimization.md](./03-prompt-safety-and-optimization.md) | Injection detection, encoding attacks, A/B testing, optimizer |
+| [04-context-module.md](./04-context-module.md) | `PromptBuilder`, `ContextPipeline`, `PromptBudget`, `CitationManager` — the `app/context/` assembly classes |
 
-<!-- Sources: app/agent/prompts.py, app/agent/graph.py, app/providers/base.py -->
+<!-- Sources: app/agent/prompts.py, app/agent/graph.py, app/providers/base.py, app/context/context_pipeline.py, app/context/prompt_builder.py, app/context/prompt_budget.py, app/context/citation_manager.py -->

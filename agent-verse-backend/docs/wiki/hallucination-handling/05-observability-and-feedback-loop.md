@@ -356,6 +356,102 @@ if results.mean_score < 0.85:
 | **RAFT service** | HITL corrections become fine-tuning candidates for the RAFT model |
 | **Cost tracking** | `hallucination_correction_cost` metric tracks LLM overhead from corrections |
 
+---
+
+## ProvenanceLedger
+
+`ProvenanceLedger` (`app/provenance/ledger.py`) provides an **append-only, per-goal audit
+trail** of every claim generated during agent execution — which source supported it, which
+model generated it, and what confidence was assessed.
+
+It is the low-level provenance record that feeds `AttributionVerifier`, `CitationManager`,
+and the hallucination feedback loop.
+
+### Class Interface
+
+```python
+class ProvenanceLedger:
+    def __init__(self) -> None:
+        self._records: list[ProvenanceRecord] = []
+
+    def record(
+        self,
+        *,
+        claim_text: str,        # the generated claim (one sentence)
+        sources: list[SourceRef],  # RAG sources that should support this claim
+        step_id: str,           # which agent step generated this claim
+        model_id: str,          # which LLM generated it (e.g. "claude-3-5-sonnet")
+        confidence: float,      # [0.0, 1.0] confidence from NLI/verifier
+    ) -> ProvenanceRecord:
+        """Records a claim. Sets status = 'supported' | 'unknown' | 'unsupported'."""
+
+    def list_all(self) -> list[ProvenanceRecord]:
+        """Returns all recorded claims for this goal execution."""
+
+    def export(self) -> list[dict]:
+        """Serialises all records to JSON-ready dicts for API/storage."""
+
+    def clear(self) -> None:
+        """Resets the ledger (called at goal start)."""
+```
+
+### Status Assignment
+
+```python
+# Status rules applied by .record():
+if sources and confidence >= 0.5:
+    status = "supported"       # claim has evidence and high confidence
+elif confidence < 0.3:
+    status = "unsupported"     # claim has low confidence regardless of sources
+else:
+    status = "unknown"         # borderline — flagged for human review
+```
+
+### ProvenanceRecord
+
+```python
+class ProvenanceRecord:
+    claim_id: str                   # uuid4
+    claim_text: str                 # the claim sentence
+    supporting_sources: list[SourceRef]  # RAG chunks cited as evidence
+    generated_by_step: str          # step_id from AgentState
+    generated_by_model: str         # model_id string
+    confidence: float               # from NLI pipeline
+    verification_status: str        # "supported" | "unknown" | "unsupported"
+    recorded_at: datetime
+```
+
+### Integration with Hallucination Defense
+
+```python
+# In the agent graph — after each executor step:
+for claim in parsed_claims:
+    ledger.record(
+        claim_text=claim.text,
+        sources=attribution_verifier.get_sources(claim),
+        step_id=state.current_step_id,
+        model_id=response.model,
+        confidence=nli_pipeline.check(claim, context_chunks),
+    )
+
+# After goal completion — export for audit trail:
+state.provenance_export = ledger.export()
+
+# Any "unsupported" claims → trigger HITL escalation:
+unsupported = [r for r in ledger.list_all() if r.verification_status == "unsupported"]
+if unsupported:
+    hitl_gateway.escalate(goal_id=state.goal_id, claims=unsupported)
+```
+
+### Observability Integration
+
+Each `ProvenanceRecord` with status `"unsupported"` emits a Prometheus increment on
+`hallucination_detected_total{layer="provenance_ledger"}`, and the `export()` output is
+stored in the goal's `AgentState.provenance_export` field, available in the audit log and
+via the API.
+
+---
+
 <!-- Sources: app/governance/hitl.py:1-120, app/intelligence/nli_checker.py:1-122,
      app/evals/attribution_verifier.py:1-148, app/evals/rag_score.py:1-45,
-     app/rag/evaluation.py:1-150 -->
+     app/rag/evaluation.py:1-150, app/provenance/ledger.py:1-60 -->

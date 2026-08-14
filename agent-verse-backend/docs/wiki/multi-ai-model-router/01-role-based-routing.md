@@ -353,6 +353,78 @@ The `JUDGE` role has stricter selection requirements than the `VERIFIER`:
 
 ---
 
+## Specialised Modality Roles — Audio, Vision, and Reranker
+
+Beyond the four core text roles, the router handles three specialised modality roles defined in `ModelCapability` and `TaskType` (`app/ai_router/models.py`).
+
+### Audio Model Selection (`SPEECH_TO_TEXT` / `TEXT_TO_SPEECH`)
+
+`TaskType.SPEECH` routes to models with `ModelCapability.SPEECH_TO_TEXT`. The `ModelOrchestrator` maps the `"audio"` modality:
+
+```python
+# Source: app/ai_router/model_orchestrator.py
+_MULTIMODAL_MODELS = {
+    "audio": {
+        "extractor": "gpt-4o-audio",   # speech-to-text transcription
+        "reasoner": "gpt-5.2",           # semantic understanding of transcript
+        "requires_audio": True,
+    },
+}
+```
+
+**Selection criteria:** Must have `ModelCapability.SPEECH_TO_TEXT`; prefer lower WER for domain terminology; multilingual audio routes to multilingual-trained models. Tenant plan: free tier → local Whisper, enterprise → cloud STT with diarisation.
+
+```mermaid
+flowchart LR
+    AUDIO["Audio Asset"] --> STT["TaskType.SPEECH\nSPEECH_TO_TEXT"]
+    STT --> PLAN["Tenant plan?"]
+    PLAN -->|"free"| LOC["whisper-large-v3\nlocal"]
+    PLAN -->|"starter+"| CLD["gpt-4o-audio\nOpenAI Realtime"]
+    LOC --> TRANS["Transcript"]
+    CLD --> TRANS
+    TRANS --> EXEC["EXECUTOR\nwith transcript context"]
+
+    style AUDIO fill:#1e3a5f,stroke:#4a9eed,color:#e0e0e0
+    style STT fill:#5a4a2e,stroke:#d4a84b,color:#e0e0e0
+    style PLAN fill:#2d2d3d,stroke:#7a7a8a,color:#e0e0e0
+    style LOC fill:#2d4a3e,stroke:#4aba8a,color:#e0e0e0
+    style CLD fill:#2d4a3e,stroke:#4aba8a,color:#e0e0e0
+    style TRANS fill:#1e3a5f,stroke:#4a9eed,color:#e0e0e0
+    style EXEC fill:#1e3a5f,stroke:#4a9eed,color:#e0e0e0
+```
+<!-- Sources: app/ai_router/model_orchestrator.py:80-90, app/ai_router/models.py:SPEECH_TO_TEXT -->
+
+**Real-World:** Call centre ingests 50K recorded calls/day → `gpt-4o-audio` transcribes each → EXECUTOR summarises + extracts issues. Routing free tenants to local Whisper saves ~$0.006/minute.
+
+### Vision Model Selection (`VISION`)
+
+Image and video tasks route to models with `ModelCapability.VISION`:
+
+```python
+_MULTIMODAL_MODELS = {
+    "image": {"extractor": "gpt-4o",          "requires_vision": True},
+    "video": {"extractor": "gemini-2.5-pro",   "requires_vision": True},
+}
+```
+
+Registry includes: `claude-3-7-sonnet`, `gpt-4.1`, `gpt-4o` (all `supports_vision=True`); `gemini-2.5-pro` (video frames). Compliance-required tenants restricted to `compliance_ready=True` vision models only.
+
+### Reranker Model Selection (`RERANK`)
+
+The retrieval layer calls `select_model(capability=ModelCapability.RERANK)` directly. Optimise for low latency — reranker is on the critical path (adds 50–200ms).
+
+| Reranker | Latency P99 | Cost/1K calls | MRR@10 |
+|---|---|---|---|
+| `ms-marco-MiniLM-L-6-v2` (local) | 50ms | $0 | 0.72 |
+| `ms-marco-MiniLM-L-12-v2` (local) | 80ms | $0 | 0.77 |
+| `cohere-rerank-v3.5` (cloud) | 150ms | $0.001 | 0.84 |
+| `jina-reranker-v2` (cloud) | 120ms | $0.0008 | 0.82 |
+
+Free tier always routes to local reranker (no per-call API cost). Enterprise tenants can configure `preferred_model: "cohere-rerank-v3.5"` in `ModelRoutePolicy` for higher MRR.
+<!-- Sources: app/ai_router/models.py:ModelCapability.RERANK, app/ai_router/registry.py -->
+
+---
+
 ## FAQ
 
 **Q: Can the router select different models for the same role in different steps of the same goal?**
