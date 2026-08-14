@@ -235,33 +235,33 @@ POST /api/v1/goals
 
 ```mermaid
 flowchart TD
-    START([POST /api/v1/goals]) --> RATE[Rate Limiter\nconcurrent + daily limits]
-    RATE --> DEDUP{Goal Deduplication\nredis hash}
+    START([POST /api/v1/goals]) --> RATE[Rate Limiter\nconcurrent + daily limits via Redis]
+    RATE --> DEDUP{Goal Deduplication\nredis content hash}
     DEDUP -- duplicate --> RETURN_DUP([Return existing goal_id])
-    DEDUP -- new goal --> RECORD[Create GoalRecord\nstatus = PENDING]
-    RECORD --> AIROUTER[AI Router\nselect model for PLANNING]
+    DEDUP -- new goal --> RECORD[Create GoalRecord\nstatus = PENDING\nDataClassification context activated]
+    RECORD --> AIROUTER[AI Router Layer 1 Multi-Model\nai_router.select_model TaskType.PLANNING tenant_id\nPriority: 1 model_override param wins\n2 tenant routing policy preferred model\n3 filter available + healthy circuit open false\n4 routing_mode: HIGHEST_QUALITY CHEAPEST FASTEST\nReturns ModelEndpoint provider + model_id]
     AIROUTER --> CLASSIFY
 
     subgraph PATTERN_SEL ["Pattern Selection — build_with_trace()"]
         direction TB
-        CLASSIFY[classify_fast\nkeyword scan, under 1ms] --> CONF{confidence low\nAND MEDIUM?}
-        CONF -- yes --> CL2[classify_with_llm\n~200ms LLM call]
+        CLASSIFY[classify_fast keyword scan under 1ms\nGoalProperties: complexity domain risk reversibility] --> CONF{confidence low\nAND complexity MEDIUM?}
+        CONF -- yes --> CL2[classify_with_llm ~200ms\nTier-2 LLM refinement call]
         CONF -- no --> ASSEMBLE
-        CL2 --> ASSEMBLE[PatternAssembler\n19 rules fired over GoalProperties]
-        ASSEMBLE --> DGA[DynamicGraphAssembler\nPatternConfig to GoalRuntimeProfile]
-        DGA --> SSE1[SSE event: pattern_assembled]
+        CL2 --> ASSEMBLE[PatternAssembler 19 rules\nfire over GoalProperties\nreturns PatternConfig]
+        ASSEMBLE --> DGA[DynamicGraphAssembler\nPatternConfig to GoalRuntimeProfile\nmodel_role_assignments set here\nDecisionTrace recorded per rule]
+        DGA --> SSE1[SSE event: pattern_assembled\nDecisionTrace emitted to client]
     end
 
     CLASSIFY -.-> PATTERN_SEL
-    SSE1 --> QUEUE[Celery task enqueued\nper-plan queue]
+    SSE1 --> QUEUE[Celery task enqueued\nper-plan queue: free/starter/enterprise\nnoisy-neighbour isolation]
     QUEUE --> HTTP202([HTTP 202 Accepted])
-
     QUEUE --> GF
 
     subgraph GRAPH_BUILD ["Graph Construction ~1-5ms"]
         direction TB
-        GF[GraphFactory.create\nprofile to boolean flags] --> AG[AgentGraph init\n20 cross-cutting services wired]
-        AG --> BUILD[AgentGraph._build\nconditional LangGraph compile]
+        GF[GraphFactory.create\nGoalRuntimeProfile to boolean feature flags] --> AG[AgentGraph init\n20 cross-cutting services wired:\nCircuitBreakers Bulkhead RollbackEngine\nAuditLog CostController PolicyEngine\nHITLGateway GuardrailChecker DeduplicationCache\nEvalRunner OTel tracer]
+        AG --> MRWIRE[ModelRouter Layer 2 injected\n_model_router init from model_role_assignments\nroles resolved at runtime per node:\nthink plan execution verification reflection]
+        MRWIRE --> BUILD[AgentGraph._build\nconditional LangGraph StateGraph compile\noptional nodes wired by boolean flags from profile]
     end
 
     BUILD --> INIT
@@ -269,82 +269,107 @@ flowchart TD
     subgraph LANGGRAPH ["LangGraph Execution — Phase 3"]
         direction TB
 
-        INIT[NODE: initialize\nGuardrailChecker check goal\nGroundingChecker\nExecutionMemory recall\nLongTermMemory recall lessons\nOTel span started]
+        INIT[NODE: initialize\nGuardrailChecker.check_goal scan for violations\nGroundingChecker validate factual claims groundable\nDataClassification context activated for tenant\nExecutionMemory.recall past attempts at this goal\nLongTermMemoryStore.recall pgvector cosine semantic search\nWorkingMemory init empty dict for this run\nProceduralMemory.recall learned step templates\nVoyagerSkillStore.recall reusable sub-skills\nOTel root span: agentverse.goal.run started]
 
-        INIT --> RAGNOD[NODE: rag_retrieval\nRAG strategy from profile\nhybrid or web or agentic or FLARE\nor RAPTOR or fusion or corrective\nKnowledgeStore search\nSSE: knowledge_retrieved]
+        INIT --> EMBQ[EmbeddingOrchestrator embed query\nEmbeddingPolicySelector select model by cost class\nfree or standard or premium + modality check\nembed_with_fallback provider fallback chain\nreturns query_embedding float32 vector]
 
-        RAGNOD --> COTQ{chain_of_thought\nactive?}
-        COTQ -- yes --> THINK[NODE: think\nSemanticCache check\nPlanner LLM with CoT prompt\nreasoning stored in evidence]
+        EMBQ --> RAGNOD[NODE: rag_retrieval Hybrid Search\nRAG strategy from profile:\nhybrid agentic web_augmented FLARE RAPTOR fusion corrective\n1 pgvector cosine distance semantic search\n2 BM25 keyword ranking exact term matches\n3 Reciprocal Rank Fusion merge ranked lists\n4 CrossEncoder.rerank second-pass top-20\n5 late_chunker context-aware chunk boundaries\n6 parent_child_chunker: small child retrieve large parent return\nSSE: knowledge_retrieved]
+
+        RAGNOD --> CITE_REG[CitationManager.register_chunks\nassign 1 2 3 IDs to retrieved chunks\ncitation map injected into all role prompts\nenables grounded answers with source refs]
+
+        CITE_REG --> COTQ{chain_of_thought active?}
+
+        COTQ -- yes --> SCACHE_T{SemanticCache L1+L2 check\ncosine similarity threshold 0.92\nL1 in-memory LRU 256 entries TTL 300s\nL2 pgvector persistent brotli-compressed}
+        SCACHE_T -- HIT --> THINK_HIT[CoT reasoning from cache\nreasoning_evidence populated from L1 or L2]
+        SCACHE_T -- MISS --> THINK
+
         COTQ -- no --> TOTQ
 
-        THINK --> TOTQ{tree_of_thoughts\nactive?}
-        TOTQ -- yes --> TOT[NODE: tree_of_thoughts\nTreeOfThoughtsPattern\nn=3 branches max_depth=2\nbest branch to planner context]
-        TOTQ -- no --> PLANNOD
+        THINK[NODE: think\n_model_router.model_for think Layer 2 routing\nContextPipeline rerank + PromptBudget 6000 tok\nContextualEnricher doc-level header per chunk\nCitationManager inject map\nOutputContractBuilder append JSON schema\nPromptBuilder.build_planner_context bundle\nLLM CoT model: CHAIN_OF_THOUGHT_SYSTEM prompt\nreasoning stored in reasoning_evidence\nOTel span: agentverse.plan]
+        THINK_HIT --> TOTQ
+        THINK --> TOTQ{tree_of_thoughts active?}
 
-        TOT --> PLANNOD
+        TOTQ -- yes --> TOT[NODE: tree_of_thoughts\nTreeOfThoughtsPattern n=3 max_depth=2\nexplore N solution branches\nbest branch injected into planner context]
+        TOTQ -- no --> CTXPIPE_P
 
-        PLANNOD[NODE: plan — Planner LLM 1\nContextPipeline rerank chunks\nSemanticCache check\nPlanner LLM: goal + RAG + lessons to steps\nCircuitBreaker wraps call\nSSE: plan_created]
+        TOT --> CTXPIPE_P
 
-        PLANNOD --> G1SANIT
+        CTXPIPE_P[ContextPipeline.run PLANNER role\n1 CrossEncoder rerank chunks by goal relevance\n2 PromptBudget.fit 6000 tok planner budget\n  priority: system goal memory rag chunks history\n  drop lowest-priority blocks if over budget\n3 ContextualEnricher doc-level header per chunk\n4 CitationManager inject citation map\n5 OutputContractBuilder append JSON output schema\nreturns PipelineResult assembled_prompt citations token_count]
 
-        subgraph EXEC_LOOP ["NODE: execute — Executor LLM 2 — ReAct loop"]
+        CTXPIPE_P --> SCACHE_P{SemanticCache L1+L2\nskip planner LLM if plan cached}
+        SCACHE_P -- HIT --> PLAN_HIT[Cached plan reused\nSSE: plan_created from cache]
+        SCACHE_P -- MISS --> PLANNOD
+
+        PLANNOD[NODE: plan Planner LLM\n_model_router.model_for_goal planning goal Layer 2\nupdate_from_profile sync runtime model assignments\nPromptBuilder.build_planner_context bundle\nProceduralMemory.recall step templates\nVoyagerSkillStore.recall reusable sub-skills\nLLM Planner model: goal + RAG + lessons to step list\nCircuitBreaker wraps LLM call fail-fast on errors\nSSE: plan_created\nOTel span: agentverse.plan]
+
+        PLAN_HIT --> LLM2
+        PLANNOD --> LLM2
+
+        subgraph EXEC_LOOP ["NODE: execute — Executor LLM — ReAct loop per step"]
             direction TB
-            LLM2[Executor LLM: Thought + tool intent] --> G1SANIT
-            G1SANIT[1 OutputSanitizer: strip PII from inputs] --> G2GUARD
-            G2GUARD[2 GuardrailChecker: policy violation?] --> G3PERM
-            G3PERM[3 PermissionMatrix: tool allowed?] --> G4POL
-            G4POL[4 PolicyEngine: allow / deny / rate-limit] --> G5COST
-            G5COST[5 CostController: within budget?] --> G6CB
-            G6CB[6 CircuitBreaker: provider healthy?] --> G7BH
-            G7BH[7 Bulkhead: concurrency limit ok?] --> G8DD
-            G8DD[8 DeduplicationCache: identical call?] --> RISKQ
-            RISKQ{9 ToolRiskAssessor\nhigh-risk step?}
-            RISKQ -- HIGH-RISK --> HITL[HITLGateway\nrequest_approval — PAUSE]
+            LLM2[Executor LLM: Thought + tool call intent\n_model_router.model_for execution Layer 2\nContextPipeline executor 3000 tok budget\nPromptBuilder.build_executor_context bundle step\nOTel span: agentverse.step.execute] --> G1SANIT
+            G1SANIT[1 OutputSanitizer strip PII from inputs\nDataClassification handling: redact no_store no_log] --> G2GUARD
+            G2GUARD[2 GuardrailChecker policy violation check\nGuardrailsV2 streaming + declarative YAML rules\npluggable evaluators per tenant] --> G3PERM
+            G3PERM[3 PermissionMatrix tool allowed for tenant+agent?] --> G4POL
+            G4POL[4 PolicyEngine allow/deny/rate-limit rules\nRedis pub/sub propagated across replicas] --> G5COST
+            G5COST[5 CostController within per-call + per-goal budget?\nRedis-backed cross-replica accuracy] --> G6CB
+            G6CB[6 CircuitBreaker provider healthy not circuit-open?] --> G7BH
+            G7BH[7 Bulkhead per-tenant concurrency limit ok?] --> G8DD
+            G8DD[8 DeduplicationCache identical call already made?] --> RISKQ
+            RISKQ{9 ToolRiskAssessor\nhigh-risk: deploy delete prod?}
+            RISKQ -- HIGH-RISK --> HITL[HITLGateway.request_approval\nPAUSE emit SSE: hitl_approval_required\nwait for human approval webhook]
             HITL -- approved --> ROLLREG
             RISKQ -- normal --> ROLLREG
-            ROLLREG[10 RollbackEngine.register\nlog compensating action] --> TOOLEXEC
-            TOOLEXEC[MCP Tool Execution] --> P11SANIT
-            P11SANIT[11 OutputSanitizer: strip PII from output] --> P12GRD
-            P12GRD[12 GuardrailChecker: scan output] --> P13AUD
-            P13AUD[13 AuditLog.record: immutable entry] --> P14COST
-            P14COST[14 CostController.record: log costs] --> P15EVAL
-            P15EVAL[15 EvalRunner.score: quality score] --> FLAREQ
-            FLAREQ{16 FLARE: output uncertain?}
-            FLAREQ -- uncertain, re-retrieve --> RAGNOD
+            ROLLREG[10 RollbackEngine.register compensating action\ntool_inverses.py maps undo operation] --> TOOLEXEC
+            TOOLEXEC[MCP Tool Execution\nOTel span: agentverse.tool.call\ntool_name input_hash duration model tracked] --> P11SANIT
+            P11SANIT[11 OutputSanitizer strip PII from tool output\nDataClassification no_log fields excluded] --> P12GRD
+            P12GRD[12 GuardrailChecker scan tool output\nGuardrailsV2 streaming token-by-token check] --> P13AUD
+            P13AUD[13 AuditLog.record immutable append-only entry\ntenant_id goal_id tool_name input_hash output_hash] --> P14COST
+            P14COST[14 CostController.record per-tool cost\ntotal cost accumulates in Redis] --> P15EVAL
+            P15EVAL[15 EvalRunner.score quality per step\nmulti-dimension evaluation] --> P16EMEM
+            P16EMEM[16 ExecutionMemory.record step + result live\nrecord_failure on tool error with context] --> FLAREQ
+            FLAREQ{17 FLARE check: output uncertain?\nforward-looking re-retrieve trigger}
+            FLAREQ -- uncertain re-retrieve --> EMBQ
             FLAREQ -- ok --> OBSERVE
-            OBSERVE[Executor observes result\nnext Thought in loop] --> MOREQ
-            MOREQ{more steps?}
+            OBSERVE[Executor observes result\nnext Thought in ReAct loop] --> MOREQ
+            MOREQ{more steps in plan?}
             MOREQ -- yes --> LLM2
             MOREQ -- no --> EXECDONE
             EXECDONE[SSE: step_completed]
         end
 
-        EXECDONE --> REFQ{self_refine\nactive?}
-        REFQ -- yes --> REFINE[NODE: refine\nLLM iterates on output\nstops on NO_CHANGES_NEEDED]
+        EXECDONE --> REFQ{self_refine active?}
+        REFQ -- yes --> REFINE[NODE: refine\nLLM iterates on output\nstops on NO_CHANGES_NEEDED token]
         REFQ -- no --> SCQ
 
-        REFINE --> SCQ{self_consistency\nactive?}
-        SCQ -- yes --> SC[NODE: self_consistency\nSelfConsistencyPattern n=3\nmajority vote answer]
-        SCQ -- no --> VERIFYNOD
+        REFINE --> SCQ{self_consistency active?}
+        SCQ -- yes --> SC[NODE: self_consistency\nSelfConsistencyPattern n=3\nmajority vote selects answer]
+        SCQ -- no --> CTXPIPE_V
 
-        SC --> VERIFYNOD
+        SC --> CTXPIPE_V
 
-        VERIFYNOD[NODE: verify — Verifier LLM 3\nContextPipeline verifier context\nVerifier LLM: goal satisfied?\nCircuitBreaker wraps call\nAuditLog.record verification\nSSE: verification_complete]
+        CTXPIPE_V[ContextPipeline.run VERIFIER role\n1 Rerank goal + final output focus\n2 PromptBudget.fit 2000 tok verifier budget\n  keep goal+output drop RAG chunks\n3 CitationManager inject citation map\n4 OutputContractBuilder verification schema]
 
-        VERIFYNOD --> PRQ{peer_review\nactive?}
-        PRQ -- yes --> PR[NODE: peer_review\nPeerReviewPattern threshold 0.7\nindependent LLM review]
+        CTXPIPE_V --> VERIFYNOD
+
+        VERIFYNOD[NODE: verify Verifier LLM\n_model_router.model_for verification Layer 2\nPromptBuilder.build_verifier_context bundle\nLLM Verifier model: did we satisfy original goal?\nProvenanceLedger.verify_citations check cited chunks exist\nCircuitBreaker wraps LLM call\nAuditLog.record verification result\nSSE: verification_complete\nOTel span: agentverse.verify]
+
+        VERIFYNOD --> PROVLED[ProvenanceLedger.finalize\nmap each claim to source chunk\nmap chunk to IngestionProvenance\nfull lineage: answer to raw document\nProvenanceVerifier.verify citations valid\nProvenanceExport citation graph built]
+
+        PROVLED --> PRQ{peer_review active?}
+        PRQ -- yes --> PR[NODE: peer_review\nPeerReviewPattern threshold 0.7\nindependent LLM quality review]
         PRQ -- no --> ROUTEQ
 
         PR --> ROUTEQ
 
         ROUTEQ{_route decision}
         ROUTEQ -- complete --> GOALOK([Goal COMPLETE])
-        ROUTEQ -- replan --> PLANNOD
+        ROUTEQ -- replan --> CTXPIPE_P
         ROUTEQ -- reflect --> REFLECTNOD
-        REFLECTNOD[NODE: reflect\nLLM diagnoses failure\nupdates verification_feedback\nincrements reflection_attempts]
-        REFLECTNOD --> PLANNOD
-        ROUTEQ -- rag_remediate --> RAGNOD
-        ROUTEQ -- max_iterations --> GOALTIMEOUT([Goal TIMEOUT — FAILED])
+        REFLECTNOD[NODE: reflect\n_model_router.model_for reflection Layer 2\nReflexionService.recall past lessons for goal type\nContextPipeline reflection context\nLLM Reflection model diagnoses failure\nupdates verification_feedback\nincrements reflection_attempts\nReflexionService.learn stores lesson tagged Classification]
+        REFLECTNOD --> CTXPIPE_P
+        ROUTEQ -- rag_remediate --> EMBQ
+        ROUTEQ -- max_iterations --> GOALTIMEOUT([Goal TIMEOUT FAILED])
     end
 
     GOALOK --> SUCPATH
@@ -352,14 +377,14 @@ flowchart TD
 
     subgraph POST_EXEC ["Phase 4 — Post-Execution and Agent Improvement"]
         direction TB
-        SUCPATH[SUCCESS PATH\nLongTermMemory.extract_from_goal\nSelfOptimizer.analyze_success\nEvalRunner final summary\nSemanticCache.store plan]
-        FAILPATH[FAILURE PATH\nRollbackEngine.rollback\nLongTermMemory.store_failure\nSelfOptimizer.analyze_failure]
-        ALWAYS[ALWAYS path\nAuditLog final entry\nCostController record total\nGoalRecord to COMPLETED or FAILED\nConcurrent counter decrement\nDedup entry cleared\nSSE goal_completed or goal_failed\nOTel root span closed]
+        SUCPATH[SUCCESS PATH\nLongTermMemoryStore.extract_from_goal distill lessons\nEpisodicMemoryStore.record add to episode history\nProceduralMemoryStore.update learned step templates\nVoyagerSkillStore.update reusable sub-skills\nSelfOptimizer.analyze_success prompt+strategy tuning\nSemanticCache.store plan+result for future reuse\nEvalRunner.final_summary multi-dimension goal scores]
+        FAILPATH[FAILURE PATH\nRollbackEngine.rollback execute compensating actions\nReflexionService.learn store failure lesson + Classification\nLongTermMemoryStore.store failure pattern\nSelfOptimizer.analyze_failure improve next run]
+        ALWAYS[ALWAYS path\nAuditLog final entry all spans consolidated\nCostController.record_total per-goal + per-model cost\nGoalRecord status to COMPLETED or FAILED\nConcurrent counter decremented\nDedup entry cleared from Redis\nSSE: goal_completed or goal_failed emitted\nOTel root span agentverse.goal.run closed\nSLOTracker.record SLO compliance check]
     end
 
     SUCPATH --> ALWAYS
     FAILPATH --> ALWAYS
-    ALWAYS --> STREAMEND([SSE stream closes])
+    ALWAYS --> STREAMEND([SSE stream closes\nProvenance export attached to result\ncitations included in final response])
 
     style PATTERN_SEL fill:#1a3a5c,stroke:#4a9ede,color:#e0f0ff
     style GRAPH_BUILD fill:#1a3a5c,stroke:#4a9ede,color:#e0f0ff
