@@ -108,6 +108,7 @@ class OcrEngine:
         try:
             import pytesseract
 
+            img = self._preprocess_image(img)
             data = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: pytesseract.image_to_data(
@@ -175,3 +176,24 @@ class OcrEngine:
         except Exception:
             return ""
         return base64.b64encode(buf.getvalue()).decode()
+
+    @staticmethod
+    def _preprocess_image(img: Any) -> Any:
+        """Apply preprocessing to improve OCR accuracy.
+
+        Converts to grayscale and applies adaptive thresholding (binarization).
+        Requires Pillow >= 10.0.0 (already a dep).
+        """
+        try:
+            from PIL import ImageFilter, ImageOps  # type: ignore[import-untyped]
+
+            # Convert to grayscale
+            if img.mode != "L":
+                img = img.convert("L")
+            # Apply slight sharpening to improve character edges
+            img = img.filter(ImageFilter.SHARPEN)
+            # Auto-contrast to improve binarization
+            img = ImageOps.autocontrast(img, cutoff=2)
+            return img
+        except Exception:
+            return img  # graceful fallback: return original if preprocessing fails

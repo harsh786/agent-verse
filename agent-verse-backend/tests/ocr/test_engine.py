@@ -131,3 +131,11 @@ async def test_to_images_returns_empty_for_import_error():
     with patch.dict("sys.modules", {"pdf2image": None}):
         pages = engine._to_images(image_bytes=None, pdf_bytes=b"fake")
     assert pages == []
+
+
+def test_preprocess_image_returns_image():
+    """_preprocess_image should return an image object (not raise)."""
+    engine = OcrEngine()
+    img = _make_pil_image()
+    result = engine._preprocess_image(img)
+    assert result is not None
