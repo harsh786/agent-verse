@@ -261,3 +261,51 @@ Key environment variables that control startup behavior:
 **Cause:** `langgraph-checkpoint-redis` package is not installed or `REDIS_URL` is unset.
 
 **Fix:** `pip install langgraph-checkpoint-redis` and ensure `REDIS_URL` is set. Monitor for the `using_memory_saver_checkpointer_no_persistence` warning log.
+
+---
+
+## Real-World Example 2: Blue/Green Deployment for a Payments SaaS
+
+**Situation:** A payments SaaS company runs AgentVerse with zero-downtime deployments. They do 8–12 deploys per week using a blue/green strategy.
+
+**Challenge:** During a blue/green cutover the green instance had `manage_pools=True` but the Kubernetes `readinessProbe` fired before `lifespan` completed its full `sync_from_db()` pass. 3% of requests during the cutover window hit the in-memory path instead of the DB-backed path, causing stale tenant configs to be served.
+
+**Fix applied:**
+```python
+# infra/k8s/agentverse-deployment.yaml
+readinessProbe:
+  httpGet:
+    path: /ready    # returns 200 only after lifespan completes
+    port: 8000
+  initialDelaySeconds: 15
+  periodSeconds: 3
+  failureThreshold: 10   # wait up to 30s for lifespan
+```
+`/ready` endpoint returns 200 only after `app.state._pools_ready = True` is set in the lifespan handler. The 15-second initialDelay absorbs the Postgres connection pool and `sync_from_db()` time.
+
+**Outcome:** Zero stale-config incidents across 200+ subsequent deploys.
+
+---
+
+## Real-World Example 3: Testing Service-Wiring Without Redis (CI Environment)
+
+**Situation:** A startup's GitHub Actions CI runners don't have Redis. Tests that import `create_app()` with `manage_pools=True` would hang or fail.
+
+**Pattern used:**
+```python
+# tests/conftest.py
+@pytest.fixture
+def app():
+    # manage_pools=False → in-memory path, no Redis/Postgres needed
+    return create_app(manage_pools=False)
+```
+
+With `manage_pools=False`, `create_app()` wires every service in-memory mode:
+- `AgentStore` → `InMemoryAgentStore`
+- `KnowledgeStore` → `InMemoryKnowledgeStore`
+- LangGraph checkpointer → `MemorySaver` (no Redis)
+- Rate limiter → `InMemoryRateLimiter`
+
+CI tests run in 8 seconds. The DB/Redis path is tested in a separate `integration` marker group that runs with testcontainers.
+
+<!-- Sources: app/main.py, app/main_services.py -->

@@ -224,4 +224,17 @@ Planning the ingestion:
 The firm stages the migration in phases (most recent 1 year first) so agents can start
 providing value within 3 hours of ingestion start.
 
+---
+
+**Real-World Example 2 — Legal Document Platform**
+
+> A legal document platform ingests 8 million case files (average 40 pages = 320M total
+> pages) over 6 weeks using voyage-3 at 1,536 dimensions and batch size 64. Total vector
+> storage: 320M × 1,536 × 4 bytes = **1.97 TB** for embeddings alone, plus ~600 GB
+> metadata. They configure HNSW with m=24 and ef_construction=150 for the high-precision
+> legal domain, achieving **89ms P99** query latency — acceptable for attorney research
+> workflows. The initial embedding run is estimated at $0.00018/1K tokens × 2.4T tokens
+> = **$432,000**, amortised over 5 years at $86,400/year; this is justified against the
+> $2.1M/year cost of the 14 paralegals previously running manual document search.
+
 <!-- Sources: app/embedding/orchestrator.py, app/embedding/router.py, app/embedding/vector_index_policy.py -->

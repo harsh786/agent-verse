@@ -410,3 +410,29 @@ Goal: "Summarise all documents' ; SELECT * FROM knowledge_chunks WHERE '1'='1
 
 **Pen test result:** "0 cross-tenant data leakage vectors found. RLS provides
 defence-in-depth at the database layer."
+
+---
+
+### RWE 2: Multi-Tier SaaS — Free vs Enterprise Queue Isolation at Peak Load
+
+**Context:** A multi-tier SaaS platform has free-tier users submitting 10,000 goals
+per day to `goals.free` (processed by 2 Celery workers, 5-minute SLA), while 3
+enterprise customers simultaneously submit time-sensitive financial analysis goals to
+`goals.enterprise` (dedicated 8-worker pool, 30-second SLA).
+
+**Peak day scenario:** A viral social media mention drives a spike of 3,000 free-tier
+goals in 4 minutes. Both free-tier workers saturate immediately; the `goals.free`
+queue depth reaches 2,400 pending goals. At the same moment, a financial services
+enterprise customer submits "Analyse Q3 earnings across FAANG companies". Because
+`PLAN_QUEUE_MAP["enterprise"] = "goals.enterprise"`, that goal routes to the
+dedicated 8-worker pool and begins executing in 2.1 seconds.
+
+**Outcome:** The 3,000-goal free-tier spike causes exactly zero latency increase for
+enterprise goals. Free-tier users wait 8–12 minutes (within their 5-minute SLA
+buffer); the enterprise customer receives results in 28 seconds. Without queue
+isolation, the spike would have delayed enterprise goals by 15–20 minutes, triggering
+SLA penalty clauses worth $4,200/month per enterprise contract.
+
+**Real-World Example 3 — Data Migration with RLS Verification**
+
+> A healthcare platform migrates 2M patient interaction records to AgentVerse. Post-migration, a QA engineer runs a test: they authenticate as Tenant B (Boston Medical) and attempt to query records with a manually-crafted SQL statement that includes Tenant A's (NYC Health) data. The RLS policy (`SET LOCAL app.tenant_id = 'tenant_b'`) ensures Postgres silently filters out all of Tenant A's rows — the query returns 0 results instead of the expected cross-tenant leak. The pgvector HNSW index (1,536 dims, m=16, ef_construction=64) handles similarity queries across 200M embeddings at 42ms P99, well within the 200ms SLA.

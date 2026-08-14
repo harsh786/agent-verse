@@ -512,3 +512,15 @@ Citations: 4 verified, all from 2023 10-K (not prior years)
 5. **Match pattern to query complexity**: Using RAPTOR for "What is our PTO policy?" wastes 5× the latency and cost of Naive RAG.
 
 6. **Governa at the boundary, not the center**: GuardrailsV2, DataClassification, PolicyEngine run at the data layer — they can't be bypassed by changing the LLM or the retrieval strategy.
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Research Consultancy (Full Integration Trace Across All Pipeline Stages)**
+
+> A research consultancy deploys an AgentVerse agent over a 2M-document corpus of academic papers and industry reports. For the goal "Summarise the current evidence on mRNA vaccine efficacy against Omicron subvariants": the `PatternAssembler` detects `domain=RESEARCH, complexity=HARD` and selects `["multi_hop", "corrective_rag"]`; Knowledge Graph traversal in `app/knowledge_graph/` identifies 14 related topic nodes (vaccine efficacy, Omicron BA.4, BA.5, XBB.1.5) and expands the retrieval scope before vector search; three retrieval hops via `KnowledgeStore.hybrid_search()` surface 22 candidate chunks; `SemanticCache` L2 returns a partial match from a prior similar query, injecting 2 cached segments to reduce LLM calls; `CitationManager` assigns `[1]`–`[11]` to the final 11 high-ranked chunks; the Planner produces a 380-token answer; `ProvenanceLedger.verify_citations()` confirms all 11 citations resolve to real KnowledgeStore entries; `AuditLog` records the full retrieval lineage including DOIs, ingestion timestamps, and data classification (`sensitivity=public`). Total latency: 4.2 seconds; total cost: $0.047.
+
+**Real-World Example 2 — Telecom Customer Support (Guardrail Intercepts Mislabelled Competitor Chunk)**
+
+> A telecom's customer support agent ingested 40,000 internal KB articles during a bulk migration, but 12 competitor comparison documents were accidentally tagged `sensitivity=public` instead of `sensitivity=confidential`. When a customer asked "How do we compare to [Competitor X] on enterprise pricing?", hybrid search retrieved a chunk from a competitor's internal pricing PDF that had been ingested inadvertently. The `DataClassification` check at retrieval time read `category=financial, source_domain=external_competitor`; the `PolicyEngine` rule "do not retrieve from collections tagged `external_competitor`" fired and excluded the chunk before it reached the LLM context window. The agent responded using only verified internal pricing knowledge. The incident triggered a `PolicyViolation` audit event that identified the mislabelled batch, allowing the security team to re-classify all 12 documents and remove them from the retrieval index within 55 minutes of the first query that would have exposed them.

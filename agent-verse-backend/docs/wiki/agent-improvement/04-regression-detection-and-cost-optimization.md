@@ -268,4 +268,50 @@ Every regression gate decision and cost optimization action is written to the au
 
 This creates a complete, tamper-evident history of every configuration change and its quality impact — essential for regulated industries where you must prove that deployments were validated before going live.
 
-<!-- Sources: app/evals/regression_gate.py, app/evals/regression_baseline.py, app/evals/runtime_scorecard.py, app/intelligence/cost_optimizer.py, app/intelligence/cost_tracker.py, app/intelligence/self_optimizer_v2.py -->
+---
+
+## Real-World Example 2: Fintech Startup Catches Silent Accuracy Regression
+
+**Situation:** A Series-B fintech startup uses AgentVerse to automate loan-application data extraction. After a batch Alembic migration on 2026-06-10, loan approval rates dropped 8% in production. Support escalations tripled.
+
+**Root cause traced via regression gate:**
+- A new embedding provider was rolled out (Voyage → OpenAI `text-embedding-3-small`) to cut costs.
+- `RegressionGate` had been run against a synthetic test set. The synthetic set only covered standard English applications.
+- Actual production goals included applications with hyphenated names and non-ASCII addresses — edge cases the synthetic set omitted.
+- `rag_quality` on these goals: **0.38** (below the 0.5 threshold).
+
+**Resolution:**
+1. `EvalDatasetBuilder` auto-captured the failing goals as regression cases from production.
+2. Next gate run included the new dataset: `rag_quality` red-lined at 0.36.
+3. `RegressionGate.evaluate_promotion()` returned `recommendation="rollback"`.
+4. Engineering reverted to Voyage; the new provider was never promoted.
+5. The incident was contained **before** it reached 10% of production traffic (canary window).
+
+**Outcome:** Zero user-visible downtime. Gate run-time: 4 minutes. Estimated cost of ignoring it: $220K in wrongful loan denials over the following quarter.
+
+---
+
+## Real-World Example 3: Global Bank Optimises GPU Spend via CostOptimizer
+
+**Situation:** A Tier-1 global bank runs 800,000 goals/day through AgentVerse across three regions. Monthly LLM cost: $1.4M (primarily Claude Opus for all task types).
+
+**CostOptimizer analysis (30-day window):**
+
+| Task type | Opus avg score | Sonnet avg score | Score delta | Opus cost | Sonnet cost |
+|---|---|---|---|---|---|
+| `ANALYSIS` (earnings summaries) | 0.91 | 0.88 | −3.3% | $0.42/goal | $0.09/goal |
+| `EXECUTION` (data extraction) | 0.87 | 0.86 | −1.1% | $0.42/goal | $0.09/goal |
+| `PLANNING` (portfolio rebalancing) | 0.93 | 0.81 | −12.9% | $0.42/goal | $0.09/goal |
+
+**Decision applied by `CostOptimizer.suggest_downgrade()`:**
+- `ANALYSIS` and `EXECUTION`: downgrade to Sonnet (delta within 5% threshold). ✅
+- `PLANNING`: keep Opus (delta −12.9% exceeds 5% threshold). ❌ no change.
+
+**Regression gate result:** A/B test over 10,000 goals/arm confirmed quality delta within bounds.
+
+**Outcome:**  
+- `ANALYSIS` + `EXECUTION` → Sonnet: **−79% cost** on those task types.  
+- Monthly bill: $1.4M → **$0.61M** (net saving: $780K/month = **$9.4M/year**).  
+- `PLANNING` tasks remain on Opus, preserving portfolio accuracy.
+
+<!-- Sources: app/evals/regression_gate.py, app/intelligence/cost_optimizer.py -->

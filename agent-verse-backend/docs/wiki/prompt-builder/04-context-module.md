@@ -392,3 +392,15 @@ result = pipeline.run(
 - [03 — Prompt Safety & Optimization](./03-prompt-safety-and-optimization.md) — injection attack prevention, PromptOptimizer
 - [RAG System](../rag/README.md) — the retrieval strategies that produce the chunks
 - [Hallucination Handling](../hallucination-handling/README.md) — how `CitationManager` feeds into the attribution verifier
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Data Analytics Agent**
+
+> A data analytics agent processes the goal "summarize Q2 sales performance across APAC regions". The RAG engine returns 15 candidate chunks (5 from `sales_reports`, 4 from `regional_benchmarks`, 6 from `product_catalog`), 4 memory items from past analytics goals (800 tokens total), and 5 tool schemas (`data_warehouse.query`, `excel.export`, `slack.send`, `confluence.create_page`, `charts.render`) for a 16K context window configured with `ContextPipeline(max_tokens=6000, max_chunks=20)`. The `min_relevance_score=0.35` filter drops 3 of the 6 product-catalog chunks (scores 0.37, 0.39, 0.41). Source diversity enforcement (`max_per_source=5`) then caps `sales_reports` at 5 chunks, preventing a single over-represented collection from consuming the budget. The final `PipelineResult` contains 10 chunks (3,400 tokens), 4 memory items (800 tokens), and 5 tool schemas (900 tokens) — 5,100 total tokens, under the 6,000-token cap with `dedup_removed=2` and `filtered_removed=3` reported for observability. No information critical to the analytics task is trimmed.
+
+**Real-World Example 2 — Multi-Lingual Support Agent**
+
+> A Japanese-language support agent handles the query「注文#98765の返金状況を確認してください」("Check refund status for order #98765"). Japanese text incurs approximately 2× token overhead versus English due to Unicode character encoding — the same semantic content that takes 120 English tokens requires ~230 Japanese tokens. `PromptBudget` detects that the assembled prompt totals 8,200 tokens against an 8,000-token hard cap (200 tokens over). It compresses in strict priority order: the two oldest `episodic_memory` blocks (from goals 14 days ago) are compressed from 800 tokens to 200 tokens via `_auto_compress()`, saving 600 tokens. The `immutable=True` blocks — system instructions, current plan steps, and the specific order ID "#98765" — are never touched. The final prompt is 7,600 tokens, and `PromptBudgetResult` reports `compressed_block_ids=["episodic-1", "episodic-2"]` and `token_savings=600` — surfaced as structured log fields for the observability dashboard to track per-language compression rates.

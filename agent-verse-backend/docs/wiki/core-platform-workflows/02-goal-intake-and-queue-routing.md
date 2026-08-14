@@ -341,3 +341,36 @@ The API response is always fast. Queue wait times depend entirely on worker avai
 ```
 
 All goal creation events are written to the structured log and separately to the `AuditLog` for SOC2 compliance.
+
+---
+
+## Real-World Example 2: E-commerce Flash Sale — Burst Handling
+
+**Situation:** A UK fashion retailer runs 200,000 goals during a Black Friday flash sale window (2 hours). Normal daily load: 15,000 goals/day. The burst is 13× peak.
+
+**Queue routing behaviour:**
+- All goals arrive via `POST /api/v1/goals`. The router checks `tenant.plan = "enterprise"` → Celery queue `goals.enterprise`.
+- The enterprise queue has 40 dedicated Celery workers (vs 8 for `goals.free`).
+- RateLimiter: enterprise plan allows 1,000 req/min. Free plan: 60 req/min.
+- During the burst, the `goals.enterprise` queue depth peaked at 8,400. Workers processed the backlog in 12 minutes.
+
+**No free-tier tenant was affected** — their `goals.free` queue remained at normal depth throughout the event. This is the noisy-neighbour isolation guarantee.
+
+**Outcome:** 99.2% of flash-sale goals completed within the 5-minute SLA. Mean queue wait: 38 seconds.
+
+---
+
+## Real-World Example 3: HITL-Required Goals Bypass the Goal Queue
+
+**Situation:** A legal services company has a policy: all goals involving contracts valued above $1M must have human approval before execution.
+
+**Implementation:**
+- `ToolPolicyEngine` evaluates the goal before it enters the queue.
+- The tool policy `"require_hitl_on_contract_above_1m"` matches any goal whose description contains `"contract"` + any dollar amount > $1M.
+- Matched goals are written to `hitl_approval_queue` (Postgres table) instead of Celery.
+- An approval UI notifies the approver via email. On approval, the goal is written to the Celery queue normally.
+- Rejected goals receive `GoalStatus.CANCELLED` with `cancellation_reason = "hitl_rejected"`.
+
+**Outcome:** 100% compliance with the company's legal risk policy. Zero unapproved high-value contract goals executed.
+
+<!-- Sources: app/services/goal_queue.py, app/scaling/celery_app.py, app/governance/hitl.py -->

@@ -293,4 +293,8 @@ A support agent handles "How do I configure SSO for my organization?":
 The response will be a Confluence search tool call, grounded in the actual documentation
 chunks rather than the LLM's potentially-stale training data.
 
+**Real-World Example 2 — Code Review Agent**
+
+> A code review agent assembles its Executor prompt for "Step 2: identify security issues in the authentication module". The `ContextBudgetManager` receives 18 candidate RAG chunks from the codebase knowledge collection but must fit within the 2,000-token budget: 12 chunks survive (4,800 chars ≈ 1,200 tokens), covering `auth.py`, `middleware.py`, and 10 related modules. Three `LongTermMemory` entries about past review patterns contribute 800 tokens ("always check JWT expiry handling", "check for timing attacks in comparisons", "verify CSRF token scope"). Six GitHub tool schemas (`github.get_file`, `github.create_comment`, `github.list_pr_files`, `github.get_diff`, `github.approve_pr`, `github.request_changes`) add 1,200 tokens. Visual context from an architecture diagram screenshot — analyzed by the vision provider to produce alt-text — contributes 400 tokens. The total assembled context before trimming is 3,600 tokens: 400 tokens over the 2,000-token `ContextBudgetManager` budget. `ContextBudgetManager` drops the 3 lowest-relevance RAG chunks (scores 0.38, 0.41, 0.44), saving ~320 tokens, then trims one older memory entry, delivering a final injected context of 1,980 tokens that retains all high-signal chunks (score > 0.6) and all three memory lessons intact.
+
 <!-- Sources: app/rag/context_manager.py, app/agent/graph.py, app/providers/base.py -->

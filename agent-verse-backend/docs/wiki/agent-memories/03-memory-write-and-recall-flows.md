@@ -408,3 +408,15 @@ This means every memory written is fully auditable: who wrote it, when, what cla
 | Not calling `WorkingMemory.clear()` at goal start | State bleed: previous goal's tool outputs appear in current context | Always call `wm.clear()` as the first action in `initialize` node |
 | Writing memories without `evidence_refs` | Record is auto-quarantined; never recalled | Construct evidence refs from tool call IDs: `f"tool_call:{tool}:{call_id}"` |
 | Using `recall_failures()` result as the only failure signal | Past failures may not be relevant; confidence degrades without updates | Combine with `ReflexionService.recall()` for richer, scored failure context |
+
+---
+
+## Real-World Examples
+
+**Real-World Example 1 — Fintech / Currency Exchange Platform**
+
+> A neobank's FX agent receives the goal "Execute a USD→EUR conversion for customer #C-48821 at the best available rate." On completion, `SalienceScorer` assigns `salience=0.82` because the goal involved a 4-step tool chain (quote API → compliance check → transfer API → confirmation). `EpisodicMemoryStore.record()` writes an episode embedding the goal text and lesson `"Always call the compliance check before initiating the transfer — skipping it caused a 403 on 2 prior runs"`. `LongTermMemoryStore.extract_from_goal_async()` extracts a `tool_preference` memory: `"FX API requires X-Idempotency-Key header; omitting it causes duplicate transfers"`, writing a 1536-dim embedding to PostgreSQL in 18 ms. 24 hours later, a Celery `consolidate_tenant_memories` task merges this with 7 prior FX lessons via Jaccard clustering at `similarity_cutoff=0.30`, reducing the cluster to 1 merged entry — a 63% storage reduction. The next FX goal for any customer under this tenant recalls the merged lesson in ~12 ms via the HNSW index.
+
+**Real-World Example 2 — Healthcare AI / EHR Failure Recovery**
+
+> A clinical documentation agent is asked to "Retrieve the latest A1C result for patient MRN-77391." The EHR integration returns a 404 — the patient exists but their lab results are stored under a legacy alias (`pat_id: 77391-L`) due to a 2019 system migration. The goal fails at the verify node with `status=FAILED`, triggering `ReflexionService.learn()` with `lesson="EHR uses legacy pat_id suffix '-L' for patients migrated before 2022; always query both MRN and MRN-L"` at `confidence=8500` (out of 10,000). The record is written to `reflexion_memory` with `idempotency_key=sha256("ehr:mrn-alias-pattern")` — ensuring this lesson is stored exactly once regardless of how many agents hit the same failure. Three days later, a similar query for MRN-80244 fires `ReflexionService.recall()` during goal initialization; the lesson scores `0.79` salience and is injected into the planner context. The agent queries both `MRN-80244` and `MRN-80244-L`, finds the result on the second variant, and completes without a replan cycle — saving approximately 8 seconds of execution time per recurrence.

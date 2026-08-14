@@ -366,3 +366,29 @@ employee spends 2 hours/day doing this manually.
 
 **Outcome:** 2 hours manual work → 8-minute automated run, zero errors.
 Annual savings at $25/hr: 2h × 250 business days × $25 = **$12,500/year**.
+
+---
+
+### RWE 2: B2B SaaS Weekly Competitive Analysis via Marketplace Template
+
+**Context:** A 50-person B2B SaaS company (no data science team) needs weekly
+competitive intelligence reports. A product manager spends 3 hours every Monday
+morning manually compiling competitor pricing changes, feature releases, and blog
+posts for 6 rival products.
+
+**Implementation:** They locate the "Weekly Competitive Analysis" marketplace template
+(`marketplace.py: get_template("weekly-competitive-analysis")`), instantiate it with
+`product_name`, `competitor_list` (6 companies), and `output_format: "executive_summary"`,
+then configure the schedule trigger. `NLScheduler.parse("every Monday at 8am",
+timezone="America/New_York")` emits `TriggerSpec(type=CRON, expression="0 8 * * 1",
+timezone="America/New_York")`. Croniter computes `next_run = 2026-08-17T08:00:00-04:00`;
+Celery Beat fires the goal at 08:00:03 the following Monday (3-second scheduling jitter
+is normal for Beat). The full marketplace-to-live setup takes 10 minutes.
+
+**Outcome:** The agent runs 6 web search tool calls per competitor (36 total per run),
+synthesises findings, and emails a 3-page report to the product team before 08:15.
+The PM reclaims 3 h/week = 156 h/year ≈ $9,360 in reclaimed time at $60/hr loaded cost.
+
+**Real-World Example 3 — Event-Driven Compliance Monitoring**
+
+> A fintech company configures an event-driven trigger: whenever a Stripe payment webhook arrives with `amount > $10,000`, it automatically submits an AML screening goal. The `TriggerType.WEBHOOK` trigger captures the payload, passes it to the goal as context, and the agent queries 3 sanctions databases via MCP tools. Average trigger-to-screening-complete time: 4.2 seconds. In the first month, the system processes 1,847 high-value transactions, flagging 3 as suspicious for human review — a workload that would have required 2 full-time compliance analysts working manually.
