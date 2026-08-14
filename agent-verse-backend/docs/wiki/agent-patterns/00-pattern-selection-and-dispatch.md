@@ -305,6 +305,27 @@ Source: [`app/agent/pattern_assembler.py:35–190`](https://github.com/harsh786/
 - CRITICAL priority safety patterns enter `critical_safety` set — they are tracked separately and cannot be removed by `agent_config`
 - `force_no_hitl=True` in `agent_config` is **explicitly ignored** — safety is inviolable ([`pattern_assembler.py:253`](https://github.com/harsh786/agent-verse/blob/main/agent-verse-backend/app/agent/pattern_assembler.py#L253))
 
+### Quick-Reference: Goal Type → Patterns Selected
+
+The table below shows which patterns are selected for the most common goal archetypes. Because all 19 rules run and **accumulate**, a goal that matches multiple rules gets all their patterns combined.
+
+| Goal archetype | Example goal text | Rules fired | `reasoning` patterns | `rag` patterns | `multi_agent` patterns | `safety` patterns | Config |
+|---|---|---|---|---|---|---|---|
+| **Simple factual** | `"What is the capital of France?"` | 19 | `react` | — | — | `guardrails` | default |
+| **Technical medium** | `"Fix the null-pointer bug in UserService"` | 8, 19 | `react`, `reflection` | — | — | `guardrails` | default |
+| **Technical complex / multi-step** | `"Refactor the auth module to use JWT, then update all tests"` | 5, 8, 9, 19 | `react`, `chain_of_thought`, `reflection` | `agentic_rag` | — | `guardrails` | `max_iter=25` |
+| **Expert technical** | `"Design and implement a multi-tenant RBAC system with migration"` | 4, 5, 6, 8, 9, 13, 19 | `react`, `chain_of_thought`, `reflection`, `self_refine`, `tree_of_thoughts` | `agentic_rag` | `goal_tree` | `guardrails` | `max_iter=50`, `persistence=True` |
+| **Creative / generative** | `"Write a blog post about distributed systems tradeoffs"` | 10, 19 | `react`, `self_refine` | — | — | `guardrails` | default |
+| **Analytical medium** | `"Summarize our Q3 metrics dashboard"` | 8, 15, 19 | `react`, `reflection` | `fusion_rag` | — | `guardrails` | default |
+| **Expert analytical** | `"Analyze performance tradeoffs between Postgres, Mongo, Cassandra and write a recommendation report"` | 4, 5, 6, 9, 11, 12, 13, 15, 17, 19 | `react`, `chain_of_thought`, `reflection`, `self_refine`, `self_consistency`, `tree_of_thoughts` | `agentic_rag`, `fusion_rag`, `raptor` | `goal_tree`, `supervisor` | `guardrails` | `max_iter=50` |
+| **Requires web / realtime** | `"What is the current Bitcoin price and compare to last month?"` | 7, 16, 19 | `react` | `web_augmented_rag`, `flare` | — | `guardrails` | `web_auto_activate=True` |
+| **High-risk operation** | `"Deploy the release to production and send an announcement email"` | 2, 3, 19 | `react` | — | — | `hitl`, `rollback`, `guardrails` | `autonomy_mode=supervised` |
+| **Critical / irreversible** | `"Drop all test records from the production database"` | 1, 3, 4, 9, 19 | `react`, `chain_of_thought`, `reflection`, `self_refine` | `agentic_rag` | — | `hitl`, `rollback`, `guardrails`, `consensus_verification` | `autonomy_mode=supervised`, `persistence=False` |
+| **Critical expert** | `"Migrate our production payment database schema and verify data integrity"` | 1, 2, 3, 4, 6, 9, 14, 19 | `react`, `chain_of_thought`, `reflection`, `self_refine`, `peer_review` | `agentic_rag` | `goal_tree` | `hitl`, `rollback`, `guardrails`, `consensus_verification` | `autonomy_mode=supervised`, `max_iter=50` |
+| **Analytical + high-risk** | `"Audit our billing data and flag any anomalies for correction"` | 2, 4, 9, 12, 15, 17, 18, 19 | `react`, `chain_of_thought`, `reflection`, `self_refine`, `self_consistency` | `agentic_rag`, `fusion_rag`, `raptor`, `corrective_rag` | — | `hitl`, `rollback`, `guardrails` | `autonomy_mode=supervised` |
+
+> **How to read this table:** Rules are additive — every matching rule adds to the final pattern set. The "Rules fired" column lists all rules (by number) that match the given goal. Patterns from all matched rules are merged before `PatternConfig` is produced.
+
 ---
 
 ## Stage 3: PatternConfig Output
