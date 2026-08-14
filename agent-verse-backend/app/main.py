@@ -2111,6 +2111,14 @@ def create_app(
     except Exception as _e:
         logger.warning("memory_v2_router_failed", error=str(_e))
 
+    # Phase 6 OCR: document text extraction
+    try:
+        from app.api.ocr import router as ocr_router
+        app.include_router(ocr_router)
+        logger.info("ocr_router_registered")
+    except Exception as _e:
+        logger.warning("ocr_router_failed", error=str(_e))
+
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 
     return app
