@@ -47,8 +47,9 @@
 | Other Core Concepts | [other-core-platform-concepts/](other-core-platform-concepts/) | 6 | MCP, providers, reliability, Celery/Postgres/Redis, SDKs |
 | RPA Automation | [rpa-automation/](rpa-automation/) | 6 | Playwright sessions, 13 RPA tools, credential injection, artifact storage, security |
 | Token & Cost Optimization | [token-optimization/](token-optimization/) | 6 | Token budgeting, model selection, caching, latency optimizer, A/B testing |
+| OCR Engine | [ocr/](ocr/) | 6 | Tesseract pipeline, 13 doc types, Aadhaar masking, Verhoeff/GSTIN validation, global LLM extraction |
 
-**Total: 20 categories · 133 files · ~50,400 lines of documentation**
+**Total: 21 categories · 140 files · ~53,200 lines of documentation**
 
 ---
 
@@ -99,6 +100,11 @@
 | [Observability](observability.md) | Structured logging, metrics, OTEL tracing, RAG/pattern traces, alert router, SLO tracker, SSE event flow |
 | [Reliability & Infrastructure](reliability-and-infrastructure.md) | Circuit breakers, bulkheads, dedup, distributed locks, rollback engine, DB schema, Redis patterns |
 | [Multimodal](multimodal.md) | Text/PDF/image/audio/video/email processing, RPA browser automation (Playwright), visual perception |
+
+### Document Intelligence
+| Page | What it covers |
+|---|---|
+| [OCR Engine](ocr-engine.md) | Tesseract + LLM vision pipeline, 13 document types, Aadhaar masking (Verhoeff), GSTIN validation, global any-doc LLM extraction |
 
 ### Integration & Deployment
 | Page | What it covers |
