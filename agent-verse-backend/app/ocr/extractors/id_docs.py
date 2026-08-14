@@ -37,6 +37,10 @@ class IdDocExtractor:
             return self._extract_passport(raw_text)
         if self._doc_type == DocumentType.DRIVING_LICENSE:
             return self._extract_dl(raw_text)
+        if self._doc_type == DocumentType.VOTER_ID:
+            return self._extract_voter_id(raw_text)
+        if self._doc_type == DocumentType.BANK_CHEQUE:
+            return self._extract_cheque(raw_text)
         return {}
 
     def _extract_pan(self, text: str) -> dict[str, ExtractedField]:
@@ -101,4 +105,45 @@ class IdDocExtractor:
         val, conf = _label_value("Valid Till", text)
         if val:
             fields["valid_to"] = ExtractedField(name="valid_to", value=val, confidence=conf)
+        return fields
+
+    def _extract_voter_id(self, text: str) -> dict[str, ExtractedField]:
+        fields: dict[str, ExtractedField] = {}
+        # EPIC number format: letters + digits, often "ABC1234567"
+        val, conf = _first_match(r"EPIC\s*(?:No\.?|:)?\s*([A-Z]{3}\d{7})", text)
+        if not val:
+            val, conf = _first_match(r"([A-Z]{3}\d{7})", text)
+        if val:
+            fields["epic_number"] = ExtractedField(name="epic_number", value=val, confidence=conf)
+        val, conf = _label_value("Name", text)
+        if val:
+            fields["name"] = ExtractedField(name="name", value=val, confidence=conf)
+        val, conf = _first_match(r"(\d{2}/\d{2}/\d{4})", text)
+        if val:
+            fields["date_of_birth"] = ExtractedField(
+                name="date_of_birth", value=val, confidence=conf
+            )
+        return fields
+
+    def _extract_cheque(self, text: str) -> dict[str, ExtractedField]:
+        fields: dict[str, ExtractedField] = {}
+        # Cheque number: 6-digit
+        val, conf = _first_match(r"Cheque\s*(?:No\.?|:)?\s*(\d{6,})", text)
+        if not val:
+            val, conf = _first_match(r"\b(\d{6})\b", text)
+        if val:
+            fields["cheque_number"] = ExtractedField(
+                name="cheque_number", value=val, confidence=conf
+            )
+        # MICR code: 9-digit at bottom of cheque
+        val, conf = _first_match(r"(\d{9})", text)
+        if val:
+            fields["micr_code"] = ExtractedField(name="micr_code", value=val, confidence=conf)
+        # Amount
+        val, conf = _first_match(r"(?:Rs\.?|INR|₹)\s*([\d,]+\.?\d*)", text)
+        if val:
+            fields["amount"] = ExtractedField(name="amount", value=val, confidence=conf)
+        val, conf = _label_value("Pay", text)
+        if val:
+            fields["payee"] = ExtractedField(name="payee", value=val, confidence=conf)
         return fields

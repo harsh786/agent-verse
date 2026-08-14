@@ -48,6 +48,44 @@ _KEYWORDS: dict[DocumentType, list[str]] = {
         "cash memo",
         "payment received",
     ],
+    DocumentType.VOTER_ID: [
+        "election commission",
+        "voter id",
+        "epic no",
+        "electors photo",
+    ],
+    DocumentType.GSTIN_CERTIFICATE: [
+        "goods and services tax",
+        "gstin",
+        "certificate of registration",
+        "central tax",
+        "state tax",
+    ],
+    DocumentType.BANK_CHEQUE: [
+        "pay",
+        "a/c payee",
+        "cheque no",
+        "micr",
+        "drawee bank",
+    ],
+    DocumentType.SALARY_SLIP: [
+        "salary slip",
+        "payslip",
+        "pay stub",
+        "gross salary",
+        "net pay",
+        "basic salary",
+        "hra",
+        "provident fund",
+    ],
+    DocumentType.ADDRESS_PROOF: [
+        "electricity bill",
+        "water bill",
+        "utility bill",
+        "rent agreement",
+        "property tax",
+        "municipal corporation",
+    ],
 }
 
 _REGEX_BOOST: dict[DocumentType, list[str]] = {

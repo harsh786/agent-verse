@@ -12,12 +12,17 @@ _ID_TYPES = {
     DocumentType.AADHAAR,
     DocumentType.PASSPORT,
     DocumentType.DRIVING_LICENSE,
+    DocumentType.VOTER_ID,
+    DocumentType.BANK_CHEQUE,
 }
 
 _FINANCIAL_TYPES = {
     DocumentType.INVOICE,
     DocumentType.BANK_STATEMENT,
     DocumentType.RECEIPT,
+    DocumentType.GSTIN_CERTIFICATE,
+    DocumentType.SALARY_SLIP,
+    DocumentType.ADDRESS_PROOF,
 }
 
 
