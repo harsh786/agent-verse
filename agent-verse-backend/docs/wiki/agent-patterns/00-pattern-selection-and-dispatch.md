@@ -673,6 +673,142 @@ The frontend uses `patterns_active` to render the pattern chips in the goal deta
 
 ---
 
+## Stage 6: From `reasoning_patterns` List to Executing Pattern Classes
+
+This is the stage most documentation omits. Once `PatternConfig.reasoning_patterns = ["react", "chain_of_thought", "reflection"]` has been assembled, the system must translate those string names into concrete Python method calls inside a running LangGraph graph.
+
+### Step 1 — String names → Boolean flags (`GraphFactory`)
+
+`app/orchestration/graph_factory.py` extracts every `strategy_id` string from the assembled runtime profile (`primary_strategy + auxiliary_strategies`) and maps each known ID to a boolean flag passed directly to `AgentGraph.__init__()`:
+
+```python
+selected_ids: set[str] = {profile.primary_strategy} | set(profile.auxiliary_strategies)
+
+flags = {
+    "enable_cot":              "chain_of_thought" in selected_ids,
+    "enable_reflection":       "reflection"       in selected_ids,
+    "enable_self_refine":      "self_refine"      in selected_ids,
+    "enable_self_consistency": "self_consistency" in selected_ids,
+    "enable_tree_of_thoughts": "tree_of_thoughts" in selected_ids,
+    "enable_peer_review":      "peer_review"      in selected_ids,
+    "enable_supervisor":       "supervisor"       in selected_ids,
+    "enable_debate":           "debate"           in selected_ids,
+}
+# AgentGraph stores them: self._enable_cot = enable_cot or "chain_of_thought" in selected_strategy_ids
+```
+
+**`"react"` is always present** — it is the default base pattern and drives the `_execute_step()` Thought → Act → Observe loop inside the always-present `execute` node. No flag is needed for it.
+
+### Step 2 — Boolean flags → LangGraph nodes (`AgentGraph._build()`)
+
+`AgentGraph._build()` at `app/agent/graph.py` registers nodes **conditionally** on the flags. The complete conditional node registration map is:
+
+| Flag | LangGraph node added | Method invoked |
+|---|---|---|
+| Always | `execute` | `_node_execute` → `_execute_step()` |
+| `_enable_cot = True` | `think` | `_node_think()` |
+| `_enable_tree_of_thoughts = True` | `tree_of_thoughts` | `_node_tree_of_thoughts()` |
+| `_enable_reflection = True` | `reflect` | `_node_reflect()` |
+| `_enable_self_refine = True` | `refine` | `_node_refine()` |
+| `_enable_self_consistency = True` | `self_consistency` | `_node_self_consistency()` |
+| `_enable_peer_review = True` | `peer_review` | `_node_peer_review()` |
+| `_enable_supervisor = True` | `supervisor` | `_node_supervisor_check()` |
+| `_enable_debate = True` | `debate` | `_node_debate()` |
+
+Nodes that are not registered simply do not exist in the compiled graph — their edges are never wired.
+
+### Step 3 — Which Python `AgentPattern` class actually runs
+
+Each node method either calls an `AgentPattern` subclass from `app/agent/patterns/` via `execute_with_evidence()`, or executes inline LLM logic. The precise mapping:
+
+| `reasoning_patterns` entry | LangGraph node | Execution mechanism | `AgentPattern` class |
+|---|---|---|---|
+| `"react"` | `execute` | `_execute_step()` — inline Thought/Act/Observe loop | None — built directly into `AgentGraph` |
+| `"chain_of_thought"` | `think` | Inline LLM call with `CHAIN_OF_THOUGHT_SYSTEM` prompt | None — no external class; runs directly in `_node_think()` |
+| `"reflection"` | `reflect` | Inline LLM call; diagnosis populates `verification_feedback` | None — runs directly in `_node_reflect()` |
+| `"self_refine"` | `refine` | Inline LLM call; stops when response starts with `NO_CHANGES_NEEDED` | None — runs directly in `_node_refine()` |
+| `"self_consistency"` | `self_consistency` | `SelfConsistencyPattern(n_samples=3).execute_with_evidence()` | `app/agent/patterns/self_consistency.py` → `SelfConsistencyPattern` |
+| `"tree_of_thoughts"` | `tree_of_thoughts` | `TreeOfThoughtsPattern(n_thoughts=3, max_depth=2).execute_with_evidence()` | `app/agent/patterns/tree_of_thoughts.py` → `TreeOfThoughtsPattern` |
+| `"peer_review"` | `peer_review` | `PeerReviewPattern(quality_threshold=0.7).execute_with_evidence()` | `app/agent/patterns/peer_review.py` → `PeerReviewPattern` |
+
+> **Note:** `chain_of_thought`, `reflection`, and `self_refine` do **not** instantiate a separate `AgentPattern` class. They are implemented inline within `AgentGraph` node methods using direct LLM calls and structured prompts. Only `self_consistency`, `tree_of_thoughts`, and `peer_review` delegate to a standalone `AgentPattern` subclass from the `app/agent/patterns/` package.
+
+### Step 4 — Execution order (the compiled graph edges)
+
+The nodes fire in this order, determined by the edges wired in `_build()`:
+
+```
+START
+  └─► initialize
+       └─► rag_retrieval
+            ├─► [think]             # if enable_cot (CoT fires BEFORE planning)
+            │    └─► [tree_of_thoughts]  # if BOTH flags; or directly if only ToT
+            └─► plan                # Planner LLM: goal + CoT context → step list
+                 └─► execute        # ReAct loop: Thought → tool call → Observe
+                      ├─► [refine]          # if enable_self_refine
+                      └─► [self_consistency] # if enable_self_consistency
+                           └─► verify       # Verifier LLM: did we reach the goal?
+                                └─► [peer_review]  # if enable_peer_review
+                                     └─► _route()
+                                          ├─► complete  ──► END
+                                          ├─► replan    ──► plan  (loop)
+                                          ├─► reflect   ──► reflect ──► plan  (loop, if enable_reflection)
+                                          ├─► rag_remediate ──► plan
+                                          └─► max_iter  ──► END
+```
+
+The `reflect` node is **not just a node** — it is also a **routing decision**. When `_enable_reflection = True` and verification fails, `_route()` returns `"reflect"` (instead of `"replan"`), sending the graph to `_node_reflect()` which diagnoses the failure, increments `reflection_attempts`, and pushes the diagnosis back into `plan` for the next cycle.
+
+### Step 5 — Evidence trail
+
+Each node, whether it calls an `AgentPattern` or runs inline, appends an entry to `agent_state.context["reasoning_evidence"]`. This list is the auditable record of exactly which patterns fired and what they found:
+
+```json
+[
+  { "strategy_id": "chain_of_thought", "status": "completed", "call_count": 1, "safe_rationale_summary": "deliberate reasoning phase completed" },
+  { "strategy_id": "self_refine",      "status": "completed", "call_count": 1, "round": 1, "changed": true },
+  { "strategy_id": "reflection",       "status": "completed", "call_count": 1, "reflection_round": 1 }
+]
+```
+
+This evidence is surfaced to the client via SSE events and stored in `AgentState.context` for the LangGraph checkpointer.
+
+### Concrete example: EXPERT analytical goal
+
+Given goal: *"Analyze our Q3 sales data, identify anomalies, and recommend corrective actions"*
+
+1. `GoalClassifier` → `Complexity.EXPERT`, `Domain.ANALYTICAL`, `RiskLevel.MEDIUM`
+2. `PatternAssembler` fires rules: EXPERT → CoT + reflection + self_refine; ANALYTICAL+EXPERT → self_consistency
+3. `PatternConfig.reasoning_patterns` = `["react", "chain_of_thought", "reflection", "self_refine", "self_consistency"]`
+4. `GraphFactory` sets: `enable_cot=True`, `enable_reflection=True`, `enable_self_refine=True`, `enable_self_consistency=True`
+5. `AgentGraph._build()` registers nodes: `think`, `reflect`, `refine`, `self_consistency`
+6. Execution order:
+   ```
+   initialize → rag_retrieval → think → plan → execute → refine → self_consistency → verify → _route()
+   ```
+   On failure: `_route()` → `reflect` → `plan` (re-plans with diagnosis)
+7. `SelfConsistencyPattern(n_samples=3)` votes on the execute output; `_node_refine()` iterates until `NO_CHANGES_NEEDED`
+
+### Key source locations
+
+| File | Lines | What it does |
+|---|---|---|
+| `app/orchestration/graph_factory.py` | `create()` method | Extracts `strategy_ids`, sets boolean flags, constructs `AgentGraph` |
+| `app/agent/graph.py` | ~296–306 | `self._enable_cot = enable_cot or "chain_of_thought" in selected_strategy_ids` |
+| `app/agent/graph.py` | ~362–441 | `_build()` — conditional node + edge registration |
+| `app/agent/graph.py` | ~990–1026 | `_node_think()` — Chain-of-Thought inline |
+| `app/agent/graph.py` | ~1027–1090 | `_node_reflect()` — Reflection inline |
+| `app/agent/graph.py` | ~916–960 | `_node_refine()` — Self-Refine inline |
+| `app/agent/graph.py` | ~1104–1135 | `_node_self_consistency()` → `SelfConsistencyPattern` |
+| `app/agent/graph.py` | ~1137–1163 | `_node_tree_of_thoughts()` → `TreeOfThoughtsPattern` |
+| `app/agent/graph.py` | ~1164–1220 | `_node_peer_review()` → `PeerReviewPattern` |
+| `app/agent/patterns/self_consistency.py` | `SelfConsistencyPattern.execute_with_evidence()` | Samples N responses, returns majority-vote answer |
+| `app/agent/patterns/tree_of_thoughts.py` | `TreeOfThoughtsPattern.execute_with_evidence()` | Deliberate search over solution space before planning |
+| `app/agent/patterns/peer_review.py` | `PeerReviewPattern.execute_with_evidence()` | Independent LLM reviewer scores output quality |
+| `app/agent/patterns/base.py` | `AgentPattern.execute_with_evidence()` | Abstract base; returns `PatternExecution(result, evidence)` |
+
+---
+
 ## Design Philosophy
 
 The selection pipeline embodies three non-negotiable principles:
