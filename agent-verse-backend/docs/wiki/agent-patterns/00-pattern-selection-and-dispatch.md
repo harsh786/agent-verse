@@ -97,6 +97,9 @@ POST /api/v1/goals
 ║  │  • WorkingMemory initialized → empty dict for this run         │   ║
 ║  │  • ProceduralMemory.recall() → learned step templates          │   ║
 ║  │  • VoyagerSkillStore.recall() → reusable sub-skills            │   ║
+║  │  • SelfOptimizerV2.get_arm_config(agent_id, goal_id)           │   ║
+║  │      injects A/B experiment arm into AgentState context        │   ║
+║  │      controls prompt variant + strategy for this goal run      │   ║
 ║  │  • OTel root span: "agentverse.goal.run" started               │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
@@ -175,6 +178,9 @@ POST /api/v1/goals
 ║  │       MISS: call LLM, then LLMResponseCache.set()              │   ║
 ║  │  • ProceduralMemory.recall() → step templates                  │   ║
 ║  │  • VoyagerSkillStore.recall() → reusable sub-skills            │   ║
+║  │  • PromptOptimizer.select_variant("planner")                   │   ║
+║  │      picks statistically best-performing prompt template        │   ║
+║  │      A/B: incumbent vs challenger based on eval score history   │   ║
 ║  │  • PromptBuilder.build_planner_context(bundle)                 │   ║
 ║  │  • LLM (Planner model): goal + RAG + lessons → step list       │   ║
 ║  │  • CircuitBreaker wraps LLM call (fail-fast on provider errors) │   ║
@@ -187,6 +193,8 @@ POST /api/v1/goals
 ║  │                                                                  │   ║
 ║  │  _model_router.model_for("execution") → executor model ID     │   ║
 ║  │  ContextPipeline executor role → 3000 tok budget               │   ║
+║  │  PromptOptimizer.select_variant("executor")                    │   ║
+║  │      picks best executor prompt (A/B variant by eval score)    │   ║
 ║  │  PromptBuilder.build_executor_context(bundle, step)            │   ║
 ║  │  OTel span: "agentverse.step.execute"                          │   ║
 ║  │                                                                  │   ║
@@ -264,6 +272,8 @@ POST /api/v1/goals
 ║  │       MISS: call LLM, then LLMResponseCache.set()              │   ║
 ║  │  • PromptBuilder.build_verifier_context(bundle)                │   ║
 ║  │  • LLM (Verifier model): did we satisfy the original goal?    │   ║
+║  │  • VerifierCalibrationStore.get_thresholds()                   │   ║
+║  │       calibrated confidence thresholds for this agent+domain   │   ║
 ║  │  • ProvenanceLedger.verify_citations() → check cited chunks    │   ║
 ║  │       exist in KnowledgeStore                                  │   ║
 ║  │  • CircuitBreaker wraps LLM call                               │   ║
@@ -308,6 +318,10 @@ POST /api/v1/goals
 ║  PHASE 4 — Post-execution & Agent Improvement  (async, < 50 ms)        ║
 ╠═════════════════════════════════════════════════════════════════════════╣
 ║  SUCCESS path:                                                          ║
+║  • SelfOptimizerV2.record_result(arm_id, eval_score)                   ║
+║       records A/B experiment outcome → statistical arm promotion       ║
+║  • PromptOptimizer.record_outcome(variant_id, avg_score)               ║
+║       updates variant win rate; promotes challenger if confidence>95%  ║
 ║  • LongTermMemoryStore.extract_from_goal() → distil lessons (pgvector)║
 ║  • EpisodicMemoryStore.record() → add episode to history               ║
 ║  • ProceduralMemoryStore.update() → update learned step templates      ║
@@ -373,7 +387,7 @@ flowchart TD
     subgraph LANGGRAPH ["LangGraph Execution — Phase 3"]
         direction TB
 
-        INIT[NODE: initialize\nGuardrailChecker.check_goal scan for violations\nGroundingChecker validate factual claims groundable\nDataClassification context activated for tenant\nExecutionMemory.recall past attempts at this goal\nLongTermMemoryStore.recall pgvector cosine semantic search\nWorkingMemory init empty dict for this run\nProceduralMemory.recall learned step templates\nVoyagerSkillStore.recall reusable sub-skills\nOTel root span: agentverse.goal.run started]
+        INIT[NODE: initialize\nGuardrailChecker.check_goal scan for violations\nGroundingChecker validate factual claims groundable\nDataClassification context activated for tenant\nExecutionMemory.recall past attempts at this goal\nLongTermMemoryStore.recall pgvector cosine semantic search\nWorkingMemory init empty dict for this run\nProceduralMemory.recall learned step templates\nVoyagerSkillStore.recall reusable sub-skills\nSelfOptimizerV2.get_arm_config agent_id goal_id\n  injects A/B experiment arm config into AgentState\n  controls prompt variant and strategy for this run\nOTel root span: agentverse.goal.run started]
 
         INIT --> EMBQ[EmbeddingOrchestrator embed query\nEmbeddingPolicySelector select model by cost class\nfree or standard or premium + modality check\nembed_with_fallback provider fallback chain\nreturns query_embedding float32 vector]
 
@@ -404,14 +418,14 @@ flowchart TD
         SCACHE_P -- HIT --> PLAN_HIT[Cached plan reused\nSSE: plan_created from cache]
         SCACHE_P -- MISS --> PLANNOD
 
-        PLANNOD[NODE: plan Planner LLM\n_model_router.model_for_goal planning goal Layer 2\nupdate_from_profile sync runtime model assignments\nPromptBuilder.build_planner_context bundle\nProceduralMemory.recall step templates\nVoyagerSkillStore.recall reusable sub-skills\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached plan skip LLM call\n  MISS: call LLM then cache result\nLLM Planner model: goal + RAG + lessons to step list\nCircuitBreaker wraps LLM call fail-fast on errors\nSSE: plan_created\nOTel span: agentverse.plan]
+        PLANNOD[NODE: plan Planner LLM\n_model_router.model_for_goal planning goal Layer 2\nupdate_from_profile sync runtime model assignments\nPromptBuilder.build_planner_context bundle\nProceduralMemory.recall step templates\nVoyagerSkillStore.recall reusable sub-skills\nPromptOptimizer.select_variant planner role A/B best template\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached plan skip LLM call\n  MISS: call LLM then cache result\nLLM Planner model: goal + RAG + lessons to step list\nCircuitBreaker wraps LLM call fail-fast on errors\nSSE: plan_created\nOTel span: agentverse.plan]
 
         PLAN_HIT --> LLM2
         PLANNOD --> LLM2
 
         subgraph EXEC_LOOP ["NODE: execute — Executor LLM — ReAct loop per step"]
             direction TB
-            LLM2[Executor LLM: Thought + tool call intent\n_model_router.model_for execution Layer 2\nContextPipeline executor 3000 tok budget\nPromptBuilder.build_executor_context bundle step\nOTel span: agentverse.step.execute] --> G1SANIT
+            LLM2[Executor LLM: Thought + tool call intent\n_model_router.model_for execution Layer 2\nPromptOptimizer.select_variant executor role A/B best template\nContextPipeline executor 3000 tok budget\nPromptBuilder.build_executor_context bundle step\nOTel span: agentverse.step.execute] --> G1SANIT
             G1SANIT[1 OutputSanitizer strip PII from inputs\nDataClassification handling: redact no_store no_log] --> G2GUARD
             G2GUARD[2 GuardrailChecker policy violation check\nGuardrailsV2 streaming + declarative YAML rules\npluggable evaluators per tenant] --> G3PERM
             G3PERM[3 PermissionMatrix tool allowed for tenant+agent?] --> G4POL
@@ -458,7 +472,7 @@ flowchart TD
 
         CTXPIPE_V --> VERIFYNOD
 
-        VERIFYNOD[NODE: verify Verifier LLM\n_model_router.model_for verification Layer 2\nPromptBuilder.build_verifier_context bundle\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached verification skip LLM call\n  MISS: call LLM then cache result\nLLM Verifier model: did we satisfy original goal?\nProvenanceLedger.verify_citations check cited chunks exist\nCircuitBreaker wraps LLM call\nAuditLog.record verification result\nSSE: verification_complete\nOTel span: agentverse.verify]
+        VERIFYNOD[NODE: verify Verifier LLM\n_model_router.model_for verification Layer 2\nPromptBuilder.build_verifier_context bundle\nVerifierCalibrationStore.get_thresholds calibrated confidence\nLLMResponseCache.get system+user+model exact hash\n  HIT: return cached verification skip LLM call\n  MISS: call LLM then cache result\nLLM Verifier model: did we satisfy original goal?\nProvenanceLedger.verify_citations check cited chunks exist\nCircuitBreaker wraps LLM call\nAuditLog.record verification result\nSSE: verification_complete\nOTel span: agentverse.verify]
 
         VERIFYNOD --> PROVLED[ProvenanceLedger.finalize\nmap each claim to source chunk\nmap chunk to IngestionProvenance\nfull lineage: answer to raw document\nProvenanceVerifier.verify citations valid\nProvenanceExport citation graph built]
 
@@ -483,7 +497,7 @@ flowchart TD
 
     subgraph POST_EXEC ["Phase 4 — Post-Execution and Agent Improvement"]
         direction TB
-        SUCPATH[SUCCESS PATH\nLongTermMemoryStore.extract_from_goal distill lessons\nEpisodicMemoryStore.record add to episode history\nProceduralMemoryStore.update learned step templates\nVoyagerSkillStore.update reusable sub-skills\nSelfOptimizer.analyze_success prompt+strategy tuning\nSemanticCache.store plan+result for future reuse\nEvalRunner.final_summary multi-dimension goal scores]
+        SUCPATH[SUCCESS PATH\nSelfOptimizerV2.record_result arm_id eval_score A/B outcome\nPromptOptimizer.record_outcome variant_id score updates win rate\nLongTermMemoryStore.extract_from_goal distill lessons\nEpisodicMemoryStore.record add to episode history\nProceduralMemoryStore.update learned step templates\nVoyagerSkillStore.update reusable sub-skills\nSelfOptimizer.analyze_success prompt+strategy tuning\nSemanticCache.store plan+result for future reuse\nEvalRunner.final_summary multi-dimension goal scores]
         FAILPATH[FAILURE PATH\nRollbackEngine.rollback execute compensating actions\nReflexionService.learn store failure lesson + Classification\nLongTermMemoryStore.store failure pattern\nSelfOptimizer.analyze_failure improve next run]
         ALWAYS[ALWAYS path\nAuditLog final entry all spans consolidated\nCostController.record_total per-goal + per-model cost\nGoalRecord status to COMPLETED or FAILED\nConcurrent counter decremented\nDedup entry cleared from Redis\nSSE: goal_completed or goal_failed emitted\nOTel root span agentverse.goal.run closed\nSLOTracker.record SLO compliance check]
     end
@@ -2027,15 +2041,30 @@ CitationManager.register_chunks(chunks) → { "[1]": chunk_1_meta, "[2]": chunk_
 | ExecutionMemory record | `app/memory/execution.py` | After each step | 3 |
 | ReflexionService recall | `app/memory/reflexion.py` | `NODE: reflect` | 3 |
 | ProvenanceLedger | `app/provenance/ledger.py` | `NODE: verify` | 3 |
+| VerifierCalibrationStore | `app/intelligence/verifier_calibration.py` | `NODE: verify` — calibrated confidence thresholds | 3 |
+| PromptOptimizer variant selection | `app/intelligence/prompt_optimizer.py` | `NODE: plan` + `NODE: execute` — A/B best variant | 3 |
+| SelfOptimizerV2 arm inject | `app/intelligence/self_optimizer_v2.py` | `NODE: initialize` — A/B experiment arm config | 3 |
 | OTel spans | `app/observability/tracing.py` | All major nodes | 3 |
 | DataClassification check | `app/data_classification/` | Tool I/O + memory write | 3 |
 | AuditLog | `app/governance/audit.py` | All significant events | 3-4 |
 | LongTermMemory extract | `app/memory/long_term.py` | Post-execution | 4 |
 | ReflexionService.learn() | `app/memory/reflexion.py` | Post-execution (if failed) | 4 |
-| SelfOptimizer | `app/intelligence/self_optimizer.py` | Post-execution | 4 |
+| SelfOptimizer (v1) | `app/intelligence/self_optimization.py` | Post-execution | 4 |
+| SelfOptimizerV2.record_result() | `app/intelligence/self_optimizer_v2.py` | Post-execution — A/B outcome recording | 4 |
+| PromptOptimizer.record_outcome() | `app/intelligence/prompt_optimizer.py` | Post-execution — variant win-rate update | 4 |
 | EpisodicMemoryStore.record() | `app/memory/episodic.py` | Post-execution | 4 |
 | CostRecord write | `app/governance/cost.py` | Post-execution | 4 |
 | SSE stream close | `app/services/goal_service.py` | Post-execution | 4 |
+
+*(Background agent improvement services — wired at app startup, run independently of individual goals)*
+
+| Subsystem | Module | Purpose |
+|---|---|---|
+| `LearningExperimentService` | `app/intelligence/learning_experiments.py` | Manages A/B learning experiments; tracks `ExperimentOutcome` per goal run |
+| `ImprovementActionExecutor` | `app/intelligence/improvement_action_executor.py` | Executes improvement actions emitted by `SelfOptimizerV2` (e.g. swap prompt, adjust temperature) |
+| `EvalSuiteRunner` | `app/intelligence/eval_suite.py` | Runs golden task `GoldenTask` eval suites; uses `LLMJudge` to score outputs against ground truth |
+| `ExperimentRegistry` | `app/intelligence/experiment_registry.py` | Registers and tracks A/B experiments; resolves arm assignment per tenant+agent |
+| `CostOptimizer` | `app/intelligence/cost_optimizer.py` | Analyzes `ModelStats`; emits `DowngradeSuggestion` when cheaper models perform equally well |
 
 *(Ingestion pipeline runs outside the agent loop — triggered separately)*
 
