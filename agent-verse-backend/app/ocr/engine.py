@@ -54,8 +54,15 @@ class OcrEngine:
         engine_used = raw_texts[0][2] if raw_texts else "tesseract"
 
         doc_type = self._classifier.classify(raw_text)
-        extractor = get_extractor(doc_type)
-        fields = extractor.extract(raw_text)
+        extractor = get_extractor(doc_type, provider=provider)
+
+        # For LLM-structured extractor, call async method
+        from app.ocr.extractors.general import LlmStructuredExtractor
+
+        if isinstance(extractor, LlmStructuredExtractor):
+            fields = await extractor.extract_async(raw_text)
+        else:
+            fields = extractor.extract(raw_text)
 
         return OcrResult(
             raw_text=raw_text,
