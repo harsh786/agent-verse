@@ -12,7 +12,11 @@ outline: deep
 
 ## End-to-End Execution Flow: From HTTP Request to Final Answer
 
-This is the full lifecycle of a goal in AgentVerse — the sequence every goal follows from the moment the client POSTs it to when the SSE stream closes. Understanding this flow answers questions like: *"When does RAG happen? When is the pattern selected? When do LLMs fire?"*
+This is the full lifecycle of a goal in AgentVerse — the sequence every goal follows from the moment the client POSTs it to when the SSE stream closes. Understanding this flow answers questions like: *"When does RAG happen? When is the pattern selected? When do LLMs fire? Which model handles planning vs execution vs verification?"*
+
+> **Multi-model routing** is active at **two independent layers**:
+> - **Layer 1 — AI Router** (`app/ai_router/router.py`): fires at Phase 1 step ④, selects the best provider/model for `TaskType.PLANNING` based on tenant policy, cost, latency, and capability constraints.
+> - **Layer 2 — ModelRouter** (`_model_router` inside `AgentGraph`): fires inside Phase 3 at each LLM node, routing `"planning"` / `"execution"` / `"verification"` / `"think"` / `"reflection"` roles to potentially **different** models (e.g. GPT-5.2 for planning, GPT-4o-mini for verification, Claude for creativity).
 
 ```
 POST /api/v1/goals
@@ -26,7 +30,15 @@ POST /api/v1/goals
 ║  ① Rate limiter          → check daily + concurrent goal limits (Redis)║
 ║  ② Goal deduplication    → identical goal already running? return it   ║
 ║  ③ Goal record created   → status = PENDING                           ║
-║  ④ AI Router             → select model_id for TaskType.PLANNING       ║
+║  ④ AI Router  ◄─ MULTI-MODEL ROUTING LAYER 1                          ║
+║     ai_router.select_model(TaskType.PLANNING, tenant_id)               ║
+║     Routing logic (in priority order):                                  ║
+║       1. model_override param → use exactly that model                 ║
+║       2. Tenant routing policy (per-tenant preferred provider/model)   ║
+║       3. Filter available models by capability + health (circuit open?)║
+║       4. Apply routing_mode: HIGHEST_QUALITY | CHEAPEST | FASTEST      ║
+║     → selects ModelEndpoint { provider, model_id, quality_score … }   ║
+║     → model_id logged in execution_context["ai_router_planner"]        ║
 ║                                                                         ║
 ║  ⑤ ★ PATTERN SELECTION (RuntimeProfileBuilder.build_with_trace())     ║
 ║     │                                                                   ║
@@ -42,6 +54,7 @@ POST /api/v1/goals
 ║     │                                                                   ║
 ║     └─ DynamicGraphAssembler.assemble()       <0.5 ms                 ║
 ║          PatternConfig → GoalRuntimeProfile                           ║
+║          model_planner / model_executor / model_verifier set here     ║
 ║          SSE event "pattern_assembled" emitted to client              ║
 ║                                                                         ║
 ║  ⑥ Celery task enqueued  → per-plan queue (free/starter/enterprise)   ║
@@ -87,7 +100,9 @@ POST /api/v1/goals
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: think  (only if chain_of_thought pattern active)         │   ║
 ║  │  • SemanticCache checked → skip if near-duplicate LLM call     │   ║
-║  │  • LLM #1 (Planner) called with CHAIN_OF_THOUGHT_SYSTEM prompt │   ║
+║  │  • _model_router.model_for("think")  ◄ LAYER 2 ROUTING        │   ║
+║  │    → resolves which model ID handles CoT reasoning             │   ║
+║  │  • LLM (CoT model) called with CHAIN_OF_THOUGHT_SYSTEM prompt │   ║
 ║  │  • CoT reasoning stored in reasoning_evidence                  │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
@@ -99,21 +114,27 @@ POST /api/v1/goals
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
-║  │  NODE: plan  ← PLANNER LLM                                      │   ║
+║  │  NODE: plan  ← PLANNER LLM   ◄ LAYER 2 ROUTING               │   ║
+║  │  • _model_router.model_for_goal("planning", goal=…)           │   ║
+║  │    → resolves planning model (default: GPT-5.2 or equivalent) │   ║
+║  │    → overrides AI Router selection if runtime profile differs  │   ║
 ║  │  • ContextPipeline: re-rank + trim retrieved chunks            │   ║
 ║  │    (separate windows for planner / executor / verifier)        │   ║
 ║  │  • SemanticCache checked → skip LLM if cached plan exists      │   ║
-║  │  • LLM #1 (Planner): goal + RAG context + lessons → step list  │   ║
+║  │  • LLM (Planner model): goal + RAG context + lessons → steps  │   ║
 ║  │  • CircuitBreaker wraps LLM call (fail-fast on provider errors) │   ║
 ║  │  • SSE "plan_created" event emitted                            │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
-║  │  NODE: execute  ← EXECUTOR LLM  (ReAct loop, once per step)    │   ║
+║  │  NODE: execute  ← EXECUTOR LLM   ◄ LAYER 2 ROUTING           │   ║
+║  │                                                                  │   ║
+║  │  _model_router.model_for("execution")  → executor model ID    │   ║
+║  │    (may differ from planner — e.g. faster/cheaper model)       │   ║
 ║  │                                                                  │   ║
 ║  │  For each step in the plan:                                     │   ║
 ║  │  ─────────────────────────────────────────────────────────      │   ║
-║  │  [A] LLM #2 (Executor) → Thought + tool call intent           │   ║
+║  │  [A] LLM (Executor model) → Thought + tool call intent        │   ║
 ║  │                                                                  │   ║
 ║  │  [B] TOOL GOVERNANCE GATE (every tool call):                   │   ║
 ║  │      1. OutputSanitizer   → strip PII/secrets from inputs      │   ║
@@ -154,9 +175,11 @@ POST /api/v1/goals
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
-║  │  NODE: verify  ← VERIFIER LLM                                   │   ║
+║  │  NODE: verify  ← VERIFIER LLM   ◄ LAYER 2 ROUTING            │   ║
+║  │  • _model_router.model_for("verification") → verifier model   │   ║
+║  │    (often a cheaper model than planner for cost efficiency)    │   ║
 ║  │  • ContextPipeline verifier context injected                   │   ║
-║  │  • LLM #3 (Verifier): did we satisfy the original goal?        │   ║
+║  │  • LLM (Verifier model): did we satisfy the original goal?    │   ║
 ║  │  • CircuitBreaker wraps LLM call                               │   ║
 ║  │  • → "complete" | "replan" | "reflect" | "rag_remediate"       │   ║
 ║  │  • AuditLog.record() → verification result logged              │   ║
@@ -174,8 +197,9 @@ POST /api/v1/goals
 ║  │  ├── complete        → END (success path)                      │   ║
 ║  │  ├── replan          → [plan] (new iteration, max_iterations)  │   ║
 ║  │  ├── reflect         → [reflect] → diagnosis → [plan]         │   ║
-║  │  │     NODE: reflect: LLM diagnoses failure, updates          │   ║
-║  │  │     verification_feedback, increments reflection_attempts   │   ║
+║  │  │     NODE: reflect: _model_router.model_for("reflection")   │   ║
+║  │  │     LLM diagnoses failure, updates verification_feedback,  │   ║
+║  │  │     increments reflection_attempts                          │   ║
 ║  │  ├── rag_remediate   → [rag_retrieval] → [plan]               │   ║
 ║  │  └── max_iterations  → END (timeout, status=FAILED)           │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
@@ -349,6 +373,107 @@ flowchart TD
     style HITL fill:#4a1a1a,stroke:#cc4444,color:#ffe0e0
 ```
 
+---
+
+### Multi-Model Routing
+
+AgentVerse routes **different LLM models to different roles** — a single goal execution may simultaneously use GPT-5.2 for planning, GPT-4o-mini for verification, and Claude for creative tasks. This happens at **two independent layers**.
+
+#### Layer 1 — AI Router  (`app/ai_router/router.py`)
+
+Fires once at **Phase 1 step ④** (goal submission, synchronous) to select the best provider+model for `TaskType.PLANNING`.
+
+```
+ai_router.select_model(
+    task_type  = TaskType.PLANNING,
+    tenant_id  = tenant_ctx.tenant_id,
+    # optional constraints:
+    require_vision     = False,
+    require_tools      = False,
+    require_structured = False,
+    max_cost_per_1k    = <from tenant plan>,
+    model_override     = <from request body, if set>,
+)
+```
+
+**Selection priority (in order):**
+
+| Priority | Logic |
+|---|---|
+| 1 | `model_override` in request body → use exactly that model, skip all other logic |
+| 2 | Tenant routing policy in registry → preferred provider + model for this tenant |
+| 3 | Filter all registered models: `is_available=True`, `circuit_open=False` |
+| 4 | Apply capability filters (vision, tool-use, structured-output, max cost/1k) |
+| 5 | Apply `routing_mode`: `HIGHEST_QUALITY` (default) / `CHEAPEST` / `FASTEST` |
+
+**Supported `TaskType` values:**
+
+| Value | Used when |
+|---|---|
+| `PLANNING` | Goal submission — selects the planner model |
+| `EXECUTION` | (future) Can select a specific executor model via AI Router |
+| `VERIFICATION` | (future) Can select a specific verifier model via AI Router |
+
+The selected `ModelEndpoint` is stored in `execution_context["ai_router_planner"]` and passed to `GraphFactory.create()` which wires it into `AgentGraph`.
+
+---
+
+#### Layer 2 — ModelRouter  (`_model_router` inside `AgentGraph`)
+
+Fires **per LangGraph node** during Phase 3 execution. `_model_router` is an instance of `ModelRouter` injected at `AgentGraph` construction time via `GraphFactory`. It knows the `GoalRuntimeProfile` (including per-role model assignments set during pattern selection) and resolves the best model ID for each role on every call.
+
+**Role → model resolution:**
+
+```
+_model_router.model_for("think")        →  CoT / reasoning-heavy model
+_model_router.model_for_goal("planning", goal=…)  →  planner model (goal-aware)
+_model_router.model_for("execution")    →  executor model (speed-optimised)
+_model_router.model_for("verification") →  verifier model (often cheaper)
+_model_router.model_for("reflection")   →  reflection/diagnosis model
+```
+
+**Where each call fires inside the graph:**
+
+| LangGraph node | `_model_router` call | Typical model role |
+|---|---|---|
+| `_node_think()` | `model_for("think")` | Chain-of-thought / strong reasoning model |
+| `_node_plan()` | `model_for_goal("planning", goal)` | Planner — highest quality, goal-aware routing |
+| `_node_execute()` | `model_for("execution")` | Executor — fast, tool-capable model |
+| `_node_verify()` | `model_for("verification")` | Verifier — cheaper model, binary pass/fail |
+| `_node_reflect()` | `model_for("reflection")` | Reflection — diagnostic reasoning |
+
+**`update_from_profile()` — runtime override at plan time:**  
+When a plan is created (`_node_plan()`), `_model_router.update_from_profile(runtime_profile)` is called to sync any profile-level model role assignments (e.g. if the plan itself determined that a different model is needed for the next execution steps).
+
+**Example: how a simple RAG goal uses 2 models, a complex CoT+critique goal uses 4:**
+
+```
+Simple goal:  "summarise these docs"
+  plan node     → model_for_goal("planning")   → GPT-4o (highest quality)
+  execute node  → model_for("execution")        → GPT-4o-mini (fast)
+  verify node   → model_for("verification")     → GPT-4o-mini (cheap pass/fail)
+
+Complex goal: "build a trading strategy and critique it"
+  think node    → model_for("think")            → o3 (deep reasoning)
+  plan node     → model_for_goal("planning")    → o3 (goal-aware, complexity=HARD)
+  execute node  → model_for("execution")        → GPT-4o (tool-capable)
+  verify node   → model_for("verification")     → GPT-4o-mini
+  reflect node  → model_for("reflection")       → GPT-4o (diagnosis if verify fails)
+```
+
+---
+
+**Summary — where to find each layer in code:**
+
+| Layer | File | Triggers at |
+|---|---|---|
+| AI Router (Layer 1) | `app/ai_router/router.py` | `goal_service.py` line ~2338 — `ai_router.select_model(TaskType.PLANNING, ...)` |
+| ModelRouter (Layer 2) | `app/agent/graph.py` `_model_router` | Per-node: `_node_think`, `_node_plan`, `_node_execute`, `_node_verify`, `_node_reflect` |
+| ModelRouter config | `app/agent/graph.py` `_node_plan()` | `_model_router.update_from_profile(runtime_profile)` at line ~1438 |
+| Role assignment source | `app/orchestration/graph_factory.py` | `model_role_assignments` in `GoalRuntimeProfile` |
+
+---
+
 
 
 
@@ -492,6 +617,28 @@ When a client submits a goal, AgentVerse does **not** run the same LangGraph eve
 5. **Compile** and execute the wired graph
 
 The entire selection pipeline completes in **< 2 ms** for Tier-1-only paths and **≤ 250 ms** when the LLM classifier fires. This means pattern selection adds negligible latency while dramatically improving output quality and safety.
+
+---
+
+## 4-Phase Execution Breakdown
+
+Every goal execution passes through exactly four phases. The phases map directly to the ASCII diagram in the E2E flow above.
+
+| Phase | Name | Runtime | Duration | Key work |
+|---|---|---|---|---|
+| **1** | HTTP + Pre-flight | Synchronous (HTTP request thread) | < 5 ms | Rate limiting, dedup, AI Router model selection, pattern selection, Celery enqueue, HTTP 202 response |
+| **2** | Graph Construction | Celery worker, before LangGraph start | 1–5 ms | `GraphFactory.create()` → `AgentGraph._build()` compiles LangGraph StateGraph with boolean feature flags from `GoalRuntimeProfile` |
+| **3** | LangGraph Execution | Celery worker, async | 200 ms – minutes | All LLM calls (planner, executor, verifier, CoT), all tool calls (MCP), RAG, HITL, verification, reflection loops |
+| **4** | Post-execution | Celery worker, after graph exits | < 50 ms | Memory write, audit log, cost record, agent improvement (LTM store, Reflexion, SelfOptimizer), SSE stream close |
+
+### What changes per phase for multi-model routing
+
+| Phase | Model routing activity |
+|---|---|
+| Phase 1 | **AI Router** selects `ModelEndpoint` for `TaskType.PLANNING`; stored in execution context |
+| Phase 2 | `GraphFactory` injects `model_router` (Layer 2) into `AgentGraph`; role assignments from `GoalRuntimeProfile.model_role_assignments` loaded |
+| Phase 3 | `_model_router.model_for(role)` called per LangGraph node — each role may resolve to a different LLM |
+| Phase 4 | No model calls; results + cost per model recorded to audit log |
 
 ---
 
