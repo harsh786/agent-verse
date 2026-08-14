@@ -79,6 +79,11 @@ multimodal = [
 colbert = [
     "ragatouille==0.0.9.post2",
 ]
+ocr = [
+    "pytesseract>=0.3.13",
+    "Pillow>=10.0.0",
+    "pdf2image>=1.17.0",
+]
 
 # Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"
 
