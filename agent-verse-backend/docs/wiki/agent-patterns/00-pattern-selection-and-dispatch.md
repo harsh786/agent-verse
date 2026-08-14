@@ -30,15 +30,16 @@ POST /api/v1/goals
 ║  ① Rate limiter          → check daily + concurrent goal limits (Redis)║
 ║  ② Goal deduplication    → identical goal already running? return it   ║
 ║  ③ Goal record created   → status = PENDING                           ║
+║     DataClassification context activated for tenant                    ║
+║                                                                         ║
 ║  ④ AI Router  ◄─ MULTI-MODEL ROUTING LAYER 1                          ║
 ║     ai_router.select_model(TaskType.PLANNING, tenant_id)               ║
-║     Routing logic (in priority order):                                  ║
+║     Priority (highest wins):                                            ║
 ║       1. model_override param → use exactly that model                 ║
 ║       2. Tenant routing policy (per-tenant preferred provider/model)   ║
-║       3. Filter available models by capability + health (circuit open?)║
-║       4. Apply routing_mode: HIGHEST_QUALITY | CHEAPEST | FASTEST      ║
+║       3. Filter: available=True, circuit_open=False, capabilities OK   ║
+║       4. routing_mode: HIGHEST_QUALITY | CHEAPEST | FASTEST            ║
 ║     → selects ModelEndpoint { provider, model_id, quality_score … }   ║
-║     → model_id logged in execution_context["ai_router_planner"]        ║
 ║                                                                         ║
 ║  ⑤ ★ PATTERN SELECTION (RuntimeProfileBuilder.build_with_trace())     ║
 ║     │                                                                   ║
@@ -54,8 +55,8 @@ POST /api/v1/goals
 ║     │                                                                   ║
 ║     └─ DynamicGraphAssembler.assemble()       <0.5 ms                 ║
 ║          PatternConfig → GoalRuntimeProfile                           ║
-║          model_planner / model_executor / model_verifier set here     ║
-║          SSE event "pattern_assembled" emitted to client              ║
+║          model_role_assignments: planner/executor/verifier/think set  ║
+║          SSE event "pattern_assembled" + DecisionTrace emitted        ║
 ║                                                                         ║
 ║  ⑥ Celery task enqueued  → per-plan queue (free/starter/enterprise)   ║
 ║                                                                         ║
@@ -69,6 +70,13 @@ POST /api/v1/goals
 ║  GraphFactory.create(profile, services)                                 ║
 ║  • reasoning_patterns → boolean flags (enable_cot, enable_reflection…)║
 ║  • AgentGraph.__init__() wires all 20 cross-cutting services           ║
+║    (CircuitBreakers, Bulkhead, RollbackEngine, AuditLog,              ║
+║     CostController, PolicyEngine, HITLGateway, GuardrailChecker,      ║
+║     DeduplicationCache, EvalRunner, OTel tracer, SemanticCache …)     ║
+║  • ModelRouter Layer 2 injected  ◄─ MULTI-MODEL ROUTING LAYER 2       ║
+║      _model_router init from model_role_assignments                    ║
+║      resolves think/planning/execution/verification/reflection roles   ║
+║      at execution time per LangGraph node                              ║
 ║  • AgentGraph._build() compiles LangGraph (conditional node wiring)   ║
 ╚═════════════════════════════════════════════════════════════════════════╝
         │
@@ -82,28 +90,64 @@ POST /api/v1/goals
 ║  │  • AgentState created, tenant context injected                  │   ║
 ║  │  • GuardrailChecker.check_goal() → scan goal for violations    │   ║
 ║  │  • GroundingChecker → validate factual claims are groundable   │   ║
-║  │  • ExecutionMemory.recall() → past plans for similar goals     │   ║
-║  │  • LongTermMemoryStore.recall() → Reflexion lessons injected   │   ║
-║  │  • OTel span: "graph.initialize" started                       │   ║
+║  │  • DataClassification context activated for tenant             │   ║
+║  │  • ExecutionMemory.recall() → past attempts at this goal       │   ║
+║  │  • LongTermMemoryStore.recall() → pgvector cosine semantic     │   ║
+║  │       search → Reflexion lessons injected into context         │   ║
+║  │  • WorkingMemory initialized → empty dict for this run         │   ║
+║  │  • ProceduralMemory.recall() → learned step templates          │   ║
+║  │  • VoyagerSkillStore.recall() → reusable sub-skills            │   ║
+║  │  • OTel root span: "agentverse.goal.run" started               │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  EMBEDDING: EmbeddingOrchestrator.embed(query)                  │   ║
+║  │  • EmbeddingPolicySelector → model by cost class               │   ║
+║  │       (free | standard | premium) + modality                   │   ║
+║  │  • embed_with_fallback() → provider fallback chain             │   ║
+║  │  → query_embedding float32 vector                               │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: rag_retrieval  ← RAG FIRES BEFORE PLANNING              │   ║
 ║  │  • rag_patterns from runtime profile selects strategy:         │   ║
-║  │    hybrid_rag | web_augmented_rag | agentic_rag | FLARE        │   ║
-║  │    | RAPTOR | fusion_rag | corrective_rag                      │   ║
-║  │  • KnowledgeStore.hybrid_search() → pgvector + BM25           │   ║
-║  │  • Retrieved chunks + citations stored in AgentState.context  │   ║
+║  │    hybrid | web_augmented | agentic | FLARE | RAPTOR           │   ║
+║  │    | fusion | corrective                                        │   ║
+║  │  • 6-step hybrid search:                                        │   ║
+║  │    1. pgvector cosine distance → semantic matches              │   ║
+║  │    2. BM25 keyword ranking → exact term matches                │   ║
+║  │    3. Reciprocal Rank Fusion → merge ranked lists              │   ║
+║  │    4. CrossEncoder.rerank() → second-pass top-20               │   ║
+║  │    5. late_chunker → context-aware chunk boundaries            │   ║
+║  │    6. parent_child_chunker → small child retrieve,             │   ║
+║  │         large parent return                                     │   ║
 ║  │  • SSE "knowledge_retrieved" event emitted                     │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  CitationManager.register_chunks()                              │   ║
+║  │  • Assign [1] [2] [3] citation IDs to retrieved chunks         │   ║
+║  │  • Citation map injected into all role prompts                  │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: think  (only if chain_of_thought pattern active)         │   ║
-║  │  • SemanticCache checked → skip if near-duplicate LLM call     │   ║
+║  │  • SemanticCache L1+L2 checked (cosine sim ≥ 0.92)            │   ║
+║  │       L1: in-memory LRU 256 entries TTL 300s                   │   ║
+║  │       L2: pgvector persistent brotli-compressed                │   ║
+║  │    → HIT: use cached CoT reasoning, skip LLM                   │   ║
+║  │    → MISS: call LLM, store result in L1+L2                     │   ║
 ║  │  • _model_router.model_for("think")  ◄ LAYER 2 ROUTING        │   ║
-║  │    → resolves which model ID handles CoT reasoning             │   ║
-║  │  • LLM (CoT model) called with CHAIN_OF_THOUGHT_SYSTEM prompt │   ║
+║  │  • ContextPipeline (5 stages):                                  │   ║
+║  │       1. CrossEncoder rerank chunks by goal                    │   ║
+║  │       2. PromptBudget.fit() → 6000 tok, drop low-priority     │   ║
+║  │       3. ContextualEnricher → doc-level header per chunk       │   ║
+║  │       4. CitationManager → inject [1][2][3] map               │   ║
+║  │       5. OutputContractBuilder → append JSON schema            │   ║
+║  │  • PromptBuilder.build_planner_context(bundle)                 │   ║
+║  │  • LLM (CoT model) with CHAIN_OF_THOUGHT_SYSTEM prompt         │   ║
 ║  │  • CoT reasoning stored in reasoning_evidence                  │   ║
+║  │  • OTel span: "agentverse.plan"                                │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
@@ -115,49 +159,80 @@ POST /api/v1/goals
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: plan  ← PLANNER LLM   ◄ LAYER 2 ROUTING               │   ║
-║  │  • _model_router.model_for_goal("planning", goal=…)           │   ║
-║  │    → resolves planning model (default: GPT-5.2 or equivalent) │   ║
-║  │    → overrides AI Router selection if runtime profile differs  │   ║
-║  │  • ContextPipeline: re-rank + trim retrieved chunks            │   ║
-║  │    (separate windows for planner / executor / verifier)        │   ║
-║  │  • SemanticCache checked → skip LLM if cached plan exists      │   ║
-║  │  • LLM (Planner model): goal + RAG context + lessons → steps  │   ║
+║  │  • _model_router.model_for_goal("planning", goal)              │   ║
+║  │       update_from_profile() syncs runtime model assignments    │   ║
+║  │  • ContextPipeline for PLANNER role (5 stages):                │   ║
+║  │       1. CrossEncoder rerank chunks by goal relevance          │   ║
+║  │       2. PromptBudget.fit() → 6000 tok planner budget          │   ║
+║  │            priority: system > goal > memory > rag > history    │   ║
+║  │            drop lowest-priority blocks if over budget          │   ║
+║  │       3. ContextualEnricher → doc-level header per chunk       │   ║
+║  │       4. CitationManager → inject [1][2][3] citation map      │   ║
+║  │       5. OutputContractBuilder → append JSON output schema     │   ║
+║  │  • SemanticCache L1+L2 checked → skip LLM if plan cached       │   ║
+║  │  • LLMResponseCache.get(system+user+model hash) → exact match  │   ║
+║  │       HIT: return cached plan, skip LLM call                   │   ║
+║  │       MISS: call LLM, then LLMResponseCache.set()              │   ║
+║  │  • ProceduralMemory.recall() → step templates                  │   ║
+║  │  • VoyagerSkillStore.recall() → reusable sub-skills            │   ║
+║  │  • PromptBuilder.build_planner_context(bundle)                 │   ║
+║  │  • LLM (Planner model): goal + RAG + lessons → step list       │   ║
 ║  │  • CircuitBreaker wraps LLM call (fail-fast on provider errors) │   ║
 ║  │  • SSE "plan_created" event emitted                            │   ║
+║  │  • OTel span: "agentverse.plan"                                │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: execute  ← EXECUTOR LLM   ◄ LAYER 2 ROUTING           │   ║
 ║  │                                                                  │   ║
-║  │  _model_router.model_for("execution")  → executor model ID    │   ║
-║  │    (may differ from planner — e.g. faster/cheaper model)       │   ║
+║  │  _model_router.model_for("execution") → executor model ID     │   ║
+║  │  ContextPipeline executor role → 3000 tok budget               │   ║
+║  │  PromptBuilder.build_executor_context(bundle, step)            │   ║
+║  │  OTel span: "agentverse.step.execute"                          │   ║
 ║  │                                                                  │   ║
-║  │  For each step in the plan:                                     │   ║
+║  │  For each step in the plan (ReAct loop):                       │   ║
 ║  │  ─────────────────────────────────────────────────────────      │   ║
 ║  │  [A] LLM (Executor model) → Thought + tool call intent        │   ║
 ║  │                                                                  │   ║
 ║  │  [B] TOOL GOVERNANCE GATE (every tool call):                   │   ║
-║  │      1. OutputSanitizer   → strip PII/secrets from inputs      │   ║
-║  │      2. GuardrailChecker  → policy violation on tool+input     │   ║
-║  │      3. PermissionMatrix  → tenant+agent allowed for this tool?│   ║
-║  │      4. PolicyEngine      → active allow/deny/rate-limit rules │   ║
-║  │      5. CostController    → within per-call + per-goal budget? │   ║
-║  │      6. CircuitBreaker    → provider healthy (not open)?       │   ║
-║  │      7. Bulkhead          → within per-tenant concurrency?     │   ║
-║  │      8. DeduplicationCache→ identical call already made?       │   ║
-║  │      9. ToolRiskAssessor  → high-risk step? (deploy/delete…)   │   ║
-║  │         └── HIGH-RISK → HITLGateway → PAUSE for human approval│   ║
+║  │      1. OutputSanitizer  → strip PII/secrets from inputs       │   ║
+║  │           DataClassification handling: redact | no_log         │   ║
+║  │      2. GuardrailChecker → policy violation check              │   ║
+║  │           GuardrailsV2: streaming + declarative YAML rules     │   ║
+║  │      3. PermissionMatrix → tenant+agent allowed for tool?      │   ║
+║  │      4. PolicyEngine     → allow/deny/rate-limit               │   ║
+║  │           Redis pub/sub propagated across replicas             │   ║
+║  │      5. CostController   → within per-call + per-goal budget?  │   ║
+║  │           Redis-backed cross-replica accuracy                  │   ║
+║  │      6. CircuitBreaker   → provider healthy (not open)?        │   ║
+║  │      7. Bulkhead         → per-tenant concurrency limit OK?    │   ║
+║  │      8. DeduplicationCache → identical call already made?      │   ║
+║  │      9. ToolRiskAssessor → high-risk step? (deploy/delete…)   │   ║
+║  │         └── HIGH-RISK → HITLGateway.request_approval()        │   ║
+║  │              PAUSE — emit SSE: hitl_approval_required          │   ║
+║  │              await ApprovalStatus: APPROVED | REJECTED |       │   ║
+║  │                                   TIMED_OUT (300 s)            │   ║
+║  │              REJECTED / TIMED_OUT → PermissionError raised     │   ║
+║  │                                   → goal FAILS                 │   ║
 ║  │     10. RollbackEngine.register() → log compensating action    │   ║
 ║  │                                                                  │   ║
 ║  │  [C] MCP tool execution (actual tool call)                     │   ║
+║  │       OTel span: "agentverse.tool.call"                        │   ║
+║  │       (tool_name, input_hash, duration, model tracked)         │   ║
 ║  │                                                                  │   ║
 ║  │  [D] POST-TOOL PROCESSING:                                     │   ║
-║  │     11. OutputSanitizer   → strip PII/secrets from output      │   ║
-║  │     12. GuardrailChecker  → scan tool output for violations    │   ║
-║  │     13. AuditLog.record() → immutable audit entry              │   ║
-║  │     14. CostController.record() → log actual costs             │   ║
-║  │     15. EvalRunner.score() → quality score on step output      │   ║
-║  │     16. FLARE check → mid-exec uncertainty? re-trigger RAG     │   ║
+║  │     11. OutputSanitizer  → strip PII/secrets from output       │   ║
+║  │           DataClassification no_log fields excluded            │   ║
+║  │     12. GuardrailChecker → scan tool output for violations     │   ║
+║  │           GuardrailsV2 streaming token-by-token check          │   ║
+║  │     13. AuditLog.record() → immutable append-only entry        │   ║
+║  │           (tenant_id, goal_id, tool_name, input_hash, output)  │   ║
+║  │     14. CostController.record() → per-tool cost accumulates    │   ║
+║  │     15. EvalRunner.score() → multi-dimension quality per step  │   ║
+║  │     16. ExecutionMemory.record(step, result) → live logging    │   ║
+║  │           record_failure(step, error) on tool error            │   ║
+║  │     17. FLARE check → mid-exec uncertainty?                    │   ║
+║  │           → re-embed query → re-trigger RAG retrieval          │   ║
 ║  │                                                                  │   ║
 ║  │  [E] Executor observes result → next Thought (ReAct loop)      │   ║
 ║  │  [F] SSE "step_completed" event emitted                        │   ║
@@ -177,13 +252,34 @@ POST /api/v1/goals
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  NODE: verify  ← VERIFIER LLM   ◄ LAYER 2 ROUTING            │   ║
 ║  │  • _model_router.model_for("verification") → verifier model   │   ║
-║  │    (often a cheaper model than planner for cost efficiency)    │   ║
-║  │  • ContextPipeline verifier context injected                   │   ║
+║  │  • ContextPipeline for VERIFIER role (5 stages):               │   ║
+║  │       1. Rerank → focus on goal + final output                 │   ║
+║  │       2. PromptBudget.fit() → 2000 tok, keep goal+output       │   ║
+║  │            drop RAG chunks to save budget                      │   ║
+║  │       3. ContextualEnricher → doc-level header per chunk       │   ║
+║  │       4. CitationManager → inject citation map                 │   ║
+║  │       5. OutputContractBuilder → verification schema           │   ║
+║  │  • LLMResponseCache.get(system+user+model hash) → exact match  │   ║
+║  │       HIT: return cached verification, skip LLM               │   ║
+║  │       MISS: call LLM, then LLMResponseCache.set()              │   ║
+║  │  • PromptBuilder.build_verifier_context(bundle)                │   ║
 ║  │  • LLM (Verifier model): did we satisfy the original goal?    │   ║
+║  │  • ProvenanceLedger.verify_citations() → check cited chunks    │   ║
+║  │       exist in KnowledgeStore                                  │   ║
 ║  │  • CircuitBreaker wraps LLM call                               │   ║
 ║  │  • → "complete" | "replan" | "reflect" | "rag_remediate"       │   ║
 ║  │  • AuditLog.record() → verification result logged              │   ║
 ║  │  • SSE "verification_complete" event emitted                   │   ║
+║  │  • OTel span: "agentverse.verify"                              │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+║                              │                                          ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  PROVENANCE: ProvenanceLedger.finalize()                        │   ║
+║  │  • Map each claim → source chunk                               │   ║
+║  │  • Map chunk → IngestionProvenance → raw document              │   ║
+║  │  • Full lineage: LLM answer → chunk → doc                     │   ║
+║  │  • ProvenanceVerifier.verify() → validate citations exist      │   ║
+║  │  • ProvenanceExport → citation graph built                     │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
@@ -194,40 +290,48 @@ POST /api/v1/goals
 ║                              │                                          ║
 ║  ┌─────────────────────────────────────────────────────────────────┐   ║
 ║  │  _route() → branching decision                                  │   ║
-║  │  ├── complete        → END (success path)                      │   ║
-║  │  ├── replan          → [plan] (new iteration, max_iterations)  │   ║
-║  │  ├── reflect         → [reflect] → diagnosis → [plan]         │   ║
-║  │  │     NODE: reflect: _model_router.model_for("reflection")   │   ║
-║  │  │     LLM diagnoses failure, updates verification_feedback,  │   ║
-║  │  │     increments reflection_attempts                          │   ║
-║  │  ├── rag_remediate   → [rag_retrieval] → [plan]               │   ║
-║  │  └── max_iterations  → END (timeout, status=FAILED)           │   ║
+║  │  ├── complete      → END (success path)                        │   ║
+║  │  ├── replan        → [ContextPipeline → plan] new iteration    │   ║
+║  │  ├── reflect       → [reflect] → diagnosis → [plan]           │   ║
+║  │  │     NODE: reflect:                                          │   ║
+║  │  │       _model_router.model_for("reflection") ◄ LAYER 2     │   ║
+║  │  │       ReflexionService.recall() → past lessons for goal    │   ║
+║  │  │       LLM diagnoses failure, updates verification_feedback  │   ║
+║  │  │       ReflexionService.learn() → stores lesson+Classification║
+║  │  ├── rag_remediate → [re-embed query → rag_retrieval → plan]  │   ║
+║  │  └── max_iterations → END (timeout, status=FAILED)            │   ║
 ║  └─────────────────────────────────────────────────────────────────┘   ║
 ╚═════════════════════════════════════════════════════════════════════════╝
         │
         ▼
 ╔═════════════════════════════════════════════════════════════════════════╗
-║  PHASE 4 — Post-execution & Agent Improvement  (async)                  ║
+║  PHASE 4 — Post-execution & Agent Improvement  (async, < 50 ms)        ║
 ╠═════════════════════════════════════════════════════════════════════════╣
 ║  SUCCESS path:                                                          ║
-║  • LongTermMemoryStore.extract_from_goal() → save lessons (pgvector)  ║
-║  • SelfOptimizer.analyze_success() → adjust strategy weights          ║
-║  • EvalRunner final summary → quality score stored                    ║
-║  • SemanticCache.store() → cache plan for future near-identical goals  ║
+║  • LongTermMemoryStore.extract_from_goal() → distil lessons (pgvector)║
+║  • EpisodicMemoryStore.record() → add episode to history               ║
+║  • ProceduralMemoryStore.update() → update learned step templates      ║
+║  • VoyagerSkillStore.update() → update reusable sub-skills             ║
+║  • SelfOptimizer.analyze_success() → adjust prompt/strategy weights   ║
+║  • SemanticCache.store() → cache plan+result for future reuse          ║
+║  • EvalRunner final summary → multi-dimension quality scores stored    ║
 ║                                                                         ║
 ║  FAILURE path:                                                          ║
-║  • RollbackEngine.rollback() → execute compensating actions           ║
-║  • LongTermMemoryStore.store_failure_lesson() → what went wrong       ║
-║  • SelfOptimizer.analyze_failure() → RPA/complex task analysis        ║
+║  • RollbackEngine.rollback() → execute compensating actions            ║
+║  • ReflexionService.learn() → store failure lesson + Classification    ║
+║  • LongTermMemoryStore.store_failure_lesson() → failure pattern stored ║
+║  • SelfOptimizer.analyze_failure() → improve for next run              ║
 ║                                                                         ║
 ║  ALWAYS (success or failure):                                           ║
-║  • AuditLog.append() → final immutable audit entry                    ║
-║  • CostController.record_total() → total goal cost persisted          ║
+║  • AuditLog.append() → final immutable audit entry (all spans)        ║
+║  • CostController.record_total() → per-goal + per-model cost persisted║
 ║  • GoalRecord updated → status = COMPLETED | FAILED                   ║
 ║  • Concurrent-goal counter decremented (Redis)                        ║
-║  • Goal deduplication entry cleared                                   ║
+║  • Goal deduplication entry cleared from Redis                        ║
 ║  • SSE "goal_completed" or "goal_failed" → client stream closes       ║
-║  • OTel root span closed → full distributed trace available in Jaeger ║
+║  • OTel root span "agentverse.goal.run" closed                        ║
+║  • SLOTracker.record() → SLO compliance check                         ║
+║  • Provenance export attached to final result (citation graph)        ║
 ╚═════════════════════════════════════════════════════════════════════════╝
 ```
 
