@@ -58,7 +58,12 @@ class OcrDocumentTool:
             "raw_text": result.raw_text,
             "document_type": result.document_type.value,
             "fields": {
-                k: {"value": v.value, "confidence": round(v.confidence, 4)}
+                k: {
+                    "value": v.masked_value if v.masked_value is not None else v.value,
+                    "raw_value": v.value if v.masked_value is not None else None,
+                    "confidence": round(v.confidence, 4),
+                    "is_valid": v.is_valid,
+                }
                 for k, v in result.fields.items()
             },
             "engine_used": result.engine_used,

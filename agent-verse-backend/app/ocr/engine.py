@@ -109,12 +109,27 @@ class OcrEngine:
             import pytesseract
 
             img = self._preprocess_image(img)
-            data = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: pytesseract.image_to_data(
-                    img, output_type=pytesseract.Output.DICT
-                ),
-            )
+            data = None
+            for tess_lang in ("hin+eng", "eng"):
+                try:
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda _lang=tess_lang: pytesseract.image_to_data(
+                            img, lang=_lang, output_type=pytesseract.Output.DICT
+                        ),
+                    )
+                    break
+                except Exception as tess_exc:
+                    if tess_lang == "eng":
+                        raise
+                    _log.debug(
+                        "Tesseract lang '%s' unavailable, trying 'eng': %s",
+                        tess_lang,
+                        tess_exc,
+                    )
+                    data = None
+                    continue
+            assert data is not None
             confs = [c for c in data.get("conf", []) if isinstance(c, (int, float)) and c >= 0]
             avg_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
 

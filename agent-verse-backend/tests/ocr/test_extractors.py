@@ -39,7 +39,7 @@ def test_pan_extracts_dob():
     ext = get_extractor(DocumentType.PAN_CARD)
     fields = ext.extract(PAN_TEXT)
     assert "date_of_birth" in fields
-    assert fields["date_of_birth"].value == "01/01/1990"
+    assert fields["date_of_birth"].value == "1990-01-01"
 
 
 # --- Aadhaar ---
@@ -58,6 +58,14 @@ def test_aadhaar_extracts_dob():
     ext = get_extractor(DocumentType.AADHAAR)
     fields = ext.extract(AADHAAR_TEXT)
     assert "date_of_birth" in fields
+
+
+def test_aadhaar_extracts_masked_value():
+    ext = get_extractor(DocumentType.AADHAAR)
+    fields = ext.extract(AADHAAR_TEXT)
+    assert "aadhaar_number" in fields
+    assert fields["aadhaar_number"].masked_value is not None
+    assert "XXXX" in fields["aadhaar_number"].masked_value
 
 
 # --- Invoice ---
