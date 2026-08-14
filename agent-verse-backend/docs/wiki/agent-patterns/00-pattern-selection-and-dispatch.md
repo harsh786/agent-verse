@@ -1462,6 +1462,464 @@ The selection pipeline embodies three non-negotiable principles:
 
 ---
 
+## Complete Agent Execution Subsystems Reference
+
+This section covers every subsystem involved during agent execution that is not already explained in the phase-by-phase diagram above.
+
+---
+
+### Ingestion Pipeline (`app/ingestion/`)
+
+Before knowledge can be searched at RAG time, documents must be ingested. Ingestion runs **outside the agent loop** (triggered separately via the ingestion API or background job), but its output is what RAG retrieves at Phase 3.
+
+**Entry point:** `IngestionOrchestrator.ingest(content, source_uri, tenant_ctx)`
+
+```
+Raw document (PDF / DOCX / audio / video / HTML / code / email)
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Parser selection (parser_registry.py)                    │
+│    ContentClassifier.classify() → ContentType               │
+│    Parsers: pdf_parser, docx_parser, audio_parser,          │
+│             video_parser, vision_parser, email_parser        │
+│    → raw text + metadata extracted                          │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Chunking strategy selection (chunking_strategy_selector) │
+│    ContentType + doc size + modality → best chunker class   │
+│                                                             │
+│    Chunkers:                                                │
+│    • SemanticChunker   — semantic boundary detection        │
+│    • HeadingChunker    — split on markdown/HTML headings    │
+│    • ASTChunker        — code-aware (class/function level)  │
+│    • PDFLayoutChunker  — preserves columns, tables          │
+│    • TableChunker      — each table row becomes a chunk     │
+│    • SceneChunker      — video/audio scene boundaries       │
+│    • TimestampChunker  — time-coded media segments          │
+│    Default: fixed-size with overlap fallback                │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Quality checks (quality_checks.py)                       │
+│    _filter_quality() drops: length < 20 chars, whitespace,  │
+│    duplicates within same document                          │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Embedding selection (embedding_policy_selector.py)       │
+│    EmbeddingOrchestrator.select() → EmbeddingSelectionResult│
+│    Picks model by: cost_class (free/standard/premium),      │
+│    modality (text/image/code), tenant plan tier             │
+│    embed_with_fallback() → calls provider, falls back on err│
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. KnowledgeStore write                                     │
+│    chunk text + embedding vector → pgvector table          │
+│    metadata: source_uri, tenant_id, chunk_index, content_hash│
+│    IngestionProvenance recorded (ProvenanceBuilder)         │
+│    KGIngestionHook.on_ingest() → optional knowledge graph   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key files:**
+
+| File | Purpose |
+|---|---|
+| `app/ingestion/orchestrator.py` | Entry point `IngestionOrchestrator.ingest()` |
+| `app/ingestion/chunkers/` | 7 specialised chunker classes + `ChunkerBase` |
+| `app/ingestion/parsers/` | 6 parsers (pdf, docx, audio, video, vision, email) |
+| `app/ingestion/content_classifier.py` | `ContentClassifier.classify()` → `ContentType` |
+| `app/ingestion/embedding_policy_selector.py` | Selects embedding model by cost/modality |
+| `app/ingestion/provenance_builder.py` | Records `IngestionProvenance` per document |
+| `app/embedding/orchestrator.py` | `EmbeddingOrchestrator` — model selection + fallback |
+
+---
+
+### Embedding System (`app/embedding/`)
+
+The `EmbeddingOrchestrator` wraps all LLM provider `embed()` calls with:
+- **Model selection**: picks best model from registry filtered by `cost_class` (free / standard / premium) and modality
+- **Batch embedding**: `embed_batch()` splits large lists into provider-safe batches
+- **Fallback**: if the selected provider fails, falls back through lower-cost models
+- **Re-embedding policy** (`ReembeddingPolicy`): triggers re-embed on schema change, provider migration, or TTL expiry
+
+Used at: ingestion time (document chunks), RAG retrieval time (query embedding), memory recall (semantic search in `LongTermMemoryStore`).
+
+---
+
+### Prompt Builder & Context Pipeline (`app/context/`)
+
+Before any LLM node fires, the prompt must be assembled from: the goal text, RAG chunks, memory, previous steps, tool descriptions, and output schema. This is not a single call — it's a pipeline.
+
+**`ContextPipeline.run()`** orchestrates the full assembly:
+
+```
+ContextPipeline.run(
+    goal, retrieved_chunks, memory_items, steps_history,
+    role = "planner" | "executor" | "verifier"
+)
+        │
+        ├─ 1. Re-ranking (rerank_policy.py)
+        │      CrossEncoder.rerank() OR reciprocal_rank_fusion()
+        │      Re-orders retrieved_chunks by relevance to goal
+        │
+        ├─ 2. PromptBudget.fit()  (prompt_budget.py)
+        │      Calculates token budget per role:
+        │        planner:  system + goal + context window (max 6000 tokens)
+        │        executor: shorter context window, step-scoped
+        │        verifier: minimal context, goal + final output only
+        │      Truncates/drops lowest-ranked chunks if over budget
+        │
+        ├─ 3. ContextualEnricher  (contextual_enricher.py)
+        │      Adds document-level context header to each chunk
+        │      so the LLM understands provenance inline
+        │
+        ├─ 4. CitationManager  (citation_manager.py)
+        │      Assigns [1], [2], [3] citation IDs to chunks
+        │      Injects citation map into prompt
+        │      Enables grounded answers with source references
+        │
+        └─ 5. OutputContractBuilder  (output_contract_builder.py)
+               Appends structured output schema (JSON) to prompt
+               Enforces the LLM's response format
+        
+        → PipelineResult { assembled_prompt, citations, token_count }
+```
+
+**`PromptBuilder`** (`app/context/prompt_builder.py`) is the role-specific layer on top of `ContextPipeline`:
+
+| Method | Role | System prompt used |
+|---|---|---|
+| `build_planner_context(bundle)` | Planner LLM | `PLANNER_SYSTEM_PROMPT` + RAG context + lessons + goal |
+| `build_executor_context(bundle, step)` | Executor LLM | `EXECUTOR_SYSTEM_PROMPT` + tool list + step description |
+| `build_verifier_context(bundle)` | Verifier LLM | `VERIFIER_SYSTEM_PROMPT` + original goal + final answer |
+
+`_auto_compress()` falls back to summarizing older context blocks when the assembled prompt would exceed `max_context_tokens` (default 6000).
+
+**`PromptVariantSelector`** (`app/context/prompt_variant_selector.py`) A/B-tests prompt templates: multiple `PromptVariant` objects ranked by `success_rate` — the selector picks the best-performing variant per goal type.
+
+---
+
+### Memory System — All 6 Types (`app/memory/`)
+
+AgentVerse has **6 distinct memory stores**, each with a different scope, lifetime, and retrieval mechanism.
+
+| Memory type | Class | Scope | Lifetime | Retrieval |
+|---|---|---|---|---|
+| **Execution Memory** | `ExecutionMemory` | Per-goal | Duration of one goal run | By goal_id, returns past step results and failure records |
+| **Working Memory** | `WorkingMemory` | Per-goal | Duration of one goal run | In-process dict, keyed by item type |
+| **Long-Term Memory** | `LongTermMemoryStore` | Per-tenant | Persistent (Postgres + pgvector) | Semantic cosine similarity search via pgvector |
+| **Episodic Memory** | `EpisodicMemoryStore` | Per-agent/tenant | Persistent | Episode replay — recollects past goal sequences |
+| **Procedural Memory** | `ProceduralMemoryStore` | Per-tenant | Persistent | Skill-like memory — "how to do X" patterns |
+| **Voyager Skills** | `VoyagerSkillStore` | Per-tenant | Persistent | Minecraft-Voyager style: goal type → learned sub-skills |
+
+**When each memory fires inside the agent loop:**
+
+```
+Phase 3 — NODE: initialize
+  ExecutionMemory.recall(goal_id)  → past attempts at this exact goal
+  LongTermMemoryStore.recall(goal) → top-K semantic memories (pgvector)
+  WorkingMemory initialized        → empty dict for this run
+
+Phase 3 — NODE: plan
+  WorkingMemory.set("retrieved_context", chunks)
+  ProceduralMemory.recall(goal_type) → learned step templates (if any)
+  VoyagerSkillStore.recall(goal_type) → reusable sub-skills
+
+Phase 3 — NODE: execute (each step)
+  ExecutionMemory.record(step, result) → logs each step outcome live
+  ExecutionMemory.record_failure(step, error) → on tool error
+
+Phase 3 — NODE: verify (fail → reflect)
+  ReflexionService.recall(goal) → past reflection lessons
+  ReflexionService.learn(lesson, classification) → stores new lesson
+
+Phase 4 — post-execution
+  LongTermMemoryStore.extract_from_goal(completed_goal) → distills lessons
+  EpisodicMemoryStore.record(goal_episode) → adds to episode history
+  SelfOptimizer.run() → may update ProceduralMemory or VoyagerSkillStore
+```
+
+**`ReflexionService`** (`app/memory/reflexion.py`):  
+Implements the Reflexion paper pattern. On verify failure: `learn(diagnosis, classification)` stores a lesson tagged with `Classification`. Future calls to `recall(goal)` surface matching lessons → injected into the next planner context so the agent doesn't repeat the same mistake.
+
+**Long-term memory recall uses pgvector:**
+```python
+# app/memory/long_term.py ~line 290
+results = await db.execute(
+    "SELECT * FROM long_term_memories 
+     ORDER BY embedding <=> $1 LIMIT $2",
+    [query_embedding, top_k]
+)
+```
+
+---
+
+### Semantic Cache (`app/rag/semantic_cache.py`)
+
+The `SemanticCache` prevents redundant LLM calls by caching responses keyed on **semantic similarity** of the input embedding — not exact string match.
+
+**Two-level architecture:**
+
+```
+Incoming LLM request
+        │
+        ▼
+L1 Cache — in-memory LRU  (max 256 entries, TTL 300s)
+  • cosine similarity threshold: 0.92
+  • O(N) scan over tenant-scoped entries
+  • Hit rate ~40% for repeated subtasks in same session
+        │  (miss)
+        ▼
+L2 Cache — pgvector  (persistent, per-tenant)
+  • embedding stored as packed float32 bytes
+  • cosine distance query: embedding <=> query_embedding
+  • threshold: configurable (default 0.92)
+  • brotli-compressed cached response
+        │  (miss)
+        ▼
+Actual LLM call  → result stored in both L1 and L2
+```
+
+**Where it fires:**
+- `NODE: think` — before CoT LLM call
+- `NODE: plan` — before planner LLM call
+- `NODE: execute` — before each executor LLM call per step
+
+---
+
+### Knowledge Store & RAG Retrieval (`app/knowledge/`, `app/rag/`)
+
+The `KnowledgeStore` is the **read side** of ingestion. At RAG retrieval time (`NODE: rag_retrieval`):
+
+```
+KnowledgeStore.hybrid_search(query, tenant_ctx, rag_strategy)
+        │
+        ├─ 1. Query embedding via EmbeddingOrchestrator
+        │
+        ├─ 2. pgvector semantic search (cosine distance)
+        │       SELECT * FROM knowledge_chunks 
+        │       WHERE tenant_id=$1
+        │       ORDER BY embedding <=> $2 LIMIT 20
+        │
+        ├─ 3. BM25 keyword search (app/rag/bm25.py)
+        │       Full-text ranking for exact term matches
+        │
+        ├─ 4. Reciprocal Rank Fusion
+        │       Merges pgvector + BM25 ranked lists
+        │       score = 1/(k + rank_semantic) + 1/(k + rank_bm25)
+        │
+        └─ 5. CrossEncoder re-ranking (app/rag/cross_encoder.py)
+               Second-pass re-rank of top-20 by cross-encoder model
+               Returns top-K chunks with citation metadata
+```
+
+**RAG strategy variants** (selected by `PatternAssembler` via `rag_patterns`):
+
+| Strategy | What changes |
+|---|---|
+| `hybrid_rag` | pgvector + BM25 + RRF (default) |
+| `web_augmented_rag` | adds SearXNG web search results before fusion |
+| `agentic_rag` | agent generates sub-queries, runs multiple retrievals |
+| `FLARE` | forward-looking retrieval: retrieves during generation when uncertainty detected |
+| `RAPTOR` | recursive abstractive processing — summarises clusters of docs |
+| `fusion_rag` | multiple query reformulations then fusion |
+| `corrective_rag` | verifies retrieved docs with an evaluator, replaces low-quality ones |
+
+**Late chunking** (`app/rag/late_chunker.py`): chunks are embedded with their surrounding context window, not in isolation — improves recall for cross-sentence references.
+
+**Parent-child chunker** (`app/rag/parent_child_chunker.py`): stores large parent chunks for context + small child chunks for precision retrieval. Searches child, returns parent.
+
+---
+
+### Grounding & Data Provenance (`app/agent/grounding.py`, `app/provenance/`)
+
+**`GroundingChecker`** (`app/agent/grounding.py`) runs at `NODE: initialize` and optionally during verification:
+- Validates that factual claims in the goal are groundable (i.e., can be verified via knowledge or tool calls)
+- Returns `GroundingResult { is_groundable, confidence, required_sources }`
+- Non-groundable goals (hallucination-prone speculation) get `rag_patterns += corrective_rag`
+
+**`ProvenanceLedger`** (`app/provenance/ledger.py`):
+- Records a `ProvenanceRecord` for every claim in the agent's output
+- Maps each claim → source chunk(s) → ingestion record → original document
+- `ProvenanceVerifier.verify()` checks that citations in the output exist in the ledger
+- Exported via `ProvenanceExport` as a structured citation graph
+
+**`IngestionProvenance`** (`app/ingestion/provenance_builder.py`):
+- Captured at ingest time: `source_uri`, `chunk_hash`, `parser_used`, `chunker_used`, `embed_model_used`, `ingested_at`
+- Stored alongside chunks in Postgres — enables full data lineage from LLM answer → chunk → raw document
+
+---
+
+### Data Classification (`app/data_classification/`)
+
+Every piece of data flowing through the agent is classified before use.
+
+**`DataClassification`** schema classifies data on three axes:
+
+| Axis | Values |
+|---|---|
+| Sensitivity | `public`, `internal`, `confidential`, `restricted`, `secret` |
+| Category | `pii`, `financial`, `health`, `code`, `general`, `credential` |
+| Handling | `store`, `no_store`, `redact`, `encrypt_at_rest`, `no_log` |
+
+**Where it fires:**
+- At ingestion: chunks tagged with `DataClassification` before storage
+- At tool execution: `OutputSanitizer` strips PII/secrets from tool inputs/outputs using `DataClassification.handling`
+- At memory write: `LongTermMemoryStore` respects `no_store` and `redact` flags
+- In audit log: `AuditLog.record()` excludes `no_log` classified data from the audit trail
+
+---
+
+### OTel Distributed Tracing (`app/observability/`)
+
+Every significant operation in `AgentGraph` emits an **OpenTelemetry span**:
+
+| OTel span name | Emitted at |
+|---|---|
+| `agentverse.goal.run` | Entire goal execution (root span) |
+| `agentverse.plan` | `_node_plan()` — includes prompt tokens, model_id |
+| `agentverse.step.execute` | Each step in the executor loop |
+| `agentverse.tool.call` | Each MCP tool call (includes tool name, input hash, duration) |
+| `agentverse.verify` | `_node_verify()` — includes verification result |
+
+**Span attributes captured per span:**
+- `goal_id`, `tenant_id`, `agent_id`
+- `model_id`, `provider`, `prompt_tokens`, `completion_tokens`, `cost_usd`
+- `tool_name`, `tool_success`, `step_index`
+- `pattern_config` (JSON — which patterns were active)
+
+**Exported to:** OTLP endpoint (Jaeger, Datadog, Honeycomb — configured via `OTEL_EXPORTER_OTLP_ENDPOINT` env var).
+
+**Supplemental trace files** (`app/observability/`):
+
+| File | What it traces |
+|---|---|
+| `model_trace.py` | Per-model latency, token usage, cost |
+| `rag_trace.py` | RAG retrieval latency, chunk count, source hits |
+| `pattern_trace.py` | Which patterns were selected and why (from `DecisionTrace`) |
+| `runtime_decision_trace.py` | Runtime profile decisions |
+| `slo_tracker.py` | SLO tracking: latency budgets, breach detection, alerting |
+
+---
+
+### Guardrails V2 (`app/guardrails_v2/`)
+
+Guardrails V2 is a **newer, more granular guardrail framework** running alongside (and partially replacing) the `GuardrailChecker` in `app/intelligence/guardrails.py`. It adds:
+
+- **Per-policy declarative rules** — guardrail policies defined as YAML/JSON, not code
+- **Streaming guardrails** — checks applied token-by-token on LLM streaming output (not just at end)
+- **Pluggable evaluators** — custom evaluator functions registered per tenant
+- Integrated with `PolicyEngine` for Redis pub/sub propagation of rule changes across replicas
+
+---
+
+### Context Budget & Prompt Compression (`app/context/prompt_budget.py`)
+
+Token budgets are enforced per LLM role to prevent exceeding model context windows:
+
+| Role | Token budget (default) | Strategy when over budget |
+|---|---|---|
+| Planner | 6000 tokens | Drop lowest-ranked RAG chunks → summarise remaining |
+| Executor | 3000 tokens | Summarise step history → keep only last N steps |
+| Verifier | 2000 tokens | Keep goal + final output only, drop RAG chunks |
+
+`PromptBudget.fit(blocks, model_max_tokens)` applies the budget:
+1. Sorts `PromptBlock` list by priority (system > goal > memory > rag_chunks > history)
+2. Drops lowest-priority blocks until total tokens `< model_max_tokens * 0.9`
+3. If still over: calls `PromptBuilder._auto_compress()` to summarise long blocks
+
+---
+
+### Citation Manager & Source Attribution (`app/context/citation_manager.py`)
+
+Every retrieved chunk that enters the context window is assigned a citation ID.
+
+```
+CitationManager.register_chunks(chunks) → { "[1]": chunk_1_meta, "[2]": chunk_2_meta ... }
+```
+
+- The planner and executor prompts include: `"When referencing retrieved context, use [1], [2] etc."`
+- After verification, `ProvenanceLedger.verify_citations()` confirms all cited chunks exist in the knowledge store
+- The final goal result includes a `citations` field with source URI, chunk index, and original document metadata
+
+---
+
+### Summary: Complete Subsystem Inventory
+
+| Subsystem | Module | Fires at | Phase |
+|---|---|---|---|
+| Rate limiter | `app/tenancy/` | Goal submission | 1 |
+| AI Router (Layer 1) | `app/ai_router/` | Goal submission | 1 |
+| GoalClassifier (Tier-1) | `app/orchestration/goal_classifier.py` | `build_with_trace()` | 1 |
+| GoalClassifier (Tier-2 LLM) | `app/orchestration/goal_classifier.py` | Conditional, conf ≤ 0.85 | 1 |
+| PatternAssembler (19 rules) | `app/orchestration/pattern_assembler.py` | `build_with_trace()` | 1 |
+| DynamicGraphAssembler | `app/orchestration/` | `build_with_trace()` | 1 |
+| Celery queue routing | `app/scaling/celery_app.py` | Task enqueue | 1→2 |
+| GraphFactory / AgentGraph compile | `app/orchestration/graph_factory.py` | Before LangGraph start | 2 |
+| ModelRouter (Layer 2) | `app/agent/graph.py` `_model_router` | Per LLM node | 3 |
+| GuardrailChecker (goal scan) | `app/intelligence/guardrails.py` | `NODE: initialize` | 3 |
+| GroundingChecker | `app/agent/grounding.py` | `NODE: initialize` | 3 |
+| ExecutionMemory recall | `app/memory/execution.py` | `NODE: initialize` | 3 |
+| LongTermMemoryStore recall | `app/memory/long_term.py` | `NODE: initialize` | 3 |
+| WorkingMemory init | `app/memory/working_memory.py` | `NODE: initialize` | 3 |
+| RAG retrieval (hybrid_search) | `app/knowledge/` + `app/rag/` | `NODE: rag_retrieval` | 3 |
+| BM25 keyword search | `app/rag/bm25.py` | Inside hybrid_search | 3 |
+| CrossEncoder re-rank | `app/rag/cross_encoder.py` | Inside hybrid_search | 3 |
+| ContextPipeline (rerank+budget) | `app/context/context_pipeline.py` | Before each LLM node | 3 |
+| PromptBudget.fit() | `app/context/prompt_budget.py` | Inside ContextPipeline | 3 |
+| CitationManager | `app/context/citation_manager.py` | Inside ContextPipeline | 3 |
+| OutputContractBuilder | `app/context/output_contract_builder.py` | Inside ContextPipeline | 3 |
+| PromptBuilder (role prompt) | `app/context/prompt_builder.py` | Before each LLM node | 3 |
+| SemanticCache (L1+L2) | `app/rag/semantic_cache.py` | Before think/plan/execute | 3 |
+| CoT / ToT / think node | `app/agent/graph.py` `_node_think()` | Conditional | 3 |
+| ProceduralMemory recall | `app/memory/procedural.py` | `NODE: plan` | 3 |
+| VoyagerSkillStore recall | `app/memory/voyager_skills.py` | `NODE: plan` | 3 |
+| OutputSanitizer | `app/governance/` | Before each tool call | 3 |
+| GuardrailChecker (tool) | `app/intelligence/guardrails.py` | Before each tool call | 3 |
+| PermissionMatrix | `app/governance/permissions.py` | Before each tool call | 3 |
+| PolicyEngine | `app/governance/policies.py` | Before each tool call | 3 |
+| CostController | `app/governance/cost.py` | Before each tool call | 3 |
+| CircuitBreaker | `app/reliability/` | Each LLM + tool call | 3 |
+| Bulkhead | `app/reliability/` | Each tool call | 3 |
+| DeduplicationCache | `app/reliability/` | Each tool call | 3 |
+| ToolRiskAssessor | `app/agent/tool_risk.py` | Before each tool call | 3 |
+| HITLGateway | `app/governance/hitl.py` | High-risk steps | 3 |
+| RollbackEngine | `app/reliability/` | After each tool call | 3 |
+| ExecutionMemory record | `app/memory/execution.py` | After each step | 3 |
+| ReflexionService recall | `app/memory/reflexion.py` | `NODE: reflect` | 3 |
+| ProvenanceLedger | `app/provenance/ledger.py` | `NODE: verify` | 3 |
+| OTel spans | `app/observability/tracing.py` | All major nodes | 3 |
+| DataClassification check | `app/data_classification/` | Tool I/O + memory write | 3 |
+| AuditLog | `app/governance/audit.py` | All significant events | 3-4 |
+| LongTermMemory extract | `app/memory/long_term.py` | Post-execution | 4 |
+| ReflexionService.learn() | `app/memory/reflexion.py` | Post-execution (if failed) | 4 |
+| SelfOptimizer | `app/intelligence/self_optimizer.py` | Post-execution | 4 |
+| EpisodicMemoryStore.record() | `app/memory/episodic.py` | Post-execution | 4 |
+| CostRecord write | `app/governance/cost.py` | Post-execution | 4 |
+| SSE stream close | `app/services/goal_service.py` | Post-execution | 4 |
+
+*(Ingestion pipeline runs outside the agent loop — triggered separately)*
+
+| Subsystem | Module | Triggered by |
+|---|---|---|
+| IngestionOrchestrator | `app/ingestion/orchestrator.py` | POST /api/v1/knowledge or background job |
+| ContentClassifier | `app/ingestion/content_classifier.py` | Inside ingestion |
+| Chunker (7 types) | `app/ingestion/chunkers/` | Inside ingestion |
+| Parser (6 types) | `app/ingestion/parsers/` | Inside ingestion |
+| EmbeddingOrchestrator | `app/embedding/orchestrator.py` | Inside ingestion + at RAG query time |
+| KnowledgeGraphIngestionHook | `app/knowledge_graph/ingestion_hook.py` | Optional, inside ingestion |
+| ProvenanceBuilder | `app/ingestion/provenance_builder.py` | Inside ingestion |
+
+---
+
 ## Related Pages
 
 | Page | Relationship |
