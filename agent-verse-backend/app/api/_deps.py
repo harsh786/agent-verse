@@ -143,3 +143,100 @@ def get_nl_scheduler(request: Request) -> Any:
 def get_settings(request: Request) -> Any:
     """Return the per-app Settings from app.state."""
     return request.app.state.settings
+
+# ---------------------------------------------------------------------------
+# Extended services (added to complete full DI coverage)
+# ---------------------------------------------------------------------------
+
+
+def get_compliance_controller(request: Request) -> Any:
+    return request.app.state.compliance_controller
+
+
+def get_red_team_runner(request: Request) -> Any:
+    return request.app.state.red_team_runner
+
+
+def get_marketplace(request: Request) -> Any:
+    return request.app.state.marketplace
+
+
+def get_self_optimizer(request: Request) -> Any:
+    return request.app.state.self_optimizer
+
+
+def get_health_registry(request: Request) -> Any:
+    return request.app.state.health
+
+
+def get_mcp_client_dep(request: Request) -> Any:
+    """Alias for get_mcp_client — used where naming conflicts exist."""
+    return request.app.state.mcp_client
+
+
+def get_strategy_registry(request: Request) -> Any:
+    return request.app.state.strategy_registry
+
+
+def get_strategy_certification(request: Request) -> Any:
+    return request.app.state.strategy_certification
+
+
+def get_strategy_readiness(request: Request) -> Any:
+    return request.app.state.strategy_readiness
+
+
+def get_auction_repository(request: Request) -> Any:
+    return request.app.state.auction_repository
+
+
+def get_auction_bid_inbox(request: Request) -> Any:
+    return request.app.state.auction_bid_inbox
+
+
+def get_swarm_repository(request: Request) -> Any:
+    return request.app.state.swarm_repository
+
+
+def get_camel_repository(request: Request) -> Any:
+    return request.app.state.camel_repository
+
+
+def get_generative_repository(request: Request) -> Any:
+    return request.app.state.generative_repository
+
+
+def get_collab_store(request: Request) -> Any:
+    return request.app.state.collab_store
+
+
+def get_connector_secret_store(request: Request) -> Any:
+    return getattr(request.app.state, "connector_secret_store", None)
+
+
+def get_rpa_session_store(request: Request) -> Any:
+    return getattr(request.app.state, "rpa_session_store", None)
+
+
+def get_rpa_executor(request: Request) -> Any:
+    return getattr(request.app.state, "rpa_executor", None)
+
+
+def get_llm_configs(request: Request) -> Any:
+    return getattr(request.app.state, "_llm_configs", {})
+
+
+def get_policy_registry(request: Request) -> Any:
+    return getattr(request.app.state, "_policy_registry", None)
+
+
+def get_webhook_tokens(request: Request) -> Any:
+    return getattr(request.app.state, "_webhook_tokens", {})
+
+
+def get_budget_config(request: Request) -> Any:
+    return getattr(request.app.state, "_budget_config", None)
+
+
+def get_cache_stats(request: Request) -> Any:
+    return getattr(request.app.state, "_cache_stats", None)

@@ -29,7 +29,7 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _compliance(request: Request) -> Any:
-    return request.app.state.compliance_controller
+    from app.api._deps import get_compliance_controller as _gcc; return _gcc(request)
 
 
 def _compliance_checker(request: Request) -> Any:
@@ -38,15 +38,15 @@ def _compliance_checker(request: Request) -> Any:
 
 
 def _simulation(request: Request) -> Any:
-    return request.app.state.simulation_runner
+    from app.api._deps import get_simulation_runner as _gsr; return _gsr(request)
 
 
 def _red_team(request: Request) -> Any:
-    return request.app.state.red_team_runner
+    from app.api._deps import get_red_team_runner as _grtr; return _grtr(request)
 
 
 def _marketplace(request: Request) -> Any:
-    return request.app.state.marketplace
+    from app.api._deps import get_marketplace as _gmp; return _gmp(request)
 
 
 def _marketplace_v2(request: Request) -> Any:
@@ -61,7 +61,7 @@ def _marketplace_v2(request: Request) -> Any:
 
 
 def _self_optimizer(request: Request) -> Any:
-    return request.app.state.self_optimizer
+    from app.api._deps import get_self_optimizer as _gso; return _gso(request)
 
 
 def _get_db(request: Request) -> Any:
@@ -1068,7 +1068,7 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     runner = getattr(request.app.state, "eval_suite_runner", None)
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
-    goal_service = request.app.state.goal_service
+    from app.api._deps import get_goal_service as _ggs; goal_service = _ggs(request)
     result = await runner.run_suite(
         suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx
     )
