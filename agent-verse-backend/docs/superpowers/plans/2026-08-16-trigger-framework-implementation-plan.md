@@ -1170,4 +1170,217 @@ Phase 5 (IoT + Advanced) — depends on: Phase 0 + Phase 1–4 (NL coverage of a
 
 ---
 
-*Plan created: 2026-08-16 | Spec: 2026-08-15-trigger-architecture-specification.md | Target: 58 trigger types, 47 supporting features, ~270 tests*
+---
+
+## 19. Frontend Changes (React 19 / Vite / TanStack Query)
+
+The backend exposes 38 new API endpoints and 58 trigger types — the frontend must surface all of them. The current `src/features/schedules/` (907 lines, 10 types, basic CRUD) is replaced by a full `src/features/triggers/` feature slice.
+
+### 19.1 Baseline
+
+| File | Lines | State |
+|---|---|---|
+| `src/features/schedules/SchedulesPage.tsx` | 907 | Covers 10 trigger types, no DLQ, no simulation, no channel auth |
+| `src/features/schedules/SchedulesPage.test.tsx` | ~100 | Basic tests |
+
+### 19.2 New File & Component Map
+
+```
+src/features/triggers/
+├── index.ts                              ← re-exports
+├── TriggersPage.tsx                      ← top-level route page
+├── components/
+│   ├── TriggerList.tsx                   ← paginated list with family filter + search
+│   ├── TriggerCard.tsx                   ← card with type badge, status, last-fired
+│   ├── TriggerCreateModal.tsx            ← wizard: pick family → pick type → configure
+│   ├── TriggerEditDrawer.tsx             ← side drawer for editing existing trigger
+│   ├── TriggerDeleteDialog.tsx           ← confirm delete with cascade warning
+│   ├── TriggerFireButton.tsx             ← manual fire + simulation toggle
+│   ├── TriggerStatusBadge.tsx            ← enabled/disabled/circuit-open indicator
+│   ├── TriggerHistoryPanel.tsx           ← firing history (trigger_events table)
+│   ├── TriggerVersionHistoryPanel.tsx    ← version diff viewer
+│   ├── TriggerDLQPanel.tsx               ← DLQ entries with retry/dismiss actions
+│   ├── TriggerSimulationResult.tsx       ← shows SimulatedTriggerResult
+│   └── families/
+│       ├── TimeFamilyForm.tsx            ← Family A: CRON, INTERVAL, ONCE, BUSINESS_CALENDAR, etc.
+│       ├── GoalChainFamilyForm.tsx       ← Family B: GOAL_COMPLETED, HITL_APPROVED, etc.
+│       ├── ConversationalFamilyForm.tsx  ← Family C: CHAT_COMMAND, EMAIL_INTENT, etc.
+│       ├── ConditionFamilyForm.tsx       ← Family D: CONDITION (CEL editor), COUNTER_THRESHOLD, etc.
+│       ├── WebhookFamilyForm.tsx         ← Family E: GITHUB_WEBHOOK, STRIPE_WEBHOOK, etc.
+│       ├── DataFamilyForm.tsx            ← Family F: DB_ROW_CHANGE, S3_EVENT, etc.
+│       ├── MonitoringFamilyForm.tsx      ← Family G: ALERTMANAGER, PAGERDUTY, etc.
+│       ├── PollingFamilyForm.tsx         ← Family H: API_POLL, GRAPHQL_SUBSCRIPTION, etc.
+│       └── IoTFamilyForm.tsx             ← Family I: MQTT, GEOFENCE, SENSOR_THRESHOLD
+├── hooks/
+│   ├── useTriggers.ts                    ← TanStack Query: list, get, create, update, delete
+│   ├── useTriggerEvents.ts               ← firing history with infinite scroll
+│   ├── useTriggerDLQ.ts                  ← DLQ list + retry + dismiss mutations
+│   ├── useTriggerSimulate.ts             ← simulation mutation + result state
+│   └── useTriggerSecretRotation.ts       ← rotate-secret mutation + status polling
+├── state/
+│   └── triggerFilters.ts                 ← Zustand store: selected family, type, status filters
+└── api/
+    └── triggersApi.ts                    ← typed wrappers around all 38 trigger endpoints
+
+src/features/channels/
+├── ChannelMappingsPage.tsx               ← register Slack/Teams/Discord workspaces to tenant
+├── components/
+│   ├── SlackWorkspaceConnect.tsx         ← OAuth flow → POST /api/v1/channels/slack/events
+│   ├── TeamsWebhookSetup.tsx             ← Teams webhook URL config
+│   └── DiscordBotSetup.tsx               ← Discord bot token entry
+└── hooks/
+    └── useChannelMappings.ts
+
+src/features/state-machines/
+├── StateMachinesPage.tsx                 ← state machine definitions CRUD
+├── components/
+│   ├── StateMachineEditor.tsx            ← visual node editor (states + transitions)
+│   ├── StateMachineInstanceList.tsx      ← per-entity current state + history
+│   └── TransitionButton.tsx             ← trigger transition for an entity
+└── hooks/
+    └── useStateMachines.ts
+```
+
+### 19.3 Phase-Aligned Frontend Task List
+
+| Task | Phase | Component | Acceptance Criteria |
+|---|---|---|---|
+| FE-00 | P0 | `triggersApi.ts` | Typed wrappers for all 38 backend endpoints; generated from OpenAPI spec |
+| FE-00 | P0 | `useTriggers.ts` | TanStack Query hooks: list, get, create, update, delete, enable, disable |
+| FE-00 | P0 | `TriggerList.tsx` | Paginated list; family filter chips (A–I); search by name/type |
+| FE-00 | P0 | `TriggerCard.tsx` | Type badge (color-coded by family); enabled/disabled; last fired timestamp |
+| FE-00 | P0 | `TriggerDeleteDialog.tsx` | Confirm with "This will delete X associated events" cascade count |
+| FE-01 | P0 | `TriggerCreateModal.tsx` | 3-step wizard: (1) Select family → (2) Select type → (3) Configure fields |
+| FE-02 | P0 | `TimeFamilyForm.tsx` | CRON (cron expression validator via `croniter` preview), INTERVAL, ONCE, BUSINESS_CALENDAR |
+| FE-03 | P1 | `GoalChainFamilyForm.tsx` | Agent selector, goal selector, score threshold slider, HITL queue picker |
+| FE-04 | P1 | `TriggerHistoryPanel.tsx` | Infinite scroll over `GET /triggers/{id}/history`; shows goal_created, skip_reason |
+| FE-05 | P2 | `ConversationalFamilyForm.tsx` | Channel type selector, keyword pattern with regex preview |
+| FE-06 | P2 | `ChannelMappingsPage.tsx` | Slack OAuth connect, Teams webhook URL display, Discord bot setup |
+| FE-07 | P3 | `ConditionFamilyForm.tsx` | CEL expression editor with syntax highlighting (Monaco); live preview pane |
+| FE-08 | P3 | `StateMachinesPage.tsx` | State + transition CRUD; visual node editor optional |
+| FE-09 | P4 | `WebhookFamilyForm.tsx` | Signed secret display + copy button; "Rotate Secret" action with grace period countdown |
+| FE-10 | P4 | `DataFamilyForm.tsx` | S3 bucket/prefix inputs; DB table/column selectors; RSS URL |
+| FE-11 | P4 | `MonitoringFamilyForm.tsx` | Alert severity filter chips; log regex pattern field |
+| FE-12 | P4 | `TriggerDLQPanel.tsx` | List DLQ entries per trigger; retry (optimistic) + dismiss; failure type badge |
+| FE-13 | P5 | `IoTFamilyForm.tsx` | MQTT broker URL + topic pattern; Geofence polygon map picker; sensor metric + threshold |
+| FE-14 | P5 | `TriggerSimulationResult.tsx` | Show `would_have_fired`, `skip_reason`, rendered goal text, estimated cost |
+| FE-15 | P5 | `TriggerVersionHistoryPanel.tsx` | Side-by-side JSON diff of trigger spec versions |
+| FE-16 | P0 | `TriggerFireButton.tsx` | Manual fire + simulation toggle; shows `SimulatedTriggerResult` in modal |
+| FE-17 | P0 | `TriggerStatusBadge.tsx` | green=enabled / yellow=circuit-open / red=disabled |
+| FE-18 | P4 | `PollingFamilyForm.tsx` | Poll URL, method, interval, JSONPath, expected value |
+| FE-19 | P0 | Rename `schedules/` → `triggers/` | `SchedulesPage` becomes `TriggersPage`; route `/triggers`; backward nav redirect from `/schedules` |
+| FE-20 | P0 | `triggerFilters.ts` (Zustand) | Persisted filter state: family, type, status, date-range |
+
+### 19.4 Key UX Requirements
+
+**Create wizard steps:**
+1. **Family picker** — 9 family cards with icons and "types count" badge
+2. **Type picker** — list of types within family with description tooltip
+3. **Config form** — family-specific fields, pre-validated, with `goal_template` preview renderer
+
+**Trigger list:**
+- Filter by family (A–I chips), type (dropdown), status (all/enabled/disabled/circuit-open)
+- Column sort: name, type, last_fired, created_at
+- Bulk enable/disable selection
+
+**Cron expression field:**
+- Live "next 5 fire times" preview using `cronstrue` npm package
+- Warning badge if expression fires more frequently than plan tier allows
+
+**Simulation flow:**
+- Toggle on trigger card: "Test without firing"
+- `POST /triggers/{id}/simulate` → display `SimulatedTriggerResult` in slide-over
+- Shows: "Would fire: Yes/No", skip reason, rendered goal text, estimated LLM cost
+
+**DLQ panel:**
+- Per-trigger tab on trigger detail drawer
+- List entries with failure type, error message (truncated), retry count
+- "Retry All" bulk action + individual retry/dismiss
+
+**Channel mappings:**
+- Separate page at `/settings/channels`
+- Slack: "Connect Workspace" → OAuth redirect → mapping created
+- Teams: copy webhook URL → paste into Teams admin
+- Discord: enter bot token → server/channel selector
+
+### 19.5 Frontend Test Coverage
+
+| Test type | Count | What |
+|---|---|---|
+| Unit (Vitest) | 30 | Form validation, trigger card rendering, filter state, simulation result display |
+| Integration (Vitest + MSW) | 15 | TanStack Query hooks with mocked API responses |
+| E2E (Playwright) | 10 | Create trigger → manual fire → check history; DLQ retry flow; channel mapping connect |
+
+### 19.6 TypeScript API Types (auto-generated)
+
+```typescript
+// src/features/triggers/api/triggersApi.ts
+export type TriggerFamily = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I';
+
+export interface TriggerSpec {
+  trigger_id:           string;
+  trigger_type:         string;   // one of 58 TriggerType values
+  family:               TriggerFamily;
+  enabled:              boolean;
+  priority:             'high' | 'normal' | 'low';
+  goal_template:        string;
+  condition:            string;
+  max_firings_per_hour: number;
+  expires_at:           string | null;
+  // ... all 60+ fields with optional typing
+}
+
+export interface TriggerEvent {
+  id:              string;
+  trigger_id:      string;
+  trigger_type:    string;
+  fired_at:        string;
+  goal_created:    boolean;
+  goal_id:         string | null;
+  skip_reason:     'dedup' | 'rate_limit' | 'condition_false' | 'circuit_open' | 'bulkhead_full' | null;
+  processing_ms:   number | null;
+}
+
+export interface SimulatedTriggerResult {
+  trigger_id:             string;
+  trigger_type:           string;
+  would_have_fired:       boolean;
+  skip_reason:            string | null;
+  goal_template_rendered: string;
+  condition_evaluated:    boolean | null;
+  estimated_cost_usd:     number | null;
+  simulated_at:           string;
+}
+
+export interface DLQEntry {
+  id:            string;
+  trigger_id:    string;
+  failed_at:     string;
+  failure_type:  string;
+  error_message: string | null;
+  retry_count:   number;
+  resolved_at:   string | null;
+}
+```
+
+### 19.7 Frontend Completion Checklist
+
+- [ ] `TriggersPage` route registered at `/triggers`; `/schedules` redirects to `/triggers`
+- [ ] All 58 trigger types selectable in create wizard
+- [ ] 9 family-specific forms render correct fields with validation
+- [ ] Cron preview shows next 5 fire times
+- [ ] Simulation toggle works and shows `SimulatedTriggerResult`
+- [ ] DLQ panel: list, retry (optimistic update), dismiss
+- [ ] Webhook secret rotation: rotate button + grace period countdown UI
+- [ ] Circuit breaker state visible on trigger card (yellow badge when open)
+- [ ] Channel mappings page: Slack/Teams/Discord connect flows
+- [ ] State machine page: definition CRUD + instance current state view
+- [ ] Trigger history infinite scroll (trigger_events)
+- [ ] Version history diff viewer
+- [ ] 30 Vitest unit + 15 integration + 10 Playwright E2E tests pass
+- [ ] `npm run typecheck` passes with 0 errors on new code
+- [ ] `npm run lint` passes with 0 new warnings
+
+---
+
+*Plan created: 2026-08-16 | Spec: 2026-08-15-trigger-architecture-specification.md | Target: 58 trigger types, 47 supporting features, ~270 backend + ~55 frontend tests*
