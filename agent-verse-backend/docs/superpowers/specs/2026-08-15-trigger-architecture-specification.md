@@ -3,9 +3,9 @@
 > **Status:** Architecture Design — Ready for Implementation Planning  
 > **Date:** 2026-08-15  
 > **Author:** AgentVerse Platform Team  
-> **Scope:** Complete trigger system redesign — all 9 trigger families, 40+ trigger types  
+> **Scope:** Complete trigger system redesign — all 9 trigger families, **58 trigger types**  
 > **Current baseline:** 10 trigger types (`CRON`, `INTERVAL`, `ONCE`, `WEBHOOK`, `REST`, `EVENT`, `FILE_DROP`, `ALERTMANAGER`, `DATADOG`, `PAGERDUTY`)  
-> **Target:** 40+ trigger types across 9 families with unified dispatch architecture
+> **Target:** 58 trigger types across 9 families with unified dispatch architecture
 
 ---
 
@@ -18,10 +18,10 @@ The target architecture covers:
 | Family | Triggers | Key capability unlocked |
 |---|---|---|
 | **A. Time** | CRON, INTERVAL, ONCE, BUSINESS_CALENDAR, RELATIVE_DELAY, DEADLINE | Business-aware scheduling |
-| **B. Goal Chaining** | GOAL_COMPLETED, GOAL_FAILED, GOAL_SCORE_BELOW, HITL_APPROVED, HITL_REJECTED | Multi-step autonomous pipelines |
+| **B. Goal Chaining** | GOAL_COMPLETED, GOAL_FAILED, GOAL_SCORE_BELOW, HITL_APPROVED, HITL_REJECTED, MEMORY_CREATED | Multi-step autonomous pipelines |
 | **C. Conversational / Chat** | CHAT_COMMAND, CHAT_KEYWORD, CHAT_MENTION, EMAIL_INTENT, SMS_INBOUND, VOICE_TRANSCRIPT, MEETING_ENDED, FORM_SUBMISSION | "Talk to your agents" from any channel |
 | **D. Condition / State** | CONDITION, COUNTER_THRESHOLD, COMPOUND, STATE_TRANSITION, WINDOW_AGGREGATE | Any data point becomes a trigger |
-| **E. Inbound HTTP / Webhook** | WEBHOOK, REST, GITHUB_WEBHOOK, JIRA_WEBHOOK, STRIPE_WEBHOOK, SLACK_EVENT, SALESFORCE_EVENT, CONFLUENCE_WEBHOOK, LINEAR_WEBHOOK | Platform-native structured events |
+| **E. Inbound HTTP / Webhook** | EVENT, WEBHOOK, REST, GITHUB_WEBHOOK, JIRA_WEBHOOK, STRIPE_WEBHOOK, SLACK_EVENT, TEAMS_WEBHOOK, DISCORD_EVENT, SALESFORCE_EVENT, CONFLUENCE_WEBHOOK, LINEAR_WEBHOOK | Platform-native structured events |
 | **F. Data / Storage** | FILE_DROP, DB_ROW_CHANGE, S3_EVENT, EMAIL_ARRIVAL, RSS_FEED, GOOGLE_SHEETS, SHAREPOINT | Data changes trigger action |
 | **G. Observability / Alerting** | ALERTMANAGER, DATADOG, PAGERDUTY, GRAFANA_ALERT, CLOUDWATCH, SENTRY_ISSUE, LOG_PATTERN | Ops events drive remediation |
 | **H. Polling / External API** | API_POLL, GRAPHQL_SUBSCRIPTION, WEBSOCKET_MESSAGE, PRICE_THRESHOLD | External state changes trigger agents |
