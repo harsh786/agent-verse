@@ -310,7 +310,7 @@ async def test_graph_records_structured_tool_call_metrics(monkeypatch: pytest.Mo
     ) -> None:
         calls.append((tool_name, connector_name, status, duration_seconds))
 
-    monkeypatch.setattr("app.agent.graph.record_tool_call", record_tool_call)
+    monkeypatch.setattr("app.agent.nodes.executor_mixin.record_tool_call", record_tool_call)
 
     g = AgentGraph(
         planner=planner,
@@ -1255,7 +1255,7 @@ async def test_graph_permission_deny_records_denied_tool_metric(
     ) -> None:
         calls.append((tool_name, connector_name, status, duration_seconds))
 
-    monkeypatch.setattr("app.agent.graph.record_tool_call", record_tool_call)
+    monkeypatch.setattr("app.agent.nodes.executor_mixin.record_tool_call", record_tool_call)
 
     g = AgentGraph(planner=p, executor=p, verifier=p, permission_matrix=matrix)
     with pytest.raises(PermissionError, match="restricted_tool"):
@@ -1290,7 +1290,7 @@ async def test_graph_policy_deny_records_denied_tool_metric(
     ) -> None:
         calls.append((tool_name, connector_name, status, duration_seconds))
 
-    monkeypatch.setattr("app.agent.graph.record_tool_call", record_tool_call)
+    monkeypatch.setattr("app.agent.nodes.executor_mixin.record_tool_call", record_tool_call)
 
     g = AgentGraph(planner=p, executor=p, verifier=p, policy_engine=policy_engine)
     with pytest.raises(PermissionError, match="restricted_tool"):

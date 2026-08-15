@@ -101,10 +101,11 @@ class ExecutorMixin:
         ):
             from app.agent.goal_tree import execute_goal_tree
 
-            def _sub_graph_factory() -> AgentGraph:
+            def _sub_graph_factory() -> "AgentGraph":
+                from app.agent.graph import AgentGraph as AgentGraph_  # local import to avoid circular
                 from opentelemetry import context as otel_context
 
-                graph = AgentGraph(
+                graph = AgentGraph_(
                     planner=self._planner,
                     executor=self._executor,
                     verifier=self._verifier,
