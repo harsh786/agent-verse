@@ -1339,6 +1339,68 @@ Secrets stored in `TenantVault` — never in plain text in `triggers` table. Col
 - Maximum rendered length: 2,048 characters
 - HTML/JS escaped by default
 
+### 13.5 Cron Expression Validation
+
+All cron expressions are validated at CREATE time using `croniter` before the trigger is persisted:
+
+```python
+from croniter import croniter, CroniterBadCronError
+
+def validate_cron(expression: str, timezone: str = "UTC") -> None:
+    """Validate a cron expression; raise ValueError on bad syntax."""
+    try:
+        croniter(expression)
+    except CroniterBadCronError as exc:
+        raise ValueError(f"Invalid cron expression '{expression}': {exc}") from exc
+    # Additional constraints by plan tier:
+    #   free/starter: minimum interval = 1 hour (prevent abuse)
+    #   professional: minimum interval = 1 minute
+    #   enterprise: minimum interval = 1 second (Quartz-style)
+```
+
+The `TriggerScheduler` also validates that `timezone` is a valid IANA timezone via `zoneinfo.ZoneInfo` before storing.
+
+### 13.6 Webhook Secret Rotation
+
+Webhook secrets support zero-downtime rotation via a **dual-secret grace period**:
+
+```python
+@dataclass
+class WebhookSecretRotation:
+    trigger_id:       str
+    old_secret_ref:   str           # vault://old-key (still valid during grace period)
+    new_secret_ref:   str           # vault://new-key (active)
+    rotation_started: datetime
+    grace_period_ends: datetime     # old secret invalidated after this
+```
+
+During the grace period `WebhookSignatureVerifier.verify()` tries `new_secret_ref` first, then `old_secret_ref`. After `grace_period_ends`, only `new_secret_ref` is accepted.
+
+API:
+```
+POST /api/v1/triggers/{id}/rotate-secret   # initiates rotation, returns new secret
+GET  /api/v1/triggers/{id}/rotation-status # check if rotation complete
+```
+
+### 13.7 Bulkhead Isolation
+
+Each tenant's trigger dispatching is isolated via a **per-tenant bulkhead** to prevent one noisy tenant from exhausting shared Celery worker capacity:
+
+```python
+@dataclass
+class TriggerBulkhead:
+    tenant_id:              str
+    max_concurrent_goals:   int       # from plan tier (Free=2, Starter=10, Professional=100, Enterprise=custom)
+    current_in_flight:      int = 0   # tracked in Redis INCR/DECR
+    overflow_policy:        Literal["reject", "queue"] = "queue"
+```
+
+When `current_in_flight >= max_concurrent_goals`:
+- `overflow_policy="reject"`: trigger event is sent to DLQ with `BULKHEAD_FULL` failure type
+- `overflow_policy="queue"`: trigger event waits in a per-tenant overflow queue (max depth 50)
+
+The bulkhead is separate from the circuit breaker: the bulkhead limits concurrency, the circuit breaker responds to error rates.
+
 ---
 
 ## 14. Tenant Plan-Tier Limits
