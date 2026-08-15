@@ -17,23 +17,59 @@
 | **Multi-trigger** | Any workflow can be triggered by webhook, schedule, natural language, or API |
 | **HITL gates** | Any step can pause for human approval before proceeding |
 | **Sub-workflow reuse** | A workflow can invoke another workflow as a step |
+| **Idempotency** | Every step is designed for safe retry; duplicate executions produce the same outcome |
+| **Observability** | All step inputs, outputs, latency, and cost are recorded as OTel spans; no silent failures |
+| **Version governance** | Workflow definitions are versioned; in-flight runs complete on the version they started |
+| **Graceful degradation** | Step failures escalate to HITL or DLQ — never silently swallowed |
+| **Tenant isolation** | Every workflow run is scoped to a tenant; cross-tenant data access is blocked at the tool layer |
 
 ---
 
 ## Step Type Reference
 
-| Type | Description | Example |
-|---|---|---|
-| `tool` | Execute a specific MCP tool | `ocr.extract_document`, `email.send` |
-| `llm` | LLM call with a prompt template | Extract fields, summarize, decide |
-| `rag` | Knowledge retrieval from a collection | Find matching policies |
-| `conditional` | Branch based on output field value | `if risk_score > 0.8 → approve` |
-| `hitl` | Human-in-the-loop gate | Manual review before sending |
-| `sub_workflow` | Invoke another workflow as a step | KYC inside Merchant Onboarding |
-| `http` | Raw HTTP call to external API | Fetch from third-party REST API |
-| `parallel` | Run N steps simultaneously | Multiple data enrichment calls |
-| `transform` | Map/format data without AI | JSON reshape, field rename |
-| `wait` | Delay or wait for external event | Wait 24h, wait for webhook callback |
+| Type | Description | Error Behaviour | Example |
+|---|---|---|---|
+| `tool` | Execute a specific MCP tool | Retry 3×, then escalate to HITL or DLQ | `ocr.extract_document`, `email.send` |
+| `llm` | LLM call with a prompt template | Retry 2× on timeout; validate output schema | Extract fields, summarise, decide |
+| `rag` | Knowledge retrieval from a collection | Return empty if no matches; do NOT block flow | Find matching policies |
+| `conditional` | Branch based on output field value | Branch to `fallback` path if expression errors | `if risk_score > 0.8 → approve` |
+| `hitl` | Human-in-the-loop gate | Timeout → auto-escalate to manager; max 7 days | Manual review before sending |
+| `sub_workflow` | Invoke another workflow as a step | Inherit sub-workflow's error policy | KYC inside Merchant Onboarding |
+| `http` | Raw HTTP call to external API | Retry 3× with exponential backoff; circuit-break at 5 failures | Fetch from third-party REST API |
+| `parallel` | Run N steps simultaneously | Wait for all; partial failures collected and reported | Multiple data enrichment calls |
+| `transform` | Map/format data without AI | Throw `TransformError`; fail fast — no retry | JSON reshape, field rename |
+| `wait` | Delay or wait for an external event | Timeout policy set per step; expired waits → HITL | Wait 24h, wait for webhook callback |
+
+---
+
+## Error Handling & Retry Policy
+
+### Per Step Type
+
+| Step type | Retry count | Retry delay | Timeout | On max retries | Alert channel |
+|---|---|---|---|---|---|
+| `tool` | 3 | Exponential (5s / 15s / 45s) | 30 s | DLQ → `on_failure_notify` | `#workflow-errors` |
+| `llm` | 2 | 3 s / 10 s | 120 s | Fallback prompt → HITL if still failing | `#workflow-errors` |
+| `rag` | 1 | 2 s | 10 s | Return empty list, continue | Silent (logged) |
+| `conditional` | 0 | — | 1 s | Branch to explicit `fallback` step if configured | `#workflow-errors` |
+| `hitl` | — | — | Configurable (default 7 days) | Auto-escalate to parent role | `on_failure_notify` |
+| `http` | 3 | Exponential (2s / 8s / 30s) | 30 s | DLQ | `#workflow-errors` |
+| `sub_workflow` | 1 | 10 s | Sub-workflow SLA | DLQ | Inherits sub-workflow policy |
+| `parallel` | Per sub-step | Per sub-step | Max of sub-step timeouts | Partial failure report → HITL | `#workflow-errors` |
+| `transform` | 0 | — | 2 s | Fail workflow | `#workflow-errors` |
+| `wait` | — | — | Configurable (default 24 h) | Timeout event fires `on_wait_timeout` step | `on_failure_notify` |
+
+### Workflow-Level Error Policy
+
+```python
+WorkflowErrorPolicy(
+    max_step_failures=2,          # Halt workflow after N step failures
+    auto_retry_workflow=False,    # Don't retry the entire workflow by default
+    dlq_retention_days=30,        # Keep failed runs for 30 days
+    notify_on_halt="on_failure_notify",
+    capture_partial_output=True,  # Save outputs from completed steps even if workflow fails
+)
+```
 
 ---
 
@@ -680,6 +716,350 @@
 | 8c | `schedule_social` | `tool` | `social_manager.schedule_posts` | `social_content`, `channels`, `launch_date` | `post_ids` list |
 | 9 | `monitor_setup` | `tool` | `analytics.create_campaign_dashboard` | `campaign_ids`, `success_metrics` | `dashboard_url` |
 | 10 | `schedule_report` | `tool` | `workflow.schedule` | Report workflow, 48h after launch | `scheduled_report_run_id` |
+
+---
+
+## Appendix: MCP Tool Registry
+
+All tools referenced across the 60 workflows, grouped by service domain. Each entry maps to a connector that must be configured in `app/mcp/`.
+
+### Communication & Messaging
+| Tool | Description | Auth method |
+|---|---|---|
+| `email.send` | Send transactional/notification email | SMTP / SendGrid API key |
+| `email.send_bulk` | Send to a list of recipients | SendGrid / Mailchimp |
+| `email_platform.schedule_campaign` | Schedule marketing campaign email | HubSpot / Mailchimp |
+| `slack.send_message` | Post message to Slack channel or DM | Bot token (OAuth) |
+| `slack.invite_user` | Add user to workspace / channels | Bot token (OAuth) |
+| `sms.send` | Send SMS notification | Twilio API key |
+| `sms_platform.schedule_campaign` | Schedule SMS campaign | Twilio / Vonage |
+| `social.get_mentions` | Fetch brand mentions from social platforms | Social API key |
+| `social_manager.schedule_posts` | Schedule social media posts | Buffer / Hootsuite API |
+
+### CRM & Sales
+| Tool | Description | Auth method |
+|---|---|---|
+| `crm.get_customer` / `crm.get_opportunity` / `crm.get_opportunity_full` | Read CRM records | OAuth (Salesforce/HubSpot) |
+| `crm.update_contact` / `crm.update_opportunity` / `crm.update_status` | Write CRM records | OAuth |
+| `crm.create_opportunities` / `crm.create_task` | Create new CRM objects | OAuth |
+| `crm.assign_lead` / `crm.disqualify_lead` | Lead routing | OAuth |
+| `crm.get_renewals` / `crm.get_contracts` | Renewal/contract data | OAuth |
+| `crm.query_segment` / `crm.lookup` | Query and lookup | OAuth |
+| `crm.add_coaching_note` / `crm.add_competitive_notes` | Enrichment notes | OAuth |
+| `outreach.enroll_sequence` / `outreach.send_email` | Sales sequence automation | Outreach.io API |
+| `intent.get_signals` | B2B intent data | Bombora / 6Sense API |
+| `web.enrich_company` / `web.enrich_contact` | Contact enrichment | Apollo / Clearbit API |
+| `surveys.get_nps_history` / `survey.send` | Survey data | Delighted / Medallia API |
+
+### Identity, IAM & HR Systems
+| Tool | Description | Auth method |
+|---|---|---|
+| `identity.create_user` / `identity.list_users` | User lifecycle | Azure AD / Okta API |
+| `identity.assign_apps` / `identity.update_groups` / `identity.revoke_access` | Access management | Azure AD / Okta |
+| `identity.get_access_matrix` / `identity.get_audit_log` | Access audit | Azure AD |
+| `identity.update_saas_apps` / `identity.update_email` | App provisioning | SCIM protocol |
+| `iam.disable_user` / `iam.get_employee_access` | IAM operations | Cloud IAM API |
+| `gsuite.suspend_account` | Google Workspace account management | Google Admin SDK |
+| `hr.get_new_hires` / `hr.get_leavers` / `hr.get_salary_changes` | HRIS data | Workday / BambooHR API |
+| `hr.get_payroll_snapshot` / `hr.apply_correction` / `hr.send_survey` | Payroll & surveys | ADP / Workday API |
+| `hr.deliver_review` | Performance review delivery | HRIS API |
+| `hrms.update_employee` / `hrms.update_candidate` | HRMS writes | Workday API |
+| `lms.assign_courses` | Learning management | Cornerstone / Docebo API |
+| `calendar.schedule` / `calendar.create_event` | Calendar management | Google Calendar / Outlook API |
+
+### Engineering & DevOps
+| Tool | Description | Auth method |
+|---|---|---|
+| `github.create_pull_request` / `github.create_review` / `github.create_comment` | PR management | GitHub App token |
+| `github.get_pr_diff` / `github.get_commit_log` / `github.get_pull_request` | Repo reads | GitHub App token |
+| `github.add_member` / `github.create_release` | Org / release management | GitHub App token |
+| `git.blame` / `git.commit_file` / `git.get_commit_range` | Git operations | SSH key |
+| `ci.get_pipeline_runs` | CI/CD data | GitHub Actions / CircleCI API |
+| `terraform.validate` / `terraform.plan` / `terraform.apply` | IaC operations | Terraform CLI + cloud creds |
+| `code.search` | Semantic/regex code search | Codebase index |
+| `linter.run` | Run linter | ruff / ESLint CLI |
+| `security_scanner.run` | SAST scan | bandit / semgrep CLI |
+| `coverage.analyze` | Test coverage analysis | Coverage.py / Istanbul |
+| `dependency.audit` | Dependency vulnerability audit | npm audit / pip audit |
+| `deployment.get_recent` | Deployment history | CI/CD API |
+| `monitoring.check_health` / `monitoring.get_service_health` | Service health | Datadog / Prometheus API |
+| `monitoring.get_active_alerts` / `monitoring.get_correlated_alerts` | Alert data | Datadog / PagerDuty |
+| `pagerduty.get_incidents` / `pagerduty.resolve_incident` / `pagerduty.add_note` | Incident management | PagerDuty API key |
+| `logs.search` / `logs.redact` / `logging.fetch` | Log operations | CloudWatch / Loki API |
+| `tracing.get_recent_traces` | Distributed traces | Jaeger / Datadog APM |
+| `plc.send_command` | PLC / industrial control | OPC-UA / MQTT |
+
+### Finance, ERP & Procurement
+| Tool | Description | Auth method |
+|---|---|---|
+| `erp.get_actuals` / `erp.get_budget` / `erp.update_forecast` | Budget & actuals | SAP / NetSuite API |
+| `erp.match_po` / `erp.approve_invoice` / `erp.schedule_payment` | AP automation | ERP API |
+| `erp.find_vendor` / `erp.get_vendor` / `erp.check_duplicate_expense` | Vendor data | ERP API |
+| `erp.post_journal_entry` / `erp.update_budget_commitment` | GL & commitments | ERP API |
+| `erp.get_po_receipts` / `erp.get_invoice_accuracy` | AP KPIs | ERP API |
+| `erp.create_po` / `erp.three_way_match` | PO creation | ERP API |
+| `procurement.check_vendor` / `procurement.create_po` | Procurement ops | ERP / Coupa API |
+| `bank.fetch_statement` | Bank statement retrieval | Open Banking / Plaid |
+| `reconciliation.auto_match` / `erp.mark_reconciled` | Bank reconciliation | ERP API |
+| `transaction.approve` / `transaction.block` | Transaction controls | Payment processor API |
+| `payment.refund` / `payment_gateway.create_merchant` | Payment operations | Stripe / Adyen API |
+| `payroll.compute_final` / `payroll.process_reimbursement` / `payroll.schedule_reimbursement` | Payroll processing | ADP / Workday API |
+| `regulator.file_str` | Regulatory reporting (AML) | Regulator API |
+
+### Document, Storage & OCR
+| Tool | Description | Auth method |
+|---|---|---|
+| `ocr.extract_document` | OCR + document parsing | AgentVerse OCR engine |
+| `document.generate` / `document.assemble` | Document generation | Template engine |
+| `pdf.generate` | PDF generation | WeasyPrint / Puppeteer |
+| `esign.send` | E-signature request | DocuSign / Adobe Sign API |
+| `storage.upload` / `storage.create_package` / `storage.get_backup_report` | File/object storage | S3 / GCS / Azure Blob |
+| `knowledge.ingest` | Ingest document into knowledge store | AgentVerse RAG API |
+
+### Customer Service & Support
+| Tool | Description | Auth method |
+|---|---|---|
+| `support.get_history` / `support.update_ticket` | Support ticket operations | Zendesk / Freshdesk API |
+| `helpdesk.get_tickets` / `helpdesk.get_ticket_sentiment` / `helpdesk.get_vendor_tickets` | Ticket analytics | Helpdesk API |
+| `memory.write` / `memory.recall_by_customer` / `memory.search_by_tenant_user` / `memory.purge_by_user` | Agent memory | AgentVerse Memory API |
+
+### IT Operations
+| Tool | Description | Auth method |
+|---|---|---|
+| `cmdb.scan` / `cmdb.compare` / `cmdb.bulk_update` / `cmdb.register_resources` | CMDB management | ServiceNow API |
+| `itsm.approve_change` | ITSM change approval | ServiceNow API |
+| `sam.get_licence_usage` / `sam.get_usage_report` / `sam.update_licence` | Software asset management | Snow Software / Flexera |
+| `mdm.get_device_inventory` | Mobile device management | Jamf / Intune API |
+| `license_manager.release` | Licence deallocation | SAM API |
+| `cloud.estimate_cost` / `cloud.get_resource_inventory` / `cloud.revoke_permissions` | Cloud management | AWS / Azure / GCP API |
+
+### Supply Chain & Logistics
+| Tool | Description | Auth method |
+|---|---|---|
+| `wms.get_stock_levels` / `wms.hold_batch` | Warehouse management | WMS API |
+| `oms.get_order` / `oms.approve_return` / `oms.update_shipment` | Order management | OMS API |
+| `inventory.return_item` / `logistics.schedule_pickup` / `logistics.schedule_delivery` | Inventory & logistics | WMS / 3PL API |
+| `carrier.get_tracking` / `carrier.book_shipment` / `carrier.generate_label` / `carrier.file_claim` | Carrier operations | FedEx / UPS / DHL API |
+| `fedex.get_rate` / `ups.get_rate` / `dhl.get_rate` / `regional_carrier.get_rate` | Rate shopping | Carrier APIs |
+
+### Data & Analytics
+| Tool | Description | Auth method |
+|---|---|---|
+| `bi.run_query` / `bi.get_metric_timeseries` | BI data queries | Looker / Power BI API |
+| `analytics.get_usage` / `analytics.get_feature_usage` / `analytics.get_demand_forecast` | Product / demand analytics | Analytics platform API |
+| `analytics.log_win_loss` / `analytics.log_reorder_event` / `analytics.record_event` | Event logging | Internal analytics API |
+| `data_catalog.scan` / `data_catalog.detect_schema_changes` / `data_catalog.tag_assets` | Data catalogue | Alation / DataHub API |
+| `dq.run_null_checks` / `dq.run_volume_checks` / `dq.run_freshness_checks` | Data quality | Great Expectations / dbt |
+| `data_profiler.profile` | Column-level data profiling | Profiler library |
+| `lineage.trace` | Data lineage | OpenLineage / DataHub |
+| `pipeline.get_run_status` | Pipeline orchestrator status | Airflow / Dagster API |
+| `report.generate` / `report_portal.publish` | Report generation | Template engine / BI portal |
+
+### Web, Research & Market Intelligence
+| Tool | Description | Auth method |
+|---|---|---|
+| `web.search` | Web search | Bing Search / SerpAPI |
+| `web.scrape` | Web page scraping | Playwright / BeautifulSoup |
+| `rss.fetch` | RSS/Atom feed ingestion | HTTP |
+| `social.get_mentions` | Social media monitoring | Brand24 / Mention API |
+
+---
+
+## Appendix: RAG Collections Index
+
+All knowledge collections referenced across the 60 workflows. Every collection must be ingested and kept current before its dependent workflows can run reliably.
+
+| Collection ID | Content | Primary source | Refresh | Used by |
+|---|---|---|---|---|
+| `kyc-field-schemas` | Field extraction schemas per doc type (PAN, Passport, etc.) | Manually curated | On schema change | 1.1, 1.2, 1.5 |
+| `fraud-patterns` | Known fraud signals, device fingerprints, velocity patterns | Fraud team playbooks | Weekly | 1.1, 1.2, 2.3, 7.2 |
+| `aml-typologies` | FATF typologies, red-flag transaction patterns | FATF / regulator releases | Monthly | 1.3 |
+| `applicable-laws` | Privacy, data protection regulations (GDPR, CCPA) | Legal team docs | Quarterly | 1.4 |
+| `compliance-rules` | Internal compliance policies | Policy repository | On policy change | 1.4, 1.7, 1.8 |
+| `soc2-controls` | SOC2 control requirements and evidence criteria | Audit framework | Annually | 1.7 |
+| `vendor-sla` | SLA terms per vendor contract | Contract repository | On contract change | 9.2 |
+| `icp-criteria` | Ideal customer profile criteria and scoring rubrics | Sales ops docs | Quarterly | 8.1 |
+| `competitive-library` | Competitor analysis, win/loss data, battlecards | Sales intel team | Weekly | 5.5, 8.3, 8.4 |
+| `past-win-loss` | Historical win/loss deal data | CRM export | Weekly | 8.3 |
+| `product-catalog` | Product/SKU definitions, pricing, features | Product team docs | On release | 8.2, 9.1, 9.3 |
+| `pricing-book` | Pricing tiers, discount policies, CPQ rules | Finance / sales ops | On pricing change | 8.2 |
+| `company-capabilities` | Case studies, product features, differentiators | Marketing docs | Monthly | 5.4, 8.2 |
+| `product-docs` | Technical product documentation | Engineering wiki | On release | 5.4 |
+| `case-studies` | Customer success stories | Marketing team | Monthly | 5.4, 8.2 |
+| `vendor-pricing` | Market pricing intelligence per software vendor | Procurement research | Quarterly | 10.2 |
+| `runbooks` | Incident runbooks per service | Engineering wiki | On incident | 3.1, 3.8 |
+| `past-incidents` | Historical incident data: root cause, resolution | Incident tracker export | Weekly | 3.1 |
+| `coding-standards` | Team coding style guide, patterns, anti-patterns | Engineering wiki | On update | 3.3 |
+| `test-coverage` | Test coverage reports, untested component list | CI/CD export | Daily | 3.3 |
+| `infra-policies` | Infrastructure security/compliance policies | Platform team docs | On policy change | 3.7 |
+| `service-dependency-map` | Service dependency graph and call graph | Generated from codebase | On deploy | 10.4, 11.1 |
+| `change-history` | Historical change records and outcomes | CMDB / ITSM export | Daily | 10.4 |
+| `change-policy` | Change management policy and risk thresholds | ITSM policy docs | On policy change | 10.4 |
+| `soc2-controls` | SOC2 control requirements | Audit framework | Annually | 1.7 |
+| `expense-policy` | Expense approval rules, per diem limits, categories | Finance policy docs | Quarterly | 2.2 |
+| `finance-knowledge` | Finance glossary, variance analysis frameworks | Finance team docs | Quarterly | 2.6 |
+| `onboarding-library` | Onboarding plans by role/department | HR team docs | Quarterly | 6.3 |
+| `performance-rubric` | Performance evaluation criteria per level | HR / OD docs | Annually | 6.4 |
+| `job-requirements` | Job description templates, required competencies | TA team | On job change | 6.1 |
+| `churn-signals` | Churn predictor features, historical churn data | Data science team | Weekly | 4.3, 4.6 |
+| `knowledge-base` | Customer-facing product knowledge | Support docs | On release | 4.2, 4.5 |
+| `past-tickets` | Historical support tickets and resolutions | Helpdesk export | Daily | 4.2 |
+| `contract-templates` | Standard contract templates by type/jurisdiction | Legal team | On template change | 4.4 |
+| `risk-clauses-library` | High-risk contract clause patterns | Legal team | Quarterly | 5.1 |
+| `legal-taxonomy` | Legal entity types, contract categorisation | Legal team | On update | 5.1 |
+| `legal-requirements` | Regulatory requirements per jurisdiction | Legal / compliance | Quarterly | 5.1 |
+| `brand-guidelines` | Brand voice, tone, style guide | Marketing | On brand refresh | 4.5, 7.3 |
+| `marketing-regulations` | Advertising standards, email compliance rules | Legal / compliance | Quarterly | 7.3 |
+| `return-policy` | Return eligibility rules, restocking fees | Operations docs | On policy change | 7.2 |
+| `return-fraud-patterns` | Return abuse patterns, high-risk signals | Loss prevention | Monthly | 7.2 |
+| `policy-terms` | Insurance policy terms and coverage definitions | Underwriting docs | On policy change | 7.4 |
+| `defect-library` | Known manufacturing defect types and root causes | Quality team | Monthly | 7.5 |
+| `quality-sops` | Quality control standard operating procedures | Quality team | On SOP change | 7.5 |
+| `preferred-vendors` | Approved vendor catalogue with pricing | Procurement team | Monthly | 9.1 |
+| `role-access-matrix` | RBAC mapping: role → apps / permissions | IT security | On role change | 1.6, 10.3 |
+| `business-calendar` | Company holiday calendar, fiscal calendar | HR / Finance | Annually | 11.3, 2.6 |
+| `pipeline-runbooks` | Data pipeline runbooks and debugging guides | Data engineering | On pipeline change | 11.1 |
+| `data-governance-policy` | Data classification rules, PII definitions, retention | Data governance team | Quarterly | 11.4 |
+| `carrier-performance` | Historical carrier reliability scores | Procurement / logistics | Weekly | 9.4 |
+| `patient-prep-guidelines` | Pre-procedure patient preparation instructions | Clinical team | On guideline update | 7.1 |
+
+---
+
+## Appendix: Workflow Priority & Complexity Matrix
+
+Implementation priority for all 60 workflows, scored on:
+- **Business value** (1–5): Revenue impact, risk reduction, operational savings
+- **Implementation effort** (S/M/L): Small < 3 days, Medium 3–10 days, Large > 10 days
+- **Dependencies**: Other workflows or infrastructure that must exist first
+
+### Wave 1 — Quick Wins (High value, Low effort)
+
+| Workflow | Business value | Effort | Key dependency | Estimated saving |
+|---|---|---|---|---|
+| 3.2 Production Bug Assistant | 5 | S | GitHub webhook | 60% MTTR reduction |
+| 3.4 Release Notes Generator | 3 | S | GitHub webhook | 2h/release saved |
+| 4.2 Support Ticket Triage | 5 | S | Helpdesk webhook | 40% routing accuracy |
+| 5.2 Meeting Minutes Generator | 4 | S | Calendar / Zoom webhook | 30 min/meeting saved |
+| 3.8 On-Call Handoff Report | 4 | S | PagerDuty + monitoring | Zero handoff gaps |
+| 2.2 Expense Report Processing | 4 | S | Email + ERP | 80% auto-approval rate |
+| 4.5 NPS Survey Follow-up | 4 | S | Survey webhook | 3× detractor response rate |
+| 5.5 Competitive Intel Digest | 3 | S | Web search + RSS | Weekly intel, zero effort |
+| 3.6 CI/CD Pipeline Health | 4 | S | CI API + Jira | Flaky test detection |
+| 11.2 Automated Report Distribution | 4 | S | BI API | 2h/week saved per analyst |
+
+### Wave 2 — Core Operations (High value, Medium effort)
+
+| Workflow | Business value | Effort | Key dependency | Estimated saving |
+|---|---|---|---|---|
+| 1.1 KYC Automation | 5 | M | OCR + sanctions API | 85% auto-completion rate |
+| 3.1 SRE Incident Response | 5 | M | Monitoring + runbooks RAG | 40% MTTR reduction |
+| 3.3 Automated Code Review | 4 | M | GitHub webhook + linters | 2h/PR review saved |
+| 2.1 Invoice Processing | 5 | M | OCR + ERP | 90% touchless rate |
+| 6.3 New Employee Onboarding | 5 | M | HRIS + Identity APIs | Day 1 productivity |
+| 2.5 Accounts Payable Automation | 5 | M | OCR + ERP + 3-way match | 95% auto-match rate |
+| 8.1 Lead Qualification | 5 | M | CRM + enrichment APIs | 2× sales rep productivity |
+| 4.6 Renewal Management | 5 | M | CRM + analytics | 15% churn reduction |
+| 9.1 Purchase Order Automation | 4 | M | ERP + approval workflow | 80% PO auto-approval |
+| 10.3 User Access Provisioning | 5 | M | Identity + HRIS webhook | Zero manual provisioning |
+
+### Wave 3 — Advanced Automation (High value, Large effort)
+
+| Workflow | Business value | Effort | Key dependency | Estimated saving |
+|---|---|---|---|---|
+| 1.2 Merchant Onboarding | 5 | L | KYC sub-workflow | 3-day → 4-hour cycle |
+| 2.3 Loan Pre-screening | 5 | L | Credit bureau API | 70% auto-decision rate |
+| 3.7 Infrastructure Provisioning | 4 | L | Terraform + cloud + CMDB | Zero infra tickets |
+| 6.4 Performance Review Cycle | 4 | L | HRIS + survey + calibration | 50% admin time saved |
+| 7.4 Insurance Claims Processing | 5 | L | OCR + fraud model + policy RAG | 3-day → 4-hour FNOL |
+| 8.2 Deal Desk & Proposal | 4 | L | CRM + CPQ + capabilities RAG | 4h → 30min proposal |
+| 10.4 Change Management | 4 | L | ITSM + monitoring + approval | Zero unsafe deployments |
+| 11.4 Data Governance & Catalogue | 4 | L | Data warehouse + CMDB | Automatic PII discovery |
+| 1.7 SOC2 Evidence Collection | 5 | L | All logging + identity + backup | 80% audit prep automated |
+
+### Wave 4 — Specialised / Industry (Medium value, Medium–Large effort)
+
+Build after Wave 3 core infrastructure is stable.
+
+| Workflow | Business value | Effort |
+|---|---|---|
+| 7.5 Manufacturing QC Alert | 5 (manufacturing only) | M |
+| 7.6 Logistics Tracking & Exception | 4 (logistics only) | M |
+| 9.4 3PL Carrier Selection | 4 (logistics only) | M |
+| 2.7 Payroll Exception | 4 | M |
+| 11.3 Analytics Anomaly Detection | 4 | L |
+| 1.8 Vendor Risk Assessment | 4 | M |
+| 5.4 RFP Response Automation | 4 | L |
+| 8.3 Win/Loss Analysis | 3 | M |
+| 9.2 Vendor Performance Review | 3 | M |
+
+---
+
+## Appendix: Workflow Trigger Quick Reference
+
+One-line trigger for all 60 workflows — use this to configure the trigger system.
+
+| Workflow | Primary trigger | Secondary trigger |
+|---|---|---|
+| 1.1 KYC Automation | `FILE_DROP` (`/kyc/inbound/`) | `WEBHOOK` (portal submission) |
+| 1.2 Merchant Onboarding | `FORM_SUBMISSION` (merchant intake) | `REST` (API) |
+| 1.3 AML Screening | `CRON` (nightly) | `DB_ROW_CHANGE` (new transaction) |
+| 1.4 GDPR Erasure | `REST` (DSR API) | `EMAIL_ARRIVAL` (data-protection@) |
+| 1.5 Background Check | `WEBHOOK` (HRIS offer accepted) | `REST` |
+| 1.6 Access Review | `CRON` (quarterly) | `REST` (manual) |
+| 1.7 SOC2 Evidence | `CRON` (monthly) | `ONCE` (before audit) |
+| 1.8 Vendor Risk | `FORM_SUBMISSION` (vendor intake) | `JIRA_WEBHOOK` |
+| 2.1 Invoice Processing | `FILE_DROP` (`/invoices/`) | `EMAIL_ARRIVAL` (AP inbox) |
+| 2.2 Expense Report | `WEBHOOK` (expense tool) | `EMAIL_ARRIVAL` |
+| 2.3 Loan Pre-screening | `FORM_SUBMISSION` (loan app) | `REST` |
+| 2.4 Bank Reconciliation | `CRON` (daily) | `REST` |
+| 2.5 AP Automation | `FILE_DROP` | `EMAIL_ARRIVAL` (AP inbox) |
+| 2.6 Budget Forecasting | `CRON` (5th of month) | `REST` |
+| 2.7 Payroll Exception | `CRON` (20th of month) | `REST` |
+| 3.1 SRE Incident Response | `ALERTMANAGER` | `PAGERDUTY` |
+| 3.2 Production Bug | `GITHUB_WEBHOOK` (bug issue) | `SENTRY_ISSUE` |
+| 3.3 Code Review | `GITHUB_WEBHOOK` (PR opened) | — |
+| 3.4 Release Notes | `GITHUB_WEBHOOK` (release tag) | `REST` |
+| 3.5 Security Vulnerability | `GITHUB_WEBHOOK` (Dependabot) | `SENTRY_ISSUE` |
+| 3.6 CI/CD Health | `CRON` (daily) | `WEBHOOK` (threshold exceeded) |
+| 3.7 Infra Provisioning | `CHAT_COMMAND` (`/provision`) | `FORM_SUBMISSION` |
+| 3.8 On-Call Handoff | `CRON` (twice daily) | — |
+| 4.1 Email Auto-Response | `EMAIL_ARRIVAL` (support@) | — |
+| 4.2 Ticket Triage | `WEBHOOK` (helpdesk) | `EMAIL_ARRIVAL` |
+| 4.3 Churn Prediction | `CRON` (weekly) | `GOAL_SCORE_BELOW` |
+| 4.4 Contract Generation | `CHAT_COMMAND` | `FORM_SUBMISSION` |
+| 4.5 NPS Follow-up | `WEBHOOK` (survey tool) | `EMAIL_ARRIVAL` |
+| 4.6 Renewal Management | `CRON` (weekly) | `DEADLINE` (renewal_date - 90d) |
+| 5.1 Legal Contract Analysis | `FILE_DROP` | `REST` |
+| 5.2 Meeting Minutes | `MEETING_ENDED` | `REST` |
+| 5.3 Research Digest | `CRON` (weekly) | `RSS_FEED` |
+| 5.4 RFP Response | `FILE_DROP` (`/rfp/inbound/`) | `EMAIL_ARRIVAL` |
+| 5.5 Competitive Intel | `CRON` (Monday weekly) | `REST` |
+| 6.1 Job Application Screening | `WEBHOOK` (ATS) | `GITHUB_WEBHOOK` (repo apply) |
+| 6.2 Employee Offboarding | `WEBHOOK` (HRIS termination) | `REST` |
+| 6.3 New Employee Onboarding | `WEBHOOK` (HRIS new hire) | `ONCE` (start date) |
+| 6.4 Performance Review | `ONCE` (review cycle start) | `CRON` (quarterly) |
+| 7.1 Patient Onboarding | `FORM_SUBMISSION` (patient portal) | `REST` |
+| 7.2 Return Processing | `WEBHOOK` (OMS return created) | `REST` |
+| 7.3 Campaign Automation | `CRON` (campaign schedule) | `WEBHOOK` (CRM segment ready) |
+| 7.4 Insurance Claims | `EMAIL_ARRIVAL` (claims@) | `FORM_SUBMISSION` |
+| 7.5 Manufacturing QC | `SENSOR_THRESHOLD` (`defect_rate > 2%`) | `MQTT` (production/line/quality) |
+| 7.6 Logistics Tracking | `WEBHOOK` (carrier webhook) | `API_POLL` (every 30 min) |
+| 8.1 Lead Qualification | `WEBHOOK` (CRM lead created) | `FORM_SUBMISSION` |
+| 8.2 Deal Desk & Proposal | `CHAT_COMMAND` (`/generate-proposal`) | `JIRA_WEBHOOK` |
+| 8.3 Win/Loss Analysis | `WEBHOOK` (CRM closed) | `CRON` (monthly) |
+| 8.4 Upsell Detection | `CRON` (weekly) | `GOAL_COMPLETED` (post-renewal) |
+| 9.1 PO Automation | `WEBHOOK` (ERP requisition) | `FORM_SUBMISSION` |
+| 9.2 Vendor Performance | `CRON` (quarterly) | — |
+| 9.3 Inventory Reorder | `CRON` (daily) | `SENSOR_THRESHOLD` (WMS alert) |
+| 9.4 3PL Carrier Booking | `WEBHOOK` (OMS shipment) | `GOAL_COMPLETED` (fulfilment) |
+| 10.1 IT Asset Lifecycle | `CRON` (nightly) | `WEBHOOK` (CMDB change) |
+| 10.2 Licence Renewal | `DEADLINE` (renewal_date - 60d) | — |
+| 10.3 Access Provisioning | `WEBHOOK` (HRIS lifecycle event) | `GOAL_COMPLETED` (onboarding) |
+| 10.4 Change Management | `JIRA_WEBHOOK` (change ticket) | `GITHUB_WEBHOOK` (release PR) |
+| 11.1 Pipeline Health | `CRON` (hourly) | `WEBHOOK` (orchestrator alert) |
+| 11.2 Report Distribution | `CRON` (configurable) | `REST` (on-demand) |
+| 11.3 Anomaly Detection | `CRON` (every 4 hours) | `WINDOW_AGGREGATE` (2σ deviation) |
+| 11.4 Data Governance | `CRON` (daily) | `DB_ROW_CHANGE` (new table) |
 
 ---
 
