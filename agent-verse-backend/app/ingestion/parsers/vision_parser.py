@@ -1,8 +1,21 @@
-"""VisionParser — describes images using GPT-4o or Claude Vision."""
+"""VisionParser — describes images using GPT-4o or Claude Vision.
+
+Supports two modes:
+1. Protocol mode: inject an ``LLMProvider`` on construction; uses
+   ``provider.complete()`` with image_data — works with any provider that
+   implements ``supports_vision()``.
+2. Legacy SDK mode (default): falls back to direct OpenAI / Anthropic SDK
+   calls when no provider is injected.  The ``prefer_provider`` string
+   controls the attempt order.
+"""
 from __future__ import annotations
 import base64
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.providers.base import LLMProvider
 
 
 @dataclass
@@ -37,8 +50,23 @@ def _detect_image_mime(image_bytes: bytes) -> str:
 
 
 class VisionParser:
-    def __init__(self, prefer_provider: str = "openai") -> None:
+    def __init__(
+        self,
+        prefer_provider: str = "openai",
+        provider: LLMProvider | None = None,
+    ) -> None:
         self._prefer = prefer_provider
+        self._provider = provider  # injected LLMProvider Protocol (optional)
+
+        # Dispatch table eliminates if/elif chains over provider names.
+        # Keys match the strings in the preference list; values are bound methods.
+        self._sdk_dispatch: dict[
+            str,
+            Callable[[str, str, str], Coroutine[Any, Any, str]],
+        ] = {
+            "openai": self._describe_with_openai,
+            "anthropic": self._describe_with_anthropic,
+        }
 
     async def parse_image_bytes(
         self,
@@ -50,16 +78,43 @@ class VisionParser:
             return VisionParseResult(source_name=source_name, error="empty image")
         mime_type = _detect_image_mime(image_bytes)
         b64_image = base64.standard_b64encode(image_bytes).decode()
-        providers = ["openai", "anthropic"] if self._prefer == "openai" else ["anthropic", "openai"]
-        last_error = ""
-        for provider in providers:
+
+        # ── Protocol path: use the injected LLMProvider if available ──────────
+        if self._provider is not None:
             try:
-                if provider == "openai":
-                    description = await self._describe_with_openai(b64_image, mime_type, prompt)
-                else:
-                    description = await self._describe_with_anthropic(b64_image, mime_type, prompt)
+                description = await self._describe_with_provider(
+                    self._provider, b64_image, mime_type, prompt
+                )
                 return VisionParseResult(
-                    source_name=source_name, description=description, model_used=provider
+                    source_name=source_name,
+                    description=description,
+                    model_used="llm_provider",
+                )
+            except Exception as exc:
+                return VisionParseResult(
+                    source_name=source_name,
+                    description=f"[Image: {source_name}]",
+                    error=str(exc),
+                    model_used="fallback",
+                )
+
+        # ── Legacy SDK path: try providers in preference order via dispatch ───
+        providers = (
+            ["openai", "anthropic"]
+            if self._prefer == "openai"
+            else ["anthropic", "openai"]
+        )
+        last_error = ""
+        for provider_name in providers:
+            describe_fn = self._sdk_dispatch.get(provider_name)
+            if describe_fn is None:
+                continue
+            try:
+                description = await describe_fn(b64_image, mime_type, prompt)
+                return VisionParseResult(
+                    source_name=source_name,
+                    description=description,
+                    model_used=provider_name,
                 )
             except Exception as exc:
                 last_error = str(exc)
@@ -69,6 +124,36 @@ class VisionParser:
             error=last_error,
             model_used="fallback",
         )
+
+    async def _describe_with_provider(
+        self,
+        provider: LLMProvider,
+        b64_image: str,
+        mime_type: str,
+        prompt: str,
+    ) -> str:
+        """Use the injected LLMProvider Protocol to describe the image.
+
+        Builds a CompletionRequest with the base64-encoded image in the
+        message content, delegating all provider-specific details to the
+        provider implementation.
+        """
+        from app.providers.base import CompletionRequest, Message
+
+        request = CompletionRequest(
+            messages=[
+                Message(
+                    role="user",
+                    content=prompt,
+                    image_data=b64_image,
+                )
+            ],
+            model="",  # provider picks the vision-capable model
+            system="You are an expert image analyst. Describe the image accurately.",
+            max_tokens=500,
+        )
+        response = await provider.complete(request)
+        return response.content or ""
 
     async def _describe_with_openai(self, b64_image: str, mime_type: str, prompt: str) -> str:
         import openai  # type: ignore[import]
