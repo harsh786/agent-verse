@@ -417,7 +417,7 @@ ALTER TABLE state_machine_instances ENABLE ROW LEVEL SECURITY;
 | P0-13 | `app/triggers/quota.py` | `TriggerQuotaEnforcer.check_create(tenant_id)` |
 | P0-14 | `app/triggers/rbac.py` | `TriggerPermissionMatrix` — 5 roles × 8 operations |
 | P0-15 | `app/triggers/dispatcher.py` | `TriggerDispatcher._dispatch()` skeleton — pipeline steps as hooks |
-| P0-16 | `app/triggers/dlq.py` | `write_to_dlq()`, `retry_from_dlq()`, `dismiss_dlq_entry()` |
+| P0-16 | `app/triggers/dlq.py` | `write_to_dlq()`, `retry_from_dlq()`, `dismiss_dlq_entry()`; retry uses exponential backoff: 3 attempts at 5s/15s/45s delays |
 | P0-17 | `app/triggers/store.py` | Rename `ScheduleStore → TriggerStore`; backward-compat alias |
 | P0-18 | `app/api/triggers.py` | CRUD endpoints: POST/GET/PATCH/DELETE `/api/v1/triggers` |
 | P0-19 | `app/api/triggers.py` | DLQ endpoints: GET/POST `/api/v1/triggers/dlq`, POST `.../retry`, POST `.../dismiss` |
