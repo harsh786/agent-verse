@@ -21,7 +21,7 @@ async def test_execute_step_threads_goal_id_to_rag_cost_execution() -> None:
     agent_state = AgentState(goal="goal with retrieval", tenant_ctx=tenant)
 
     with patch(
-        "app.agent.graph.smart_context_fetch",
+        "app.agent.nodes.executor_mixin.smart_context_fetch",
         AsyncMock(return_value=""),
     ) as fetch:
         await graph._execute_step("step 1", agent_state, tenant)
