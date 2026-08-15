@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     voyage_api_key: str = ""
 
+    # --- default model names per task type (override via env vars) ---
+    default_planning_model: str = "gpt-5.2"
+    default_planning_provider: str = "openai"
+    default_execution_model: str = "gpt-4o-mini"
+    default_execution_provider: str = "openai"
+    default_verification_model: str = "gpt-4o-mini"
+    default_verification_provider: str = "openai"
+    default_summarization_model: str = "claude-haiku-3-5"
+    default_summarization_provider: str = "anthropic"
+    default_classification_model: str = "gpt-4o-mini"
+    default_classification_provider: str = "openai"
+
     # --- feature flags ---
     civilization_enabled: bool = False
 

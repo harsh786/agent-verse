@@ -103,7 +103,10 @@ class ApproveRequest(BaseModel):
 
 
 def _goal_service(request: Request) -> Any:
-    return request.app.state.goal_service
+    # Re-export from _deps for backward compatibility with existing usages in this file.
+    # New code should use: Depends(get_goal_service) from app.api._deps
+    from app.api._deps import get_goal_service
+    return get_goal_service(request)
 
 
 def _require_tenant(request: Request) -> TenantContext:

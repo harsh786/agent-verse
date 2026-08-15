@@ -568,11 +568,13 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _agent_store(request: Request) -> AgentStore:
-    return request.app.state.agent_store  # type: ignore[no-any-return]
+    from app.api._deps import get_agent_store
+    return get_agent_store(request)  # type: ignore[no-any-return]
 
 
 def _meta_agent(request: Request) -> MetaAgentPlanner:
-    return request.app.state.meta_agent  # type: ignore[no-any-return]
+    from app.api._deps import get_meta_agent
+    return get_meta_agent(request)  # type: ignore[no-any-return]
 
 
 async def _create_agent_record(
