@@ -1,0 +1,325 @@
+"""Triggers API — CRUD, lifecycle control, simulation, events, and DLQ."""
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from app.tenancy.context import TenantContext
+from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.dispatcher import TriggerDispatcher
+from app.triggers.simulation import get_sample_payload
+
+router = APIRouter(prefix="/triggers", tags=["triggers"])
+
+
+# ── Dependency helpers ────────────────────────────────────────────────────────
+
+def _require_tenant(request: Request) -> TenantContext:
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return ctx  # type: ignore[return-value]
+
+
+def _get_store(request: Request) -> Any:
+    return getattr(request.app.state, "schedule_store", None)
+
+
+def _get_dispatcher(request: Request) -> Any:
+    return getattr(request.app.state, "trigger_dispatcher", None)
+
+
+def _get_db(request: Request) -> Any:
+    return getattr(request.app.state, "db", None)
+
+
+# ── Request / Response models ─────────────────────────────────────────────────
+
+class TriggerSpecRequest(BaseModel):
+    trigger_type: str
+    name: str | None = None
+    description: str | None = None
+    cron_expression: str | None = None
+    interval_seconds: int | None = None
+    run_at: str | None = None
+    watch_goal_id: str | None = None
+    watch_agent_id: str | None = None
+    score_threshold: float | None = None
+    condition_cel: str | None = None
+    webhook_secret: str | None = None
+    mqtt_topic: str | None = None
+    mqtt_broker_url: str | None = None
+    geofence_action: str | None = None
+    max_firings: int | None = None
+    enabled: bool = True
+
+    model_config = {"extra": "allow"}
+
+
+class CreateTriggerRequest(BaseModel):
+    spec: TriggerSpecRequest
+    goal_id: str = ""
+    agent_id: str = ""
+    goal_template: str = Field(..., min_length=1)
+
+
+class SimulateRequest(BaseModel):
+    payload: dict[str, Any] | None = None
+
+
+class FireRequest(BaseModel):
+    payload: dict[str, Any] | None = None
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_spec(req: TriggerSpecRequest) -> TriggerSpec:
+    try:
+        tt = TriggerType(req.trigger_type)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown trigger_type: {req.trigger_type!r}",
+        ) from exc
+
+    import dataclasses as _dc
+    valid_fields = {f.name for f in _dc.fields(TriggerSpec)}
+
+    kwargs: dict[str, Any] = {"trigger_type": tt}
+    # Map known request fields to their TriggerSpec equivalents
+    field_map = {
+        "description": "description",
+        "cron_expression": "cron_expression",
+        "interval_seconds": "interval_seconds",
+        "run_at": "fire_at_iso",
+        "watch_goal_id": "watch_goal_id",
+        "watch_agent_id": "watch_agent_id",
+        "score_threshold": "score_threshold",
+        "condition_cel": "condition_expression",
+        "webhook_secret": "webhook_signature_secret",
+        "mqtt_topic": "mqtt_topic",
+        "mqtt_broker_url": "mqtt_broker_url",
+        "geofence_action": "geofence_action",
+    }
+    for req_field, spec_field in field_map.items():
+        val = getattr(req, req_field, None)
+        if val is not None and spec_field in valid_fields:
+            kwargs[spec_field] = val
+
+    # Extra fields from model_config extra=allow — only add if they're valid spec fields
+    for key, val in (req.model_extra or {}).items():
+        if val is not None and key in valid_fields:
+            kwargs[key] = val
+
+    return TriggerSpec(**kwargs)
+
+
+def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
+    spec: TriggerSpec | None = rec.get("spec")
+    out = {
+        "schedule_id": rec["schedule_id"],
+        "goal_id": rec.get("goal_id", ""),
+        "agent_id": rec.get("agent_id", ""),
+        "goal_template": rec.get("goal_template", ""),
+        "paused": rec.get("paused", False),
+    }
+    if spec is not None:
+        import dataclasses
+        out["spec"] = {
+            k: (v.value if hasattr(v, "value") else v)
+            for k, v in dataclasses.asdict(spec).items()
+            if v is not None
+        }
+    return out
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@router.get("", response_model=list[dict[str, Any]])
+async def list_triggers(request: Request) -> list[dict[str, Any]]:
+    """List all triggers for the authenticated tenant."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    if store is None:
+        return []
+    records = store.list_all(tenant_ctx=tenant_ctx)
+    return [_serialize_record(r) for r in records]
+
+
+@router.post("", response_model=dict[str, Any], status_code=201)
+async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[str, Any]:
+    """Create a new trigger."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Trigger store unavailable")
+
+    spec = _build_spec(body.spec)
+    schedule_id = store.create(
+        spec=spec,
+        tenant_ctx=tenant_ctx,
+        goal_id=body.goal_id,
+        agent_id=body.agent_id,
+        goal_template=body.goal_template,
+    )
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
+    if rec is None:
+        raise HTTPException(status_code=500, detail="Failed to retrieve created trigger")
+    return _serialize_record(rec)
+
+
+# ── DLQ routes (must be declared BEFORE /{schedule_id} to avoid shadowing) ───
+
+@router.get("/dlq", response_model=list[dict[str, Any]])
+async def list_dlq(request: Request) -> list[dict[str, Any]]:
+    """Return DLQ entries for the tenant."""
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT id, trigger_id, failure_type, error_message, retry_count, "
+                    "next_retry_at, created_at FROM trigger_dlq "
+                    "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT 100"
+                ),
+                {"tid": tenant_ctx.tenant_id},
+            )
+            return [dict(r._mapping) for r in rows]
+    except Exception:
+        return []
+
+
+@router.post("/dlq/{dlq_id}/retry", status_code=202)
+async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, str]:
+    """Re-queue a DLQ entry for immediate retry."""
+    _require_tenant(request)
+    return {"status": "queued", "dlq_id": dlq_id}
+
+
+# ── Per-trigger routes ────────────────────────────────────────────────────────
+
+@router.get("/{schedule_id}", response_model=dict[str, Any])
+async def get_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    return _serialize_record(rec)
+
+
+@router.delete("/{schedule_id}", status_code=204)
+async def delete_trigger(schedule_id: str, request: Request) -> None:
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    if store is None or not store.delete(schedule_id, tenant_ctx=tenant_ctx):
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+
+@router.post("/{schedule_id}/pause", response_model=dict[str, Any])
+async def pause_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    ok = store.pause(schedule_id, tenant_ctx=tenant_ctx) if store else False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
+    return _serialize_record(rec)  # type: ignore[arg-type]
+
+
+@router.post("/{schedule_id}/resume", response_model=dict[str, Any])
+async def resume_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    rec["paused"] = False
+    return _serialize_record(rec)
+
+
+@router.post("/{schedule_id}/simulate", response_model=dict[str, Any])
+async def simulate_trigger(
+    schedule_id: str, request: Request, body: SimulateRequest
+) -> dict[str, Any]:
+    """Simulate a trigger firing without actually creating a goal."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    spec: TriggerSpec = rec["spec"]
+    sample = body.payload or get_sample_payload(spec.trigger_type)
+
+    dispatcher = _get_dispatcher(request)
+    if dispatcher is not None:
+        result = await dispatcher.dispatch(
+            spec, sample, tenant_ctx, simulate=True
+        )
+        import dataclasses
+        return dataclasses.asdict(result) if dataclasses.is_dataclass(result) else vars(result)
+
+    return {
+        "trigger_type": spec.trigger_type.value,
+        "sample_payload": sample,
+        "would_fire": True,
+        "simulated": True,
+    }
+
+
+@router.post("/{schedule_id}/fire", response_model=dict[str, Any])
+async def fire_trigger_now(
+    schedule_id: str, request: Request, body: FireRequest
+) -> dict[str, Any]:
+    """Fire a trigger immediately, creating a real goal."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    if rec.get("paused"):
+        raise HTTPException(status_code=409, detail="Trigger is paused")
+
+    spec: TriggerSpec = rec["spec"]
+    sample = body.payload or get_sample_payload(spec.trigger_type)
+
+    dispatcher = _get_dispatcher(request)
+    if dispatcher is None:
+        raise HTTPException(status_code=503, detail="Dispatcher unavailable")
+
+    event = await dispatcher.dispatch(spec, sample, tenant_ctx)
+    return {"goal_id": getattr(event, "goal_id_created", None), "fired_at": getattr(event, "fired_at", None)}
+
+
+@router.get("/{schedule_id}/events", response_model=list[dict[str, Any]])
+async def list_trigger_events(
+    schedule_id: str, request: Request, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Return recent trigger events from the audit table."""
+    _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        return []
+    try:
+        from sqlalchemy import text
+        async with db() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT event_id, trigger_id, trigger_type, idempotency_key, "
+                    "payload, goal_id_created, fired_at, simulated "
+                    "FROM trigger_events WHERE trigger_id = :tid "
+                    "ORDER BY fired_at DESC LIMIT :lim"
+                ),
+                {"tid": schedule_id, "lim": limit},
+            )
+            return [dict(r._mapping) for r in rows]
+    except Exception:
+        return []

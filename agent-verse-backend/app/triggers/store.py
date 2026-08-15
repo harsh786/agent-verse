@@ -271,6 +271,41 @@ class ScheduleStore:
             if tid == tenant_ctx.tenant_id
         ]
 
+    def find_by_type(
+        self, trigger_type: str, *, tenant_id: str
+    ) -> list[dict[str, Any]]:
+        """Return all enabled triggers of a given type for a tenant (in-memory)."""
+        result = []
+        for (tid, _), rec in self._data.items():
+            if tid != tenant_id:
+                continue
+            if rec.get("paused", False):
+                continue
+            spec = rec.get("spec")
+            if spec is not None and hasattr(spec, "trigger_type"):
+                tt = spec.trigger_type
+                rec_type = tt.value if hasattr(tt, "value") else str(tt)
+            else:
+                rec_type = str(rec.get("trigger_type", ""))
+            if rec_type == trigger_type:
+                result.append(rec)
+        return result
+
+    async def find_by_type_async(
+        self,
+        trigger_type: str | None = None,
+        *,
+        tenant_id: str,
+        **_: object,
+    ) -> list[dict[str, Any]]:
+        """Async version of find_by_type for use in consumers.
+
+        Accepts both positional and keyword ``trigger_type`` for ergonomics.
+        """
+        if trigger_type is None:
+            return []
+        return self.find_by_type(trigger_type, tenant_id=tenant_id)
+
     def delete(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
         key = (tenant_ctx.tenant_id, schedule_id)
         if key not in self._data:
