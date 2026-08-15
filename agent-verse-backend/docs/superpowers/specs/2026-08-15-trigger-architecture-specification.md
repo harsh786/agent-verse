@@ -1341,7 +1341,49 @@ Secrets stored in `TenantVault` — never in plain text in `triggers` table. Col
 
 ---
 
-## 14. Observability
+## 14. Tenant Plan-Tier Limits
+
+Each AgentVerse billing plan enforces trigger-level quotas at both CREATE time and runtime:
+
+| Quota | Free | Starter | Professional | Enterprise |
+|---|---|---|---|---|
+| Max triggers per tenant | 5 | 25 | 200 | Unlimited |
+| Max firings per trigger per hour | 10 | 60 | 600 | Custom |
+| Max concurrent in-flight trigger goals | 2 | 10 | 100 | Custom |
+| DLQ retention (days) | 3 | 14 | 30 | 90 |
+| Max payload size (KB) | 64 | 256 | 1024 | 4096 |
+| Webhook signature algorithm | HMAC-SHA256 | HMAC-SHA256 | HMAC-SHA256 + Ed25519 | HMAC-SHA256 + Ed25519 + custom |
+| Goal-chaining depth | 3 | 5 | 10 | 50 |
+| Cron expressions | Hourly+ | 15-min+ | 1-min+ | 1-second (custom Quartz) |
+| Circuit-breaker override | No | No | Yes | Yes |
+| NL trigger config | Limited | Full | Full | Full + training |
+| Simulation mode | No | Yes | Yes | Yes |
+| Cross-tenant templates | No | No | No | Yes |
+
+Enforcement happens in two places:
+
+1. **CREATE time** (`POST /api/v1/triggers`): `TriggerQuotaEnforcer.check_create(tenant_id, trigger_count)` raises `TriggerQuotaExceeded` (HTTP 429) if the tenant would exceed `max_triggers_per_tenant`.
+
+2. **Runtime** (`TriggerDispatcher._rate_limit_check`): Uses the tenant's plan to derive the effective `max_firings_per_hour` — the per-trigger `TriggerSpec.max_firings_per_hour` is capped at the plan ceiling.
+
+```python
+def _effective_rate_cap(spec: TriggerSpec, tenant_plan: str) -> int:
+    plan_caps = {
+        "free":         10,
+        "starter":      60,
+        "professional": 600,
+        "enterprise":   spec.max_firings_per_hour or 999_999,
+    }
+    plan_cap = plan_caps.get(tenant_plan, 10)
+    user_cap  = spec.max_firings_per_hour
+    if user_cap == 0:
+        return plan_cap          # 0 = user wants unlimited; enforce plan ceiling
+    return min(user_cap, plan_cap)
+```
+
+---
+
+## 14b. Observability
 
 ### 14.1 Metrics
 
@@ -1665,7 +1707,233 @@ TriggerSpec(
 
 ---
 
-## 19. Open Questions
+## 19. RBAC & Permission Model
+
+Every trigger operation is gated by the `TriggerPermissionMatrix`:
+
+```python
+TriggerPermissionMatrix = {
+    "admin":     ["create", "read", "update", "delete", "enable", "disable", "fire_manual", "view_history"],
+    "developer": ["create", "read", "update", "enable", "disable", "fire_manual", "view_history"],
+    "operator":  ["read", "enable", "disable", "fire_manual", "view_history"],
+    "viewer":    ["read", "view_history"],
+    "api_key":   ["fire_manual"],   # external callers: fire only, no CRUD
+}
+```
+
+**Chatbot / conversational triggers** additionally verify:
+- Slack/Teams user is a member of the tenant workspace (`/api/v1/auth/verify_member`)
+- User has `operator` role or above
+- The trigger's `allowed_roles` list (default: `["admin", "developer", "operator"]`) includes the caller's role
+
+**API-key-scoped triggers**: A trigger can be locked to a specific API key via `allowed_api_keys: list[str]` on `TriggerSpec`. Any webhook that does not present an API key in this list is rejected with HTTP 403 before HMAC is checked.
+
+**Audit gate**: Every `create`, `update`, `enable`, `disable`, and `delete` action on a trigger is written to `TriggerAuditEvent` before the operation is applied:
+
+```python
+@dataclass
+class TriggerAuditEvent:
+    event_id:       str            # uuid7
+    tenant_id:      str
+    trigger_id:     str
+    actor_id:       str            # user_id or api_key_id
+    actor_role:     str
+    action:         str            # create | update | enable | disable | delete | fire_manual
+    before_state:   dict | None    # snapshot of TriggerSpec before change
+    after_state:    dict | None    # snapshot after change
+    occurred_at:    datetime
+    ip_address:     str | None
+    request_id:     str
+```
+
+---
+
+## 20. Idempotency Design
+
+All trigger operations are idempotent end-to-end:
+
+### Trigger Firing Idempotency
+
+Each `TriggerEvent` carries an `idempotency_key` that is derived deterministically from the triggering signal:
+
+| Trigger family | Key composition |
+|---|---|
+| **Webhook / HTTP** | `sha256(trigger_id + request_body_hash + timestamp_bucket)` |
+| **Cron / Interval** | `trigger_id + scheduled_fire_time_iso` |
+| **Goal chaining** | `trigger_id + source_goal_id + completion_event_id` |
+| **DB row change** | `trigger_id + table + primary_key + txn_id` |
+| **Chat / conversational** | `trigger_id + message_id` |
+
+The `trigger_events` table enforces `UNIQUE (tenant_id, idempotency_key)`. Duplicate events within the deduplication window return HTTP 200 with the original `event_id` rather than creating a new goal.
+
+### Goal Creation Idempotency
+
+When the dispatcher creates a goal from a trigger, it passes `idempotency_key` to `GoalService.create_goal()`. The goal service checks `goals.idempotency_key` before INSERT, returning the existing goal ID if already created. This prevents double-goal creation on retries.
+
+### Trigger CRUD Idempotency
+
+All `PUT /triggers/{id}` operations use `If-Match: <etag>` optimistic concurrency. Concurrent updates from two processes fail the second with HTTP 409, forcing a re-read before retry.
+
+---
+
+## 21. Circuit Breaker & Fault Isolation
+
+Each trigger has its own per-trigger circuit breaker to prevent cascading failures:
+
+```python
+@dataclass
+class TriggerCircuitBreaker:
+    trigger_id:              str
+    state:                   Literal["closed", "open", "half_open"] = "closed"
+    failure_count:           int = 0
+    success_count:           int = 0
+    failure_threshold:       int = 5          # consecutive failures → open
+    success_threshold:       int = 2          # successes in half-open → closed
+    open_duration_seconds:   int = 60         # probe after this delay
+    last_failure_at:         datetime | None = None
+    last_state_change_at:    datetime | None = None
+```
+
+**State transitions:**
+- `closed → open`: 5 consecutive goal-creation failures for this trigger (e.g., downstream API unavailable, goal service overloaded)
+- `open → half_open`: After `open_duration_seconds`, one probe firing is allowed
+- `half_open → closed`: 2 consecutive successes in half-open state
+- `half_open → open`: Any failure while half-open resets the timer
+
+**Effects when open:**
+- Webhook triggers return **HTTP 202** (accepted but not dispatched) rather than 200; payload is stored in DLQ
+- Cron/interval triggers skip the firing silently and emit `trigger_circuit_open` metric
+- Chat triggers send a user-visible error: "Agent temporarily unavailable — retry in 60 seconds"
+
+**Tenant-level circuit breaker** (above the per-trigger level): If a tenant's aggregate goal failure rate exceeds 80% over a 5-minute window, ALL their triggers are suspended for 120 seconds and `#platform-ops` is alerted.
+
+---
+
+## 22. Observability & Distributed Tracing
+
+All trigger operations emit OTel spans and structured metrics.
+
+### Span Hierarchy
+
+```
+agentverse.trigger.fire  ← root span (created when signal arrives)
+  ├── agentverse.trigger.validate_signature
+  ├── agentverse.trigger.evaluate_condition
+  ├── agentverse.trigger.dedup_check
+  ├── agentverse.trigger.rate_limit_check
+  ├── agentverse.trigger.circuit_breaker_check
+  └── agentverse.trigger.dispatch_goal  ← child span
+        └── agentverse.goal.create
+```
+
+Span attributes:
+
+```python
+{
+    "trigger.id":          trigger_spec.trigger_id,
+    "trigger.type":        trigger_spec.trigger_type.value,
+    "trigger.tenant_id":   tenant_ctx.tenant_id,
+    "trigger.family":      trigger_spec.trigger_type.family,
+    "trigger.idempotency_key": event.idempotency_key,
+    "trigger.fired_at":    event.fired_at.isoformat(),
+    "trigger.goal_created": True | False,
+    "trigger.skip_reason":  "dedup" | "rate_limit" | "circuit_open" | "condition_false" | None,
+}
+```
+
+### Prometheus Metrics
+
+| Metric | Type | Labels |
+|---|---|---|
+| `agentverse_trigger_firings_total` | Counter | `trigger_type`, `tenant_plan`, `result` (success/dedup/rate_limited/circuit_open/error) |
+| `agentverse_trigger_dispatch_latency_seconds` | Histogram | `trigger_type`, `tenant_plan` |
+| `agentverse_trigger_goal_created_total` | Counter | `trigger_type`, `tenant_plan` |
+| `agentverse_trigger_circuit_state` | Gauge (0=closed, 1=half_open, 2=open) | `trigger_id`, `tenant_id` |
+| `agentverse_trigger_dlq_depth` | Gauge | `trigger_type`, `tenant_id` |
+| `agentverse_trigger_rate_limit_drops_total` | Counter | `trigger_type`, `tenant_id` |
+
+### Alert Rules
+
+```yaml
+# PagerDuty P2 alert: trigger DLQ depth spike
+- alert: TriggerDLQDepthHigh
+  expr: agentverse_trigger_dlq_depth > 100
+  for: 5m
+  labels: { severity: warning }
+
+# PagerDuty P1 alert: circuit breaker open across many triggers
+- alert: TriggerCircuitBreakerCascade
+  expr: count(agentverse_trigger_circuit_state == 2) by (tenant_id) > 10
+  for: 2m
+  labels: { severity: critical }
+```
+
+---
+
+## 23. Simulation & Testing Mode
+
+### Trigger Simulation Mode
+
+`TriggerSpec.simulation_mode: bool = False`
+
+When `simulation_mode=True`:
+- The trigger fires normally through the full pipeline (dedup, rate limit, condition evaluation, circuit breaker)
+- Instead of calling `GoalService.create_goal()`, the dispatcher writes to `simulated_trigger_events` table
+- Returns a `SimulatedTriggerResult` with `would_have_fired: bool`, `goal_template_rendered: str`, `skip_reason: str | None`
+- No real goals are created, no Celery tasks are enqueued
+
+```python
+@dataclass
+class SimulatedTriggerResult:
+    trigger_id:              str
+    trigger_type:            TriggerType
+    would_have_fired:        bool
+    skip_reason:             str | None     # "dedup" | "rate_limit" | "condition_false" | None
+    goal_template_rendered:  str            # fully resolved goal text
+    condition_evaluated:     bool | None    # result of condition_expression
+    estimated_cost_usd:      float | None   # estimated LLM cost of the resulting goal
+    simulated_at:            datetime
+```
+
+### Sandbox Test Payloads
+
+Each trigger type ships a `test_payload_factory()` that generates a realistic sample payload for testing without live integrations:
+
+```python
+# Example: test a GitHub webhook trigger without a real push
+result = await trigger_service.simulate(
+    trigger_id="trg_abc123",
+    test_payload=TriggerType.GITHUB_WEBHOOK.test_payload_factory(
+        event="push",
+        repo="acme/backend",
+        branch="main",
+        author="engineer@acme.com",
+    )
+)
+assert result.would_have_fired is True
+assert "Summarise commits in acme/backend" in result.goal_template_rendered
+```
+
+### Chaos / Failure Injection
+
+For integration testing, the `TriggerChaosHarness` wraps the dispatcher and injects controlled failures:
+
+```python
+chaos = TriggerChaosHarness(
+    inject_signature_failure_pct=10,    # 10% of webhooks fail HMAC
+    inject_condition_timeout_pct=5,     # 5% of CEL evaluations time out
+    inject_goal_service_down_for=30,    # goal service unavailable for 30 s
+)
+async with chaos.active():
+    await fire_test_webhooks(n=100)
+
+assert chaos.stats.dlq_writes >= 5      # failed events landed in DLQ
+assert chaos.stats.circuit_breaker_opens >= 1
+```
+
+---
+
+## 24. Open Questions
 
 | Question | Options | Recommendation |
 |---|---|---|
