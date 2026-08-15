@@ -1303,7 +1303,217 @@ src/features/state-machines/
 - Teams: copy webhook URL → paste into Teams admin
 - Discord: enter bot token → server/channel selector
 
-### 19.5 Frontend Test Coverage
+### 19.5 UI/UX Quality — World-Class Standards
+
+The frontend already has a high baseline (`SchedulesPage` has 4 tabs, analytics, AI advisor, NL scheduler). The trigger feature must match or exceed this quality.
+
+#### 19.5.1 Existing Library Integrations (already in `package.json`)
+
+| Library | Use in trigger feature |
+|---|---|
+| `@xyflow/react` v12 | `StateMachineEditor.tsx` — visual node editor for state machine definitions (states as nodes, transitions as edges) |
+| `@uiw/react-codemirror` v4 | `ConditionFamilyForm.tsx` — CEL expression editor with syntax highlighting, autocompletion, error underlines |
+| `recharts` v2 | `TriggerHistoryPanel.tsx` — firing rate sparkline; trigger distribution pie chart |
+| `d3-force` | `StateMachineEditor.tsx` — force-layout fallback for auto-positioning nodes |
+| `react-hotkeys-hook` | Global: `N` = new trigger, `?` = help overlay, `Cmd+K` = trigger search |
+| `@uiw/react-codemirror` | `GoalTemplateField.tsx` — syntax highlighting for `{{payload.field}}` interpolation |
+| `lucide-react` | All icons: family-specific icons (Clock=A, Link=B, MessageSquare=C, etc.) |
+
+#### 19.5.2 New Dependencies Required
+
+```bash
+npm install cronstrue        # cron expression → human-readable preview
+npm install --save-dev msw@2 # Mock Service Worker for integration tests
+```
+
+#### 19.5.3 Loading States (using existing `Skeleton.tsx`)
+
+Every async panel uses skeleton loading — no blank white boxes:
+
+```tsx
+// TriggerList.tsx — while loading
+<div className="space-y-3">
+  {[...Array(5)].map((_, i) => (
+    <Skeleton key={i} className="h-16 w-full rounded-xl" />
+  ))}
+</div>
+
+// TriggerHistoryPanel.tsx — while fetching history
+<Skeleton className="h-48 w-full rounded-xl" />
+
+// TriggerCard.tsx — last_fired shimmer
+<Skeleton className="h-4 w-24 inline-block" />
+```
+
+#### 19.5.4 Empty States (using existing `EmptyState.tsx`)
+
+| Scenario | Empty state message |
+|---|---|
+| No triggers | "No triggers yet. Create your first one to automate goal execution." + "New Trigger" CTA |
+| No triggers matching filter | "No triggers match your current filters." + "Clear filters" action |
+| No firing history | "This trigger has never fired." + (if disabled) "Enable to start firing" |
+| Empty DLQ | "No failed firings — this trigger is healthy." + green checkmark |
+| No channel mappings | "No channels connected. Connect Slack, Teams, or Discord to enable conversational triggers." |
+
+#### 19.5.5 Error States
+
+```tsx
+// Any TanStack Query error → inline error banner with retry
+{isError && (
+  <div role="alert" className="flex items-center gap-2 text-destructive text-sm p-3 bg-destructive/10 rounded-lg border border-destructive/20">
+    <AlertCircle className="w-4 h-4 shrink-0" />
+    <span>Failed to load triggers.</span>
+    <button onClick={() => refetch()} className="ml-auto text-sm underline">Retry</button>
+  </div>
+)}
+```
+
+#### 19.5.6 Accessibility (WCAG 2.2 AA)
+
+- All interactive elements: `aria-label`, `role`, `aria-expanded`, `aria-haspopup`
+- Trigger status badge: `aria-label="Trigger status: enabled"` / `"circuit open"` / `"disabled"`
+- Create wizard: `aria-live="polite"` on step progress; `aria-current="step"` on active step
+- CEL editor: `aria-label="CEL condition expression"`, `aria-describedby` pointing to CEL reference docs link
+- DLQ table: `<th scope="col">`, `<caption>`, keyboard-navigable rows
+- Modal focus trap on `TriggerCreateModal`, `TriggerDeleteDialog`
+- Color contrast: status badges use text+color (never color alone) — e.g. `● Enabled` not just green dot
+- Keyboard: `Escape` closes modals; `Tab` navigates all form fields; `Space`/`Enter` toggles checkboxes
+
+#### 19.5.7 Responsive Design
+
+| Breakpoint | Layout |
+|---|---|
+| Mobile (`< 640px`) | Single column; trigger card stack; family picker scrolls horizontally |
+| Tablet (`640px–1024px`) | Two-column card grid; drawer replaces full modal on small tablet |
+| Desktop (`> 1024px`) | Three-column card grid; side-by-side list + detail panel |
+
+#### 19.5.8 Micro-interactions & Animations
+
+- **Trigger card status toggle**: smooth CSS transition on the enabled/disabled pill (150ms ease)
+- **DLQ retry button**: spinner + optimistic "Retrying..." state; success → row fades out
+- **Simulation result**: slide-in from right with fade on `SimulatedTriggerResult` panel
+- **Circuit breaker badge**: pulsing yellow ring when circuit is `half_open` (CSS `animate-pulse`)
+- **Manual fire button**: confetti burst (using Web Animation API) on successful `would_have_fired: true`
+- **Create wizard step transition**: horizontal slide between steps
+- **Cron preview**: debounced 300ms — typed cron → `cronstrue.toString()` preview updates inline
+
+#### 19.5.9 Real-time Feedback on CEL Expression
+
+```tsx
+// ConditionFamilyForm.tsx — live CEL validation
+const [celError, setCelError] = useState<string | null>(null);
+const [celResult, setCelResult] = useState<boolean | null>(null);
+
+// On blur/change: POST /api/v1/triggers/validate-condition {expression, test_payload}
+// → {valid: bool, error_message: str | null, evaluated_to: bool | null}
+```
+
+Show inline below the editor:
+- Green "✓ Valid expression" with evaluated result
+- Red "✗ Parse error: unexpected token '+'" with error highlighted in CodeMirror
+
+#### 19.5.10 Goal Template Preview
+
+Every form that has a `goal_template` field shows a live rendered preview:
+
+```tsx
+// GoalTemplateField.tsx
+<div className="mt-2 p-3 bg-muted rounded-lg text-sm font-mono text-muted-foreground">
+  <span className="text-xs text-muted-foreground uppercase tracking-wide">Preview:</span>
+  <p>{renderTemplate(goalTemplate, samplePayload)}</p>
+</div>
+```
+
+`samplePayload` comes from `test_payload_factory(triggerType)` on the backend — the same factory used in simulation mode.
+
+#### 19.5.11 Keyboard Shortcuts (react-hotkeys-hook)
+
+```tsx
+// In TriggersPage.tsx
+useHotkeys('n', () => setShowCreate(true), { description: 'New trigger' });
+useHotkeys('?', () => setShowHelp(true), { description: 'Keyboard shortcuts' });
+useHotkeys('mod+k', () => setShowSearch(true), { description: 'Search triggers' });
+useHotkeys('mod+r', () => refetch(), { description: 'Refresh list' });
+useHotkeys('escape', () => { setShowCreate(false); setShowSearch(false); });
+```
+
+#### 19.5.12 Family Icon System
+
+Each family gets a consistent icon + color throughout the UI:
+
+| Family | Icon | Color |
+|---|---|---|
+| A Time/Schedule | `Clock` | `blue-500` |
+| B Goal/Chain | `Link2` | `purple-500` |
+| C Conversational | `MessageSquare` | `green-500` |
+| D Condition/State | `GitBranch` | `orange-500` |
+| E External Events | `Webhook` | `red-500` |
+| F Data/File | `Database` | `cyan-500` |
+| G Monitoring | `Activity` | `yellow-500` |
+| H API/Polling | `RefreshCw` | `indigo-500` |
+| I IoT/Edge | `Cpu` | `pink-500` |
+
+These colors appear consistently on: family picker cards, type badges, trigger list filter chips, and card border-left accent.
+
+#### 19.5.13 State Machine Visual Editor (XYFlow)
+
+```tsx
+// StateMachineEditor.tsx — uses @xyflow/react
+import ReactFlow, { Background, Controls, MiniMap } from '@xyflow/react';
+
+// Nodes = states (green = initial, red = terminal, blue = normal)
+// Edges = transitions (labeled with event name)
+// Toolbar: + Add State, + Add Transition, Validate, Save
+// On transition click → TransitionEditPanel slides in from right
+```
+
+Features:
+- Auto-layout using dagre (add `dagre` as dep: `npm install dagre`)
+- Double-click node → inline edit state name
+- Drag edge to create transition
+- Highlight invalid transitions in red (e.g. transition to non-existent state)
+- Export as JSON (maps to `StateMachine.transitions` API model)
+
+#### 19.5.14 TriggerCreateModal — Wizard UX Detail
+
+```
+Step 1: Pick Family
+  ┌──────────────────────────────────────────────────────┐
+  │  ⏰ Time/Schedule        3 types  │  🔗 Goal Chain    6 types │
+  │  💬 Conversational       8 types  │  ⚡ Condition      5 types │
+  │  🌐 External Events     12 types  │  🗄️ Data/File      7 types │
+  │  📊 Monitoring           7 types  │  🔄 API/Polling    4 types │
+  │  🖥️ IoT/Edge              3 types  │                            │
+  └──────────────────────────────────────────────────────┘
+
+Step 2: Pick Type (within chosen family — show description tooltip)
+  [CRON] Run on a schedule | [INTERVAL] Every N seconds | [ONCE] One-shot at time
+
+Step 3: Configure
+  [Family-specific form with inline validation]
+  [Goal Template field with live preview]
+  [Test with simulation toggle]
+```
+
+Progress indicator: `○──●──○` breadcrumbs with family name, type name, "Configure".
+
+---
+
+### 19.6 New npm Dependencies
+
+```bash
+# Production
+npm install cronstrue         # cron → human-readable preview
+
+# Dev
+npm install --save-dev msw@2  # Mock Service Worker for integration tests
+npm install --save-dev dagre  # Auto-layout for state machine editor
+```
+
+All destructive actions (delete trigger, dismiss DLQ, rotate secret) use the existing `ConfirmModal` component.
+All mutations (create, fire, retry, dismiss) use the existing `toast({ kind: 'success'|'error'|'warning', message })` system.
+
+### 19.7 Frontend Test Coverage
 
 | Test type | Count | What |
 |---|---|---|
