@@ -45,6 +45,8 @@ from app.api.billing import router as billing_router
 from app.api.builder import router as builder_router
 from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.api.a2a import router as a2a_router
+from app.chat.router import router as chat_router
+from app.chat.service import ChatService as _ChatService
 from app.api.agent_directory import router as agent_directory_router
 from app.api.solutions import router as solutions_router
 from app.api.admin import router as admin_router
@@ -1874,6 +1876,9 @@ def create_app(
     _register_error_handlers(app)
 
     # ── Routers ───────────────────────────────────────────────────────────────
+    # Chat (conversational agent interface)
+    app.state.chat_service = _ChatService()
+    app.include_router(chat_router)
     # Core
     app.include_router(system_router)
     app.include_router(tenants_router)
