@@ -87,9 +87,17 @@ async def stream_goal_progress(
 
         # Tool calls within step
         for tool in step.get("tool_calls", []):
-            yield _sse("tool_call", {"goal_id": goal_id, "step": step.get("name", ""), "tool": tool})
+            yield _sse("tool_call", {
+                "goal_id": goal_id,
+                "step": step.get("name", ""),
+                "tool": tool,
+            })
 
-        yield _sse("step_complete", {"goal_id": goal_id, "step": step.get("name", ""), "result": step.get("result", "")})
+        yield _sse("step_complete", {
+            "goal_id": goal_id,
+            "step": step.get("name", ""),
+            "result": step.get("result", ""),
+        })
 
     if outcome == "failure" and failure_reason:
         yield _sse(
@@ -112,7 +120,7 @@ async def stream_clarify(
     message_id: str,
     question: str,
     options: list[str],
-    round: int = 1,
+    round: int = 1,  # noqa: A002
 ) -> AsyncGenerator[str, None]:
     """Emit a clarify_needed event."""
     yield _sse("typing_started", {"session_id": session_id, "message_id": message_id})
