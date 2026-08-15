@@ -29,6 +29,19 @@ Both engines share the same underlying infrastructure: `LLMProvider`, `MCPClient
 
 | Decision | Choice | Rationale |
 |---|---|---|
+| **`code` step sandboxing** | Delegates to `app/execution_environment/` (already exists) | Python/JS code steps run in existing sandbox: no fs/network, 30s CPU, 128MB RAM |
+| **Data retention + GDPR** | `workflow_runs_retention_days` per tenant + cleanup Celery task | Step results containing PII have configurable TTL; GDPR erasure covers run data |
+| **Webhook HMAC replay protection** | `X-Timestamp` + 5-minute window on HMAC webhooks | Prevents replay attacks on webhook ingress |
+| **Max payload size** | 1MB input limit per trigger, 5MB per step output, S3 offload for large | Protects DB; large payloads stored in object storage, referenced by URL |
+| **Definition publishing approval** | Optional `requires_approval: true` flag on `workflow_definitions` | Enterprise/regulated tenants require 2-person approval before a workflow goes live |
+| **Custom step type plugins** | `BaseStepNode` protocol + `StepTypeRegistry` | Third parties register custom step types without forking the engine |
+| **Workflow variables** | `vars:` section in DSL + `set_variable`/`get_variable` step types | Mutable state across steps; not tied to step outputs |
+| **Auto-audit trail** | Framework auto-emits audit events for every step transition | Audit is a framework concern, not a step concern; no manual `audit.record` steps needed |
+| **Trigger transform** | `trigger_transform:` DSL section | Reshape incoming trigger payload before it becomes workflow `inputs` |
+| **Callback URL** | `callback:` DSL section | POST final outputs to a URL on run completion (async callers) |
+| **Run labels/metadata** | `workflow_runs.labels JSONB`, `workflow_runs.run_metadata JSONB` | Filter runs by label; attach arbitrary context to a run |
+| **Operator pause/resume** | `POST /workflow-runs/{id}/pause` + `resume` | Admin operational control distinct from HITL |
+| **`foreach` progress tracking** | `WorkflowState.foreach_progress` dict | Track N/total iterations; frontend shows "5/25 items" |
 | **Workflow definition format** | YAML (primary) + JSON (API-equivalent) | YAML for humans; JSON for API/SDK; UI generates both |
 | **Execution engine** | LangGraph `StateGraph` — compiled from YAML at deploy time | Reuses existing LangGraph infra; checkpointing + SSE work unchanged |
 | **YAML ↔ canvas sync** | Bidirectional — canvas generates YAML; YAML renders as canvas | No source-of-truth split; YAML is always canonical |
@@ -80,6 +93,9 @@ app/workflow/
   celery_tasks.py      # Celery tasks: execute_workflow_run, resume_hitl_workflow
   otel.py             # OpenTelemetry: workflow run span, per-step child spans
   nl_trigger.py       # NLTriggerResolver: IntentRouter → workflow.run() dispatch
+  registry.py         # StepTypeRegistry: register built-in + custom step types (PLUGIN SYSTEM)
+  variables.py        # WorkflowVariableStore: set/get mutable variables within a run
+  audit_middleware.py # AutoAuditMiddleware: auto-emit AuditEvent on every step transition
 
 app/db/models/workflow.py  # Alembic migration models
 
@@ -423,6 +439,56 @@ error_handling:
 #     fail_on:  [ValidationError, AuthenticationError, NotFoundError]
 ```
 
+# ── STEP-LEVEL ERROR TYPE ROUTING ────────────────────
+# Per-step override: which exceptions trigger retry vs. immediate failure
+# (Applied inside each step's on_failure handler)
+#
+# retry_on:   list of error_codes / exception class names that are transient
+# fail_on:    list that are terminal — skip retry, go directly to on_failure action
+#
+# Example on any step:
+#   retry:
+#     max_attempts: 3
+#     backoff: exponential
+#     retry_on: [ConnectionError, TimeoutError, RateLimitError]
+#     fail_on:  [ValidationError, AuthenticationError, NotFoundError]
+
+# ── WORKFLOW VARIABLES ────────────────────────────────
+# Mutable variables that live for the duration of a run.
+# Unlike step outputs (immutable), variables CAN be overwritten.
+# Set with type: set_variable, read via {{vars.VAR_NAME}}
+vars:
+  accumulated_total: 0        # initial value (optional — can be set by set_variable step)
+  last_decision: null
+
+# ── TRIGGER TRANSFORM ─────────────────────────────────
+# Reshape the raw trigger payload → workflow inputs BEFORE step execution begins.
+# Uses the same {{...}} context syntax — {{trigger.FIELD}} refers to raw payload.
+# Applied once on ingress; result becomes {{inputs.FIELD}} for all steps.
+trigger_transform:
+  document_url: "{{trigger.data.file_location}}"
+  customer_id:  "{{trigger.metadata.user_id}}"
+
+# ── CALLBACK URL ──────────────────────────────────────
+# POST the final workflow outputs to this URL when the run completes.
+# Useful for async callers who trigger a run and don't want to poll or stream.
+# Body: { "run_id": "...", "status": "complete|failed", "outputs": {...} }
+callback:
+  url: "{{inputs.callback_url}}"    # or hardcoded URL
+  auth:
+    type: bearer
+    token: "{{vault://CALLBACK_SECRET}}"
+  on_failure: true                  # also POST on run failure
+
+# ── RUN LABELS ────────────────────────────────────────
+# Arbitrary key-value labels attached to every run of this workflow.
+# Also overridable per-run-trigger via the API: POST /workflows/{id}/run { labels: {...} }
+# Queryable: GET /workflow-runs?label.environment=prod
+run_labels:
+  environment: production
+  domain: compliance
+  owner: "{{workflow.tenant_id}}"
+
   # ── type: foreach ──────────────────────────────
   # MISSING FROM ORIGINAL — critical for batch operations
   - id: verify_employers
@@ -754,7 +820,19 @@ CREATE TABLE workflow_runs (
 
     -- test run fields
     is_test_run     BOOL        DEFAULT false,
-    test_scenario_id UUID
+    test_scenario_id UUID,
+
+    -- operator control
+    paused_by       UUID,
+    paused_at       TIMESTAMPTZ,
+    pause_reason    TEXT,
+
+    -- labels for filtering (from run_labels DSL + per-trigger overrides)
+    labels          JSONB       DEFAULT '{}',
+    run_metadata    JSONB       DEFAULT '{}',
+
+    -- foreach progress: step_id → {"current": N, "total": M, "failed": K}
+    foreach_progress JSONB      DEFAULT '{}'
 );
 
 ALTER TABLE workflow_runs ENABLE ROW LEVEL SECURITY;
@@ -930,7 +1008,372 @@ class WorkflowState(TypedDict):
     # Control
     is_test_run:     bool
     mock_overrides:  dict[str, Any]         # step_id → mock output (test only)
+
+    # Workflow Variables (mutable state, distinct from step outputs)
+    vars:            dict[str, Any]         # set by set_variable steps, read via {{vars.X}}
+
+    # foreach progress tracking
+    foreach_progress: dict[str, dict]       # step_id → {"current": N, "total": M, "failed": K}
+
+    # Operator control
+    paused_by:       str | None             # user_id who paused the run
+    paused_at:       str | None             # ISO timestamp
+
+    # Labels and metadata (from run_labels DSL + per-trigger overrides)
+    labels:          dict[str, str]
+    run_metadata:    dict[str, Any]
 ```
+
+### Plugin System: Custom Step Types
+
+The `StepTypeRegistry` is the public extension point that makes this a **true framework**, not just a fixed-step automation tool:
+
+```python
+# app/workflow/registry.py
+
+class StepTypeRegistry:
+    """
+    Singleton registry of all available step types.
+    Built-in step types are pre-registered at startup.
+    Third-party code can register custom step types via register().
+    
+    The Visual Builder's tool palette is generated from this registry.
+    The YAML validator uses this registry to check step type validity.
+    The WorkflowCompiler uses this registry to instantiate step nodes.
+    """
+    
+    _registry: dict[str, type[BaseStepNode]] = {}
+    _metadata: dict[str, StepTypeMeta] = {}
+    
+    @classmethod
+    def register(
+        cls,
+        step_type: str,
+        node_class: type[BaseStepNode],
+        meta: StepTypeMeta,
+    ) -> None:
+        """Register a custom step type.
+        
+        Example (in app startup or plugin init):
+            StepTypeRegistry.register(
+                step_type="salesforce.query",
+                node_class=SalesforceQueryNode,
+                meta=StepTypeMeta(
+                    display_name="Salesforce Query",
+                    category="CRM",
+                    icon="salesforce-icon",
+                    input_schema={...},   # JSON Schema for step config form
+                    output_schema={...},  # JSON Schema for step output
+                    description="Execute a SOQL query against Salesforce",
+                ),
+            )
+        """
+        cls._registry[step_type] = node_class
+        cls._metadata[step_type] = meta
+    
+    @classmethod
+    def get(cls, step_type: str) -> type[BaseStepNode]:
+        if step_type not in cls._registry:
+            raise UnknownStepTypeError(f"Unknown step type: {step_type!r}")
+        return cls._registry[step_type]
+    
+    @classmethod
+    def list_all(cls) -> list[StepTypeMeta]:
+        return list(cls._metadata.values())
+
+
+@dataclass
+class StepTypeMeta:
+    step_type: str
+    display_name: str
+    category: str            # tool palette grouping in Visual Builder
+    icon: str                # icon name or URL
+    input_schema: dict       # JSON Schema — drives the right-panel config form
+    output_schema: dict      # JSON Schema — shown in output preview
+    description: str
+    is_built_in: bool = True
+    requires_connectors: list[str] = field(default_factory=list)
+
+
+# app/workflow/compiler.py uses the registry:
+def _build_node(self, step: StepDefinition) -> Callable:
+    NodeClass = StepTypeRegistry.get(step.type)  # works for both built-in + custom
+    return NodeClass(step, self._context_resolver, **self._service_deps).execute
+```
+
+**Built-in types registered at startup:**
+```python
+# app/workflow/__init__.py or app/main.py
+
+StepTypeRegistry.register("tool",          ToolStepNode,          TOOL_META)
+StepTypeRegistry.register("llm",           LLMStepNode,           LLM_META)
+StepTypeRegistry.register("rag",           RAGStepNode,           RAG_META)
+StepTypeRegistry.register("http",          HTTPStepNode,          HTTP_META)
+StepTypeRegistry.register("hitl",          HITLStepNode,          HITL_META)
+StepTypeRegistry.register("parallel",      ParallelStepNode,      PARALLEL_META)
+StepTypeRegistry.register("conditional",   ConditionalStepNode,   CONDITIONAL_META)
+StepTypeRegistry.register("foreach",       ForeachStepNode,       FOREACH_META)
+StepTypeRegistry.register("transform",     TransformStepNode,     TRANSFORM_META)
+StepTypeRegistry.register("sub_workflow",  SubWorkflowStepNode,   SUB_WORKFLOW_META)
+StepTypeRegistry.register("wait",          WaitStepNode,          WAIT_META)
+StepTypeRegistry.register("code",          CodeStepNode,          CODE_META)
+StepTypeRegistry.register("set_variable",  SetVariableStepNode,   SET_VARIABLE_META)
+StepTypeRegistry.register("emit_event",    EmitEventStepNode,     EMIT_EVENT_META)
+```
+
+**API to list available step types (drives the Visual Builder palette):**
+```
+GET /api/v1/workflow-step-types              # All step types (built-in + custom for tenant)
+GET /api/v1/workflow-step-types/{step_type}  # Metadata + schema for one type
+POST /api/v1/workflow-step-types             # Register custom step type (enterprise tier)
+```
+
+---
+
+### Workflow Variables
+
+```python
+# app/workflow/variables.py
+
+class WorkflowVariableStore:
+    """
+    Manages mutable `vars` in WorkflowState.
+    Variables are distinct from step outputs:
+    - Step outputs: immutable after step completes
+    - Variables: can be overwritten by any set_variable step
+    
+    Read via: {{vars.VAR_NAME}}  in any step's input config
+    Write via: type: set_variable step
+    """
+    
+    def set(self, state: WorkflowState, name: str, value: Any) -> WorkflowState:
+        return {**state, "vars": {**state["vars"], name: value}}
+    
+    def get(self, state: WorkflowState, name: str, default: Any = None) -> Any:
+        return state["vars"].get(name, default)
+
+
+# DSL for set_variable step:
+# - id: accumulate_total
+#   type: set_variable
+#   name: running_total
+#   value: "{{vars.running_total}} + {{steps.invoice.output.amount}}"
+#   value_type: number    # cast after expression evaluation
+```
+
+---
+
+### Auto-Audit Trail (Framework Responsibility)
+
+The framework auto-emits an `AuditEvent` for every step transition. No workflow YAML needs an `audit.record` step.
+
+```python
+# app/workflow/audit_middleware.py
+
+class AutoAuditMiddleware:
+    """
+    Wraps every step node execution with automatic audit logging.
+    The AuditLog entries are immutable, append-only (existing AuditLog pattern).
+    
+    Events emitted automatically:
+    - workflow.run_started    (run_id, workflow_id, tenant_id, trigger_type, inputs_hash)
+    - step.started            (run_id, step_id, step_type, resolved_input_hash)
+    - step.completed          (run_id, step_id, output_hash, duration_ms, cost_usd)
+    - step.failed             (run_id, step_id, error_code, error_message)
+    - step.skipped            (run_id, step_id, reason)
+    - hitl.requested          (run_id, step_id, assignee_role, deadline)
+    - hitl.decided            (run_id, step_id, action, reviewer_id, note)
+    - workflow.completed      (run_id, outputs_hash, total_cost_usd, duration_ms)
+    - workflow.failed         (run_id, error_code, failed_step_id)
+    - workflow.paused         (run_id, paused_by, reason)
+    - workflow.resumed        (run_id, resumed_by)
+    
+    Note: actual step output VALUES are stored in workflow_step_results.
+    Audit trail stores HASHES only — PII-safe.
+    """
+    
+    async def wrap(self, step_fn: Callable, state: WorkflowState) -> WorkflowState:
+        await self.audit_log.record(AuditEvent(
+            event_type="step.started",
+            run_id=state["run_id"],
+            step_id=state["current_step_id"],
+            tenant_id=state["tenant_id"],
+        ))
+        try:
+            result = await step_fn(state)
+            await self.audit_log.record(AuditEvent(event_type="step.completed", ...))
+            return result
+        except Exception as e:
+            await self.audit_log.record(AuditEvent(event_type="step.failed", ...))
+            raise
+```
+
+---
+
+### Operator Pause/Resume
+
+Distinct from HITL (workflow-designed) — this is **operational control** by admins:
+
+```python
+# New API endpoints:
+POST /api/v1/workflow-runs/{run_id}/pause    # Admin pauses a running workflow
+# Body: { "reason": "connector outage" }
+# Effect: sets WorkflowState.status = "paused", records paused_by + reason
+
+POST /api/v1/workflow-runs/{run_id}/resume   # Admin resumes a paused workflow
+# Effect: sets status = "running", re-dispatches to Celery
+
+# Pause happens gracefully: current step completes, then the engine checks
+# WorkflowState.paused_by before starting the next step.
+```
+
+---
+
+### Callback URL
+
+For callers who trigger a workflow and don't want to poll or stream:
+
+```python
+# WorkflowRunner emits callback after run completes/fails:
+async def _emit_callback(self, state: WorkflowState, definition: WorkflowDefinition):
+    if not definition.callback:
+        return
+    url = self.context_resolver.resolve(definition.callback.url, state)
+    payload = {
+        "run_id":  state["run_id"],
+        "status":  state["status"],
+        "outputs": state["outputs"],
+        "labels":  state["labels"],
+        "cost_usd": state["cost_usd"],
+    }
+    if state["status"] == "failed" and not definition.callback.on_failure:
+        return
+    async with httpx.AsyncClient() as client:
+        await client.post(url, json=payload, timeout=30)
+```
+
+---
+
+### `code` Step: Sandbox via Existing `execution_environment`
+
+```python
+# app/workflow/steps/code_step.py
+# Delegates to the existing app/execution_environment/ sandbox (already tested)
+
+class CodeStepNode:
+    async def execute(self, state: WorkflowState) -> dict:
+        code = self.ctx_resolver.resolve(self.step.code, state)
+        inputs = self.ctx_resolver.resolve_all(self.step.input, state)
+        
+        # Reuse existing ExecutionEnvironment — same sandbox as ChatCodeExecutor
+        # Constraints: no filesystem, no network, 30s CPU timeout, 128MB RAM
+        result = await execution_environment.run(
+            runtime=self.step.runtime,   # python | javascript
+            code=code,
+            inputs=inputs,
+            timeout_seconds=min(self.step.timeout_seconds or 30, 120),
+        )
+        return {"step_outputs": {self.step.id: result.output}}
+```
+
+### Data Retention + GDPR Erasure for Run Data
+
+```sql
+-- workflow_definitions already has: tenant_id (RLS enforced)
+-- New: per-tenant retention configuration
+
+ALTER TABLE workflow_definitions
+    ADD COLUMN run_retention_days INT DEFAULT 90;  -- null = keep forever
+
+-- Cleanup Celery task (added to beat_schedule, runs daily):
+-- @celery_app.task(name="workflow.cleanup_expired_runs")
+-- Deletes workflow_step_results + workflow_runs older than tenant's retention_days.
+-- Also fires when a GDPR erasure request is processed for a customer:
+-- WorkflowRunStore.delete_runs_containing_subject(subject_id, tenant_id)
+```
+
+**GDPR Integration:** The existing `GDPR Data Subject Request` workflow (Section 1.4 of catalog)
+includes a step that calls `workflow.purge_runs_by_subject(subject_id)`. The framework
+provides this as a built-in operation, not requiring a manual step in user workflows.
+
+### Webhook HMAC Replay Protection
+
+```python
+# app/workflow/router.py — inbound webhook handler (addition to existing spec)
+
+MAX_TIMESTAMP_SKEW_SECONDS = 300  # 5 minutes
+
+def verify_hmac_webhook(
+    payload_bytes: bytes,
+    signature_header: str,    # X-Hub-Signature-256: sha256=...
+    timestamp_header: str,    # X-Timestamp: Unix epoch seconds
+    hmac_secret: str,
+) -> None:
+    # 1. Replay protection: reject if timestamp is >5 minutes old
+    ts = int(timestamp_header)
+    if abs(time.time() - ts) > MAX_TIMESTAMP_SKEW_SECONDS:
+        raise WebhookReplayError("Timestamp too old — possible replay attack")
+    
+    # 2. HMAC-SHA256 verification: sign (timestamp + "." + payload)
+    expected = hmac.new(
+        hmac_secret.encode(),
+        f"{timestamp_header}.".encode() + payload_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+    
+    received = signature_header.removeprefix("sha256=")
+    if not hmac.compare_digest(expected, received):
+        raise WebhookSignatureError("HMAC signature mismatch")
+```
+
+### Max Payload Size Limits + Large Payload S3 Offload
+
+```python
+# Limits enforced at ingress and step output:
+
+MAX_TRIGGER_PAYLOAD_BYTES  = 1 * 1024 * 1024    # 1 MB — trigger inputs
+MAX_STEP_OUTPUT_BYTES      = 5 * 1024 * 1024    # 5 MB — per step output
+MAX_STEP_INPUT_BYTES       = 2 * 1024 * 1024    # 2 MB — per step input (resolved)
+
+# Large payload S3 offload strategy:
+# If step output > MAX_STEP_OUTPUT_BYTES:
+#   1. Upload to S3/MinIO: s3://workflow-artifacts/{tenant_id}/{run_id}/{step_id}.json
+#   2. Store reference in workflow_step_results.output: {"_s3_ref": "s3://..."}
+#   3. ContextResolver transparently fetches from S3 when {{steps.X.output}} is accessed
+#
+# This keeps the DB row size bounded while supporting large documents (OCR text,
+# bank statements, research papers).
+#
+# app/workflow/storage.py: LargePayloadStore — handles upload/download transparently
+```
+
+### Workflow Definition Publishing Approval (Regulated Industries)
+
+```sql
+-- workflow_definitions table addition:
+ALTER TABLE workflow_definitions
+    ADD COLUMN requires_publish_approval BOOL DEFAULT false,
+    ADD COLUMN publish_approved_by       UUID,
+    ADD COLUMN publish_approved_at       TIMESTAMPTZ,
+    ADD COLUMN publish_approval_note     TEXT;
+
+-- Status flow when requires_publish_approval = true:
+-- draft → pending_approval → published
+-- (without flag: draft → published directly)
+```
+
+```python
+# API additions:
+# POST /api/v1/workflows/{id}/submit-for-approval   # Author submits draft
+# POST /api/v1/workflows/{id}/approve-publish       # Role: workflow_approver
+# POST /api/v1/workflows/{id}/reject-publish        # Role: workflow_approver + note required
+
+# Configured per-tenant in tenant settings:
+# "workflow_publish_requires_approval": true
+# "workflow_approver_role": "compliance_officer"
+```
+
+---
 
 ### WorkflowCompiler
 
@@ -1458,6 +1901,17 @@ GET    /api/v1/workflow-runs/{run_id}/steps/{step_id}    # Single step detail (p
 POST   /api/v1/workflow-runs/{run_id}/cancel             # Cancel a running run
 POST   /api/v1/workflow-runs/{run_id}/replay             # Re-run from a specific step
 POST   /api/v1/workflow-runs/{run_id}/resume             # Resume after HITL decision
+POST   /api/v1/workflow-runs/{run_id}/pause              # Operator pause (admin)
+POST   /api/v1/workflow-runs/{run_id}/resume-paused      # Operator resume from pause
+GET    /api/v1/workflow-runs?label.KEY=VALUE             # Filter runs by label
+```
+
+### Step Type Registry API
+
+```
+GET    /api/v1/workflow-step-types                       # All step types (built-in + custom)
+GET    /api/v1/workflow-step-types/{step_type}           # Metadata + input/output schema
+POST   /api/v1/workflow-step-types                       # Register custom step type (enterprise)
 ```
 
 ### Testing
@@ -2183,20 +2637,25 @@ export class WorkflowClient {
 ## Implementation Phases
 
 ### Phase 1 — Core Engine (Backend)
-- [ ] `app/workflow/dsl.py` — Pydantic DSL schema, YAML↔JSON parser, validation (incl. `retry_on`/`fail_on` per step)
-- [ ] `app/workflow/state.py` — `WorkflowState` TypedDict
-- [ ] `app/workflow/context.py` — `ContextResolver` (`{{steps.X.output.Y}}`, `{{vault://Z}}`, `{{env.X}}`, `{{foreach.X}}`)
+- [ ] `app/workflow/dsl.py` — Pydantic DSL schema including: `vars`, `trigger_transform`, `callback`, `run_labels`, `retry_on`/`fail_on`
+- [ ] `app/workflow/state.py` — `WorkflowState` TypedDict with `vars`, `foreach_progress`, `labels`, `run_metadata`, `paused_by`
+- [ ] `app/workflow/registry.py` — `StepTypeRegistry` + `StepTypeMeta` — the public plugin extension point
+- [ ] `app/workflow/variables.py` — `WorkflowVariableStore` (set/get vars within a run)
+- [ ] `app/workflow/audit_middleware.py` — `AutoAuditMiddleware` (auto-emit AuditEvent per step transition)
+- [ ] `app/workflow/context.py` — `ContextResolver` supporting `{{inputs.X}}`, `{{steps.X.output.Y}}`, `{{vars.X}}`, `{{vault://Z}}`, `{{env.X}}`, `{{foreach.X}}`, `{{trigger.X}}`
 - [ ] `app/workflow/expression_engine.py` — `ExpressionEngine` using `simpleeval` (safe, no eval())
-- [ ] `app/workflow/security.py` — `SSRFGuard` (IP blocklist) + `SecretMasker` (redact vault values before DB persist)
-- [ ] `app/workflow/steps/` — All **12** step node implementations; `http_step.py` integrates `SSRFGuard` + `CircuitBreaker`
-- [ ] `app/workflow/compiler.py` — LangGraph graph compiler (handles foreach loop expansion)
-- [ ] `app/workflow/runner.py` — `WorkflowRunner` with Celery dispatch + concurrency control + OTEL span wrapping
-- [ ] `app/workflow/otel.py` — `WorkflowOTELMiddleware`: root span per run, child span per step
-- [ ] `app/db/models/workflow.py` — All **7** tables + Alembic migration
-- [ ] `app/workflow/router.py` — Core definition + execution endpoints; webhook ingress with idempotency key + per-token rate limiting
-- [ ] `app/workflow/celery_tasks.py` — execute, resume, check_escalations, retry_dead_letter tasks
-- [ ] Register `check_hitl_escalations` and `retry_dead_letter_webhooks` in `app/scaling/celery_app.py` beat_schedule
-- [ ] `tests/workflow/` — 80%+ coverage (incl. SSRF guard, secret masking, idempotency)
+- [ ] `app/workflow/security.py` — `SSRFGuard` + `SecretMasker`
+- [ ] `app/workflow/steps/` — All **14** step types registered via `StepTypeRegistry` (incl. `set_variable`, `emit_event`)
+- [ ] `app/workflow/compiler.py` — LangGraph compiler using `StepTypeRegistry.get()` for all node types
+- [ ] `app/workflow/runner.py` — `WorkflowRunner`: Celery dispatch, concurrency control, OTEL, trigger_transform, callback URL, operator pause
+- [ ] `app/workflow/otel.py` — OTEL spans per run/step
+- [ ] `app/db/models/workflow.py` — All **7** tables + `labels`/`run_metadata`/`foreach_progress`/`paused_by` columns + Alembic migration
+- [ ] `app/workflow/router.py` — All endpoints incl. pause/resume, label filter, step-type registry, HMAC replay protection on webhook ingress
+- [ ] `app/workflow/storage.py` — `LargePayloadStore`: S3/MinIO offload for step outputs > 5MB
+- [ ] `app/workflow/celery_tasks.py` — execute, resume, check_escalations, retry_dead_letter, **cleanup_expired_runs** + Beat schedule
+- [ ] Enforce max payload size limits (1MB trigger input, 5MB step output) at ingress + step execution
+- [ ] Add `run_retention_days` + `requires_publish_approval` columns to `workflow_definitions` migration
+- [ ] `tests/workflow/` — 80%+ coverage (incl. plugin system, variables, auto-audit, callback, pause/resume, HMAC replay, payload limits)
 
 ### Phase 2 — HITL & Templates (Backend)
 - [ ] `app/workflow/hitl_extension.py` — `HITLWorkflowGateway` (all 20 HITL features)

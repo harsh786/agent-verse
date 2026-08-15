@@ -47,7 +47,7 @@ def test_trigger_type_invalid_raises() -> None:
 
 
 def test_trigger_type_members_count() -> None:
-    assert len(TriggerType) == 10
+    assert len(TriggerType) == 58
 
 
 def test_trigger_type_values_are_lowercase() -> None:
