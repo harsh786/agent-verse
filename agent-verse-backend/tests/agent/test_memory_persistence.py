@@ -21,6 +21,15 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_eval_runner_has_score_and_persist():
     """EvalRunner must have score_and_persist() method."""
     from app.intelligence.eval_runner import EvalRunner
@@ -114,7 +123,7 @@ def test_graph_calls_extract_from_goal_async():
 
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "extract_from_goal_async" in src, (
         "graph.py must call extract_from_goal_async for DB persistence"
     )
@@ -126,7 +135,7 @@ def test_graph_calls_score_and_persist():
 
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "score_and_persist" in src, (
         "graph.py must call score_and_persist to write eval results to DB"
     )
@@ -138,7 +147,7 @@ def test_graph_calls_recall_async_for_exec_memory():
 
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "recall_async" in src, (
         "graph.py must use recall_async for DB-backed execution memory retrieval"
     )

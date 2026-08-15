@@ -13,6 +13,15 @@ import asyncio
 import pytest
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_redis_cost_controller_has_check_and_record():
     """RedisCostController must have check_and_record (not just check_and_record_async)."""
     from app.governance.cost import RedisCostController
@@ -32,7 +41,7 @@ def test_model_router_has_no_route_method_called_in_graph():
 
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "model_router.route(" not in src, (
         "graph.py must not call .route() — that method doesn't exist on ModelRouter"
     )

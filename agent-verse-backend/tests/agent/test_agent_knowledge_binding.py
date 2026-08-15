@@ -14,6 +14,15 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_agentgraph_has_agent_collection_ids_attr():
     """AgentGraph must have _agent_collection_ids attribute."""
     from app.agent.graph import AgentGraph
@@ -37,7 +46,7 @@ def test_graph_rag_comment_removed():
     import inspect
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "skip — no collection_id" not in src, (
         "KnowledgeStore RAG skip comment must be removed and replaced with real implementation"
     )

@@ -1,0 +1,1911 @@
+"""Mixin extracted from app.agent.graph — zero semantic changes."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any, TypedDict
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from app.agent.prompts import (
+    CHAIN_OF_THOUGHT_SYSTEM,
+    EXECUTOR_SYSTEM,
+    PLANNER_SYSTEM,
+    REFLECTION_SYSTEM,
+    STRUCTURED_PLANNER_SYSTEM,
+    VERIFIER_SYSTEM,
+)
+from app.agent.sanitization import (
+    _EXECUTOR_CONTEXT_MAX_LENGTH,
+    sanitize_event,
+    sanitize_event_value,
+    sanitize_tool_event_value,
+    sanitize_tool_raw_output,
+)
+from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
+from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
+from app.agent.tool_risk import classify_tool_risk
+from app.governance.audit import AuditEvent, AuditLog
+from app.governance.cost import CostController
+from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.permissions import ActionLevel, PermissionMatrix
+from app.governance.policies import PolicyEngine, PolicyResult
+from app.intelligence.eval_runner import EvalRunner
+from app.intelligence.explainability import DecisionTrace
+from app.intelligence.guardrails import GuardrailChecker
+from app.memory.execution import ExecutionMemory
+from app.memory.long_term import LongTermMemoryStore
+from app.observability.metrics import (
+    record_approval_wait,
+    record_goal_completed,
+    record_goal_failed,
+    record_plan_duration,
+    record_tool_call,
+    record_verify_duration,
+    track_tool_call,
+)
+from app.pipeline.steps import smart_context_fetch
+from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
+from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
+from app.rag.store import KnowledgeStore
+from app.reliability.circuit_breaker import CircuitBreaker
+from app.reliability.dedup import DeduplicationCache
+from app.reliability.result_processor import ResultProcessor
+from app.reliability.rollback import RollbackEngine
+from app.tenancy.context import TenantContext
+
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
+from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+
+
+from app.agent.nodes._helpers import (
+    _is_high_risk_step,
+    _is_ungrounded_status,
+    _build_verifier_summary,
+    _parse_json,
+    _parse_verifier_response,
+    _extract_tool_name as _extract_tool_name_fn,
+    _extract_scope_value,
+)
+
+class ExecutorMixin:
+    """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
+
+    async def _node_execute(self, state: GraphState) -> dict[str, Any]:
+        agent_state: AgentState = state["agent_state"]
+        tenant_ctx: TenantContext = state["tenant_ctx"]
+        plan: list[str] = state.get("plan") or agent_state.plan
+
+        agent_state.status = GoalStatus.EXECUTING
+
+        # Goal-tree decomposition: delegate large plans to parallel sub-agents
+        if (
+            self._enable_goal_tree
+            and len(plan) >= self._goal_tree_threshold
+        ):
+            from app.agent.goal_tree import execute_goal_tree
+
+            def _sub_graph_factory() -> AgentGraph:
+                from opentelemetry import context as otel_context
+
+                graph = AgentGraph(
+                    planner=self._planner,
+                    executor=self._executor,
+                    verifier=self._verifier,
+                    max_iterations=5,
+                    # Inherit governance + reliability from parent
+                    permission_matrix=self._permission_matrix,
+                    audit_log=self._audit_log,
+                    cost_controller=self._cost_controller,
+                    hitl_gateway=self._hitl_gateway,
+                    policy_engine=self._policy_engine,
+                    result_processor=self._result_processor,
+                    dedup_cache=DeduplicationCache(),      # fresh instance per sub-agent
+                    rollback_engine=RollbackEngine(),       # fresh instance per sub-agent
+                    guardrail_checker=self._guardrail_checker,
+                    # Inherit memory + RAG
+                    exec_memory=self._exec_memory,
+                    long_term_memory=self._long_term_memory,
+                    knowledge_store=self._knowledge_store,
+                    retrieval_gateway=self._retrieval_gateway,
+                    mcp_client=self._mcp_client,
+                    eval_runner=self._eval_runner,
+                    # Sub-agents don't recurse into goal trees
+                    enable_goal_tree=False,
+                    autonomy_mode=self._autonomy_mode,
+                )
+                graph._agent_collection_ids = list(self._agent_collection_ids)
+                graph._event_callback = self._event_callback
+                graph._parent_trace_context = otel_context.get_current()
+                return graph
+
+            try:
+                sub_goals: list[SubGoal] = await execute_goal_tree(
+                    agent_state.goal,
+                    planner=self._planner,
+                    tenant_ctx=tenant_ctx,
+                    parent_goal_id=agent_state.goal_id,
+                    graph_factory=_sub_graph_factory,
+                    event_callback=self._event_callback,
+                )
+                agent_state.sub_goals = sub_goals
+                if sub_goals:
+                    child_failures = [
+                        sub_goal
+                        for sub_goal in sub_goals
+                        if sub_goal.status is GoalStatus.FAILED
+                    ]
+                    for sub_goal in sub_goals:
+                        agent_state.provenance.extend(sub_goal.provenance)
+                    agent_state.context["child_retrieval_traces"] = [
+                        trace
+                        for sub_goal in sub_goals
+                        for trace in sub_goal.retrieval_trace
+                    ]
+                    # Aggregate sub-goal results as steps so the verifier sees them
+                    for sg in sub_goals:
+                        step = StepResult(
+                            description=sg.description,
+                            output=sg.result or sg.error,
+                            status=StepStatus.COMPLETE if not sg.error else StepStatus.FAILED,
+                        )
+                        agent_state.steps.append(step)
+                    if child_failures:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = "Nested retrieval failed"
+                        await self._emit(
+                            {
+                                "type": "nested_goal_failed",
+                                "failed_sub_goals": [
+                                    sub_goal.sub_goal_id
+                                    for sub_goal in child_failures
+                                ],
+                                "provenance": agent_state.provenance,
+                                "retrieval_trace": agent_state.context[
+                                    "child_retrieval_traces"
+                                ],
+                            }
+                        )
+                    return {"agent_state": agent_state}
+            except Exception as exc:
+                # Fall through to normal execution if goal-tree fails
+                await self._emit({"type": "goal_tree_error", "error": str(exc)})
+
+        # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
+        import asyncio as _asyncio
+
+        from app.agent.structured_plan import StructuredPlan as _SP
+        from app.agent.structured_plan import StructuredStep as _SS
+
+        _structured: _SP | None = None
+        for _entry in plan:
+            try:
+                _parsed = json.loads(_entry)
+                if isinstance(_parsed, dict) and "steps" in _parsed:
+                    _structured = _SP.from_llm_response(_entry)
+                    break
+            except Exception:
+                pass
+
+        if _structured is None:
+            # Plain string steps — treat as sequential (each depends on the previous)
+            _structured = _SP(steps=[
+                _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                for i, sd in enumerate(plan)
+            ])
+
+        waves = _structured.execution_waves()
+        step_global_index = 0
+        # P1.1: Track completed StructuredStep objects for condition evaluation
+        _completed_steps: dict[str, Any] = {}
+
+        # ── Batch cache prefetch ────────────────────────────────────────────
+        # Embed ALL plan step descriptions at once (single embedding API call)
+        # then batch-check the cache. This way, before the first wave executes,
+        # we already know which steps have cache hits — saving per-step embedding
+        # latency during the hot path.
+        _batch_cache_results: dict[str, str] = {}  # step_desc → cached_response
+        if self._semantic_cache is not None and self._embedder is not None:
+            try:
+                from app.providers.base import EmbedRequest as _EmbedReq
+                _all_descs = [s.description for w in waves for s in w]
+                if _all_descs:
+                    _batch_resp = await self._embedder.embed(_EmbedReq(texts=_all_descs))
+                    _batch_embs = _batch_resp.embeddings or []
+                    if _batch_embs and hasattr(self._semantic_cache, "get_batch"):
+                        _batch_hits = await self._semantic_cache.get_batch(
+                            embeddings=_batch_embs,
+                            tenant_id=tenant_ctx.tenant_id,
+                        )
+                        for desc, hit in zip(_all_descs, _batch_hits):
+                            if hit is not None:
+                                # Skip cached empty/error results so they are not
+                                # served on fresh runs — forces a real tool call.
+                                cached_resp = hit.response if hasattr(hit, 'response') else str(hit)
+                                _cr_stripped = cached_resp.strip().lower() if cached_resp else ""
+                                _is_llm_reasoning = (
+                                    _cr_stripped.startswith((
+                                        "i'll ", "i will ", "i'll use", "i will use",
+                                        "to complete", "let me ", "i need to ",
+                                        "step 1", "first,", "first i",
+                                    ))
+                                    or ("will use" in _cr_stripped and "tool" in _cr_stripped)
+                                    or ("will call" in _cr_stripped and len(_cr_stripped) < 500)
+                                )
+                                _is_empty = (
+                                    not cached_resp
+                                    or '"total": 0' in cached_resp
+                                    or '"issues": []' in cached_resp
+                                    or '"projects": []' in cached_resp
+                                    or cached_resp.strip() in ('{}', '[]', '')
+                                    or len(cached_resp.strip()) < 10
+                                    or _is_llm_reasoning  # Never serve stale LLM text as tool result
+                                )
+                                if not _is_empty:
+                                    _batch_cache_results[desc] = cached_resp
+                        if _batch_cache_results:
+                            self._logger.info(
+                                "batch_cache_prefetch",
+                                total=len(_all_descs),
+                                hits=len(_batch_cache_results),
+                            )
+            except Exception as _bp_exc:
+                self._logger.debug("batch_cache_prefetch_skipped", error=str(_bp_exc)[:80])
+
+        for wave_idx, wave in enumerate(waves):
+            # P1.1: Filter out steps whose condition evaluates to False
+            eligible_steps = [s for s in wave if s.should_execute(_completed_steps)]
+            if not eligible_steps:
+                self._logger.info(
+                    "wave_all_steps_skipped_by_condition",
+                    wave=wave_idx,
+                    skipped=[s.id for s in wave],
+                )
+                continue
+
+            if len(eligible_steps) == 1:
+                # Single step — execute normally (with loop support if configured)
+                struct_step = eligible_steps[0]
+                step_desc = struct_step.description
+                step = StepResult(description=step_desc, status=StepStatus.RUNNING)
+                agent_state.steps.append(step)
+                await self._emit({"type": "step_started", "step": step_desc})
+
+                with self._tracer.start_as_current_span("agentverse.step.execute") as span:
+                    span.set_attribute("step.description", step_desc[:200])
+                    try:
+                        if struct_step.loop_until is not None:
+                            # P1.1: Loop execution
+                            output = await self._execute_step_with_loop(
+                                struct_step, agent_state, tenant_ctx
+                            )
+                        elif step_desc in _batch_cache_results:
+                            # Batch prefetch hit — serve from pre-fetched cache result
+                            output = _batch_cache_results[step_desc]
+                            await self._emit({
+                                "type": "cache_hit",
+                                "step": step_desc,
+                                "source": "batch_prefetch",
+                            })
+                        elif self._semantic_cache is not None:
+                            output = await self._execute_step_with_cache(
+                                step_desc, agent_state, tenant_ctx
+                            )
+                        else:
+                            output = await self._execute_step(step_desc, agent_state, tenant_ctx)
+                    except PermissionError as exc:
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = str(exc)
+                        step.status = StepStatus.FAILED
+                        step.error = str(exc)
+                        raise  # re-raise so LangGraph propagates it out of ainvoke
+
+                step.output = output
+                step.status = StepStatus.COMPLETE
+                # P1.1: Update StructuredStep runtime state for condition evaluation
+                struct_step.output = output
+                struct_step.status = "complete"
+                _completed_steps[struct_step.id] = struct_step
+                await self._emit({"type": "step_complete", "step": step_desc, "output": output})
+                # Persist tool outcome for cross-restart trust scores
+                try:
+                    _orch_persist = (
+                        getattr(self._app_state, "orchestration_persistence", None)
+                        if self._app_state else None
+                    )
+                    if _orch_persist is not None:
+                        _tool_nm = self._extract_tool_name(step_desc) or step_desc[:50]
+                        _step_ok = output and "error" not in output.lower()[:50] and "failed" not in output.lower()[:50]
+                        _step_lat = float(agent_state.context.get("last_step_latency_ms", 200.0))
+                        import asyncio as _tp_asyncio
+                        _tp_asyncio.ensure_future(
+                            _orch_persist.persist_tool_outcome(
+                                tool_name=_tool_nm,
+                                success=bool(_step_ok),
+                                latency_ms=_step_lat,
+                                tenant_id=tenant_ctx.tenant_id,
+                            )
+                        )
+                except Exception:
+                    pass
+                # Invoke step_callback for streaming simulation support
+                if self._step_callback is not None:
+                    try:
+                        import asyncio as _asyncio_cb
+                        _asyncio_cb.create_task(self._step_callback("step_completed", {
+                            "description": step_desc,
+                            "tool_called": self._extract_tool_name(step_desc),
+                            "output": output[:500] if output else "",
+                            "cost_increment": (
+                                agent_state.context.get("last_step_cost", 0.0)
+                                if isinstance(agent_state.context, dict)
+                                else 0.0
+                            ),
+                        }))
+                    except Exception:
+                        pass
+                await self._write_checkpoint(
+                    agent_state.goal_id, step_global_index, agent_state, tenant_ctx
+                )
+                step_global_index += 1
+
+            else:
+                # Multiple independent steps — execute in parallel via asyncio.gather
+                await self._emit({
+                    "type": "steps_parallel_start",
+                    "wave": wave_idx,
+                    "steps": [s.description for s in eligible_steps],
+                    "count": len(eligible_steps),
+                })
+
+                # Pre-create StepResult objects before parallel execution to maintain order
+                parallel_steps: list[StepResult] = []
+                for s in eligible_steps:
+                    sr = StepResult(description=s.description, status=StepStatus.RUNNING)
+                    agent_state.steps.append(sr)
+                    await self._emit({"type": "step_started", "step": s.description})
+                    parallel_steps.append(sr)
+
+                # Lock to protect shared agent_state mutations across concurrent coroutines
+                _state_lock = _asyncio.Lock()
+
+                async def _run_wave_step(
+                    desc: str, sr: StepResult
+                ) -> None:
+                    try:
+                        if self._semantic_cache is not None:
+                            out = await self._execute_step_with_cache(
+                                desc, agent_state, tenant_ctx
+                            )
+                        else:
+                            out = await self._execute_step(desc, agent_state, tenant_ctx)
+                        async with _state_lock:
+                            sr.output = out
+                            sr.status = StepStatus.COMPLETE
+                        await self._emit({"type": "step_complete", "step": desc, "output": out})
+                        # H4: Persist tool outcome for parallel wave steps
+                        try:
+                            _orch_persist_wave = (
+                                getattr(self._app_state, "orchestration_persistence", None)
+                                if self._app_state else None
+                            )
+                            if _orch_persist_wave is not None:
+                                _tool_nm_wave = self._extract_tool_name(desc) or desc[:50]
+                                _step_ok_wave = bool(out and "error" not in out.lower()[:50])
+                                import asyncio as _wp_asyncio
+                                _wp_asyncio.ensure_future(
+                                    _orch_persist_wave.persist_tool_outcome(
+                                        tool_name=_tool_nm_wave,
+                                        success=_step_ok_wave,
+                                        latency_ms=200.0,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                    )
+                                )
+                        except Exception:
+                            pass
+                    except PermissionError as exc:
+                        async with _state_lock:
+                            agent_state.status = GoalStatus.FAILED
+                            agent_state.error_message = str(exc)
+                            sr.status = StepStatus.FAILED
+                            sr.error = str(exc)
+                        raise
+                    except Exception as exc:
+                        async with _state_lock:
+                            sr.status = StepStatus.FAILED
+                            sr.error = str(exc)
+                        raise
+
+                tasks = [
+                    _asyncio.create_task(
+                        _run_wave_step(eligible_steps[i].description, parallel_steps[i])
+                    )
+                    for i in range(len(eligible_steps))
+                ]
+                try:
+                    await _asyncio.gather(*tasks)
+                except (PermissionError, Exception):
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    await _asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+
+                # P1.1: Update StructuredStep runtime state for parallel steps
+                for i, struct_step_par in enumerate(eligible_steps):
+                    struct_step_par.output = parallel_steps[i].output
+                    struct_step_par.status = (
+                        "complete" if parallel_steps[i].status == StepStatus.COMPLETE else "failed"
+                    )
+                    _completed_steps[struct_step_par.id] = struct_step_par
+
+                for i in range(len(eligible_steps)):
+                    await self._write_checkpoint(
+                        agent_state.goal_id, step_global_index + i, agent_state, tenant_ctx
+                    )
+                step_global_index += len(eligible_steps)
+
+                await self._emit({
+                    "type": "steps_parallel_complete",
+                    "wave": wave_idx,
+                    "count": len(eligible_steps),
+                })
+
+        return {"agent_state": agent_state}
+
+    async def _execute_step_with_loop(
+        self,
+        step: Any,
+        agent_state: AgentState,
+        tenant_ctx: TenantContext,
+    ) -> str:
+        """Execute a step with loop-until support (P1.1).
+
+        Calls ``_execute_step`` repeatedly until ``loop_until`` evaluates to True
+        or ``max_loop_iter`` is exceeded. Uses exponential backoff between iterations.
+        """
+        for iteration in range(step.max_loop_iter):
+            step.iterations_used = iteration + 1
+            output = await self._execute_step(step.description, agent_state, tenant_ctx)
+            step.output = output
+
+            try:
+                from app.agent.structured_plan import _safe_eval_condition as _loop_eval
+                done = _loop_eval(
+                    step.loop_until,
+                    {"output": output, "iteration": iteration + 1, "iterations": iteration + 1},
+                )
+            except Exception:
+                done = True  # On eval error, exit loop
+
+            if done:
+                self._logger.info(
+                    "loop_step_completed",
+                    step_id=step.id,
+                    iterations=step.iterations_used,
+                )
+                return output
+
+            if iteration < step.max_loop_iter - 1:
+                delay = min(2 ** iteration, 30)  # exponential backoff, max 30s
+                self._logger.info(
+                    "loop_step_retry",
+                    step_id=step.id,
+                    iteration=iteration + 1,
+                    next_delay_s=delay,
+                )
+                await asyncio.sleep(delay)
+
+        # Max iterations reached
+        self._logger.warning(
+            "loop_step_max_iterations_reached",
+            step_id=step.id,
+            max=step.max_loop_iter,
+        )
+        return step.output  # Return last output
+
+    async def _execute_step(
+        self, step: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
+        """Run the canonical governed per-step execution pipeline."""
+        tool_name = self._extract_tool_name(step)
+
+        # H23-H26: Action safety profile — assess per-tool risk
+        try:
+            from app.security_runtime.action_safety_profile import (
+                ActionSafetyLevel,
+                ActionSafetyProfileSelector,
+            )
+            _asp_selector = ActionSafetyProfileSelector()
+            _risk = state.context.get("_risk_level", "low")
+            _asp = _asp_selector.select(
+                tool_name=tool_name,
+                tool_args={},
+                risk_level=str(_risk),
+            )
+            if _asp.safety_level.value == ActionSafetyLevel.BLOCKED.value:
+                return f"Action blocked by safety profile: {_asp.reason}"
+        except Exception:
+            pass
+
+        # 1. Cost check deferred — actual cost calculated after LLM call below.
+
+        # 2. Exec memory recall — already done in rag_retrieval; skip here.
+
+        # 3. Dedup
+        if self._dedup_cache is not None:
+            content_hash = hashlib.sha256(f"{step}:{state.goal}".encode()).hexdigest()
+            if self._dedup_cache.is_duplicate(content_hash=content_hash, tenant_ctx=tenant_ctx):
+                return "Duplicate step, returning cached result."
+            self._dedup_cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
+
+        # 3b. Smart context fetch (per-step RAG)
+        app_state = getattr(self._app_state, "state", self._app_state)
+        step_strategy = RAGStrategy(
+            str(state.context.get("retrieval_strategy", RAGStrategy.HYBRID.value))
+        )
+        step_context = await smart_context_fetch(
+            goal=state.goal,
+            step=step,
+            tenant_ctx=tenant_ctx,
+            retrieval_gateway=(
+                self._retrieval_gateway
+                or getattr(app_state, "retrieval_gateway", None)
+            ),
+            collection_ids=list(self._agent_collection_ids),
+            strategy=step_strategy,
+            top_k=int(state.context.get("retrieval_top_k", 3)),
+            filters=state.context.get("retrieval_filters", {}),
+            execution_id=state.goal_id,
+        )
+
+        # 4. Circuit breaker
+        _active_breaker: CircuitBreaker | None = None
+        if self._circuit_breakers:
+            breaker = self._circuit_breakers.get("llm") or self._circuit_breakers.get(tool_name)
+            if breaker is not None:
+                if not breaker.can_call():
+                    return "Circuit open, step skipped."
+                _active_breaker = breaker  # track for success/failure recording
+
+        # 5. Governance — permission check with scope extraction
+        if self._permission_matrix is not None:
+            scope_value = _extract_scope_value(step)
+            level = self._permission_matrix.check(
+                tool_name=tool_name,
+                tenant_ctx=tenant_ctx,
+                scope_value=scope_value,
+            )
+            if level == ActionLevel.DENY:
+                record_tool_call(tool_name, "policy", "denied", 0.0)
+                raise PermissionError(
+                    f"Tool '{tool_name}' denied by governance policy "
+                    f"for tenant '{tenant_ctx.tenant_id}'."
+                )
+
+        # 6. Guardrails — validate step text for injection, then tool name
+        # 6a. Check the plan STEP TEXT for injection phrases (e.g. "ignore all previous instructions")
+        # This is important: a compromised tool could return an injection-crafted step description.
+        if self._guardrail_checker is not None:
+            step_issues = self._guardrail_checker.check_goal(step)
+            if step_issues:
+                return f"Guardrail blocked step: {'; '.join(step_issues)}"
+
+        # 6b. Check tool name (only check the name; do NOT pass the step description as tool_args
+        # since it triggers false positives on benign words like "extract", "format").
+        if self._guardrail_checker is not None:
+            violations = self._guardrail_checker.check(
+                tool_name=tool_name,
+                tool_args={},
+            )
+            if violations:
+                return f"Guardrail blocked step: {'; '.join(violations)}"
+
+        # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
+        try:
+            from app.core.runtime_flags import get_runtime_flags as _ge_rtf
+            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+            _ge_flags = _ge_rtf()
+            _runtime_profile = state.context.get("_runtime_profile")
+            if (
+                (_ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile)
+                and _runtime_profile is not None
+            ):
+                _ge = GuardrailEnforcer()
+                _ge_result = _ge.check_tool_args(
+                    tool_name=tool_name,
+                    tool_args={},  # C2 fix: tool_args not defined at pre-LLM check stage
+                    profile=_runtime_profile,
+                )
+                if _ge_result.blocked:
+                    return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
+        except Exception:
+            pass  # profile-based guardrail never crashes execution
+
+        # N6b: guardrail_profile_selected SSE — only when dynamic orchestration profile present
+        if self._event_callback is not None and _runtime_profile is not None:
+            try:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse_gps = RuntimeSSEEmitter()
+                _bundle = getattr(
+                    getattr(_runtime_profile, "security", None),
+                    "guardrail_bundle", "default"
+                ) or "default"
+                await self._emit(_sse_gps.guardrail_profile_selected(
+                    goal_id=state.goal_id,
+                    bundle=_bundle,
+                    scanners=["injection", "pii", "tool_args"],
+                ))
+            except Exception:
+                pass
+
+        # 6b. Policy engine check (glob-based policies)
+        _hitl_already_requested = False
+        if self._policy_engine is not None:
+            policy_result = self._policy_engine.evaluate(
+                tool_name=tool_name, tenant_ctx=tenant_ctx
+            )
+            if policy_result == PolicyResult.DENY:
+                record_tool_call(tool_name, "policy", "denied", 0.0)
+                raise PermissionError(
+                    f"Tool '{tool_name}' denied by governance policy "
+                    f"for tenant '{tenant_ctx.tenant_id}'."
+                )
+            elif policy_result == PolicyResult.REQUIRE_APPROVAL and self._hitl_gateway is not None:
+                req_id = str(self._hitl_gateway.request_approval(
+                    goal_id=state.goal_id, action=step, risk_level="high",
+                    tenant_ctx=tenant_ctx,
+                ))
+                _hitl_already_requested = True
+                if self._autonomy_mode == "supervised":
+                    await self._emit(
+                        {"type": "waiting_approval", "request_id": req_id, "action": step}
+                    )
+                    approval_started = time.monotonic()
+                    final_status = await self._hitl_gateway.wait_for_approval(
+                        req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+                    )
+                    record_approval_wait(time.monotonic() - approval_started)
+                    if final_status == ApprovalStatus.REJECTED:
+                        raise PermissionError(
+                            f"Step '{step}' was rejected by human approver via policy."
+                        )
+
+        # 7. HITL gate
+        if not _hitl_already_requested and self._hitl_gateway is not None:
+            risk = "high" if _is_high_risk_step(step) else "low"
+            if risk == "high":
+                req_id = str(self._hitl_gateway.request_approval(
+                    goal_id=state.goal_id,
+                    action=step,
+                    risk_level=risk,
+                    tenant_ctx=tenant_ctx,
+                ))
+                if self._autonomy_mode == "supervised":
+                    # Actually BLOCK until a human approves or rejects
+                    await self._emit(
+                        {"type": "waiting_approval", "request_id": req_id, "action": step}
+                    )
+                    approval_started = time.monotonic()
+                    final_status = await self._hitl_gateway.wait_for_approval(
+                        req_id, tenant_ctx=tenant_ctx
+                    )
+                    record_approval_wait(time.monotonic() - approval_started)
+                    if final_status == ApprovalStatus.REJECTED:
+                        raise PermissionError(f"Step '{step}' was rejected by human approver.")
+                    elif final_status == ApprovalStatus.TIMED_OUT:
+                        raise PermissionError(f"Step '{step}' approval timed out.")
+                    await self._emit({"type": "approval_granted", "request_id": req_id})
+                # In bounded/fully-autonomous: just log, don't block
+
+        # 8. Execute via LLM executor
+        recent_outputs = "\n".join(
+            (s.output or "")[:_EXECUTOR_CONTEXT_MAX_LENGTH]
+            for s in state.steps[-3:]
+            if s.output
+        )
+        context_parts = []
+        if recent_outputs:
+            context_parts.append(f"Recent outputs:\n{recent_outputs}")
+        if step_context:
+            context_parts.append(f"Relevant knowledge:\n{step_context}")
+
+        # ── Search directive parsing ───────────────────────────────────────
+        try:
+            from app.rag.agentic.search_directive_parser import SearchDirectiveParser
+            _directive_parser = SearchDirectiveParser()
+            _directives = _directive_parser.extract(step)
+            if _directives and self._agent_collection_ids:
+                from app.rag.agentic.retriever_tool import RetrieverTool
+                _retriever = RetrieverTool(
+                    retrieval_gateway=(
+                        self._retrieval_gateway
+                        or getattr(app_state, "retrieval_gateway", None)
+                    )
+                )
+                _directive_contexts: list[str] = []
+                for _directive in _directives:
+                    _strategy = {
+                        "kb": RAGStrategy.HYBRID,
+                        "graph": RAGStrategy.GRAPH,
+                        "web": RAGStrategy.WEB_AUGMENTED,
+                    }.get(_directive.source_type)
+                    if _strategy is None:
+                        raise ValueError("Unsupported search directive source")
+                    _retrieval = await _retriever.retrieve(
+                        query=_directive.query,
+                        tenant_ctx=tenant_ctx,
+                        strategy=_strategy,
+                        collection_ids=list(self._agent_collection_ids),
+                        top_k=3,
+                        execution_id=state.goal_id,
+                    )
+                    if _retrieval.chunks:
+                        _directive_contexts.append(
+                            f"[{_directive.source_type.upper()} SEARCH: {_directive.query}]\n"
+                            + _retrieval.context_text[:1000]
+                        )
+                if _directive_contexts:
+                    _directive_context_str = "\n\n".join(_directive_contexts)
+                    context_parts.append(_directive_context_str)
+        except ValueError:
+            raise
+        # ── end search directives ──────────────────────────────────────────
+
+        content = f"Step: {step}"
+        if context_parts:
+            content += "\n\n" + "\n\n".join(context_parts)
+
+        # N9: Prepend executor context from ContextPipeline if available
+        _exec_ctx = state.context.get("_executor_context", "") or ""
+        if _exec_ctx and len(_exec_ctx) > 50:
+            content = (
+                f"[Relevant context for this step]\n{_exec_ctx[:1200]}\n\n{content}"
+            )
+
+        # Collect available tools for structured tool calling (Task 1)
+        # IMPORTANT: OpenAI function names must match ^[a-zA-Z0-9_-]{1,64}$
+        # DO NOT include server_name in the name — "Jira Connector.jira_search_issues"
+        # is invalid and causes OpenAI to return text instead of a tool call.
+        _tool_defs: list[ToolDefinition] = []
+        _tc_ctx = state.context.get("tool_context")
+        if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
+            for _t in _tc_ctx.tools:
+                import re as _re
+                # Use only the bare tool name, sanitized to valid function-name chars
+                _raw_name = _t.name if hasattr(_t, "name") else ""
+                _safe_name = _re.sub(r"[^a-zA-Z0-9_-]", "_", _raw_name)[:64]
+                if not _safe_name:
+                    continue
+                _tool_defs.append(ToolDefinition(
+                    name=_safe_name,
+                    description=getattr(_t, "description", ""),
+                    input_schema=getattr(_t, "input_schema", {}),
+                ))
+
+        # Build allowed-tools allowlist for anti-hallucination grounding
+        _allowed_tools_set: set[str] = set()
+        if _tc_ctx is not None:
+            try:
+                _tools_list = getattr(_tc_ctx, "tools", []) or []
+                _allowed_tools_set = {t.name for t in _tools_list if hasattr(t, "name")}
+            except Exception:
+                pass
+
+        # ToolPromptBuilder — enrich content with formatted tool descriptions (M5b)
+        try:
+            from app.context.tool_prompt_builder import ToolPromptBuilder
+            if _tool_defs:
+                _tpb = ToolPromptBuilder()
+                _defs_as_dicts = [
+                    {"name": td.name, "description": td.description}
+                    for td in _tool_defs
+                ]
+                _tool_context = _tpb.build(tools=_defs_as_dicts, step_context=step)
+                if _tool_context:
+                    content = f"{content}\n\nAvailable tools:\n{_tool_context}"
+        except Exception:
+            pass
+
+        # N10: Tag unreliable tools (informational — don't hard-block, just log)
+        try:
+            _tr_store = getattr(self, "_tool_reliability_store", None)
+            if _tr_store is not None and _tool_defs:
+                _unreliable = await _tr_store.get_unreliable_tools(
+                    tenant_id=tenant_ctx.tenant_id, threshold=0.3
+                )
+                _unreliable_names = {
+                    t.get("tool_name", "") if isinstance(t, dict) else str(t)
+                    for t in (_unreliable or [])
+                }
+                if _unreliable_names:
+                    state.context["_unreliable_tools"] = list(_unreliable_names)
+                    # Add a hint to the step context
+                    _unreliable_hint = (
+                        f"\n[Note: these tools have had reliability issues: "
+                        f"{', '.join(list(_unreliable_names)[:3])}]"
+                    )
+                    content = content + _unreliable_hint if content else _unreliable_hint
+        except Exception:
+            pass
+
+        # Select executor system prompt via PromptOptimizer if wired (Task 7)
+        _executor_prompt = EXECUTOR_SYSTEM
+        _exec_optimizer = getattr(self, "_prompt_optimizer", None)
+        if _exec_optimizer is not None:
+            _exec_variant = _exec_optimizer.select_variant("executor")
+            if _exec_variant is not None:
+                _executor_prompt = _exec_variant.prompt_text
+
+        # Inject allowed-tools list into executor system prompt
+        if _allowed_tools_set:
+            _tool_lines = "\n".join(f"  - {n}" for n in sorted(_allowed_tools_set)[:30])
+            _executor_prompt = _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
+
+        # Resolve executor model via model_router when available (Bug 3 fix)
+        _exec_model = ""
+        if self._model_router is not None:
+            try:
+                _exec_model = self._model_router.model_for("execution") or ""
+            except Exception:
+                pass
+
+        req = CompletionRequest(
+            messages=[
+                Message(role="system", content=_executor_prompt),
+                Message(role="user", content=content),
+            ],
+            model=_exec_model,
+            tools=_tool_defs,
+        )
+
+        # 8a. Bulkhead — distributed concurrency limit per tenant (RedisBulkhead or Semaphore)
+        _bulkhead = None
+        if self._bulkhead_registry is not None and tenant_ctx is not None:
+            try:
+                _bulkhead = self._bulkhead_registry.get_bulkhead(tenant_ctx.tenant_id)
+            except Exception:
+                _bulkhead = None
+
+        _bulkhead_acquired = False
+        if _bulkhead is not None:
+            try:
+                if hasattr(_bulkhead, "acquire"):
+                    # RedisBulkhead path
+                    _bulkhead_acquired = await _bulkhead.acquire()
+                    if not _bulkhead_acquired:
+                        self._logger.warning(
+                            "bulkhead_full",
+                            tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                            step=step[:100],
+                        )
+                        return (
+                            "[Bulkhead: too many concurrent operations for this tenant."
+                            " Please retry.]"
+                        )
+                else:
+                    # asyncio.Semaphore fallback
+                    await _bulkhead.acquire()
+                    _bulkhead_acquired = True
+            except Exception as bulkhead_exc:
+                self._logger.warning("bulkhead_acquire_failed", error=str(bulkhead_exc))
+                _bulkhead_acquired = False
+
+        # Token streaming — buffer for accumulation and closure for on_token callback.
+        # Defined before the bulkhead try so the closure captures step by value.
+        _token_buffer: list[str] = []
+        _step_for_token = step
+
+        async def _on_token(chunk: str) -> None:
+            _token_buffer.append(chunk)
+            await self._emit({
+                "type": "token_chunk",
+                "step": _step_for_token,
+                "token": chunk,
+                "cumulative": "".join(_token_buffer),
+            })
+
+        try:
+            try:
+                async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
+                    resp = await self._executor.stream_tokens(req, _on_token)
+                if _active_breaker is not None:
+                    _active_breaker.record_success()
+            except Exception:
+                if _active_breaker is not None:
+                    _active_breaker.record_failure()
+                raise
+        finally:
+            if _bulkhead_acquired and _bulkhead is not None:
+                try:
+                    if hasattr(_bulkhead, "release"):
+                        await _bulkhead.release()  # RedisBulkhead
+                    else:
+                        _bulkhead.release()  # asyncio.Semaphore
+                except Exception:
+                    pass
+
+        # 1. Calculate actual LLM cost from token usage and check budget
+        if self._cost_controller is not None:
+            from app.governance.pricing import estimate_cost as _estimate_cost
+            _actual_cost = _estimate_cost(
+                resp.model if hasattr(resp, "model") and resp.model else "",
+                resp.input_tokens,
+                resp.output_tokens,
+            )
+            async with self._state_lock:
+                state.context["total_cost_usd"] = (
+                    state.context.get("total_cost_usd", 0.0) + _actual_cost
+                )
+            ok = await self._cost_controller.check_and_record(
+                goal_id=state.goal_id,
+                cost_usd=_actual_cost,
+                tenant_ctx=tenant_ctx,
+            )
+            if not ok:
+                return "Step skipped: budget exceeded."
+
+        # 1b. Record ACTUAL token cost via CostTracker when usage is available
+        if self._cost_tracker is not None and getattr(resp, "usage", None) is not None:
+            try:
+                from app.intelligence.cost_tracker import calculate_cost as _calc_cost
+                _model_name = resp.model if hasattr(resp, "model") and resp.model else _exec_model
+                _real_cost = _calc_cost(
+                    _model_name,
+                    resp.usage.prompt_tokens,
+                    resp.usage.completion_tokens,
+                )
+                async with self._state_lock:
+                    state.context["total_cost_usd"] = (
+                        state.context.get("total_cost_usd", 0.0) + _real_cost
+                    )
+                await self._cost_tracker.record_llm_usage(
+                    model=_model_name,
+                    prompt_tokens=resp.usage.prompt_tokens,
+                    completion_tokens=resp.usage.completion_tokens,
+                    tenant_ctx=tenant_ctx,
+                    goal_id=state.goal_id or "",
+                    agent_id=state.context.get("agent_id"),
+                    role="executor",
+                )
+            except Exception as _ct_exc:
+                self._logger.warning("cost_tracker_record_failed", error=str(_ct_exc))
+        # 2.3: Per-goal executor cost tracking
+        try:
+            from app.observability.cost_breakdown import record_role_cost as _rrc
+            _rrc(
+                goal_id=state.goal_id,
+                role="executor",
+                model=_exec_model,
+                input_tok=getattr(resp, "input_tokens", 0),
+                output_tok=getattr(resp, "output_tokens", 0),
+                cost=_actual_cost if "_actual_cost" in locals() else 0.0,
+            )
+        except Exception:
+            pass
+        raw_output = resp.content
+        raw_output_sanitized = False
+
+        # Prefer structured tool_calls from provider; fall back to text parsing (Task 1)
+        _structured_tcs: list[dict[str, Any]] = resp.tool_calls if resp.tool_calls else []
+        if _structured_tcs:
+            _first_stc = _structured_tcs[0]
+            _stc_name = _first_stc.get("name") or _first_stc.get("tool_name", "")
+            _stc_args = _first_stc.get("input") or _first_stc.get("arguments") or {}
+            if not isinstance(_stc_args, dict):
+                _stc_args = {}
+            tool_call = ToolCall(tool=_stc_name, arguments=_stc_args) if _stc_name else None
+            # Update tool_name from structured response (Task 3)
+            if _stc_name:
+                tool_name = self._extract_tool_name(
+                    step, tool_calls_result=[{"tool_name": _stc_name}]
+                )
+        else:
+            tool_call = extract_tool_call(raw_output)
+        if tool_call is not None:
+            tool_call = await repair_tool_call_arguments(tool_call, step, goal=state.goal)
+        # Validate tool name before dispatching
+        if tool_call is not None and tool_call.tool:
+            from app.agent.tool_calls import validate_tool_name as _validate_tn
+            _tn_rejection = _validate_tn(tool_call.tool, _allowed_tools_set)
+            if _tn_rejection:
+                raw_output = _tn_rejection
+                raw_output_sanitized = True
+                await self._emit({
+                    "type": "tool_call_failed",
+                    "tool": tool_call.tool,
+                    "error": _tn_rejection[:300],
+                })
+                record_tool_call(
+                    tool_call.tool, "unknown", "rejected",
+                    0.0,
+                )
+                tool_call = None  # prevent dispatch
+        if tool_call is not None:
+            # GuardrailEngine v2: evaluate tool arguments BEFORE the MCP call
+            _guardrail_engine_v2 = (
+                getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
+            )
+            if _guardrail_engine_v2 is not None:
+                try:
+                    from app.intelligence.guardrail_engine import GuardrailContext as _GCtx
+                    _ge_ctx = _GCtx(
+                        tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+                        goal_id=state.goal_id or "",
+                        agent_id=self._agent_id or "",
+                        domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                    )
+                    _ge_args_result = await _guardrail_engine_v2.evaluate_tool_args(
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments or {},
+                        context=_ge_ctx,
+                    )
+                    if not _ge_args_result.allowed:
+                        _ge_viol = _ge_args_result.violations[0] if _ge_args_result.violations else None
+                        raise PermissionError(
+                            f"Guardrail blocked tool call '{tool_name}': "
+                            f"{_ge_viol.matched_pattern if _ge_viol else 'policy violation'}"
+                        )
+                except PermissionError:
+                    raise
+                except Exception as _ge_exc:
+                    self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
+
+            # Guardrail check: tool_args (Guardrails 2.0)
+            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                try:
+                    _g2_args_str = json.dumps(tool_call.arguments) if isinstance(tool_call.arguments, dict) else str(tool_call.arguments)
+                    _g2_args_result = await guardrails_engine.evaluate(
+                        content=_g2_args_str,
+                        layer=GuardrailLayer.TOOL_ARGS,
+                        tenant_id=tenant_ctx.tenant_id,
+                        goal_id=getattr(state, "goal_id", None),
+                        step_description=step,
+                    )
+                    if _g2_args_result.get("blocked"):
+                        _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get("rule_name", "policy")
+                        raise PermissionError(
+                            f"Tool call blocked by guardrail: {_g2_viol_name}"
+                        )
+                except PermissionError:
+                    raise
+                except Exception:
+                    pass  # Guardrail errors must never break execution
+
+            tool_call_started = time.monotonic()
+            if self._mcp_client is None:
+                self._logger.warning("mcp_client_none_at_tool_dispatch tool=%s", tool_call.tool)
+                error = self._sanitize_tool_raw_output("MCP client unavailable")
+                await self._emit(
+                    {
+                        "type": "tool_call_failed",
+                        "tool": tool_call.tool,
+                        "error": error,
+                    }
+                )
+                record_tool_call(
+                    tool_call.tool,
+                    "unknown",
+                    "failed",
+                    time.monotonic() - tool_call_started,
+                )
+                raw_output = error
+                raw_output_sanitized = True
+            else:
+                tool_context = state.context.get("tool_context")
+                tool_ref = (
+                    tool_context.find_tool(tool_call.tool)
+                    if tool_context is not None and hasattr(tool_context, "find_tool")
+                    else None
+                )
+                if tool_ref is None:
+                    # Check if it's a civilization spawn tool call
+                    if (
+                        self._civilization_spawn_enabled
+                        and self._civilization_id
+                        and tool_call.tool == "civilization_spawn"
+                    ):
+                        try:
+                            from app.civilization.governor import Governor
+                            from app.civilization.spawn_tool import execute_spawn_tool
+                            _gov_kwargs: dict[str, Any] = {
+                                "civilization_id": self._civilization_id,
+                                "tenant_id": tenant_ctx.tenant_id,
+                            }
+                            if self._db_session_factory is not None:
+                                _gov_kwargs["db_session_factory"] = self._db_session_factory
+                            _civ_const_placeholder = None
+                            try:
+                                from app.civilization.models import Constitution
+                                _civ_const_placeholder = Constitution()
+                            except Exception:
+                                pass
+                            if _civ_const_placeholder is not None:
+                                _gov_kwargs["constitution"] = _civ_const_placeholder
+                            governor = Governor(**_gov_kwargs)
+                            spawn_result = await execute_spawn_tool(
+                                arguments=tool_call.arguments or {},
+                                governor=governor,
+                                goal_service=self._goal_service,
+                                tenant_ctx=tenant_ctx,
+                            )
+                            raw_output = str(spawn_result)
+                            await self._emit({
+                                "type": "child_agent_spawned",
+                                "parent_agent_id": getattr(state, "agent_id", ""),
+                                "child_agent_id": spawn_result.get("agent_id"),
+                                "child_goal_id": spawn_result.get("goal_id"),
+                                "depth": spawn_result.get("depth", 0),
+                                "capability": (tool_call.arguments or {}).get("requested_capability", ""),
+                            })
+                            raw_output_sanitized = True
+                            record_tool_call(
+                                tool_call.tool, "civilization", "success",
+                                time.monotonic() - tool_call_started,
+                            )
+                        except Exception as _spawn_exc:
+                            raw_output = f"Civilization spawn error: {_spawn_exc}"
+                            await self._emit({
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": str(_spawn_exc),
+                            })
+                            raw_output_sanitized = True
+                    # Check if it's a built-in RPA tool (rpa_open_url, rpa_click, etc.)
+                    from app.rpa.tools import RPA_TOOLS as _RPA_TOOLS
+                    _rpa_tool_names = {str(t["name"]) for t in _RPA_TOOLS}
+                    if tool_call.tool in _rpa_tool_names or any(
+                        tool_call.tool.endswith(f".{t}") for t in _rpa_tool_names
+                    ):
+                        # Dispatch directly to RPAExecutor
+                        rpa_tool_name = (
+                            tool_call.tool.split(".")[-1]
+                            if "." in tool_call.tool
+                            else tool_call.tool
+                        )
+                        rpa_executor = (
+                            getattr(state.context.get("_app_state"), "rpa_executor", None)
+                            or getattr(self, "_rpa_executor", None)
+                        )
+                        if rpa_executor is not None:
+                            try:
+                                goal_id_str = str(getattr(state, "goal_id", ""))
+                                rpa_result = await rpa_executor.execute(
+                                    tool_name=rpa_tool_name,
+                                    arguments=tool_call.arguments or {},
+                                    tenant_id=tenant_ctx.tenant_id,
+                                    goal_id=goal_id_str,
+                                )
+                                raw_output = (
+                                    rpa_result.output
+                                    if rpa_result.success
+                                    else f"RPA error: {rpa_result.error}"
+                                )
+                                await self._emit({
+                                    "type": "tool_call_complete",
+                                    "tool": tool_call.tool,
+                                    "server_id": "rpa",
+                                    "success": rpa_result.success,
+                                    "output": raw_output,
+                                    "artifact_url": rpa_result.artifact_url,
+                                    "artifact_name": rpa_result.artifact_name,
+                                })
+                                record_tool_call(
+                                    rpa_tool_name, "rpa",
+                                    "success" if rpa_result.success else "failed",
+                                    time.monotonic() - tool_call_started,
+                                )
+                                raw_output_sanitized = True
+                                # ── RPA failure → ExecutionMemory + SelfOptimizer ──
+                                if not rpa_result.success:
+                                    _rpa_url_fail = (
+                                        (tool_call.arguments or {}).get("url", "")
+                                        or (
+                                            agent_state.context.get(
+                                                "_current_rpa_url", ""
+                                            )
+                                            if isinstance(agent_state.context, dict)
+                                            else ""
+                                        )
+                                    )
+                                    # Record failure in ExecutionMemory for recall
+                                    if (
+                                        self._exec_memory is not None
+                                        and self._db_session_factory is not None
+                                    ):
+                                        _fail_task = asyncio.create_task(
+                                            self._exec_memory.record_failure_async(
+                                                goal=agent_state.goal,
+                                                error=(
+                                                    f"RPA {rpa_tool_name} failed on "
+                                                    f"{_rpa_url_fail}: "
+                                                    f"{rpa_result.error or 'unknown'}"
+                                                ),
+                                                tenant_id=tenant_ctx.tenant_id,
+                                                db=self._db_session_factory,
+                                            )
+                                        )
+                                        self._background_tasks.add(_fail_task)
+                                        _fail_task.add_done_callback(
+                                            self._background_tasks.discard
+                                        )
+                                    # Generate RPA-specific suggestions
+                                    if self._self_optimizer is not None:
+                                        self._self_optimizer.analyze_rpa_failure(
+                                            tool_name=rpa_tool_name,
+                                            error=rpa_result.error or "",
+                                            url=str(_rpa_url_fail),
+                                            tenant_ctx=tenant_ctx,
+                                        )
+                                # ── RPA → LTM persistence ──────────────────
+                                # Store extracted text and vision analysis so
+                                # future goals can recall what was found on
+                                # this page via semantic search.
+                                if (
+                                    rpa_result.success
+                                    and self._long_term_memory is not None
+                                    and rpa_tool_name in (
+                                        "rpa_extract_text", "rpa_screenshot"
+                                    )
+                                    and rpa_result.output
+                                    and len(rpa_result.output) > 50
+                                ):
+                                    _rpa_url = (tool_call.arguments or {}).get(
+                                        "url",
+                                        (state.context.get("_current_rpa_url", "")
+                                         if isinstance(state.context, dict) else "")
+                                    )
+                                    _rpa_src = (
+                                        "rpa_vision"
+                                        if rpa_tool_name == "rpa_screenshot"
+                                        else "rpa_extraction"
+                                    )
+                                    _rpa_ltm_task = asyncio.create_task(
+                                        self._long_term_memory.store_rpa_extraction(
+                                            url=str(_rpa_url or "unknown"),
+                                            extracted_text=rpa_result.output,
+                                            goal_id=str(
+                                                getattr(state, "goal_id", "")
+                                            ),
+                                            tenant_ctx=tenant_ctx,
+                                            db=self._db_session_factory,
+                                            embedder=self._embedder,
+                                            source_type=_rpa_src,
+                                        )
+                                    )
+                                    self._background_tasks.add(_rpa_ltm_task)
+                                    _rpa_ltm_task.add_done_callback(
+                                        self._background_tasks.discard
+                                    )
+                                # Track current URL for extraction attribution
+                                if rpa_tool_name == "rpa_open_url":
+                                    _nav_url = (tool_call.arguments or {}).get("url", "")
+                                    if isinstance(state.context, dict) and _nav_url:
+                                        state.context["_current_rpa_url"] = _nav_url
+                            except Exception as _rpa_exc:
+                                raw_output = f"RPA execution error: {_rpa_exc}"
+                                await self._emit({
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": str(_rpa_exc),
+                                })
+                                raw_output_sanitized = True
+                        else:
+                            raw_output = self._sanitize_tool_raw_output(
+                                f"Tool not found: {tool_call.tool}"
+                            )
+                            raw_output_sanitized = True
+                            await self._emit({
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": self._sanitize_tool_event_value("Tool not found"),
+                            })
+                            record_tool_call(
+                                tool_call.tool, "unknown", "failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                    else:
+                        # Existing "tool_ref is None" error handling
+                        raw_output = self._sanitize_tool_raw_output(
+                            f"Tool not found: {tool_call.tool}"
+                        )
+                        raw_output_sanitized = True
+                        await self._emit(
+                            {
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": self._sanitize_tool_event_value("Tool not found"),
+                            }
+                        )
+                        record_tool_call(
+                            tool_call.tool,
+                            "unknown",
+                            "failed",
+                            time.monotonic() - tool_call_started,
+                        )
+                else:
+                    tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
+                    # Gate write_high bypass behind an explicit env flag (default-secure).
+                    import os as _os
+                    _allow_fa_write_high = (
+                        _os.getenv("ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH", "false").lower() == "true"
+                    )
+                    if (
+                        tool_risk == "write_high"
+                        and self._autonomy_mode == "fully-autonomous"
+                        and _allow_fa_write_high
+                    ):
+                        tool_risk = "write_low"
+                    # else: falls through to write_high HITL gate below (default-secure)
+                    if tool_risk == "destructive":
+                        error = self._sanitize_tool_raw_output(
+                            f"Jira tool '{tool_ref.name}' denied as destructive."
+                        )
+                        await self._emit(
+                            {
+                                "type": "tool_call_failed",
+                                "tool": tool_ref.name,
+                                "server_id": tool_ref.server_id,
+                                "error": error,
+                            }
+                        )
+                        record_tool_call(
+                            tool_ref.name,
+                            tool_ref.server_id,
+                            "denied",
+                            time.monotonic() - tool_call_started,
+                        )
+                        raw_output = error
+                        raw_output_sanitized = True
+                    elif tool_risk == "write_high":
+                        if self._hitl_gateway is None:
+                            error = self._sanitize_tool_raw_output(
+                                f"Jira tool '{tool_ref.name}' requires approval."
+                            )
+                            await self._emit(
+                                {
+                                    "type": "tool_call_failed",
+                                    "tool": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "error": error,
+                                }
+                            )
+                            record_tool_call(
+                                tool_ref.name,
+                                tool_ref.server_id,
+                                "failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                            raw_output = error
+                            raw_output_sanitized = True
+                        else:
+                            req_id = str(self._hitl_gateway.request_approval(
+                                goal_id=state.goal_id,
+                                action=tool_ref.name,
+                                risk_level=tool_risk,
+                                tenant_ctx=tenant_ctx,
+                            ))
+                            await self._emit(
+                                {
+                                    "type": "waiting_approval",
+                                    "request_id": req_id,
+                                    "action": tool_ref.name,
+                                    "tool": tool_ref.name,
+                                }
+                            )
+                            await self._emit(
+                                {
+                                    "type": "tool_call_pending_approval",
+                                    "tool": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "request_id": req_id,
+                                    "risk": tool_risk,
+                                }
+                            )
+                            if self._autonomy_mode == "supervised":
+                                _hitl_start = time.monotonic()
+                                final_status = await self._hitl_gateway.wait_for_approval(
+                                    req_id, tenant_ctx=tenant_ctx
+                                )
+                                record_approval_wait(time.monotonic() - _hitl_start)
+                                if final_status == ApprovalStatus.REJECTED:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' was rejected by human approver."
+                                    )
+                                elif final_status == ApprovalStatus.TIMED_OUT:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' approval timed out."
+                                    )
+                                # APPROVED: now actually dispatch the tool call
+                                await self._emit({"type": "approval_granted", "request_id": req_id})
+                                _approved_result = await self._mcp_client.call_tool(
+                                    server_id=tool_ref.server_id,
+                                    tool_name=tool_ref.name,
+                                    arguments=tool_call.arguments,
+                                    tenant_ctx=tenant_ctx,
+                                )
+                                raw_output = (
+                                    _approved_result.output
+                                    if _approved_result.success
+                                    else str(_approved_result.error)
+                                )
+                                raw_output_sanitized = False
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "success" if _approved_result.success else "failed",
+                                    time.monotonic() - tool_call_started,
+                                )
+                            else:
+                                # Non-supervised: log the request but do not block
+                                raw_output = self._sanitize_tool_raw_output(
+                                    f"High-risk tool '{tool_ref.name}' "
+                                    "requires approval (non-supervised mode)."
+                                )
+                                raw_output_sanitized = True
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "approval",
+                                    time.monotonic() - tool_call_started,
+                                )
+                    else:
+                        # V4: Validate arguments against JSON schema before MCP dispatch
+                        from app.agent.tool_calls import validate_tool_arguments as _validate_args
+                        _tool_schema = getattr(tool_ref, "input_schema", None) or {}
+                        _arg_errors_v4 = _validate_args(tool_call.arguments or {}, _tool_schema)
+                        if _arg_errors_v4:
+                            _arg_error_msg = (
+                                f"[ARGUMENT VALIDATION FAILED] Tool '{tool_call.tool}' "
+                                f"called with invalid arguments:\n"
+                                + "\n".join(f"  - {e}" for e in _arg_errors_v4)
+                                + "\nPlease retry with correct arguments from the tool schema."
+                            )
+                            raw_output = self._sanitize_tool_raw_output(_arg_error_msg)
+                            raw_output_sanitized = True
+                            await self._emit({
+                                "type": "tool_call_failed",
+                                "tool": tool_call.tool,
+                                "error": _arg_error_msg[:300],
+                            })
+                            record_tool_call(
+                                tool_call.tool,
+                                getattr(tool_ref, "server_id", "unknown"),
+                                "arg_validation_failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                        else:
+                            # V5: Placeholder argument guard — prevent LLM-generated
+                            # placeholder values (e.g. "your_organization/your_repository")
+                            # from reaching real MCP servers.
+                            _PLACEHOLDER_PATTERNS = (
+                                "your_organization", "your_repository",
+                                "your_org", "your_repo", "your_project",
+                                "your_workspace", "your_team", "your_board",
+                                "<organization>", "<repository>", "<repo>",
+                                "{organization}", "{repository}", "{repo}",
+                                "example.com", "placeholder",
+                            )
+                            _ph_hits = [
+                                f"{k}={v!r}"
+                                for k, v in (tool_call.arguments or {}).items()
+                                if isinstance(v, str)
+                                and any(p in v.lower() for p in _PLACEHOLDER_PATTERNS)
+                            ]
+                            if _ph_hits:
+                                _ph_msg = (
+                                    f"[PLACEHOLDER ARGUMENTS DETECTED] Tool '{tool_call.tool}' "
+                                    f"was called with generic placeholder values: "
+                                    f"{', '.join(_ph_hits)}. "
+                                    "Please use real values from the goal context or "
+                                    "user-provided configuration instead of template placeholders."
+                                )
+                                raw_output = self._sanitize_tool_raw_output(_ph_msg)
+                                raw_output_sanitized = True
+                                await self._emit({
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": _ph_msg[:300],
+                                })
+                                record_tool_call(
+                                    tool_call.tool,
+                                    getattr(tool_ref, "server_id", "unknown"),
+                                    "placeholder_args",
+                                    time.monotonic() - tool_call_started,
+                                )
+                            else:
+                                # No placeholders — dispatch to MCP
+                                try:
+                                    with self._tracer.start_as_current_span("agentverse.tool.call") as span:
+                                        span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
+                                        result = await self._mcp_client.call_tool(
+                                            server_id=tool_ref.server_id,
+                                            tool_name=tool_ref.name,
+                                            arguments=tool_call.arguments,
+                                            tenant_ctx=tenant_ctx,
+                                        )
+                                except Exception:
+                                    record_tool_call(
+                                        tool_ref.name,
+                                        tool_ref.server_id,
+                                        "failed",
+                                        time.monotonic() - tool_call_started,
+                                    )
+                                    raise
+                            # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
+                            raw_output_text = ""
+                            if isinstance(result.output, dict):
+                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                            elif isinstance(result.output, str):
+                                raw_output_text = result.output[:500]
+                            if self._guardrail_checker and raw_output_text:
+                                pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
+                                if pii_issues:
+                                    await self._emit({
+                                        "type": "pii_redacted",
+                                        "tool": getattr(tool_call, "tool", "") if tool_call else "",
+                                        "issues": pii_issues,
+                                    })
+                                    if self._audit_log is not None:
+                                        try:
+                                            self._audit_log.record(
+                                                AuditEvent(
+                                                    goal_id=state.goal_id,
+                                                    tool_name="guardrail_checker",
+                                                    action_level=ActionLevel.ALLOW_LOG,
+                                                    outcome="pii_redacted",
+                                                    step_id=state.steps[-1].step_id if state.steps else "",
+                                                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                                                    note=f"issues_count={len(pii_issues)} step={step[:100]}",
+                                                ),
+                                                tenant_ctx=tenant_ctx,
+                                            )
+                                        except Exception:
+                                            pass
+                            raw_result_output = self._sanitize_tool_raw_output(result.output)
+                            raw_result_error = self._sanitize_tool_raw_output(result.error)
+
+                            # Guardrail check: tool_output (Guardrails 2.0)
+                            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                                try:
+                                    _g2_out_preview = str(raw_result_output)[:500] if raw_result_output else ""
+                                    await guardrails_engine.evaluate(
+                                        content=_g2_out_preview,
+                                        layer=GuardrailLayer.TOOL_OUTPUT,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                        goal_id=getattr(state, "goal_id", None),
+                                    )
+                                except Exception:
+                                    pass  # Guardrail errors must never break execution
+
+                            # ── Indirect injection scan on tool output ──────────────
+                            # External tool results (Confluence, web, email) may contain
+                            # adversarial text designed to hijack the agent (tool poisoning).
+                            if result.success and raw_result_output:
+                                try:
+                                    from app.agent.exfil_guard import (
+                                        check_tool_output_for_injection,
+                                    )
+                                    _injection_warning = check_tool_output_for_injection(
+                                        tool_ref.name, raw_result_output
+                                    )
+                                    if _injection_warning:
+                                        self._logger.warning(
+                                            "indirect_injection_detected",
+                                            tool=tool_ref.name,
+                                            warning=_injection_warning[:120],
+                                        )
+                                        raw_result_output = _injection_warning + "\n\n" + raw_result_output
+                                except Exception:
+                                    pass  # injection scan must never block execution
+
+                            # ── C4 Fix: Populate StepResult.tool_calls ─────────────
+                            # This allows the verifier's [TOOL FAILED] markers to fire.
+                            if state.steps:
+                                state.steps[-1].tool_calls.append({
+                                    "tool_name": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "success": result.success,
+                                    "error": result.error or "",
+                                    "output": str(result.output)[:300] if result.output else "",
+                                })
+
+                            # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
+                            raw_output_text = ""
+                            if isinstance(result.output, dict):
+                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                            elif isinstance(result.output, str):
+                                raw_output_text = result.output[:500]
+                            await self._emit(
+                                {
+                                    "type": "tool_call_complete",
+                                    "tool": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "success": result.success,
+                                    "output": self._sanitize_tool_event_value(result.output),
+                                    "error": self._sanitize_tool_event_value(result.error),
+                                    # tool_output preserves the raw structured dict for result_artifacts.py
+                                    # without truncation so downstream consumers can access full data.
+                                    "tool_output": result.output if isinstance(result.output, dict) else None,
+                                }
+                            )
+                            # Check for artifact capture (RPA screenshot etc.)
+                            # result is always ToolCallResult — use getattr not dict access
+                            _artifact_uri: str = getattr(result, "artifact_url", "") or ""
+                            _artifact_name: str = getattr(result, "artifact_name", "") or ""
+                            if _artifact_uri and not _artifact_uri.startswith("data:"):
+                                await self._emit({
+                                    "type": "artifact_captured",
+                                    "artifact_type": "screenshot",
+                                    "artifact_url": _artifact_uri,
+                                    "artifact_name": _artifact_name,
+                                    "tool": tool_ref.name,
+                                })
+                            record_tool_call(
+                                tool_ref.name,
+                                tool_ref.server_id,
+                                "success" if result.success else "failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                            raw_output = raw_result_output if result.success else raw_result_error
+                            raw_output_sanitized = True
+
+        # 9. Result processor / graph sanitizer — redact secrets, truncate
+        if not raw_output_sanitized:
+            raw_output = self._sanitize_tool_raw_output(raw_output)
+
+        # Check output for data leakage
+        if self._guardrail_checker is not None:
+            output_issues = self._guardrail_checker.check_output(output=raw_output)
+            if output_issues:
+                raw_output = f"[Output redacted by guardrails: {'; '.join(output_issues)}]"
+
+        # GuardrailEngine v2: scan output for PII/secrets/cloud-destruction patterns
+        _guardrail_engine_v2_out = (
+            getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
+        )
+        if _guardrail_engine_v2_out is not None and raw_output:
+            try:
+                from app.intelligence.guardrail_engine import GuardrailContext as _GCtxOut
+                _ge_out_ctx = _GCtxOut(
+                    tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+                    goal_id=state.goal_id or "",
+                    agent_id=self._agent_id or "",
+                    domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                )
+                _ge_out_result = await _guardrail_engine_v2_out.evaluate_tool_output(
+                    tool_name=tool_name,
+                    output=str(raw_output),
+                    context=_ge_out_ctx,
+                )
+                if _ge_out_result.redacted_content:
+                    raw_output = _ge_out_result.redacted_content
+            except Exception as _ge_out_exc:
+                self._logger.warning("guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc))
+
+        # 10. Record rollback point
+        if self._rollback_engine is not None:
+            from app.reliability.tool_inverses import get_inverse_fn as _get_inverse_fn
+            _rb_tool = tool_name
+            _rb_args: dict[str, Any] = {}
+            if tool_call is not None and tool_call.arguments:
+                _rb_tool = tool_call.tool or tool_name
+                _rb_args = dict(tool_call.arguments)
+            self._rollback_engine.register(
+                action=step,
+                inverse=_get_inverse_fn(_rb_tool, _rb_args),
+            )
+
+        # 11. Decision trace for explainability — real LLM output (Task 6)
+        _reasoning_text = raw_output[:500] if raw_output else "No output"
+        if tool_call is not None and getattr(tool_call, "tool", None):
+            _reasoning_text = f"Used tool '{tool_call.tool}': {raw_output[:300]}"
+        trace = DecisionTrace(
+            action=step,
+            reasoning=_reasoning_text,
+            evidence=[raw_output[:300]],
+            alternatives=[],
+            confidence=0.8,
+        )
+        state.context.setdefault("decision_traces", []).append(trace.to_dict())
+        # Persist decision trace to DB
+        if self._db_session_factory and hasattr(trace, "trace_id"):
+            import asyncio as _asyncio
+            _task = _asyncio.create_task(self._persist_decision_trace(trace, state, tenant_ctx))
+            _task.add_done_callback(
+                lambda t: (not t.cancelled() and t.exception()) and self._logger.warning(
+                    "decision_trace_persist_failed", error=str(t.exception())
+                )
+            )
+            # Hold a strong reference so the GC doesn't collect the task before it finishes
+            self._background_tasks.add(_task)
+            _task.add_done_callback(self._background_tasks.discard)
+
+        # 12. Audit log
+        if self._audit_log is not None:
+            self._audit_log.record(
+                AuditEvent(
+                    goal_id=state.goal_id,
+                    tool_name=tool_name,
+                    action_level=ActionLevel.ALLOW_LOG,
+                    outcome="step_complete",
+                    step_id=state.steps[-1].step_id if state.steps else "",
+                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                    request_id=(
+                        state.context.get("request_id")
+                        or state.context.get("execution_context", {}).get("request_id")
+                    ),
+                ),
+                tenant_ctx=tenant_ctx,
+            )
+
+        # 13. Claim grounding check — verify LLM claims against tool outputs.
+        # SKIP when raw_output is already a structured tool result (JSON/dict),
+        # as it IS the evidence and cannot be "ungrounded" against itself.
+        try:
+            from app.agent.grounding import annotate_ungrounded, check_grounding
+            _raw_stripped = (raw_output or "").strip()
+            _is_structured_tool_output = _raw_stripped.startswith(('{', '[', "{'"))
+            _tool_outputs_for_grounding = [
+                str(tc.get("output", ""))
+                for tc in (state.steps[-1].tool_calls if state.steps else [])
+                if tc.get("output")
+            ]
+            if raw_output and _tool_outputs_for_grounding and not _is_structured_tool_output:
+                _ground_result = check_grounding(
+                    output=raw_output,
+                    tool_outputs=_tool_outputs_for_grounding,
+                )
+                if not _ground_result.grounded:
+                    self._logger.info(
+                        "grounding_failed",
+                        ungrounded=_ground_result.ungrounded_claims[:3],
+                        step=step[:100],
+                    )
+                    raw_output = annotate_ungrounded(raw_output, _ground_result)
+                    state.ungrounded_claims.extend(_ground_result.ungrounded_claims[:5])
+                    # C4: Mark the current step as UNGROUNDED
+                    if state.steps:
+                        _last_step = state.steps[-1]
+                        if hasattr(_last_step, "status"):
+                            from app.agent.state import StepStatus
+                            _last_step.status = StepStatus.UNGROUNDED
+                    await self._emit({
+                        "type": "grounding_warning",
+                        "ungrounded_claims": _ground_result.ungrounded_claims[:5],
+                        "step": step,
+                    })
+                state.context["grounding_checked"] = True
+        except Exception as exc:
+            # Log but don't block execution — fail-open only on grounding check errors
+            self._logger.warning("grounding_check_error", error=str(exc)[:80])
+
+        # M12: Update session memory with step output
+        try:
+            _session_mem = getattr(self, "_session_memory", None)
+            if _session_mem is not None and hasattr(_session_mem, "add"):
+                _session_mem.add(
+                    key=f"step_{len(state.steps)}",
+                    value={"description": step, "output": (raw_output or "")[:500]},
+                )
+        except Exception:
+            pass
+
+        return raw_output
+
+    async def _execute_step_with_cache(
+        self, step: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
+        """
+        Execute a step using the world-class semantic cache.
+
+        True cosine-similarity matching (threshold 0.92) means paraphrases like
+        "Search GitHub for open issues" and "Find open GitHub issues" both hit
+        the same cache entry — no more exact-match-only limitation.
+
+        Flow:
+          1. Embed the step description (single API call, ~50ms)
+          2. L1 lookup: in-process LRU (sub-millisecond, no network)
+          3. L2 lookup: Redis vector scan (cosine similarity, ~5ms)
+          4. Cache MISS → execute step fully → store result in L1+L2
+        """
+        _cache_embedding: list[float] | None = None
+        if self._semantic_cache is not None and self._embedder is not None:
+            try:
+                from app.providers.base import EmbedRequest
+                _cache_embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
+                _cache_embedding = (
+                    _cache_embed_resp.embeddings[0] if _cache_embed_resp.embeddings else None
+                )
+                if _cache_embedding:
+                    # Use the new true-similarity API
+                    hit = await self._semantic_cache.get_similar(
+                        embedding=_cache_embedding,
+                        tenant_id=tenant_ctx.tenant_id,
+                    )
+                    # Only serve non-empty, non-error responses from cache.
+                    # Empty responses (stored by failed prior runs) must be ignored.
+                    if hit is not None and hit.response and len(hit.response.strip()) >= 10:
+                        await self._emit({
+                            "type": "cache_hit",
+                            "step": step,
+                            "similarity": round(hit.similarity, 4),
+                            "source": hit.source,
+                            "latency_ms": round(hit.latency_ms, 1),
+                        })
+                        return hit.response
+            except Exception as _ce:
+                _cache_embedding = None
+                self._logger.debug("cache_embed_failed", error=str(_ce)[:80])
+
+        raw_output = await self._execute_step(step, state, tenant_ctx)
+
+        # Store result — skip caching error responses so bad LLM outputs
+        # (API errors, model-not-found messages, timeouts) never poison the cache.
+        # Also skip caching empty/minimal results — they often represent transient
+        # failures (401 auth, wrong JQL, empty project) and should not be served
+        # as "correct" cached answers on future runs.
+        # CRITICAL: Never cache plain-text "I'll call..." executor reasoning text.
+        # Only cache actual tool call results (JSON or clearly structured output).
+        _out_stripped = (raw_output or "").strip()
+        _looks_like_llm_reasoning = (
+            _out_stripped.lower().startswith((
+                "i'll ", "i will ", "i'll use", "i will use",
+                "to complete", "let me ", "i need to ", "i can ", "i should ",
+                "step 1", "first,", "first i", "i'll now",
+                "i'll start", "i'll call", "i'll search",
+                "now i'll", "next, i", "to search",
+            ))
+            or ("will use" in _out_stripped.lower() and "tool" in _out_stripped.lower())
+            or ("will call" in _out_stripped.lower() and len(_out_stripped) < 500)
+        )
+        _is_error_output = (
+            not raw_output
+            or raw_output.strip().startswith("{\"error")
+            or "model_not_found" in raw_output.lower()
+            or "invalid model" in raw_output.lower()
+            or "rate_limit_exceeded" in raw_output.lower()
+            or raw_output.strip().lower().startswith("error:")
+            or "mcp client unavailable" in raw_output.lower()
+            or "tool not available" in raw_output.lower()
+            or "argument validation failed" in raw_output.lower()
+            or "circuit open" in raw_output.lower()
+            or "requires approval" in raw_output.lower()
+            # Don't cache empty collection results (Jira 0 issues, empty lists)
+            or raw_output.strip() in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', '[]', '{}')
+            or '"total": 0' in raw_output
+            or '"issues": []' in raw_output
+            or '"projects": []' in raw_output
+            or len(raw_output.strip()) < 10
+            # Don't cache plain LLM reasoning text (no actual tool result)
+            or _looks_like_llm_reasoning
+        )
+        if self._semantic_cache is not None and _cache_embedding is not None and not _is_error_output:
+            try:
+                await self._semantic_cache.store_async(
+                    embedding=_cache_embedding,
+                    query=step,
+                    response=raw_output,
+                    tenant_id=tenant_ctx.tenant_id,
+                )
+            except Exception:
+                pass  # write failures must never block execution
+
+        return raw_output
+
