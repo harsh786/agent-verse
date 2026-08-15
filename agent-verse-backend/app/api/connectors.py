@@ -74,7 +74,7 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _registry(request: Request) -> Any:
-    return request.app.state.mcp_registry
+    from app.api._deps import get_mcp_registry as _gmr; return _gmr(request)
 
 
 def _is_production() -> bool:

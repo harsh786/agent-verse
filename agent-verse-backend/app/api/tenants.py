@@ -33,7 +33,8 @@ def _generate_raw_key(plan_prefix: str = "free") -> str:
 
 def _get_tenant_service(request: Request) -> Any:
     """Read the service from app.state (injected by create_app or tests)."""
-    return request.app.state.tenant_service
+    from app.api._deps import get_tenant_service as _get_ts
+    return _get_ts(request)
 
 
 def _require_tenant(request: Request) -> TenantContext:
