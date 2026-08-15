@@ -4,6 +4,15 @@ import pytest
 
 # ── Vector 5: Grounded executor prompt ───────────────────────────────────────
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_executor_system_contains_grounding_rules():
     """EXECUTOR_SYSTEM must contain all 5 grounding rules."""
     from app.agent.prompts import EXECUTOR_SYSTEM
@@ -212,7 +221,7 @@ def test_build_verifier_provider_is_callable_in_main():
 def test_self_optimizer_threshold_is_half():
     """Self-optimizer must only fire on failing goals (< 0.5), not all goals."""
     import pathlib
-    src = pathlib.Path("app/agent/graph.py").read_text()
+    src = _agent_source()
     # Find lines with average_score() threshold comparisons
     lines = [l.strip() for l in src.splitlines() if "average_score()" in l and "< " in l]
     threshold_lines = [l for l in lines if "0." in l]

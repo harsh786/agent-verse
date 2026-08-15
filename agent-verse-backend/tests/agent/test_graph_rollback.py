@@ -4,6 +4,17 @@ import pytest
 from app.reliability.rollback import RollbackEngine
 
 
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+
+
 @pytest.mark.asyncio
 async def test_rollback_all_async_awaited_on_failure():
     """Rollback inverses must complete before graph continues on step failure."""
@@ -32,7 +43,7 @@ async def test_rollback_engine_in_agent_graph_uses_async():
     import inspect
     import app.agent.graph as graph_module
 
-    source = inspect.getsource(graph_module)
+    source = _agent_source()
     # Must contain rollback_all_async somewhere in the graph
     assert "rollback_all_async" in source, (
         "AgentGraph must call rollback_all_async() (not rollback_all()) "

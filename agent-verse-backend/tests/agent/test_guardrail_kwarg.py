@@ -4,6 +4,15 @@ import inspect
 import pytest
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_guardrail_check_output_accepts_keyword():
     """GuardrailChecker.check_output must accept 'output=' kwarg."""
     from app.intelligence.guardrails import GuardrailChecker
@@ -31,7 +40,7 @@ def test_guardrail_graph_uses_keyword():
     """graph.py source must use output= keyword for check_output."""
     from app.agent import graph
 
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert "check_output(output=" in src, (
         "graph.py must call check_output with keyword argument output="
     )

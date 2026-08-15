@@ -9,6 +9,15 @@ Bug 4: Model router missing keys for "think", "reflection", "execution", "verifi
 from __future__ import annotations
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 def test_verifier_system_prompt_instructs_json_output():
     """VERIFIER_SYSTEM must instruct the LLM to respond with JSON."""
     from app.agent.prompts import VERIFIER_SYSTEM
@@ -87,7 +96,7 @@ def test_executor_uses_model_router_not_hardcoded():
     """_execute_step must use model_router.model_for('execution') not hardcoded string."""
     import inspect
     from app.agent import graph
-    src = inspect.getsource(graph)
+    src = _agent_source()
     # Find the executor CompletionRequest — should NOT have hardcoded model
     # The fix should have model=_exec_model or similar
     assert '_exec_model' in src or 'model_for("execution")' in src or "execution" in src, \
@@ -98,6 +107,6 @@ def test_verifier_uses_model_router_not_hardcoded():
     """_node_verify must use model_router not hardcoded model."""
     import inspect
     from app.agent import graph
-    src = inspect.getsource(graph)
+    src = _agent_source()
     assert '_verify_model' in src or 'model_for("verification")' in src or "verification" in src, \
         "Verifier must use model router for model selection"

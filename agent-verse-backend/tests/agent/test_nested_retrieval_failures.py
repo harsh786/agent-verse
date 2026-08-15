@@ -16,6 +16,16 @@ from app.tenancy.context import PlanTier, TenantContext
 TENANT = TenantContext("nested-tenant", PlanTier.PROFESSIONAL, "nested-key")
 
 
+
+def _agent_source() -> str:
+    """Read combined source of graph.py and all node mixin files."""
+    import pathlib
+    parts = [pathlib.Path("app/agent/graph.py").read_text(encoding="utf-8")]
+    for f in sorted(pathlib.Path("app/agent/nodes").glob("*.py")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 @pytest.mark.asyncio
 async def test_failed_child_state_sets_error_and_preserves_retrieval_trace() -> None:
     child = AgentState(goal="child", tenant_ctx=TENANT)

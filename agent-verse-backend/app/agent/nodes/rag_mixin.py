@@ -1,0 +1,467 @@
+"""Mixin extracted from app.agent.graph — zero semantic changes."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any, TypedDict
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from app.agent.prompts import (
+    CHAIN_OF_THOUGHT_SYSTEM,
+    EXECUTOR_SYSTEM,
+    PLANNER_SYSTEM,
+    REFLECTION_SYSTEM,
+    STRUCTURED_PLANNER_SYSTEM,
+    VERIFIER_SYSTEM,
+)
+from app.agent.sanitization import (
+    _EXECUTOR_CONTEXT_MAX_LENGTH,
+    sanitize_event,
+    sanitize_event_value,
+    sanitize_tool_event_value,
+    sanitize_tool_raw_output,
+)
+from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
+from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
+from app.agent.tool_risk import classify_tool_risk
+from app.governance.audit import AuditEvent, AuditLog
+from app.governance.cost import CostController
+from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.permissions import ActionLevel, PermissionMatrix
+from app.governance.policies import PolicyEngine, PolicyResult
+from app.intelligence.eval_runner import EvalRunner
+from app.intelligence.explainability import DecisionTrace
+from app.intelligence.guardrails import GuardrailChecker
+from app.memory.execution import ExecutionMemory
+from app.memory.long_term import LongTermMemoryStore
+from app.observability.metrics import (
+    record_approval_wait,
+    record_goal_completed,
+    record_goal_failed,
+    record_plan_duration,
+    record_tool_call,
+    record_verify_duration,
+    track_tool_call,
+)
+from app.pipeline.steps import smart_context_fetch
+from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
+from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
+from app.rag.store import KnowledgeStore
+from app.reliability.circuit_breaker import CircuitBreaker
+from app.reliability.dedup import DeduplicationCache
+from app.reliability.result_processor import ResultProcessor
+from app.reliability.rollback import RollbackEngine
+from app.tenancy.context import TenantContext
+
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
+from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+
+
+from app.agent.nodes._helpers import (
+    _is_high_risk_step,
+    _is_ungrounded_status,
+    _build_verifier_summary,
+    _parse_json,
+    _parse_verifier_response,
+    _extract_tool_name as _extract_tool_name_fn,
+    _extract_scope_value,
+)
+
+class RAGMixin:
+    """Mixin: _node_rag_retrieval, _node_rag_prime, _node_rag_remediate."""
+
+    async def _node_rag_retrieval(self, state: GraphState) -> dict[str, Any]:
+        agent_state: AgentState = state["agent_state"]
+        tenant_ctx: TenantContext = state["tenant_ctx"]
+        context_parts: list[str] = []
+
+        # H3: Check if a specific RAG strategy was assembled by the orchestration layer
+        _rag_strategy = agent_state.context.get("_rag_strategy_override")
+        if _rag_strategy is None:
+            _runtime_profile = agent_state.context.get("_runtime_profile")
+            if _runtime_profile is not None:
+                _rag_strategy = getattr(
+                    getattr(_runtime_profile, "rag_strategy", None), "strategy", None
+                )
+        requested_strategy_id = str(
+            _rag_strategy
+            if _rag_strategy is not None
+            else agent_state.context.get(
+                "retrieval_strategy",
+                RAGStrategy.HYBRID.value,
+            )
+        )
+        try:
+            resolved_strategy = resolve_rag_strategy(requested_strategy_id)
+        except Exception as exc:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Invalid retrieval strategy"
+            agent_state.context["rag_retrieval_status"] = "failed"
+            failure_event = {
+                "type": "knowledge_retrieval_failed",
+                "collections_searched": list(self._agent_collection_ids[:3]),
+                "requested_strategy_id": requested_strategy_id,
+                "status": "failed",
+                "citations": [],
+                "resolved_strategy_ids": [],
+                "retrieval_legs": [],
+                "strategy_trace": [],
+            }
+            agent_state.events.append(failure_event)
+            await self._emit(failure_event)
+            raise RetrievalEntryPointError("Invalid retrieval strategy") from exc
+        agent_state.context["_requested_rag_strategy_id"] = requested_strategy_id
+        agent_state.context["_active_rag_strategy"] = resolved_strategy.value
+        agent_state.context["retrieval_strategy"] = resolved_strategy.value
+
+        # N6e: chunking_strategy_selected SSE
+        try:
+            if self._event_callback is not None and _rag_strategy:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse_cs = RuntimeSSEEmitter()
+                await self._emit(_sse_cs.chunking_strategy_selected(
+                    goal_id=agent_state.goal_id,
+                    content_type="text",
+                    strategy=_rag_strategy or "semantic",
+                    reason="configured canonical strategy",
+                ))
+        except Exception:
+            pass
+
+        # 1. Execution memory: recall past winning plans (DB-backed async recall, BUG 2 fix)
+        if self._exec_memory is not None:
+            exec_plans: list[dict] = []
+            try:
+                exec_plans = await self._exec_memory.recall_async(
+                    agent_state.goal,
+                    tenant_id=tenant_ctx.tenant_id,
+                    db=self._db_session_factory,
+                    limit=3,
+                )
+            except Exception as _em_exc:
+                self._logger.warning("exec_memory_recall_failed", error=str(_em_exc))
+                exec_plans = self._exec_memory.recall(
+                    goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                )
+            if exec_plans:
+                mem_text = "\n".join(
+                    f"- Past plan: {m.get('plan', [])}" for m in exec_plans
+                )
+                context_parts.append(f"[Past winning plans]\n{mem_text}")
+
+        # 1b. Execution memory: recall past failure patterns to avoid repeating them
+        if self._exec_memory is not None:
+            try:
+                failures = self._exec_memory.recall_failures(
+                    goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                )
+                if failures:
+                    failure_lines = [
+                        f"- {str(f.get('goal', f.get('goal_text', '')))[:100]}"
+                        for f in failures[-3:]
+                    ]
+                    context_parts.append(
+                        "[Previously Failed Approaches — Avoid These]\n"
+                        + "\n".join(failure_lines)
+                    )
+            except Exception:
+                pass
+
+        # 2. Long-term memory — async pgvector recall when embedder available (Task 4)
+        if self._long_term_memory is not None:
+            ltm = await self._long_term_memory.recall_async(
+                query=agent_state.goal,
+                tenant_ctx=tenant_ctx,
+                top_k=3,
+                db=self._db_session_factory,
+                embedder=self._embedder,
+            )
+            if ltm:
+                ltm_text = "\n".join(f"- {m.content}" for m in ltm)
+                context_parts.append(f"[Domain knowledge]\n{ltm_text}")
+
+        # 3. Required collection retrieval through the tenant-aware gateway.
+        search_collections = list(self._agent_collection_ids[:3])
+        if not search_collections and self._knowledge_store is not None:
+            all_collections = await self._knowledge_store.list_collections_async(
+                tenant_ctx=tenant_ctx
+            )
+            search_collections = [collection.collection_id for collection in all_collections[:3]]
+
+        if search_collections:
+            app_state = getattr(self._app_state, "state", self._app_state)
+            gateway = self._retrieval_gateway or getattr(
+                app_state, "retrieval_gateway", None
+            )
+            requested_strategy = str(
+                agent_state.context.get("_requested_rag_strategy_id")
+                or agent_state.context.get("retrieval_strategy")
+                or RAGStrategy.HYBRID.value
+            )
+            raw_top_k = agent_state.context.get("retrieval_top_k", 3)
+            retrieval_filters = agent_state.context.get("retrieval_filters", {})
+
+            try:
+                if gateway is None:
+                    raise RuntimeError("Retrieval gateway is not configured")
+                if (
+                    not isinstance(raw_top_k, int)
+                    or isinstance(raw_top_k, bool)
+                    or raw_top_k < 1
+                ):
+                    raise ValueError("Invalid retrieval top_k")
+                if not isinstance(retrieval_filters, dict):
+                    raise TypeError("Invalid retrieval filters")
+                canonical_strategy = resolve_rag_strategy(requested_strategy)
+                agent_state.context["retrieval_strategy"] = canonical_strategy.value
+                agent_state.context["_active_rag_strategy"] = canonical_strategy.value
+                gateway_results: list[RAGExecutionResult] = []
+                for collection_id in search_collections:
+                    gateway_result = await gateway.execute(
+                        tenant_ctx,
+                        collection_id=collection_id,
+                        query=agent_state.goal,
+                        strategy_id=requested_strategy,
+                        top_k=raw_top_k,
+                        filters=retrieval_filters,
+                        execution_id=agent_state.goal_id,
+                    )
+                    if not isinstance(gateway_result, RAGExecutionResult):
+                        raise TypeError("Retrieval gateway returned an invalid result")
+                    gateway_results.append(gateway_result)
+            except Exception as exc:
+                agent_state.status = GoalStatus.FAILED
+                agent_state.error_message = "Required retrieval failed"
+                agent_state.context["rag_retrieval_status"] = "failed"
+                failure_event = {
+                    "type": "knowledge_retrieval_failed",
+                    "collections_searched": search_collections,
+                    "requested_strategy_id": requested_strategy,
+                    "status": "failed",
+                    "citations": [],
+                    "resolved_strategy_ids": [],
+                    "retrieval_legs": [],
+                    "strategy_trace": [],
+                }
+                agent_state.events.append(failure_event)
+                await self._emit(failure_event)
+                self._logger.warning(
+                    "required_rag_retrieval_failed",
+                    error_type=type(exc).__name__,
+                    strategy=requested_strategy,
+                )
+                raise RetrievalEntryPointError("Required retrieval failed") from exc
+
+            knowledge_citations = [
+                {
+                    **citation.model_dump(mode="json"),
+                    "collection_id": collection_id,
+                }
+                for collection_id, result in zip(
+                    search_collections, gateway_results, strict=True
+                )
+                for citation in result.citations
+            ]
+            retrieval_legs = [
+                leg.model_dump(mode="json")
+                for result in gateway_results
+                for leg in result.retrieval_legs
+            ]
+            strategy_trace = [
+                trace.model_dump(mode="json")
+                for result in gateway_results
+                for trace in result.strategy_trace
+            ]
+            resolved_strategy_ids = sorted(
+                {result.resolved_strategy_id.value for result in gateway_results}
+            )
+            knowledge_contexts = [
+                (
+                    f"[Collection: {citation['collection_id']}, "
+                    f"source: {citation['source']}, score: {citation['score']:.2f}]\n"
+                    f"{citation['content'][:600]}"
+                )
+                for citation in knowledge_citations
+            ]
+            context_parts.extend(knowledge_contexts)
+            agent_state.context["rag_knowledge"] = "\n\n".join(knowledge_contexts)
+            agent_state.context["rag_citations"] = knowledge_citations
+            agent_state.context["rag_requested_strategy_id"] = requested_strategy
+            agent_state.context["rag_resolved_strategy_ids"] = resolved_strategy_ids
+            agent_state.context["rag_retrieval_legs"] = retrieval_legs
+            agent_state.context["rag_strategy_trace"] = strategy_trace
+            agent_state.context["rag_retrieval_status"] = "complete"
+            agent_state.context["retrieval_attempted"] = True
+            average_confidence = (
+                sum(float(item["score"]) for item in knowledge_citations)
+                / len(knowledge_citations)
+                if knowledge_citations
+                else 0.0
+            )
+            agent_state.context["runtime_retrieval_evidence"] = {
+                "source": "knowledge_base",
+                "confidence": average_confidence,
+            }
+            agent_state.context["retrieval_evidence_ref"] = (
+                f"goal:{agent_state.goal_id}:rag"
+            )
+            agent_state.provenance.extend(knowledge_citations)
+            success_event = {
+                "type": "knowledge_retrieved",
+                "collections_searched": search_collections,
+                "chunks_found": len(knowledge_citations),
+                "citations": knowledge_citations,
+                "requested_strategy_id": requested_strategy,
+                "resolved_strategy_ids": resolved_strategy_ids,
+                "retrieval_legs": retrieval_legs,
+                "strategy_trace": strategy_trace,
+            }
+            agent_state.events.append(success_event)
+            await self._emit(success_event)
+
+        rag_context = "\n\n".join(context_parts)
+
+        # ── RAGTrace: record retrieval for observability ───────────────────────
+        try:
+            from app.rag.agentic.rag_trace import RAGTrace
+            _rag_trace = RAGTrace(goal_id=agent_state.goal_id, tenant_id=tenant_ctx.tenant_id)
+            _strategy = agent_state.context.get("_active_rag_strategy", "hybrid")
+            _rag_trace.record_retrieval(
+                strategy=_strategy,
+                query=agent_state.goal[:200],
+                result_count=len(context_parts),
+                confidence=0.7,
+                latency_ms=0,
+            )
+            if self._event_callback is not None:
+                await self._emit(_rag_trace.to_sse_event())
+        except Exception:
+            pass
+
+        # H21: Emit rag_strategy_selected SSE
+        try:
+            if self._event_callback is not None:
+                from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+                _sse = RuntimeSSEEmitter()
+                _strategy = agent_state.context.get("_active_rag_strategy") or agent_state.context.get(
+                    "retrieval_strategy", "hybrid"
+                )
+                await self._emit(_sse.rag_strategy_selected(
+                    goal_id=agent_state.goal_id,
+                    strategy=str(_strategy),
+                    sources=[],
+                    reranker="score",
+                ))
+        except Exception:
+            pass
+
+        return {"rag_context": rag_context}
+
+    async def _node_rag_prime(self, state: GraphState) -> dict:
+        """Alias for _node_rag_retrieval — spec-required name (doc-2 §9.1).
+
+        Fires comprehensive first retrieval across all available sources before planning.
+        Builds source_inventory for planner awareness. Activates web_search when KB is empty.
+        """
+        return await self._node_rag_retrieval(state)
+
+    async def _node_rag_remediate(self, state: GraphState) -> dict:
+        """Targeted re-retrieval when verification fails due to context gap (doc-2 §9.2).
+
+        Triggered by _route() when verification_feedback contains gap signals:
+          "insufficient", "unclear", "no information", "cannot determine",
+          "lack of context", "not mentioned", "unknown"
+
+        Strategy:
+        1. Extract missing topic from verification_feedback
+        2. Search with BROADER strategy (web if KB was empty before)
+        3. Inject as [Remediation context: iteration N] into next plan
+        4. Increment remediation_count (max 2 to prevent loops)
+        """
+        agent_state = state.get("agent_state")
+        if agent_state is None:
+            return {}
+
+        if not agent_state.context.get("allow_rag_remediation", False):
+            return {}
+
+        try:
+            from app.rag.agentic.context_gap_detector import ContextGapDetector
+            from app.rag.agentic.retriever_tool import RetrieverTool
+
+            feedback = agent_state.verification_feedback or ""
+            detector = ContextGapDetector()
+            missing_topic = detector.extract_missing_topic(feedback) or agent_state.goal[:100]
+            app_state = getattr(self._app_state, "state", self._app_state)
+            gateway = self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
+            strategy = RAGStrategy(
+                str(agent_state.context.get("retrieval_strategy", RAGStrategy.HYBRID.value))
+            )
+            tool = RetrieverTool(retrieval_gateway=gateway)
+            result = await tool.retrieve(
+                query=missing_topic,
+                tenant_ctx=agent_state.tenant_ctx,
+                strategy=strategy,
+                collection_ids=list(self._agent_collection_ids),
+                top_k=7,
+                min_confidence=0.2,
+                execution_id=agent_state.goal_id,
+            )
+
+            count = agent_state.context.get("remediation_count", 0) + 1
+            agent_state.context["remediation_count"] = count
+            agent_state.context["remediation_context"] = (
+                f"[Remediation context — iteration {count}]\n"
+                f"Query: {missing_topic}\n"
+                f"Source: {result.source} (confidence={result.confidence:.2f})\n\n"
+                f"{result.context_text[:2000]}"
+            )
+
+        except Exception as exc:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = "Required retrieval remediation failed"
+            agent_state.context["rag_remediation_status"] = "failed"
+            event = {
+                "type": "knowledge_retrieval_failed",
+                "status": "failed",
+                "phase": "remediation",
+                "requested_strategy_id": str(
+                    agent_state.context.get(
+                        "retrieval_strategy",
+                        RAGStrategy.HYBRID.value,
+                    )
+                ),
+                "citations": [],
+                "resolved_strategy_ids": [],
+                "retrieval_legs": [],
+                "strategy_trace": [],
+            }
+            agent_state.events.append(event)
+            await self._emit(event)
+            self._logger.warning(
+                "rag_remediate_failed",
+                error_type=type(exc).__name__,
+            )
+            raise RetrievalEntryPointError(
+                "Required retrieval remediation failed"
+            ) from exc
+
+        return {"agent_state": agent_state}
+
