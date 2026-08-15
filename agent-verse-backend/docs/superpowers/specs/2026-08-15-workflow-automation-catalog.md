@@ -720,22 +720,892 @@ workflow_run:
 
 ---
 
-## Appendix: Sub-workflow Reuse Map
+## Section 1 Additions — Identity & Compliance
+
+---
+
+### 1.6 Access Review & Recertification
+
+**Purpose:** Automatically identify stale user access rights across SaaS apps and AD groups, generate review tasks for managers, and revoke unconfirmed access.  
+**Trigger:** CRON (quarterly, `0 9 1 1,4,7,10 *`) | Manual REST  
+**Inputs:** `review_period` (e.g., `"Q3-2026"`), `scope` (all users / specific department)  
+**Outputs:** `access_changes_applied`, `revoked_count`, `certified_count`, `report_url`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_users` | `tool` | `identity.list_users` | `scope` | `users` list with roles, last_login, manager |
+| 2 | `fetch_access` | `tool` | `identity.get_access_matrix` | `users` | `access_matrix`: user → apps/groups/permissions |
+| 3 | `risk_score` | `llm` | Access risk prompt | `access_matrix`, `last_login` per user | `risk_items` list: user, resource, risk_reason, score |
+| 4 | `auto_revoke_inactive` | `conditional` | — | `last_login > 90 days` | → `revoke` if inactive; → `certify_queue` if active |
+| 5a | `revoke` | `tool` | `identity.revoke_access` | `user_id`, `resource_id` | `revoked: true`, `timestamp` |
+| 5b | `send_review_tasks` | `tool` | `email.send` | Manager email, access list needing certification | `task_ids` list |
+| 6 | `collect_responses` | `wait` | — | Wait up to 7 days for manager confirmations | `certified_items`, `unresponded_items` |
+| 7 | `revoke_unresponded` | `tool` | `identity.revoke_access` | `unresponded_items` | `auto_revoked` list |
+| 8 | `generate_report` | `llm` | Report prompt | Full review summary | `executive_summary`, `changes_log`, `compliance_statement` |
+| 9 | `publish_report` | `tool` | `confluence.create_page` | Report content | `report_url` |
+
+---
+
+### 1.7 SOC2 Evidence Collection
+
+**Purpose:** Automatically collect, organise, and upload SOC2 audit evidence for a specified control period.  
+**Trigger:** CRON (monthly, `0 8 1 * *`) | ONCE (before audit)  
+**Inputs:** `audit_period_start`, `audit_period_end`, `controls` list (e.g., CC6, CC7)  
+**Outputs:** `evidence_package_url`, `coverage_score`, `gaps` list
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `map_controls` | `rag` | `soc2-controls` collection | `controls` list | `evidence_requirements` per control |
+| 2 | `collect_logs` | `parallel` | — | `audit_period_start`, `audit_period_end` | |
+| 2a | `access_logs` | `tool` | `identity.get_audit_log` | date range | `access_log_file` |
+| 2b | `change_logs` | `tool` | `github.get_commit_log` | date range, all repos | `change_log_file` |
+| 2c | `backup_logs` | `tool` | `storage.get_backup_report` | date range | `backup_report_file` |
+| 2d | `vuln_scan_reports` | `tool` | `security.get_scan_reports` | date range | `scan_reports` list |
+| 2e | `incident_reports` | `tool` | `pagerduty.get_incidents` | date range | `incident_list` |
+| 3 | `gap_analysis` | `llm` | Gap analysis prompt | `evidence_requirements`, all collected evidence | `coverage_map`, `gaps` list with severity |
+| 4 | `package_evidence` | `tool` | `storage.create_package` | All evidence files | `package_url` |
+| 5 | `notify_auditor` | `tool` | `email.send` | Auditor email, package URL, coverage summary | `sent: true` |
+
+---
+
+### 1.8 Vendor Risk Assessment
+
+**Purpose:** Assess the security and compliance posture of a new vendor before contract approval.  
+**Trigger:** Form submission (vendor intake form) | Webhook (Jira issue created in VENDOR project)  
+**Inputs:** `vendor_name`, `vendor_url`, `data_shared` (PII/financial/none), `integration_type`  
+**Outputs:** `risk_score` (0–100), `risk_tier` (LOW/MEDIUM/HIGH/CRITICAL), `approval_recommendation`, `due_diligence_report_url`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `enrich_vendor` | `parallel` | — | `vendor_name`, `vendor_url` | |
+| 1a | `web_search` | `tool` | `web.search` | vendor security incidents, breaches | `breach_history`, `news_items` |
+| 1b | `cert_check` | `tool` | `security.check_certifications` | `vendor_url` | `iso27001: bool`, `soc2: bool`, `gdpr_compliant: bool` |
+| 1c | `dns_analysis` | `tool` | `security.dns_scan` | `vendor_url` | `ssl_grade`, `email_security_config`, `dns_flags` |
+| 2 | `questionnaire_send` | `tool` | `email.send` | vendor security contact, SIG Lite questionnaire | `questionnaire_id` |
+| 3 | `wait_response` | `wait` | — | Up to 5 business days | `questionnaire_response` or `timeout` |
+| 4 | `risk_scoring` | `llm` | Risk scoring prompt | All enrichment + questionnaire response | `risk_score`, `risk_factors` list, `mitigating_factors` list |
+| 5 | `generate_report` | `llm` | Report prompt | All data | `executive_summary`, `findings`, `recommendations` |
+| 6 | `approval_routing` | `conditional` | — | `risk_tier` | → `auto_approve` if LOW; → `hitl_review` if MEDIUM/HIGH; → `reject` if CRITICAL |
+| 7a | `auto_approve` | `tool` | `jira.update_issue` + `email.send` | Approval status | `approved: true` |
+| 7b | `hitl_review` | `hitl` | Role: `security_team` | Full report | Manual decision |
+| 7c | `reject` | `tool` | `email.send` | Vendor contact, rejection rationale | `rejected: true` |
+
+---
+
+## Section 2 Additions — Financial Operations
+
+---
+
+### 2.5 Accounts Payable Automation
+
+**Purpose:** Fully automate the purchase-to-pay cycle: extract invoice data, match against POs, route for approval, and schedule payment.  
+**Trigger:** FILE_DROP (`/invoices/inbound/`) | EMAIL_ARRIVAL (AP inbox)  
+**Inputs:** `invoice_file` (PDF/image), `vendor_id` (optional)  
+**Outputs:** `payment_scheduled: bool`, `invoice_id`, `matched_po_id`, `payment_date`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `extract_invoice` | `tool` | `ocr.extract_document` | `invoice_file` | `vendor_name`, `invoice_number`, `invoice_date`, `due_date`, `line_items`, `total_amount`, `bank_details` |
+| 2 | `vendor_lookup` | `tool` | `erp.find_vendor` | `vendor_name`, `bank_details` | `vendor_id`, `vendor_approved: bool`, `payment_terms` |
+| 3 | `po_matching` | `tool` | `erp.match_po` | `vendor_id`, `line_items`, `total_amount` | `matched_po_id`, `match_confidence`, `variance_amount`, `variance_pct` |
+| 4 | `match_decision` | `conditional` | — | `match_confidence`, `variance_pct` | → `auto_approve` if confidence > 0.95 and variance < 1%; → `human_review` if variance 1–5%; → `dispute` if variance > 5% or no PO |
+| 5a | `auto_approve` | `tool` | `erp.approve_invoice` | `invoice_id`, `matched_po_id` | `approved: true` |
+| 5b | `human_review` | `hitl` | Role: `ap_manager` | Invoice + PO comparison, variance explanation | Manager decision |
+| 5c | `dispute` | `tool` | `email.send` | Vendor, dispute details, supporting docs | `dispute_ticket_id` |
+| 6 | `schedule_payment` | `tool` | `erp.schedule_payment` | `invoice_id`, `vendor_id`, `due_date`, `payment_terms` | `payment_date`, `payment_amount`, `payment_ref` |
+| 7 | `update_gl` | `tool` | `erp.post_journal_entry` | `invoice_id`, cost centre, GL account | `journal_entry_id` |
+| 8 | `notify_vendor` | `tool` | `email.send` | Vendor, payment confirmation, payment date | `sent: true` |
+
+---
+
+### 2.6 Budget Forecasting & Variance Alert
+
+**Purpose:** Monitor actuals vs budget monthly, detect significant variances, identify root causes, and notify budget owners.  
+**Trigger:** CRON (`0 7 5 * *` — 5th of each month)  
+**Inputs:** `fiscal_period`, `departments` list  
+**Outputs:** `variance_report_url`, `alerts_sent`, `forecast_updated`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_actuals` | `tool` | `erp.get_actuals` | `fiscal_period`, `departments` | `actuals_by_dept`: dept → category → amount |
+| 2 | `fetch_budget` | `tool` | `erp.get_budget` | `fiscal_period`, `departments` | `budget_by_dept`: dept → category → budget |
+| 3 | `compute_variance` | `transform` | — | `actuals_by_dept`, `budget_by_dept` | `variance_matrix`: amount, pct, RAG status per line item |
+| 4 | `flag_alerts` | `conditional` | — | `variance_pct` per line | → `critical_alert` if > 15%; → `warning_alert` if 5–15%; → `ok` if < 5% |
+| 5 | `root_cause_analysis` | `llm` | Variance analysis prompt | `variance_matrix`, `actuals_by_dept` + context from `finance-knowledge` collection | `root_causes` per variance, `one-time_vs_recurring` classification |
+| 6 | `reforecast` | `llm` | Reforecast prompt | `actuals`, `root_causes`, historical trends | `updated_full_year_forecast` per dept |
+| 7 | `generate_report` | `llm` | Report prompt | All variance data, root causes, forecast | `executive_summary`, `dept_narratives`, `action_items` |
+| 8 | `send_alerts` | `tool` | `email.send` (parallel per dept) | Dept owners, variance narrative, action items | `alerts_sent` count |
+| 9 | `update_forecast` | `tool` | `erp.update_forecast` | `updated_full_year_forecast` | `forecast_updated: true` |
+
+---
+
+### 2.7 Payroll Exception Handling
+
+**Purpose:** Detect payroll anomalies (new hires, leavers, salary changes, duplicate entries) before payroll runs and route for correction.  
+**Trigger:** CRON (`0 8 20 * *` — 20th of each month, before payroll cutoff)  
+**Inputs:** `pay_period`, `payroll_snapshot`  
+**Outputs:** `exceptions_resolved`, `payroll_approved: bool`, `exception_report_url`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_payroll_data` | `tool` | `hr.get_payroll_snapshot` | `pay_period` | `employee_records` with pay, deductions, hours |
+| 2 | `detect_anomalies` | `parallel` | — | `employee_records` | |
+| 2a | `new_hires_check` | `tool` | `hr.get_new_hires` | `pay_period` | `missing_new_hires` list |
+| 2b | `leavers_check` | `tool` | `hr.get_leavers` | `pay_period` | `active_leavers` list (should have final pay only) |
+| 2c | `salary_change_check` | `tool` | `hr.get_salary_changes` | `pay_period` | `unapplied_changes` list |
+| 2d | `duplicate_check` | `transform` | — | `employee_records` | `duplicate_entries` list |
+| 2e | `stat_anomaly` | `llm` | Anomaly detection prompt | Pay amounts vs 3-month rolling avg | `stat_outliers` list: employee, expected, actual, deviation |
+| 3 | `compile_exceptions` | `transform` | — | All anomaly outputs | `exceptions` list with severity, type, employee |
+| 4 | `auto_fix_simple` | `tool` | `hr.apply_correction` | Low-risk exceptions (duplicates, obvious errors) | `auto_fixed` list |
+| 5 | `human_review_queue` | `hitl` | Role: `payroll_manager` | Remaining exceptions list | Corrections applied or overridden |
+| 6 | `approve_payroll` | `hitl` | Role: `hr_director` | Cleared exception list | `payroll_approved: bool` |
+| 7 | `generate_report` | `llm` | Exception report prompt | All exceptions, resolutions | `exception_report` |
+
+---
+
+## Section 3 Additions — Developer & Engineering Operations
+
+---
+
+### 3.6 CI/CD Pipeline Health Monitor
+
+**Purpose:** Monitor CI/CD pipeline health, detect flaky tests and slow builds, generate root-cause reports, and auto-file engineering tickets.  
+**Trigger:** CRON (daily `0 8 * * 1-5`) | WEBHOOK (build failure threshold exceeded)  
+**Inputs:** `pipeline_ids` list, `lookback_days` (default 7)  
+**Outputs:** `health_report_url`, `tickets_created`, `flaky_tests_identified`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_build_history` | `tool` | `ci.get_pipeline_runs` | `pipeline_ids`, `lookback_days` | `runs` list: status, duration, failure_step, test_results |
+| 2 | `compute_metrics` | `transform` | — | `runs` | `success_rate`, `avg_duration`, `p95_duration`, `failure_breakdown` by step |
+| 3 | `detect_flaky_tests` | `llm` | Flaky test detection prompt | `runs` with test results | `flaky_tests` list: test_name, flake_rate, failure_pattern |
+| 4 | `slow_build_analysis` | `llm` | Build performance prompt | `runs` with step timings | `bottleneck_steps`, `regression_commits`, `optimisation_suggestions` |
+| 5 | `failure_root_cause` | `llm` | RCA prompt | `runs` with failure logs (sampled) | `common_failure_patterns`, `root_causes`, `affected_teams` |
+| 6 | `generate_report` | `llm` | Health report prompt | All metrics + analysis | `health_score` (0–100), `summary`, `recommendations`, `trend_vs_last_week` |
+| 7 | `create_tickets` | `conditional` | — | `flaky_tests.count`, `health_score` | → `create_jira_issues` if flaky_tests > 3 or health_score < 70 |
+| 7a | `create_jira_issues` | `tool` | `jira.create_issue` (per flaky test / bottleneck) | Issue details | `ticket_ids` list |
+| 8 | `post_report` | `parallel` | — | | |
+| 8a | `slack_summary` | `tool` | `slack.send_message` | `#engineering`, health summary | sent |
+| 8b | `confluence_report` | `tool` | `confluence.create_page` | Full report | `report_url` |
+
+---
+
+### 3.7 Infrastructure Provisioning
+
+**Purpose:** Accept a natural language infrastructure request, generate Terraform, validate, and apply after HITL approval.  
+**Trigger:** CHAT_COMMAND (`/provision`) | Form submission (infra request form)  
+**Inputs:** `requester`, `environment` (dev/staging/prod), `resource_type`, `requirements` (NL description)  
+**Outputs:** `terraform_plan_url`, `resources_created`, `cost_estimate`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `parse_requirements` | `llm` | Infrastructure parsing prompt | `requirements` (NL) | `resource_specs`: type, size, region, replicas, networking |
+| 2 | `cost_estimate` | `tool` | `cloud.estimate_cost` | `resource_specs`, `environment` | `monthly_cost_estimate`, `cost_breakdown` |
+| 3 | `policy_check` | `rag` | `infra-policies` collection | `resource_specs`, `environment` | `policy_violations` list, `required_tags`, `compliance_notes` |
+| 4 | `generate_terraform` | `llm` | Terraform generation prompt | `resource_specs`, `policy_requirements` | `terraform_code`, `variable_values`, `backend_config` |
+| 5 | `terraform_validate` | `tool` | `terraform.validate` | `terraform_code` | `valid: bool`, `validation_errors` |
+| 6 | `terraform_plan` | `tool` | `terraform.plan` | `terraform_code`, `variable_values` | `plan_output`, `resources_to_create`, `resources_to_modify` |
+| 7 | `approval` | `hitl` | Role: `infra_lead` (prod) / `auto` (dev) | Plan output, cost estimate, policy notes | `approved: bool` |
+| 8 | `terraform_apply` | `tool` | `terraform.apply` | `terraform_code` (if approved) | `resources_created`, `outputs` dict |
+| 9 | `register_cmdb` | `tool` | `cmdb.register_resources` | Created resources | `cmdb_entries` |
+| 10 | `notify` | `tool` | `slack.send_message` | Requester, resource URLs, access instructions | `sent: true` |
+
+---
+
+### 3.8 On-Call Handoff Report
+
+**Purpose:** Generate a comprehensive handoff report at shift end, summarising open incidents, system health, and action items for the incoming engineer.  
+**Trigger:** CRON (`0 8,20 * * *` — twice daily shift boundaries)  
+**Inputs:** `shift_end_engineer`, `shift_start_engineer`, `shift_end_time`  
+**Outputs:** `handoff_report_url`, `open_items_count`, `slack_message_sent`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_incidents` | `tool` | `pagerduty.get_incidents` | Last 12 hours | `open_incidents`, `resolved_incidents` list |
+| 2 | `fetch_deployments` | `tool` | `deployment.get_recent` | Last 12 hours | `deployments` list with status, rollback_risk |
+| 3 | `fetch_alerts` | `tool` | `monitoring.get_active_alerts` | Current | `active_alerts` list with severity |
+| 4 | `fetch_metrics` | `tool` | `monitoring.get_service_health` | Current | `service_health_map`: service → status, error_rate, latency |
+| 5 | `check_action_items` | `tool` | `jira.search_issues` | `assignee=shift_end_engineer AND status=In Progress` | `open_tasks` list |
+| 6 | `generate_handoff` | `llm` | Handoff report prompt | All fetched data | `executive_summary`, `open_incidents_summary`, `watch_items`, `action_items_for_incoming`, `system_health_overview` |
+| 7 | `post_report` | `parallel` | — | | |
+| 7a | `confluence_page` | `tool` | `confluence.create_page` | Handoff report | `report_url` |
+| 7b | `slack_handoff` | `tool` | `slack.send_message` | `#on-call`, handoff summary, @mention incoming | `sent: true` |
+| 7c | `pagerduty_note` | `tool` | `pagerduty.add_note` | All open incidents, handoff context | `notes_added` |
+
+---
+
+## Section 4 Additions — Customer & Support Operations
+
+---
+
+### 4.5 NPS Survey Follow-up
+
+**Purpose:** Parse inbound NPS responses, classify detractors, generate personalised follow-up messages, and route high-risk accounts to CSM.  
+**Trigger:** WEBHOOK (NPS survey tool — Delighted / Medallia) | EMAIL_ARRIVAL (survey responses)  
+**Inputs:** `respondent_email`, `nps_score` (0–10), `verbatim_feedback`, `customer_id`  
+**Outputs:** `follow_up_sent: bool`, `csm_alerted: bool`, `crm_updated: bool`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `classify_response` | `llm` | NPS classification prompt | `nps_score`, `verbatim_feedback` | `sentiment_category` (detractor/passive/promoter), `pain_points` list, `praise_points` list, `urgency_level` |
+| 2 | `enrich_customer` | `tool` | `crm.get_customer` | `customer_id` | `account_tier`, `arr`, `csm_owner`, `recent_tickets`, `contract_renewal_date` |
+| 3 | `route_response` | `conditional` | — | `nps_score`, `account_tier` | → `detractor_flow` if score ≤ 6; → `passive_flow` if 7–8; → `promoter_flow` if 9–10 |
+| 4a | `detractor_flow` | `llm` | Personalised recovery email prompt | `pain_points`, `customer_name`, `account_context` | `recovery_email_draft` |
+| 4b | `passive_flow` | `llm` | Engagement email prompt | `feedback`, `product_updates_relevant` | `engagement_email_draft` |
+| 4c | `promoter_flow` | `llm` | Advocacy ask prompt | `praise_points`, `customer_name` | `referral_ask_email_draft` |
+| 5 | `send_follow_up` | `tool` | `email.send` | Respondent email, draft email | `sent: true` |
+| 6 | `alert_csm` | `conditional` | — | `nps_score ≤ 6 AND arr > 50000` | → `slack.send_message` to CSM with churn risk alert |
+| 7 | `update_crm` | `tool` | `crm.update_contact` | `customer_id`, NPS score, sentiment, follow-up actions | `crm_updated: true` |
+
+---
+
+### 4.6 Subscription Renewal Management
+
+**Purpose:** Proactively manage renewal pipeline: identify at-risk accounts, generate personalised outreach, track renewal status, and escalate blockers.  
+**Trigger:** CRON (`0 9 * * 1` — weekly) | DEADLINE (`contract.renewal_date - 90 days`)  
+**Inputs:** `renewal_horizon_days` (default 90)  
+**Outputs:** `renewals_contacted`, `at_risk_escalated`, `pipeline_report_url`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_renewals` | `tool` | `crm.get_renewals` | `renewal_horizon_days` | `renewal_accounts` list: account, ARR, renewal_date, health_score, csm |
+| 2 | `health_scoring` | `parallel` | — | `renewal_accounts` | |
+| 2a | `product_usage` | `tool` | `analytics.get_usage` | `account_ids` | `usage_score` per account |
+| 2b | `support_sentiment` | `tool` | `helpdesk.get_ticket_sentiment` | `account_ids`, last 90 days | `support_health_score` |
+| 2c | `nps_history` | `tool` | `surveys.get_nps_history` | `account_ids` | `latest_nps`, `nps_trend` |
+| 3 | `churn_risk_model` | `llm` | Churn risk prompt | All health signals | `churn_probability`, `risk_factors`, `expansion_opportunities` |
+| 4 | `segment_accounts` | `transform` | — | `churn_probability`, `ARR` | `green` / `yellow` / `red` segments |
+| 5 | `generate_outreach` | `llm` | Renewal outreach prompt (per segment) | Account context, risk factors | `personalised_email_draft`, `talking_points`, `renewal_offer` |
+| 6 | `send_outreach` | `tool` | `email.send` | Accounts in green/yellow segments | `emails_sent` count |
+| 7 | `escalate_red` | `tool` | `slack.send_message` | CSM + VP Sales, red accounts with ARR > $25K | `escalations_sent` |
+| 8 | `update_crm` | `tool` | `crm.update_opportunities` | Renewal stage, outreach timestamp | `crm_updated` |
+| 9 | `pipeline_report` | `llm` | Pipeline summary prompt | Full renewal data | `pipeline_report` |
+
+---
+
+## Section 5 Additions — Document & Knowledge Processing
+
+---
+
+### 5.4 RFP Response Automation
+
+**Purpose:** Parse an inbound RFP, map requirements to company capabilities, draft responses for each section, and produce a formatted bid document.  
+**Trigger:** FILE_DROP (`/rfp/inbound/`) | EMAIL_ARRIVAL (procurement@)  
+**Inputs:** `rfp_document` (PDF/DOCX), `submission_deadline`, `project_name`  
+**Outputs:** `draft_response_url`, `completion_pct`, `review_tasks_created`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `parse_rfp` | `tool` | `ocr.extract_document` + `llm` | `rfp_document` | `rfp_sections` list, `requirements` per section, `evaluation_criteria`, `submission_format` |
+| 2 | `capability_mapping` | `rag` | `company-capabilities`, `case-studies`, `product-docs` collections | `requirements` per section | `relevant_capabilities`, `supporting_case_studies`, `product_features` per requirement |
+| 3 | `draft_responses` | `llm` (parallel per section) | RFP response prompt | Section requirements + relevant capabilities | `draft_response` per section |
+| 4 | `compliance_check` | `llm` | Compliance check prompt | `rfp_sections`, `draft_responses` | `requirements_addressed`, `missing_requirements`, `word_limits_check` |
+| 5 | `pricing_section` | `hitl` | Role: `commercial_team` | Requirements, competitive context | `pricing_proposal`, `commercial_terms` |
+| 6 | `assemble_document` | `tool` | `document.assemble` | All draft sections, pricing, company boilerplate | `draft_document_url` |
+| 7 | `create_review_tasks` | `tool` | `jira.create_issues` | Section owners, review deadlines | `review_task_ids` |
+| 8 | `notify_team` | `tool` | `slack.send_message` | `#bids`, document URL, deadline, open review tasks | `sent: true` |
+
+---
+
+### 5.5 Competitive Intelligence Digest
+
+**Purpose:** Monitor competitor activity (press releases, job postings, product updates, pricing changes) and deliver a weekly intelligence digest.  
+**Trigger:** CRON (`0 7 * * 1` — Monday morning)  
+**Inputs:** `competitors` list, `lookback_days` (default 7)  
+**Outputs:** `digest_url`, `slack_digest_sent`, `crm_insights_added`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `gather_signals` | `parallel` | — | `competitors`, `lookback_days` | |
+| 1a | `news_search` | `tool` | `web.search` | Competitor name + news terms | `news_items` list |
+| 1b | `job_postings` | `tool` | `web.scrape` | LinkedIn/Greenhouse competitor pages | `job_postings` list with titles, volume |
+| 1c | `product_changelog` | `tool` | `rss.fetch` | Competitor changelog RSS | `changelog_items` |
+| 1d | `pricing_check` | `tool` | `web.scrape` | Competitor pricing pages | `pricing_data`, `pricing_changes` |
+| 1e | `social_monitoring` | `tool` | `social.get_mentions` | Competitor brand terms | `social_mentions`, `sentiment_scores` |
+| 2 | `analyse_signals` | `llm` | Competitive analysis prompt | All gathered signals | `strategic_moves`, `product_gaps`, `hiring_themes`, `pricing_shifts`, `win_loss_implications` |
+| 3 | `generate_digest` | `llm` | Intelligence digest prompt | Analysis output | `executive_summary`, `competitor_cards` (one per competitor), `recommended_actions` |
+| 4 | `distribute_digest` | `parallel` | | | |
+| 4a | `email_digest` | `tool` | `email.send` | Sales + Product leadership, digest | `sent: true` |
+| 4b | `slack_digest` | `tool` | `slack.send_message` | `#competitive-intel`, summary | `sent: true` |
+| 4c | `update_crm` | `tool` | `crm.add_competitive_notes` | Insights per competitor | `crm_updated` |
+
+---
+
+## Section 6 Additions — HR & People Operations
+
+---
+
+### 6.3 New Employee Onboarding
+
+**Purpose:** Automate the first-30-day onboarding journey: provision accounts, assign learning, schedule introductions, and track completion.  
+**Trigger:** WEBHOOK (HRIS new hire record created) | ONCE (offer letter signed + start date)  
+**Inputs:** `employee_id`, `full_name`, `department`, `role`, `start_date`, `manager_id`  
+**Outputs:** `accounts_provisioned`, `onboarding_plan_created`, `week1_tasks_sent`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `provision_accounts` | `parallel` | — | `employee_id`, `email`, `department` | |
+| 1a | `create_email` | `tool` | `identity.create_user` | Full name, department | `work_email`, `login_credentials` |
+| 1b | `provision_saas` | `tool` | `identity.assign_apps` | `employee_id`, role-based app list | `apps_provisioned` list |
+| 1c | `github_access` | `tool` | `github.add_member` | GitHub org, team | `github_access: true` |
+| 1d | `slack_invite` | `tool` | `slack.invite_user` | Workspace, channels by department | `slack_active: true` |
+| 2 | `generate_onboarding_plan` | `llm` + `rag` | Onboarding plan prompt + `onboarding-library` collection | `role`, `department`, `start_date` | `30_day_plan`: week-by-week tasks, learning resources, meetings |
+| 3 | `schedule_meetings` | `parallel` | — | | |
+| 3a | `manager_1on1` | `tool` | `calendar.schedule` | Manager + employee, day 1 | `meeting_id` |
+| 3b | `team_intro` | `tool` | `calendar.schedule` | Team + employee, week 1 | `meeting_id` |
+| 3c | `hr_orientation` | `tool` | `calendar.schedule` | HR + employee, day 2 | `meeting_id` |
+| 4 | `assign_learning` | `tool` | `lms.assign_courses` | `employee_id`, role-based courses (security, compliance, role-specific) | `course_ids` list |
+| 5 | `send_welcome_package` | `tool` | `email.send` | Employee, welcome email with credentials, plan, first-week schedule | `sent: true` |
+| 6 | `alert_manager` | `tool` | `slack.send_message` | Manager DM, new hire context, suggested talking points for day 1 | `sent: true` |
+| 7 | `create_tracker` | `tool` | `jira.create_issue` | 30-day onboarding checklist with due dates | `tracker_url` |
+
+---
+
+### 6.4 Performance Review Cycle
+
+**Purpose:** Orchestrate the quarterly/annual performance review: collect self-assessments, 360 feedback, calibrate ratings, and deliver review documents.  
+**Trigger:** ONCE (review cycle start) | CRON (quarterly pre-reminder)  
+**Inputs:** `review_cycle_id`, `review_period`, `employees` list, `reviewers_map`  
+**Outputs:** `reviews_completed_pct`, `review_documents_delivered`, `calibration_report_url`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `send_self_assessments` | `tool` | `hr.send_survey` | All employees, self-assessment form | `self_assessment_ids` |
+| 2 | `send_peer_requests` | `tool` | `hr.send_survey` | Peer reviewers per employee | `peer_response_ids` |
+| 3 | `collect_responses` | `wait` | — | Until deadline (14 days) | `self_assessments`, `peer_responses` |
+| 4 | `manager_draft` | `llm` (parallel per employee) | Review draft prompt | Self-assessment + peer feedback + `performance-rubric` collection | `draft_review`: strengths, development areas, rating suggestion, examples |
+| 5 | `manager_hitl` | `hitl` | Role: `direct_manager` | Draft review per report | Manager edits and submits |
+| 6 | `calibration_analysis` | `llm` | Calibration prompt | All submitted reviews + org ratings distribution | `rating_distribution`, `outliers`, `calibration_notes` |
+| 7 | `calibration_session` | `hitl` | Role: `hr_business_partner` | Calibration analysis | Final ratings approved |
+| 8 | `generate_review_docs` | `tool` | `document.generate` | Final reviews per employee | `review_doc_urls` list |
+| 9 | `deliver_reviews` | `tool` | `hr.deliver_review` | Employee + manager pairs, review docs | `reviews_delivered` count |
+| 10 | `comp_recommendations` | `llm` | Comp recommendation prompt | Final ratings, salary bands, budget | `comp_adjustment_recommendations` |
+
+---
+
+## Section 7 Additions — Industry-Specific Workflows
+
+---
+
+### 7.4 Insurance Claims Processing
+
+**Purpose:** Automate FNOL (First Notice of Loss) through initial assessment, evidence collection, reserve setting, and adjuster assignment.  
+**Trigger:** EMAIL_ARRIVAL (claims inbox) | FORM_SUBMISSION (online claims form) | SMS_INBOUND  
+**Inputs:** `policy_number`, `claimant_name`, `loss_date`, `loss_description`, `supporting_documents` list  
+**Outputs:** `claim_id`, `reserve_amount`, `adjuster_assigned`, `next_steps_sent`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `validate_policy` | `tool` | `policy.get_policy` | `policy_number` | `policy_valid: bool`, `coverage_details`, `deductible`, `limits`, `exclusions` |
+| 2 | `extract_claim_details` | `llm` | FNOL extraction prompt | `loss_description` + documents (OCR) | `loss_type`, `estimated_damage`, `third_parties_involved`, `police_report_number` |
+| 3 | `coverage_check` | `llm` + `rag` | Coverage analysis prompt + `policy-terms` collection | `loss_type`, `coverage_details` | `covered: bool`, `coverage_pct`, `applicable_exclusions`, `sub_limits` |
+| 4 | `fraud_score` | `llm` | Fraud detection prompt | Claim details + claimant history + `fraud-patterns` collection | `fraud_score` (0–1), `fraud_indicators` list |
+| 5 | `set_reserve` | `llm` | Reserve estimation prompt | `loss_type`, `estimated_damage`, historical settlements | `initial_reserve`, `reserve_confidence`, `reserve_rationale` |
+| 6 | `route_claim` | `conditional` | — | `fraud_score`, `reserve_amount` | → `fast_track` if reserve < $5K and fraud_score < 0.3; → `standard` if reserve $5K–$50K; → `complex` if reserve > $50K or fraud_score > 0.5 |
+| 7 | `assign_adjuster` | `tool` | `claims.assign_adjuster` | `claim_type`, `reserve_amount`, adjuster capacity | `adjuster_id`, `adjuster_name`, `expected_contact_date` |
+| 8 | `notify_claimant` | `tool` | `email.send` + `sms.send` | Claimant, claim number, adjuster details, next steps, expected timeline | `notifications_sent` |
+| 9 | `update_claims_system` | `tool` | `claims.update_claim` | All claim data | `claim_record_created: true` |
+
+---
+
+### 7.5 Manufacturing Quality Control Alert
+
+**Purpose:** Monitor production line sensor data, detect quality deviations, trigger containment actions, and initiate root-cause analysis.  
+**Trigger:** SENSOR_THRESHOLD (`defect_rate > 2%`) | MQTT (`production/line/{id}/quality`)  
+**Inputs:** `line_id`, `product_sku`, `defect_rate`, `sensor_readings`, `batch_id`  
+**Outputs:** `line_stopped: bool`, `rca_initiated: bool`, `containment_actions_taken`, `qa_alert_sent`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `assess_severity` | `llm` | QC severity prompt | `defect_rate`, `product_sku`, `batch_id` | `severity` (P1–P4), `affected_quantity`, `customer_impact_risk` |
+| 2 | `containment_decision` | `conditional` | — | `severity`, `defect_rate` | → `stop_line` if P1 (defect_rate > 5%); → `quarantine_batch` if P2; → `monitor` if P3/P4 |
+| 3a | `stop_line` | `tool` | `plc.send_command` | `line_id`, STOP | `line_stopped: true`, `timestamp` |
+| 3b | `quarantine_batch` | `tool` | `wms.hold_batch` | `batch_id` | `batch_quarantined: true` |
+| 4 | `retrieve_sop` | `rag` | `quality-sops`, `defect-library` collections | `defect_type`, `product_sku` | `relevant_sops`, `known_defect_patterns` |
+| 5 | `root_cause_analysis` | `llm` | QC RCA prompt | `sensor_readings`, `defect_rate`, `sop_context` | `probable_causes` list, `parameter_anomalies`, `recommended_checks` |
+| 6 | `alert_team` | `tool` | `slack.send_message` | `#quality-alerts`, line status, RCA summary | `alert_sent` |
+| 7 | `create_ncr` | `tool` | `quality.create_ncr` | Non-conformance report: batch, defect, RCA | `ncr_id` |
+| 8 | `notify_customers` | `conditional` | — | `severity == P1 AND shipped_units > 0` | → `email.send` to affected customers with product hold notice |
+
+---
+
+### 7.6 Logistics Shipment Tracking & Exception
+
+**Purpose:** Monitor shipments in transit, detect exceptions (delays, damage, failed delivery), and proactively notify customers and operations.  
+**Trigger:** WEBHOOK (carrier webhook) | API_POLL (carrier tracking API every 30 min) | CRON (`*/30 * * * *`)  
+**Inputs:** `shipment_id`, `tracking_number`, `carrier`, `expected_delivery_date`, `customer_id`  
+**Outputs:** `exception_type` (if any), `customer_notified: bool`, `ops_ticket_created: bool`, `new_eta`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_tracking` | `tool` | `carrier.get_tracking` | `tracking_number`, `carrier` | `current_status`, `location`, `last_scan_time`, `estimated_delivery` |
+| 2 | `detect_exception` | `llm` | Exception detection prompt | `current_status`, `expected_delivery_date`, `last_scan_time` | `exception_detected: bool`, `exception_type` (delay/damage/lost/failed-delivery), `severity` |
+| 3 | `classify_action` | `conditional` | — | `exception_type`, `shipment_value` | → `auto_rebook` if failed-delivery and low value; → `carrier_escalate` if delay > 3 days; → `ops_ticket` if damage/lost |
+| 4a | `auto_rebook` | `tool` | `carrier.rebook_delivery` | `tracking_number`, new delivery slot | `new_delivery_date` |
+| 4b | `carrier_escalate` | `tool` | `carrier.file_claim` + `email.send` | Carrier, shipment details, SLA breach evidence | `claim_id`, `new_eta` |
+| 4c | `ops_ticket` | `tool` | `jira.create_issue` | Damage/loss details, photos (if available) | `ops_ticket_id` |
+| 5 | `customer_notification` | `llm` + `tool` | Notification draft prompt + `email.send` / `sms.send` | Customer, exception details, resolution timeline | `notification_sent: true` |
+| 6 | `update_oms` | `tool` | `oms.update_shipment` | `shipment_id`, new status, new ETA | `oms_updated: true` |
+
+---
+
+## Section 8 — Sales & Revenue Operations
+
+---
+
+### 8.1 Lead Qualification & Scoring
+
+**Purpose:** Enrich inbound leads, score them using ICP criteria, route to the right sales rep, and create a personalised outreach sequence.  
+**Trigger:** WEBHOOK (CRM lead created) | FORM_SUBMISSION (contact us / free trial) | EMAIL_ARRIVAL (sales@)  
+**Inputs:** `lead_email`, `lead_name`, `company_name`, `lead_source`, `form_data`  
+**Outputs:** `lead_score`, `icp_fit` (HIGH/MEDIUM/LOW), `assigned_rep`, `outreach_sequence_started`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `enrich_lead` | `parallel` | — | `lead_email`, `company_name` | |
+| 1a | `company_data` | `tool` | `web.enrich_company` | `company_name` | `industry`, `employee_count`, `revenue_range`, `tech_stack`, `location` |
+| 1b | `contact_data` | `tool` | `web.enrich_contact` | `lead_email` | `job_title`, `seniority`, `linkedin_url` |
+| 1c | `intent_signals` | `tool` | `intent.get_signals` | `company_name` | `web_activity`, `competitor_research`, `category_intent_score` |
+| 2 | `icp_scoring` | `llm` | ICP scoring prompt | All enrichment data + `icp-criteria` RAG collection | `icp_score` (0–100), `fit_reasons`, `disqualification_flags` |
+| 3 | `route_lead` | `conditional` | — | `icp_score` | → `high_touch` if score > 75; → `nurture` if 40–75; → `disqualify` if < 40 |
+| 4a | `assign_rep` | `tool` | `crm.assign_lead` | Territory, rep capacity, specialisation | `assigned_rep`, `rep_email` |
+| 4a2 | `generate_outreach` | `llm` | Personalised outreach prompt | Lead context, pain points, relevant case studies | `email_sequence` (3 emails), `linkedin_message`, `call_script_talking_points` |
+| 4a3 | `start_sequence` | `tool` | `outreach.enroll_sequence` | Lead, email sequence | `sequence_started: true` |
+| 4b | `nurture_enroll` | `tool` | `marketing.enroll_nurture` | Lead, nurture track by persona | `nurture_track_id` |
+| 4c | `disqualify` | `tool` | `crm.disqualify_lead` | Lead, disqualification reason | `lead_status: disqualified` |
+| 5 | `notify_rep` | `tool` | `slack.send_message` | Rep DM, lead summary, enrichment, outreach started | `rep_notified: true` |
+
+---
+
+### 8.2 Deal Desk & Proposal Generation
+
+**Purpose:** Generate a customised sales proposal, pricing quote, and contract terms based on deal context and customer requirements.  
+**Trigger:** CHAT_COMMAND (`/generate-proposal`) | Jira issue created in DEAL project  
+**Inputs:** `opportunity_id`, `customer_name`, `requirements` (NL), `deal_value`, `contract_length`  
+**Outputs:** `proposal_url`, `quote_pdf_url`, `approval_status`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_opportunity` | `tool` | `crm.get_opportunity` | `opportunity_id` | `customer_profile`, `pain_points`, `use_cases`, `competitors_evaluated`, `budget` |
+| 2 | `solution_mapping` | `rag` | `product-capabilities`, `case-studies`, `pricing-book` collections | `requirements`, `use_cases`, `industry` | `recommended_products`, `relevant_case_studies`, `pricing_options` |
+| 3 | `pricing_configuration` | `llm` | Pricing prompt | `recommended_products`, `deal_value`, `contract_length`, discount policy | `list_price`, `proposed_price`, `discount_pct`, `justification` |
+| 4 | `discount_approval` | `conditional` | — | `discount_pct` | → `auto_approve` if < 15%; → `manager_approval` if 15–25%; → `vp_approval` if > 25% |
+| 5 | `generate_proposal` | `llm` | Proposal prompt | `customer_profile`, `solution_mapping`, `pricing_config`, proposal template | `executive_summary`, `solution_sections`, `roi_model`, `implementation_timeline` |
+| 6 | `generate_documents` | `parallel` | | | |
+| 6a | `proposal_pdf` | `tool` | `document.generate` | Proposal content, company template | `proposal_url` |
+| 6b | `quote_pdf` | `tool` | `cpq.generate_quote` | Pricing configuration | `quote_url` |
+| 7 | `send_to_customer` | `tool` | `email.send` | Customer contact, proposal + quote | `email_sent: true` |
+| 8 | `update_crm` | `tool` | `crm.update_opportunity` | Proposal sent timestamp, links | `crm_updated: true` |
+
+---
+
+### 8.3 Win/Loss Analysis
+
+**Purpose:** Automatically analyse closed opportunities to identify patterns in wins and losses, and generate actionable insights for sales and product.  
+**Trigger:** WEBHOOK (CRM opportunity closed-won or closed-lost) | CRON (monthly batch)  
+**Inputs:** `opportunity_id`, `outcome` (won/lost), `close_reason`, `competitor` (if lost)  
+**Outputs:** `win_loss_report_url`, `product_insights`, `sales_coaching_notes`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_opportunity_data` | `tool` | `crm.get_opportunity_full` | `opportunity_id` | Full deal history: activities, emails, call notes, stage progression |
+| 2 | `interview_rep` | `tool` | `survey.send` | Sales rep, structured win/loss questions | `rep_feedback` |
+| 3 | `customer_interview` | `conditional` | — | `outcome == lost AND deal_value > $50K` | → `email.send` customer exit interview request |
+| 4 | `analyse_deal` | `llm` | Win/loss analysis prompt | All deal data + `competitive-library` collection | `key_factors` (positive/negative), `decisive_moments`, `competitor_gaps`, `process_issues` |
+| 5 | `pattern_matching` | `rag` | `past-win-loss` collection | `key_factors`, `industry`, `deal_size` | `similar_patterns`, `historical_win_rate_for_profile`, `leading_indicators` |
+| 6 | `generate_insights` | `llm` | Insights prompt | Analysis + pattern matching | `product_gaps`, `sales_process_improvements`, `competitive_positioning_notes`, `coaching_recommendations` |
+| 7 | `distribute_insights` | `parallel` | | | |
+| 7a | `product_slack` | `tool` | `slack.send_message` | `#product`, product gap insights | `sent` |
+| 7b | `sales_coaching` | `tool` | `crm.add_coaching_note` | Rep record, coaching recommendations | `note_added` |
+| 7c | `bi_update` | `tool` | `analytics.log_win_loss` | Structured data for BI dashboard | `logged: true` |
+
+---
+
+### 8.4 Upsell & Cross-sell Opportunity Detection
+
+**Purpose:** Analyse customer usage, support history, and contract data to identify expansion opportunities and generate personalised upsell campaigns.  
+**Trigger:** CRON (weekly, `0 8 * * 1`) | GOAL_COMPLETED (post-renewal agent)  
+**Inputs:** `customer_segment` (enterprise/mid-market), `lookback_days` (default 30)  
+**Outputs:** `opportunities_identified`, `outreach_sent`, `pipeline_value_added`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_customer_data` | `parallel` | — | All customers in segment | |
+| 1a | `usage_data` | `tool` | `analytics.get_feature_usage` | `customer_ids`, `lookback_days` | Usage patterns per customer |
+| 1b | `contract_data` | `tool` | `crm.get_contracts` | `customer_ids` | Current products, seats, limits approaching |
+| 1c | `support_data` | `tool` | `helpdesk.get_tickets` | `customer_ids`, `lookback_days` | Feature request tickets, pain points |
+| 2 | `identify_signals` | `llm` | Upsell signal detection prompt | All data + `product-catalog` collection | `expansion_signals` per customer: usage limit approached, feature requested, peer adoption |
+| 3 | `score_opportunities` | `llm` | Opportunity scoring prompt | `expansion_signals`, `customer_health`, `contract_renewal_date` | `opportunity_score`, `recommended_product`, `estimated_expansion_ARR` |
+| 4 | `generate_campaigns` | `llm` (parallel) | Personalised upsell prompt | Top 20% scored customers | `personalised_outreach_email`, `csm_talking_points`, `roi_calculator_inputs` |
+| 5 | `send_campaigns` | `tool` | `outreach.send_email` | Customers, emails | `emails_sent` |
+| 6 | `alert_csm` | `tool` | `slack.send_message` | CSM per account, opportunity summary | `csm_alerted` |
+| 7 | `log_pipeline` | `tool` | `crm.create_opportunities` | Expansion opportunities | `opportunity_ids` list |
+
+---
+
+## Section 9 — Supply Chain & Procurement
+
+---
+
+### 9.1 Purchase Order Automation
+
+**Purpose:** Convert purchase requisitions into approved POs, route for approval based on amount thresholds, and send to vendors.  
+**Trigger:** WEBHOOK (HRIS/ERP new requisition) | FORM_SUBMISSION (purchase request form)  
+**Inputs:** `requester_id`, `items` list (name, quantity, unit_price, supplier), `cost_centre`, `business_justification`  
+**Outputs:** `po_number`, `approval_status`, `vendor_notified: bool`, `budget_impact`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `validate_items` | `parallel` | — | `items` | |
+| 1a | `vendor_check` | `tool` | `procurement.check_vendor` | Supplier names | `approved_vendors`, `flagged_vendors` |
+| 1b | `budget_check` | `tool` | `erp.check_budget` | `cost_centre`, total amount | `budget_available: bool`, `remaining_budget` |
+| 1c | `catalog_match` | `rag` | `preferred-vendors` + `product-catalog` collections | `items` | `catalog_alternatives`, `preferred_vendor_options`, `potential_savings` |
+| 2 | `policy_check` | `llm` | Procurement policy prompt | `items`, `total_value`, `requester_role` + `procurement-policy` RAG | `policy_violations`, `required_approvals`, `sole_source_justification_needed` |
+| 3 | `approval_routing` | `conditional` | — | `total_value` | → `auto_approve` if < $500; → `manager_approve` if $500–$5K; → `dept_head_approve` if > $5K |
+| 4 | `send_for_approval` | `hitl` (tiered) | Role based on amount | Requisition details, policy notes, alternatives | `approved: bool` |
+| 5 | `generate_po` | `tool` | `erp.create_po` | Approved items, vendor, payment terms | `po_number`, `po_document_url` |
+| 6 | `send_to_vendor` | `tool` | `email.send` | Vendor, PO document | `vendor_notified: true` |
+| 7 | `update_erp` | `tool` | `erp.update_budget_commitment` | `cost_centre`, PO amount | `commitment_created` |
+| 8 | `notify_requester` | `tool` | `email.send` | Requester, PO number, expected delivery | `requester_notified: true` |
+
+---
+
+### 9.2 Vendor Performance Review
+
+**Purpose:** Quarterly automated assessment of vendor performance against SLA, quality, and delivery KPIs, with scorecard generation and contract review triggers.  
+**Trigger:** CRON (`0 9 1 1,4,7,10 *` — quarterly)  
+**Inputs:** `vendor_id` (or all active vendors), `review_period`  
+**Outputs:** `scorecards_generated`, `underperformers_escalated`, `contract_review_initiated`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_vendor_data` | `parallel` | — | `vendor_id`, `review_period` | |
+| 1a | `delivery_data` | `tool` | `erp.get_po_receipts` | Vendor, period | `on_time_delivery_rate`, `quantity_accuracy` |
+| 1b | `quality_data` | `tool` | `quality.get_nco_rate` | Vendor, period | `non_conformance_rate`, `return_rate` |
+| 1c | `invoice_data` | `tool` | `erp.get_invoice_accuracy` | Vendor, period | `invoice_error_rate`, `payment_dispute_count` |
+| 1d | `support_data` | `tool` | `helpdesk.get_vendor_tickets` | Vendor, period | `support_tickets_count`, `resolution_time` |
+| 2 | `score_vendor` | `llm` | Vendor scoring prompt | All KPI data + `vendor-sla` collection | `overall_score` (0–100), `dimension_scores`, `trend_vs_prior_quarter` |
+| 3 | `generate_scorecard` | `llm` | Scorecard prompt | Score, KPIs, trends | `scorecard_narrative`, `highlights`, `areas_for_improvement`, `recommendations` |
+| 4 | `threshold_check` | `conditional` | — | `overall_score` | → `escalate` if < 60; → `warning` if 60–75; → `good_standing` if > 75 |
+| 5a | `escalate` | `tool` | `email.send` to procurement + vendor + `jira.create_issue` | Performance details, improvement requirements | `escalation_created` |
+| 5b | `warning_notice` | `tool` | `email.send` to vendor | Warning letter with specific improvement targets | `notice_sent` |
+| 6 | `publish_scorecards` | `tool` | `confluence.create_page` | All vendor scorecards | `report_url` |
+
+---
+
+### 9.3 Inventory Reorder Automation
+
+**Purpose:** Monitor inventory levels, predict stockouts, automatically generate reorder recommendations, and place approved orders.  
+**Trigger:** CRON (`0 6 * * *` — daily) | SENSOR_THRESHOLD (WMS inventory alert)  
+**Inputs:** `warehouse_id`, `sku_category` (all or specific)  
+**Outputs:** `reorders_placed`, `stockout_risks_flagged`, `purchase_orders_created`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_inventory` | `tool` | `wms.get_stock_levels` | `warehouse_id`, `sku_category` | `sku_inventory` list: SKU, quantity_on_hand, quantity_on_order, reorder_point |
+| 2 | `fetch_demand` | `tool` | `analytics.get_demand_forecast` | SKUs, next 30 days | `demand_forecast` per SKU: daily_avg, peak_days, confidence |
+| 3 | `stockout_analysis` | `llm` | Stockout risk prompt | `sku_inventory`, `demand_forecast` | `stockout_risk_items` list: SKU, days_until_stockout, criticality |
+| 4 | `compute_reorders` | `transform` | — | `stockout_risk_items`, `demand_forecast`, lead_times | `reorder_recommendations` list: SKU, qty, preferred_vendor, estimated_cost |
+| 5 | `approval_threshold` | `conditional` | — | `estimated_cost` per reorder | → `auto_reorder` if < $1K; → `manager_approval` if > $1K |
+| 6a | `auto_reorder` | `tool` | `procurement.create_po` | Reorder recommendation | `po_created` |
+| 6b | `manager_approval` | `hitl` | Role: `warehouse_manager` | Reorder list with costs | Approved POs |
+| 7 | `alert_stockouts` | `tool` | `slack.send_message` | `#supply-chain`, critical stockouts requiring immediate attention | `alert_sent` |
+| 8 | `update_forecast` | `tool` | `analytics.log_reorder_event` | PO data for forecast model retraining | `logged: true` |
+
+---
+
+### 9.4 3PL Carrier Selection & Booking
+
+**Purpose:** For each outbound shipment, select the optimal carrier based on cost/speed/reliability, generate shipping labels, and book collection.  
+**Trigger:** WEBHOOK (OMS new shipment) | GOAL_COMPLETED (order fulfilment agent)  
+**Inputs:** `order_id`, `ship_from` address, `ship_to` address, `package_specs` (weight, dimensions), `delivery_sla`  
+**Outputs:** `carrier_selected`, `tracking_number`, `label_url`, `cost_saved_vs_list`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `get_quotes` | `parallel` | — | `ship_from`, `ship_to`, `package_specs` | |
+| 1a | `fedex_quote` | `tool` | `fedex.get_rate` | Shipment specs | `fedex_rate`, `fedex_transit_days` |
+| 1b | `ups_quote` | `tool` | `ups.get_rate` | Shipment specs | `ups_rate`, `ups_transit_days` |
+| 1c | `dhl_quote` | `tool` | `dhl.get_rate` | Shipment specs | `dhl_rate`, `dhl_transit_days` |
+| 1d | `regional_quote` | `tool` | `regional_carrier.get_rate` | Shipment specs | `regional_rate`, `regional_transit_days` |
+| 2 | `select_carrier` | `llm` | Carrier selection prompt | All quotes + `delivery_sla` + carrier reliability scores from `carrier-performance` collection | `selected_carrier`, `selection_rationale`, `cost_vs_sla_tradeoff` |
+| 3 | `book_shipment` | `tool` | `carrier.book_shipment` | `selected_carrier`, shipment details | `booking_confirmation`, `tracking_number` |
+| 4 | `generate_label` | `tool` | `carrier.generate_label` | `tracking_number`, address details | `label_url` |
+| 5 | `update_oms` | `tool` | `oms.update_shipment` | `order_id`, `tracking_number`, `carrier`, `expected_delivery` | `oms_updated: true` |
+| 6 | `notify_customer` | `tool` | `email.send` + `sms.send` | Customer, tracking number, carrier, estimated delivery | `notifications_sent: true` |
+
+---
+
+## Section 10 — IT Operations & Infrastructure
+
+---
+
+### 10.1 IT Asset Lifecycle Management
+
+**Purpose:** Track hardware and software assets from procurement through retirement, maintain CMDB accuracy, and manage licence compliance.  
+**Trigger:** CRON (`0 3 * * *` — nightly audit) | WEBHOOK (CMDB change event)  
+**Inputs:** `asset_type` (hardware/software/all), `audit_scope`  
+**Outputs:** `cmdb_updated`, `licence_overages`, `retirement_candidates`, `compliance_score`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `scan_assets` | `parallel` | — | `audit_scope` | |
+| 1a | `hardware_scan` | `tool` | `mdm.get_device_inventory` | All managed devices | `hardware_assets` list: device, owner, location, age, warranty |
+| 1b | `software_licences` | `tool` | `sam.get_licence_usage` | All tracked software | `licence_inventory`: software, licences_purchased, licences_used |
+| 1c | `cloud_resources` | `tool` | `cloud.get_resource_inventory` | All cloud accounts | `cloud_assets` list: type, size, tags, monthly_cost |
+| 2 | `validate_cmdb` | `tool` | `cmdb.compare` | Discovered assets vs CMDB records | `discrepancies`: missing_from_cmdb, stale_records |
+| 3 | `update_cmdb` | `tool` | `cmdb.bulk_update` | `discrepancies` | `records_updated`, `records_created`, `records_retired` |
+| 4 | `licence_analysis` | `llm` | Licence compliance prompt | `licence_inventory` | `over_licenced` (cost savings), `under_licenced` (risk), `unused_licences` |
+| 5 | `retirement_candidates` | `llm` | Asset lifecycle prompt | `hardware_assets` with age, warranty, usage | `end_of_life_candidates`, `cost_of_replacement_vs_support` |
+| 6 | `generate_report` | `llm` | Asset report prompt | All findings | `compliance_score`, `licence_savings_opportunity`, `refresh_roadmap` |
+| 7 | `create_tickets` | `tool` | `jira.create_issues` | Licence violations, CMDB gaps, EoL devices | `ticket_ids` |
+
+---
+
+### 10.2 Software Licence Renewal Management
+
+**Purpose:** Track software licence renewal dates, automate renewal requests, and manage vendor negotiations.  
+**Trigger:** DEADLINE (`licence.renewal_date - 60 days`)  
+**Inputs:** `licence_id`, `software_name`, `vendor`, `renewal_date`, `current_cost`  
+**Outputs:** `renewal_initiated`, `negotiation_points`, `approval_obtained`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `usage_analysis` | `tool` | `sam.get_usage_report` | `licence_id`, last 12 months | `usage_stats`: active_users, peak_usage, feature_utilisation |
+| 2 | `right_sizing` | `llm` | Right-sizing prompt | `usage_stats`, `current_licences` | `recommended_licence_count`, `potential_savings`, `justification` |
+| 3 | `market_research` | `tool` | `web.search` + `rag` | `software_name` competitor pricing + `vendor-pricing` collection | `market_price`, `competitor_alternatives`, `switching_cost_estimate` |
+| 4 | `negotiation_strategy` | `llm` | Negotiation prompt | `current_cost`, `market_price`, `usage_stats`, `renewal_leverage` | `negotiation_targets`, `BATNA`, `opening_position`, `walk_away_price` |
+| 5 | `initiate_renewal` | `tool` | `email.send` | Vendor account manager, renewal notice + initial terms | `renewal_thread_id` |
+| 6 | `approval` | `hitl` | Role: `it_director` | Negotiation strategy, proposed terms, market comparison | Final terms approved |
+| 7 | `execute_renewal` | `tool` | `procurement.create_po` | Approved terms | `po_number`, `renewal_confirmed` |
+| 8 | `update_sam` | `tool` | `sam.update_licence` | New licence count, expiry date | `licence_updated` |
+
+---
+
+### 10.3 User Access Provisioning (Joiner/Mover/Leaver)
+
+**Purpose:** Automate IT access changes for new hires, role transfers, and terminations across all systems.  
+**Trigger:** WEBHOOK (HRIS employee lifecycle event) | `GOAL_COMPLETED` (onboarding/offboarding agent)  
+**Inputs:** `event_type` (joiner/mover/leaver), `employee_id`, `new_role` (for mover), `effective_date`  
+**Outputs:** `access_changes_applied`, `accounts_created_or_deactivated`, `audit_log_created`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `determine_access` | `rag` | `role-access-matrix` collection | `new_role`, `department`, `event_type` | `required_apps`, `required_groups`, `required_permissions` |
+| 2 | `current_access` | `tool` | `identity.get_user_access` | `employee_id` | `current_apps`, `current_groups` (empty for joiner) |
+| 3 | `compute_delta` | `transform` | — | `required_access`, `current_access` | `access_to_grant`, `access_to_revoke` |
+| 4 | `apply_changes` | `parallel` | — | `access_to_grant`, `access_to_revoke` | |
+| 4a | `ad_changes` | `tool` | `identity.update_groups` | Group additions/removals | `ad_updated` |
+| 4b | `saas_changes` | `tool` | `identity.update_saas_apps` | App provisioning/deprovisioning per app | `saas_updated` |
+| 4c | `email_changes` | `tool` | `identity.update_email` | Alias updates, delegate access | `email_updated` |
+| 5 | `leaver_special` | `conditional` | — | `event_type == leaver` | → `disable_all_accounts`, `transfer_data_ownership`, `revoke_tokens` |
+| 6 | `audit_log` | `tool` | `audit.log_access_change` | All changes applied | `audit_record_id` |
+| 7 | `notify` | `tool` | `email.send` | Manager, IT, and employee (joiner/mover only) | `notifications_sent` |
+
+---
+
+### 10.4 Change Management & Release Governance
+
+**Purpose:** Automate the ITSM change management process: risk assessment, CAB review scheduling, deployment approval, and post-implementation review.  
+**Trigger:** JIRA_WEBHOOK (change ticket created) | GITHUB_WEBHOOK (release PR targeting prod)  
+**Inputs:** `change_id`, `change_description`, `impact_assessment`, `rollback_plan`, `implementation_window`  
+**Outputs:** `risk_level`, `cab_approved: bool`, `deployment_cleared: bool`, `pir_scheduled`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `classify_change` | `llm` | Change classification prompt + `change-policy` collection | `change_description`, `impact_assessment` | `change_type` (standard/normal/emergency), `risk_level` (LOW/MEDIUM/HIGH), `classification_rationale` |
+| 2 | `impact_analysis` | `rag` | `service-dependency-map` + `change-history` collections | `change_description`, affected services | `downstream_dependencies`, `similar_changes_history`, `incident_risk_score` |
+| 3 | `route_change` | `conditional` | — | `change_type`, `risk_level` | → `auto_approve` if standard and LOW; → `cab_review` if normal; → `emergency_cab` if emergency |
+| 4a | `auto_approve` | `tool` | `itsm.approve_change` | `change_id` | `approved: true` |
+| 4b | `cab_review` | `hitl` | Role: `cab_members` | Change details, risk analysis, rollback plan | `cab_approved: bool`, `conditions` |
+| 5 | `deployment_clearance` | `conditional` | — | `cab_approved`, `implementation_window` | → `clear_deployment` if in maintenance window + approved; → `defer` otherwise |
+| 6 | `notify_stakeholders` | `tool` | `email.send` + `slack.send_message` | All affected teams, change summary, window, contacts | `notifications_sent` |
+| 7 | `post_deployment` | `wait` | — | Wait 30 minutes post-deployment | |
+| 8 | `health_check` | `tool` | `monitoring.check_health` | Affected services | `all_healthy: bool`, `issues` list |
+| 9 | `schedule_pir` | `conditional` | — | `risk_level in [HIGH, EMERGENCY]` | → `calendar.schedule` PIR meeting 48h post-deployment |
+
+---
+
+## Section 11 — Data & Analytics Operations
+
+---
+
+### 11.1 Data Pipeline Health Monitor
+
+**Purpose:** Monitor data pipeline health, detect late/missing data, schema drift, and quality anomalies, and alert data engineering teams.  
+**Trigger:** CRON (hourly `0 * * * *`) | WEBHOOK (pipeline orchestrator alert)  
+**Inputs:** `pipeline_ids` list, `sla_configs` (expected completion times)  
+**Outputs:** `anomalies_detected`, `tickets_created`, `data_consumers_notified`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `check_completions` | `tool` | `pipeline.get_run_status` | `pipeline_ids`, last 24 hours | `completed_runs`, `failed_runs`, `late_runs` |
+| 2 | `schema_drift_check` | `tool` | `data_catalog.detect_schema_changes` | All monitored tables | `schema_changes` list: table, column, change_type |
+| 3 | `data_quality_check` | `parallel` | — | Critical tables | |
+| 3a | `null_check` | `tool` | `dq.run_null_checks` | Key columns | `null_rate_by_column` |
+| 3b | `volume_check` | `tool` | `dq.run_volume_checks` | Expected vs actual row counts | `volume_anomalies` |
+| 3c | `freshness_check` | `tool` | `dq.run_freshness_checks` | Max age expected per table | `stale_tables` list |
+| 4 | `root_cause_analysis` | `llm` | Pipeline RCA prompt | Failures + `pipeline-runbooks` collection | `probable_causes`, `affected_downstream_consumers`, `resolution_steps` |
+| 5 | `severity_routing` | `conditional` | — | Anomaly type + downstream impact | → `critical` if affects reporting layer; → `warning` if non-critical pipeline |
+| 6 | `create_tickets` | `tool` | `jira.create_issue` | Per anomaly | `ticket_ids` |
+| 7 | `notify_consumers` | `conditional` | — | `stale_tables` with downstream consumers | → `email.send` / `slack.send_message` to affected teams |
+| 8 | `generate_health_report` | `llm` | Health report prompt | All findings | `sla_adherence_pct`, `anomaly_summary`, `trend_analysis` |
+
+---
+
+### 11.2 Automated Report Distribution
+
+**Purpose:** Generate scheduled business reports from data sources, apply narrative commentary, and distribute to stakeholders.  
+**Trigger:** CRON (configurable per report: daily/weekly/monthly) | REST (on-demand report)  
+**Inputs:** `report_id`, `report_config` (data sources, KPIs, recipients), `period`  
+**Outputs:** `report_url`, `emails_sent`, `slack_posted`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_data` | `parallel` | — | `report_config.data_sources`, `period` | |
+| 1a | `bi_data` | `tool` | `bi.run_query` | SQL/API queries per metric | `metric_values` dict |
+| 1b | `prior_period` | `tool` | `bi.run_query` | Same metrics, prior period | `prior_period_values` dict |
+| 2 | `compute_metrics` | `transform` | — | `metric_values`, `prior_period_values` | `metric_table`: value, WoW/MoM/YoY delta, RAG status |
+| 3 | `detect_anomalies` | `llm` | Anomaly detection prompt | `metric_table`, historical context | `notable_movements`, `anomalies`, `possible_explanations` |
+| 4 | `generate_narrative` | `llm` | Report narrative prompt | `metric_table`, `anomalies`, `report_config.context` | `executive_summary`, `section_narratives`, `call_to_action` |
+| 5 | `generate_report` | `tool` | `report.generate` | Data + narrative, report template | `report_url`, `report_pdf` |
+| 6 | `distribute` | `parallel` | | | |
+| 6a | `email_report` | `tool` | `email.send` | Recipients, report PDF + summary | `emails_sent` |
+| 6b | `slack_post` | `tool` | `slack.send_message` | Configured channel, summary + link | `posted` |
+| 6c | `portal_publish` | `tool` | `report_portal.publish` | `report_url`, access controls | `published: true` |
+
+---
+
+### 11.3 Analytics Anomaly Detection & Alert
+
+**Purpose:** Continuously monitor key business metrics for unusual patterns and automatically route anomaly alerts with context and hypotheses.  
+**Trigger:** CRON (every 4 hours) | WINDOW_AGGREGATE (metric deviates > 2σ from rolling avg)  
+**Inputs:** `metric_configs` list (metric name, source, threshold, owners)  
+**Outputs:** `anomalies_detected`, `alerts_sent`, `hypotheses_generated`
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `fetch_metrics` | `tool` | `bi.get_metric_timeseries` | All monitored metrics, last 7 days | `metric_timeseries` dict |
+| 2 | `statistical_detection` | `transform` | Z-score + rolling avg | `metric_timeseries` | `anomaly_candidates`: metric, value, expected_range, sigma_deviation |
+| 3 | `contextual_analysis` | `llm` | Anomaly context prompt | `anomaly_candidates` + recent events from `business-calendar` collection | `confirmed_anomalies`, `likely_false_positives` (holiday/campaign), `confidence` |
+| 4 | `root_cause_hypotheses` | `llm` | Hypothesis generation prompt | `confirmed_anomalies` + correlated metrics | `top_hypotheses` list (ranked), `supporting_evidence`, `investigation_queries` |
+| 5 | `generate_alert` | `llm` | Alert message prompt | Anomaly details + hypotheses | `slack_alert_text`, `email_subject`, `investigation_checklist` |
+| 6 | `route_alerts` | `tool` | `slack.send_message` per metric owner | Anomaly alert with hypotheses | `alerts_sent` |
+| 7 | `create_investigation_task` | `tool` | `jira.create_issue` | Anomaly, hypotheses, investigation queries | `investigation_ticket_id` |
+
+---
+
+### 11.4 Data Governance & Catalogue Maintenance
+
+**Purpose:** Automatically discover new data assets, classify them by sensitivity, apply governance tags, and maintain a searchable data catalogue.  
+**Trigger:** CRON (daily `0 2 * * *`) | DB_ROW_CHANGE (new table created in data warehouse)  
+**Inputs:** `data_warehouse_connection`, `governance_policies` config  
+**Outputs:** `new_assets_catalogued`, `pii_assets_classified`, `governance_gaps` list
+
+| Step | ID | Type | Tool / Model | Input | Output |
+|---|---|---|---|---|---|
+| 1 | `discover_assets` | `tool` | `data_catalog.scan` | `data_warehouse_connection` | `new_tables`, `modified_tables`, `new_columns` |
+| 2 | `profile_assets` | `parallel` | — | `new_tables` | |
+| 2a | `column_profiles` | `tool` | `data_profiler.profile` | Table, sample rows | `column_stats`: type, cardinality, null_rate, sample_values |
+| 2b | `lineage_scan` | `tool` | `lineage.trace` | Table name | `upstream_sources`, `downstream_consumers` |
+| 3 | `classify_sensitivity` | `llm` | Data classification prompt + `data-governance-policy` collection | `column_profiles`, sample values | `sensitivity_tags` per column: PII/PHI/financial/public, `data_types` detected |
+| 4 | `apply_governance` | `tool` | `data_catalog.tag_assets` | Tables/columns + sensitivity tags | `tags_applied` |
+| 5 | `ownership_resolution` | `tool` | `data_catalog.suggest_owner` | Table lineage + team structure | `suggested_owner` per table |
+| 6 | `gap_analysis` | `llm` | Governance gap prompt | Classified assets + policy requirements | `ungoverned_pii_assets`, `missing_documentation`, `access_policy_gaps` |
+| 7 | `create_tasks` | `tool` | `jira.create_issues` | Governance gaps | `remediation_ticket_ids` |
+| 8 | `publish_catalogue` | `tool` | `data_catalog.publish` | Updated catalogue | `catalogue_updated: true` |
+
+---
+
+## Appendix: Sub-workflow Reuse Map (Updated)
+
+**Total workflows:** 60 across 11 sections
 
 ```
-kyc-automation
-  └── used by: merchant-onboarding
-               loan-prescreening
-               employee-background-check
-               patient-onboarding
+── Identity & Compliance ──────────────────────────────────
+kyc-automation (1.1)
+  └── used by: merchant-onboarding (1.2)
+               loan-prescreening (2.3)
+               employee-background-check (1.5)
+               patient-onboarding (7.1)
+               vendor-risk-assessment (1.8)
 
-kyc-automation
-  └── sub-step of: aml-screening (via customer profile)
+sanctions-screening (1.3 AML sub-step)
+  └── shared step in: vendor-risk-assessment (1.8)
+                      lead-qualification (8.1) [for regulated industries]
 
-invoice-processing
-  └── used by: (future) vendor-payment-automation
+access-provisioning (10.3)
+  └── triggered by: new-employee-onboarding (6.3)
+                    employee-offboarding (6.2)
+                    access-review (1.6) [for mover events]
 
-sre-incident-response
-  └── can trigger: release-notes-generator (post-resolution)
-                  security-vulnerability-response (if security incident)
+── Financial Operations ───────────────────────────────────
+invoice-processing (2.1)
+  └── used by: accounts-payable-automation (2.5) [sub-workflow]
+               vendor-risk-assessment (1.8) [invoice history check]
+
+purchase-order-automation (9.1)
+  └── triggered by: inventory-reorder (9.3)
+                    infrastructure-provisioning (3.7)
+
+vendor-performance-review (9.2)
+  └── can trigger: contract-lifecycle [future]
+                   vendor-risk-assessment (1.8) [re-assessment]
+
+── Developer & Engineering ────────────────────────────────
+sre-incident-response (3.1)
+  └── can trigger: release-notes-generator (3.4) [post-resolution]
+                   security-vulnerability-response (3.5) [if security incident]
+                   on-call-handoff (3.8) [at shift boundary]
+
+production-bug-assistant (3.2)
+  └── triggered by: sre-incident-response (3.1) [bug component]
+
+automated-code-review (3.3)
+  └── integrated with: production-bug-assistant (3.2) [fix validation]
+
+change-management (10.4)
+  └── triggered by: infrastructure-provisioning (3.7)
+
+── Sales & Revenue ────────────────────────────────────────
+lead-qualification (8.1)
+  └── triggers: deal-desk-proposal (8.2) [high-score leads]
+                nps-follow-up (4.5) [post-onboarding]
+
+renewal-management (4.6)
+  └── triggers: upsell-cross-sell (8.4) [post-renewal]
+                win-loss-analysis (8.3) [if churn occurs]
+
+── HR & People ────────────────────────────────────────────
+employee-onboarding (6.3)
+  └── triggers: access-provisioning (10.3)
+                performance-review-cycle (6.4) [first review at 90 days]
+
+employee-offboarding (6.2)
+  └── triggers: access-provisioning (10.3) [leaver event]
+                vendor-performance-review (9.2) [if vendor liaison leaves]
+
+── Customer Operations ────────────────────────────────────
+nps-follow-up (4.5)
+  └── can trigger: renewal-management (4.6) [for detractors near renewal]
+
+support-ticket-triage (4.2)
+  └── can trigger: production-bug-assistant (3.2) [if engineering issue]
+                   sre-incident-response (3.1) [if severity P1]
+
+── Supply Chain ───────────────────────────────────────────
+inventory-reorder (9.3)
+  └── triggers: purchase-order-automation (9.1)
+                3pl-carrier-booking (9.4) [when shipment needed]
+
+3pl-carrier-booking (9.4)
+  └── triggers: logistics-tracking (7.6)
+
+── Data & Analytics ───────────────────────────────────────
+data-pipeline-monitor (11.1)
+  └── can trigger: report-distribution (11.2) [if critical data late → notify consumers]
+
+data-governance (11.4)
+  └── feeds: data-quality checks in pipeline-monitor (11.1)
+             compliance-evidence in soc2-evidence (1.7)
 ```
