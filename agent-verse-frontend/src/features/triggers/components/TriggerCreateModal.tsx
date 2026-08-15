@@ -1,0 +1,197 @@
+import { useState } from 'react';
+import { X, ChevronRight } from 'lucide-react';
+import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types';
+import { TRIGGER_FAMILY_LABELS } from '../types';
+import { useCreateTrigger } from '../hooks';
+import { TimeFamilyForm } from './families/TimeFamilyForm';
+import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
+import { WebhookFamilyForm } from './families/WebhookFamilyForm';
+import { GenericFamilyForm } from './families/GenericFamilyForm';
+
+type Step = 'family' | 'type' | 'config' | 'confirm';
+
+interface TriggerCreateModalProps {
+  onClose: () => void;
+}
+
+const FAMILY_TYPES: Record<TriggerFamily, TriggerType[]> = {
+  time: ['cron', 'interval', 'one_shot', 'calendar', 'business_hours', 'market_hours', 'solar_event', 'recurring_relative', 'rate_limited_schedule', 'deadline'],
+  goal_chain: ['goal_completed', 'goal_failed', 'goal_score_below', 'goal_score_above', 'goal_timeout', 'goal_created', 'hitl_approved', 'hitl_rejected', 'memory_created', 'goal_chain_depth'],
+  conversational: ['chat_command', 'chat_keyword', 'chat_mention', 'slack_event', 'teams_webhook', 'discord_event', 'email_intent', 'email_arrival', 'sms_inbound', 'voice_transcript', 'meeting_ended', 'form_submission'],
+  webhook: ['github_webhook', 'jira_webhook', 'stripe_webhook', 'pagerduty_webhook', 'linear_webhook', 'custom_webhook'],
+  data: ['db_row_change', 's3_event', 'api_poll', 'rss_feed', 'kafka_message', 'graphql_subscription'],
+  monitoring: ['metric_threshold', 'log_pattern', 'grafana_alert', 'cloudwatch_alarm', 'sentry_event', 'uptime_check'],
+  state_condition: ['state_transition', 'condition_true', 'flag_change', 'quota_exceeded', 'cost_threshold', 'user_segment'],
+  ml_signal: ['model_drift', 'anomaly_detected', 'prediction_confidence', 'ab_test_winner', 'price_movement'],
+  iot: ['mqtt', 'geofence', 'sensor_threshold'],
+};
+
+const FAMILY_DESCRIPTIONS: Record<TriggerFamily, string> = {
+  time: 'Schedule goals at fixed times, intervals, or calendar events',
+  goal_chain: 'React to goal lifecycle events and chain automations',
+  conversational: 'Respond to chat commands, emails, forms, and voice',
+  webhook: 'Fire on GitHub, Stripe, Jira, PagerDuty, and custom webhooks',
+  data: 'Watch for database changes, file events, and API responses',
+  monitoring: 'Trigger from metrics, log patterns, and alerting systems',
+  state_condition: 'Evaluate conditions, feature flags, and state transitions',
+  ml_signal: 'React to model drift, anomalies, and ML predictions',
+  iot: 'Handle MQTT messages, geofence events, and sensor readings',
+};
+
+export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
+  const [step, setStep] = useState<Step>('family');
+  const [selectedFamily, setSelectedFamily] = useState<TriggerFamily | null>(null);
+  const [selectedType, setSelectedType] = useState<TriggerType | null>(null);
+  const [specFields, setSpecFields] = useState<Record<string, unknown>>({});
+  const [goalTemplate, setGoalTemplate] = useState('');
+  const [agentId, setAgentId] = useState('');
+
+  const create = useCreateTrigger();
+
+  function handleSubmit() {
+    if (!selectedType) return;
+    const req: CreateTriggerRequest = {
+      spec: {
+        trigger_type: selectedType,
+        ...specFields,
+      },
+      goal_id: '',
+      agent_id: agentId || undefined,
+      goal_template: goalTemplate,
+    };
+    create.mutate(req, {
+      onSuccess: () => onClose(),
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Create trigger">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-2xl rounded-xl bg-background shadow-xl flex flex-col max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            {(['family', 'type', 'config', 'confirm'] as Step[]).map((s, i) => (
+              <span key={s} className={`flex items-center gap-1 ${step === s ? 'text-foreground font-medium' : ''}`}>
+                {i > 0 && <ChevronRight className="h-3 w-3" />}
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </span>
+            ))}
+          </div>
+          <button onClick={onClose} aria-label="Close" className="rounded-md p-2 hover:bg-muted transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5">
+          {/* Step 1: Select family */}
+          {step === 'family' && (
+            <div>
+              <h2 className="text-base font-semibold mb-4">Choose a trigger family</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {(Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).map((family) => (
+                  <button
+                    key={family}
+                    onClick={() => { setSelectedFamily(family); setStep('type'); }}
+                    className="rounded-xl border border-border p-4 text-left hover:border-primary hover:bg-primary/5 transition-all group"
+                  >
+                    <div className="font-medium text-sm group-hover:text-primary">{TRIGGER_FAMILY_LABELS[family]}</div>
+                    <div className="text-xs text-muted-foreground mt-1">{FAMILY_DESCRIPTIONS[family]}</div>
+                    <div className="text-xs text-muted-foreground mt-2">{FAMILY_TYPES[family].length} types</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Select type */}
+          {step === 'type' && selectedFamily && (
+            <div>
+              <button onClick={() => setStep('family')} className="text-sm text-muted-foreground hover:text-foreground mb-4 flex items-center gap-1">
+                ← Back
+              </button>
+              <h2 className="text-base font-semibold mb-4">{TRIGGER_FAMILY_LABELS[selectedFamily]}</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {FAMILY_TYPES[selectedFamily].map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => { setSelectedType(type); setStep('config'); }}
+                    className="rounded-lg border border-border px-3 py-2 text-left text-sm font-mono hover:border-primary hover:bg-primary/5 transition-all"
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Configure */}
+          {step === 'config' && selectedType && selectedFamily && (
+            <div>
+              <button onClick={() => setStep('type')} className="text-sm text-muted-foreground hover:text-foreground mb-4 flex items-center gap-1">
+                ← Back
+              </button>
+              <h2 className="text-base font-semibold mb-4">Configure <code className="font-mono bg-muted rounded px-1.5 py-0.5">{selectedType}</code></h2>
+
+              {/* Family-specific form */}
+              {selectedFamily === 'time' && (
+                <TimeFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'goal_chain' && (
+                <GoalChainFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'webhook' && (
+                <WebhookFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {!['time', 'goal_chain', 'webhook'].includes(selectedFamily) && (
+                <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+
+              {/* Common fields */}
+              <div className="mt-5 space-y-4">
+                <div>
+                  <label className="text-sm font-medium" htmlFor="goal-template">Goal Template *</label>
+                  <textarea
+                    id="goal-template"
+                    value={goalTemplate}
+                    onChange={(e) => setGoalTemplate(e.target.value)}
+                    placeholder="Describe the goal to create when this trigger fires…"
+                    rows={3}
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium" htmlFor="agent-id">Agent ID (optional)</label>
+                  <input
+                    id="agent-id"
+                    value={agentId}
+                    onChange={(e) => setAgentId(e.target.value)}
+                    placeholder="Leave blank to auto-route"
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {step === 'config' && (
+          <div className="border-t border-border px-5 py-4 flex gap-2 justify-end">
+            <button onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={create.isPending || !goalTemplate.trim()}
+              className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {create.isPending ? 'Creating…' : 'Create Trigger'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

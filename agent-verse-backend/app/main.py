@@ -98,6 +98,7 @@ from app.api.schedules import (
 from app.api.schedules import (
     router as schedules_router,
 )
+from app.api.triggers import router as triggers_router  # NEW: full trigger CRUD
 from app.api.system import router as system_router
 from app.api.templates import router as templates_router
 from app.api.templates import template_store as _template_store

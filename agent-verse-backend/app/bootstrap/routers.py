@@ -76,6 +76,7 @@ from app.api.schedules import (
 from app.api.schedules import (
     router as schedules_router,
 )
+from app.api.triggers import router as triggers_router  # Phase 4: full trigger CRUD
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
@@ -113,6 +114,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(knowledge_router)
     app.include_router(rpa_router)
     app.include_router(schedules_router)
+    app.include_router(triggers_router)  # Phase 4: full trigger CRUD + DLQ
     app.include_router(nl_router)
     app.include_router(webhooks_router)
     app.include_router(events_router)
