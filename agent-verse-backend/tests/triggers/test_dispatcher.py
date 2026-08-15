@@ -178,8 +178,7 @@ def test_quota_enterprise_very_high():
 # ── RBAC ─────────────────────────────────────────────────────────────────────
 
 def test_rbac_admin_can_do_everything():
-    for op in ["create", "read", "update", "delete", "enable", "disable",
-               "fire_manual", "view_history"]:
+    for op in ["create", "read", "update", "delete", "fire", "pause", "resume", "view_dlq"]:
         check_permission("admin", op)  # should not raise
 
 
@@ -190,7 +189,7 @@ def test_rbac_viewer_limited():
 
 
 def test_rbac_operator_can_fire():
-    check_permission("operator", "fire_manual")
+    check_permission("operator", "fire")
     with pytest.raises(TriggerPermissionDenied):
         check_permission("operator", "delete")
 

@@ -64,7 +64,7 @@ class TriggerDispatcher:
 
         # ── Step 1: RBAC check ────────────────────────────────────────────────
         try:
-            check_permission(caller_role, "fire_manual")
+            check_permission(caller_role, "fire")
         except Exception as exc:
             return self._skip_event(
                 trigger_id, tenant_id, payload, "RBAC_DENIED",

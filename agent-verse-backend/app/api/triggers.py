@@ -323,3 +323,177 @@ async def list_trigger_events(
             return [dict(r._mapping) for r in rows]
     except Exception:
         return []
+
+
+# ── PATCH (partial update) ────────────────────────────────────────────────────
+
+class UpdateTriggerRequest(BaseModel):
+    goal_template: str | None = None
+    paused: bool | None = None
+    spec: TriggerSpecRequest | None = None
+
+
+@router.patch("/{schedule_id}", response_model=dict[str, Any])
+async def update_trigger(
+    schedule_id: str, request: Request, body: UpdateTriggerRequest
+) -> dict[str, Any]:
+    """Partially update a trigger (goal_template, paused, or spec fields)."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    if body.goal_template is not None:
+        rec["goal_template"] = body.goal_template
+    if body.paused is not None:
+        rec["paused"] = body.paused
+    if body.spec is not None:
+        new_spec = _build_spec(body.spec)
+        rec["spec"] = new_spec
+
+    return _serialize_record(rec)
+
+
+# ── Rotate secret ─────────────────────────────────────────────────────────────
+
+@router.post("/{schedule_id}/rotate-secret", response_model=dict[str, Any])
+async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
+    """Initiate webhook secret rotation (dual-secret grace period)."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    from app.triggers.webhooks.rotation import WebhookSecretRotation
+    rotation = WebhookSecretRotation()
+    result = await rotation.rotate(schedule_id, tenant_id=tenant_ctx.tenant_id)
+    # Update spec with new secret
+    spec = rec.get("spec")
+    if spec is not None:
+        spec.webhook_signature_secret = result["new_secret"]
+    return {
+        "trigger_id": schedule_id,
+        "new_secret": result["new_secret"],
+        "grace_period_seconds": result["grace_period_seconds"],
+        "status": "rotation_started",
+    }
+
+
+# ── Validate condition (CEL) ──────────────────────────────────────────────────
+
+class ValidateConditionRequest(BaseModel):
+    expression: str
+    test_payload: dict[str, Any] = {}
+
+
+@router.post("/validate-condition", response_model=dict[str, Any])
+async def validate_condition(body: ValidateConditionRequest) -> dict[str, Any]:
+    """Validate a CEL condition expression and evaluate it against a test payload."""
+    from app.triggers.condition.evaluator import CELEvaluator
+    evaluator = CELEvaluator()
+    try:
+        result = evaluator.evaluate(body.expression, body.test_payload)
+        return {"valid": True, "error_message": None, "evaluated_to": result}
+    except Exception as exc:
+        return {"valid": False, "error_message": str(exc), "evaluated_to": None}
+
+
+# ── Typed webhook ingest ──────────────────────────────────────────────────────
+
+@router.post("/webhooks/{webhook_type}/{token}")
+async def receive_typed_webhook(
+    webhook_type: str, token: str, request: Request
+) -> dict[str, Any]:
+    """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc."""
+    body_bytes = await request.body()
+    try:
+        body = __import__("json").loads(body_bytes)
+    except Exception:
+        body = {}
+
+    # Determine signature header per type
+    sig_header_map = {
+        "github": "x-hub-signature-256",
+        "stripe": "stripe-signature",
+        "jira": "x-hub-signature",
+        "pagerduty": "x-pagerduty-signature",
+        "linear": "linear-signature",
+        "sentry": "sentry-hook-signature",
+    }
+    sig_header = request.headers.get(sig_header_map.get(webhook_type, "x-signature"), "")
+
+    # Verify signature if store has a matching trigger with a secret
+    store = _get_store(request)
+    dispatcher = _get_dispatcher(request)
+    if store is None or dispatcher is None:
+        return {"status": "accepted", "webhook_type": webhook_type}
+
+    # Find matching trigger by webhook token (token matches webhook_signature_secret prefix)
+    import dataclasses as _dc
+    from types import SimpleNamespace
+    from app.triggers.webhooks.verifier import WebhookSignatureVerifier
+
+    verifier = WebhookSignatureVerifier()
+
+    # Map webhook_type to TriggerType value
+    type_map = {
+        "github": "github_webhook",
+        "stripe": "stripe_webhook",
+        "jira": "jira_webhook",
+        "pagerduty": "pagerduty",
+        "linear": "linear_webhook",
+        "sentry": "sentry_issue",
+        "grafana": "grafana_alert",
+        "cloudwatch": "cloudwatch",
+        "datadog": "datadog",
+        "alertmanager": "alertmanager",
+        "confluence": "confluence_webhook",
+        "salesforce": "salesforce_event",
+        "slack": "slack_event",
+        "teams": "teams_webhook",
+    }
+    trigger_type = type_map.get(webhook_type, "webhook")
+
+    # Enrich payload with parsed data
+    from app.triggers.webhooks import parsers as _parsers
+    parse_map = {
+        "github": lambda: _parsers.GitHubWebhookPayload.parse(dict(request.headers), body).__dict__,
+        "stripe": lambda: _parsers.StripeWebhookPayload.parse(body).__dict__,
+        "jira": lambda: _parsers.JiraWebhookPayload.parse(body).__dict__,
+        "slack": lambda: _parsers.SlackEventPayload.parse(body).__dict__,
+        "pagerduty": lambda: _parsers.PagerDutyWebhookPayload.parse(body).__dict__,
+        "linear": lambda: _parsers.LinearWebhookPayload.parse(body).__dict__,
+    }
+    parse_fn = parse_map.get(webhook_type)
+    enriched: dict = {**body, "webhook_type": webhook_type}
+    if parse_fn:
+        try:
+            parsed = parse_fn()
+            enriched.update({k: v for k, v in parsed.items() if k != "raw"})
+        except Exception:
+            pass
+
+    # Attempt dispatch — the token is used as a lookup key; for now just broadcast to matching type
+    # In production: token would be hashed and matched against stored webhook_token field
+    tenant_id = request.headers.get("X-Tenant-ID", "")
+    if not tenant_id:
+        # Return accepted regardless (Slack, GitHub etc. expect 200 quickly)
+        return {"status": "accepted"}
+
+    tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan="free")
+    triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
+    for trigger in triggers:
+        spec = trigger.get("spec", trigger)
+        secret = getattr(spec, "webhook_signature_secret", "") or ""
+        if secret and sig_header:
+            valid = await verifier.verify(body_bytes, sig_header, secret)
+            if not valid:
+                continue
+        try:
+            await dispatcher.dispatch(spec, enriched, tenant_ctx)
+        except Exception:
+            pass
+
+    return {"status": "accepted", "webhook_type": webhook_type}
