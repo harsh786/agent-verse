@@ -11,21 +11,15 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from app.chat.intent import Intent, IntentRouter, ClarifyRequest, ScheduleConfirmation
 from app.chat.context import ConversationContext
-from app.chat.stream import (
-    stream_qa_response,
-    stream_goal_progress,
-    stream_clarify,
-    stream_schedule_created,
-)
+from app.chat.intent import Intent, IntentRouter
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _hex() -> str:

@@ -257,3 +257,143 @@ async def test_list_models(client_with_tenant) -> None:
     assert r.status_code == 200
     models = r.json()["models"]
     assert len(models) >= 4
+
+
+# ── New endpoints ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_execute_code_python(client_with_tenant) -> None:
+    r = await client_with_tenant.post("/chat/sessions", json={"title": "Exec"})
+    sid = r.json()["id"]
+    r2 = await client_with_tenant.post(
+        f"/chat/sessions/{sid}/execute",
+        json={"code": "print('hello')", "language": "python"},
+    )
+    assert r2.status_code == 200
+    data = r2.json()
+    assert data["exit_code"] == 0
+    assert "hello" in data["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_execute_code_unsupported_language(client_with_tenant) -> None:
+    r = await client_with_tenant.post("/chat/sessions", json={"title": "Exec2"})
+    sid = r.json()["id"]
+    r2 = await client_with_tenant.post(
+        f"/chat/sessions/{sid}/execute",
+        json={"code": "SELECT 1", "language": "sql"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["error"] == "unsupported_language"
+
+
+@pytest.mark.asyncio
+async def test_within_session_search(client_with_tenant) -> None:
+    r = await client_with_tenant.post("/chat/sessions", json={"title": "Search"})
+    sid = r.json()["id"]
+    await client_with_tenant.post(f"/chat/sessions/{sid}/messages", json={"content": "FastAPI rocks"})
+    r2 = await client_with_tenant.get(f"/chat/sessions/{sid}/search?q=FastAPI")
+    assert r2.status_code == 200
+    assert r2.json()["total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_memory_crud(client_with_tenant) -> None:
+    # Create
+    r = await client_with_tenant.post("/chat/memories", json={"content": "Use snake_case"})
+    assert r.status_code == 201
+    mid = r.json()["id"]
+    # List
+    r2 = await client_with_tenant.get("/chat/memories")
+    assert len(r2.json()["memories"]) >= 1
+    # Update
+    r3 = await client_with_tenant.patch(f"/chat/memories/{mid}", json={"content": "Updated"})
+    assert r3.status_code == 200
+    # Delete
+    r4 = await client_with_tenant.delete(f"/chat/memories/{mid}")
+    assert r4.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_delete_all_memories_requires_header(client_with_tenant) -> None:
+    await client_with_tenant.post("/chat/memories", json={"content": "A"})
+    r = await client_with_tenant.delete("/chat/memories")
+    assert r.status_code == 400  # Missing confirm header
+
+
+@pytest.mark.asyncio
+async def test_delete_all_memories_with_header(client_with_tenant) -> None:
+    await client_with_tenant.post("/chat/memories", json={"content": "B"})
+    r = await client_with_tenant.delete(
+        "/chat/memories", headers={"X-Confirm-Gdpr-Delete": "yes"}
+    )
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_templates_list_includes_builtin(client_with_tenant) -> None:
+    r = await client_with_tenant.get("/chat/templates")
+    assert r.status_code == 200
+    templates = r.json()["templates"]
+    builtin = [t for t in templates if t.get("builtin")]
+    assert len(builtin) >= 5
+
+
+@pytest.mark.asyncio
+async def test_create_and_delete_template(client_with_tenant) -> None:
+    r = await client_with_tenant.post(
+        "/chat/templates",
+        json={"name": "My Persona", "description": "Test", "system_prompt": "You are helpful"},
+    )
+    assert r.status_code == 201
+    tid = r.json()["id"]
+    r2 = await client_with_tenant.delete(f"/chat/templates/{tid}")
+    assert r2.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_services_list_and_connect(client_with_tenant) -> None:
+    r = await client_with_tenant.post(
+        "/chat/services",
+        json={"name": "GitHub", "url": "https://github.com", "scopes": ["repo"]},
+    )
+    assert r.status_code == 201
+    data = r.json()
+    assert "service_id" in data
+    assert "oauth_url" in data
+    r2 = await client_with_tenant.get("/chat/services")
+    assert len(r2.json()["services"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_disconnect_service(client_with_tenant) -> None:
+    r = await client_with_tenant.post(
+        "/chat/services", json={"name": "Jira", "url": "https://jira.com"}
+    )
+    sid = r.json()["service_id"]
+    r2 = await client_with_tenant.delete(f"/chat/services/{sid}")
+    assert r2.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_message_feedback(client_with_tenant) -> None:
+    r = await client_with_tenant.post("/chat/sessions", json={"title": "Fb"})
+    sid = r.json()["id"]
+    r2 = await client_with_tenant.post(f"/chat/sessions/{sid}/messages", json={"content": "Test?"})
+    mid = r2.json()["message_id"]
+    r3 = await client_with_tenant.post(
+        f"/chat/sessions/{sid}/messages/{mid}/feedback",
+        json={"rating": 1, "comment": "Great"},
+    )
+    assert r3.status_code == 200
+    assert r3.json()["rating"] == 1
+
+
+@pytest.mark.asyncio
+async def test_export_session(client_with_tenant) -> None:
+    r = await client_with_tenant.post("/chat/sessions", json={"title": "Export"})
+    sid = r.json()["id"]
+    await client_with_tenant.post(f"/chat/sessions/{sid}/messages", json={"content": "Hello"})
+    r2 = await client_with_tenant.get(f"/chat/sessions/{sid}/export")
+    assert r2.status_code == 200
+    assert "markdown" in r2.json()

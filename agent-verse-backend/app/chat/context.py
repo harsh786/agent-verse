@@ -85,7 +85,7 @@ class ConversationContext:
             "content": summary_text,
             "metadata": {"compressed": True, "original_count": len(old)},
         }
-        return [summary_msg] + recent
+        return [summary_msg, *recent]
 
     def inject_long_term_memory(
         self,
@@ -98,7 +98,7 @@ class ConversationContext:
         memory_text = "Relevant long-term memories:\n" + "\n".join(
             f"- {m}" for m in memories[:3]
         )
-        return [{"role": "system", "content": memory_text}] + turns
+        return [{"role": "system", "content": memory_text}, *turns]
 
     def inject_system_prompt(
         self,
@@ -106,7 +106,7 @@ class ConversationContext:
         turns: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         """Prepend session system_prompt before all other turns."""
-        return [{"role": "system", "content": system_prompt}] + turns
+        return [{"role": "system", "content": system_prompt}, *turns]
 
     def inject_file_context(
         self,
@@ -117,7 +117,7 @@ class ConversationContext:
         if not file_contents:
             return turns
         files_text = "Uploaded file context:\n" + "\n---\n".join(file_contents)
-        return [{"role": "system", "content": files_text}] + turns
+        return [{"role": "system", "content": files_text}, *turns]
 
     def inject_workspace_rag(
         self,
@@ -128,4 +128,4 @@ class ConversationContext:
         if not snippets:
             return turns
         rag_text = "Relevant codebase context:\n" + "\n---\n".join(snippets[:5])
-        return [{"role": "system", "content": rag_text}] + turns
+        return [{"role": "system", "content": rag_text}, *turns]

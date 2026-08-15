@@ -36,6 +36,7 @@ const GraphExplorerPage = lazy(() => import('@/features/knowledge-graph/GraphExp
 const AdminPage = lazy(() => import('@/features/admin/AdminPage'));
 const SecurityCenterPage = lazy(() => import('@/features/security/SecurityCenterPage'));
 const ChatPage = lazy(() => import('@/features/chat/ChatPage'));
+const AgentMemoryPage = lazy(() => import('@/features/chat/AgentMemoryPage'));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -254,6 +255,7 @@ export default function App() {
         <Route path="security"              element={lazy_rb("Security Center", <SecurityCenterPage />)} />
         <Route path="chat"                  element={lazy_rb("Chat",            <ChatPage />)} />
         <Route path="chat/:sessionId"       element={lazy_rb("Chat",            <ChatPage />)} />
+        <Route path="chat/memory"           element={lazy_rb("Agent Memory",    <AgentMemoryPage />)} />
         <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>

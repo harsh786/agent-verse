@@ -9,7 +9,7 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 # ── Intent enum ───────────────────────────────────────────────────────────────
 
 
-class Intent(str, enum.Enum):
+class Intent(enum.StrEnum):
     QA = "QA"           # Question answering — stream LLM response directly
     GOAL = "GOAL"       # Agent goal execution via LangGraph loop
     CLARIFY = "CLARIFY" # Need more info before acting
@@ -175,7 +175,7 @@ class IntentRouter:
         self,
         message: str,
         history: list[dict[str, str]] | None = None,
-        round: int = 1,
+        round: int = 1,  # noqa: A002
     ) -> ClarifyRequest:
         """Return a clarifying question based on what's missing in *message*."""
         # Simple heuristic questions — in prod swap with fast LLM call
