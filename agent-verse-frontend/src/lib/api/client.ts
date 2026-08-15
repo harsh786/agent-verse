@@ -2466,6 +2466,65 @@ export const collabApi = {
     request<{ token: string; expires_in: number }>('/collab/crdt-token', { method: 'POST' }),
 };
 
+// ── OCR Document Extraction ────────────────────────────────────────────────────
+
+export type OcrDocumentType =
+  | 'pan_card' | 'aadhaar' | 'passport' | 'driving_license' | 'voter_id'
+  | 'gstin_certificate' | 'bank_cheque' | 'salary_slip' | 'address_proof'
+  | 'invoice' | 'bank_statement' | 'receipt' | 'general';
+
+export interface OcrFieldResult {
+  value: string;
+  confidence: number;
+  is_valid: boolean;
+  raw_value?: string | null;
+}
+
+export interface OcrResponse {
+  raw_text: string;
+  document_type: OcrDocumentType;
+  fields: Record<string, OcrFieldResult>;
+  engine_used: 'tesseract' | 'llm_vision';
+  overall_confidence: number;
+  page_count: number;
+}
+
+export interface BatchOcrResponse {
+  results: (OcrResponse | null)[];
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export const ocrApi = {
+  /** Upload a file (image or PDF) and extract text + structured fields. */
+  extractFile: (file: File): Promise<OcrResponse> => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<OcrResponse>('/ocr/extract', { method: 'POST', body: form });
+  },
+
+  /** Send pre-encoded base64 image or PDF for extraction. */
+  extractBase64: (
+    imageBase64: string,
+    pdfBase64: string,
+    filename = 'document',
+  ): Promise<OcrResponse> =>
+    request<OcrResponse>('/ocr/extract', {
+      method: 'POST',
+      body: JSON.stringify({ image_base64: imageBase64, pdf_base64: pdfBase64, filename }),
+    }),
+
+  /** Process up to 10 documents concurrently via the batch endpoint. */
+  batch: (
+    documents: Array<{ image_base64?: string; pdf_base64?: string; filename?: string }>,
+  ): Promise<BatchOcrResponse> =>
+    request<BatchOcrResponse>('/ocr/batch', {
+      method: 'POST',
+      body: JSON.stringify({ documents }),
+    }),
+};
+
 // ── Admin (platform-level) ────────────────────────────────────────────────────
 // Admin auth is enforced server-side: the backend checks the calling tenant's
 // role for "admin" or "system" — no admin secret is needed in the frontend.

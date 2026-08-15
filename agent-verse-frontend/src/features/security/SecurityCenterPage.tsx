@@ -44,7 +44,7 @@ export default function SecurityCenterPage() {
 
   return (
     <MissionControlLayout>
-      <div className="space-y-0">
+      <div className="space-y-0" data-testid="security-center-page">
         {/* Header */}
         <div className="pb-0">
           <div className="flex items-center justify-between mb-5">
@@ -69,6 +69,7 @@ export default function SecurityCenterPage() {
               return (
                 <button
                   key={tab.id}
+                  data-testid={`tab-${tab.id}`}
                   onClick={() => setActiveTab(tab.id)}
                   title={tab.description}
                   className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all border ${
@@ -89,7 +90,7 @@ export default function SecurityCenterPage() {
         <div className="h-px bg-neural-violet/15 mb-5 mt-3" />
 
         {/* Tab content */}
-        <div>
+        <div data-testid="tab-content">
           {activeTab === 'identity'   && <AgentIdentityPanel />}
           {activeTab === 'governance' && <GovernancePanel />}
           {activeTab === 'guardrails' && <GuardrailsPanel />}

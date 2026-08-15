@@ -48,8 +48,9 @@
 | RPA Automation | [rpa-automation/](rpa-automation/) | 6 | Playwright sessions, 13 RPA tools, credential injection, artifact storage, security |
 | Token & Cost Optimization | [token-optimization/](token-optimization/) | 6 | Token budgeting, model selection, caching, latency optimizer, A/B testing |
 | OCR Engine | [ocr/](ocr/) | 6 | Tesseract pipeline, 13 doc types, Aadhaar masking, Verhoeff/GSTIN validation, global LLM extraction |
+| Chat Interface | [chat/](chat/) | 6 | Intent routing, session TTL/pinning, SSE streaming, clarification flows, HITL gate, world-class frontend |
 
-**Total: 21 categories · 140 files · ~53,200 lines of documentation**
+**Total: 22 categories · 146 files · ~55,500 lines of documentation**
 
 ---
 
@@ -105,6 +106,7 @@
 | Page | What it covers |
 |---|---|
 | [OCR Engine](ocr-engine.md) | Tesseract + LLM vision pipeline, 13 document types, Aadhaar masking (Verhoeff), GSTIN validation, global any-doc LLM extraction |
+| [Chat Interface](chat-interface.md) | Conversational agent: intent routing (Q&A/GOAL/CLARIFY), SSE streaming, clarification flows, HITL gate, world-class frontend UX |
 
 ### Integration & Deployment
 | Page | What it covers |
