@@ -84,3 +84,129 @@ class TemplateRenderer:
 
         result = self._PLACEHOLDER_RE.sub(replace, template)
         return result[: self.MAX_LENGTH]
+
+
+class CounterThresholdEvaluator:
+    """Sliding-window counter backed by a dict (production: use Redis INCR+EXPIRE).
+
+    Fires when a counter hits or exceeds a threshold within a time window.
+    """
+
+    def __init__(self) -> None:
+        import time as _time
+        self._time = _time
+        # key → list of timestamps
+        self._events: dict[str, list[float]] = {}
+
+    def record(self, key: str) -> int:
+        """Record an event occurrence and return the current window count."""
+        now = self._time.monotonic()
+        self._events.setdefault(key, []).append(now)
+        return self._count(key, window_secs=3600)
+
+    def check(
+        self,
+        key: str,
+        threshold: int,
+        window_secs: int = 3600,
+    ) -> bool:
+        """Return True if count in window >= threshold."""
+        now = self._time.monotonic()
+        events = self._events.get(key, [])
+        # Keep only events within window
+        cutoff = now - window_secs
+        recent = [t for t in events if t >= cutoff]
+        self._events[key] = recent
+        return len(recent) >= threshold
+
+    def _count(self, key: str, window_secs: int = 3600) -> int:
+        import time as _time
+        now = _time.monotonic()
+        return sum(1 for t in self._events.get(key, []) if t >= now - window_secs)
+
+    def reset(self, key: str) -> None:
+        self._events.pop(key, None)
+
+
+class WindowAggregateEvaluator:
+    """Time-window aggregation evaluator (sum/avg/max/min) against a threshold.
+
+    Production implementation would use Redis sorted sets.
+    """
+
+    AGGREGATIONS = {
+        "sum": sum,
+        "avg": lambda vals: sum(vals) / len(vals) if vals else 0.0,
+        "max": max,
+        "min": min,
+        "count": len,
+    }
+
+    def __init__(self) -> None:
+        import time as _time
+        self._time = _time
+        # key → list of (timestamp, value)
+        self._values: dict[str, list[tuple[float, float]]] = {}
+
+    def record(self, key: str, value: float) -> None:
+        """Record a metric sample."""
+        now = self._time.monotonic()
+        self._values.setdefault(key, []).append((now, value))
+
+    def check(
+        self,
+        key: str,
+        threshold: float,
+        aggregation: str = "avg",
+        window_secs: int = 300,
+        comparison: str = ">",
+    ) -> bool:
+        """Return True if the aggregate of values in window meets the threshold condition."""
+        now = self._time.monotonic()
+        cutoff = now - window_secs
+        pairs = [(t, v) for t, v in self._values.get(key, []) if t >= cutoff]
+        self._values[key] = pairs
+
+        if not pairs:
+            return False
+
+        values = [v for _, v in pairs]
+        agg_fn = self.AGGREGATIONS.get(aggregation, self.AGGREGATIONS["avg"])
+        aggregate = agg_fn(values)  # type: ignore[operator]
+
+        ops = {">": aggregate > threshold, ">=": aggregate >= threshold,
+               "<": aggregate < threshold, "<=": aggregate <= threshold,
+               "==": aggregate == threshold}
+        return ops.get(comparison, False)
+
+
+class CompoundTriggerEvaluator:
+    """Evaluate AND/OR/NOT logic over multiple condition results.
+
+    Each condition is identified by a string key and a boolean current state.
+    """
+
+    def evaluate_compound(
+        self,
+        logic: str,
+        states: dict[str, bool],
+    ) -> bool:
+        """
+        Evaluate compound logic.
+
+        logic: 'AND' | 'OR' | 'NOT'
+        states: mapping of condition_id → bool (current state)
+        """
+        values = list(states.values())
+        if not values:
+            return False
+
+        if logic.upper() == "AND":
+            return all(values)
+        if logic.upper() == "OR":
+            return any(values)
+        if logic.upper() == "NOT":
+            # NOT applies to first condition
+            return not values[0]
+        # Default: AND
+        return all(values)

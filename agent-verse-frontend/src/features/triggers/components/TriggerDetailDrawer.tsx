@@ -1,7 +1,9 @@
-import { X, Clock, Zap, RefreshCw } from 'lucide-react';
-import type { Trigger, TriggerEvent } from '../types';
+import { X, Zap, RefreshCw } from 'lucide-react';
+import type { Trigger } from '../types';
 import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY } from '../types';
-import { useTriggerEvents, useSimulateTrigger, useFireTriggerNow } from '../hooks';
+import { useSimulateTrigger, useFireTriggerNow } from '../hooks';
+import { TriggerStatusBadge } from './TriggerStatusBadge';
+import { TriggerHistoryPanel } from './TriggerHistoryPanel';
 
 interface TriggerDetailDrawerProps {
   trigger: Trigger;
@@ -9,11 +11,9 @@ interface TriggerDetailDrawerProps {
 }
 
 export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerProps) {
-  const { data: events, isLoading: eventsLoading } = useTriggerEvents(trigger.schedule_id);
+  const family = TRIGGER_TYPE_FAMILY[trigger.spec.trigger_type];
   const simulate = useSimulateTrigger();
   const fireNow = useFireTriggerNow();
-
-  const family = TRIGGER_TYPE_FAMILY[trigger.spec.trigger_type];
 
   return (
     <div
@@ -41,6 +41,9 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
             <h2 className="mt-1 text-base font-semibold">
               {trigger.spec.name ?? 'Trigger Detail'}
             </h2>
+            <div className="mt-1">
+              <TriggerStatusBadge paused={trigger.paused} />
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -108,35 +111,7 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
 
           {/* Events */}
           <Section title="Recent Events">
-            {eventsLoading ? (
-              <div className="space-y-2">
-                {[1, 2].map((i) => <div key={i} className="h-8 rounded-lg bg-muted animate-pulse" />)}
-              </div>
-            ) : !events?.length ? (
-              <p className="text-sm text-muted-foreground">No events yet.</p>
-            ) : (
-              <div className="space-y-1.5 max-h-52 overflow-y-auto">
-                {events.map((ev: TriggerEvent) => (
-                  <div
-                    key={ev.event_id}
-                    className="flex items-center gap-3 rounded-lg bg-muted/50 px-3 py-2 text-xs"
-                  >
-                    <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
-                    <span className="text-muted-foreground">{new Date(ev.fired_at).toLocaleString()}</span>
-                    {ev.goal_id_created && (
-                      <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                        → {ev.goal_id_created.slice(0, 8)}…
-                      </span>
-                    )}
-                    {ev.simulated && (
-                      <span className="rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 px-1.5 py-0.5">
-                        sim
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <TriggerHistoryPanel scheduleId={trigger.schedule_id} />
           </Section>
         </div>
 

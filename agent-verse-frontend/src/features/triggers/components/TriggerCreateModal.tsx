@@ -6,6 +6,12 @@ import { useCreateTrigger } from '../hooks';
 import { TimeFamilyForm } from './families/TimeFamilyForm';
 import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
 import { WebhookFamilyForm } from './families/WebhookFamilyForm';
+import { ConversationalFamilyForm } from './families/ConversationalFamilyForm';
+import { ConditionFamilyForm } from './families/ConditionFamilyForm';
+import { DataFamilyForm } from './families/DataFamilyForm';
+import { MonitoringFamilyForm } from './families/MonitoringFamilyForm';
+import { IoTFamilyForm } from './families/IoTFamilyForm';
+import { PollingFamilyForm } from './families/PollingFamilyForm';
 import { GenericFamilyForm } from './families/GenericFamilyForm';
 
 type Step = 'family' | 'type' | 'config' | 'confirm';
@@ -144,7 +150,25 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
               {selectedFamily === 'webhook' && (
                 <WebhookFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
               )}
-              {!['time', 'goal_chain', 'webhook'].includes(selectedFamily) && (
+              {selectedFamily === 'conversational' && (
+                <ConversationalFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'state_condition' && (
+                <ConditionFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'data' && (
+                <DataFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'monitoring' && (
+                <MonitoringFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'iot' && (
+                <IoTFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {selectedFamily === 'ml_signal' && (
+                <PollingFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
+              )}
+              {!['time', 'goal_chain', 'webhook', 'conversational', 'state_condition', 'data', 'monitoring', 'iot', 'ml_signal'].includes(selectedFamily) && (
                 <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
               )}
 
