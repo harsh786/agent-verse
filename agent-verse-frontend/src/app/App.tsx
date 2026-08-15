@@ -33,6 +33,8 @@ const BuilderPage = lazy(() => import("@/features/builder/BuilderPage"));
 const SkillsPage = lazy(() => import('@/features/skills/SkillsPage'));
 const ModelControlCenter = lazy(() => import('@/features/models/ModelControlCenter').then(m => ({ default: m.ModelControlCenter })));
 const GraphExplorerPage = lazy(() => import('@/features/knowledge-graph/GraphExplorerPage').then(m => ({ default: m.GraphExplorerPage })));
+const AdminPage = lazy(() => import('@/features/admin/AdminPage'));
+const SecurityCenterPage = lazy(() => import('@/features/security/SecurityCenterPage'));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -65,6 +67,7 @@ import { AnalyticsDashboardPage } from "@/features/analytics/AnalyticsDashboardP
 import SimulationPage from "@/features/simulation/SimulationPage";
 import AuditExplorerPage from "@/features/audit/AuditExplorerPage";
 import RpaLivePage from "@/features/rpa/RpaLivePage";
+import OcrPage from "@/features/ocr/OcrPage";
 import { MemoryExplorerPage } from "@/features/memory/MemoryExplorerPage";
 import { ArtifactsBrowserPage } from "@/features/artifacts/ArtifactsBrowserPage";
 import { ToolsPage } from "@/features/tools/ToolsPage";
@@ -226,6 +229,7 @@ export default function App() {
         <Route path="simulation"            element={rb("Simulation",     <SimulationPage />)} />
         <Route path="audit"                 element={rb("Audit Explorer", <AuditExplorerPage />)} />
         <Route path="rpa/live"              element={rb("RPA Live",       <RpaLivePage />)} />
+        <Route path="ocr"                   element={rb("OCR Extraction", <OcrPage />)} />
         <Route path="memory"                element={rb("Memory",         <MemoryExplorerPage />)} />
         <Route path="artifacts"             element={rb("Artifacts",      <ArtifactsBrowserPage />)} />
         <Route path="tools"                 element={rb("Tools",          <ToolsPage />)} />
@@ -245,6 +249,8 @@ export default function App() {
         <Route path="builder"               element={lazy_rb("Builder",       <BuilderPage />)} />
         <Route path="models"                element={lazy_rb("Model Registry", <ModelControlCenter />)} />
         <Route path="knowledge-graph"       element={lazy_rb("Knowledge Graph", <GraphExplorerPage />)} />
+        <Route path="admin"                 element={lazy_rb("Admin",          <AdminPage />)} />
+        <Route path="security"              element={lazy_rb("Security Center", <SecurityCenterPage />)} />
         <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>
