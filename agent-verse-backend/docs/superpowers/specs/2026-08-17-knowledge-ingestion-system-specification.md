@@ -4394,3 +4394,594 @@ TESTS:
 *SUPPLEMENT E added: 2026-08-17 — Generic Framework Architecture & Code File Map*
 *Covers: BaseConnector ABC, ConnectorRegistry, IngestionPipeline, migration path,*
 *RAG integration wiring, KnowledgeIngestTool, 30+ additional source sub-types*
+
+---
+
+## SUPPLEMENT F — AI Organization Team Integration
+
+> **The missing link:** Every AI agent in the AI Organization OS has a *Knowledge Profile*
+> — a set of knowledge sources it reads from. This supplement defines how the ingestion
+> system maps sources to agents, departments, and teams across the entire AI Organization OS.
+
+### F.1 Knowledge Profile per Agent Role
+
+Every agent role in the AI Organization OS (456 roles, 22 departments) has a
+`KnowledgeProfile` that declares which source families and collections it needs:
+
+```python
+@dataclass
+class AgentKnowledgeProfile:
+    """Declares which knowledge sources an agent role should have access to."""
+    role_id:            str
+    department:         str
+    collection_ids:     list[str]   # collections this agent queries
+    source_families:    list[str]   # SourceFamily values it has read access to
+    auto_ingest_tags:   list[str]   # sources tagged with these are auto-added
+    rag_strategy:       str = "hybrid"
+    max_context_chunks: int = 10
+```
+
+**Example profiles across departments:**
+
+| Department | Agent Role | Source Families | Key Sources |
+|-----------|-----------|----------------|-------------|
+| **Sales** | Sales Agent | `crm_erp`, `communication`, `web` | Salesforce, HubSpot, Slack, competitor web |
+| **Engineering** | Code Review Agent | `code_repository`, `document_store`, `web` | GitHub, Confluence, Jira, arXiv |
+| **HR** | HR Agent | `crm_erp`, `document_store`, `communication` | Workday, SharePoint, Slack, BambooHR |
+| **Finance** | Finance Agent | `crm_erp`, `object_storage`, `olap_database` | QuickBooks, S3 reports, Snowflake |
+| **Marketing** | Campaign Agent | `communication`, `web`, `crm_erp` | HubSpot, Slack, website analytics |
+| **Legal** | Legal Agent | `scientific`, `document_store`, `object_storage` | CourtListener, SEC EDGAR, GDrive legal |
+| **Support** | Support Agent | `support`, `document_store`, `communication` | Zendesk, Confluence KB, Slack |
+| **Data** | Analytics Agent | `olap_database`, `object_storage`, `streaming` | Snowflake, S3, Kafka |
+| **Security** | SecOps Agent | `observability`, `code_repository`, `scientific` | Sentry, PagerDuty, GitHub, CVE feeds |
+| **Operations** | SRE Agent | `observability`, `streaming`, `iot_telemetry` | PagerDuty, Grafana, Prometheus, MQTT |
+
+### F.2 Multi-Collection Routing Rules
+
+When a source is ingested, chunks are routed to one or more collections based on rules:
+
+```python
+@dataclass
+class CollectionRoutingRule:
+    """Route ingested chunks to specific collections based on source properties."""
+    source_family:    str | None = None    # e.g. "crm_erp"
+    source_type:      str | None = None    # e.g. "salesforce"
+    source_tags:      list[str] = field(default_factory=list)  # ["sales", "crm"]
+    target_collections: list[str] = field(default_factory=list)  # collection IDs
+    copy_mode:        str = "reference"   # "reference" (shared) | "copy" (isolated)
+    # "reference": all agents share the same chunk (cost-efficient)
+    # "copy": agent gets its own chunk copy (for ACL isolation)
+
+# Example routing rules:
+ROUTING_RULES = [
+    CollectionRoutingRule(source_type="salesforce",   target_collections=["sales-col", "marketing-col"]),
+    CollectionRoutingRule(source_type="github",       target_collections=["engineering-col", "security-col"]),
+    CollectionRoutingRule(source_family="observability", target_collections=["ops-col", "security-col"]),
+    CollectionRoutingRule(source_tags=["finance"],    target_collections=["finance-col"]),
+    CollectionRoutingRule(source_type="slack",        target_collections=["all-agents-col"]),  # org-wide
+]
+```
+
+### F.3 Department Knowledge Bootstrap
+
+When a new tenant onboards, their AI Organization is bootstrapped with default sources:
+
+```python
+DEPARTMENT_DEFAULT_SOURCES: dict[str, list[dict]] = {
+    "engineering": [
+        {"source_type": "github",       "name": "Engineering GitHub"},
+        {"source_type": "confluence",   "name": "Engineering Wiki"},
+        {"source_type": "jira",         "name": "Engineering Tickets"},
+        {"source_type": "pagerduty",    "name": "Incidents"},
+    ],
+    "sales": [
+        {"source_type": "salesforce",   "name": "CRM Data"},
+        {"source_type": "slack",        "name": "Sales Slack"},
+        {"source_type": "hubspot",      "name": "Marketing"},
+    ],
+    "support": [
+        {"source_type": "zendesk",      "name": "Support Tickets"},
+        {"source_type": "confluence",   "name": "Knowledge Base"},
+    ],
+}
+
+async def bootstrap_department_knowledge(
+    tenant_id: str,
+    department: str,
+    credentials: dict,
+) -> list[str]:
+    """Create default sources for a department on AI Org bootstrap."""
+    source_ids = []
+    for source_def in DEPARTMENT_DEFAULT_SOURCES.get(department, []):
+        config = SourceConfig(
+            tenant_id=tenant_id,
+            family=detect_family(source_def["source_type"]),
+            source_type=source_def["source_type"],
+            name=source_def["name"],
+            connection_config=credentials.get(source_def["source_type"], {}),
+        )
+        source_id = await source_config_store.create(config)
+        source_ids.append(source_id)
+    return source_ids
+```
+
+### F.4 NLScheduler for Ingestion
+
+The NLScheduler (already in the trigger framework for all 58 trigger types) is extended to parse natural-language ingestion schedules:
+
+```python
+NL_INGESTION_EXAMPLES = {
+    "Ingest our Slack workspace daily at 9am":
+        {"source_type": "slack", "sync_mode": "incremental",
+         "sync_schedule": "0 9 * * *"},
+
+    "Sync Salesforce every hour":
+        {"source_type": "salesforce", "sync_mode": "incremental",
+         "sync_interval_seconds": 3600},
+
+    "Stream Kafka topic events in real-time":
+        {"source_type": "kafka", "sync_mode": "streaming"},
+
+    "Full re-index our GitHub repos every weekend":
+        {"source_type": "github", "sync_mode": "full",
+         "sync_schedule": "0 2 * * 0"},
+
+    "Monitor S3 bucket for new files as they arrive":
+        {"source_type": "s3", "sync_mode": "streaming",
+         "notification_mode": "sqs_event"},
+
+    "Crawl our documentation site weekly":
+        {"source_type": "web_crawl", "sync_mode": "incremental",
+         "sync_schedule": "0 3 * * 1"},
+}
+# NLScheduler.parse("Ingest our Slack workspace daily at 9am")
+# → SourceConfig(source_type="slack", sync_mode="incremental", cron="0 9 * * *")
+```
+
+### F.5 Knowledge-Aware Agent Execution
+
+When an agent executes a goal, it automatically queries its department's collection:
+
+```python
+# In smart_context_fetch (existing function):
+async def smart_context_fetch(
+    *,
+    goal: str,
+    step: str,
+    tenant_ctx: TenantContext,
+    agent_id: str = "",              # NEW: look up agent's profile
+    collection_ids: list[str] | None = None,
+    ...
+) -> str:
+    # If collection_ids not explicit, resolve from agent's KnowledgeProfile
+    if not collection_ids and agent_id:
+        profile = await get_agent_knowledge_profile(agent_id, tenant_ctx)
+        collection_ids = profile.collection_ids
+
+    # Apply ACL filter: only chunks this agent can access
+    acl_filter = {"allowed_roles": tenant_ctx.role} if hasattr(tenant_ctx, "role") else {}
+    ...
+```
+
+### F.6 AI Org Knowledge Topology
+
+```mermaid
+graph TD
+    subgraph SOURCES["~200 Source Connectors"]
+        SF[Salesforce]
+        GH[GitHub]
+        ZD[Zendesk]
+        SL[Slack]
+        SNF[Snowflake]
+        PD[PagerDuty]
+    end
+
+    subgraph COLLECTIONS["Knowledge Collections (per dept)"]
+        SALES[sales-collection]
+        ENG[engineering-collection]
+        SUP[support-collection]
+        ORG[org-wide-collection]
+        DATA[data-collection]
+        OPS[ops-collection]
+    end
+
+    subgraph AGENTS["AI Org Agents"]
+        SA[Sales Agent]
+        CA[Code Review Agent]
+        SUA[Support Agent]
+        DAA[Data Agent]
+        SRE[SRE Agent]
+    end
+
+    SF --> SALES
+    SF --> ORG
+    GH --> ENG
+    ZD --> SUP
+    SL --> ORG
+    SNF --> DATA
+    PD --> OPS
+
+    SALES --> SA
+    ENG --> CA
+    SUP --> SUA
+    DATA --> DAA
+    OPS --> SRE
+    ORG --> SA
+    ORG --> CA
+    ORG --> SUA
+```
+
+---
+
+## SUPPLEMENT G — Missing Engineering Principles (World-Class Additions)
+
+The original 13 laws + 5 quality + 8 security principles cover core requirements.
+These 12 additional principles ensure the framework is truly world-class:
+
+### G.1 Distributed Locking (LAW-14)
+
+```
+LAW-14  No duplicate ingestion jobs
+        Before starting a source sync job, acquire a distributed lock:
+          key = f"ingestion_lock:{tenant_id}:{source_id}"
+          TTL = max_job_duration (24h for full sync, 1h for incremental)
+        If lock is already held → skip (another worker is syncing this source)
+        Redis SETNX used; lock auto-expires if worker crashes
+```
+
+```python
+async def start_ingestion_job(source_id: str, tenant_id: str) -> bool:
+    lock_key = f"ingestion_lock:{tenant_id}:{source_id}"
+    acquired = await redis.set(lock_key, "1", nx=True, ex=3600)
+    if not acquired:
+        _log.info("ingestion_skipped_locked source_id=%s", source_id)
+        return False
+    # ... run ingestion job
+    await redis.delete(lock_key)  # Release on completion
+    return True
+```
+
+### G.2 Idempotent Job Scheduling (LAW-15)
+
+```
+LAW-15  Celery task idempotency
+        All ingestion tasks have a stable task_id:
+          task_id = f"ingest:{tenant_id}:{source_id}:{date_bucket}"
+        If Celery already has a task with this ID pending/running → do not enqueue
+        date_bucket = hour for streaming, day for incremental
+```
+
+### G.3 Distributed Tracing Propagation (LAW-16)
+
+```
+LAW-16  Trace context propagated across system boundaries
+        When a trigger fires an ingestion job:
+          - OTel trace context from trigger span propagated to ingestion task
+          - Trace flows: TriggerDispatcher → IngestionScheduler → IngestionPipeline
+          - All ingestion spans linked to the originating trigger span
+          - W3C TraceContext headers used for cross-service propagation
+```
+
+### G.4 Correlation IDs (LAW-17)
+
+```
+LAW-17  Every document has a correlation_id tracking its full journey
+        correlation_id = UUID generated at connector.get_delta() yield time
+        Appears in:
+          - IngestionJob.docs[].correlation_id
+          - Every pipeline stage log line
+          - Chunk metadata (for reverse lookup)
+          - DLQ entry (to trace failures back to source event)
+```
+
+### G.5 Event Sourcing for Ingestion Audit (LAW-18)
+
+```
+LAW-18  All ingestion state changes as immutable events
+        Table: ingestion_events (append-only)
+          event_type: job_started | doc_received | doc_indexed | doc_failed |
+                      job_completed | cursor_advanced | source_disabled | ...
+          event_data: JSONB
+          occurred_at: TIMESTAMPTZ
+        Never UPDATE ingestion state directly — always append an event
+        Current state reconstructed by replaying events (event sourcing)
+```
+
+### G.6 SLA Contracts per Plan Tier (LAW-19)
+
+```
+LAW-19  Explicit SLA per plan tier (measurable, alertable)
+
+  Plan          | Time-to-first-chunk | Incremental lag | Full sync time
+  free          | < 5 min             | < 24h           | < 1h
+  starter       | < 2 min             | < 1h            | < 30min
+  professional  | < 30s               | < 5min          | < 5min
+  enterprise    | < 5s                | < 1min          | < 1min (partial)
+
+Prometheus alert fires if SLA breach detected for any active tenant.
+SLA reported in API response headers:
+  X-Ingestion-SLA-Plan: professional
+  X-Ingestion-Queue-Depth: 3
+  X-Ingestion-ETA-Seconds: 45
+```
+
+### G.7 Feature Flags per Connector (LAW-20)
+
+```
+LAW-20  Every new connector gated by a feature flag
+        Flags stored in Settings (app/core/config.py):
+          ingestion_connector_s3_enabled: bool = False
+          ingestion_connector_kafka_enabled: bool = False
+          ingestion_connector_snowflake_enabled: bool = False
+          ...
+        Dark-launch pattern: deploy connector, enable for 1% of tenants,
+        ramp to 100% over 2 weeks, remove flag after stable.
+        Plan restrictions also enforced via feature flags:
+          ingestion_streaming_min_plan: str = "professional"
+```
+
+### G.8 Health Probes per Connector (LAW-21)
+
+```
+LAW-21  Every registered connector has a health probe endpoint
+        GET /api/v1/sources/{id}/health
+        Response: ConnectionHealth(ok, latency_ms, error, metadata)
+        Used by:
+          - Frontend (before creating source)
+          - Scheduled health check (every 5 min for active sources)
+          - Circuit breaker reset decision (probe in half_open state)
+          - Kubernetes readiness probe for ingestion workers
+```
+
+### G.9 Dry-Run Mode (LAW-22)
+
+```
+LAW-22  Every ingestion job supports dry-run mode
+        dry_run=True: runs stages 1-9 (parse, PII, quality, chunk)
+                      skips stages 10-13 (embed, dedup, index, emit)
+        Returns: {chunks_would_create: N, tokens_estimate: K,
+                  cost_estimate_usd: $X, pii_detected: [...]}
+        Used for:
+          - Cost estimation before full sync
+          - Testing connector config without consuming embedding budget
+          - QA validation of new parsers
+```
+
+### G.10 Semantic Cache Invalidation (LAW-23)
+
+```
+LAW-23  Semantic cache invalidated on ingestion completion
+        After Stage 13 (Emit):
+          invalidation_keys = [
+            f"sem_cache:{tenant_id}:{collection_id}:*",  # all queries for this collection
+          ]
+          await redis.delete(*invalidation_keys)
+        Only query caches for the updated collection are cleared.
+        Other collections' caches are untouched.
+        TTL-based expiry (5 min) is the fallback if Redis flush fails.
+```
+
+### G.11 CQRS Separation (LAW-24)
+
+```
+LAW-24  Read and write models are separated
+        Write model (ingestion): source_configs, ingestion_jobs, ingestion_dlq
+        Read models (retrieval):
+          - indexed_documents (document-level metadata)
+          - knowledge_chunks_{dim} (chunk embeddings, queried by RAG engine)
+          - BM25 corpus index (text search)
+          - Graph nodes (entity relationships)
+        Never join write model tables in retrieval queries.
+        Ingestion jobs DO NOT lock retrieval tables.
+```
+
+### G.12 Chaos Engineering Support (LAW-25)
+
+```
+LAW-25  Ingestion pipeline supports controlled fault injection
+        In staging/testing environments:
+          INGESTION_CHAOS_FAIL_STAGE=embed  # force embed stage to fail
+          INGESTION_CHAOS_FAIL_PCT=20       # fail 20% of documents
+          INGESTION_CHAOS_SLOW_MS=5000      # add 5s latency to parse stage
+        Uses TriggerChaosHarness pattern from the trigger framework.
+        Purpose: validate circuit breaker, DLQ, and retry behaviour
+        under realistic failure conditions before production rollout.
+```
+
+---
+
+## SUPPLEMENT H — Complete Integration Verification Checklist
+
+This is the definitive checklist verifying all integrations are spec'd:
+
+### H.1 Knowledge System Integration
+
+```
+- [x] Chunks persisted via KnowledgeStore.ingest_chunks_async()
+- [x] Chunks carry: source_id, source_type, source_url, content_hash
+- [x] Quality score per chunk (quality_gate stage)
+- [x] PII redaction flag per chunk
+- [x] ACL propagated from source to chunk
+- [x] Freshness TTL per source family
+- [x] Content version tracking (hash-based change detection)
+- [x] Deletion propagation (GDPR compliant)
+- [x] Re-embedding on model change
+- [x] Collection-level organisation (multi-collection routing)
+- [x] Cross-source deduplication (same content from different sources)
+- [x] Embedding model routing per content type (code/text/multimodal)
+```
+
+### H.2 RAG System Integration
+
+```
+- [x] RAG strategy selected per source type (HYBRID, COLBERT, GRAPH, etc.)
+- [x] Hybrid search: pgvector ANN + BM25 + FTS + trigram fusion
+- [x] smart_context_fetch() enriched with source_url, source_type citations
+- [x] Agent-scoped collection lookup via KnowledgeProfile
+- [x] Real-time semantic cache invalidation on new ingestion
+- [x] GraphRAG for code/graph/entity-rich sources (Neo4j, GitHub)
+- [x] RAPTOR hierarchical chunking for long documents (PDFs, books)
+- [x] Parent-child chunking for PDFs with structure
+- [x] ColBERT for code search (precise token matching)
+- [x] Self-RAG for agent-generated knowledge (verification pass)
+```
+
+### H.3 Workflow Engine Integration
+
+```
+- [x] knowledge.ingest tool registered in agent tool registry
+- [x] Workflow step: ingest URL before analysis
+- [x] Workflow step: ingest S3 path after file upload
+- [x] wait_for_completion=true blocks workflow step until indexed
+- [x] Ingestion job_id returned as step output (for next-step use)
+- [x] Workflow can depend on ingestion step (depends_on: [ingest_step])
+- [x] Failed ingestion → workflow step fails → DLQ + retry
+- [x] Cost of ingestion tracked in workflow cost budget
+```
+
+### H.4 AI Organization Team Integration
+
+```
+- [x] KnowledgeProfile per agent role (456 roles, 22 departments)
+- [x] Department default source bootstrap on AI Org creation
+- [x] Collection routing rules (source_type → department collections)
+- [x] Multi-collection routing (single source → multiple agent collections)
+- [x] ACL enforcement at retrieval (agent reads only its collections)
+- [x] NLScheduler for ingestion ("sync Salesforce every hour")
+- [x] AI Org knowledge topology diagram (SUPPLEMENT F.6)
+- [x] Cross-agent shared collections (org-wide Slack, all-agents)
+- [x] Department-scoped knowledge isolation
+```
+
+### H.5 Trigger System Integration
+
+```
+- [x] SourceConfig.sync_mode=streaming auto-creates trigger subscription
+- [x] S3_EVENT trigger → immediate single-doc ingestion
+- [x] DB_ROW_CHANGE trigger → incremental row ingestion
+- [x] GITHUB_WEBHOOK trigger → re-ingest changed files only
+- [x] SLACK_EVENT → near-real-time message ingestion
+- [x] AGENT_GENERATED → goal output auto-ingested on goal.completed
+- [x] Trigger → Ingestion trace propagation (OTel, LAW-16)
+- [x] knowledge.updated Redis event → downstream trigger support
+  (e.g. "when new S3 file is indexed → run analysis workflow")
+- [x] NLScheduler parses ingestion schedules from natural language
+- [x] Rate limiting: max ingestion triggers per hour per tenant
+```
+
+### H.6 Engineering Principles Coverage
+
+```
+Core Laws (13):
+- [x] LAW-01: Single pipeline path
+- [x] LAW-02: Idempotency (content hash)
+- [x] LAW-03: Incremental by default
+- [x] LAW-04: Tenant isolation (RLS)
+- [x] LAW-05: Provenance immutability
+- [x] LAW-06: PII before embedding
+- [x] LAW-07: ACL propagation
+- [x] LAW-08: Schema-versioned embeddings
+- [x] LAW-09: Priority queue routing
+- [x] LAW-10: Back-pressure
+- [x] LAW-11: Never block event loop
+- [x] LAW-12: Observability at every stage
+- [x] LAW-13: No credentials in logs/spans
+
+World-Class Additions (12):
+- [x] LAW-14: Distributed locking (no duplicate jobs)
+- [x] LAW-15: Idempotent job scheduling (Celery dedup)
+- [x] LAW-16: Distributed trace propagation (trigger → ingest)
+- [x] LAW-17: Correlation IDs (full journey tracking)
+- [x] LAW-18: Event sourcing (immutable ingestion events)
+- [x] LAW-19: SLA contracts per plan tier (5s/30s/2min/5min)
+- [x] LAW-20: Feature flags per connector (dark launch)
+- [x] LAW-21: Health probes per connector
+- [x] LAW-22: Dry-run mode (cost estimation)
+- [x] LAW-23: Semantic cache invalidation
+- [x] LAW-24: CQRS (read/write model separation)
+- [x] LAW-25: Chaos engineering support
+
+Quality Principles (5): [x] all covered in PART 2.2
+Security Principles (8): [x] all covered in PART 2.3
+Resilience Patterns (12): [x] all covered in PART 9
+```
+
+### H.7 Source Coverage Summary
+
+| Source Status | Count |
+|--------------|-------|
+| ✅ EXISTS in codebase (ingestors/connectors) | 9 |
+| 📄 Detailed connector spec (PART 19) | 17 |
+| 📋 Catalogued in 18 families (~200 sources) | ~200 |
+| ➕ Additional sub-types (SUPPLEMENT E.9) | 30+ |
+| **Total source types covered in spec** | **~230+** |
+| Families: | 18 |
+| Missing from spec: | **0** |
+
+### H.8 File Delivery Checklist (Implementation-Ready)
+
+When implementation starts, these files must be created in order:
+
+```
+PHASE 1 — Framework Core (prerequisite for all connectors):
+  1. app/ingestion/source_config.py        ← SourceConfig, RawDocument, IngestionJob
+  2. app/ingestion/base_connector.py       ← BaseConnector ABC
+  3. app/ingestion/connector_registry.py   ← @register decorator
+  4. app/ingestion/pipeline.py             ← 13-stage IngestionPipeline
+  5. app/ingestion/job_tracker.py          ← cursor + status persistence
+  6. app/db/migrations/0108_ingestion_sources.py  ← source_configs, ingestion_jobs tables
+  7. app/db/migrations/0109_ingestion_dlq.py       ← already in 0106 — verify/reuse
+
+PHASE 2 — New Parsers (10 files):
+  8.  app/ingestion/parsers/csv_parser.py
+  9.  app/ingestion/parsers/excel_parser.py
+  10. app/ingestion/parsers/html_parser.py
+  11. app/ingestion/parsers/json_parser.py
+  12. app/ingestion/parsers/markdown_parser.py
+  13. app/ingestion/parsers/notebook_parser.py
+  14. app/ingestion/parsers/yaml_parser.py
+  15. app/ingestion/parsers/parquet_parser.py
+  16. app/ingestion/parsers/avro_parser.py
+  17. app/ingestion/parsers/latex_parser.py
+
+PHASE 3 — Migrate Existing Connectors (9 wrappers):
+  18. app/ingestion/connectors/slack_connector.py     ← wraps SlackIngestor
+  19. app/ingestion/connectors/github_connector.py    ← wraps GitHubIngestor
+  20. app/ingestion/connectors/confluence_connector.py← wraps ConfluenceIngestor
+  21. app/ingestion/connectors/jira_connector.py      ← wraps JiraIngestor
+  22. app/ingestion/connectors/gdrive_connector.py    ← migrate in place
+  23. app/ingestion/connectors/notion_connector.py    ← migrate in place
+  24. app/ingestion/connectors/sharepoint_connector.py← migrate in place
+  25. app/ingestion/connectors/pdf_connector.py       ← wraps PdfIngestor
+  26. app/ingestion/connectors/docx_connector.py      ← wraps DocxIngestor
+
+PHASE 4 — New Tier-1 Connectors:
+  27. app/ingestion/connectors/s3_connector.py
+  28. app/ingestion/connectors/snowflake_connector.py
+  29. app/ingestion/connectors/postgresql_connector.py
+  30. app/ingestion/connectors/kafka_connector.py
+  31. app/ingestion/connectors/bigquery_connector.py
+  32. app/ingestion/connectors/mongodb_connector.py
+  33. app/ingestion/connectors/web_crawl_connector.py
+
+PHASE 5 — RAG & Workflow Integration:
+  34. app/tools/knowledge_ingest_tool.py       ← knowledge.ingest agent tool
+  35. app/api/ingestion.py                      ← 38 REST endpoints
+  36. app/ingestion/scheduler.py               ← Celery beat integration
+  37. app/ingestion/knowledge_profile.py       ← KnowledgeProfile per agent role
+
+PHASE 6 — Tests (~800 target):
+  38. tests/ingestion/test_pipeline.py         ← 8 pipeline stage tests
+  39. tests/ingestion/test_base_connector.py   ← contract tests
+  40. tests/ingestion/connectors/test_s3.py    ← 7 tests per connector
+  41. tests/ingestion/connectors/test_snowflake.py
+  42. ... (1 test file per connector)
+  43. tests/ingestion/test_e2e.py              ← S3 → pipeline → RAG → agent E2E
+```
+
+---
+
+*Final re-audit completed: 2026-08-17*
+*Spec now covers: 28 PARTS + SUPPLEMENTS A–H*
+*Total: 25 engineering laws, 12 resilience patterns, ~230+ sources*
+*All integrations verified: Knowledge ✅ RAG ✅ Workflows ✅ AI Org ✅ Triggers ✅*
