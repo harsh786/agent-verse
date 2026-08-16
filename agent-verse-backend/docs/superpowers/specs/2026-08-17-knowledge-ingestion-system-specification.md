@@ -2233,9 +2233,1396 @@ stateDiagram-v2
 
 ---
 
-*Specification created: 2026-08-17*
+*Specification created: 2026-08-17 | Re-audited & extended: 2026-08-17*
 *Target: ~200 ingestion sources, 18 families*
 *Pipeline: 13 stages, 12 resilience patterns*
 *API: 38 endpoints*
-*Frontend: 14 family forms, 10 components, full animation system*
+*Frontend: 14 family forms, 14 components, full animation system*
 *Testing: ~800 tests*
+
+---
+
+## PART 23 — Deletion Propagation & GDPR Right-to-Erasure
+
+### 23.1 Deletion Triggers
+
+A document may need to be removed from the knowledge store when:
+
+| Trigger | Source | Action |
+|---------|--------|--------|
+| Source-side delete | CDC event / webhook DELETE | Hard delete chunks from all indexes |
+| Connector notifies deletion | `BaseConnector.delete_doc()` | Same as above |
+| Tenant-initiated purge | `DELETE /api/v1/ingestion/documents/{id}` | Hard delete + audit log |
+| GDPR erasure request | Admin API | Erase all chunks matching subject_id |
+| TTL expiry | Freshness scheduler | Soft-delete, then sweep |
+| Source config deleted | `DELETE /api/v1/sources/{id}` | Cascade delete ALL docs + chunks |
+
+### 23.2 Deletion Pipeline
+
+```
+Source DELETE event
+  │
+  ├─► DeletionJob created in ingestion_jobs (type=deletion)
+  │
+  ├─► Stage 1: Find all chunks by (tenant_id, source_id, doc_id)
+  │         SELECT id FROM chunks WHERE tenant_id=$t AND doc_id=$d
+  │
+  ├─► Stage 2: Delete from pgvector
+  │         DELETE FROM chunks WHERE id = ANY($chunk_ids)
+  │
+  ├─► Stage 3: Delete from BM25 index
+  │         remove_documents(chunk_ids)
+  │
+  ├─► Stage 4: Delete from graph nodes (if entity extracted)
+  │         DELETE nodes WHERE source_doc_id = $doc_id
+  │
+  ├─► Stage 5: Update indexed_documents
+  │         DELETE FROM indexed_documents WHERE doc_id=$d AND source_id=$s
+  │
+  └─► Stage 6: Emit knowledge.deleted event (Redis pub/sub)
+              → invalidate semantic cache entries for this source
+```
+
+### 23.3 GDPR Right-to-Erasure (Article 17)
+
+```python
+class GDPRErasureRequest:
+    """Erase all personal data for a given subject from the knowledge store."""
+
+    async def erase(self, subject_id: str, tenant_id: str) -> ErasureReport:
+        # 1. Find all chunks where subject_id appears in metadata
+        chunks = await find_chunks_by_subject(subject_id, tenant_id)
+
+        # 2. Option A: Delete chunk entirely (hard erase)
+        # Option B: Redact PII fields in chunk text (soft erase)
+        # Default: hard erase for compliance certainty
+
+        # 3. Audit trail: record erasure event (immutable)
+        await write_erasure_audit(subject_id, len(chunks), tenant_id)
+
+        # 4. Return report: how many chunks erased, which sources
+        return ErasureReport(
+            subject_id=subject_id,
+            chunks_erased=len(chunks),
+            sources_affected=[c.source_id for c in chunks],
+            completed_at=datetime.now(UTC).isoformat()
+        )
+```
+
+### 23.4 Soft-Delete vs Hard-Delete Strategy
+
+| Scenario | Strategy | Retention |
+|----------|---------|-----------|
+| Source doc updated | Hard-delete old chunks + re-index new | 0 (replace) |
+| Source doc deleted | Hard-delete all chunks | 0 |
+| GDPR erasure | Hard-delete + audit log | Audit log: 7 years |
+| TTL expiry | Soft-delete (deleted_at set) → nightly hard-delete sweep | 24h grace |
+| Source config deleted | Cascade hard-delete all related | 0 |
+| Tenant account closed | Full data purge within 30 days | Per-plan SLA |
+
+---
+
+## PART 24 — Content Lifecycle & Freshness Management
+
+### 24.1 Freshness TTL per Source Family
+
+```python
+DEFAULT_FRESHNESS_TTL: dict[str, int] = {
+    "streaming":       900,       # 15 min — near real-time
+    "oltp_database":   3_600,     # 1 h
+    "nosql_database":  3_600,     # 1 h
+    "olap_database":   86_400,    # 24 h (analytical)
+    "communication":   3_600,     # 1 h (Slack, Teams)
+    "code_repository": 86_400,    # 24 h
+    "web":             86_400,    # 24 h
+    "file_system":     86_400,    # 24 h
+    "document_store":  86_400,    # 24 h
+    "crm_erp":         86_400,    # 24 h
+    "support":         3_600,     # 1 h (ticket urgency)
+    "iot_telemetry":   900,       # 15 min
+    "observability":   900,       # 15 min
+    "object_storage":  86_400,    # 24 h
+    "scientific":      604_800,   # 7 days (papers don't change)
+    "agent_generated": 0,         # never expire (agent learnings)
+}
+```
+
+### 24.2 Freshness Enforcement Lifecycle
+
+```
+Nightly scheduler (Celery beat):
+  1. SELECT doc_id, expires_at FROM indexed_documents
+     WHERE tenant_id=$t AND expires_at < NOW()
+     AND NOT soft_deleted
+
+  2. For each stale doc:
+     a. Check if source still exists (source_config enabled)
+     b. If source active → trigger re-sync for that doc
+     c. If source disabled → soft-delete the doc
+     d. If TTL=0 (never expire) → skip
+
+  3. Nightly sweep: hard-delete all soft-deleted docs > 24h old
+
+  4. Emit Prometheus: agentverse_ingestion_expired_docs_total
+```
+
+### 24.3 Re-embedding Strategy
+
+When the embedding model changes (schema migration):
+
+```
+Trigger: source_configs.embedding_model updated
+
+Step 1: Create re_embedding_job record
+        status = pending
+        scope = {tenant_id, source_id or ALL}
+
+Step 2: Queue Celery task: reembed_source
+        Priority: enterprise > professional > starter > free
+
+Step 3: For each chunk in the source:
+        a. Fetch original text from indexed_documents
+        b. Re-embed with new model
+        c. Update chunks SET embedding = $new_vec, model_id = $new_id
+        d. Update needs_reembedding = false
+
+Step 4: Old chunks served during migration (model_id filter at retrieval)
+
+Step 5: Emit: knowledge.reembedded (source_id, model_id, chunk_count)
+```
+
+### 24.4 Content Version Tracking
+
+When source doc is updated (not deleted):
+
+```python
+# In IngestionPipeline.ingest():
+existing = await find_by_doc_id(doc_id, source_id, tenant_id)
+
+if existing:
+    if existing.content_hash == new_content_hash:
+        # Content unchanged → update last_seen_at only (cheap)
+        await update_last_seen(existing.id)
+        return SkipResult(reason="unchanged")
+    else:
+        # Content changed → delete old chunks, index new chunks
+        await delete_chunks_for_doc(doc_id, source_id, tenant_id)
+        # Continue to full pipeline...
+        # indexed_documents.version += 1
+        # All new chunks tagged with new version
+```
+
+---
+
+## PART 25 — Cost Model & Budget Controls
+
+### 25.1 Embedding Cost Estimation
+
+```python
+EMBEDDING_COSTS_PER_1M_TOKENS: dict[str, float] = {
+    "text-embedding-3-large":  0.13,   # USD
+    "text-embedding-3-small":  0.02,
+    "text-embedding-ada-002":  0.10,
+    "voyage-code-2":           0.12,
+    "multilingual-e5-large":   0.00,   # self-hosted = free
+}
+
+def estimate_ingestion_cost(
+    doc_count: int,
+    avg_tokens_per_doc: int,
+    model_id: str = "text-embedding-3-large"
+) -> float:
+    """Estimate total embedding cost in USD."""
+    total_tokens = doc_count * avg_tokens_per_doc
+    cost_per_token = EMBEDDING_COSTS_PER_1M_TOKENS.get(model_id, 0.13) / 1_000_000
+    return round(total_tokens * cost_per_token, 4)
+```
+
+### 25.2 Budget Controls
+
+```python
+PLAN_MONTHLY_TOKEN_BUDGETS: dict[str, int | None] = {
+    "free":         1_000_000,      # 1M tokens/month
+    "starter":      50_000_000,     # 50M tokens/month
+    "professional": 500_000_000,    # 500M tokens/month
+    "enterprise":   None,           # unlimited
+}
+```
+
+**Budget enforcement:**
+1. Before each embedding batch: `TenantQuotaEnforcer.check_token_quota(batch_tokens)`
+2. If over budget: queue job as `paused_budget_exceeded`
+3. UI alert: quota bar turns red + toast notification
+4. Admin can override for enterprise
+
+### 25.3 Cost API Endpoint
+
+```
+GET /api/v1/ingestion/cost
+Response:
+{
+  "period": "2026-08",
+  "total_tokens_used": 12_400_000,
+  "total_cost_usd": 1.61,
+  "budget_tokens": 50_000_000,
+  "budget_usd": 6.50,
+  "by_source": [
+    {"source_id": "...", "source_name": "Notion", "tokens": 5_000_000, "cost_usd": 0.65},
+    ...
+  ]
+}
+```
+
+### 25.4 Cost Estimation Before Sync
+
+```
+POST /api/v1/sources/{id}/estimate-cost
+Response:
+{
+  "estimated_docs": 15_000,
+  "estimated_tokens": 7_500_000,
+  "estimated_cost_usd": 0.975,
+  "model_id": "text-embedding-3-large",
+  "warning": null  // or "Exceeds monthly budget remainder ($0.50)"
+}
+```
+
+---
+
+## PART 26 — Workflow, Trigger & RAG Integration
+
+### 26.1 Trigger-Driven Ingestion
+
+The ingestion system integrates with the trigger framework:
+
+```python
+# Trigger Type: S3_EVENT → auto-ingest new files
+# Trigger Type: DB_ROW_CHANGE → auto-ingest changed rows
+# Trigger Type: GITHUB_WEBHOOK → auto-ingest changed code
+# Trigger Type: AGENT_GENERATED → auto-ingest goal outputs
+
+# When trigger fires:
+TriggerEvent(type=S3_EVENT, payload={"bucket": "x", "key": "report.pdf"})
+    → IngestionScheduler.schedule_doc(source_id, doc_id=key, priority="immediate")
+        → Celery task: ingest_single_document
+```
+
+The `SourceConfig.sync_mode = "streaming"` automatically creates a trigger in the trigger system:
+- Object Storage → `S3_EVENT` or `GCS_NOTIFICATION` trigger
+- Databases → `DB_ROW_CHANGE` trigger
+- Communication → `SLACK_EVENT` / `TEAMS_WEBHOOK` trigger
+- Kafka → always-on Kafka consumer (not trigger-based)
+
+### 26.2 Ingestion as Workflow Step
+
+Ingestion can be invoked as a step in the workflow engine:
+
+```yaml
+# Workflow step: ingest a report before analysis
+steps:
+  - id: ingest_report
+    tool: knowledge.ingest
+    inputs:
+      source_url: "{{trigger.payload.report_url}}"
+      collection_id: "{{workflow.collection_id}}"
+      wait_for_completion: true
+
+  - id: analyze_report
+    description: "Analyze the ingested report"
+    depends_on: [ingest_report]
+```
+
+```python
+# Tool definition
+class KnowledgeIngestTool(BaseTool):
+    name = "knowledge.ingest"
+
+    async def execute(self, source_url: str, collection_id: str, wait: bool) -> dict:
+        job = await ingestion_orchestrator.ingest_url(source_url, collection_id)
+        if wait:
+            await job.wait_for_completion(timeout=300)
+        return {"job_id": job.job_id, "chunks_created": job.chunks_created}
+```
+
+### 26.3 RAG Strategy Selection per Source Type
+
+The RAG engine selects the optimal retrieval strategy based on source type:
+
+```python
+RAG_STRATEGY_BY_SOURCE: dict[str, RAGStrategy] = {
+    # Source type  →  RAG pattern
+    "s3":            RAGStrategy.HYBRID,       # Dense + BM25 (documents vary)
+    "web_crawl":     RAGStrategy.HYBRID,
+    "pdf":           RAGStrategy.PARENT_CHILD,  # PDF has structure
+    "code":          RAGStrategy.COLBERT,       # Code needs precise matching
+    "database":      RAGStrategy.FUSION,        # Multiple query reformulations
+    "kafka":         RAGStrategy.ADAPTIVE,      # Recent events need fresh context
+    "slack":         RAGStrategy.WINDOW,        # Conversations have temporal context
+    "github":        RAGStrategy.GRAPH,         # Code has relationships
+    "agent_generated": RAGStrategy.SELF_RAG,    # Agent output needs verification
+}
+```
+
+### 26.4 Real-Time Knowledge Updates to Running Agents
+
+When new chunks are indexed for a source, running agents that use that source are notified:
+
+```python
+# After Stage 13 (Emit):
+await redis.publish(
+    f"knowledge.updated.{tenant_id}",
+    json.dumps({
+        "source_id": source_id,
+        "collection_id": collection_id,
+        "chunks_added": chunk_count,
+        "doc_ids": new_doc_ids,
+    })
+)
+# Running agents with a subscription to this collection
+# can invalidate their semantic cache and re-query
+```
+
+---
+
+## PART 27 — Complete Frontend Specification
+
+### 27.1 SourceDetailPage Component Spec
+
+```tsx
+// Route: /knowledge/sources/:sourceId
+function SourceDetailPage() {
+  // 4 tabs: Overview | Documents | History | Settings
+  const [tab, setTab] = useState<"overview"|"documents"|"history"|"settings">("overview");
+
+  return (
+    <Layout>
+      <SourceHeader source={source} job={activeJob} />
+      {/* Breadcrumb: Knowledge → Sources → {source.name} */}
+      <Tabs value={tab} onChange={setTab}>
+        <Tab value="overview">
+          <SourceStatsPanel source={source} />          {/* doc count, chunk count, cost */}
+          <SyncProgressPanel job={activeJob} />          {/* SSE streaming progress */}
+          <QuotaUsageBar tenant={tenant} />
+        </Tab>
+        <Tab value="documents">
+          <DocumentBrowser sourceId={source.source_id} />
+        </Tab>
+        <Tab value="history">
+          <IngestionJobHistory sourceId={source.source_id} />
+        </Tab>
+        <Tab value="settings">
+          <SourceSettingsForm source={source} />         {/* edit config + auth */}
+          <DangerZone onDelete={handleDelete} onReindex={handleReindex} />
+        </Tab>
+      </Tabs>
+    </Layout>
+  );
+}
+```
+
+### 27.2 DocumentBrowser Component Spec
+
+```tsx
+function DocumentBrowser({ sourceId }: { sourceId: string }) {
+  // Infinite scroll list of indexed documents
+  const { data, fetchNextPage } = useInfiniteQuery(
+    ["documents", sourceId],
+    ({ pageParam }) => apiFetch(`/ingestion/documents?source_id=${sourceId}&cursor=${pageParam}`)
+  );
+
+  return (
+    <div>
+      {/* Search bar: filter docs by title/content */}
+      <SearchBar placeholder="Search indexed documents…" />
+
+      {/* Document list */}
+      {documents.map(doc => (
+        <DocumentRow key={doc.doc_id} doc={doc} onClick={setSelectedDoc} />
+      ))}
+
+      {/* ChunkInspector slide-over */}
+      {selectedDoc && (
+        <ChunkInspector docId={selectedDoc.doc_id} onClose={() => setSelectedDoc(null)} />
+      )}
+    </div>
+  );
+}
+
+function DocumentRow({ doc, onClick }) {
+  return (
+    <div className="flex items-start gap-3 p-3 border-b hover:bg-muted/30 cursor-pointer" onClick={onClick}>
+      <FileIcon mimeType={doc.content_type} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm truncate">{doc.title || doc.doc_id}</span>
+          <QualityBadge score={doc.quality_score} />
+          {doc.has_pii_redacted && <PIIBadge />}
+        </div>
+        <div className="text-xs text-muted-foreground mt-0.5">
+          {doc.chunk_count} chunks · {doc.language} · Modified {timeAgo(doc.doc_modified_at)}
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+    </div>
+  );
+}
+```
+
+### 27.3 ChunkInspector Component Spec
+
+```tsx
+function ChunkInspector({ docId, onClose }) {
+  const { data: chunks } = useQuery(["chunks", docId], () =>
+    apiFetch(`/ingestion/documents/${docId}/chunks`)
+  );
+
+  return (
+    <Drawer onClose={onClose} title="Chunk Inspector">
+      {/* Document metadata */}
+      <MetaSection doc={doc} />
+
+      {/* Chunk list with stagger animation */}
+      <div className="space-y-2 mt-4">
+        {chunks?.map((chunk, i) => (
+          <ChunkCard key={chunk.chunk_id} chunk={chunk} index={i} />
+        ))}
+      </div>
+    </Drawer>
+  );
+}
+
+function ChunkCard({ chunk, index }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.04 }}
+      className="rounded-lg border bg-card p-3"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">
+          Chunk {chunk.chunk_index + 1}/{chunk.total_chunks_in_doc}
+        </span>
+        <div className="flex gap-2">
+          <QualityBadge score={chunk.quality_score} size="sm" />
+          {chunk.has_pii_redacted && <span className="text-xs text-amber-600">🔒 PII redacted</span>}
+          <span className="text-xs text-muted-foreground">{chunk.language}</span>
+        </div>
+      </div>
+      <p className={cn("text-sm mt-2", !expanded && "line-clamp-3")}>{chunk.text}</p>
+      {chunk.text.length > 200 && (
+        <button onClick={() => setExpanded(!expanded)} className="text-xs text-primary mt-1">
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </motion.div>
+  );
+}
+```
+
+### 27.4 IngestionJobHistory Component Spec
+
+```tsx
+function IngestionJobHistory({ sourceId }) {
+  const { data: jobs } = useQuery(["jobs", sourceId], () =>
+    apiFetch(`/ingestion/jobs?source_id=${sourceId}&limit=20`)
+  );
+
+  return (
+    <div className="space-y-2">
+      {jobs?.map(job => (
+        <JobHistoryRow key={job.job_id} job={job} />
+      ))}
+    </div>
+  );
+}
+
+function JobHistoryRow({ job }) {
+  const statusColors = {
+    completed: "bg-emerald-100 text-emerald-700",
+    failed:    "bg-red-100 text-red-700",
+    running:   "bg-blue-100 text-blue-700",
+    paused:    "bg-amber-100 text-amber-700",
+  };
+  return (
+    <div className="flex items-center gap-4 p-3 rounded-lg border">
+      <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", statusColors[job.status])}>
+        {job.status}
+      </span>
+      <div className="flex-1">
+        <div className="text-sm">{job.sync_mode} sync · {job.triggered_by}</div>
+        <div className="text-xs text-muted-foreground">
+          {job.docs_indexed} indexed · {job.docs_skipped} skipped · {job.docs_failed} failed
+          · {formatDuration(job.started_at, job.completed_at)}
+        </div>
+      </div>
+      <time className="text-xs text-muted-foreground">{timeAgo(job.created_at)}</time>
+    </div>
+  );
+}
+```
+
+### 27.5 SSE Streaming Progress Spec
+
+```typescript
+// hooks/useSyncJob.ts — Server-Sent Events for live progress
+export function useSyncJob(jobId: string | null) {
+  const [job, setJob] = useState<IngestionJob | null>(null);
+
+  useEffect(() => {
+    if (!jobId) return;
+    const es = new EventSource(`/api/v1/ingestion/jobs/${jobId}/stream`);
+
+    es.onmessage = (e) => {
+      const update = JSON.parse(e.data) as IngestionJobUpdate;
+      setJob(prev => ({ ...prev, ...update }));
+    };
+
+    es.addEventListener("complete", () => {
+      es.close();
+      queryClient.invalidateQueries(["sources"]);
+    });
+
+    return () => es.close();
+  }, [jobId]);
+
+  return job;
+}
+
+// SSE event types from backend:
+interface IngestionJobUpdate {
+  job_id:           string;
+  status:           string;
+  docs_discovered:  number;
+  docs_indexed:     number;
+  docs_failed:      number;
+  chunks_created:   number;
+  current_stage:    string;  // "parse" | "embed" | "index" | ...
+  eta_seconds:      number | null;
+  error_message:    string;
+}
+```
+
+### 27.6 TypeScript Types Specification
+
+```typescript
+// src/features/ingestion/types.ts
+
+export type SourceFamily =
+  | "object_storage" | "olap_database" | "oltp_database" | "nosql_database"
+  | "streaming" | "file_system" | "document_store" | "communication"
+  | "code_repository" | "web" | "crm_erp" | "support"
+  | "iot_telemetry" | "observability" | "scientific"
+  | "graph_database" | "vector_database" | "agent_generated";
+
+export interface SourceConfig {
+  source_id:            string;
+  tenant_id:            string;
+  name:                 string;
+  family:               SourceFamily;
+  source_type:          string;
+  enabled:              boolean;
+  sync_mode:            "full" | "incremental" | "streaming";
+  sync_interval_seconds: number;
+  connection_config:    Record<string, unknown>;
+  cursor_value:         string;
+  chunking_strategy:    string;
+  chunk_size_tokens:    number;
+  embedding_model:      string;
+  pii_action:           "redact" | "reject" | "allow";
+  collection_id:        string | null;
+  last_synced_at:       string | null;
+  total_docs_indexed:   number;
+  total_chunks:         number;
+  created_at:           string;
+  updated_at:           string;
+}
+
+export interface IngestionJob {
+  job_id:           string;
+  source_id:        string;
+  status:           "pending" | "running" | "completed" | "failed" | "paused";
+  sync_mode:        "full" | "incremental" | "streaming";
+  triggered_by:     string;
+  started_at:       string | null;
+  completed_at:     string | null;
+  docs_discovered:  number;
+  docs_indexed:     number;
+  docs_skipped:     number;
+  docs_failed:      number;
+  chunks_created:   number;
+  bytes_processed:  number;
+  tokens_consumed:  number;
+  error_message:    string;
+  created_at:       string;
+}
+
+export interface IndexedDocument {
+  id:               string;
+  source_id:        string;
+  doc_id:           string;
+  title:            string;
+  source_url:       string;
+  author:           string;
+  content_hash:     string;
+  language:         string;
+  chunk_count:      number;
+  quality_score:    number;
+  has_pii_redacted: boolean;
+  acl:              string[];
+  ingested_at:      string;
+  expires_at:       string | null;
+}
+
+export interface IndexedChunk {
+  chunk_id:           string;
+  doc_id:             string;
+  source_id:          string;
+  text:               string;
+  chunk_index:        number;
+  total_chunks_in_doc: number;
+  quality_score:      number;
+  language:           string;
+  has_pii_redacted:   boolean;
+  embedding_model_id: string;
+  content_hash:       string;
+}
+
+export interface ConnectionHealth {
+  ok:          boolean;
+  latency_ms:  number;
+  error:       string;
+  metadata:    Record<string, unknown>;
+}
+
+export interface DLQEntry {
+  id:            string;
+  source_id:     string;
+  doc_id:        string;
+  failed_stage:  string;
+  failure_type:  string;
+  error_message: string;
+  retry_count:   number;
+  next_retry_at: string | null;
+  created_at:    string;
+}
+
+export interface IngestionQuota {
+  plan:                string;
+  sources_used:        number;
+  sources_limit:       number;
+  docs_used:           number;
+  docs_limit:          number | null;
+  chunks_used:         number;
+  chunks_limit:        number | null;
+  tokens_used_month:   number;
+  tokens_limit_month:  number | null;
+  cost_usd_month:      number;
+}
+```
+
+### 27.7 Zustand Store Specification
+
+```typescript
+// src/features/ingestion/state/sourceFilters.ts
+interface SourceFilterState {
+  familyFilter:    SourceFamily | "all";
+  statusFilter:    "all" | "enabled" | "disabled" | "syncing" | "error";
+  searchQuery:     string;
+  sortBy:          "name" | "last_synced" | "doc_count" | "created_at";
+  sortDir:         "asc" | "desc";
+  setFamilyFilter: (f: SourceFamily | "all") => void;
+  setStatusFilter: (s: string) => void;
+  setSearchQuery:  (q: string) => void;
+  setSortBy:       (s: string) => void;
+  resetFilters:    () => void;
+}
+// Persisted in sessionStorage
+```
+
+### 27.8 Empty States Specification
+
+| Scenario | Illustration | Message | CTA |
+|----------|-------------|---------|-----|
+| No sources | Database icon with + | "No knowledge sources yet" | "Add your first source" |
+| No docs in source | Empty folder | "Nothing indexed yet — run a sync to get started" | "Sync now" |
+| No jobs | Clock icon | "No sync history" | — |
+| Empty DLQ | Green checkmark | "No failed documents — this source is healthy" | — |
+| Search no results | Search icon | "No results match your search" | "Clear search" |
+| All sources disabled | Info icon | "All sources are paused" | "Enable a source" |
+
+### 27.9 Error States Specification
+
+```tsx
+// Inline error banner (TanStack Query error)
+{isError && (
+  <div role="alert" className="flex items-center gap-2 text-destructive text-sm
+                               p-3 bg-destructive/10 rounded-lg border border-destructive/20">
+    <AlertCircle className="h-4 w-4 shrink-0" />
+    <span>{getErrorMessage(error)}</span>
+    <button onClick={() => refetch()} className="ml-auto text-sm underline">Retry</button>
+  </div>
+)}
+
+// Toast notification (mutations)
+toast.error("Failed to create source", { description: error.message });
+toast.success("Source created", { description: "First sync starting…" });
+toast.warning("Budget nearly exceeded", { description: "92% of monthly tokens used" });
+```
+
+### 27.10 Keyboard Shortcuts
+
+```tsx
+useHotkeys("n", () => setShowCreate(true),       { description: "New source" });
+useHotkeys("?", () => setShowHelp(true),          { description: "Help" });
+useHotkeys("mod+k", () => setShowSearch(true),    { description: "Search sources" });
+useHotkeys("mod+r", () => refetch(),              { description: "Refresh" });
+useHotkeys("escape", () => { setShowCreate(false); setShowSearch(false); });
+// On source card focus:
+useHotkeys("s", () => triggerSync(focusedSource), { description: "Sync now" });
+useHotkeys("d", () => openDLQ(focusedSource),     { description: "View DLQ" });
+```
+
+### 27.11 Accessibility Specification
+
+```
+ARIA requirements:
+- SourceCard: role="article", aria-label="{name} source, {status}"
+- SyncProgressPanel: aria-live="polite", aria-valuenow={progress}
+- DLQPanel table: <caption>, <th scope="col">, keyboard-navigable rows
+- SourceCreateWizard: aria-current="step" on active step
+- QuotaUsageBar: role="progressbar", aria-valuenow, aria-valuemin, aria-valuemax
+- HealthBadge: aria-label="Status: {status}" — never color-only
+- All modals: role="dialog", aria-modal="true", focus trap, Escape closes
+- Filter chips: role="checkbox", aria-checked
+- Search: role="searchbox", aria-label="Search sources"
+
+Color contrast: all text passes WCAG 2.2 AA (4.5:1 normal, 3:1 large)
+Focus indicators: 2px ring with 2px offset on all interactive elements
+Reduced-motion: all animations respect prefers-reduced-motion
+```
+
+### 27.12 Mobile / Responsive Breakpoints
+
+| Breakpoint | Layout |
+|-----------|--------|
+| `< 640px` (mobile) | Single column card stack; family picker horizontal scroll; wizard full-screen |
+| `640–1024px` (tablet) | Two-column grid; drawer instead of modal |
+| `> 1024px` (desktop) | Three-column grid; inline detail panel option |
+| `> 1440px` (wide) | Four-column grid; sidebar filter panel |
+
+---
+
+## PART 28 — Alerting Rules & Runbooks
+
+### 28.1 Prometheus Alerting Rules
+
+```yaml
+groups:
+  - name: ingestion
+    rules:
+      - alert: IngestionDLQDepthHigh
+        expr: agentverse_ingestion_dlq_depth > 50
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "DLQ depth {{ $value }} for {{ $labels.source_type }}"
+          runbook: "https://runbooks.agentverse.ai/ingestion-dlq"
+
+      - alert: IngestionFailureRateHigh
+        expr: |
+          rate(agentverse_ingestion_docs_total{result="failed"}[5m]) /
+          rate(agentverse_ingestion_docs_total[5m]) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Ingestion failure rate > 5% for {{ $labels.source_type }}"
+
+      - alert: IngestionSourceStale
+        expr: |
+          time() - agentverse_ingestion_last_sync_timestamp > 7200
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Source {{ $labels.source_id }} not synced in 2+ hours"
+
+      - alert: IngestionQueueDepthHigh
+        expr: agentverse_ingestion_queue_depth{tenant_plan="enterprise"} > 1000
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Enterprise ingestion queue backed up ({{ $value }} jobs)"
+
+      - alert: IngestionTokenBudgetExceeded
+        expr: |
+          agentverse_embedding_tokens_total / on(tenant_id)
+          agentverse_embedding_token_budget > 0.95
+        for: 0m
+        labels: { severity: info }
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} at 95%+ of token budget"
+
+      - alert: IngestionCircuitBreakerOpen
+        expr: agentverse_ingestion_circuit_state == 2
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Circuit breaker OPEN for {{ $labels.source_type }}"
+          runbook: "https://runbooks.agentverse.ai/circuit-breaker"
+
+      - alert: IngestionPipelineLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            agentverse_ingestion_pipeline_latency_seconds_bucket{stage="embed"}
+          ) > 30
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Embedding stage P99 latency > 30s"
+```
+
+### 28.2 Runbook: DLQ Depth High
+
+```
+RUNBOOK: IngestionDLQDepthHigh
+
+Symptoms: DLQ depth metric above threshold
+Impact:   Documents failing to be indexed; knowledge gap growing
+
+Investigation:
+  1. GET /api/v1/ingestion/dlq?limit=10 — inspect top entries
+  2. Check failure_type:
+     - "parse_error"     → file format issue, check parser
+     - "embed_timeout"   → embedding API slow, check OpenAI status
+     - "quota_exceeded"  → tenant over plan; upgrade or wait
+     - "pii_rejected"    → document contains PII, pii_action=reject
+     - "quality_rejected"→ content below min_quality_score
+  3. Check source circuit_state in Grafana
+  4. Review recent source config changes
+
+Mitigation:
+  - parse_error:     POST /api/v1/ingestion/dlq/{id}/dismiss (skip bad docs)
+  - embed_timeout:   Wait for API recovery; POST /api/v1/ingestion/dlq/retry-all
+  - quota_exceeded:  Upgrade plan or POST /api/v1/ingestion/dlq/{id}/dismiss
+```
+
+---
+
+## PART 19 (Extended) — Connector Specs: Remaining 13 Families
+
+### 19.6 OLTP Database — PostgreSQL CDC Connector Spec
+
+```python
+class PostgreSQLConnectorConfig:
+    host:            str
+    port:            int = 5432
+    database:        str
+    username:        str
+    password:        str = ""      # vault://
+    tables:          list[str]     # ["public.orders", "public.customers"]
+    query:           str = ""      # custom SQL fallback
+    cdc_mode:        str = "query" # query | logical_replication | pg_notify
+    cursor_col:      str = "updated_at"
+    row_template:    str = "auto"
+    slot_name:       str = ""      # for logical replication mode
+
+class PostgreSQLConnector(BaseConnector):
+    source_type = "postgresql"
+    supports_deletion_tracking = True    # via CDC
+
+    async def get_delta(self, config, cursor):
+        if config.cdc_mode == "query":
+            # SELECT * FROM {table} WHERE {cursor_col} > :cursor ORDER BY {cursor_col}
+            # cursor = ISO timestamp of last processed row
+        elif config.cdc_mode == "logical_replication":
+            # pg_logical_slot_get_changes() → parse WAL events
+            # Yields INSERT/UPDATE/DELETE as RawDocuments
+```
+
+### 19.7 NoSQL — MongoDB Change Streams Connector Spec
+
+```python
+class MongoDBConnectorConfig:
+    uri:          str              # vault:// → mongodb+srv://...
+    database:     str
+    collections:  list[str]        # ["orders", "customers"]
+    pipeline:     list[dict] = []  # aggregation pipeline filter
+    read_pref:    str = "secondary"
+
+class MongoDBConnector(BaseConnector):
+    source_type = "mongodb"
+    supports_streaming = True
+    supports_deletion_tracking = True
+
+    async def get_delta(self, config, cursor):
+        # cursor = resume_token (dict from last change event)
+        # watch() with resume_after=cursor
+        # Yields: INSERT/UPDATE/DELETE as RawDocuments
+        # DELETE → calls pipeline.delete_doc(doc_id)
+```
+
+### 19.8 Communication — Slack Connector Spec
+
+```python
+class SlackConnectorConfig:
+    workspace_id:    str
+    bot_token:       str           # vault://
+    channels:        list[str]     # channel IDs, empty = all
+    include_threads: bool = True
+    include_files:   bool = True
+    history_days:    int = 90
+
+class SlackConnector(BaseConnector):
+    source_type = "slack"
+    supports_acl_propagation = True   # channel membership = ACL
+
+    async def get_delta(self, config, cursor):
+        # conversations.history for each channel
+        # cursor = timestamp of last message
+        # Thread replies fetched separately
+        # Files downloaded and added as separate RawDocuments
+        # ACL = channel members list
+
+    def message_to_text(self, msg: dict, channel_name: str) -> str:
+        # "#{channel_name} [{timestamp}] @{user}: {text}"
+        # Thread context prepended if is_reply
+```
+
+### 19.9 Communication — Microsoft Teams Connector Spec
+
+```python
+class TeamsConnectorConfig:
+    tenant_id:    str
+    client_id:    str
+    client_secret: str             # vault://
+    teams:        list[str] = []   # team IDs, empty = all joined teams
+    channels:     list[str] = []   # channel IDs, empty = all
+
+class TeamsConnector(BaseConnector):
+    source_type = "teams"
+    supports_acl_propagation = True
+
+    async def get_delta(self, config, cursor):
+        # Graph API: GET /teams/{id}/channels/{id}/messages
+        # deltaLink token used as cursor
+        # Nested replies fetched
+```
+
+### 19.10 Code Repository — GitHub Connector Spec
+
+```python
+class GitHubConnectorConfig:
+    token:          str            # vault://  (PAT or GitHub App)
+    repos:          list[str]      # ["org/repo1", "org/repo2"]
+    include_code:   bool = True
+    include_issues: bool = True
+    include_prs:    bool = True
+    include_wiki:   bool = True
+    include_discussions: bool = False
+    branch:         str = "main"
+    file_patterns:  list[str] = ["**/*.py", "**/*.ts", "**/*.md"]
+
+class GitHubConnector(BaseConnector):
+    source_type = "github"
+    supports_acl_propagation = True   # repo visibility + team membership
+
+    async def get_delta(self, config, cursor):
+        # Code: git log since cursor commit SHA → changed files
+        #       Each file → RawDocument with language detection
+        # Issues/PRs: REST API with since=cursor (ISO timestamp)
+        # Wiki: git clone + diff since cursor
+```
+
+### 19.11 File/Drive — Google Drive Connector Spec
+
+```python
+class GDriveConnectorConfig:
+    credentials:    str            # vault:// → OAuth2 token
+    folder_ids:     list[str] = [] # root folder IDs, empty = all Drive
+    include_shared: bool = True
+    mime_filters:   list[str] = [] # empty = all supported types
+
+class GDriveConnector(BaseConnector):
+    source_type = "gdrive"
+    supports_acl_propagation = True   # Drive permissions propagated
+
+    async def get_delta(self, config, cursor):
+        # Drive changes API: GET /changes?pageToken=cursor
+        # Supports: Google Docs → text/plain export
+        #           Google Sheets → text/csv export
+        #           Google Slides → text/plain export
+        #           PDF, DOCX, etc. → direct download
+        # cursor = nextPageToken from Drive changes API
+```
+
+### 19.12 CRM — Salesforce Connector Spec
+
+```python
+class SalesforceConnectorConfig:
+    instance_url:   str            # https://myorg.salesforce.com
+    client_id:      str
+    client_secret:  str            # vault://
+    objects:        list[str]      # ["Account", "Contact", "Opportunity", "Case", "Note"]
+    cursor_field:   str = "SystemModstamp"
+    include_fields: dict[str, list[str]] = {}  # per-object field list
+
+class SalesforceConnector(BaseConnector):
+    source_type = "salesforce"
+
+    async def get_delta(self, config, cursor):
+        # SOQL: SELECT {fields} FROM {Object}
+        #       WHERE SystemModstamp > :cursor
+        #       ORDER BY SystemModstamp ASC LIMIT 2000
+        # Supports bulk API for large initial syncs
+```
+
+### 19.13 Customer Support — Zendesk Connector Spec
+
+```python
+class ZendeskConnectorConfig:
+    subdomain:    str              # https://{subdomain}.zendesk.com
+    api_token:    str              # vault://
+    email:        str
+    include_tickets: bool = True
+    include_articles: bool = True  # Help Center
+    include_macros:   bool = False
+    ticket_statuses:  list[str] = ["open", "pending", "solved", "closed"]
+
+class ZendeskConnector(BaseConnector):
+    source_type = "zendesk"
+
+    async def get_delta(self, config, cursor):
+        # Incremental Ticket Export API: /api/v2/incremental/tickets?start_time=cursor
+        # Cursor = Unix timestamp
+        # Articles: /api/v2/help_center/articles?updated_at[gte]=cursor
+```
+
+### 19.14 IoT / Telemetry — MQTT Connector Spec
+
+```python
+class MQTTConnectorConfig:
+    broker_url:    str             # mqtt://broker.example.com:1883
+    client_id:     str
+    username:      str = ""
+    password:      str = ""        # vault://
+    topics:        list[str]       # ["sensors/#", "alerts/+/critical"]
+    qos:           int = 1
+    window_seconds: int = 300      # aggregate N seconds of data into one chunk
+
+class MQTTConnector(BaseConnector):
+    source_type = "mqtt"
+    supports_streaming = True
+
+    async def get_delta(self, config, cursor):
+        # MQTT doesn't support historical pull natively
+        # Reads from InfluxDB or time-series store if configured
+        # Otherwise: streaming only
+
+    # Streaming: maintains persistent MQTT subscription
+    # Aggregates messages in window_seconds → one RawDocument per window
+```
+
+### 19.15 Observability — PagerDuty Connector Spec
+
+```python
+class PagerDutyConnectorConfig:
+    api_token:       str           # vault://
+    include_incidents: bool = True
+    include_services:  bool = True
+    include_runbooks:  bool = True
+    severity_filter:   list[str] = ["critical", "high"]
+    lookback_days:     int = 30
+
+class PagerDutyConnector(BaseConnector):
+    source_type = "pagerduty"
+
+    async def get_delta(self, config, cursor):
+        # GET /incidents?since=cursor&severities[]=critical
+        # Incident text = title + description + resolution_notes
+        # cursor = ISO timestamp of last incident
+```
+
+### 19.16 Graph Database — Neo4j Connector Spec
+
+```python
+class Neo4jConnectorConfig:
+    uri:          str              # neo4j://localhost:7687
+    username:     str
+    password:     str              # vault://
+    database:     str = "neo4j"
+    node_labels:  list[str] = []   # empty = all
+    rel_types:    list[str] = []   # relationship types to include
+    chunk_triples: int = 20        # N triples per chunk
+
+class Neo4jConnector(BaseConnector):
+    source_type = "neo4j"
+
+    async def get_delta(self, config, cursor):
+        # MATCH (n) WHERE n.updated_at > :cursor
+        # For each node: serialize properties
+        # For each relationship: "({from}) -[{type}]-> ({to})"
+        # Group N triples into one RawDocument
+        # cursor = ISO timestamp on node.updated_at
+```
+
+### 19.17 Scientific — arXiv Connector Spec
+
+```python
+class ArXivConnectorConfig:
+    categories:     list[str]      # ["cs.AI", "cs.LG", "stat.ML"]
+    max_results:    int = 100      # per sync
+    include_abstract: bool = True
+    include_full_text: bool = False  # requires PDF download
+    start_date:     str = ""       # YYYY-MM-DD
+
+class ArXivConnector(BaseConnector):
+    source_type = "arxiv"
+
+    async def get_delta(self, config, cursor):
+        # OAI-PMH: GET http://export.arxiv.org/oai2?verb=ListRecords
+        #              &from=cursor&metadataPrefix=oai_dc&set=cs
+        # cursor = YYYY-MM-DD of last harvest
+        # Title + abstract = one chunk
+        # Full PDF: download + parse if include_full_text=True
+```
+
+---
+
+## SUPPLEMENT A — Source Catalogue Schema
+
+The `GET /api/v1/sources/catalogue` endpoint returns the full catalogue of supported source types. Each entry includes the config schema:
+
+```json
+{
+  "families": [
+    {
+      "family": "object_storage",
+      "label": "Object Storage",
+      "icon": "Cloud",
+      "color": "sky-500",
+      "sources": [
+        {
+          "source_type": "s3",
+          "label": "AWS S3",
+          "description": "Amazon S3 buckets — any file format",
+          "auth_type": "iam_role_or_access_key",
+          "supports_streaming": true,
+          "supports_deletion": true,
+          "incremental_method": "list_objects_cursor",
+          "config_schema": {
+            "type": "object",
+            "required": ["bucket", "credentials"],
+            "properties": {
+              "bucket":     { "type": "string", "description": "S3 bucket name" },
+              "prefix":     { "type": "string", "default": "" },
+              "region":     { "type": "string", "default": "us-east-1" },
+              "credentials":{ "type": "string", "pattern": "^vault://" },
+              "endpoint_url":{"type": "string", "default": "" }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## SUPPLEMENT B — File Parser Matrix
+
+Which parser handles which MIME type from which source family:
+
+| MIME Type | Parser | Source Families |
+|-----------|--------|----------------|
+| `application/pdf` | `pdf_parser.py` (pymupdf) | All |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `docx_parser.py` | All |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `excel_parser.py` (NEW) | Object Storage, Drive |
+| `text/csv` | `csv_parser.py` (NEW) | All |
+| `application/json` | `json_parser.py` (NEW) | All |
+| `application/x-ndjson` | `jsonl_parser.py` (NEW) | Object Storage, Streaming |
+| `text/html` | `html_parser.py` (trafilatura, NEW) | Web, Email |
+| `text/markdown` | `markdown_parser.py` (AST, NEW) | Code, Drive |
+| `text/x-python` | `code_parser.py` (AST, existing) | Code |
+| `text/javascript` | `code_parser.py` | Code |
+| `text/typescript` | `code_parser.py` | Code |
+| `text/x-java-source` | `code_parser.py` | Code |
+| `application/x-ipynb+json` | `notebook_parser.py` (NEW) | Code, Object Storage |
+| `application/x-yaml` | `yaml_parser.py` (NEW) | Code |
+| `audio/mpeg` | `audio_parser.py` (Whisper) | Communication, IoT |
+| `video/mp4` | `video_parser.py` (Whisper) | Communication |
+| `image/png`, `image/jpeg` | `vision_parser.py` (Vision LLM) | All |
+| `application/vnd.apache.parquet` | `parquet_parser.py` (NEW, pyarrow) | Object Storage, OLAP |
+| `application/avro` | `avro_parser.py` (NEW) | Streaming |
+| `message/rfc822` | `email_parser.py` (existing) | Email |
+| `application/x-latex` | `latex_parser.py` (NEW) | Scientific |
+
+**NEW parsers** (currently missing from codebase — required for completeness):
+- `excel_parser.py` — XLS/XLSX with header detection
+- `csv_parser.py` — CSV/TSV with schema inference
+- `json_parser.py` — JSON object + array flattening
+- `html_parser.py` — trafilatura extraction
+- `markdown_parser.py` — AST-aware section chunking
+- `notebook_parser.py` — Jupyter cell pairs
+- `yaml_parser.py` — YAML/HCL/TOML config extraction
+- `parquet_parser.py` — Parquet column sampling
+- `avro_parser.py` — Avro schema + record sampling
+- `latex_parser.py` — LaTeX section extraction
+
+---
+
+## SUPPLEMENT C — Error Classification
+
+Every ingestion failure is classified for routing to retry vs DLQ:
+
+| Error Type | Classification | Action |
+|-----------|---------------|--------|
+| `parse_error` | PERMANENT — bad file | DLQ immediately; no retry |
+| `pii_rejected` | PERMANENT — policy | DLQ immediately |
+| `quality_rejected` | PERMANENT — low quality | DLQ immediately |
+| `auth_error` | PERMANENT (until rotated) | Disable source + alert |
+| `embed_timeout` | TRANSIENT | Retry 3× with backoff |
+| `embed_rate_limit` | TRANSIENT | Retry after Retry-After header |
+| `network_error` | TRANSIENT | Retry 3× with backoff |
+| `db_connection_error` | TRANSIENT | Retry 3× with backoff |
+| `quota_exceeded` | SOFT_PERMANENT | Queue as paused_budget |
+| `content_too_large` | PERMANENT | Truncate + warn or skip |
+| `source_deleted` | PERMANENT | Skip + log |
+| `empty_content` | PERMANENT | Skip silently |
+
+---
+
+## SUPPLEMENT D — Rollback Strategy
+
+Ingestion jobs are reversible within a time window:
+
+```
+POST /api/v1/ingestion/jobs/{job_id}/rollback
+
+Rollback procedure:
+1. Fetch all chunk_ids created in this job
+   (via ingestion_jobs.chunk_id_range or dedicated tracking table)
+
+2. Delete chunks from pgvector, BM25, graph
+
+3. Restore previous cursor_value on source_config
+   (stored in ingestion_jobs.cursor_before)
+
+4. Emit knowledge.deleted event
+
+5. Return: {chunks_deleted: N, cursor_restored: "..."}
+
+Constraints:
+- Rollback available within 24h of job completion
+- Incremental jobs: rollback restores cursor to pre-job value
+- Full-index jobs: rollback deletes all docs for source
+- Enterprise only: rollback on streaming sources (complex)
+```
+
+---
+
+## RE-AUDIT CHECKLIST
+
+**Architecture:**
+- [x] 18 source families defined
+- [x] ~200 source types catalogued
+- [x] 13 engineering laws
+- [x] 13-stage unified pipeline
+- [x] 12 resilience patterns
+- [x] BaseConnector interface contract
+
+**Data Model:**
+- [x] SourceFamily enum (18 values)
+- [x] SourceConfig (25+ fields)
+- [x] RawDocument
+- [x] IngestionJob
+- [x] IndexedChunk
+
+**Connector Specs (19 detailed):**
+- [x] S3 (object storage)
+- [x] Snowflake (OLAP)
+- [x] Kafka (streaming)
+- [x] Web crawl
+- [x] Agent-generated
+- [x] PostgreSQL CDC (OLTP)
+- [x] MongoDB (NoSQL)
+- [x] Slack (communication)
+- [x] Teams (communication)
+- [x] GitHub (code)
+- [x] Google Drive (file/drive)
+- [x] Salesforce (CRM)
+- [x] Zendesk (support)
+- [x] MQTT (IoT)
+- [x] PagerDuty (observability)
+- [x] Neo4j (graph)
+- [x] arXiv (scientific)
+
+**Backend:**
+- [x] 38 API endpoints
+- [x] 4 database tables with RLS
+- [x] Prometheus metrics (8 metrics)
+- [x] OTel span hierarchy
+- [x] Grafana dashboard (8 panels)
+- [x] Alerting rules (7 rules)
+
+**Lifecycle:**
+- [x] Deletion propagation
+- [x] GDPR right-to-erasure
+- [x] Freshness TTL per family
+- [x] Re-embedding strategy
+- [x] Content version tracking
+- [x] Rollback strategy
+
+**Cost & Quota:**
+- [x] Embedding cost model
+- [x] Budget controls per plan
+- [x] Cost estimation endpoint
+
+**Integration:**
+- [x] Trigger-driven ingestion
+- [x] Workflow step integration
+- [x] RAG strategy per source
+- [x] Real-time cache invalidation
+
+**Frontend (complete):**
+- [x] SourcesPage
+- [x] SourceDetailPage
+- [x] SourceCard + SourceList
+- [x] SourceCreateWizard (4-step)
+- [x] SyncProgressPanel (SSE)
+- [x] DocumentBrowser
+- [x] ChunkInspector
+- [x] IngestionJobHistory
+- [x] DLQPanel
+- [x] QuotaUsageBar
+- [x] 14 family forms
+- [x] TypeScript types (types.ts)
+- [x] Zustand store
+- [x] SSE streaming hook
+- [x] Empty states
+- [x] Error states
+- [x] Keyboard shortcuts
+- [x] Accessibility (WCAG 2.2 AA)
+- [x] Mobile/responsive breakpoints
+- [x] Motion & animation
+- [x] Family icon + color system
+
+**Testing:**
+- [x] ~800 test target
+- [x] 7 mandatory tests per connector
+- [x] 8 pipeline stage tests
+- [x] Performance (locust)
+- [x] Frontend (Vitest + Playwright)
+
+**Supplementary:**
+- [x] Source catalogue schema
+- [x] File parser matrix (21 formats)
+- [x] Error classification
+- [x] Rollback strategy
+- [x] Alerting runbooks
+- [x] 3 Mermaid architecture diagrams
+
+*Re-audit completed: 2026-08-17*
+*Added: PART 23-28, PART 19 extended (12 more connector specs), SUPPLEMENTs A-D*
+*Total: ~3,100 lines, 28 parts, 4 supplements, 17 connector specs, 19 sources*
