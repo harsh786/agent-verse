@@ -1,0 +1,41 @@
+slug: sre-incident-response
+name: "SRE Incident Response"
+description: "Automated incident triage, war room creation, and runbook execution"
+category: "Engineering"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['sre', 'devops', 'incident']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "SRE Incident Response"
+  description: "Automated incident triage, war room creation, and runbook execution"
+  steps:
+    - id: detect_incident
+      type: tool
+      tool: 'monitoring.detect'
+    - id: triage
+      type: llm
+      prompt: 'SRE triage for incident: {{steps.detect_incident.output}}'
+      depends_on: ['detect_incident']
+    - id: notify_oncall
+      type: tool
+      tool: 'pagerduty.alert'
+      depends_on: ['triage']
+    - id: escalate_p1
+      type: conditional
+      expression: "{{steps.triage.output.severity}} == 'P1'"
+      branches: [{'condition': 'true', 'next': 'war_room'}, {'condition': 'else', 'next': 'auto_remediate'}]
+      depends_on: ['notify_oncall']
+    - id: war_room
+      type: hitl
+      assignee: {'role': 'sre_lead'}
+      actions: [{'id': 'acknowledge'}, {'id': 'escalate'}]
+      depends_on: ['escalate_p1']
+    - id: auto_remediate
+      type: tool
+      tool: 'runbook.execute'
+      depends_on: ['escalate_p1']

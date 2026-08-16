@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
 
-from app.triggers.events import SimulatedTriggerResult
-from app.triggers.models import TriggerSpec, TriggerType
-
+from app.triggers.models import TriggerType
 
 # ── Test payload factory ──────────────────────────────────────────────────────
 
@@ -64,13 +61,13 @@ class ChaosStats:
 class TriggerChaosHarness:
     """Injects controlled failures for testing the dispatch pipeline."""
 
-    inject_signature_failure_pct: int = 0    # 0–100
-    inject_condition_timeout_pct: int = 0    # 0–100
+    inject_signature_failure_pct: int = 0    # 0-100
+    inject_condition_timeout_pct: int = 0    # 0-100
     inject_goal_service_down_for: int = 0    # seconds (0 = never)
     stats: ChaosStats = field(default_factory=ChaosStats)
     _active: bool = False
 
-    def __enter__(self) -> "TriggerChaosHarness":
+    def __enter__(self) -> TriggerChaosHarness:
         self._active = True
         return self
 

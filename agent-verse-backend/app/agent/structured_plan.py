@@ -78,6 +78,10 @@ def _safe_eval_condition(expr: str, context: dict[str, Any]) -> bool:
         return bool(evaluator.eval(expr))
     except ImportError:
         pass
+    except Exception:
+        # simpleeval raises NameNotDefined, FeatureNotAvailable, etc.
+        # on unsafe/unknown expressions — default to True (safe: run the step)
+        return True
 
     # Fallback: validate expression before eval using allowlist pattern
     safe_pattern = re.compile(

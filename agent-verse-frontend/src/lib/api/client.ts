@@ -2542,3 +2542,182 @@ export const adminApi = {
     }),
   getPlatformUsage: () => request<any>('/admin/usage'),
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workflow Automation Engine API  (new — separate from legacy workflowsApi)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface WEWorkflow {
+  id: string;
+  name: string;
+  description: string;
+  status: 'draft' | 'published' | 'archived';
+  version: string;
+  labels: Record<string, string>;
+  trigger_type?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WERun {
+  run_id: string;
+  workflow_id: string;
+  workflow_name?: string;
+  status: string;
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  step_count: number;
+  cost_usd: number;
+}
+
+export interface WEStepResult {
+  step_id: string;
+  step_type: string;
+  status: string;
+  output?: Record<string, unknown>;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+}
+
+const V1 = '/api/v1';
+
+export const workflowEngineApi = {
+  // ── Definitions ──────────────────────────────────────────────────────────
+
+  list: (params?: { page?: number; per_page?: number; status?: string; label?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.per_page) qs.set('per_page', String(params.per_page));
+    if (params?.status) qs.set('status', params.status);
+    if (params?.label) qs.set('label', params.label);
+    return request<{ items: WEWorkflow[]; total: number; page: number; per_page: number }>(
+      `${V1}/workflows?${qs}`
+    );
+  },
+
+  get: (id: string) => request<WEWorkflow>(`${V1}/workflows/${id}`),
+
+  create: (body: { name: string; description?: string; definition: Record<string, unknown>; labels?: Record<string, string> }) =>
+    request<WEWorkflow>(`${V1}/workflows`, { method: 'POST', body: JSON.stringify(body) }),
+
+  update: (id: string, body: { name?: string; description?: string; definition?: Record<string, unknown>; labels?: Record<string, string> }) =>
+    request<WEWorkflow>(`${V1}/workflows/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  delete: (id: string) =>
+    request<void>(`${V1}/workflows/${id}`, { method: 'DELETE' }),
+
+  publish: (id: string) =>
+    request<WEWorkflow>(`${V1}/workflows/${id}/publish`, { method: 'POST', body: '{}' }),
+
+  unpublish: (id: string) =>
+    request<WEWorkflow>(`${V1}/workflows/${id}/unpublish`, { method: 'POST', body: '{}' }),
+
+  validate: (id: string) =>
+    request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
+
+  exportYaml: (id: string) => request<string>(`${V1}/workflows/${id}/yaml`),
+
+  clone: (id: string) =>
+    request<WEWorkflow>(`${V1}/workflows/${id}/clone`, { method: 'POST', body: '{}' }),
+
+  // ── Runs ─────────────────────────────────────────────────────────────────
+
+  trigger: (id: string, body: { inputs?: Record<string, unknown>; dry_run?: boolean; idempotency_key?: string; callback_url?: string }) =>
+    request<WERun>(`${V1}/workflows/${id}/trigger`, { method: 'POST', body: JSON.stringify(body) }),
+
+  listRuns: (params?: { workflow_id?: string; status?: string; page?: number; per_page?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.workflow_id) qs.set('workflow_id', params.workflow_id);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.per_page) qs.set('per_page', String(params.per_page));
+    return request<{ items: WERun[]; total: number; page: number; per_page: number }>(
+      `${V1}/runs?${qs}`
+    );
+  },
+
+  getRun: (runId: string) => request<WERun>(`${V1}/runs/${runId}`),
+
+  getRunSteps: (runId: string) => request<WEStepResult[]>(`${V1}/runs/${runId}/steps`),
+
+  cancelRun: (runId: string) =>
+    request<{ run_id: string; status: string }>(`${V1}/runs/${runId}/cancel`, { method: 'POST', body: '{}' }),
+
+  pauseRun: (runId: string) =>
+    request<{ run_id: string; status: string }>(`${V1}/runs/${runId}/pause`, { method: 'POST', body: '{}' }),
+
+  resumeRun: (runId: string) =>
+    request<{ run_id: string; status: string }>(`${V1}/runs/${runId}/resume`, { method: 'POST', body: '{}' }),
+
+  debugRun: (runId: string) => request<Record<string, unknown>>(`${V1}/runs/${runId}/debug`),
+
+  // ── Versions ─────────────────────────────────────────────────────────────
+
+  listVersions: (id: string) => request<any[]>(`${V1}/workflows/${id}/versions`),
+
+  // ── NL trigger preview ────────────────────────────────────────────────────
+
+  nlTriggerPreview: (description: string) =>
+    request<{ trigger: Record<string, unknown>; description: string }>(
+      `${V1}/workflows/nl-trigger-preview`,
+      { method: 'POST', body: JSON.stringify({ description }) }
+    ),
+
+  // ── Templates ─────────────────────────────────────────────────────────────
+
+  listTemplates: (params?: { category?: string; q?: string; page?: number; per_page?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set('category', params.category);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.per_page) qs.set('per_page', String(params.per_page));
+    return request<{ items: any[]; total: number }>(`${V1}/workflow-templates?${qs}`);
+  },
+
+  getTemplate: (slug: string) => request<any>(`${V1}/workflow-templates/${slug}`),
+
+  forkTemplate: (slug: string, overrides?: Record<string, unknown>) =>
+    request<WEWorkflow>(`${V1}/workflow-templates/${slug}/fork`, {
+      method: 'POST', body: JSON.stringify(overrides ?? {}),
+    }),
+
+  listTemplateCategories: () => request<Array<{ category: string; count: number }>>(
+    `${V1}/workflow-templates/categories`
+  ),
+
+  // ── HITL / Approvals ──────────────────────────────────────────────────────
+
+  listApprovals: (params?: { priority?: string; page?: number; per_page?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.priority) qs.set('priority', params.priority);
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.per_page) qs.set('per_page', String(params.per_page));
+    return request<{ items: any[]; total: number }>(`${V1}/approvals?${qs}`);
+  },
+
+  decideApproval: (requestId: string, body: { action: string; note?: string; form_data?: Record<string, unknown> }) =>
+    request<any>(`${V1}/approvals/${requestId}/decide`, { method: 'POST', body: JSON.stringify(body) }),
+
+  delegateApproval: (requestId: string, toUserId: string, note?: string) =>
+    request<any>(`${V1}/approvals/${requestId}/delegate`, {
+      method: 'POST', body: JSON.stringify({ to_user_id: toUserId, note: note ?? '' }),
+    }),
+
+  approvalStats: () => request<{ pending_count: number; total_requests: number; avg_resolution_seconds: number }>(
+    `${V1}/approvals/stats`
+  ),
+
+  // ── Analytics ─────────────────────────────────────────────────────────────
+
+  analyticsSummary: (days = 7) =>
+    request<Record<string, unknown>>(`${V1}/workflows/analytics/summary?days=${days}`),
+
+  workflowAnalytics: (id: string, days = 7) =>
+    request<Record<string, unknown>>(`${V1}/workflows/${id}/analytics?days=${days}`),
+};

@@ -41,7 +41,7 @@ def convert_to_base(value: float, unit: str) -> float:
 class SensorThresholdEvaluator:
     """Evaluate sensor readings against per-trigger thresholds."""
 
-    COMPARISON_OPS = {
+    COMPARISON_OPS: dict = {  # noqa: RUF012
         ">": lambda v, t: v > t,
         ">=": lambda v, t: v >= t,
         "<": lambda v, t: v < t,

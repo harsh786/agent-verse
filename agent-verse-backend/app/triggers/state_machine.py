@@ -5,7 +5,6 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
 
 _log = logging.getLogger(__name__)
 

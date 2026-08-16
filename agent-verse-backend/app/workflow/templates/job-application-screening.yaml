@@ -1,0 +1,41 @@
+slug: job-application-screening
+name: "Job Application Screening"
+description: "Automated CV screening with skills matching and interview scheduling"
+category: "HR"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['hiring', 'recruitment', 'screening']
+popularity_score: 0.0
+sample_input:
+  topic: "example"
+definition:
+  name: "Job Application Screening"
+  description: "Automated CV screening with skills matching and interview scheduling"
+  inputs:
+    topic:
+      type: string
+      required: true
+      description: "Main input for the workflow"
+  steps:
+    - id: main_step
+      type: llm
+      prompt: "Process the following for Job Application Screening: {{inputs.topic}}"
+      model: gpt-4o
+    - id: review
+      type: hitl
+      depends_on: [main_step]
+      assignee:
+        role: reviewer
+      actions:
+        - id: approve
+          label: Approve
+        - id: reject
+          label: Reject
+    - id: complete
+      type: emit_event
+      depends_on: [review]
+      event_channel_out: workflow.completed
+      event_payload:
+        result: "{{steps.main_step.output}}"
+        action: "{{steps.review.output.action}}"

@@ -1,6 +1,6 @@
 """RBAC permission matrix for trigger operations.
 
-5 roles × 8 operations = 40 cells, all explicitly defined.
+5 roles x 8 operations = 40 cells, all explicitly defined.
 Operations: create | read | update | delete | fire | pause | resume | view_dlq
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ TRIGGER_PERMISSION_MATRIX: dict[str, dict[str, bool]] = {
 VALID_OPERATIONS = frozenset(TRIGGER_PERMISSION_MATRIX["admin"].keys())
 
 
-class TriggerPermissionDenied(Exception):
+class TriggerPermissionDenied(Exception):  # noqa: N818
     pass
 
 

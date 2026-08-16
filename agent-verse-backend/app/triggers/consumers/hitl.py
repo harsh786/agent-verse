@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 class HITLTriggerConsumer:
     """Subscribe to HITL approval/rejection events and dispatch matching triggers."""
 
-    CHANNELS = ["hitl.approved", "hitl.rejected"]
+    CHANNELS: list[str] = ["hitl.approved", "hitl.rejected"]  # noqa: RUF012
 
     def __init__(
         self,

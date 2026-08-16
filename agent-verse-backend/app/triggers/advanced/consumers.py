@@ -8,7 +8,9 @@ _log = logging.getLogger(__name__)
 
 
 class GraphQLSubscriptionConsumer:
-    """Maintain a WebSocket connection to a GraphQL endpoint and fire triggers on subscription events."""
+    """Maintain a WebSocket connection to a GraphQL endpoint
+    and fire triggers on subscription events.
+    """
 
     TRIGGER_TYPE = "graphql_subscription"
 

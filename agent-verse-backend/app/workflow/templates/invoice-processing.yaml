@@ -1,0 +1,43 @@
+slug: invoice-processing
+name: "Invoice Processing"
+description: "Automated invoice ingestion, validation, and approval routing"
+category: "Finance"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['finance', 'invoices', 'accounts-payable']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Invoice Processing"
+  description: "Automated invoice ingestion, validation, and approval routing"
+  steps:
+    - id: extract_data
+      type: tool
+      tool: 'ocr.extract'
+      description: 'Extract invoice data via OCR'
+    - id: validate
+      type: tool
+      tool: 'invoice.validate'
+      depends_on: ['extract_data']
+    - id: route_approval
+      type: conditional
+      expression: '{{steps.extract_data.output.amount}} > 10000'
+      branches: [{'condition': 'true', 'next': 'senior_approval'}, {'condition': 'else', 'next': 'auto_approve'}]
+      depends_on: ['validate']
+    - id: senior_approval
+      type: hitl
+      assignee: {'role': 'finance_director'}
+      actions: [{'id': 'approve'}, {'id': 'reject'}]
+      depends_on: ['route_approval']
+    - id: auto_approve
+      type: set_variable
+      var_name: 'status'
+      var_value: 'approved'
+      depends_on: ['route_approval']
+    - id: process_payment
+      type: tool
+      tool: 'payment.process'
+      depends_on: ['senior_approval', 'auto_approve']

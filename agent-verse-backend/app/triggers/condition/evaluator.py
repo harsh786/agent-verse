@@ -134,7 +134,7 @@ class WindowAggregateEvaluator:
     Production implementation would use Redis sorted sets.
     """
 
-    AGGREGATIONS = {
+    AGGREGATIONS = {  # noqa: RUF012
         "sum": sum,
         "avg": lambda vals: sum(vals) / len(vals) if vals else 0.0,
         "max": max,

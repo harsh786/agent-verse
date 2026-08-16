@@ -12,7 +12,7 @@ MAX_CHAIN_DEPTH = 10
 class ChainTriggerConsumer:
     """Listens on Redis pub/sub for goal lifecycle events and fires chain triggers."""
 
-    CHANNELS = [
+    CHANNELS: list[str] = [  # noqa: RUF012
         "goal.completed",
         "goal.failed",
         "goal.score_below",

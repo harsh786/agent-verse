@@ -1,0 +1,32 @@
+slug: bank-reconciliation
+name: "Bank Reconciliation"
+description: "Automated bank statement reconciliation with exception flagging"
+category: "Finance"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['accounting', 'reconciliation', 'banking']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Bank Reconciliation"
+  description: "Automated bank statement reconciliation with exception flagging"
+  steps:
+    - id: fetch_statements
+      type: tool
+      tool: 'bank.fetch_statements'
+    - id: match_transactions
+      type: tool
+      tool: 'accounting.reconcile'
+      depends_on: ['fetch_statements']
+    - id: flag_exceptions
+      type: tool
+      tool: 'accounting.flag_exceptions'
+      depends_on: ['match_transactions']
+    - id: review_exceptions
+      type: hitl
+      assignee: {'role': 'accountant'}
+      actions: [{'id': 'approve'}, {'id': 'investigate'}]
+      depends_on: ['flag_exceptions']

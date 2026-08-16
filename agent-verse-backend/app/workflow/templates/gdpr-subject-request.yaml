@@ -1,0 +1,33 @@
+slug: gdpr-subject-request
+name: "GDPR Subject Request"
+description: "Process GDPR data subject requests (access, erasure, portability)"
+category: "Compliance"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['gdpr', 'privacy', 'data-rights']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "GDPR Subject Request"
+  description: "Process GDPR data subject requests (access, erasure, portability)"
+  steps:
+    - id: verify_identity
+      type: tool
+      tool: 'identity.verify'
+    - id: classify_request
+      type: llm
+      prompt: 'Classify GDPR request type: {{inputs.request_text}}'
+      depends_on: ['verify_identity']
+    - id: review
+      type: hitl
+      assignee: {'role': 'dpo'}
+      actions: [{'id': 'approve'}, {'id': 'reject'}]
+      depends_on: ['classify_request']
+    - id: execute_request
+      type: tool
+      tool: 'gdpr.execute'
+      input: {'type': '{{steps.classify_request.output.type}}'}
+      depends_on: ['review']

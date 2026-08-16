@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.triggers.bulkhead import TriggerBulkhead
 from app.triggers.circuit_breaker import CircuitBreakerRegistry
@@ -18,8 +18,6 @@ from app.triggers.models import TriggerSpec
 from app.triggers.quota import TriggerQuotaEnforcer
 from app.triggers.rate_limiter import TriggerRateLimiter
 from app.triggers.rbac import check_permission
-
-from datetime import datetime, timezone
 
 _log = logging.getLogger(__name__)
 
@@ -185,7 +183,7 @@ class TriggerDispatcher:
                 trigger_id=trigger_id,
                 trigger_type=str(trigger_spec.trigger_type),
                 idempotency_key=idempotency_key,
-                fired_at=datetime.now(timezone.utc),
+                fired_at=datetime.now(UTC),
                 payload=payload,
                 goal_created=goal_id is not None,
                 goal_id=goal_id,
@@ -358,7 +356,7 @@ class TriggerDispatcher:
             trigger_id=trigger_id,
             trigger_type="unknown",
             idempotency_key=idempotency_key,
-            fired_at=datetime.now(timezone.utc),
+            fired_at=datetime.now(UTC),
             payload=payload,
             goal_created=False,
             goal_id=None,

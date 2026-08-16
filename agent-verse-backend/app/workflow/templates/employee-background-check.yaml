@@ -1,0 +1,29 @@
+slug: employee-background-check
+name: "Employee Background Check"
+description: "Automated employee background verification with third-party integration"
+category: "HR"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['hr', 'background-check', 'hiring']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Employee Background Check"
+  description: "Automated employee background verification with third-party integration"
+  steps:
+    - id: collect_consent
+      type: hitl
+      assignee: {'role': 'hr_admin'}
+      actions: [{'id': 'consent_given'}, {'id': 'consent_refused'}]
+    - id: run_checks
+      type: parallel
+      parallel_branches: [{'id': 'criminal', 'type': 'tool', 'tool': 'bgcheck.criminal'}, {'id': 'employment', 'type': 'tool', 'tool': 'bgcheck.employment'}]
+      depends_on: ['collect_consent']
+    - id: review_results
+      type: hitl
+      assignee: {'role': 'hr_manager'}
+      actions: [{'id': 'hire'}, {'id': 'reject'}]
+      depends_on: ['run_checks']

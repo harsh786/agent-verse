@@ -2068,6 +2068,549 @@ trigger:
 
 ---
 
+## UI/UX Design System
+
+### Design Tokens
+
+```typescript
+// src/features/workflow/design/tokens.ts
+// Single source of truth — all values consumed via Tailwind CSS variables
+
+export const tokens = {
+  // ── Color Palette ────────────────────────────────────────────────────
+  // Node type colors (light / dark mode variants)
+  node: {
+    trigger:      { bg: '#DCFCE7', border: '#16A34A', icon: '#15803D' },  // green
+    tool:         { bg: '#DBEAFE', border: '#2563EB', icon: '#1D4ED8' },  // blue
+    llm:          { bg: '#F3E8FF', border: '#9333EA', icon: '#7E22CE' },  // purple
+    rag:          { bg: '#FFF7ED', border: '#EA580C', icon: '#C2410C' },  // orange
+    conditional:  { bg: '#FEF9C3', border: '#CA8A04', icon: '#A16207' },  // yellow
+    parallel:     { bg: '#CCFBF1', border: '#0D9488', icon: '#0F766E' },  // teal
+    hitl:         { bg: '#FEE2E2', border: '#DC2626', icon: '#B91C1C' },  // red
+    http:         { bg: '#E0E7FF', border: '#4F46E5', icon: '#4338CA' },  // indigo
+    foreach:      { bg: '#FCE7F3', border: '#DB2777', icon: '#BE185D' },  // pink
+    transform:    { bg: '#F0FDF4', border: '#22C55E', icon: '#16A34A' },  // light green
+    sub_workflow: { bg: '#F8FAFC', border: '#64748B', icon: '#475569' },  // slate
+    wait:         { bg: '#F1F5F9', border: '#94A3B8', icon: '#64748B' },  // light slate
+    code:         { bg: '#FDF4FF', border: '#C026D3', icon: '#A21CAF' },  // fuchsia
+    set_variable: { bg: '#FFFBEB', border: '#F59E0B', icon: '#D97706' },  // amber
+  },
+
+  // Status colors
+  status: {
+    complete:     '#16A34A',  // green
+    running:      '#2563EB',  // blue (animated pulse)
+    waiting_hitl: '#D97706',  // amber
+    failed:       '#DC2626',  // red
+    paused:       '#6B7280',  // gray
+    pending:      '#94A3B8',  // light gray
+    skipped:      '#CBD5E1',  // very light
+  },
+
+  // Priority levels (HITL inbox)
+  priority: {
+    critical: { bg: '#FEE2E2', text: '#991B1B', dot: '#DC2626' },
+    high:     { bg: '#FFF7ED', text: '#9A3412', dot: '#EA580C' },
+    medium:   { bg: '#FEF9C3', text: '#854D0E', dot: '#CA8A04' },
+    low:      { bg: '#F0FDF4', text: '#166534', dot: '#16A34A' },
+  },
+
+  // ── Typography ───────────────────────────────────────────────────────
+  font: {
+    sans:  "'Inter', 'SF Pro Display', system-ui, sans-serif",
+    mono:  "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+  },
+  fontSize: {
+    xs:   ['11px', { lineHeight: '16px', letterSpacing: '0.01em' }],
+    sm:   ['12px', { lineHeight: '18px' }],
+    base: ['13px', { lineHeight: '20px' }],
+    md:   ['14px', { lineHeight: '22px' }],
+    lg:   ['16px', { lineHeight: '24px', fontWeight: '500' }],
+    xl:   ['20px', { lineHeight: '28px', fontWeight: '600' }],
+    '2xl':['24px', { lineHeight: '32px', fontWeight: '700' }],
+  },
+
+  // ── Spacing ──────────────────────────────────────────────────────────
+  // 4px base grid — t-shirt sizes (matches Tailwind)
+  spacing: { 0.5: '2px', 1: '4px', 2: '8px', 3: '12px', 4: '16px',
+             6: '24px', 8: '32px', 12: '48px', 16: '64px' },
+
+  // ── Shadow System ────────────────────────────────────────────────────
+  shadow: {
+    node:        '0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04)',
+    nodeHover:   '0 4px 12px rgba(0,0,0,.12), 0 2px 4px rgba(0,0,0,.06)',
+    nodeSelected:'0 0 0 2px #2563EB, 0 4px 12px rgba(37,99,235,.25)',
+    panel:       '0 8px 32px rgba(0,0,0,.12)',
+    modal:       '0 20px 60px rgba(0,0,0,.20)',
+    toast:       '0 8px 24px rgba(0,0,0,.14)',
+  },
+
+  // ── Border Radius ────────────────────────────────────────────────────
+  radius: { sm: '4px', md: '8px', lg: '12px', xl: '16px', full: '9999px' },
+
+  // ── Z-Index Stack ────────────────────────────────────────────────────
+  zIndex: {
+    canvas:     0,
+    nodeBase:   10,
+    nodeHover:  20,
+    edge:       5,
+    minimap:    30,
+    palette:    100,
+    configPanel:100,
+    topbar:     200,
+    dropdown:   300,
+    tooltip:    400,
+    modal:      500,
+    toast:      600,
+  },
+};
+```
+
+---
+
+### Motion & Animation System
+
+```typescript
+// src/features/workflow/design/motion.ts
+// Built with Framer Motion for React components + CSS transitions for canvas edges
+
+export const spring = {
+  // Snappy — node selection, button press
+  snappy:  { type: 'spring', stiffness: 400, damping: 30, mass: 0.8 },
+  // Bouncy — node drop onto canvas, template install
+  bouncy:  { type: 'spring', stiffness: 300, damping: 20, mass: 1 },
+  // Gentle — panel open/close, modal enter
+  gentle:  { type: 'spring', stiffness: 200, damping: 25, mass: 1 },
+  // Smooth — page transitions
+  smooth:  { type: 'spring', stiffness: 150, damping: 20, mass: 1.2 },
+};
+
+export const duration = {
+  instant:  0,
+  fast:     100,    // hover feedback, button press
+  normal:   200,    // most transitions
+  slow:     350,    // panel slide, modal
+  deliberate: 500,  // page transition, first-paint
+};
+
+export const easing = {
+  ease:       [0.25, 0.1, 0.25, 1.0],
+  easeIn:     [0.4, 0.0, 1, 1],
+  easeOut:    [0.0, 0.0, 0.2, 1],
+  easeInOut:  [0.4, 0.0, 0.2, 1],
+  bounce:     [0.34, 1.56, 0.64, 1],   // overshoots for playful actions
+};
+
+// WCAG 2.2 requirement: all animations respect prefers-reduced-motion
+export const reducedMotion = {
+  transition: { duration: 0 },
+  spring:     { type: 'tween', duration: 0 },
+};
+```
+
+**Animation Catalogue:**
+
+| Interaction | Animation | Library |
+|---|---|---|
+| Node drag onto canvas | Spring bounce landing (scale 1.05 → 1.0) | Framer Motion |
+| Node select/deselect | Scale 1.0 → 1.02 + blue ring glow | CSS transition |
+| Edge connection | Animated flowing dots (SVG stroke-dasharray) | CSS animation |
+| Edge delete | Dissolve fade + slight shrink | Framer Motion layout |
+| Canvas pan | Momentum-based smooth deceleration | React Flow built-in |
+| Canvas zoom | Smooth scale with pinch-to-zoom | React Flow built-in |
+| Panel open/close | Slide in from right (spring: gentle) | Framer Motion |
+| Config panel tab switch | Crossfade 200ms | CSS transition |
+| Run step status change | Badge color + icon swap (spring: snappy) | Framer Motion |
+| Execution overlay dots | Animated SVG dots moving along edge path | CSS `stroke-dashoffset` |
+| HITL SLA countdown | Color shift green→yellow→red as deadline approaches | CSS transition on hue |
+| Toast enter/exit | Slide up + fade in from bottom-right (spring: bouncy) | Framer Motion |
+| Modal backdrop | Fade in 200ms | Framer Motion |
+| Modal content | Scale 0.96→1 + fade (spring: gentle) | Framer Motion |
+| Skeleton shimmer | Shimmer gradient left-to-right | CSS `@keyframes` |
+| Approval swipe (mobile) | Swipe right=approve (green tint), left=reject (red tint) | Framer Motion gesture |
+| foreach progress bar | Smooth width transition as iterations complete | CSS transition |
+| Analytics chart data load | Bars grow up from baseline | Recharts animation props |
+| Version diff reveal | Lines fade in sequentially | Framer Motion stagger |
+| Node collapse/expand | Height animate via `layout` prop | Framer Motion layout |
+| Auto-layout reflow | All nodes animate to new positions simultaneously | React Flow `fitView` + Framer |
+| Undo/redo | Brief flash on affected nodes | CSS `@keyframes` flash |
+
+---
+
+### Canvas UX: Interaction Design
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CANVAS INTERACTION RULES                                                    │
+│                                                                             │
+│  Node Hover:       Drop shadow deepens + cursor: grab                       │
+│  Node Selected:    Blue outline ring + resize handles appear (8 points)     │
+│  Node Dragging:    Ghost preview at 70% opacity, snap guides appear         │
+│  Node Drop:        Spring bounce + blue flash for 200ms                     │
+│  Multi-select:     Rubber-band selection box with blue fill at 20% opacity  │
+│  Edge Hover:       Stroke widens 1px→2px + delete button appears mid-edge  │
+│  Edge Connecting:  Blue bezier preview follows cursor                       │
+│  Connection Valid: Target port glows green                                  │
+│  Connection Invalid: Target port glows red + shake animation               │
+│  Zoom In/Out:      Smooth logarithmic scale, nodes don't pixelate          │
+│  Pan:             Two-finger drag or Space+drag; momentum decel             │
+│  Fit View:         Ctrl+Shift+F — animates camera to frame all nodes        │
+│  Grid Snap:        Subtle grid lines appear while dragging, hide on release │
+│  Auto-layout:      All nodes animate to Dagre positions simultaneously      │
+│  Minimap:          Click-to-teleport + drag viewport rectangle              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Canvas Context Menu** (right-click on node/edge/empty space):
+```
+On node:  [✂ Cut] [⎘ Copy] [⊞ Duplicate] [🔗 Connect to...] [🗑 Delete] [ℹ Properties]
+On edge:  [🗑 Delete edge] [➕ Add step here]
+On empty: [➕ Add step] [🗺 Auto-layout] [📐 Fit to view] [🔍 Zoom: 100%]
+```
+
+**Keyboard Shortcuts Panel** (Cmd/Ctrl+?):
+```
+Ctrl+Z / Cmd+Z         Undo
+Ctrl+Y / Cmd+Shift+Z   Redo
+Ctrl+C / Cmd+C         Copy selected nodes
+Ctrl+V / Cmd+V         Paste
+Ctrl+D / Cmd+D         Duplicate
+Delete / Backspace     Delete selected
+Ctrl+A / Cmd+A         Select all
+Space + drag           Pan canvas
+Ctrl+= / Cmd+=         Zoom in
+Ctrl+- / Cmd+-         Zoom out
+Ctrl+0 / Cmd+0         Reset zoom to 100%
+Ctrl+Shift+F           Fit all nodes to view
+Escape                 Deselect / close panel
+Tab                    Select next node
+Shift+Tab              Select previous node
+Enter                  Open config for selected node
+L                      Auto-layout (Dagre)
+T                      Toggle YAML/Canvas view
+```
+
+---
+
+### Component Interaction States
+
+Every interactive component implements all 6 states:
+
+| State | Visual Treatment |
+|---|---|
+| **Default** | Base colors, no decoration |
+| **Hover** | Subtle bg-color shift (4% lighter/darker) + shadow-sm, `cursor: pointer` |
+| **Focus** | 2px blue ring (`outline: 2px solid #2563EB; outline-offset: 2px`) — keyboard nav |
+| **Active/Pressed** | Scale 0.98 + slightly darker bg (spring: snappy) |
+| **Loading** | Spinner replaces icon OR skeleton replaces content |
+| **Disabled** | 40% opacity + `cursor: not-allowed` + pointer-events: none |
+| **Error** | Red border + red icon + error tooltip below |
+| **Success** | Brief green flash + checkmark icon swap (200ms) |
+
+---
+
+### Empty States
+
+Every list/grid/canvas has a world-class empty state:
+
+| Screen | Empty State |
+|---|---|
+| Workflow list | Illustration + "Create your first workflow" + [Use a Template] [Start from Scratch] buttons |
+| Run history | Illustration + "No runs yet" + [Test Run] button |
+| Canvas (new workflow) | Ghosted instruction overlay: "Drag a step from the palette →" with animated arrow |
+| HITL inbox | Animated checkmark illustration + "You're all caught up" |
+| Template marketplace | Search no-results: "No templates match" + suggest closest match |
+| Analytics (no data) | Sparkline illustration + "Run your first workflow to see metrics" |
+
+---
+
+### Error States
+
+| Error Type | Treatment |
+|---|---|
+| Step execution failed | Node turns red with ❌ badge + tooltip with error message + "View Details" link |
+| YAML parse error | Monaco editor squiggle + red panel at bottom listing errors with line numbers |
+| Network error (API) | Toast: "Connection lost — retrying…" with spinner + auto-retry with exponential backoff |
+| 4xx API error | Toast: specific error message (e.g., "Workflow not found") |
+| 5xx API error | Toast: "Something went wrong — we're looking into it" + correlation ID for support |
+| Form validation | Inline red border + red text below field (never toast for forms) |
+| HITL escalation expired | Row shows ⚠️ badge + "Deadline passed" label |
+| Webhook HMAC fail | Toast: "Webhook rejected — signature mismatch" |
+
+---
+
+### Tooltip System
+
+Tooltips appear for: node icons, toolbar buttons, config field labels, SLA countdowns, status badges, truncated text.
+
+```typescript
+// Tooltip behavior spec:
+delay:    400ms      // show after hover delay (prevents flickering)
+duration: 150ms      // fade in
+position: auto       // smart: follows cursor, avoids viewport edges
+max-width: 240px     // long descriptions wrap
+content:  string | ReactNode  // can include keyboard shortcut hint
+style:    rounded-lg bg-gray-900 text-white text-xs px-2 py-1 shadow-lg
+
+// Example: toolbar button tooltip
+<Tooltip content="Auto-layout (L)" delay={400}>
+  <Button icon={<LayoutIcon />} />
+</Tooltip>
+```
+
+---
+
+### Dropdown / Popover System
+
+All dropdowns and popovers use Radix UI primitives for accessibility + Framer Motion for animation:
+
+```typescript
+// Enter: scale 0.95→1 + fade, origin from trigger
+// Exit:  scale 1→0.95 + fade, 150ms
+// Smart positioning: auto-flips if near viewport edge
+// Focus trap: Tab cycles through items
+// Dismiss: Escape or click outside
+```
+
+---
+
+### Toast / Notification System
+
+```
+Position: bottom-right, stacked (newest on top)
+Max visible: 5 (older ones auto-dismiss when overflow)
+Auto-dismiss: 4s (error: 8s, success: 3s)
+Progress bar: thin line at bottom depletes over auto-dismiss duration
+Pause on hover: progress bar pauses when mouse enters toast
+
+Types:
+  success  — green left border + checkmark icon
+  error    — red left border + X icon
+  warning  — amber left border + warning icon
+  info     — blue left border + info icon
+  loading  — blue left border + spinner (no auto-dismiss)
+  action   — includes [Undo] or [View] button
+
+Enter: slide up + fade in (spring: bouncy, from bottom)
+Exit:  slide right + fade out (200ms)
+Stack: new toast pushes others up (layout animation)
+```
+
+---
+
+### HITL Inbox: World-Class UX Details
+
+```
+Priority Indicators:
+  🔴 CRITICAL  — pulsing red dot + red left border + bold text
+  🟡 HIGH      — amber dot + amber left border
+  🟢 MEDIUM    — yellow dot + yellow left border
+  ⚪ LOW       — gray dot + gray left border
+
+SLA Countdown:
+  > 24h remaining  — green text "2 days left"
+  6–24h remaining  — amber text + amber clock icon  
+  < 6h remaining   — red text + animated pulsing clock
+  Expired          — red background + "OVERDUE" badge (pulse animation)
+
+Mobile Swipe Gestures:
+  Swipe right (>100px) → approve (green tint appears)
+  Swipe left  (>100px) → reject  (red tint appears)
+  Swipe threshold not reached → spring back to center
+  Haptic feedback: light tap on threshold cross, medium tap on confirm
+
+Bulk Selection:
+  Long-press (500ms) on card → enters bulk mode
+  Checkboxes animate in from left on all cards
+  Floating action bar slides up from bottom: [Approve All] [Reject All] [Cancel]
+
+Discussion Thread:
+  Messages animate in with slide + fade
+  "Typing…" indicator with 3 animated dots
+  New message scrolls to bottom with smooth animation
+```
+
+---
+
+### Analytics Charts: Motion
+
+```typescript
+// All charts use Recharts with animation enabled
+animationDuration: 800   // ms
+animationEasing:   'ease-out'
+
+// Specific animations:
+// Line chart:     Line draws from left to right
+// Bar chart:      Bars grow upward from baseline  
+// Area chart:     Area fills upward
+// Heatmap:        Cells fade in row by row (stagger: 20ms per cell)
+// Stat cards:     Numbers count up from 0 (using react-countup)
+
+// On data refresh:
+// New data points slide in from right
+// Removed data points fade out
+// Y-axis re-scales smoothly
+```
+
+---
+
+### Responsive Breakpoints
+
+| Breakpoint | Width | Layout Changes |
+|---|---|---|
+| `xs` | < 480px | Single-column HITL cards, no canvas (redirect to mobile view) |
+| `sm` | 480–768px | Condensed approval inbox, YAML editor only (no canvas) |
+| `md` | 768–1024px | Canvas visible but palette auto-collapsed, config panel as bottom sheet |
+| `lg` | 1024–1280px | Full layout minus collaboration cursors |
+| `xl` | 1280–1536px | Full layout |
+| `2xl` | > 1536px | Extra padding, larger node sizes, more visible text |
+
+**Mobile-specific adaptations:**
+- Canvas replaced with read-only run timeline on mobile
+- HITL inbox is the primary mobile experience
+- Approval swipe gestures replace button clicks
+- Bottom-sheet config panel instead of right panel
+- Touch targets minimum 44×44px everywhere
+- PWA installable — add to home screen prompt after 3rd approval
+
+---
+
+### Virtualization Strategy
+
+| List | Library | Trigger |
+|---|---|---|
+| Workflow list | `@tanstack/react-virtual` | > 50 workflows |
+| Run history | `@tanstack/react-virtual` | > 100 runs |
+| Step results in run detail | `@tanstack/react-virtual` | > 50 steps (foreach) |
+| HITL inbox | `@tanstack/react-virtual` | > 30 items |
+| Template marketplace | CSS grid + Intersection Observer | > 50 templates |
+
+---
+
+### Canvas Performance
+
+```typescript
+// React Flow performance settings:
+nodesDraggable:    true
+nodesConnectable:  true
+elementsSelectable:true
+
+// Optimizations:
+// 1. Node memoization: each node component wrapped in React.memo
+// 2. Edge rendering: only visible edges rendered (viewport culling)
+// 3. Minimap: separate canvas element, updates at 10fps
+// 4. Connection line: SVG, not DOM
+// 5. Max nodes warning: > 200 nodes → "Consider using sub-workflows"
+// 6. Debounced YAML sync: 300ms debounce on canvas→YAML conversion
+```
+
+---
+
+### Dark Mode Implementation
+
+```css
+/* CSS variables strategy — Tailwind + custom properties */
+:root {
+  --canvas-bg:           #F8FAFC;
+  --canvas-grid:         #E2E8F0;
+  --node-bg-default:     #FFFFFF;
+  --node-border-default: #E2E8F0;
+  --panel-bg:            #FFFFFF;
+  --panel-border:        #E2E8F0;
+  --text-primary:        #0F172A;
+  --text-secondary:      #475569;
+  --text-tertiary:       #94A3B8;
+}
+
+.dark {
+  --canvas-bg:           #0F172A;
+  --canvas-grid:         #1E293B;
+  --node-bg-default:     #1E293B;
+  --node-border-default: #334155;
+  --panel-bg:            #1E293B;
+  --panel-border:        #334155;
+  --text-primary:        #F8FAFC;
+  --text-secondary:      #94A3B8;
+  --text-tertiary:       #475569;
+}
+/* All node type colors have dark variants at 20% opacity for backgrounds */
+/* Icons remain full saturation in dark mode */
+/* Shadows use rgba with opacity instead of hard colors */
+```
+
+---
+
+### Micro-interactions
+
+Every state change has a micro-interaction — no instant jumps:
+
+| Trigger | Micro-interaction |
+|---|---|
+| Button click | Scale 0.97 for 80ms then spring back |
+| Toggle/checkbox | Thumb slides + color transitions simultaneously |
+| Input focus | Border animates to blue + label floats up |
+| Step status → complete | Checkmark draws in (SVG `stroke-dashoffset`) |
+| Node connected | Brief green flash on connected ports |
+| Copy step | Duplicate appears with slide-in + slight scale from 0.9 |
+| **Copy-paste steps** | Ctrl+C copies selected nodes; Ctrl+V pastes at cursor + 24px offset per paste; cross-workflow copy-paste supported |
+| Drag-and-drop step onto canvas | Ghost image follows cursor, target slot highlights, drop = spring bounce |
+| Paste from clipboard | Pasted nodes fade in at 0.8 opacity then snap to full in 150ms |
+| Tag/chip add | New chip slides in from the right of the input |
+| Tag/chip remove | Chip shrinks to zero + gap closes with layout animation |
+| Breadcrumb navigation | Current segment animates to active state |
+| Pagination page change | List crossfades with direction (next=right, prev=left) |
+
+---
+
+### Breadcrumb Navigation
+
+Every page has a clear breadcrumb with smooth transitions:
+
+```
+Workflows > KYC Automation > Edit            (builder page)
+Workflows > KYC Automation > Runs           (run list)
+Workflows > KYC Automation > Runs > R-9192  (run detail)
+Workflows > KYC Automation > Settings       (settings)
+Workflows > KYC Automation > Analytics      (analytics)
+Templates > KYC Automation                  (template preview)
+Approvals > KYC Review — Acme Corp         (approval detail)
+```
+
+Active segment is bold; separator is `/` at 40% opacity; clicking any segment navigates back.
+
+---
+
+### Chip / Tag Components
+
+Used throughout for: step tags, workflow tags, template categories, run labels, role names:
+
+```typescript
+// Chip variants:
+// default:  gray bg + dark text
+// colored:  node-type-specific color
+// outlined: transparent bg + colored border
+// removable: × button appears on hover (animate in 150ms)
+// clickable: hover bg change + cursor pointer
+
+// Sizes: sm (20px height), md (24px), lg (28px)
+// Max chips visible before +N overflow chip
+```
+
+---
+
+### Pagination
+
+Run lists, step lists, and template grids use **cursor-based pagination** (not page numbers):
+
+```
+[← Previous]  Showing 20 of 847 runs  [Next →]
+                                        
+For analytics: infinite scroll with intersection observer
+For run steps: virtual list (no pagination, all loaded)
+```
+
+---
+
 ## Frontend Architecture
 
 ### Package Structure

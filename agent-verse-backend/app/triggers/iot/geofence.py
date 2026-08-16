@@ -1,8 +1,8 @@
 """Geofence trigger — detects when a device enters or exits a polygon."""
 from __future__ import annotations
 
-import math
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,7 +42,7 @@ def point_in_polygon(point: LatLng, polygon: list[LatLng]) -> bool:
 
 def haversine_meters(a: LatLng, b: LatLng) -> float:
     """Great-circle distance between two LatLng points in metres."""
-    R = 6_371_000
+    R = 6_371_000  # noqa: N806
     φ1, φ2 = math.radians(a.lat), math.radians(b.lat)
     dφ = math.radians(b.lat - a.lat)
     dλ = math.radians(b.lng - a.lng)
@@ -108,7 +108,10 @@ class GeofenceTriggerEvaluator:
             }
             for trigger in pool:
                 spec = trigger.get("spec", trigger)
-                watch_region = getattr(spec, "geofence_region_id", "") or trigger.get("geofence_region_id", "")
+                watch_region = (
+                    getattr(spec, "geofence_region_id", "")
+                    or trigger.get("geofence_region_id", "")
+                )
                 if watch_region and watch_region != region.region_id:
                     continue
                 # Filter by geofence_action ("enter" | "exit" | "both")

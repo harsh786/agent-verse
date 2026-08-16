@@ -25,8 +25,6 @@ def derive_idempotency_key(
     The key is a SHA-256 hex digest (first 32 chars) of a stable string
     composed from the trigger_id and firing-context identifiers.
     """
-    family = trigger_type.split("_")[0].lower()
-
     # Family A: Time-based — keyed on trigger + scheduled fire time
     if trigger_type in ("cron", "interval", "once", "business_calendar",
                         "relative_delay", "deadline"):
@@ -44,18 +42,17 @@ def derive_idempotency_key(
         stable = f"{trigger_id}:{message_id or _payload_hash(payload)}"
 
     # Family D: Condition/State — keyed on trigger + payload hash
-    elif trigger_type in ("condition", "counter_threshold", "compound",
-                          "state_transition", "window_aggregate"):
-        stable = f"{trigger_id}:{_payload_hash(payload)}"
-
-    # Family E/G: Webhooks/HTTP — keyed on trigger + request body hash
-    elif trigger_type in ("event", "webhook", "rest", "github_webhook",
-                          "jira_webhook", "stripe_webhook", "slack_event",
-                          "teams_webhook", "discord_event", "salesforce_event",
-                          "confluence_webhook", "linear_webhook",
-                          "alertmanager", "datadog", "pagerduty",
-                          "grafana_alert", "cloudwatch", "sentry_issue",
-                          "log_pattern"):
+    elif trigger_type in (
+        "condition", "counter_threshold", "compound",
+        "state_transition", "window_aggregate",
+        "event", "webhook", "rest", "github_webhook",
+        "jira_webhook", "stripe_webhook", "slack_event",
+        "teams_webhook", "discord_event", "salesforce_event",
+        "confluence_webhook", "linear_webhook",
+        "alertmanager", "datadog", "pagerduty",
+        "grafana_alert", "cloudwatch", "sentry_issue",
+        "log_pattern",
+    ):
         stable = f"{trigger_id}:{_payload_hash(payload)}"
 
     # Family F: Data — keyed on trigger + txn_id or payload hash

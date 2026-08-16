@@ -1,0 +1,33 @@
+slug: merchant-onboarding
+name: "Merchant Onboarding"
+description: "End-to-end merchant onboarding with business verification and account setup"
+category: "Financial Services"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['onboarding', 'payments', 'merchant']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Merchant Onboarding"
+  description: "End-to-end merchant onboarding with business verification and account setup"
+  steps:
+    - id: validate_business
+      type: tool
+      tool: 'business.validate'
+      description: 'Validate merchant business details'
+    - id: credit_check
+      type: tool
+      tool: 'credit.check'
+      depends_on: ['validate_business']
+    - id: review_app
+      type: hitl
+      assignee: {'role': 'risk_analyst'}
+      actions: [{'id': 'approve'}, {'id': 'reject'}]
+      depends_on: ['credit_check']
+    - id: create_account
+      type: tool
+      tool: 'merchant.create_account'
+      depends_on: ['review_app']

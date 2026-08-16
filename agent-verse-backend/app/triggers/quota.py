@@ -9,7 +9,7 @@ PLAN_MAX_TRIGGERS: dict[str, int] = {
 }
 
 
-class TriggerQuotaExceeded(Exception):
+class TriggerQuotaExceeded(Exception):  # noqa: N818
     pass
 
 
