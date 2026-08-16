@@ -98,3 +98,25 @@ class ParserRegistry:
 
     def get_parser(self, content_type: ContentType) -> TextParser:
         return self._parsers.get(content_type, TextParser())  # type: ignore[return-value]
+
+    def parse(self, content: bytes, content_type: object) -> str:
+        """Parse raw bytes into plain text. Used by IngestionPipeline Stage 5.
+
+        Returns a single string of extracted text.
+        Falls back to UTF-8 decode if parser raises.
+        """
+        from app.ingestion.content_classifier import ContentType as CT
+        ct = content_type if isinstance(content_type, CT) else CT.PLAIN_TEXT
+        parser = self._parsers.get(ct, TextParser())
+
+        # Most parsers take str, but pipeline gives bytes
+        try:
+            # Try to decode first; parsers that need raw bytes have their own logic
+            text_input = content.decode("utf-8", errors="replace")
+            result = parser.parse(text_input)
+            if isinstance(result, list):
+                return "\n".join(result)
+            return str(result)
+        except Exception:
+            # Ultimate fallback: raw decode
+            return content.decode("utf-8", errors="replace")

@@ -234,30 +234,27 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
           <CostEstimateWidget goal={goal} enabled={goal.length >= 10} />
         </div>
 
+        {/* Agent selector — always visible */}
+        <div className="px-5 py-2 border-t border-border flex items-center gap-3">
+          <label htmlFor="agent-select" className="text-xs text-muted-foreground w-20 shrink-0">Agent</label>
+          <select
+            id="agent-select"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            className="flex-1 bg-background border border-input rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+            <option value="auto">Auto-select best agent</option>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>
+                {a.name} ({a.autonomy_mode})
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Options (collapsible) */}
         {showOptions && (
           <div className="px-5 py-3 border-t border-border bg-muted/20 space-y-3">
-            {/* Agent selector */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground w-20 shrink-0">Agent</span>
-              <select
-                value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
-                className="flex-1 bg-background border border-input rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              >
-                <option value="auto">
-                  {defaultAgentId !== 'auto'
-                    ? `Auto → ${agents.find(a => a.agent_id === defaultAgentId)?.name ?? 'first agent'}`
-                    : 'Auto-select (no agents configured)'}
-                </option>
-                {agents.map((a) => (
-                  <option key={a.agent_id} value={a.agent_id}>
-                    {a.name} · {a.autonomy_mode}
-                  </option>
-                ))}
-              </select>
-            </div>
-
             {/* Workflow mode */}
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground w-20 shrink-0">Strategy</span>
@@ -304,17 +301,6 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
                 ))}
               </div>
             </fieldset>
-
-            {/* Dry run */}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
-                className="accent-primary"
-              />
-              Dry run (preview only — no tools executed)
-            </label>
           </div>
         )}
 
@@ -362,6 +348,18 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
 
           <div className="flex-1" />
 
+          {/* Dry run — always visible in footer */}
+          <label htmlFor="dry-run-toggle" className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+            <input
+              id="dry-run-toggle"
+              type="checkbox"
+              checked={dryRun}
+              onChange={(e) => setDryRun(e.target.checked)}
+              className="accent-primary"
+            />
+            Dry run
+          </label>
+
           <button
             type="button"
             onClick={() => goal.trim() && submit.mutate()}
@@ -375,7 +373,7 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
             ) : (
               <>
                 <Zap className="h-3.5 w-3.5" aria-hidden="true" />
-                {dryRun ? 'Preview' : 'Launch'}
+                {dryRun ? 'Dry Run' : 'Submit'}
               </>
             )}
           </button>

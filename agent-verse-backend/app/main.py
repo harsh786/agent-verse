@@ -533,6 +533,22 @@ def create_app(
     _nl_sched = NLScheduler(provider=_app_provider)
     _knowledge_store = KnowledgeStore()
     _semantic_cache = SemanticCache()
+    # Ingestion framework — LAW-01: single pipeline path
+    try:
+        from app.ingestion.pipeline import IngestionPipeline
+        from app.ingestion.job_tracker import IngestionJobTracker
+        from app.ingestion.connector_registry import load_all_connectors
+        load_all_connectors()
+        _ingestion_pipeline = IngestionPipeline(
+            knowledge_store=_knowledge_store,
+            embedder=_app_provider,
+        )
+        _ingestion_job_tracker = IngestionJobTracker()
+    except Exception as _ing_exc:
+        import logging as _lg
+        _lg.getLogger(__name__).warning("ingestion_framework_init_error: %s", _ing_exc)
+        _ingestion_pipeline = None
+        _ingestion_job_tracker = None
     # In-memory ToolResultCache (upgraded with Redis in lifespan)
     try:
         from app.mcp.tool_cache import ToolResultCache
@@ -1764,6 +1780,9 @@ def create_app(
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
     app.state.repository_ingestion_tasks = set()
+    # Ingestion framework
+    app.state.ingestion_pipeline = _ingestion_pipeline
+    app.state.ingestion_job_tracker = _ingestion_job_tracker
     app.state.retrieval_gateway = _retrieval_gateway
     app.state.raft_service = _raft_service
     app.state.safe_web_search_capability = _web_search_capability
@@ -1808,10 +1827,39 @@ def create_app(
     # Perception
     app.state.browser_agent = _browser_agent
     app.state.page_analyzer = _page_analyzer
-    # Workflow Builder
+    # Workflow Builder (legacy canvas-based)
     app.state.workflow_store = WorkflowStore()
     # Goal Templates
     app.state.template_store = _template_store
+
+    # ── Workflow Automation Engine ────────────────────────────────────────────
+    try:
+        from app.workflow.compiler import WorkflowCompiler
+        from app.workflow.context import ContextResolver
+        from app.workflow.hitl_extension import HITLWorkflowGateway
+        from app.workflow.nl_trigger import NLTriggerResolver
+        from app.workflow.runner import WorkflowRunner
+        from app.workflow.template_store import SystemTemplateStore
+
+        _wf_ctx = ContextResolver()
+        _wf_compiler = WorkflowCompiler(context_resolver=_wf_ctx)
+        _wf_runner = WorkflowRunner(compiler=_wf_compiler)
+        _hitl_wf_gateway = HITLWorkflowGateway()
+        _nl_trigger_resolver = NLTriggerResolver()
+        _system_template_store = SystemTemplateStore()
+
+        # workflow_service: stub — real impl backed by DB in production lifespan
+        # The routers use getattr(..., "workflow_service", None) → 503 if absent.
+        # Set a sentinel so the 503 branch is never hit unnecessarily.
+        app.state.workflow_service = None         # populated by lifespan when DB is ready
+        app.state.workflow_runner = _wf_runner
+        app.state.workflow_compiler = _wf_compiler
+        app.state.hitl_workflow_gateway = _hitl_wf_gateway
+        app.state.nl_trigger_resolver = _nl_trigger_resolver
+        app.state.template_store_we = _system_template_store  # workflow engine templates
+    except Exception as _wfe:
+        import logging as _log
+        _log.getLogger(__name__).warning("workflow_engine_state_init_failed: %s", _wfe)
 
     # ── Middleware (order matters — outermost wraps last) ─────────────────────
     # NOTE: CORSMiddleware must be outermost (added LAST) so CORS headers are

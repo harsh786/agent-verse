@@ -79,6 +79,7 @@ from app.api.schedules import (
 from app.api.triggers import router as triggers_router  # Phase 4: full trigger CRUD
 from app.api.channels.ingestion import router as channels_router  # Phase 2
 from app.api.state_machines import router as state_machines_router  # Phase 3
+from app.api.ingestion import router as ingestion_sources_router, documents_router as ingestion_documents_router  # Ingestion framework
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
@@ -119,6 +120,8 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(triggers_router)  # Phase 4: full trigger CRUD + DLQ
     app.include_router(channels_router)  # Phase 2: channel ingestion
     app.include_router(state_machines_router)  # Phase 3: state machines
+    app.include_router(ingestion_sources_router)  # Ingestion: source CRUD + sync
+    app.include_router(ingestion_documents_router)  # Ingestion: documents + DLQ + quota
     app.include_router(nl_router)
     app.include_router(webhooks_router)
     app.include_router(events_router)

@@ -1,7 +1,9 @@
 /**
  * RunCostSummary — cost, token count, and duration breakdown for a workflow run.
  */
+import { motion } from 'framer-motion';
 import { DollarSign, Cpu, Timer, TrendingUp } from 'lucide-react';
+import { springs } from '../design/motion';
 import type { WERun } from '../../../lib/api/client';
 
 interface Props {
@@ -45,14 +47,19 @@ export function RunCostSummary({ run, stepCount }: Props) {
   ];
 
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       className="grid grid-cols-2 lg:grid-cols-4 gap-3"
       role="list"
       aria-label="Run cost summary"
     >
-      {stats.map(({ icon, label, value, sub }) => (
-        <div
+      {stats.map(({ icon, label, value, sub }, idx) => (
+        <motion.div
           key={label}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ ...springs.gentle, delay: idx * 0.08 }}
           className="rounded-xl border border-white/8 bg-white/3 px-4 py-3 flex items-center gap-3"
           role="listitem"
         >
@@ -62,8 +69,8 @@ export function RunCostSummary({ run, stepCount }: Props) {
             <p className="text-sm font-semibold text-white">{value}</p>
             <p className="text-xs text-white/25">{sub}</p>
           </div>
-        </div>
+        </motion.div>
       ))}
-    </div>
+    </motion.div>
   );
 }

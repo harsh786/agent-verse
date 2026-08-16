@@ -1,3 +1,5 @@
+import { motion } from 'framer-motion';
+import { springs } from '../design/motion';
 /**
  * StepOutputInspector — JSON tree viewer for step input/output.
  *
@@ -100,14 +102,17 @@ function CopyButton({ value }: { value: unknown }) {
   };
 
   return (
-    <button
+    <motion.button
+      whileHover={{ scale: 1.1 }}
+      whileTap={{ scale: 0.9 }}
+      transition={springs.snappy}
       onClick={copy}
       className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/8
                  transition-colors"
       aria-label={copied ? 'Copied!' : 'Copy to clipboard'}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-    </button>
+    </motion.button>
   );
 }
 
@@ -131,7 +136,12 @@ export function StepOutputInspector({
   }
 
   return (
-    <div className={`rounded-xl border border-white/8 bg-slate-900/50 overflow-hidden ${className}`}>
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={springs.gentle}
+      className={`rounded-xl border border-white/8 bg-slate-900/50 overflow-hidden ${className}`}
+    >
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/8 bg-white/3">
         <span className="text-xs font-semibold text-white/50 uppercase tracking-wide">{title}</span>
         <CopyButton value={data} />
@@ -143,6 +153,6 @@ export function StepOutputInspector({
       >
         <JsonValue value={data} />
       </div>
-    </div>
+    </motion.div>
   );
 }

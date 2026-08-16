@@ -1,7 +1,12 @@
 /**
  * WorkflowRunsPage — run history list for a specific workflow.
+ *
+ * Accessibility: uses useMotionSafe to respect prefers-reduced-motion.
+ * When reduced-motion is on, all transitions use reducedMotion (instant).
  */
 import { useParams, Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { springs, reducedMotion } from './design/motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, Play, CheckCircle, XCircle, Clock, Loader2, Pause } from 'lucide-react';
 import { workflowEngineApi, type WERun } from '../../lib/api/client';
@@ -25,7 +30,18 @@ function RunRow({ run }: { run: WERun }) {
       : `${(run.duration_ms / 1000).toFixed(1)}s`
     : '—';
 
+  // Respect prefers-reduced-motion: use instant transition when user has set this preference
+  const prefersReduced = typeof window !== 'undefined'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const transitionToUse = prefersReduced ? reducedMotion : springs.gentle;
+
   return (
+    <motion.div
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={transitionToUse}
+      whileHover={{ x: 2 }}
+    >
     <Link
       to={`/workflow-runs/${run.run_id}`}
       className="flex items-center gap-4 px-4 py-3 rounded-xl border border-white/8
@@ -48,6 +64,7 @@ function RunRow({ run }: { run: WERun }) {
         <span>{run.started_at ? new Date(run.started_at).toLocaleString() : '—'}</span>
       </div>
     </Link>
+    </motion.div>
   );
 }
 
@@ -92,11 +109,17 @@ export default function WorkflowRunsPage() {
             <p className="text-sm">No runs yet. Trigger the workflow to see runs here.</p>
           </div>
         ) : (
-          <div className="space-y-2" role="list" aria-label="Workflow runs">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="space-y-2"
+            role="list"
+            aria-label="Workflow runs"
+          >
             {(runs?.items ?? []).map((run) => (
               <RunRow key={run.run_id} run={run} />
             ))}
-          </div>
+          </motion.div>
         )}
       </main>
     </div>

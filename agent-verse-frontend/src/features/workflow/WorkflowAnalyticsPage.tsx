@@ -5,6 +5,8 @@
  * Stats: total runs, cost this month, pending HITL.
  */
 import { useParams, Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { springs } from './design/motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, TrendingUp, DollarSign, CheckCircle, Clock, Loader2, AlertCircle } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
@@ -112,7 +114,13 @@ export default function WorkflowAnalyticsPage() {
         ) : (
           <div className="space-y-6">
             {/* Stat cards */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" role="list">
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={springs.gentle}
+              className="grid grid-cols-2 lg:grid-cols-4 gap-4"
+              role="list"
+            >
               <StatCard
                 icon={<TrendingUp className="h-4 w-4" />}
                 label="Total Runs"
@@ -137,7 +145,7 @@ export default function WorkflowAnalyticsPage() {
                 value={`${Math.round(Number((analytics as Record<string, unknown> | undefined)?.avg_duration_seconds ?? 0))}s`}
                 color="sky"
               />
-            </div>
+            </motion.div>
 
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

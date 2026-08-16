@@ -1,4 +1,4 @@
-"""Tests for Phase 1–4 trigger infrastructure modules."""
+"""Tests for Phase 1-4 trigger infrastructure modules."""
 from __future__ import annotations
 
 import pytest

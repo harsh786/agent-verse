@@ -233,7 +233,7 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
 const CONNECTOR_URL_MAP: Record<string, { url: string; hint: string; label: string }> = {
   jira:           { url: 'https://yourcompany.atlassian.net', hint: 'Replace "yourcompany" with your Atlassian subdomain', label: 'JIRA Base URL' },
   confluence:     { url: 'https://yourcompany.atlassian.net', hint: 'Same domain as JIRA for Atlassian Cloud', label: 'Confluence Base URL' },
-  github:         { url: 'https://api.githubcopilot.com/mcp/', hint: 'Official GitHub MCP Server. For GitHub Enterprise use your GHE MCP endpoint.', label: 'GitHub MCP URL' },
+  github:         { url: 'https://api.github.com', hint: 'GitHub REST API. For MCP Server use: https://api.githubcopilot.com/mcp/', label: 'GitHub API URL' },
   gitlab:         { url: 'https://gitlab.com', hint: 'For self-hosted: https://gitlab.yourcompany.com', label: 'GitLab URL' },
   slack:          { url: 'https://slack.com/api', hint: 'Always use this URL for Slack API calls', label: 'Slack API URL' },
   salesforce:     { url: 'https://yourinstance.salesforce.com', hint: 'Replace with your Salesforce instance domain', label: 'Salesforce Instance URL' },
@@ -837,8 +837,9 @@ export function ConnectorsRegisteredPage() {
                           </button>
                           <button
                             onClick={() => setConfirmDeleteId(c.server_id)}
-                            disabled={unregisterMutation.isPending}
+                            disabled={unregisterMutation.isPending || confirmDeleteId === c.server_id}
                             className="text-destructive hover:opacity-70 text-xs font-medium disabled:opacity-40 transition-opacity"
+                            aria-hidden={confirmDeleteId === c.server_id}
                           >
                             Remove
                           </button>

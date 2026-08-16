@@ -12,9 +12,16 @@ from agentverse.models import (
     GoalEvent,
     GoalStatus,
 )
+from agentverse.workflows import WorkflowClient, WorkflowRun, WorkflowDefinition
 
 __all__ = [
+    # Core client
     "AgentVerseClient",
+    # Workflow Automation Engine
+    "WorkflowClient",
+    "WorkflowRun",
+    "WorkflowDefinition",
+    # Goals / Agents
     "Goal",
     "GoalEvent",
     "GoalStatus",
@@ -23,6 +30,7 @@ __all__ = [
     "CoordinationLayerPage",
     "CoordinationEvent",
     "CoordinationMessagePage",
+    # Exceptions
     "AgentVerseError",
     "AuthError",
     "GoalFailedError",
