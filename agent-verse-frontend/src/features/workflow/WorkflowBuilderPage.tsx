@@ -47,7 +47,7 @@ import { WorkflowExecutionOverlay } from './builder/WorkflowExecutionOverlay';
 import { useYamlSync } from './builder/canvas-utils/useYamlSync';
 import { useCanvasKeyboardShortcuts } from './builder/canvas-utils/useCanvasKeyboardShortcuts';
 import { useAutoLayout } from './builder/canvas-utils/useAutoLayout';
-import { panelSlide } from './design/motion';
+import { panelSlide, toolbarButton, modalBackdrop, modalContent, edgeFlow } from './design/motion';
 import type { WorkflowNodeData } from './builder/nodes/BaseWorkflowNode';
 
 // ── History for undo/redo ─────────────────────────────────────────────────────
@@ -116,7 +116,8 @@ function BuilderCanvas({
     setEdges((eds) => addEdge({
       ...params,
       type: 'smoothstep',
-      animated: false,
+      animated: true,
+      style: { strokeDasharray: 6, animation: edgeFlow.animation },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
     }, eds));
   }, [setEdges]);
@@ -247,7 +248,11 @@ function BuilderCanvas({
                          bg-slate-900/90 backdrop-blur-md rounded-2xl border border-white/10
                          px-3 py-1.5 shadow-xl">
           {/* Undo/redo */}
-          <button
+          <motion.button
+            variants={toolbarButton}
+            initial="rest"
+            whileHover="hover"
+            whileTap="pressed"
             onClick={doUndo}
             disabled={!history.canUndo}
             className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/8
@@ -256,8 +261,12 @@ function BuilderCanvas({
             title="Undo (Ctrl+Z)"
           >
             <Undo2 className="h-4 w-4" />
-          </button>
-          <button
+          </motion.button>
+          <motion.button
+            variants={toolbarButton}
+            initial="rest"
+            whileHover="hover"
+            whileTap="pressed"
             onClick={doRedo}
             disabled={!history.canRedo}
             className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/8
@@ -266,7 +275,7 @@ function BuilderCanvas({
             title="Redo (Ctrl+Y)"
           >
             <Redo2 className="h-4 w-4" />
-          </button>
+          </motion.button>
 
           <div className="w-px h-5 bg-white/10 mx-0.5" />
 
@@ -378,9 +387,16 @@ function BuilderCanvas({
               exit="exit"
               className="absolute top-0 right-0 bottom-0 w-[400px] border-l border-white/10
                          bg-slate-900/95 backdrop-blur-md flex flex-col shadow-2xl z-10"
+          style={modalBackdrop.animate as React.CSSProperties}
               aria-label="YAML editor"
             >
-              <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+              <motion.div
+                variants={modalContent}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="flex items-center justify-between px-4 py-3 border-b border-white/10"
+              >
                 <span className="text-sm font-semibold text-white flex items-center gap-2">
                   <Code2 className="h-4 w-4 text-sky-400" />
                   Workflow YAML
@@ -397,7 +413,7 @@ function BuilderCanvas({
                 >
                   <X className="h-4 w-4" />
                 </button>
-              </div>
+              </motion.div>
               <textarea
                 value={yamlText}
                 onChange={(e) => {

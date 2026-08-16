@@ -49,7 +49,7 @@ class ApprovalDecisionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/versions")
+@router.get("/{workflow_id}/versions", operation_id="workflow_versions_list")
 async def list_versions(workflow_id: str, request: Request) -> list[dict[str, Any]]:
     """List all saved versions of a workflow definition."""
     svc = _svc(request)
@@ -76,6 +76,7 @@ async def get_version(
 @router.post(
     "/{workflow_id}/versions/{version}/restore",
     status_code=status.HTTP_200_OK,
+    operation_id="workflow_versions_restore",
 )
 async def restore_version(
     workflow_id: str, version: int, request: Request

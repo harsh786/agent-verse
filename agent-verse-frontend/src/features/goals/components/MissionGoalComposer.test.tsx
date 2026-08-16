@@ -28,7 +28,7 @@ describe('MissionGoalComposer strategy controls', () => {
   test('keeps override fields absent by default', async () => {
     view();
     fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Run a safe goal' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(submit).toHaveBeenCalled());
     const lastCall = submit.mock.calls[submit.mock.calls.length - 1]?.[0];
     expect(lastCall).not.toHaveProperty('strategy_override');
@@ -42,7 +42,7 @@ describe('MissionGoalComposer strategy controls', () => {
     fireEvent.change(screen.getByLabelText('Runtime'), { target: { value: 'react' } });
     fireEvent.change(screen.getByLabelText('Calls'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Run a bounded goal' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({ strategy_override: 'react', pattern_limits: { calls: 4 } })));
   });
 });

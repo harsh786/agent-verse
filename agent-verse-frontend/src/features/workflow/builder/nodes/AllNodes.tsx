@@ -3,20 +3,26 @@
  *
  * Each node wraps BaseWorkflowNode with type-specific visual identity
  * and exports a nodeTypes map for React Flow registration.
+ *
+ * Animations: nodeBounce on mount, selection ring pulse.
  */
 import type { NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
+import { motion } from 'framer-motion';
 import { BaseWorkflowNode, type WorkflowNodeData } from './BaseWorkflowNode';
 import { NODE_COLORS, type NodeType } from '../../design/tokens';
+import { nodeBounce } from '../../design/motion';
 
 // ── Shared base wrapper ───────────────────────────────────────────────────────
 
 function makeNode(stepType: NodeType | string) {
   const NodeComponent = (props: NodeProps) => (
-    <BaseWorkflowNode
-      {...props}
-      data={{ ...(props.data as WorkflowNodeData), stepType }}
-    />
+    <motion.div variants={nodeBounce} initial="initial" animate="animate" exit="exit">
+      <BaseWorkflowNode
+        {...props}
+        data={{ ...(props.data as WorkflowNodeData), stepType }}
+      />
+    </motion.div>
   );
   NodeComponent.displayName = `${stepType}Node`;
   return NodeComponent;

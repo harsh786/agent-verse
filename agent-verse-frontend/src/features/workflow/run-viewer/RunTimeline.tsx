@@ -1,16 +1,21 @@
 /**
  * RunTimeline — vertical step-by-step execution timeline.
  *
- * Renders each step result with status icon, duration, cost.
- * Clicking a step opens StepOutputInspector.
- * Accessible: uses role="list" + aria-labels.
+ * Animations:
+ * - Steps stagger-reveal on mount (150ms delay between each)
+ * - Running steps pulse with runningPulse variant
+ * - Completed steps bounce-in with completionBounce
+ * - Output panel springs open/close
+ * - Failed steps shake on mount
  */
 import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   CheckCircle, XCircle, Clock, Loader2, ChevronDown, ChevronRight,
   UserCheck, Pause, SkipForward,
 } from 'lucide-react';
 import type { WEStepResult } from '../../../lib/api/client';
+import { runningPulse, completionBounce, springs } from '../design/motion';
 
 // ── Status config ─────────────────────────────────────────────────────────────
 
@@ -54,16 +59,39 @@ const STEP_STATUS = {
 
 // ── Step row ──────────────────────────────────────────────────────────────────
 
+// Stagger container for the list
+const listVariants = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.08 } },
+};
+
+// Each row slides up + fades in
+const rowVariants = {
+  hidden: { opacity: 0, y: 12 },
+  show: { opacity: 1, y: 0, transition: springs.gentle },
+};
+
+// Failed row shakes horizontally
+const failedShake = {
+  hidden: { x: 0 },
+  show: {
+    x: [0, -6, 6, -4, 4, 0],
+    transition: { duration: 0.4, delay: 0.15 },
+  },
+};
+
 function StepRow({
   step,
   isLast,
   onSelect,
   selected,
+  index,
 }: {
   step: WEStepResult;
   isLast: boolean;
   onSelect: (s: WEStepResult) => void;
   selected: boolean;
+  index: number;
 }) {
   const config = STEP_STATUS[step.status as keyof typeof STEP_STATUS] ?? STEP_STATUS.pending;
   const duration = step.duration_ms
@@ -72,18 +100,32 @@ function StepRow({
       : `${(step.duration_ms / 1000).toFixed(1)}s`
     : null;
 
+  const isRunning = step.status === 'running';
+  const isComplete = step.status === 'complete';
+  const isFailed = step.status === 'failed';
+
   return (
-    <li className="relative flex gap-4" role="listitem">
+    <motion.li
+      className="relative flex gap-4"
+      role="listitem"
+      variants={isFailed ? failedShake : rowVariants}
+      custom={index}
+    >
       {/* Vertical line */}
       {!isLast && (
         <div className="absolute left-[15px] top-8 bottom-0 w-0.5 bg-white/10" aria-hidden />
       )}
 
-      {/* Status dot */}
-      <div className={`relative z-10 shrink-0 w-8 h-8 rounded-full flex items-center
-                       justify-center ring-1 ${config.ringColor} bg-slate-900`}>
+      {/* Status dot — pulses when running, bounces when complete */}
+      <motion.div
+        className={`relative z-10 shrink-0 w-8 h-8 rounded-full flex items-center
+                     justify-center ring-1 ${config.ringColor} bg-slate-900`}
+        animate={isRunning ? 'animate' : 'initial'}
+        variants={isRunning ? runningPulse : isComplete ? completionBounce : undefined}
+        initial={isComplete ? 'initial' : undefined}
+      >
         {config.icon}
-      </div>
+      </motion.div>
 
       {/* Content */}
       <button
@@ -106,20 +148,31 @@ function StepRow({
         </div>
         <div className="flex items-center gap-2 text-xs text-white/30 shrink-0">
           {duration && <span>{duration}</span>}
-          {selected
-            ? <ChevronDown className="h-3.5 w-3.5" />
-            : <ChevronRight className="h-3.5 w-3.5" />}
+          <motion.span
+            animate={{ rotate: selected ? 0 : 0 }}
+            transition={springs.snappy}
+          >
+            {selected
+              ? <ChevronDown className="h-3.5 w-3.5" />
+              : <ChevronRight className="h-3.5 w-3.5" />}
+          </motion.span>
         </div>
       </button>
-    </li>
+    </motion.li>
   );
 }
 
-// ── Output inspector (inline) ─────────────────────────────────────────────────
+// ── Output inspector (inline) — spring expand ────────────────────────────────
 
 function InlineOutput({ step }: { step: WEStepResult }) {
   return (
-    <div className="ml-12 mb-4 rounded-xl border border-white/8 bg-slate-900/60 overflow-hidden">
+    <motion.div
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      transition={springs.gentle}
+      className="ml-12 mb-4 rounded-xl border border-white/8 bg-slate-900/60 overflow-hidden"
+    >
       {step.error && (
         <div className="p-3 bg-red-950/40 border-b border-red-500/20">
           <p className="text-xs font-semibold text-red-400 mb-1">Error</p>
@@ -137,7 +190,7 @@ function InlineOutput({ step }: { step: WEStepResult }) {
       {!step.error && !step.output && (
         <div className="p-3 text-xs text-white/30">No output data</div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -148,14 +201,26 @@ export function RunTimeline({ steps }: { steps: WEStepResult[] }) {
 
   if (!steps.length) {
     return (
-      <p className="text-xs text-white/30 py-4" role="status">
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-xs text-white/30 py-4"
+        role="status"
+      >
         No steps recorded yet.
-      </p>
+      </motion.p>
     );
   }
 
   return (
-    <ul className="space-y-0" role="list" aria-label="Step execution timeline">
+    <motion.ul
+      variants={listVariants}
+      initial="hidden"
+      animate="show"
+      className="space-y-0"
+      role="list"
+      aria-label="Step execution timeline"
+    >
       {steps.map((step, idx) => {
         const isLast = idx === steps.length - 1;
         const isSelected = selectedId === step.step_id;
@@ -164,13 +229,18 @@ export function RunTimeline({ steps }: { steps: WEStepResult[] }) {
             <StepRow
               step={step}
               isLast={isLast && !isSelected}
+              index={idx}
               onSelect={(s) => setSelectedId(isSelected ? null : s.step_id)}
               selected={isSelected}
             />
-            {isSelected && <InlineOutput step={step} />}
+            {isSelected && (
+              <AnimatePresence>
+                <InlineOutput step={step} />
+              </AnimatePresence>
+            )}
           </div>
         );
       })}
-    </ul>
+    </motion.ul>
   );
 }

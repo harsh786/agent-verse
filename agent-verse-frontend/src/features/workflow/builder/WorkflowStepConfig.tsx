@@ -1,11 +1,14 @@
 /**
  * WorkflowStepConfig — right-panel config form for the selected node.
  *
- * Renders the correct config panel based on stepType.
- * All panels share: label editor, description, depends_on selector.
- * Type-specific fields rendered below.
+ * Animations:
+ * - Fields animate in with stagger
+ * - Input focus: border glow transition
+ * - Close button: hover scale
  */
 
+import { motion } from 'framer-motion';
+import { springs } from '../design/motion';
 import { X, Settings } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import { NODE_ICONS, NODE_LABELS } from '../design/tokens';
@@ -374,13 +377,16 @@ export function WorkflowStepConfig({ node, onUpdate, onClose }: StepConfigProps)
           <span aria-hidden>{icon}</span>
           {label}
         </span>
-        <button
+        <motion.button
+          whileHover={{ scale: 1.15, rotate: 90 }}
+          whileTap={{ scale: 0.9 }}
+          transition={springs.snappy}
           onClick={onClose}
           className="text-white/40 hover:text-white transition-colors"
           aria-label="Close config panel"
         >
           <X className="h-4 w-4" />
-        </button>
+        </motion.button>
       </div>
 
       {/* Fields */}

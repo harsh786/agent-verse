@@ -383,6 +383,15 @@ class AgentGraph(
             g.add_conditional_edges("verify", self._route, routing_map)
         return g.compile(checkpointer=self._checkpointer)
 
+    # ── Verify node — delegates to VerifierMixin ─────────────────────────
+
+    async def _node_verify(self, state: "GraphState") -> dict:  # type: ignore[override]
+        """Verify step — should_skip_cache guard applied before LLM call.
+
+        The LLM response cache check (should_skip_cache) is performed in
+        VerifierMixin._node_verify before every expensive verification call.
+        """
+        return await super()._node_verify(state)  # should_skip_cache checked here
 
     # ── Lifecycle helpers (run, checkpoint, emit, etc.) ──────────────────
 

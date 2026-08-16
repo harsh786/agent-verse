@@ -1,3 +1,6 @@
+import { motion } from 'framer-motion';
+import { springs, SKELETON_SHIMMER_CLASS } from '../design/motion';
+
 /**
  * Skeleton loading components for workflow pages.
  *
@@ -6,14 +9,21 @@
  */
 
 function SkeletonBox({ className = '' }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-white/5 ${className}`} />;
+  return <div className={`${SKELETON_SHIMMER_CLASS} rounded-lg ${className}`} />;
 }
 
 // ── Workflow List Skeleton ────────────────────────────────────────────────────
 
 export function WorkflowListSkeleton() {
   return (
-    <div role="status" aria-label="Loading workflows…" className="space-y-4">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={springs.gentle}
+      role="status"
+      aria-label="Loading workflows…"
+      className="space-y-4"
+    >
       {/* Search bar */}
       <div className="flex gap-3 mb-6">
         <SkeletonBox className="h-9 w-64 rounded-xl" />
@@ -41,7 +51,7 @@ export function WorkflowListSkeleton() {
         ))}
       </div>
       <span className="sr-only">Loading workflows…</span>
-    </div>
+    </motion.div>
   );
 }
 

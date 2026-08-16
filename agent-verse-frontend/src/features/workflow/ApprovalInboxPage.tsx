@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
 import { PRIORITY_COLORS } from './design/tokens';
-import { nodeBounce, emptyStateFade, slaPulse } from './design/motion';
+import { nodeBounce, emptyStateFade, slaPulse, swipeTint, springs } from './design/motion';
 
 // ── Priority badge ────────────────────────────────────────────────────────────
 
@@ -189,7 +189,10 @@ function ApprovalCard({
             ))
           ) : (
             <>
-              <button
+              <motion.button
+                whileHover={swipeTint.approve}
+                whileTap={{ scale: 0.96 }}
+                transition={springs.snappy}
                 onClick={() => onDecide(req.request_id, 'approved', note || undefined)}
                 disabled={isDeciding}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/80
@@ -199,8 +202,11 @@ function ApprovalCard({
               >
                 {isDeciding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
                 Approve
-              </button>
-              <button
+              </motion.button>
+              <motion.button
+                whileHover={swipeTint.reject}
+                whileTap={{ scale: 0.96 }}
+                transition={springs.snappy}
                 onClick={() => onDecide(req.request_id, 'rejected', note || undefined)}
                 disabled={isDeciding}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/60
@@ -210,7 +216,7 @@ function ApprovalCard({
               >
                 {isDeciding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
                 Reject
-              </button>
+              </motion.button>
             </>
           )}
 
