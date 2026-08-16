@@ -32,6 +32,7 @@
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
     "diff": "^9.0.0",
+    "framer-motion": "^13.1.0",
     "html-to-image": "1.11.13",
     "i18next": "^26.3.4",
     "i18next-browser-languagedetector": "^8.2.1",

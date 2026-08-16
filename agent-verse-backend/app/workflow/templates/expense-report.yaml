@@ -1,0 +1,32 @@
+slug: expense-report
+name: "Expense Report Processing"
+description: "Employee expense report submission and multi-level approval"
+category: "Finance"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['finance', 'expenses', 'reimbursement']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Expense Report Processing"
+  description: "Employee expense report submission and multi-level approval"
+  steps:
+    - id: parse_report
+      type: tool
+      tool: 'expense.parse'
+    - id: check_policy
+      type: llm
+      prompt: 'Check expense policy compliance: {{steps.parse_report.output}}'
+      depends_on: ['parse_report']
+    - id: manager_approval
+      type: hitl
+      assignee: {'role': 'line_manager'}
+      actions: [{'id': 'approve'}, {'id': 'reject'}]
+      depends_on: ['check_policy']
+    - id: reimburse
+      type: tool
+      tool: 'payroll.reimburse'
+      depends_on: ['manager_approval']

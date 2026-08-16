@@ -44,7 +44,15 @@ def parse_cloudwatch_alarm(body: dict) -> AlertPayload:
         message=detail.get("state", {}).get("reason", ""),
         source="cloudwatch",
         labels={
-            "namespace": detail.get("configuration", {}).get("metrics", [{}])[0].get("metricStat", {}).get("metric", {}).get("namespace", "") if detail.get("configuration", {}).get("metrics") else "",
+            "namespace": (
+                detail.get("configuration", {})
+                .get("metrics", [{}])[0]
+                .get("metricStat", {})
+                .get("metric", {})
+                .get("namespace", "")
+                if detail.get("configuration", {}).get("metrics")
+                else ""
+            ),
         },
         raw=body,
     )

@@ -57,6 +57,7 @@ dependencies = [
     "razorpay>=2.0.1",
     "rank-bm25>=0.2.2",
     "sentence-transformers>=5.6.0",
+    "simpleeval>=1.0.7",
 ]
 
 [project.scripts]
@@ -188,6 +189,19 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["PIL.*", "pytesseract.*", "pdf2image.*"]
 ignore_missing_imports = true
+
+# Celery tasks: @shared_task decorator is untyped (celery has no py.typed marker)
+[[tool.mypy.overrides]]
+module = "app.workflow.celery_tasks"
+disallow_untyped_decorators = false
+warn_return_any = false
+no_warn_return_any = true
+
+# LangGraph compiler: StateGraph stubs are incomplete
+[[tool.mypy.overrides]]
+module = "app.workflow.compiler"
+warn_return_any = false
+no_warn_return_any = true
 
 [tool.uv.sources]
 agentverse-sdk = { path = "../agent-verse-sdk-python" }

@@ -248,7 +248,7 @@ def validate_cron(expression: str, plan: str = "free") -> None:
     Raises ValueError if the expression is invalid or violates plan limits.
     """
     try:
-        from croniter import CroniterBadCronError, croniter
+        from croniter import croniter
         croniter(expression)
     except ImportError:
         pass  # croniter not installed — skip validation

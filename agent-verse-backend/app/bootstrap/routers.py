@@ -335,4 +335,20 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     except Exception as _e:
         logger.warning("ocr_router_failed", error=str(_e))
 
+    # ── Workflow Automation Engine (Phase WE) ─────────────────────────────────
+    try:
+        from app.workflow.router import router as workflow_engine_router
+        from app.workflow.router_runs import router as workflow_runs_router
+        from app.workflow.router_hitl import router as workflow_hitl_router
+        from app.workflow.router_templates import router as workflow_templates_router
+        from app.workflow.router_versions import router as workflow_versions_router
+        app.include_router(workflow_engine_router, prefix="/api/v1")
+        app.include_router(workflow_runs_router, prefix="/api/v1")
+        app.include_router(workflow_hitl_router, prefix="/api/v1")
+        app.include_router(workflow_templates_router, prefix="/api/v1")
+        app.include_router(workflow_versions_router, prefix="/api/v1")
+        logger.info("workflow_engine_routers_registered")
+    except Exception as _we:
+        logger.warning("workflow_engine_router_failed", error=str(_we))
+
 

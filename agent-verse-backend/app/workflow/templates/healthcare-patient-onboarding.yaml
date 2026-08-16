@@ -1,0 +1,41 @@
+slug: healthcare-patient-onboarding
+name: "Healthcare Patient Onboarding"
+description: "HIPAA-compliant patient onboarding with consent and EHR setup"
+category: "Healthcare"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['healthcare', 'patient', 'onboarding']
+popularity_score: 0.0
+sample_input:
+  topic: "example"
+definition:
+  name: "Healthcare Patient Onboarding"
+  description: "HIPAA-compliant patient onboarding with consent and EHR setup"
+  inputs:
+    topic:
+      type: string
+      required: true
+      description: "Main input for the workflow"
+  steps:
+    - id: main_step
+      type: llm
+      prompt: "Process the following for Healthcare Patient Onboarding: {{inputs.topic}}"
+      model: gpt-4o
+    - id: review
+      type: hitl
+      depends_on: [main_step]
+      assignee:
+        role: reviewer
+      actions:
+        - id: approve
+          label: Approve
+        - id: reject
+          label: Reject
+    - id: complete
+      type: emit_event
+      depends_on: [review]
+      event_channel_out: workflow.completed
+      event_payload:
+        result: "{{steps.main_step.output}}"
+        action: "{{steps.review.output.action}}"

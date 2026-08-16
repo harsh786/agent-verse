@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -18,7 +18,7 @@ class TriggerEvent:
     payload:         dict = field(default_factory=dict)
     goal_created:    bool = False
     goal_id:         str | None = None
-    skip_reason:     str | None = None   # dedup | rate_limit | condition_false | circuit_open | bulkhead_full
+    skip_reason:     str | None = None   # dedup|rate_limit|condition_false|circuit_open
     processing_ms:   int | None = None
 
 
@@ -34,7 +34,7 @@ class TriggerAuditEvent:
     action:       str   # create | update | enable | disable | delete | fire_manual | rotate_secret
     before_state: dict | None = None
     after_state:  dict | None = None
-    occurred_at:  datetime = field(default_factory=lambda: __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    occurred_at:  datetime = field(default_factory=lambda: datetime.now(UTC))
     ip_address:   str | None = None
     request_id:   str | None = None
 
@@ -50,4 +50,4 @@ class SimulatedTriggerResult:
     goal_template_rendered:  str
     condition_evaluated:     bool | None
     estimated_cost_usd:      float | None
-    simulated_at:            datetime = field(default_factory=lambda: __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+    simulated_at:            datetime = field(default_factory=lambda: datetime.now(UTC))

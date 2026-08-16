@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 class MemoryTriggerConsumer:
     """Subscribe to memory creation events and dispatch matching triggers."""
 
-    CHANNELS = ["memory.created"]
+    CHANNELS: list[str] = ["memory.created"]  # noqa: RUF012
 
     def __init__(
         self,

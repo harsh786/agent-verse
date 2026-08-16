@@ -60,7 +60,11 @@ class TriggerCircuitBreaker:
         elif self.state == "closed" and self.failure_count >= self.failure_threshold:
             self.state = "open"
             self.last_state_change_at = time.time()
-            _log.warning("circuit_open trigger_id=%s failures=%d", self.trigger_id, self.failure_count)
+            _log.warning(
+                "circuit_open trigger_id=%s failures=%d",
+                self.trigger_id,
+                self.failure_count,
+            )
 
     def prometheus_state_value(self) -> int:
         """0=closed, 1=half_open, 2=open — for Prometheus gauge."""

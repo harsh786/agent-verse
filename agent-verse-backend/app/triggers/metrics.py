@@ -47,7 +47,7 @@ except ImportError:
     METRICS_AVAILABLE = False
 
     class _Noop:
-        def labels(self, **_: object) -> "_Noop":
+        def labels(self, **_: object) -> _Noop:
             return self
         def inc(self, *_: object) -> None: ...
         def observe(self, *_: object) -> None: ...

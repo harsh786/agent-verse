@@ -1,0 +1,39 @@
+slug: aml-screening
+name: "AML Screening"
+description: "Anti-money laundering transaction screening with automatic flagging"
+category: "Financial Services"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['aml', 'compliance', 'screening']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "AML Screening"
+  description: "Anti-money laundering transaction screening with automatic flagging"
+  steps:
+    - id: screen
+      type: tool
+      tool: 'aml.screen'
+      description: 'Screen transaction against AML rules'
+    - id: risk_assess
+      type: llm
+      prompt: 'AML risk assessment: {{steps.screen.output}}'
+      depends_on: ['screen']
+    - id: escalate_if_high
+      type: conditional
+      expression: "{{steps.risk_assess.output.risk_level}} == 'high'"
+      branches: [{'condition': 'true', 'next': 'manual_review'}, {'condition': 'else', 'next': 'auto_clear'}]
+      depends_on: ['risk_assess']
+    - id: manual_review
+      type: hitl
+      assignee: {'role': 'aml_analyst'}
+      actions: [{'id': 'clear'}, {'id': 'freeze'}, {'id': 'report'}]
+      depends_on: ['escalate_if_high']
+    - id: auto_clear
+      type: set_variable
+      var_name: 'result'
+      var_value: 'cleared'
+      depends_on: ['escalate_if_high']

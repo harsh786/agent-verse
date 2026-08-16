@@ -1,0 +1,32 @@
+slug: loan-prescreening
+name: "Loan Pre-Screening"
+description: "Automated loan pre-qualification with credit scoring and HITL underwriting"
+category: "Financial Services"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['lending', 'credit', 'loans']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "Loan Pre-Screening"
+  description: "Automated loan pre-qualification with credit scoring and HITL underwriting"
+  steps:
+    - id: score_credit
+      type: tool
+      tool: 'credit.score'
+    - id: assess_risk
+      type: llm
+      prompt: 'Underwriting assessment: {{steps.score_credit.output}}'
+      depends_on: ['score_credit']
+    - id: underwriter_review
+      type: hitl
+      assignee: {'role': 'underwriter'}
+      actions: [{'id': 'prequalify'}, {'id': 'decline'}]
+      depends_on: ['assess_risk']
+    - id: notify_applicant
+      type: tool
+      tool: 'notification.send'
+      depends_on: ['underwriter_review']

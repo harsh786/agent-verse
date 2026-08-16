@@ -1,0 +1,41 @@
+slug: research-paper-digest
+name: "Research Paper Digest"
+description: "Digest research papers into structured summaries with key insights"
+category: "Research"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['research', 'papers', 'summaries']
+popularity_score: 0.0
+sample_input:
+  topic: "example"
+definition:
+  name: "Research Paper Digest"
+  description: "Digest research papers into structured summaries with key insights"
+  inputs:
+    topic:
+      type: string
+      required: true
+      description: "Main input for the workflow"
+  steps:
+    - id: main_step
+      type: llm
+      prompt: "Process the following for Research Paper Digest: {{inputs.topic}}"
+      model: gpt-4o
+    - id: review
+      type: hitl
+      depends_on: [main_step]
+      assignee:
+        role: reviewer
+      actions:
+        - id: approve
+          label: Approve
+        - id: reject
+          label: Reject
+    - id: complete
+      type: emit_event
+      depends_on: [review]
+      event_channel_out: workflow.completed
+      event_payload:
+        result: "{{steps.main_step.output}}"
+        action: "{{steps.review.output.action}}"

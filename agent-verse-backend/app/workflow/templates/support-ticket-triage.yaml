@@ -1,0 +1,41 @@
+slug: support-ticket-triage
+name: "Support Ticket Triage"
+description: "Automated support ticket classification, routing, and SLA tracking"
+category: "Operations"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['support', 'helpdesk', 'triage']
+popularity_score: 0.0
+sample_input:
+  topic: "example"
+definition:
+  name: "Support Ticket Triage"
+  description: "Automated support ticket classification, routing, and SLA tracking"
+  inputs:
+    topic:
+      type: string
+      required: true
+      description: "Main input for the workflow"
+  steps:
+    - id: main_step
+      type: llm
+      prompt: "Process the following for Support Ticket Triage: {{inputs.topic}}"
+      model: gpt-4o
+    - id: review
+      type: hitl
+      depends_on: [main_step]
+      assignee:
+        role: reviewer
+      actions:
+        - id: approve
+          label: Approve
+        - id: reject
+          label: Reject
+    - id: complete
+      type: emit_event
+      depends_on: [review]
+      event_channel_out: workflow.completed
+      event_payload:
+        result: "{{steps.main_step.output}}"
+        action: "{{steps.review.output.action}}"

@@ -53,6 +53,7 @@ celery_app = Celery(
     backend=REDIS_URL,
     include=[
         "app.scaling.tasks",
+        "app.workflow.celery_tasks",  # Workflow Automation Engine tasks
     ],
 )
 
@@ -96,6 +97,15 @@ celery_app.conf.update(
         "app.scaling.tasks.civilization_tick": {"queue": "maintenance"},
         "app.scaling.tasks.civilization_learning_step": {"queue": "maintenance"},
         "app.scaling.tasks.discover_and_tick_civilizations": {"queue": "maintenance"},
+        # ── Workflow Automation Engine ─────────────────────────────────────────
+        "app.workflow.celery_tasks.execute_workflow_run": {"queue": "workflows.free"},
+        "app.workflow.celery_tasks.check_hitl_escalations": {"queue": "workflows.maintenance"},
+        "app.workflow.celery_tasks.retry_dead_letter_webhooks": {"queue": "workflows.maintenance"},
+        "app.workflow.celery_tasks.cleanup_expired_runs": {"queue": "workflows.maintenance"},
+        "agentverse.workflows.run_free": {"queue": "workflows.free"},
+        "agentverse.workflows.run_starter": {"queue": "workflows.starter"},
+        "agentverse.workflows.run_professional": {"queue": "workflows.professional"},
+        "agentverse.workflows.run_enterprise": {"queue": "workflows.enterprise"},
     },
     beat_schedule={
         "mcp-health-check-every-30s": {
@@ -195,6 +205,22 @@ celery_app.conf.update(
             "task": "agentverse.maintenance.reindex_stale_knowledge",
             "schedule": 3600,
             "options": {"queue": "maintenance"},
+        },
+        # ── Workflow Automation Engine beat tasks ─────────────────────────────
+        "workflow-check-hitl-escalations": {
+            "task": "app.workflow.celery_tasks.check_hitl_escalations",
+            "schedule": 900.0,  # every 15 minutes
+            "options": {"queue": "workflows.maintenance"},
+        },
+        "workflow-retry-dead-letter-webhooks": {
+            "task": "app.workflow.celery_tasks.retry_dead_letter_webhooks",
+            "schedule": 300.0,  # every 5 minutes
+            "options": {"queue": "workflows.maintenance"},
+        },
+        "workflow-cleanup-expired-runs": {
+            "task": "app.workflow.celery_tasks.cleanup_expired_runs",
+            "schedule": crontab(hour=2, minute=0),  # 2 AM UTC daily
+            "options": {"queue": "workflows.maintenance"},
         },
     },
 )

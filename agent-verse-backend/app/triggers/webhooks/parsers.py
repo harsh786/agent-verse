@@ -15,7 +15,7 @@ class GitHubWebhookPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, headers: dict, body: dict) -> "GitHubWebhookPayload":
+    def parse(cls, headers: dict, body: dict) -> GitHubWebhookPayload:
         return cls(
             event_type=headers.get("X-GitHub-Event", headers.get("x-github-event", "")),
             repo_full_name=(body.get("repository") or {}).get("full_name", ""),
@@ -38,7 +38,7 @@ class StripeWebhookPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, body: dict) -> "StripeWebhookPayload":
+    def parse(cls, body: dict) -> StripeWebhookPayload:
         obj = body.get("data", {}).get("object", {})
         return cls(
             event_type=body.get("type", ""),
@@ -61,7 +61,7 @@ class JiraWebhookPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, body: dict) -> "JiraWebhookPayload":
+    def parse(cls, body: dict) -> JiraWebhookPayload:
         issue = body.get("issue", {})
         fields = issue.get("fields", {})
         status = (fields.get("status") or {}).get("name", "")
@@ -87,7 +87,7 @@ class SlackEventPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, body: dict) -> "SlackEventPayload":
+    def parse(cls, body: dict) -> SlackEventPayload:
         event = body.get("event", {})
         return cls(
             event_type=body.get("type", ""),
@@ -110,7 +110,7 @@ class PagerDutyWebhookPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, body: dict) -> "PagerDutyWebhookPayload":
+    def parse(cls, body: dict) -> PagerDutyWebhookPayload:
         messages = body.get("messages", [body])
         msg = messages[0] if messages else {}
         incident = msg.get("incident", {})
@@ -135,7 +135,7 @@ class LinearWebhookPayload:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, body: dict) -> "LinearWebhookPayload":
+    def parse(cls, body: dict) -> LinearWebhookPayload:
         data = body.get("data", {})
         return cls(
             event_type=body.get("type", ""),

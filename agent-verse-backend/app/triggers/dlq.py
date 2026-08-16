@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _log = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ async def write_to_dlq(
 
     try:
         import uuid
+
         from sqlalchemy import text
         await db_session.execute(
             text(
@@ -57,7 +58,7 @@ async def write_to_dlq(
                 "id": str(uuid.uuid4()),
                 "tenant_id": tenant_id,
                 "trigger_id": trigger_id,
-                "failed_at": datetime.now(timezone.utc),
+                "failed_at": datetime.now(UTC),
                 "failure_type": failure_type,
                 "error_message": error_message[:2048],
                 "raw_payload": raw_payload,

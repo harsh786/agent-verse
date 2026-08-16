@@ -1,0 +1,39 @@
+slug: kyc-automation
+name: "KYC Automation"
+description: "Automated Know Your Customer process with document verification and HITL review"
+category: "Financial Services"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "medium"
+tags: ['kyc', 'compliance', 'identity']
+popularity_score: 0.0
+sample_input:
+  tenant_id: "example-tenant"
+  user_id: "example-user"
+definition:
+  name: "KYC Automation"
+  description: "Automated Know Your Customer process with document verification and HITL review"
+  steps:
+    - id: collect_docs
+      type: tool
+      tool: 'document.collect'
+      description: 'Collect KYC documents'
+    - id: verify_docs
+      type: tool
+      tool: 'document.verify'
+      depends_on: ['collect_docs']
+    - id: risk_score
+      type: llm
+      prompt: 'Assess KYC risk for: {{steps.verify_docs.output}}'
+      depends_on: ['verify_docs']
+    - id: review
+      type: hitl
+      assignee: {'role': 'compliance_officer'}
+      context: [{'display_type': 'json', 'title': 'Risk Assessment', 'data': '{{steps.risk_score.output}}'}]
+      actions: [{'id': 'approve', 'label': 'Approve KYC'}, {'id': 'reject', 'label': 'Reject'}]
+      depends_on: ['risk_score']
+    - id: notify
+      type: tool
+      tool: 'notification.send'
+      input: {'to': '{{inputs.email}}', 'status': '{{steps.review.output.action}}'}
+      depends_on: ['review']

@@ -1,8 +1,8 @@
 """Webhook secret rotation — supports manual and scheduled rotation."""
 from __future__ import annotations
 
-import secrets
 import logging
+import secrets
 from typing import Any
 
 _log = logging.getLogger(__name__)
