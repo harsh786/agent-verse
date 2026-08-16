@@ -3626,3 +3626,771 @@ Constraints:
 *Re-audit completed: 2026-08-17*
 *Added: PART 23-28, PART 19 extended (12 more connector specs), SUPPLEMENTs A-D*
 *Total: ~3,100 lines, 28 parts, 4 supplements, 17 connector specs, 19 sources*
+
+---
+
+## SUPPLEMENT E — Generic Framework Architecture & Code File Map
+
+> **Purpose:** Specify exactly which Python files to create, how existing ingestors
+> migrate to the generic framework, and how the whole system wires into the RAG
+> engine so agentic agents get knowledge from any source automatically.
+
+### E.1 Complete File Map — What To Build
+
+```
+app/ingestion/
+├── base_connector.py          ← NEW: BaseConnector ABC (LAW-01 enforcement)
+├── source_config.py           ← NEW: SourceConfig, RawDocument, IngestionJob dataclasses
+├── connector_registry.py      ← NEW: ConnectorRegistry (maps source_type → class)
+├── pipeline.py                ← NEW: IngestionPipeline — 13-stage unified processor
+├── job_tracker.py             ← NEW: IngestionJobTracker — cursor + status persistence
+├── scheduler.py               ← NEW: IngestionScheduler — Celery beat + event-driven
+├── orchestrator.py            ← EXTEND: wire BaseConnector → IngestionPipeline
+├── parsers/
+│   ├── base.py                ← EXISTS: ParsedChunk
+│   ├── pdf_parser.py          ← EXISTS
+│   ├── docx_parser.py         ← EXISTS
+│   ├── audio_parser.py        ← EXISTS
+│   ├── video_parser.py        ← EXISTS
+│   ├── email_parser.py        ← EXISTS
+│   ├── vision_parser.py       ← EXISTS
+│   ├── csv_parser.py          ← NEW: CSV/TSV with schema inference
+│   ├── excel_parser.py        ← NEW: XLS/XLSX
+│   ├── html_parser.py         ← NEW: trafilatura clean extraction
+│   ├── json_parser.py         ← NEW: JSON/JSONL flattening
+│   ├── markdown_parser.py     ← NEW: AST-aware section chunking
+│   ├── notebook_parser.py     ← NEW: Jupyter .ipynb cell pairs
+│   ├── yaml_parser.py         ← NEW: YAML/HCL/TOML configs
+│   ├── parquet_parser.py      ← NEW: Parquet column sampling (pyarrow)
+│   ├── avro_parser.py         ← NEW: Avro schema + record sampling
+│   └── latex_parser.py        ← NEW: LaTeX section extraction
+├── connectors/
+│   ├── __init__.py
+│   ├── gdrive_connector.py    ← MIGRATE: wrap in BaseConnector
+│   ├── notion_connector.py    ← MIGRATE: wrap in BaseConnector
+│   ├── sharepoint_connector.py← MIGRATE: wrap in BaseConnector
+│   ├── s3_connector.py        ← NEW
+│   ├── gcs_connector.py       ← NEW
+│   ├── azure_blob_connector.py← NEW
+│   ├── minio_connector.py     ← NEW
+│   ├── snowflake_connector.py ← NEW
+│   ├── bigquery_connector.py  ← NEW
+│   ├── clickhouse_connector.py← NEW
+│   ├── duckdb_connector.py    ← NEW
+│   ├── postgresql_connector.py← NEW (CDC + query modes)
+│   ├── mysql_connector.py     ← NEW
+│   ├── mongodb_connector.py   ← NEW
+│   ├── elasticsearch_connector.py ← NEW
+│   ├── kafka_connector.py     ← NEW
+│   ├── kinesis_connector.py   ← NEW
+│   ├── pubsub_connector.py    ← NEW
+│   ├── slack_connector.py     ← NEW (migrate SlackIngestor)
+│   ├── teams_connector.py     ← NEW
+│   ├── discord_connector.py   ← NEW
+│   ├── email_imap_connector.py← NEW
+│   ├── github_connector.py    ← NEW (migrate GitHubIngestor)
+│   ├── gitlab_connector.py    ← NEW
+│   ├── confluence_connector.py← NEW (migrate ConfluenceIngestor)
+│   ├── jira_connector.py      ← NEW (migrate JiraIngestor)
+│   ├── notion_connector.py    ← MIGRATE
+│   ├── web_crawl_connector.py ← NEW (trafilatura)
+│   ├── rss_connector.py       ← NEW
+│   ├── youtube_connector.py   ← NEW (transcripts)
+│   ├── arxiv_connector.py     ← NEW
+│   ├── pubmed_connector.py    ← NEW
+│   ├── salesforce_connector.py← NEW
+│   ├── hubspot_connector.py   ← NEW
+│   ├── zendesk_connector.py   ← NEW
+│   ├── servicenow_connector.py← NEW
+│   ├── mqtt_connector.py      ← NEW
+│   ├── influxdb_connector.py  ← NEW
+│   ├── pagerduty_connector.py ← NEW
+│   ├── sentry_connector.py    ← NEW
+│   ├── neo4j_connector.py     ← NEW
+│   └── agent_generated_connector.py ← NEW
+└── chunkers/
+    ├── base.py                ← EXISTS: ChunkerBase
+    ├── ast_chunker.py         ← EXISTS
+    ├── heading.py             ← EXISTS
+    ├── semantic.py            ← EXISTS
+    ├── table.py               ← EXISTS
+    ├── timestamp.py           ← EXISTS
+    └── scene.py               ← EXISTS
+
+app/tools/
+└── knowledge_ingest_tool.py   ← NEW: knowledge.ingest tool for agents/workflows
+
+app/api/
+└── ingestion.py               ← NEW: 38 REST endpoints
+```
+
+---
+
+### E.2 `base_connector.py` — The Generic Framework Contract
+
+```python
+# app/ingestion/base_connector.py
+"""BaseConnector — the single interface every source adapter implements.
+
+Rules:
+  LAW-01: Every source MUST implement get_delta(config, cursor) yielding RawDocuments
+  LAW-02: All yielded docs are content-hash deduplicated by IngestionPipeline
+  LAW-03: Connectors are stateless — all state in SourceConfig.cursor_value
+  LAW-04: No credentials in connector code — always vault:// references
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from app.ingestion.source_config import RawDocument, SourceConfig
+
+
+@dataclass
+class ConnectionHealth:
+    ok:          bool
+    latency_ms:  float
+    error:       str = ""
+    metadata:    dict[str, Any] = field(default_factory=dict)
+
+
+class BaseConnector(ABC):
+    """Abstract base class every ingestion connector must implement.
+
+    Connectors are thin adapters: they fetch content from a source,
+    normalize it into RawDocument, and yield it. All processing (PII,
+    quality, chunking, embedding, indexing) happens in IngestionPipeline.
+    """
+
+    @property
+    @abstractmethod
+    def source_type(self) -> str:
+        """e.g. 's3', 'snowflake', 'kafka', 'slack'"""
+
+    @property
+    def supports_streaming(self) -> bool:
+        """True if this connector supports real-time push mode."""
+        return False
+
+    @property
+    def supports_acl_propagation(self) -> bool:
+        """True if source permissions can be read and stored on chunks."""
+        return False
+
+    @property
+    def supports_deletion_tracking(self) -> bool:
+        """True if the source exposes deleted-document events."""
+        return False
+
+    @abstractmethod
+    async def validate_connection(
+        self, config: "SourceConfig"
+    ) -> ConnectionHealth:
+        """Test connectivity and auth. Called on source creation."""
+
+    @abstractmethod
+    async def get_delta(
+        self,
+        config: "SourceConfig",
+        cursor: str | None,
+    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        """Yield (document, new_cursor) tuples incrementally.
+
+        cursor=None means full initial sync.
+        Must yield in source-modified-at ascending order.
+        MUST be resumable: if interrupted, resume from last yielded cursor.
+
+        Yields:
+            (RawDocument, new_cursor_value) for each new/updated document.
+        """
+
+    async def on_webhook(
+        self,
+        config: "SourceConfig",
+        payload: bytes,
+        headers: dict[str, str],
+    ) -> AsyncIterator["RawDocument"]:
+        """Handle real-time push events. Override for webhook-based sources."""
+        raise NotImplementedError
+
+    async def get_acl(
+        self,
+        config: "SourceConfig",
+        doc_id: str,
+    ) -> list[str]:
+        """Return allowed principals for a document. Default: tenant-wide."""
+        return []
+
+    async def delete_doc(
+        self,
+        config: "SourceConfig",
+        doc_id: str,
+    ) -> None:
+        """Handle source-side deletions. Default: no-op."""
+
+    def estimate_doc_count(self, config: "SourceConfig") -> int | None:
+        """Return estimated total docs for progress reporting. None=unknown."""
+        return None
+```
+
+---
+
+### E.3 `connector_registry.py` — Self-Registration Pattern
+
+```python
+# app/ingestion/connector_registry.py
+"""ConnectorRegistry — maps source_type strings to connector classes.
+
+All connectors self-register via the @register decorator.
+No central list to maintain — just add the decorator and import.
+"""
+from __future__ import annotations
+from typing import TYPE_CHECKING, Type
+
+if TYPE_CHECKING:
+    from app.ingestion.base_connector import BaseConnector
+
+_REGISTRY: dict[str, Type["BaseConnector"]] = {}
+
+
+def register(source_type: str):
+    """Class decorator: register a connector in the global registry."""
+    def decorator(cls: Type["BaseConnector"]) -> Type["BaseConnector"]:
+        _REGISTRY[source_type] = cls
+        return cls
+    return decorator
+
+
+def get_connector(source_type: str) -> Type["BaseConnector"]:
+    """Return the connector class for source_type, or raise KeyError."""
+    if source_type not in _REGISTRY:
+        raise KeyError(
+            f"No connector registered for source_type={source_type!r}. "
+            f"Available: {sorted(_REGISTRY)}"
+        )
+    return _REGISTRY[source_type]
+
+
+def list_registered() -> list[str]:
+    """List all registered source types."""
+    return sorted(_REGISTRY.keys())
+
+
+# Usage in a connector file:
+# from app.ingestion.connector_registry import register
+# @register("s3")
+# class S3Connector(BaseConnector):
+#     source_type = "s3"
+#     ...
+```
+
+---
+
+### E.4 `pipeline.py` — 13-Stage Unified Processor
+
+```python
+# app/ingestion/pipeline.py
+"""IngestionPipeline — 13-stage unified document processing pipeline.
+
+This is the ONLY path from raw bytes to indexed chunk. All 18 connector
+families funnel into this single pipeline. No type-specific shortcuts.
+
+Stage order (LAW-01: single pipeline path):
+  1  RECEIVE       — quota check, accept job
+  2  VALIDATE      — MIME check, size limit, content scan
+  3  CONTENT_HASH  — SHA-256 dedup check (skip if unchanged)
+  4  CLASSIFY      — ContentType, language, content category
+  5  PARSE         — ParserRegistry dispatch → plain text
+  6  PII_DETECT    — Presidio scan, apply pii_action
+  7  QUALITY_GATE  — min tokens, gibberish, quality_score
+  8  CHUNK         — ChunkingStrategySelector dispatch
+  9  ENRICH        — contextual enrichment, NER, keywords
+  10 EMBED         — EmbeddingPolicySelector → vectors
+  11 DEDUP         — chunk-level SHA-256 + near-dup cosine check
+  12 INDEX         — write to pgvector + BM25 + graph
+  13 EMIT          — update cursor, emit Redis event, metrics
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+_log = logging.getLogger(__name__)
+
+
+@dataclass
+class PipelineResult:
+    doc_id:          str
+    source_id:       str
+    tenant_id:       str
+    status:          str          # indexed | skipped | failed
+    skip_reason:     str = ""     # dedup | quality | pii_rejected | quota
+    chunks_created:  int = 0
+    tokens_consumed: int = 0
+    processing_ms:   float = 0.0
+    error:           str = ""
+
+
+class IngestionPipeline:
+    """The single, canonical path from RawDocument to indexed chunks.
+
+    Wired in app/main.py via lifespan → app.state.ingestion_pipeline.
+    All connectors call: await pipeline.ingest(raw_doc, source_config)
+    """
+
+    def __init__(
+        self,
+        *,
+        knowledge_store: Any = None,        # app.rag.store.KnowledgeStore
+        embedder: Any = None,               # LLMProvider (embedding)
+        pii_analyzer: Any = None,           # presidio AnalyzerEngine
+        content_scanner: Any = None,        # malware/content scanner
+        rate_limiter: Any = None,           # per-tenant rate cap
+        quota_enforcer: Any = None,         # TenantQuotaEnforcer
+        metrics: Any = None,               # Prometheus metrics
+        tracer: Any = None,                # OTel tracer
+    ) -> None:
+        self._kb = knowledge_store
+        self._embedder = embedder
+        self._pii = pii_analyzer
+        self._scanner = content_scanner
+        self._rate_limiter = rate_limiter
+        self._quota = quota_enforcer
+        self._metrics = metrics
+        self._tracer = tracer
+
+        from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
+        from app.ingestion.content_classifier import ContentClassifier
+        from app.ingestion.parser_registry import ParserRegistry
+
+        self._classifier = ContentClassifier()
+        self._chunker_selector = ChunkingStrategySelector()
+        self._parser_registry = ParserRegistry()
+
+    async def ingest(
+        self,
+        raw_doc: Any,       # RawDocument
+        source_config: Any, # SourceConfig
+    ) -> PipelineResult:
+        """Run all 13 stages for one document. Returns PipelineResult."""
+        start = time.perf_counter()
+        result = PipelineResult(
+            doc_id=raw_doc.doc_id,
+            source_id=source_config.source_id,
+            tenant_id=source_config.tenant_id,
+            status="pending",
+        )
+        try:
+            # Stage 1: Receive + quota
+            if self._quota:
+                self._quota.check_doc_quota(source_config.tenant_id)
+
+            # Stage 2: Validate
+            self._validate(raw_doc, source_config)
+
+            # Stage 3: Content hash check (LAW-02 idempotency)
+            content_hash = hashlib.sha256(raw_doc.content).hexdigest()
+            if await self._is_duplicate(content_hash, source_config):
+                result.status = "skipped"
+                result.skip_reason = "dedup"
+                return result
+
+            # Stage 4: Classify
+            content_type = self._classifier.classify(
+                raw_doc.content, raw_doc.content_type
+            )
+
+            # Stage 5: Parse
+            text = self._parser_registry.parse(
+                raw_doc.content, content_type
+            )
+            if not text.strip():
+                result.status = "skipped"
+                result.skip_reason = "empty_content"
+                return result
+
+            # Stage 6: PII detection + redaction
+            text, pii_detected = self._run_pii(
+                text, source_config.pii_action
+            )
+            if text is None:  # pii_action=reject
+                result.status = "skipped"
+                result.skip_reason = "pii_rejected"
+                return result
+
+            # Stage 7: Quality gate
+            quality_score = self._quality_gate(text)
+            if quality_score < source_config.min_quality_score:
+                result.status = "skipped"
+                result.skip_reason = "quality_rejected"
+                return result
+
+            # Stage 8: Chunk
+            chunks_text = self._chunker_selector.select_and_chunk(
+                text, content_type, source_config.chunking_strategy,
+                source_config.chunk_size_tokens, source_config.chunk_overlap_tokens
+            )
+
+            # Stage 9: Enrich
+            chunks_text = self._enrich(chunks_text, raw_doc)
+
+            # Stage 10: Embed
+            chunks_with_embeddings = await self._embed(
+                chunks_text, source_config
+            )
+            result.tokens_consumed = sum(
+                len(c["text"].split()) for c in chunks_with_embeddings
+            )
+
+            # Stage 11: Chunk-level dedup
+            unique_chunks = await self._dedup_chunks(
+                chunks_with_embeddings, source_config
+            )
+
+            # Stage 12: Index
+            await self._index(
+                unique_chunks, raw_doc, source_config, content_hash,
+                quality_score, pii_detected
+            )
+
+            # Stage 13: Emit
+            await self._emit(raw_doc, source_config, len(unique_chunks))
+
+            result.status = "indexed"
+            result.chunks_created = len(unique_chunks)
+
+        except Exception as exc:
+            _log.error("pipeline_error doc=%s stage=unknown: %s", raw_doc.doc_id, exc)
+            result.status = "failed"
+            result.error = str(exc)[:500]
+
+        finally:
+            result.processing_ms = (time.perf_counter() - start) * 1000
+
+        return result
+```
+
+---
+
+### E.5 Migration: Wrapping Existing Ingestors in `BaseConnector`
+
+The 9 existing ingestors must be wrapped — they become the inner implementation of a `BaseConnector`:
+
+```python
+# app/ingestion/connectors/slack_connector.py
+"""SlackConnector — wraps SlackIngestor in BaseConnector interface."""
+from __future__ import annotations
+from typing import AsyncIterator, TYPE_CHECKING
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_registry import register
+
+if TYPE_CHECKING:
+    from app.ingestion.source_config import RawDocument, SourceConfig
+
+
+@register("slack")
+class SlackConnector(BaseConnector):
+    """Slack channel ingestion via Web API."""
+    source_type = "slack"
+    supports_acl_propagation = True
+
+    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+        token = config.connection_config.get("bot_token", "")
+        # GET /auth.test with token
+        # Return ConnectionHealth(ok=True, latency_ms=...)
+        ...
+
+    async def get_delta(
+        self, config: "SourceConfig", cursor: str | None
+    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        # Delegates to SlackIngestor.ingest_channel() internally
+        from app.knowledge.ingestors.slack_ingestor import SlackIngestor
+        token = config.connection_config.get("bot_token", "")
+        ingestor = SlackIngestor(token=token)
+        for channel_id in config.connection_config.get("channels", []):
+            chunks = await ingestor.ingest_channel(channel_id, max_messages=500)
+            for chunk in chunks:
+                raw_doc = _chunk_to_raw_doc(chunk, config)
+                new_cursor = chunk.get("metadata", {}).get("ts", cursor or "")
+                yield (raw_doc, new_cursor)
+```
+
+**Migration table for all 9 existing ingestors:**
+
+| Existing File | New Connector File | source_type |
+|--------------|-------------------|-------------|
+| `knowledge/ingestors/pdf_ingestor.py` | `ingestion/connectors/file_connector.py` | `pdf_file` |
+| `knowledge/ingestors/docx_ingestor.py` | same | `docx_file` |
+| `knowledge/ingestors/slack_ingestor.py` | `ingestion/connectors/slack_connector.py` | `slack` |
+| `knowledge/ingestors/github_ingestor.py` | `ingestion/connectors/github_connector.py` | `github` |
+| `knowledge/ingestors/jira_ingestor.py` | `ingestion/connectors/jira_connector.py` | `jira` |
+| `knowledge/ingestors/confluence_ingestor.py` | `ingestion/connectors/confluence_connector.py` | `confluence` |
+| `ingestion/connectors/gdrive_connector.py` | migrate in place | `gdrive` |
+| `ingestion/connectors/notion_connector.py` | migrate in place | `notion` |
+| `ingestion/connectors/sharepoint_connector.py` | migrate in place | `sharepoint` |
+
+---
+
+### E.6 RAG Integration — How Agents Get Knowledge From Any Source
+
+The complete data flow from source → agent context:
+
+```
+Source (S3/Slack/Snowflake/etc.)
+    │
+    │  BaseConnector.get_delta() yields RawDocuments
+    ▼
+IngestionPipeline.ingest(raw_doc, source_config)
+    │
+    │  13 stages: validate → parse → PII → chunk → embed → dedup
+    ▼
+KnowledgeStore.ingest_chunks_async(chunks, collection_id=config.collection_id)
+    │
+    │  Persisted to: pgvector (dense) + BM25 (sparse) + graph (entities)
+    ▼
+[chunks stored with metadata: source_id, source_type, source_url, acl, quality_score]
+    │
+    │  Agent executes a goal step
+    ▼
+smart_context_fetch(query=step, collection_ids=[...], strategy=RAGStrategy.HYBRID)
+    │
+    │  retrieval_gateway.execute() → RAGEngine.retrieve()
+    │  4-leg fusion: pgvector ANN + FTS + pg_trgm + BM25
+    ▼
+Context string injected into agent's LLM prompt
+    │
+    │  Source metadata visible to agent: citation.source_url, citation.source_type
+    ▼
+Agent uses knowledge from any of the ~200 source types transparently
+```
+
+**Key wiring in `app/main.py` (lifespan):**
+
+```python
+# In create_app() / lifespan:
+from app.ingestion.pipeline import IngestionPipeline
+from app.ingestion.connector_registry import get_connector
+from app.ingestion.scheduler import IngestionScheduler
+
+# Build the pipeline (wired to existing KnowledgeStore)
+_ingestion_pipeline = IngestionPipeline(
+    knowledge_store=_knowledge_store,
+    embedder=_embedder,
+    quota_enforcer=_quota_enforcer,
+)
+app.state.ingestion_pipeline = _ingestion_pipeline
+
+# Build the scheduler (Celery beat)
+_ingestion_scheduler = IngestionScheduler(
+    pipeline=_ingestion_pipeline,
+    connector_registry=get_connector,
+)
+app.state.ingestion_scheduler = _ingestion_scheduler
+```
+
+---
+
+### E.7 `KnowledgeIngestTool` — Agents Trigger Ingestion
+
+Agents can ingest ad-hoc content as a workflow step:
+
+```python
+# app/tools/knowledge_ingest_tool.py
+"""knowledge.ingest — tool for agents to index a URL or bytes on-the-fly."""
+from __future__ import annotations
+from typing import Any
+from app.tools.base import BaseTool
+
+
+class KnowledgeIngestTool(BaseTool):
+    """Ingest a URL or raw content into the knowledge store.
+
+    Used in workflow steps:
+      - "Before analyzing, ingest the report at this URL"
+      - "Index the output of the previous step"
+    """
+
+    name = "knowledge.ingest"
+    description = "Ingest a URL or text content into the knowledge store for RAG retrieval"
+
+    parameters = {
+        "type": "object",
+        "required": ["content_or_url"],
+        "properties": {
+            "content_or_url": {
+                "type": "string",
+                "description": "URL to fetch+ingest, or raw text content"
+            },
+            "collection_id": {
+                "type": "string",
+                "description": "Target collection (default: agent's collection)"
+            },
+            "wait_for_completion": {
+                "type": "boolean",
+                "description": "Block until indexed (default: true)",
+                "default": True
+            }
+        }
+    }
+
+    async def execute(
+        self,
+        content_or_url: str,
+        *,
+        collection_id: str = "",
+        wait_for_completion: bool = True,
+        tenant_ctx: Any = None,
+        pipeline: Any = None,  # IngestionPipeline
+        **_: Any,
+    ) -> dict[str, Any]:
+        if not pipeline:
+            return {"error": "Ingestion pipeline not available"}
+
+        # URL → fetch → RawDocument
+        if content_or_url.startswith(("http://", "https://")):
+            raw_doc = await _fetch_url_to_raw_doc(content_or_url)
+        else:
+            raw_doc = _text_to_raw_doc(content_or_url)
+
+        # Build ad-hoc SourceConfig
+        from app.ingestion.source_config import SourceConfig, SourceFamily
+        config = SourceConfig(
+            source_id=f"adhoc_{raw_doc.doc_id}",
+            tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+            name="Agent-Ingest",
+            family=SourceFamily.AGENT_GENERATED,
+            source_type="adhoc",
+            collection_id=collection_id,
+        )
+
+        result = await pipeline.ingest(raw_doc, config)
+        return {
+            "job_status": result.status,
+            "chunks_created": result.chunks_created,
+            "doc_id": result.doc_id,
+            "skip_reason": result.skip_reason,
+        }
+```
+
+**Registration in tool registry:**
+
+```python
+# app/main.py (or app/agent/tool_registry.py)
+from app.tools.knowledge_ingest_tool import KnowledgeIngestTool
+_tool_registry.register(KnowledgeIngestTool())
+```
+
+---
+
+### E.8 Agentic RAG Source Awareness
+
+After ingestion, each chunk carries `source_type` and `source_url` in its metadata.
+The RAG engine propagates this to the agent as citation metadata:
+
+```python
+# In smart_context_fetch():
+# Each citation includes:
+citation = {
+    "content": "...",
+    "score": 0.92,
+    "source_url": "https://s3.amazonaws.com/bucket/report.pdf",
+    "source_type": "s3",         # "slack", "github", "snowflake", etc.
+    "doc_title": "Q4 Report",
+    "ingested_at": "2026-08-17T10:00:00Z",
+}
+# Agent can cite: "According to the Q4 Report from S3 (score=0.92)..."
+```
+
+---
+
+### E.9 Additional Missing Source Sub-Families
+
+The following source types from the initial brainstorm are NOT yet categorised in the 18 families. They map to existing families as sub-categories:
+
+| Source | Maps to Family | Sub-type key |
+|--------|---------------|-------------|
+| **Workday** | `crm_erp` | `workday` |
+| **BambooHR** | `crm_erp` | `bamboohr` |
+| **ADP** | `crm_erp` | `adp` |
+| **Greenhouse** | `crm_erp` | `greenhouse` |
+| **QuickBooks** | `crm_erp` | `quickbooks` |
+| **Xero** | `crm_erp` | `xero` |
+| **SEC EDGAR** | `scientific` | `sec_edgar` |
+| **USPTO** | `scientific` | `uspto` |
+| **CourtListener** | `scientific` | `courtlistener` |
+| **EUR-Lex** | `scientific` | `eurlex` |
+| **Twitter/X** | `web` | `twitter` |
+| **Reddit** | `web` | `reddit` |
+| **Hacker News** | `web` | `hackernews` |
+| **LinkedIn (company pages)** | `web` | `linkedin` |
+| **Medium** | `web` | `medium` |
+| **Substack** | `web` | `substack` |
+| **Asana** | `crm_erp` | `asana` |
+| **Monday.com** | `crm_erp` | `monday` |
+| **Trello** | `crm_erp` | `trello` |
+| **Loom** | `communication` | `loom` |
+| **Zoom** | `communication` | `zoom` |
+| **Google Meet** | `communication` | `google_meet` |
+| **Intercom** | `support` | `intercom` |
+| **Help Scout** | `support` | `helpscout` |
+| **OPC-UA** | `iot_telemetry` | `opc_ua` |
+| **Modbus** | `iot_telemetry` | `modbus` |
+| **Prometheus** | `observability` | `prometheus` |
+| **Jaeger** | `observability` | `jaeger` |
+| **Terraform Registry** | `code_repository` | `terraform_registry` |
+| **npm/PyPI/Maven** | `code_repository` | `package_registry` |
+| **Backstage** | `code_repository` | `backstage` |
+| **Wikidata** | `graph_database` | `wikidata` |
+| **DBpedia** | `graph_database` | `dbpedia` |
+
+**Total source coverage:**
+- 18 families explicitly defined
+- ~200+ source types when sub-categories included
+- 17 detailed connector specs in PART 19
+- Remaining ~183 sources follow the same `BaseConnector` pattern — just implement `get_delta()`
+
+---
+
+### E.10 Final Framework Integration Checklist
+
+Before implementation starts, verify:
+
+```
+FRAMEWORK:
+- [ ] app/ingestion/base_connector.py — BaseConnector ABC created
+- [ ] app/ingestion/source_config.py — SourceConfig, RawDocument, IngestionJob
+- [ ] app/ingestion/connector_registry.py — @register decorator + lookup
+- [ ] app/ingestion/pipeline.py — 13-stage IngestionPipeline
+- [ ] app/ingestion/job_tracker.py — cursor + status persistence (Postgres)
+- [ ] app/ingestion/scheduler.py — Celery beat + event-driven (trigger system)
+
+PARSERS (new):
+- [ ] csv_parser.py, excel_parser.py, html_parser.py
+- [ ] json_parser.py, markdown_parser.py, notebook_parser.py
+- [ ] yaml_parser.py, parquet_parser.py, avro_parser.py, latex_parser.py
+
+CONNECTORS (migrate existing → BaseConnector):
+- [ ] gdrive, notion, sharepoint, slack, github, jira, confluence wrapped
+- [ ] New connectors: S3, GCS, Azure Blob, Snowflake, BigQuery, Kafka, etc.
+
+RAG WIRING:
+- [ ] IngestionPipeline.ingest() calls KnowledgeStore.ingest_chunks_async()
+- [ ] Chunks carry source_id, source_type, source_url, acl, quality_score
+- [ ] smart_context_fetch() returns source_type/source_url in citations
+- [ ] knowledge.ingest tool registered in agent tool registry
+
+TESTS:
+- [ ] 7 mandatory tests per connector (see PART 20.2)
+- [ ] 8 pipeline stage tests (see PART 20.3)
+- [ ] Integration: S3 → pipeline → RAG → agent retrieval E2E test
+```
+
+*SUPPLEMENT E added: 2026-08-17 — Generic Framework Architecture & Code File Map*
+*Covers: BaseConnector ABC, ConnectorRegistry, IngestionPipeline, migration path,*
+*RAG integration wiring, KnowledgeIngestTool, 30+ additional source sub-types*
