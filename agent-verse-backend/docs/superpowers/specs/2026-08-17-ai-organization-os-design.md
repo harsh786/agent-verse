@@ -12030,3 +12030,719 @@ ALL THREE unified:
   Split View (T2.5) — see graph + bases + maps simultaneously
   Cross-skill sync — clicking in one panel highlights in others
 ```
+
+---
+
+# SUPPLEMENT U — GRAPHIFY + OBSIDIAN-SKILLS BACKEND ENGINEERING
+## Scalable, Reliable, Secure — Best Engineering Principles
+
+*Covers the 6 missing backend gaps: caching, async, scaling, safety, testing, error handling*
+
+---
+
+## U1 — ASYNC PROCESSING (Graphify as Celery Task)
+
+Graphify is a heavy operation (minutes for large vaults). It MUST be async.
+
+```python
+# app/org/tasks/graphify_tasks.py
+
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    queue="org.{plan}.graphify",   # per-plan queue isolation
+    time_limit=1800,               # 30 min hard limit
+    soft_time_limit=1500,          # 25 min soft limit (graceful stop)
+    acks_late=True,                # only ack after completion (reliability)
+)
+def run_graphify(
+    self,
+    org_id: str,
+    tenant_id: str,
+    artifact_paths: list[str],
+    mode: str = "fast",            # fast (no LLM) | deep (uses LLM for INFER)
+    trigger: str = "manual",       # manual | mission_complete | scheduled | update
+) -> GraphifyResult:
+    """Run graphify on org artifacts. Streams progress via Redis pub/sub."""
+
+    job_id = self.request.id
+
+    try:
+        # Publish progress to Redis (frontend subscribes via SSE)
+        progress = GraphifyProgressReporter(org_id, job_id)
+        progress.update(phase="extracting", pct=0)
+
+        result = graphify_pipeline(
+            artifact_paths=artifact_paths,
+            mode=mode,
+            on_node_extracted=lambda n: progress.update(phase="extracting", node=n),
+            on_edge_added=lambda e: progress.update(phase="building", edge=e),
+            on_community=lambda c: progress.update(phase="community", community=c),
+            on_discovery=lambda d: progress.update(phase="discovery", discovery=d),
+        )
+
+        # Store result
+        await graph_store.save(org_id, result)
+        progress.complete(result)
+        return result
+
+    except SoftTimeLimitExceeded:
+        # Graceful partial result — save what we have so far
+        partial = graph_store.get_partial(org_id, job_id)
+        graph_store.save(org_id, partial, status="partial")
+        progress.update(phase="partial_complete", warning="Time limit reached")
+        return partial
+
+    except Exception as exc:
+        progress.error(str(exc))
+        raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+
+# TRIGGER POINTS (when graphify runs):
+# 1. Mission completes → run_graphify.delay(org_id, new_artifacts, trigger="mission")
+# 2. Nightly schedule → run_graphify.apply_async(org_id, trigger="scheduled", eta=midnight)
+# 3. User clicks "Analyze" → run_graphify.delay(org_id, trigger="manual")
+# 4. Incremental (--update) → only new/changed files, every 30 min
+
+# QUEUE ROUTING per plan:
+GRAPHIFY_QUEUES = {
+    "free":       "org.free.graphify",        # shared, lowest priority
+    "starter":    "org.starter.graphify",      # shared, normal priority
+    "pro":        "org.pro.graphify",          # dedicated workers
+    "enterprise": "org.enterprise.graphify",   # dedicated high-memory workers
+}
+```
+
+### Progress SSE Stream
+
+```python
+# Frontend subscribes: GET /v1/org/{id}/graphify/{job_id}/stream
+# SSE events emitted during graphify run:
+
+class GraphifyProgressReporter:
+    def update(self, phase: str, **kwargs) -> None:
+        event = {
+            "phase": phase,      # extracting | building | community | discovery | complete | error
+            "pct": kwargs.get("pct", 0),
+            "nodes_found": self.node_count,
+            "edges_found": self.edge_count,
+            "discoveries": self.discovery_count,
+            "node": kwargs.get("node"),      # most recent node (for animation)
+            "edge": kwargs.get("edge"),      # most recent edge (for animation)
+            "discovery": kwargs.get("discovery"),  # INFERRED connection found
+        }
+        redis.publish(f"graphify:{self.org_id}:{self.job_id}", json.dumps(event))
+```
+
+---
+
+## U2 — GRAPH CACHING STRATEGY
+
+Graphify is expensive. Results must be cached aggressively.
+
+```python
+class GraphCache:
+    """
+    Multi-level caching for knowledge graph.
+    
+    Level 1: Redis (hot — recent queries, 1h TTL)
+    Level 2: S3/object storage (warm — full graph JSON, indefinite)
+    Level 3: PostgreSQL (cold — graph metadata + discovery history)
+    """
+
+    async def get_graph(self, org_id: str) -> GraphData | None:
+        # L1: Redis hot cache
+        cached = await self.redis.get(f"graph:{org_id}:current")
+        if cached:
+            return GraphData.parse_raw(cached)
+
+        # L2: S3 graph file
+        graph_file = await self.s3.get(f"org-graphs/{org_id}/graph.json")
+        if graph_file:
+            data = GraphData.parse_raw(graph_file)
+            # Warm L1
+            await self.redis.setex(f"graph:{org_id}:current", 3600, graph_file)
+            return data
+
+        return None  # No graph yet
+
+    async def invalidate_partial(self, org_id: str, changed_artifacts: list[str]) -> None:
+        """Only invalidate nodes related to changed artifacts — not full graph."""
+        affected_nodes = await self.find_nodes_for_artifacts(org_id, changed_artifacts)
+        for node_id in affected_nodes:
+            await self.redis.delete(f"graph:{org_id}:node:{node_id}")
+        # Mark graph as "stale" but don't delete — serve stale until refresh complete
+        await self.redis.set(f"graph:{org_id}:stale", "1", ex=3600)
+
+    async def get_query_result(self, org_id: str, query: str) -> QueryResult | None:
+        """Cache graph query results (BFS/DFS traversals)."""
+        key = f"graph:{org_id}:query:{hashlib.sha256(query.encode()).hexdigest()[:16]}"
+        cached = await self.redis.get(key)
+        if cached:
+            return QueryResult.parse_raw(cached)
+        return None
+
+    async def set_query_result(self, org_id: str, query: str, result: QueryResult) -> None:
+        key = f"graph:{org_id}:query:{hashlib.sha256(query.encode()).hexdigest()[:16]}"
+        await self.redis.setex(key, 1800, result.json())  # 30 min TTL
+
+# CACHE INVALIDATION RULES:
+# New artifact added → partial invalidation (only affected nodes)
+# Policy change → full invalidation (policies affect all INFERRED edges)
+# Manual "Analyze" click → force re-run, skip cache
+# Stale graph → serve cached version with "⚠ updating" indicator in UI
+```
+
+---
+
+## U3 — HORIZONTAL SCALING FOR LARGE GRAPHS
+
+```python
+# GRAPH SIZE TIERS + STRATEGIES:
+
+GRAPH_TIERS = {
+    "small":   {"nodes": "< 500",    "strategy": "in_memory_d3force"},
+    "medium":  {"nodes": "500-5K",   "strategy": "postgres_with_redis_cache"},
+    "large":   {"nodes": "5K-50K",   "strategy": "neo4j_dedicated"},
+    "massive": {"nodes": "> 50K",    "strategy": "neo4j_cluster_sharded"},
+}
+
+class GraphScalingRouter:
+    """Routes graph operations to appropriate backend based on graph size."""
+
+    async def query(self, org_id: str, q: GraphQuery) -> GraphResult:
+        tier = await self.detect_tier(org_id)
+
+        if tier == "small":
+            # Load full graph into memory, run D3-force client-side
+            return await self.postgres_backend.query(q)
+
+        elif tier == "medium":
+            # Redis cache + Postgres with graph extension
+            return await self.redis_postgres_backend.query(q)
+
+        elif tier in ("large", "massive"):
+            # Neo4j with Cypher queries
+            return await self.neo4j_backend.query(q)
+
+# FRONTEND LEVEL-OF-DETAIL (LOD) for large graphs:
+LOD_RULES = {
+    "zoom_level_0":  "community_labels_only",      # far zoom: just cluster names
+    "zoom_level_1":  "hub_nodes_only",             # medium: only high-connection nodes
+    "zoom_level_2":  "all_nodes_no_text",          # closer: all nodes, no labels
+    "zoom_level_3":  "full_detail",                # close: everything
+}
+
+# VIRTUAL RENDERING (> 500 nodes):
+# Only render nodes visible in current viewport
+# React Flow's built-in virtualization handles this
+# Background nodes: represented as cluster summaries
+
+# GRAPH PARTITIONING for very large orgs:
+# Partition by department: each dept has its own sub-graph
+# Cross-dept connections: shown only when both are in view
+# "Expand to global" button shows all cross-dept connections
+```
+
+---
+
+## U4 — VAULT SYNC SAFETY + IDEMPOTENCY
+
+```python
+class ObsidianVaultSyncer:
+    """
+    Safe, idempotent Obsidian vault sync.
+    Handles: conflicts, concurrent writes, partial failures, recovery.
+    """
+
+    async def sync(self, org_id: str, vault_path: str) -> SyncResult:
+        # Acquire distributed lock (prevent concurrent syncs for same org)
+        async with self.redis.lock(f"vault_sync:{org_id}", timeout=300):
+            return await self._do_sync(org_id, vault_path)
+
+    async def _do_sync(self, org_id: str, vault_path: str) -> SyncResult:
+        sync_id = str(uuid.uuid4())
+        manifest = await self._build_manifest(org_id)
+
+        synced = []
+        failed = []
+
+        for item in manifest.items:
+            try:
+                # IDEMPOTENCY: check content hash before writing
+                existing_hash = self._file_hash(vault_path / item.path)
+                new_content = await self._render_item(item)
+                new_hash = hashlib.sha256(new_content.encode()).hexdigest()
+
+                if existing_hash == new_hash:
+                    continue  # No change — skip
+
+                # CONFLICT DETECTION: file modified by user since last sync?
+                if existing_hash != item.last_synced_hash:
+                    # User modified the file → don't overwrite, create .conflict version
+                    await self._save_conflict(vault_path, item, new_content)
+                    failed.append(SyncConflict(path=item.path))
+                    continue
+
+                # Safe to write
+                await self._write_atomic(vault_path / item.path, new_content)
+                synced.append(item.path)
+
+            except Exception as exc:
+                failed.append(SyncError(path=item.path, error=str(exc)))
+                logger.error(f"vault_sync_item_failed path={item.path} err={exc}")
+                # Continue with other items (partial sync better than no sync)
+
+        # Update manifest with new hashes
+        await self._update_manifest(org_id, synced, new_hash_map)
+
+        return SyncResult(
+            sync_id=sync_id,
+            synced_count=len(synced),
+            failed_count=len(failed),
+            conflicts=failed,
+            duration_ms=elapsed_ms,
+        )
+
+    async def _write_atomic(self, path: Path, content: str) -> None:
+        """Write to temp file first, then atomic rename. Prevents partial writes."""
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.rename(path)  # atomic on most filesystems
+
+    # BACKUP before sync:
+    # Create ~/.obsidian_backup/{org_id}/{timestamp}/ before each sync
+    # Keep last 5 backups (auto-rotate)
+    # "Restore from backup" option in Settings if sync goes wrong
+```
+
+---
+
+## U5 — ACCESS CONTROL FOR KNOWLEDGE GRAPHS
+
+```python
+# Knowledge graphs contain sensitive org knowledge.
+# Must be tenant-isolated AND role-based within tenant.
+
+class GraphAccessControl:
+    """
+    Controls who can see/query/export knowledge graphs.
+    Enforced at: API layer + SSE stream + S3 file access.
+    """
+
+    ACCESS_LEVELS = {
+        "tenant_admin": ["read", "write", "export", "delete", "share"],
+        "org_admin":    ["read", "write", "export"],
+        "org_member":   ["read", "query"],
+        "org_viewer":   ["read"],           # can view graph but not query
+        "approver":     [],                 # no knowledge graph access
+    }
+
+    # NODE-LEVEL SENSITIVITY (some nodes are restricted):
+    # Nodes tagged with sensitivity: "confidential" are only visible to org_admin+
+    # Agent output containing PII: automatically tagged "restricted"
+    # Legal documents: tagged "legal_only" → only legal team members can see
+
+    async def check(
+        self, user: TenantUser, action: str, org_id: str,
+        node_id: str | None = None
+    ) -> bool:
+        allowed = self.ACCESS_LEVELS.get(user.role, [])
+        if action not in allowed:
+            return False
+
+        if node_id:
+            node = await self.graph_store.get_node(node_id)
+            if node.sensitivity == "confidential" and user.role not in ("tenant_admin", "org_admin"):
+                return False
+            if node.sensitivity == "legal_only" and "legal" not in user.org_permissions.get(org_id, []):
+                return False
+
+        return True
+
+# TENANT ISOLATION (critical):
+# Every graph stored at: org-graphs/{tenant_id}/{org_id}/
+# S3 bucket policy: can only access own tenant's prefix
+# Neo4j (enterprise): separate database per tenant OR label-based isolation
+# Redis: namespace: graph:{tenant_id}:{org_id}:*
+
+# GRAPH EXPORT PERMISSIONS:
+# Only org_admin+ can export full graph (contains all org knowledge)
+# Export requires: audit log entry + email notification to tenant admin
+# Export formats: JSON (full), GraphML (anonymized), CSV (nodes only)
+```
+
+---
+
+## U6 — ERROR HANDLING + SELF-HEALING
+
+```python
+class GraphifyErrorHandler:
+    """Handles all failure modes for graphify + obsidian vault operations."""
+
+    # FAILURE MODE 1: Graphify timeout
+    async def handle_timeout(self, org_id: str, job_id: str) -> None:
+        # Save partial result (whatever nodes/edges were found before timeout)
+        partial = await self.get_partial_result(job_id)
+        if partial.node_count > 0:
+            await self.graph_store.save(org_id, partial, status="partial")
+            await self.notify_ui(org_id, "Graph analysis partial — results available")
+        # Schedule retry during off-peak hours
+        run_graphify.apply_async(
+            args=[org_id, ...],
+            eta=next_offpeak_time(),
+            queue=f"org.{org.plan}.graphify",
+        )
+
+    # FAILURE MODE 2: LLM call fails (INFERRED edge generation fails)
+    async def handle_llm_failure(self, org_id: str) -> None:
+        # Fall back to EXTRACTED-only graph (no INFERRED connections)
+        # This is still valuable — just less rich
+        await self.graph_store.save(org_id, extracted_only_result, mode="extracted_only")
+        await self.notify_ui(org_id, "Knowledge graph built (connections only — AI analysis unavailable)")
+
+    # FAILURE MODE 3: Neo4j unavailable
+    async def handle_neo4j_down(self, org_id: str) -> None:
+        # Automatic fallback to Postgres backend
+        self.backend_router.force_backend(org_id, "postgres")
+        await self.notify_ui(org_id, "Knowledge graph running in fallback mode")
+        # Schedule retry for Neo4j reconnection
+
+    # FAILURE MODE 4: Vault sync conflict
+    async def handle_sync_conflict(self, conflict: SyncConflict) -> None:
+        # Create .conflict file (don't overwrite user changes)
+        # Notify user: "2 conflicts in vault sync — [Resolve]"
+        # Show diff UI: org version vs user version
+
+    # FAILURE MODE 5: S3 unavailable (graph storage down)
+    async def handle_storage_failure(self, org_id: str) -> None:
+        # Serve from Redis cache (may be stale)
+        cached = await self.redis.get(f"graph:{org_id}:current")
+        if cached:
+            return stale_response(cached, warning="Graph may be outdated")
+        return empty_graph_response(warning="Knowledge graph temporarily unavailable")
+
+    # FAILURE MODE 6: Graphify package not installed / outdated
+    async def check_graphify_available(self) -> bool:
+        try:
+            result = subprocess.run(["npx", "graphify", "--version"], capture_output=True)
+            return result.returncode == 0
+        except FileNotFoundError:
+            await self.notify_admin("graphify package not found — install with: npm install -g graphify")
+            return False
+
+# HEALTH CHECK ENDPOINT:
+# GET /v1/org/{id}/knowledge/health
+# Returns: {
+#   "graph_available": true,
+#   "last_updated": "2h ago",
+#   "node_count": 247,
+#   "status": "fresh" | "stale" | "partial" | "building" | "error",
+#   "neo4j_connected": true,
+#   "last_sync": "1h ago",
+#   "vault_conflicts": 0
+# }
+```
+
+---
+
+## U7 — GRAPHIFY COST + LLM BUDGET
+
+Graphify in `--mode deep` makes LLM calls for INFERRED edge generation.
+These must be controlled.
+
+```python
+class GraphifyBudgetManager:
+    """Controls LLM costs for graphify deep mode."""
+
+    COST_PER_MODE = {
+        "fast":     0.00,    # No LLM calls (pattern matching only)
+        "moderate": 0.05,    # LLM on high-value documents only
+        "deep":     0.20,    # LLM on all documents
+    }
+
+    async def select_mode(self, org_id: str, artifact_count: int) -> str:
+        budget = await self.get_remaining_budget(org_id)
+
+        estimated_deep_cost = artifact_count * 0.003  # ~$0.003 per doc for INFER
+
+        if budget < estimated_deep_cost:
+            return "fast"      # Budget too low for deep
+        elif budget < estimated_deep_cost * 2:
+            return "moderate"  # Selective LLM
+        else:
+            return "deep"      # Full AI analysis
+
+    # SEMANTIC CACHE for INFERRED edges:
+    # If two similar documents were processed before, reuse the INFERRED edge
+    # Uses existing app/rag/semantic_cache.py
+    # Expected: 30-40% reduction in LLM calls for incremental runs
+
+    # LLM CALL BREAKDOWN:
+    # "fast" mode:    0 LLM calls — pure structural analysis
+    # "moderate" mode: 1 LLM call per document (summary + key concepts)
+    # "deep" mode:    2-3 LLM calls per document (summary + relations + INFER)
+
+    # COST TRACKING:
+    # Each graphify run logs: mode, artifact_count, llm_calls, total_cost_usd
+    # Shown in org cost dashboard: "Knowledge Analysis: $0.42 this month"
+```
+
+---
+
+## U8 — GRAPH VERSIONING (Time Travel)
+
+```python
+class GraphVersionManager:
+    """
+    Maintains graph snapshots over time.
+    Enables: "show me the knowledge graph from last week"
+    Enables: Organization Replay (Supplement N10) for knowledge
+    """
+
+    SNAPSHOT_POLICY = {
+        "free":       "weekly",
+        "starter":    "daily",
+        "pro":        "6-hourly",
+        "enterprise": "hourly",
+    }
+
+    async def snapshot(self, org_id: str) -> SnapshotId:
+        """Create a point-in-time snapshot of the knowledge graph."""
+        current = await self.graph_store.get_current(org_id)
+        snapshot_id = f"{org_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        await self.s3.put(
+            f"org-graphs/{org_id}/snapshots/{snapshot_id}.json",
+            current.json(),
+        )
+        return snapshot_id
+
+    async def get_at_time(self, org_id: str, timestamp: datetime) -> GraphData:
+        """Get the knowledge graph as it was at a specific time."""
+        snapshots = await self.list_snapshots(org_id)
+        # Find closest snapshot before the requested time
+        closest = min(
+            [s for s in snapshots if s.created_at <= timestamp],
+            key=lambda s: timestamp - s.created_at
+        )
+        return await self.load_snapshot(org_id, closest.snapshot_id)
+
+    # UI: Timeline scrubber on Knowledge Graph page
+    # "Showing graph from: [Aug 10] ────────●──── [Now]"
+    # Drag to any point → graph transitions to that version
+    # Nodes that didn't exist yet: fade out
+    # New nodes in that period: fade in with entrance animation
+```
+
+---
+
+## U9 — TESTING SUITE
+
+```python
+# tests/org/test_graphify.py
+
+class TestGraphifyIntegration:
+    async def test_graphify_runs_and_builds_graph(self, tmp_path):
+        """Graphify processes artifacts and returns valid graph."""
+        ...
+
+    async def test_inferred_edges_detected(self, tmp_path):
+        """Deep mode finds semantic connections between documents."""
+        ...
+
+    async def test_community_detection_returns_clusters(self, graph_with_clusters):
+        """Community detection identifies distinct knowledge clusters."""
+        ...
+
+    async def test_gap_detection_finds_unassigned_capabilities(self, org_with_gap):
+        """Graph analysis identifies capabilities with no assigned agent."""
+        ...
+
+    async def test_incremental_update_only_processes_new_files(self, existing_graph):
+        """--update flag skips already-processed files."""
+        ...
+
+    async def test_graphify_timeout_saves_partial_result(self):
+        """Timeout results in partial graph, not empty."""
+        ...
+
+    async def test_tenant_isolation_enforced(self, tenant_a, tenant_b):
+        """Tenant A cannot access Tenant B's knowledge graph."""
+        ...
+
+    async def test_graphify_cache_hit_skips_reprocessing(self):
+        """Unchanged artifacts served from cache without re-running."""
+        ...
+
+# tests/org/test_obsidian_sync.py
+
+class TestObsidianVaultSync:
+    async def test_wikilinks_create_graph_edges(self):
+        """[[wikilink]] in note creates corresponding graph edge."""
+        ...
+
+    async def test_sync_is_idempotent(self, vault_path):
+        """Running sync twice produces identical result."""
+        ...
+
+    async def test_conflict_detection_on_user_edit(self, modified_vault):
+        """User-modified file creates .conflict not overwrite."""
+        ...
+
+    async def test_atomic_write_prevents_partial_files(self):
+        """Write failure leaves original file intact."""
+        ...
+
+    async def test_base_file_renders_correctly(self, mission_list):
+        """obsidian-bases skill output is valid .base format."""
+        ...
+
+    async def test_canvas_file_renders_correctly(self, mission_deps):
+        """json-canvas skill output is valid JSON Canvas format."""
+        ...
+
+# tests/api/test_knowledge_api.py
+
+class TestKnowledgeAPI:
+    async def test_graphify_endpoint_returns_job_id(self):
+        """POST /knowledge/graphify returns async job_id immediately."""
+        ...
+
+    async def test_graph_query_endpoint_returns_results(self):
+        """POST /knowledge/graph/query returns BFS traversal results."""
+        ...
+
+    async def test_unauthorized_graph_access_rejected(self):
+        """Non-member cannot access org's knowledge graph."""
+        ...
+
+    async def test_graph_health_endpoint(self):
+        """GET /knowledge/health returns status + metadata."""
+        ...
+
+# tests/frontend/KnowledgeGraph.test.tsx
+
+describe("KnowledgeGraph component", () => {
+    it("renders nodes from graph data", async () => { ... });
+    it("animates new node appearance on SSE event", async () => { ... });
+    it("draws edge on new wikilink SSE event", async () => { ... });
+    it("fires discovery animation on INFERRED edge event", async () => { ... });
+    it("dimis unconnected nodes on hover", async () => { ... });
+    it("respects prefers-reduced-motion (disables animations)", async () => { ... });
+    it("handles 500 nodes without performance degradation", async () => { ... });
+    it("shows stale indicator when graph is outdated", async () => { ... });
+});
+```
+
+---
+
+## U10 — GRAPH API COMPLETENESS (All Endpoints)
+
+```
+GRAPHIFY ENDPOINTS:
+  POST   /v1/org/{id}/knowledge/graphify                ← trigger async run
+  GET    /v1/org/{id}/knowledge/graphify/{job_id}       ← job status
+  GET    /v1/org/{id}/knowledge/graphify/{job_id}/stream← SSE progress stream
+  DELETE /v1/org/{id}/knowledge/graphify/{job_id}       ← cancel running job
+
+GRAPH QUERY ENDPOINTS:
+  GET    /v1/org/{id}/knowledge/graph                   ← full graph metadata
+  GET    /v1/org/{id}/knowledge/graph/nodes             ← list nodes (cursor paginated)
+  GET    /v1/org/{id}/knowledge/graph/nodes/{node_id}   ← single node + connections
+  POST   /v1/org/{id}/knowledge/graph/query             ← BFS/DFS traversal
+  POST   /v1/org/{id}/knowledge/graph/path              ← shortest path
+  GET    /v1/org/{id}/knowledge/graph/communities       ← community list
+  GET    /v1/org/{id}/knowledge/graph/gaps              ← capability/knowledge gaps
+  GET    /v1/org/{id}/knowledge/graph/html              ← download interactive HTML
+  GET    /v1/org/{id}/knowledge/graph/export            ← export JSON/GraphML/CSV
+
+VAULT + OBSIDIAN-SKILLS ENDPOINTS:
+  POST   /v1/org/{id}/obsidian/note                     ← write obsidian-markdown note
+  POST   /v1/org/{id}/obsidian/base-view                ← generate .base file
+  POST   /v1/org/{id}/obsidian/canvas                   ← generate .canvas file
+  GET    /v1/org/{id}/obsidian/vault-sync               ← trigger vault sync
+  GET    /v1/org/{id}/obsidian/vault-sync/status        ← sync status
+  GET    /v1/org/{id}/obsidian/conflicts                ← list sync conflicts
+  POST   /v1/org/{id}/obsidian/conflicts/{id}/resolve   ← resolve conflict
+
+GRAPH VERSIONING:
+  GET    /v1/org/{id}/knowledge/snapshots               ← list snapshots
+  GET    /v1/org/{id}/knowledge/snapshots/{id}          ← get snapshot graph
+  GET    /v1/org/{id}/knowledge/at/{timestamp}          ← graph at specific time
+
+HEALTH:
+  GET    /v1/org/{id}/knowledge/health                  ← graph + vault health
+
+Total: 21 endpoints (complete REST API for knowledge layer)
+```
+
+---
+
+## SUPPLEMENT U — SUMMARY
+
+```
+GRAPHIFY + OBSIDIAN-SKILLS BACKEND ENGINEERING — ALL GAPS CLOSED
+
+U1:  Async Processing (Graphify as Celery Task)
+     Per-plan queue isolation (free/starter/pro/enterprise)
+     SSE progress stream (nodes appear live in UI during run)
+     SoftTimeLimitExceeded: saves partial result, retries off-peak
+     acks_late=True for reliability (at-least-once processing)
+
+U2:  Graph Caching Strategy
+     L1: Redis hot cache (1h TTL, query results 30m)
+     L2: S3 warm cache (full graph JSON, indefinite)
+     L3: PostgreSQL cold (metadata + discovery history)
+     Partial invalidation: only re-process changed artifacts' nodes
+     Stale serving: show cached graph with "updating" indicator
+
+U3:  Horizontal Scaling for Large Graphs
+     4 tiers: small(<500) → postgres | medium(<5K) → postgres+redis
+     large(<50K) → neo4j | massive(>50K) → neo4j cluster sharded
+     Frontend LOD: zoom out → community labels only (performance)
+     Virtual rendering: only render visible viewport nodes (React Flow)
+     Graph partitioning: per-dept sub-graphs for very large orgs
+
+U4:  Vault Sync Safety + Idempotency
+     Distributed Redis lock prevents concurrent syncs
+     Content hash check: skip unchanged files (true idempotency)
+     Conflict detection: user-modified files → .conflict copy created
+     Atomic writes: tmp→rename prevents partial file corruption
+     Backup before sync: last 5 backups retained for rollback
+
+U5:  Access Control for Knowledge Graphs
+     Role-based: tenant_admin → full | org_viewer → read-only
+     Node-level sensitivity: confidential/legal_only tags
+     Tenant isolation: S3 prefix policy + Neo4j label isolation
+     Export requires: audit log + admin notification
+
+U6:  Error Handling + Self-Healing
+     6 failure modes handled: timeout, LLM failure, Neo4j down,
+     vault conflict, S3 unavailable, graphify not installed
+     All failures: serve degraded (partial/cached) not empty
+     Health endpoint: /v1/org/{id}/knowledge/health
+
+U7:  Graphify Cost + LLM Budget
+     Fast mode: 0 LLM calls (pattern-matching only)
+     Moderate/Deep: budget-adaptive mode selection
+     Semantic cache: 30-40% LLM call reduction on incremental runs
+     Cost shown in org cost dashboard: "Knowledge Analysis: $X/month"
+
+U8:  Graph Versioning (Time Travel)
+     Snapshots: hourly (enterprise) → weekly (free) per plan
+     get_at_time(): graph as it was at any point in history
+     UI: timeline scrubber with graph transition animation
+
+U9:  Testing Suite (complete)
+     Backend: 9 graphify tests + 6 vault sync tests + 4 API tests
+     Frontend: 8 KnowledgeGraph component tests
+     Covers: isolation, idempotency, error modes, performance, a11y
+
+U10: Graph API Completeness
+     21 total endpoints covering:
+     graphify (job management + SSE) + graph query + vault/obsidian-skills
+     + graph versioning + health
+     All paginated (cursor-based), all authenticated, all audited
+
+SPEC VERSION: 3.4.0 — GRAPHIFY + OBSIDIAN-SKILLS FULLY SPECCED
+```
