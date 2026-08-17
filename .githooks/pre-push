@@ -78,7 +78,7 @@ if ! npm run lint 2>&1 | tail -5; then
   exit 1
 fi
 
-if ! npm run test -- --run 2>&1 | tail -10; then
+if ! npm run test -- --run --reporter=verbose 2>&1 | tail -10; then
   echo -e "${RED}❌ Frontend tests failed. Fix before pushing.${NC}"
   cd ..
   exit 1
@@ -86,22 +86,26 @@ fi
 echo -e "  ${GREEN}✅ Frontend checks passed${NC}"
 cd ..
 
-# ─── 4. Full integration tests (only when pushing to main/release) ────────────
+# ─── 4. Integration tests (only on main/release AND when Docker+SDK available) ──
 if [ "$RUN_FULL_SUITE" = true ]; then
-  echo -e "  🐳 Running integration tests (pushing to $CURRENT_BRANCH)..."
-  echo -e "  ${YELLOW}This requires Docker (colima start if on macOS)${NC}"
-
-  cd "$REPO_ROOT/agent-verse-backend"
-  if ! DOCKER_HOST="unix:///Users/$USER/.colima/default/docker.sock" \
-      TESTCONTAINERS_RYUK_DISABLED=true \
-      uv run pytest tests/ -m "integration" \
-      --timeout=120 --tb=short -q 2>&1 | tail -20; then
-    echo -e "${RED}❌ Integration tests failed. Fix before pushing to $CURRENT_BRANCH.${NC}"
-    cd ..
-    exit 1
+  if [ ! -d "$REPO_ROOT/agent-verse-sdk-python" ]; then
+    echo -e "  ${YELLOW}⚠️  Skipping integration tests (SDK not available) — CI runs them${NC}"
+  elif ! command -v docker &>/dev/null; then
+    echo -e "  ${YELLOW}⚠️  Skipping integration tests (Docker not available)${NC}"
+  else
+    echo -e "  🐳 Running integration tests (pushing to $CURRENT_BRANCH)..."
+    cd "$REPO_ROOT/agent-verse-backend"
+    if ! DOCKER_HOST="unix:///Users/$USER/.colima/default/docker.sock" \
+        TESTCONTAINERS_RYUK_DISABLED=true \
+        uv run pytest tests/ -m "integration" \
+        --timeout=120 --tb=short -q 2>&1 | tail -20; then
+      echo -e "${RED}❌ Integration tests failed.${NC}"
+      cd "$REPO_ROOT"
+      exit 1
+    fi
+    echo -e "  ${GREEN}✅ Integration tests passed${NC}"
+    cd "$REPO_ROOT"
   fi
-  echo -e "  ${GREEN}✅ Integration tests passed${NC}"
-  cd ..
 fi
 
 echo -e "${GREEN}✅ All pre-push checks passed! Pushing to $REMOTE...${NC}"

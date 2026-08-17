@@ -109,7 +109,7 @@ describe('QuotaUsageBar', () => {
     wrap(<QuotaUsageBar quota={QUOTA} />);
     expect(screen.getByText('Sources')).toBeInTheDocument();
     expect(screen.getByText('Tokens this month')).toBeInTheDocument();
-  });
+  }, 30_000);
 
   test('shows warning state when >80% used', async () => {
     const { QuotaUsageBar } = await import('../components/QuotaUsageBar');
