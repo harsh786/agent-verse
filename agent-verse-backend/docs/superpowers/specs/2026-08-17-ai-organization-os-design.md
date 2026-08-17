@@ -8000,4 +8000,1144 @@ Every major enterprise requirement is now specced:
   ✅ 19,450 tests on existing platform (verified)
 ```
 
+---
+
+# SUPPLEMENT Q — MULTI-TENANT ORG OS + UNIVERSAL COMMAND GATEWAY
+## Two world-class enhancements: Tenant Architecture + Command from Anywhere
+
+*Added 2026-08-17 — Complete spec for tenant hierarchy + REST/Telegram/MCP/A2A*
+
+---
+
+## Q1 — MULTI-TENANT ARCHITECTURE FOR THE ORG OS
+
+The Org OS is fully multi-tenant from day one.
+**Every organization is owned by a tenant. Every tenant is fully isolated.**
+
+### Tenant Hierarchy
+
+```
+PLATFORM (AgentVerse)
+  └── TENANT (a company, developer, or individual)
+        ├── ORGANIZATION 1 (e.g. "Trading Team Alpha")
+        │     ├── Departments
+        │     ├── Teams
+        │     ├── Agents
+        │     ├── Missions
+        │     ├── Knowledge
+        │     └── Memory (tenant-isolated)
+        ├── ORGANIZATION 2 (e.g. "Marketing Org")
+        │     └── [fully separate, isolated from Org 1]
+        └── ORGANIZATION N (any number of orgs per tenant)
+```
+
+### Tenant Data Model
+
+```python
+@dataclass
+class Tenant:
+    tenant_id: str                        # UUID, primary key
+    name: str                             # company/user name
+    slug: str                             # url-safe identifier
+    plan: str                             # free | starter | pro | enterprise
+    
+    # API Access
+    api_keys: list[TenantAPIKey]          # multiple keys supported
+    
+    # Org OS Quotas (per plan)
+    max_organizations: int                # free=1, starter=3, pro=10, enterprise=unlimited
+    max_agents_per_org: int               # free=5, starter=20, pro=100, enterprise=unlimited
+    max_concurrent_missions: int          # free=2, starter=10, pro=50, enterprise=unlimited
+    max_monthly_budget_usd: float         # spend cap across all orgs
+    
+    # Command Gateway config
+    command_gateway_enabled: bool         # enables UCG
+    allowed_channels: list[str]           # ["rest", "telegram", "slack", "mcp", "a2a"]
+    
+    # Webhook config
+    webhook_url: str | None               # outbound events destination
+    webhook_secret: str | None            # HMAC signing secret
+    
+    # SSO
+    sso_config: EnterpriseAuthConfig | None
+    
+    # Billing
+    billing_email: str
+    created_at: datetime
+
+@dataclass
+class TenantAPIKey:
+    key_id: str
+    key_hash: str                         # stored as bcrypt hash, never plain
+    name: str                             # "Production Key", "Telegram Bot Key"
+    scopes: list[str]                     # ["orgs:read", "missions:write", "approve"]
+    rate_limit_per_minute: int            # default: 60
+    allowed_org_ids: list[str] | None     # None = all orgs in tenant
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    created_at: datetime
+```
+
+### Tenant Isolation Guarantees
+
+```
+STORAGE ISOLATION:
+  Every table has tenant_id + RLS policy.
+  An agent in Tenant A CANNOT read data from Tenant B.
+  No cross-tenant joins possible at DB level.
+  Enforced by PostgreSQL Row Level Security (already in spec Part 30).
+
+EXECUTION ISOLATION:
+  Each tenant's Celery tasks run in tenant-scoped queues.
+  Tenant A mission cannot consume Tenant B's worker budget.
+  Per-tenant concurrency limits enforced by Celery bulkhead.
+
+MEMORY ISOLATION:
+  Redis keys namespaced: tenant:{tenant_id}:*
+  Vector collections namespaced: tenant_{tenant_id}_{collection}
+  Org memory never crosses tenant boundaries.
+
+API KEY ISOLATION:
+  API key always resolves to exactly one tenant.
+  Cannot forge tenant_id in request body — always taken from auth token.
+  Key scopes limit which operations and which orgs are accessible.
+
+BILLING ISOLATION:
+  Costs tracked per tenant per org per mission.
+  Tenant budget enforced across all their orgs combined.
+  Budget exhaustion pauses low-priority work, not critical work.
+```
+
+### Tenant Management APIs
+
+```
+POST   /v1/tenants/signup              ← tenant registration
+POST   /v1/tenants/api-keys            ← create API key
+DELETE /v1/tenants/api-keys/{key_id}   ← revoke key
+GET    /v1/tenants/api-keys            ← list keys
+PUT    /v1/tenants/config              ← update tenant settings
+GET    /v1/tenants/usage               ← usage + billing summary
+GET    /v1/tenants/orgs                ← list all orgs in tenant
+POST   /v1/tenants/orgs                ← create new org
+DELETE /v1/tenants/orgs/{org_id}       ← delete org
+```
+
+### Multi-Org Use Cases
+
+```
+SCENARIO 1: SaaS company
+  Tenant: "Acme SaaS"
+  Org 1: "Engineering Team" (software dev missions)
+  Org 2: "Marketing Team" (LinkedIn, lead gen)
+  Org 3: "Customer Success" (support tickets, retention)
+  Each org fully isolated, different agents, different knowledge bases.
+
+SCENARIO 2: Consulting firm
+  Tenant: "Khan & Partners"
+  Org per client: "Client A Org", "Client B Org", "Client C Org"
+  Client data never crosses to other clients' orgs.
+  All orgs managed from one dashboard.
+
+SCENARIO 3: Developer building a product
+  Tenant: developer account
+  Org: "My AI Company" (the product they're building)
+  Calls org via REST API from their own app.
+  End users never directly access AgentVerse.
+```
+
+---
+
+## Q2 — UNIVERSAL COMMAND GATEWAY (UCG)
+
+The Universal Command Gateway allows the org to receive commands and
+send responses via **any channel** — not just the web UI.
+
+### Architecture
+
+```
+ANY CHANNEL                    UNIVERSAL COMMAND GATEWAY
+──────────────────────────────────────────────────────────────
+REST API client                         ↓
+Telegram bot              → CHANNEL ADAPTER  → NORMALIZER
+Slack bot                 → CHANNEL ADAPTER  → NORMALIZER
+WhatsApp (Business API)   → CHANNEL ADAPTER  → NORMALIZER
+Discord bot               → CHANNEL ADAPTER  → NORMALIZER
+Email inbound             → CHANNEL ADAPTER  → NORMALIZER
+MCP client                → CHANNEL ADAPTER  → NORMALIZER
+External agent (A2A)      → CHANNEL ADAPTER  → NORMALIZER
+Voice webhook             → CHANNEL ADAPTER  → NORMALIZER
+Custom webhook            → CHANNEL ADAPTER  → NORMALIZER
+                                              ↓
+                                       COMMAND ROUTER
+                                              ↓
+                                       ORG BRAIN
+                                       (processes command)
+                                              ↓
+                                       RESPONSE FORMATTER
+                                              ↓
+                                       RESPONSE sent back
+                                       via originating channel
+```
+
+### Command Object (channel-agnostic)
+
+```python
+@dataclass
+class OrgCommand:
+    """Normalized command from any channel."""
+    command_id: str
+    tenant_id: str
+    org_id: str
+    
+    # What was said
+    text: str                        # raw user text
+    intent: str | None               # classified intent (filled by router)
+    
+    # Who said it
+    actor_id: str                    # user ID in originating system
+    actor_name: str | None
+    actor_channel: str               # "rest"|"telegram"|"slack"|"mcp"|"a2a"
+    
+    # Context
+    conversation_id: str | None      # thread/conversation for multi-turn
+    reply_to_command_id: str | None  # if this is a reply in conversation
+    
+    # Attachments
+    files: list[CommandFile] = field(default_factory=list)  # images, PDFs
+    
+    # Routing hints
+    explicit_org_id: str | None      # if user specified which org
+    urgency: str = "normal"          # "urgent" | "normal" | "background"
+    
+    # Channel metadata
+    raw_payload: dict               # original payload from channel
+    received_at: datetime
+
+@dataclass
+class OrgResponse:
+    """Response sent back to originating channel."""
+    command_id: str
+    text: str                        # main response text
+    formatted: dict | None           # channel-specific formatting (Telegram markdown, Slack blocks)
+    actions: list[ResponseAction]    # interactive buttons/actions
+    artifacts: list[ArtifactRef]     # linked reports/files
+    mission_id: str | None           # if a mission was created
+    requires_action: bool            # true if approval/decision needed
+    voice_text: str | None           # shorter version for TTS if needed
+```
+
+---
+
+## Q3 — REST API COMMAND INTERFACE
+
+The simplest integration. Any system can POST a command to the org.
+
+```
+ENDPOINT:
+  POST /v1/org/{org_id}/command
+
+AUTHENTICATION:
+  Header: X-API-Key: {tenant_api_key}
+  OR: Authorization: Bearer {jwt_token}
+
+REQUEST:
+  {
+    "text": "What's the status of active missions?",
+    "conversation_id": "optional-thread-id",
+    "urgency": "normal"
+  }
+
+RESPONSE (immediate — async processing):
+  {
+    "command_id": "cmd_abc123",
+    "status": "processing",
+    "estimated_response_ms": 2000
+  }
+
+RESPONSE (streaming — SSE):
+  GET /v1/org/{org_id}/command/{command_id}/stream
+  
+  event: thinking
+  data: {"text": "Looking up mission status..."}
+  
+  event: response
+  data: {"text": "3 active missions:\n1. Q3 Analysis (80%)\n2..."}
+  
+  event: complete
+  data: {"command_id": "cmd_abc123", "status": "done"}
+
+RESPONSE (synchronous wait):
+  POST /v1/org/{org_id}/command?wait=true&timeout_ms=10000
+  → Returns full response when ready (up to timeout)
+
+COMMON COMMAND EXAMPLES:
+  "Start a mission to research our top 3 competitors"
+  "Approve the pending marketing campaign"
+  "What happened while I was away?"
+  "Pause all autonomous work"
+  "Show me the status of the Germany mission"
+  "How much have we spent this month?"
+  "Who is working on the compliance analysis?"
+  "Create a daily market intelligence schedule"
+```
+
+### REST Command SDK
+
+```python
+# Python SDK usage
+from agentverse import OrgClient
+
+client = OrgClient(api_key="av_prod_xxx", org_id="org_trading_001")
+
+# Simple command
+response = client.command("What's happening?")
+print(response.text)
+
+# Streaming response
+for chunk in client.command_stream("Research our top 5 competitors"):
+    print(chunk.text, end="")
+
+# Async
+import asyncio
+async def main():
+    response = await client.command_async("Approve the email campaign")
+    print(response.text)
+
+# Approval workflow
+pending = client.list_pending_approvals()
+for item in pending:
+    print(f"Pending: {item.description} — Cost: ${item.estimated_cost}")
+    client.approve(item.approval_id, comment="Looks good")
+```
+
+```typescript
+// TypeScript SDK usage
+import { OrgClient } from "@agentverse/sdk";
+
+const client = new OrgClient({ apiKey: "av_prod_xxx", orgId: "org_trading_001" });
+
+// Simple command
+const response = await client.command("What's happening?");
+console.log(response.text);
+
+// Streaming
+for await (const chunk of client.commandStream("Research competitors")) {
+  process.stdout.write(chunk.text);
+}
+
+// React hook
+const { command, response, loading } = useOrgCommand(orgId);
+```
+
+---
+
+## Q4 — TELEGRAM BOT INTEGRATION
+
+Users approve missions, get briefings, and control the org from Telegram.
+
+### Setup (one-time per org)
+
+```
+In AgentVerse settings:
+  [Connect Telegram]
+  → System creates a dedicated Telegram bot for this org
+  → Bot token stored encrypted in vault
+  → User shares bot with their Telegram
+  → Bot is ready
+
+OR: Use their own bot token (bring-your-own-bot):
+  Settings → Integrations → Telegram → Enter bot token
+```
+
+### Command Experience
+
+```
+USER in Telegram:
+  "What's the status of my missions?"
+
+BOT responds:
+  📊 Org Status — Trading Team Alpha
+  ─────────────────────────
+  ✅ Active missions: 3
+    • Q3 Risk Analysis (80%) 
+    • Competitor Intel (45%)
+    • SEBI Review (20%)
+  
+  ⏰ Needs attention: 2
+    [📋 View Approvals] [❓ Ask more]
+
+USER: "Approve the email campaign"
+BOT: 
+  ✅ Marketing campaign approved
+  3,400 leads will receive campaign at 10:00 AM
+  Budget consumed: ₹8,400
+
+USER: "Start a mission to research AI trends in fintech"
+BOT:
+  ⚡ Mission started
+  Research team formed: 3 agents
+  Est. completion: 4 hours | Cost: ~₹340
+  [🔗 View in dashboard]
+
+USER: "Morning brief"
+BOT: [sends full morning brief as Telegram message]
+```
+
+### Telegram-specific features
+
+```python
+class TelegramChannelAdapter:
+    """Adapts Telegram messages to OrgCommands and back."""
+    
+    async def handle_update(self, update: TelegramUpdate) -> None:
+        """Entry point for all Telegram messages."""
+        
+        # Text commands → OrgCommand
+        if update.message.text:
+            command = self.normalize(update.message)
+            response = await self.gateway.process(command)
+            await self.send_response(update.chat_id, response)
+        
+        # Documents/images → OCR + command
+        elif update.message.document or update.message.photo:
+            file = await self.download_file(update)
+            command = self.normalize_with_file(update.message, file)
+            response = await self.gateway.process(command)
+            await self.send_response(update.chat_id, response)
+        
+        # Callback query (button press)
+        elif update.callback_query:
+            action = self.parse_callback(update.callback_query)
+            await self.execute_action(action)
+    
+    def format_response(self, response: OrgResponse) -> TelegramMessage:
+        """Format OrgResponse for Telegram (markdown + inline buttons)."""
+        buttons = []
+        for action in response.actions:
+            buttons.append(InlineKeyboardButton(
+                text=action.label,
+                callback_data=action.action_id,
+            ))
+        return TelegramMessage(
+            text=response.text,  # already Telegram markdown
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+        )
+
+# Inline keyboards for approvals:
+# [✅ Approve] [❌ Reject] [📋 View details] [🔄 Ask more]
+
+# Voice messages → auto-transcribed via voice system (Supplement O)
+# → treated as text command
+
+# /commands:
+#   /status  → org health summary
+#   /approve → list pending approvals
+#   /brief   → morning brief
+#   /ask [question] → ask org anything
+#   /pause   → pause all autonomous work
+#   /resume  → resume
+```
+
+### Multi-user Telegram group support
+
+```
+An org can have a Telegram group where multiple team members interact:
+  - Any member can ask questions
+  - Only users with "approve" scope can use approval commands
+  - Bot uses @mentions to direct responses to the right person
+  - Group becomes the org's command channel for the team
+```
+
+---
+
+## Q5 — SLACK BOT INTEGRATION
+
+```python
+class SlackChannelAdapter:
+    """Full Slack bot integration via Bolt SDK."""
+    
+    # Slash commands
+    /org status        → org health + active missions
+    /org ask [text]    → ask org anything
+    /org approve       → list pending approvals
+    /org mission [text]→ create a mission
+    /org brief         → morning brief
+    
+    # Mentions
+    @OrgBot What's the status?  → natural language command
+    
+    # App Home tab
+    → Full mini-dashboard in Slack
+    → Approval queue
+    → Active missions list
+    → Morning brief
+    
+    # Workflow steps
+    → Org as a Workflow Builder step
+    → "When X happens in Slack → Ask org to handle it"
+    
+    # Message shortcuts
+    → Right-click any message → "Send to Org" → creates a mission
+```
+
+---
+
+## Q6 — ADDITIONAL CHANNEL INTEGRATIONS
+
+### WhatsApp Business API
+
+```python
+class WhatsAppChannelAdapter:
+    """WhatsApp Business Cloud API integration."""
+    
+    # Text messages → OrgCommand
+    # Voice notes → auto-transcribed (Supplement O STT) → OrgCommand
+    # Documents → OCR → OrgCommand
+    # Images → vision model → OrgCommand
+    
+    # Interactive messages (buttons):
+    # [Approve] [Reject] [Details] (WhatsApp template messages)
+    
+    # Ideal for: field teams, mobile-first users, emerging markets
+    # Setup: Connect WhatsApp Business number in settings
+```
+
+### Discord Bot
+
+```python
+class DiscordChannelAdapter:
+    """Discord bot for dev-focused orgs or communities."""
+    
+    # Slash commands: /org ask, /org status, /org approve
+    # Message commands via bot mention
+    # Thread-based conversations (each org command = new thread)
+    # Embeds for rich formatting
+    # Role-based command permissions (Discord roles → org scopes)
+```
+
+### Email Command Interface
+
+```python
+class EmailChannelAdapter:
+    """
+    Send commands via email to a dedicated org address.
+    org_id@commands.agentverse.io (or custom domain)
+    """
+    
+    # Subject: mission title OR command
+    # Body: detailed instructions
+    # Attachments: processed via OCR/parsers
+    # Replies continue the conversation thread
+    # "Reply-to" on org responses → thread continues
+    
+    # Ideal for: async workflows, external stakeholders,
+    #            users who prefer email for everything
+```
+
+### Custom Webhook Receiver
+
+```python
+class WebhookChannelAdapter:
+    """
+    Any system can POST a webhook to trigger org commands.
+    
+    POST /v1/org/{org_id}/webhook
+    Headers: X-Webhook-Secret: {hmac_signed}
+    Body: {
+        "trigger": "github.pr_merged",
+        "payload": {...},
+        "command": "auto"  # org decides what to do based on trigger
+    }
+    """
+    # github.pr_merged → "Trigger deployment analysis mission"
+    # calendar.meeting_ended → "Send meeting summary request"
+    # crm.deal_closed → "Trigger customer success onboarding"
+    # custom events from any system
+```
+
+---
+
+## Q7 — ORG AS MCP SERVER (Expose to AI Tools)
+
+The org can expose itself as an **MCP (Model Context Protocol) server**.
+Any AI tool, AI assistant, or AI agent that supports MCP can then
+call your org's capabilities directly.
+
+```
+WHAT THIS ENABLES:
+
+  Claude Desktop      → connects to org MCP → uses org capabilities
+  Cursor/Windsurf     → AI coding assistant calls org research missions
+  Custom AI agent     → calls org for research, analysis, execution
+  Any MCP client      → can interact with the full org
+
+THE ORG BECOMES A "SUPER TOOL" for any AI system.
+```
+
+### MCP Server Architecture
+
+```python
+from app.org.mcp_server import OrgMCPServer
+
+class OrgMCPServer:
+    """
+    Exposes the org as an MCP server.
+    Each org has its own MCP endpoint.
+    Tools auto-generated from org's capabilities.
+    """
+    
+    # MCP server endpoint: 
+    # wss://mcp.agentverse.io/v1/org/{org_id}
+    # Auth: Bearer {api_key}
+    
+    # AUTO-GENERATED TOOLS (from org capabilities):
+    
+    @mcp_tool(
+        name="ask_organization",
+        description="Ask the organization anything in natural language",
+    )
+    async def ask(self, question: str) -> str:
+        """Ask the org brain a question. Returns answer based on org state."""
+        return await self.org_brain.ask(self.org_id, question)
+    
+    @mcp_tool(
+        name="start_mission",
+        description="Start a new mission for the organization to execute",
+    )
+    async def start_mission(self, description: str, priority: str = "medium") -> dict:
+        """Create and start a new mission."""
+        return await self.mission_service.create_and_start(
+            org_id=self.org_id,
+            description=description,
+            priority=priority,
+            source="mcp",
+        )
+    
+    @mcp_tool(
+        name="get_status",
+        description="Get current organization status, active missions, and pending items",
+    )
+    async def get_status(self) -> dict:
+        return await self.org_brain.get_status(self.org_id)
+    
+    @mcp_tool(
+        name="list_missions",
+        description="List missions with optional status filter",
+    )
+    async def list_missions(self, status: str | None = None) -> list[dict]:
+        return await self.mission_service.list(self.org_id, status=status)
+    
+    @mcp_tool(
+        name="get_mission_result",
+        description="Get the result and artifacts of a completed mission",
+    )
+    async def get_mission_result(self, mission_id: str) -> dict:
+        return await self.mission_service.get_with_artifacts(mission_id)
+    
+    @mcp_tool(
+        name="list_pending_approvals",
+        description="List items waiting for human approval",
+    )
+    async def list_pending_approvals(self) -> list[dict]:
+        return await self.approval_service.list_pending(self.org_id)
+    
+    @mcp_tool(
+        name="approve",
+        description="Approve a pending action",
+    )
+    async def approve(self, approval_id: str, comment: str = "") -> dict:
+        return await self.approval_service.approve(approval_id, comment)
+    
+    @mcp_tool(
+        name="search_knowledge",
+        description="Search the org's knowledge base",
+    )
+    async def search_knowledge(self, query: str, top_k: int = 5) -> list[dict]:
+        return await self.knowledge_service.search(self.org_id, query, top_k)
+    
+    @mcp_tool(
+        name="search_memory",
+        description="Search organizational memory and past decisions",
+    )
+    async def search_memory(self, query: str) -> list[dict]:
+        return await self.memory_service.search(self.org_id, query)
+    
+    # DYNAMIC TOOLS (from org's registered capabilities):
+    # For each capability in org.capabilities:
+    #   → generate a tool: invoke_capability(capability_name, inputs)
+    # For each scheduled mission type:
+    #   → generate a tool: run_{mission_template}(params)
+```
+
+### MCP Configuration in Settings
+
+```
+SETTINGS → Integrations → MCP Server
+
+  MCP Endpoint:  wss://mcp.agentverse.io/v1/org/org_abc123
+  Auth Token:    [Generate new token]   [Copy]
+
+  EXPOSED TOOLS:
+  ☑ ask_organization        (read)
+  ☑ start_mission           (write — rate limited)
+  ☑ get_status              (read)
+  ☑ list_missions           (read)
+  ☑ get_mission_result      (read)
+  ☑ list_pending_approvals  (read)
+  ☑ approve                 (write — requires approve scope)
+  ☑ search_knowledge        (read)
+  ☑ search_memory           (read)
+  ☐ pause_organization      (disabled — too powerful for MCP)
+  ☐ delete_mission          (disabled — irreversible)
+
+  TOOL RATE LIMITS:
+  start_mission: 10/hour (prevent spam)
+  approve: 50/hour
+  ask, search, status: unlimited
+
+  [Save] [Test connection] [Copy Claude Desktop config]
+```
+
+### Ready-to-use config snippet (Claude Desktop)
+
+```json
+{
+  "mcpServers": {
+    "my-trading-org": {
+      "command": "npx",
+      "args": ["-y", "@agentverse/mcp-proxy"],
+      "env": {
+        "AGENTVERSE_ORG_URL": "wss://mcp.agentverse.io/v1/org/org_abc123",
+        "AGENTVERSE_API_KEY": "av_prod_xxx"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Q8 — ORG AS AN AGENT (Agent-to-Agent / A2A)
+
+The org can be called by **other AI agents** as if it were a single super-agent.
+An external orchestration system, another org's agent, or a developer's
+custom agent can invoke this org and get work done.
+
+```
+WHAT THIS ENABLES:
+
+  External orchestrator → "Research competitors" → Org executes
+  Another org's agent   → "Get legal review"    → Your legal org executes
+  Custom AI pipeline    → "Analyze this PDF"    → Org handles it
+  Meta-orchestrator     → coordinates multiple orgs as agents
+```
+
+### Org-as-Agent Interface
+
+```python
+class OrgAsAgent:
+    """
+    Makes an org callable like a standard AI agent.
+    Implements the AgentVerse A2A protocol.
+    Compatible with: LangGraph nodes, CrewAI agents, AutoGen agents.
+    """
+    
+    # Standard agent interface (any framework can call this)
+    
+    async def invoke(self, task: str, context: dict | None = None) -> AgentResult:
+        """
+        Main entry point. External agent sends a task.
+        Org executes it and returns the result.
+        
+        This is a SYNCHRONOUS call (waits for mission to complete).
+        For long missions, use invoke_async.
+        """
+        mission = await self.create_and_run_mission(task, context)
+        return AgentResult(
+            output=mission.outputs,
+            artifacts=mission.artifacts,
+            cost_usd=mission.actual_cost_usd,
+            duration_seconds=mission.duration_seconds,
+            mission_id=str(mission.id),
+        )
+    
+    async def invoke_async(self, task: str, callback_url: str | None = None) -> str:
+        """
+        Non-blocking. Returns mission_id immediately.
+        Results delivered via: callback_url | polling | SSE stream.
+        """
+        mission = await self.create_mission(task)
+        return str(mission.id)
+    
+    async def stream(self, task: str) -> AsyncIterator[AgentEvent]:
+        """
+        Stream events as the mission executes.
+        Compatible with: LangGraph streaming, async generators.
+        """
+        async for event in self.execute_streaming(task):
+            yield event
+    
+    # LangGraph node (drop-in):
+    # graph.add_node("trading_org", OrgAsAgent(org_id="org_trading_001"))
+    
+    # CrewAI tool:
+    # crew = Crew(agents=[OrgAsAgent(org_id="org_legal_001")])
+    
+    # AutoGen agent:
+    # assistant = OrgAsAgent(org_id="org_research_001")
+    # await assistant.initiate_chat(recipient, "Research this topic")
+```
+
+### A2A Protocol (org-to-org calls)
+
+```python
+# Your marketing org can call your law firm org:
+
+class OrgA2AClient:
+    """
+    Enables one org to delegate work to another org.
+    Both orgs must be in same tenant OR have explicit federation agreement.
+    """
+    
+    async def delegate_to_org(
+        self,
+        from_org_id: str,
+        to_org_id: str,
+        task: str,
+        *,
+        share_context: list[str] | None = None,  # which memory to share
+        budget_usd: float | None = None,
+    ) -> DelegationResult:
+        """
+        Marketing org delegates legal review to law firm org.
+        
+        Example:
+          marketing_org.delegate_to(
+              to_org_id="law_firm_org",
+              task="Review this contract before we sign",
+              share_context=["contract.pdf"],
+          )
+        """
+        ...
+
+# Use case: "Meta-org" that coordinates multiple specialized orgs
+# MetaOrg.delegate("Research task", to=ResearchOrg)
+# MetaOrg.delegate("Legal review", to=LegalOrg)
+# MetaOrg.delegate("Execute strategy", to=ExecutionOrg)
+```
+
+### External AI Framework Adapters
+
+```python
+# LangGraph adapter
+from agentverse.adapters.langgraph import OrgLangGraphNode
+
+org_node = OrgLangGraphNode(org_id="org_research", api_key="av_xxx")
+graph = StateGraph(AgentState)
+graph.add_node("research", org_node)
+
+# CrewAI adapter
+from agentverse.adapters.crewai import OrgCrewAITool
+
+org_tool = OrgCrewAITool(
+    org_id="org_legal",
+    api_key="av_xxx",
+    name="Legal Review Org",
+    description="A complete legal department that reviews contracts",
+)
+
+# AutoGen adapter
+from agentverse.adapters.autogen import OrgAutoGenAgent
+
+org_agent = OrgAutoGenAgent(
+    name="ResearchDept",
+    org_id="org_research",
+    api_key="av_xxx",
+)
+
+# OpenAI function calling (org as a function)
+from agentverse.adapters.openai_functions import OrgAsOpenAIFunction
+
+org_fn = OrgAsOpenAIFunction(org_id="org_analysis", api_key="av_xxx")
+# Registers as: {"name": "run_analysis_org", "description": "...", "parameters": {...}}
+```
+
+---
+
+## Q9 — CHANNEL ROUTER + CONVERSATION MANAGER
+
+### Multi-turn Conversations Across Channels
+
+```python
+class ConversationManager:
+    """
+    Maintains conversation state across multiple turns, regardless of channel.
+    
+    Key feature: conversation context is CHANNEL-AWARE.
+    A Telegram conversation stays in Telegram context.
+    A Slack thread stays in Slack context.
+    Cross-channel: user can start on Telegram, continue on web.
+    """
+    
+    async def get_or_create_conversation(
+        self,
+        tenant_id: str,
+        org_id: str,
+        channel: str,
+        channel_user_id: str,  # Telegram user_id, Slack user_id, etc.
+        conversation_key: str,  # Telegram chat_id, Slack thread_ts, etc.
+    ) -> Conversation:
+        """Get existing conversation or create new one."""
+        ...
+    
+    async def add_turn(
+        self,
+        conversation_id: str,
+        command: OrgCommand,
+        response: OrgResponse,
+    ) -> None:
+        """Record a command-response pair in the conversation."""
+        ...
+    
+    async def get_context(
+        self,
+        conversation_id: str,
+        last_n_turns: int = 10,
+    ) -> list[ConversationTurn]:
+        """Get recent conversation history for context window."""
+        ...
+
+# Cross-channel continuity:
+# User starts on Telegram: "Research our competitors"
+# System: conversation_id = "conv_abc123"
+# User opens web UI: sees the conversation in chat history
+# User continues there: "Focus on their pricing strategy"
+# System knows this is the same conversation thread
+```
+
+### Command Authentication Per Channel
+
+```python
+class ChannelAuthGuard:
+    """
+    Each channel has its own auth mechanism.
+    All ultimately verify against tenant API key or user session.
+    """
+    
+    CHANNEL_AUTH = {
+        "rest":     "X-API-Key header (tenant API key)",
+        "telegram": "Telegram user_id must be in org's allowed_telegram_users list",
+        "slack":    "Slack workspace must be linked to tenant, user in org team",
+        "whatsapp": "Phone number must be in org's allowed_phones list",
+        "mcp":      "MCP token (scoped API key)",
+        "a2a":      "Agent certificate or signed JWT",
+        "email":    "From address must be in org's allowed_emails list",
+        "webhook":  "HMAC-SHA256 signature on X-Webhook-Signature header",
+    }
+    
+    # Scope enforcement:
+    # "orgs:read"      → can read org status, missions, history
+    # "missions:write" → can create and manage missions
+    # "approve"        → can approve/reject pending actions
+    # "admin"          → can change org settings, autonomy, budget
+    # "voice"          → can use voice commands
+```
+
+---
+
+## Q10 — GATEWAY ADMIN UI
+
+```
+SETTINGS → Command Gateway
+
+  ACTIVE CHANNELS
+  ────────────────────────────────────────────────────────
+  ✅ REST API         Always enabled  
+     Endpoint: POST /v1/org/{org_id}/command
+     [Manage API Keys]
+
+  ✅ Telegram         Connected
+     Bot: @AcmeTradingBot
+     Authorized users: 3
+     [Manage users] [Disconnect]
+
+  ☐ Slack             Not connected
+     [Connect Slack workspace]
+
+  ☐ WhatsApp          Not connected
+     [Connect WhatsApp Business]
+
+  ☐ Discord           Not connected
+     [Add to Discord server]
+
+  ✅ MCP Server       Enabled
+     Endpoint: wss://mcp.agentverse.io/v1/org/org_abc
+     Tools: 9 exposed
+     [Configure tools] [Copy config]
+
+  ☐ Email Commands    Not configured
+     [Set up command email address]
+
+  ✅ Webhooks         3 active
+     [Manage webhooks]
+
+  GATEWAY SETTINGS
+  ────────────────────────────────────────────────────────
+  Max commands/hour:   100  (across all channels)
+  Require 2FA for:     [✓] approve  [✓] change-autonomy  [✓] delete
+  Log all commands:    [✓] Yes
+  Response language:   [Auto-detect ▾]
+  Response format:     [Auto (per channel) ▾]
+```
+
+---
+
+## Q11 — BACKEND ARCHITECTURE
+
+```
+NEW BACKEND PACKAGE: app/gateway/
+
+app/gateway/
+├── __init__.py
+├── router.py              # UCG REST endpoints
+├── command.py             # OrgCommand + OrgResponse models
+├── conversation.py        # Multi-turn conversation manager
+├── auth.py                # Per-channel authentication
+├── rate_limiter.py        # Per-channel, per-tenant rate limits
+├── channels/
+│   ├── __init__.py
+│   ├── base.py            # ChannelAdapter abstract class
+│   ├── rest.py            # REST API adapter
+│   ├── telegram.py        # Telegram Bot adapter (python-telegram-bot)
+│   ├── slack.py           # Slack Bolt adapter
+│   ├── whatsapp.py        # WhatsApp Cloud API adapter
+│   ├── discord.py         # discord.py adapter
+│   ├── email.py           # Email IMAP/SMTP adapter
+│   ├── webhook.py         # Generic webhook receiver
+│   └── voice_webhook.py   # Voice webhook (connects to Supplement O)
+├── mcp_server/
+│   ├── __init__.py
+│   ├── server.py          # OrgMCPServer (WebSocket MCP)
+│   ├── tools.py           # Auto-generated MCP tools
+│   └── auth.py            # MCP token validation
+├── a2a/
+│   ├── __init__.py
+│   ├── agent.py           # OrgAsAgent (standard agent interface)
+│   ├── client.py          # OrgA2AClient (call other orgs)
+│   └── adapters/
+│       ├── langgraph.py   # LangGraph node adapter
+│       ├── crewai.py      # CrewAI tool adapter
+│       ├── autogen.py     # AutoGen agent adapter
+│       └── openai.py      # OpenAI function calling adapter
+└── tests/
+    ├── test_rest_channel.py
+    ├── test_telegram_adapter.py
+    ├── test_mcp_server.py
+    ├── test_a2a_agent.py
+    ├── test_conversation_manager.py
+    └── test_channel_auth.py
+
+NEW ENDPOINTS:
+  POST /v1/org/{org_id}/command               ← REST command
+  GET  /v1/org/{org_id}/command/{id}/stream   ← SSE stream
+  GET  /v1/org/{org_id}/command/{id}          ← poll result
+  POST /v1/org/{org_id}/webhook               ← incoming webhook
+  GET  /v1/org/{org_id}/gateway/config        ← gateway config
+  PUT  /v1/org/{org_id}/gateway/config        ← update config
+  POST /v1/org/{org_id}/gateway/telegram/webhook   ← Telegram updates
+  POST /v1/org/{org_id}/gateway/slack/events       ← Slack events
+  POST /v1/org/{org_id}/gateway/whatsapp/webhook   ← WhatsApp messages
+  WS   /v1/mcp/{org_id}                       ← MCP WebSocket server
+  POST /v1/a2a/{org_id}/invoke                ← A2A synchronous
+  POST /v1/a2a/{org_id}/invoke-async          ← A2A async
+
+NEW DB TABLE: gateway_conversations
+  conversation_id   UUID PK
+  tenant_id         TEXT NOT NULL
+  org_id            UUID NOT NULL
+  channel           TEXT NOT NULL   (rest|telegram|slack|mcp|a2a)
+  channel_user_id   TEXT            (Telegram user_id, etc.)
+  conversation_key  TEXT            (Telegram chat_id, Slack thread, etc.)
+  turns             JSONB DEFAULT '[]'
+  created_at        TIMESTAMPTZ
+  updated_at        TIMESTAMPTZ
+  + RLS policy on tenant_id
+```
+
+---
+
+## Q12 — FRONTEND: GATEWAY MANAGEMENT
+
+```
+NEW FRONTEND: src/features/gateway/
+
+src/features/gateway/
+├── GatewaySettingsPage.tsx      # Main settings page (Q10 UI)
+├── ChannelStatus.tsx            # Status card per channel
+├── TelegramSetup.tsx            # Telegram connection wizard
+├── SlackSetup.tsx               # Slack OAuth flow
+├── MCPConfig.tsx                # MCP server config + tool toggles
+├── WebhookManager.tsx           # Manage incoming webhooks
+├── CommandHistory.tsx           # Log of all commands across channels
+├── ConversationViewer.tsx       # View multi-turn conversations
+├── APIKeyManager.tsx            # Manage tenant API keys
+└── hooks/
+    ├── useGatewayConfig.ts
+    ├── useCommandHistory.ts
+    └── useChannelStatus.ts
+```
+
+---
+
+## SUPPLEMENT Q — SUMMARY
+
+```
+UNIVERSAL COMMAND GATEWAY + MULTI-TENANT ORG OS
+────────────────────────────────────────────────────────────────────
+
+MULTI-TENANT ARCHITECTURE:
+  Tenant → multiple orgs per tenant
+  Full RLS + queue + memory isolation per tenant
+  Per-tenant API keys with scopes
+  Per-tenant quotas (agents, missions, budget)
+  Multi-org dashboard (see all orgs in one place)
+
+CHANNELS SUPPORTED:
+  ✅ REST API          (POST /command — any system, SDK included)
+  ✅ Telegram Bot      (python-telegram-bot, voice notes supported)
+  ✅ Slack Bot         (Bolt SDK, slash commands, mentions)
+  ✅ WhatsApp          (Business Cloud API)
+  ✅ Discord Bot       (discord.py)
+  ✅ Email Commands    (dedicated command email address)
+  ✅ Custom Webhook    (HMAC-signed, any system)
+  ✅ MCP Server        (org exposed as MCP tools for AI assistants)
+  ✅ Agent-as-Service  (org callable by other agents)
+  ✅ Voice             (via Supplement O voice system)
+
+MCP SERVER:
+  9 auto-generated tools (ask, start_mission, get_status, etc.)
+  Dynamic tools from org capabilities
+  Compatible with: Claude Desktop, Cursor, any MCP client
+  Rate-limited per tool type
+  Configurable tool exposure
+
+AGENT-AS-SERVICE (A2A):
+  Standard agent interface (invoke/stream/invoke_async)
+  Adapters: LangGraph, CrewAI, AutoGen, OpenAI functions
+  Org-to-org delegation (same tenant or federated)
+  
+NEW BACKEND: app/gateway/ (40+ files)
+NEW FRONTEND: src/features/gateway/ (10 files)
+NEW DB TABLE: gateway_conversations
+NEW ENDPOINTS: 14 (REST + WebSocket + A2A)
+SDKs: Python + TypeScript (both already specced in Supplement C)
+
+DESIGN PRINCIPLE:
+  The org does not care where the command comes from.
+  Every channel normalizes to OrgCommand.
+  The response is formatted per the originating channel.
+  Authentication is channel-specific but all verify to tenant key.
+```
+
+
 
