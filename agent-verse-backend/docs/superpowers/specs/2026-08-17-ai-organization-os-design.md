@@ -11693,3 +11693,340 @@ PERFORMANCE:
   Reduced motion: all physics/particles disabled
   Particle effects: disabled at >200 nodes
 ```
+
+---
+
+# SUPPLEMENT T.2 — OBSIDIAN-SKILLS IN THE JARVIS UI (Explicit Mapping)
+
+*Where each obsidian-skill appears in the JARVIS command center UI*
+
+---
+
+## T2.1 — OBSIDIAN-MARKDOWN → KNOWLEDGE GRAPH (Nodes + Edges)
+
+Every note an agent writes using obsidian-markdown skill becomes a graph node.
+Every `[[wikilink]]` becomes a graph edge. In real-time.
+
+### Live Graph Growth Animation
+
+```
+TRIGGER: Research agent writes "See [[Competitor-Intel/Zerodha]] for details"
+
+T+0ms    Backend detects new [[wikilink]] in note
+T+100ms  SSE event sent to frontend: "new_node" + "new_edge"
+T+200ms  New node fades in from 0 opacity, scale 0→1 (300ms spring)
+T+500ms  Edge draws itself from current note → Zerodha node (400ms)
+T+900ms  Knowledge Pulse widget: one dot lights up (flash, 200ms)
+T+1100ms D3-force: graph physics adjusts to accommodate new node
+T+1600ms Settled — new node breathing with the rest
+
+IF this is the first connection to Zerodha (new node):
+  Extra entrance: node drops in from above (gravity simulation, 400ms)
+  Brief "new knowledge" ripple: concentric circles expand from node
+
+IF agent writes multiple [[wikilinks]] in one note:
+  Staggered: each edge draws 100ms after previous
+  Creates a "web being spun" visual effect
+```
+
+### Note Type → Node Style Mapping
+
+```
+obsidian-markdown skill produces notes in these categories:
+  (determined from YAML frontmatter: type: research|decision|evidence|mission)
+
+  type: research    → ● Blue circle node (research team output)
+  type: decision    → ◆ Amber diamond node (decision records)
+  type: evidence    → ▣ Green rectangle node (mission evidence)
+  type: knowledge   → ○ White circle node (general knowledge)
+  no type specified → ● Default blue circle
+
+Frontmatter written by agent:
+  ---
+  type: research
+  mission: "[[Missions/Q3-Revenue-Analysis]]"
+  tags: [competitive-intel, q3]
+  ---
+
+→ Graph renders this as a blue Research node
+→ [[Missions/Q3-Revenue-Analysis]] creates mission edge (special color)
+```
+
+### Callout → Node Annotation
+
+```
+When agent writes callouts (obsidian-markdown skill), they appear
+as visual annotations on the node in the knowledge graph:
+
+  > [!warning] SEBI Deadline
+  → Red badge on the node: ⚠
+  → Tooltip shows callout content
+
+  > [!tip] Key Finding
+  → Blue info badge: ℹ
+  
+  > [!bug] Known Issue
+  → Red bug badge: 🐛
+
+These badges pulse when the note is recently updated.
+Badges visible at zoom level 2+ (not at far zoom-out)
+```
+
+---
+
+## T2.2 — OBSIDIAN-BASES → LIVE BASES DASHBOARD
+
+obsidian-bases skill produces `.base` files. These render as live,
+animated data views inside the JARVIS command center.
+
+### Bases Dashboard UI
+
+```
+KNOWLEDGE BASES                                    [+ New Base]
+┌──────────────────────────────────────────────────────────────────┐
+│  ● ACTIVE-MISSIONS.BASE                 Table ▾  ↻ Live  [↗]  │
+│  ─────────────────────────────────────────────────────────────  │
+│  Title               Priority   Owner       Running   Cost      │
+│  ───────────────────────────────────────────────────────────    │
+│  ◉ Q3 Revenue        ■ HIGH     Maya        3d 4h     $28.40   │
+│  ◉ SEBI Compliance   ■ HIGH     Raj         1d 2h     $8.10    │
+│  ● Competitor Intel  □ MED      Team        5h 30m    $2.30    │
+│  ───────────────────────────────────────────────────────────    │
+│  3 missions active   Avg: $12.93/mission    Total: $38.80       │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  ⏰ PENDING-APPROVALS.BASE              Table ▾  ↻ Live  [↗]  │
+│  ─────────────────────────────────────────────────────────────  │
+│  Action               Risk    Cost        Expires               │
+│  ───────────────────────────────────────────────────────────    │
+│  🔴 Email campaign    MED     $12,400    01:47:23 ←  counting  │
+│  🟡 Legal contract    LOW     —          2 days                 │
+│  ───────────────────────────────────────────────────────────    │
+│  2 pending  |  High urgency: 1                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Bases Animation System
+
+```
+ROW APPEARS (new record):
+  Slides in from bottom (200ms, spring easing)
+  Brief highlight: row background flashes blue, fades (300ms)
+
+NUMERIC VALUE UPDATES (cost, count):
+  Counter animation: number counts up/down smoothly (300ms)
+  Like a scoreboard update — satisfying feedback
+
+DEADLINE COUNTDOWN (when <6h remaining):
+  Timer shows HH:MM:SS counting down (updates every second)
+  Row background: transitions amber (6h) → red (1h) → deep red (15min)
+  Amber pulse: row flashes slightly every 30s at <1h
+
+ROW COMPLETED/REMOVED:
+  Strikethrough appears left-to-right (200ms)
+  Row shrinks height to 0 (300ms, ease-in)
+  Other rows close the gap smoothly
+
+BASE FILE UPDATED (agent regenerates the .base):
+  ↻ icon spins for 500ms
+  All rows do a subtle refresh shimmer (left-to-right shimmer, 800ms)
+
+SWITCHING VIEWS (Table ↔ Cards):
+  Table rows fold flat (200ms) → cards unfold (300ms stagger)
+  Each card flips in with a subtle 3D rotation (20°, 400ms)
+```
+
+### Base File as Org Kanban
+
+```
+CARD VIEW of active-missions.base:
+
+  Priority: HIGH              Priority: MEDIUM          Priority: LOW
+  ┌──────────────┐            ┌──────────────┐          ┌──────────────┐
+  │ Q3 Revenue   │            │ Competitor   │          │ Onboarding   │
+  │ ◉ Running    │            │ Intel        │          │ Docs         │
+  │ Maya  3 days │            │ ● Running    │          │ ● Queued     │
+  │ $28.40       │            │ Team  5h     │          │ —   —        │
+  │ [View →]     │            │ $2.30        │          │ [View →]     │
+  └──────────────┘            │ [View →]     │          └──────────────┘
+  ┌──────────────┐            └──────────────┘
+  │ SEBI Compl.  │
+  │ ◉ Running    │
+  │ Raj  1 day   │
+  │ $8.10        │
+  │ [View →]     │
+  └──────────────┘
+
+Cards animate to new column when priority changes:
+  Drag-and-drop (manual)
+  OR auto-move when agent updates the mission priority
+  Animation: card lifts (shadow), slides to new column (400ms spring)
+```
+
+---
+
+## T2.3 — JSON-CANVAS → VISUAL MAPS GALLERY + VIEWER
+
+json-canvas skill produces `.canvas` files. These appear in two places:
+the Maps Gallery and the full Canvas Viewer.
+
+### Maps Gallery UI (thumbnails)
+
+```
+KNOWLEDGE MAPS                                   [+ Generate Map]
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐ │
+│  │                 │  │                 │  │                 │ │
+│  │  [mini graph]   │  │  [mini graph]   │  │  [mini graph]   │ │
+│  │   o───o         │  │  ○ ○ ○          │  │  o──→──o        │ │
+│  │  / \ /          │  │   ╲ │ ╱         │  │  │     │        │ │
+│  │ o   o   o       │  │    ○─○           │  │  o──→──o        │ │
+│  │                 │  │                 │  │  ↑ blocked      │ │
+│  │ ORG MAP         │  │ COMPETITOR      │  │ MISSION DEPS    │ │
+│  │ ● LIVE          │  │ LANDSCAPE       │  │ ⚠ 1 blocked    │ │
+│  │ updated 5m      │  │ ✅ 2 days ago   │  │ updated 1h      │ │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘ │
+│                                                                  │
+│  Hover:  thumbnail scales 1.05 + shadow + "Open →" overlay      │
+│  Click:  full-screen canvas viewer (T5 animation)               │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Thumbnail Animations
+
+```
+NEW CANVAS GENERATED:
+  "Flip card" entrance: starts face-down (rotateY 180°)
+  Flips to reveal canvas thumbnail (600ms, ease-out)
+  Brief gold border flash (discovery color) — agent created this
+
+LIVE CANVAS (updated < 1h):
+  Subtle breathing border (animated, 3s loop)
+  "● LIVE" indicator with pulsing dot
+
+CANVAS WITH BLOCKED ITEMS:
+  Amber badge showing count: "⚠ 1 blocked"
+  Badge pulses every 5s
+
+GENERATING NEW CANVAS (agent is building it):
+  Placeholder thumbnail with loading state
+  Graph nodes appear one-by-one as canvas builds (like T8)
+  When complete: thumbnail cross-fades from loading → final (300ms)
+```
+
+### Canvas Viewer — How obsidian-bases + json-canvas work together
+
+```
+Scenario: Agent creates org-map.canvas using json-canvas skill
+  → Canvas contains FILE NODES linking to mission notes
+  → Those mission notes were created with obsidian-markdown
+  → Those missions are ALSO in active-missions.base
+
+The Canvas Viewer pulls live status from active-missions.base:
+
+  ┌─────────────────────────────────┐
+  │  Missions/Q3-Revenue-Analysis.md│  ← json-canvas file node
+  │  ─────────────────────────────  │
+  │  ████████░░  80%  3 agents      │  ← live data from .base file
+  │  Running 3 days  |  $28.40      │
+  │  [View in Bases] [Open note ↗] │
+  └─────────────────────────────────┘
+
+This cross-skill connection is the most powerful UX:
+  Canvas shows WHERE things are (visual)
+  Bases shows WHAT STATE they're in (live data)
+  Notes show WHAT WAS FOUND (content)
+  All three synchronized. All native Obsidian format.
+```
+
+---
+
+## T2.4 — UNIFIED KNOWLEDGE COMMAND
+
+A single command bar where users interact with all three skill outputs:
+
+```
+KNOWLEDGE COMMAND BAR
+┌──────────────────────────────────────────────────────────────────┐
+│ ⌘  Ask about org knowledge...                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+Examples that trigger different views:
+
+"Show me everything about churn"
+→ Knowledge Graph: highlights churn-related nodes + dims others
+→ Bases: filters active-missions.base to churn-tagged missions
+→ Maps: highlights churn analysis canvas if exists
+
+"Create a visual map of our competitor research"
+→ Triggers json-canvas skill: agent generates competitor.canvas
+→ Gallery thumbnail appears with flip-card animation
+→ Canvas viewer opens automatically (800ms transition)
+
+"What did agents write about SEBI today?"
+→ Timeline view: shows all notes written today tagged [[SEBI*]]
+→ Notes listed with their callouts shown inline
+→ Graph highlights: SEBI cluster lights up
+
+"Show me the mission dashboard"
+→ Bases view: opens active-missions.base in card view
+→ Animated: all cards slide in from bottom (stagger 50ms each)
+```
+
+---
+
+## T2.5 — SIDE-BY-SIDE: GRAPH + BASES + MAPS
+
+Power users can open split view showing all three skill outputs at once.
+
+```
+SPLIT VIEW (desktop, 3 panels)
+
+┌─────────────────────┬────────────────────┬──────────────────────┐
+│ KNOWLEDGE GRAPH     │ BASES              │ CANVAS MAPS           │
+│ (obsidian-markdown) │ (obsidian-bases)   │ (json-canvas)         │
+│                     │                    │                        │
+│   ◉─────◉          │ Active Missions    │  [org-map.canvas]     │
+│  / \   / \         │ ─────────────────  │                        │
+│ ◉   ◉─◉   ◉       │ Q3 Revenue  HIGH   │    Q3 ──→ Germany     │
+│ │           │      │ SEBI      HIGH    │    │                   │
+│ ◆ Decision  ◆      │ Comp Intel MED    │    └──→ SEBI Compl.   │
+│                     │                    │                        │
+│ Hover node →        │ Row pulse on       │ Click node →         │
+│ right panel         │ live update        │ opens note           │
+└─────────────────────┴────────────────────┴──────────────────────┘
+
+Synchronized: clicking a mission in Bases highlights it in Graph
+              clicking a node in Graph highlights row in Bases
+              clicking Canvas node shows note + Bases row
+```
+
+---
+
+## SUPPLEMENT T.2 SUMMARY
+
+```
+OBSIDIAN-SKILLS → JARVIS UI MAPPING
+
+obsidian-markdown skill:
+  Where: Knowledge Graph (T1 + T2.1)
+  What appears: nodes (notes), edges (wikilinks), badges (callouts)
+  Animation: live growth as agents write, edge draws itself on new [[link]]
+
+obsidian-bases skill:
+  Where: Bases Dashboard (T2.2)
+  What appears: live tables/cards with animated rows
+  Animation: rows slide in, numbers count up, deadline countdown, card kanban
+
+json-canvas skill:
+  Where: Maps Gallery + Canvas Viewer (T5 + T2.3)
+  What appears: visual knowledge maps with live mission status overlays
+  Animation: flip-card entrance, live status bars, animated edges
+
+ALL THREE unified:
+  Knowledge Command Bar (T2.4) — single NL interface for all three
+  Split View (T2.5) — see graph + bases + maps simultaneously
+  Cross-skill sync — clicking in one panel highlights in others
+```
