@@ -5,15 +5,51 @@
 This skill activates world-class code generation guardrails for the AgentVerse monorepo.
 It enforces all engineering standards when generating backend (Python/FastAPI), frontend (React/TypeScript), database (PostgreSQL), and infrastructure (Kubernetes/Helm) code.
 
-## When to Invoke
+## Skill Invocation Map
 
-Invoke this skill when:
-- Creating any new backend module or API endpoint
-- Creating any new frontend feature or component
-- Designing a new database schema or migration
-- Adding observability, resilience, or security patterns
-- Reviewing existing code for compliance
-- Setting up infrastructure or DevOps configurations
+| Trigger | Read This Skill |
+|---------|----------------|
+| **ANY new feature** | `.copilot/skills/brainstorm-spec-plan/SKILL.md` FIRST |
+| **Writing tests** | `.copilot/skills/tdd/SKILL.md` |
+| **Coverage check** | `.copilot/skills/test-coverage/SKILL.md` |
+| **Security review** | `.copilot/skills/security-testing/SKILL.md` |
+| **Logging/metrics/APM** | `.copilot/skills/monitoring-apm/SKILL.md` |
+| **DB schema design** | `.copilot/skills/database-design/SKILL.md` |
+| **Microservice patterns** | `.copilot/skills/microservice-design/SKILL.md` |
+| **UI/UX / animations** | `.copilot/skills/ui-ux-jarvis/SKILL.md` |
+| **Exploring codebase** | `.copilot/skills/graphify-context/SKILL.md` |
+| **Using any library** | `.copilot/skills/context7-docs/SKILL.md` |
+
+## Workflow (Follow This Order For Every Feature)
+
+```
+1. BRAINSTORM  → .copilot/skills/brainstorm-spec-plan/SKILL.md
+   └─ Explore intent, scope, risks, reuse opportunities
+
+2. CONTEXT     → .copilot/skills/graphify-context/SKILL.md
+   └─ Understand codebase dependencies before touching anything
+
+3. DOCS        → .copilot/skills/context7-docs/SKILL.md
+   └─ Fetch latest library docs for anything you're about to use
+
+4. TDD         → .copilot/skills/tdd/SKILL.md
+   └─ Write tests BEFORE implementation (RED → GREEN → REFACTOR)
+
+5. IMPLEMENT   → .github/instructions/<layer>.instructions.md
+   └─ Follow backend/frontend/database/API patterns
+
+6. COVERAGE    → .copilot/skills/test-coverage/SKILL.md
+   └─ Verify ≥90% coverage, all integration and functional tests pass
+
+7. SECURITY    → .copilot/skills/security-testing/SKILL.md
+   └─ Run access control, injection, auth tests
+
+8. MONITORING  → .copilot/skills/monitoring-apm/SKILL.md
+   └─ OTel spans, metrics, structured logs added to new code
+
+9. COMMIT      → .githooks/ (auto-runs pre-commit + pre-push)
+   └─ Hooks enforce ruff, mypy, TypeScript, ESLint, tests
+```
 
 ## Stack Reference
 
