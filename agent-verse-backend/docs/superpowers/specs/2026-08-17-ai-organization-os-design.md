@@ -16650,3 +16650,96 @@ SUPPLEMENTS: N through AA (16 total)
 PRODUCT FEATURES: ✅ ALL COVERED
 ENGINEERING PRINCIPLES: ✅ 145/145 VERIFIED
 ```
+
+---
+
+# SUPPLEMENT AB — FINAL COVERAGE ADDENDUM
+
+## AB1 — LOCAL DEV DOCKER-COMPOSE
+
+```yaml
+# infra/docker-compose.yml — full local development stack
+# Run: docker-compose -f infra/docker-compose.yml up -d
+
+version: "3.9"
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment: { POSTGRES_DB: agentverse, POSTGRES_PASSWORD: agentverse }
+    ports: ["5432:5432"]
+    volumes: ["pg_data:/var/lib/postgresql/data"]
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment: { DATABASE_URL: "postgres://agentverse:agentverse@postgres/agentverse" }
+    ports: ["5433:5432"]
+    depends_on: [postgres]
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports: ["6379:6379"]
+
+  celery-worker:
+    build: { context: ./agent-verse-backend, dockerfile: Dockerfile }
+    command: celery -A app.scaling.celery_app worker --loglevel=info
+    environment: { DATABASE_URL: "...", REDIS_URL: "redis://redis:6379/0" }
+    depends_on: [postgres, redis]
+
+  celery-beat:
+    build: { context: ./agent-verse-backend, dockerfile: Dockerfile }
+    command: celery -A app.scaling.celery_app beat --loglevel=info
+    depends_on: [celery-worker]
+
+  mailpit:
+    image: axllent/mailpit
+    ports: ["1025:1025", "8025:8025"]   # SMTP + web UI
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports: ["9000:9000", "9001:9001"]   # S3-compatible + console
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports: ["16686:16686", "14268:14268"]   # UI + collector
+
+volumes:
+  pg_data:
+
+# Minimum for most development (skip minio/jaeger):
+# docker-compose up -d postgres redis
+# Full stack (includes mailpit, minio, jaeger):
+# docker-compose up -d
+```
+
+## AB2 — SBOM + SUPPLY CHAIN SECURITY
+
+```yaml
+# SBOM (Software Bill of Materials) — track every dependency
+# Generated on every release, attached to GitHub release asset.
+
+# Backend SBOM (CycloneDX format):
+# uv run cyclonedx-bom -e -o sbom-backend.json
+
+# Frontend SBOM:
+# npx @cyclonedx/cyclonedx-npm --output-file sbom-frontend.json
+
+SUPPLY_CHAIN_SECURITY = {
+    "SBOM_format":        "CycloneDX 1.5 (JSON)",
+    "SBOM_generated":     "On every main branch push via CI",
+    "SBOM_attached_to":   "GitHub release + GHCR image manifest",
+    "vulnerability_scan": "Grype (SBOM → CVE check), blocks release on CRITICAL",
+    "license_scan":       "license-checker (blocks GPL/AGPL without approval)",
+    "dependency_update":  "Dependabot weekly PRs (security: within 48h)",
+    "image_signing":      "Cosign (keyless signing via GitHub OIDC)",
+    "provenance":         "SLSA Level 2 (build provenance attestation)",
+}
+
+# CI/CD supply chain gates:
+# 1. uv run pip-audit          → no known CVEs in Python deps
+# 2. npm audit --audit-level=high → no high/critical in JS deps
+# 3. grype sbom-backend.json   → no CRITICAL CVEs in final image
+# 4. cosign sign               → sign released image
+# All gates BLOCK merge if they fail.
+```
