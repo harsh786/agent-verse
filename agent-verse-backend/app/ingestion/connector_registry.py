@@ -119,20 +119,52 @@ def load_all_connectors() -> None:
     New connectors are discovered automatically by adding them here.
     """
     connector_modules = [
-        # Existing (migrated)
+        # Tier 1 — Document stores (existing migrated)
         "app.ingestion.connectors.gdrive_connector",
         "app.ingestion.connectors.notion_connector",
         "app.ingestion.connectors.sharepoint_connector",
         "app.ingestion.connectors.slack_connector",
         "app.ingestion.connectors.github_connector",
-        "app.ingestion.connectors.confluence_connector",
-        "app.ingestion.connectors.jira_connector",
         "app.ingestion.connectors.pdf_file_connector",
         "app.ingestion.connectors.agent_generated_connector",
-        # Tier 1 new connectors
         "app.ingestion.connectors.s3_connector",
         "app.ingestion.connectors.web_crawl_connector",
         "app.ingestion.connectors.postgresql_connector",
+        # Tier 2 — Object storage + Analytics
+        "app.ingestion.connectors.gcs_connector",
+        "app.ingestion.connectors.azure_blob_connector",
+        "app.ingestion.connectors.minio_connector",
+        "app.ingestion.connectors.snowflake_connector",
+        "app.ingestion.connectors.bigquery_connector",
+        "app.ingestion.connectors.clickhouse_connector",
+        "app.ingestion.connectors.duckdb_connector",
+        # Tier 3 — Communication + Developer + Web
+        "app.ingestion.connectors.teams_connector",
+        "app.ingestion.connectors.email_imap_connector",
+        "app.ingestion.connectors.confluence_connector",
+        "app.ingestion.connectors.jira_connector",
+        "app.ingestion.connectors.rss_connector",
+        "app.ingestion.connectors.youtube_connector",
+        "app.ingestion.connectors.arxiv_connector",
+        "app.ingestion.connectors.gitlab_connector",
+        "app.ingestion.connectors.discord_connector",
+        # Tier 4 — Streaming + Databases + CRM
+        "app.ingestion.connectors.kafka_connector",
+        "app.ingestion.connectors.kinesis_connector",
+        "app.ingestion.connectors.pubsub_connector",
+        "app.ingestion.connectors.mysql_connector",
+        "app.ingestion.connectors.mongodb_connector",
+        "app.ingestion.connectors.elasticsearch_connector",
+        "app.ingestion.connectors.salesforce_connector",
+        "app.ingestion.connectors.hubspot_connector",
+        "app.ingestion.connectors.zendesk_connector",
+        "app.ingestion.connectors.servicenow_connector",
+        # Tier 5 — IoT + Scientific + Specialized
+        "app.ingestion.connectors.mqtt_connector",
+        "app.ingestion.connectors.influxdb_connector",
+        "app.ingestion.connectors.pagerduty_connector",
+        "app.ingestion.connectors.sentry_connector",
+        "app.ingestion.connectors.neo4j_connector",
     ]
     for module_path in connector_modules:
         try:
