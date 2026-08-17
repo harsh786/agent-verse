@@ -53,13 +53,16 @@ export function CRDTEditor({
   const { text, setText, cursors, connected, synced, undo, redo, canUndo, canRedo, updateCursorPosition } =
     useYjsCollab({ roomId, userName, color: userColor });
 
-  // Apply initial content once: only when CRDT document is empty after first sync
+  // Apply initial content once: when CRDT document is empty after first sync,
+  // OR immediately if not connected (offline/test mode)
   useEffect(() => {
-    if (synced && !initialApplied.current && initialContent && text === '') {
-      setText(initialContent, 'init');
-      initialApplied.current = true;
+    if (!initialApplied.current && initialContent && text === '') {
+      if (synced || !connected) {
+        setText(initialContent, 'init');
+        initialApplied.current = true;
+      }
     }
-  }, [synced, initialContent, text, setText]);
+  }, [synced, connected, initialContent, text, setText]);
 
   // Notify parent on every CRDT-driven change
   useEffect(() => {

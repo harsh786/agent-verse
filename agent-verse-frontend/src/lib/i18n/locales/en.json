@@ -43,7 +43,7 @@
     "search": "Search knowledge…", "noCollections": "No knowledge collections"
   },
   "marketplace": {
-    "install": "Install", "installed": "Installed", "search": "Search marketplace…",
+    "install": "Deploy", "installed": "Installed", "search": "Search marketplace…",
     "all": "All Templates", "noResults": "No templates found"
   },
   "settings": { "title": "Settings", "billing": "Billing", "security": "Security", "mfa": "Two-Factor Auth", "api_keys": "API Keys" },

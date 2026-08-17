@@ -104,7 +104,7 @@ function ConnectorCard({
                   className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 dark:border-amber-700"
                 >
                   <Zap className="h-3 w-3 fill-amber-600 text-amber-600 dark:fill-amber-400 dark:text-amber-400" aria-hidden="true" />
-                  Built-in
+                  Built-in (Native)
                 </span>
               )}
             </div>
