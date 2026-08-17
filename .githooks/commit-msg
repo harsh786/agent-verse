@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# commit-msg hook — enforces Conventional Commits format
+# Blocks commit if message doesn't follow the convention.
+# Install: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Skip merge commits, revert commits, and squash commits
+if echo "$COMMIT_MSG" | grep -qE '^(Merge|Revert|Squash|fixup!|squash!)'; then
+  exit 0
+fi
+
+# Conventional Commits pattern:
+# type(scope?): subject
+# type: feat|fix|docs|chore|refactor|perf|test|ci|style|build|revert
+PATTERN='^(feat|fix|docs|chore|refactor|perf|test|ci|style|build|revert)(\([a-z0-9/_-]+\))?: .{1,72}$'
+
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+
+if ! echo "$FIRST_LINE" | grep -qE "$PATTERN"; then
+  echo -e "${RED}❌ Commit message format invalid.${NC}"
+  echo ""
+  echo -e "${YELLOW}Expected format:${NC} type(scope): subject"
+  echo ""
+  echo -e "${YELLOW}Valid types:${NC}"
+  echo "  feat     → New feature"
+  echo "  fix      → Bug fix"
+  echo "  docs     → Documentation only"
+  echo "  chore    → Build/tooling/no production code"
+  echo "  refactor → Code change (no feat/fix)"
+  echo "  perf     → Performance improvement"
+  echo "  test     → Adding/fixing tests"
+  echo "  ci       → CI/CD changes"
+  echo "  style    → Formatting/whitespace"
+  echo "  build    → Build system changes"
+  echo "  revert   → Reverts a previous commit"
+  echo ""
+  echo -e "${YELLOW}Examples:${NC}"
+  echo "  feat(missions): add cursor-based pagination to list endpoint"
+  echo "  fix(auth): handle expired JWT tokens gracefully"
+  echo "  docs: update README with local dev setup steps"
+  echo "  chore(deps): upgrade LangGraph to 0.3.0"
+  echo "  test(graphify): add integration tests for community detection"
+  echo ""
+  echo -e "${YELLOW}Your message:${NC} $FIRST_LINE"
+  echo ""
+  echo -e "Edit with: git commit --amend"
+  exit 1
+fi
+
+# Subject line length check (max 72 chars)
+if [ ${#FIRST_LINE} -gt 72 ]; then
+  echo -e "${RED}❌ Subject line too long (${#FIRST_LINE} chars, max 72).${NC}"
+  echo -e "   Shorten: $FIRST_LINE"
+  exit 1
+fi
+
+# No period at end of subject
+if echo "$FIRST_LINE" | grep -qE '\.$'; then
+  echo -e "${YELLOW}⚠️  Subject line should not end with a period.${NC}"
+  # warn only
+fi
+
+echo -e "${GREEN}✅ Commit message format valid${NC}"
