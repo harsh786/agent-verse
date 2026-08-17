@@ -65,6 +65,7 @@ export function Sidebar() {
       heading: "Core",
       items: [
         { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+        { to: "/org",       icon: Building,        label: "Organizations" },
         { to: "/goals",     icon: Target,          label: t('nav.goals')  },
         { to: "/agents",    icon: Bot,             label: t('nav.agents') },
       ],

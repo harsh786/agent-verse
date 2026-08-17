@@ -1,5 +1,6 @@
 // Public exports for the org feature
 export { OrgPage }            from './OrgPage';
+export { OrgListPage }        from './OrgListPage';
 export { CommandCenter }      from './CommandCenter';
 export { MissionCard }        from './components/MissionCard';
 export { MissionsList }       from './components/MissionsList';

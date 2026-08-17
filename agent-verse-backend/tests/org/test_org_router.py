@@ -232,7 +232,6 @@ class TestOrgServiceCreate:
             await svc.create_mission(
                 org_id="nonexistent",
                 title="Bad Mission",
-                mission_type="research",
                 priority="high",
             )
 
