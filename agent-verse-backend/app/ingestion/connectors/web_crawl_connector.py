@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -24,7 +25,7 @@ class WebCrawlConnector(BaseConnector):
 
     source_type = "web_crawl"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         seed_urls = config.connection_config.get("seed_urls", [])
@@ -46,8 +47,8 @@ class WebCrawlConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Crawl seed URLs and discover new/changed pages."""
         from app.ingestion.source_config import RawDocument
 

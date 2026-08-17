@@ -1,5 +1,6 @@
 """AudioParser — transcribes audio using OpenAI Whisper API with timestamp chunking."""
 from __future__ import annotations
+
 import io
 from dataclasses import dataclass, field
 from typing import Any

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -28,7 +29,7 @@ class TeamsConnector(BaseConnector):
     source_type = "teams"
     supports_acl_propagation = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -50,10 +51,11 @@ class TeamsConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
-        from app.ingestion.source_config import RawDocument
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         import httpx
+
+        from app.ingestion.source_config import RawDocument
 
         token = await self._get_token(config)
         team_id = config.connection_config.get("team_id", "")
@@ -100,7 +102,7 @@ class TeamsConnector(BaseConnector):
                         yield doc, new_cursor
                     url = data.get("@odata.nextLink")
 
-    async def _get_token(self, config: "SourceConfig") -> str:
+    async def _get_token(self, config: SourceConfig) -> str:
         """Acquire OAuth2 token via client credentials flow."""
         import httpx
         cc = config.connection_config

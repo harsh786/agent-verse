@@ -1,8 +1,8 @@
 """Markdown parser — AST-aware section chunking."""
 from __future__ import annotations
 
-import re
 import logging
+import re
 
 _log = logging.getLogger(__name__)
 

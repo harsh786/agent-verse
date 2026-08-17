@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -20,12 +21,12 @@ class PDFFileConnector(BaseConnector):
 
     source_type = "pdf_file"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         return ConnectionHealth(ok=True, latency_ms=0.0, metadata={"type": "file"})
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
         urls = config.connection_config.get("urls", [])
@@ -59,12 +60,12 @@ class DOCXFileConnector(BaseConnector):
 
     source_type = "docx_file"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         return ConnectionHealth(ok=True, latency_ms=0.0, metadata={"type": "file"})
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
         urls = config.connection_config.get("urls", [])

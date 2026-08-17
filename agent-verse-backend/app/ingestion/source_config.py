@@ -9,7 +9,16 @@ from __future__ import annotations
 import enum
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any
+
+
+class IngestionStatus(enum.StrEnum):
+    """Job completion statuses used by scheduler and job tracker."""
+    PENDING   = "pending"
+    RUNNING   = "running"
+    COMPLETED = "completed"
+    PARTIAL   = "partial"    # some docs failed but most succeeded
+    FAILED    = "failed"
+    PAUSED    = "paused"
 
 
 class SourceFamily(enum.StrEnum):
@@ -91,6 +100,7 @@ class SourceConfig:
     last_synced_at:          str | None = None
     total_docs_indexed:      int = 0
     total_chunks:            int = 0
+    consecutive_failures:    int = 0   # for exponential backoff (LAW-09)
     version:                 int = 1
     created_at:              str = ""
     updated_at:              str = ""

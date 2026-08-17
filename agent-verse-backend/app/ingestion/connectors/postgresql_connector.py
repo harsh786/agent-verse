@@ -7,9 +7,9 @@ Three modes:
 """
 from __future__ import annotations
 
-import json
 import logging
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -37,7 +37,7 @@ class PostgreSQLConnector(BaseConnector):
     source_type = "postgresql"
     supports_deletion_tracking = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -59,8 +59,8 @@ class PostgreSQLConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Yield rows from configured tables newer than cursor."""
         from app.ingestion.source_config import RawDocument
 

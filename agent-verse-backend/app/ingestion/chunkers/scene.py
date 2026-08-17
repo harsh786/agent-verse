@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _SCENE_PATTERN = re.compile(r"\[SCENE\s+(\d+)(?::\s*([^\]]+))?\]", re.IGNORECASE)

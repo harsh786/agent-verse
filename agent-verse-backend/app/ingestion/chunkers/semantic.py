@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _CHARS_PER_TOKEN = 4

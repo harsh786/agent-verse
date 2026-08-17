@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -27,12 +28,15 @@ class BigQueryConnector(BaseConnector):
 
     source_type = "bigquery"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
+            import json
+            import os
+            import tempfile
+
             from google.cloud import bigquery  # type: ignore[import-not-found]
-            import json, tempfile, os
             creds_json = config.connection_config.get("service_account_json")
             project = config.connection_config.get("project", "")
 
@@ -54,15 +58,17 @@ class BigQueryConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
         try:
             from google.cloud import bigquery  # type: ignore[import-not-found]
         except ImportError:
             _log.error("google-cloud-bigquery not installed"); return
 
-        import json, tempfile, os
+        import json
+        import os
+        import tempfile
         cc = config.connection_config
         creds_json = cc.get("service_account_json")
         project = cc.get("project", "")

@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -27,7 +28,7 @@ class KafkaConnector(BaseConnector):
     source_type = "kafka"
     supports_streaming = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -46,8 +47,8 @@ class KafkaConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
         try:
             from confluent_kafka import Consumer, KafkaError  # type: ignore[import-not-found]

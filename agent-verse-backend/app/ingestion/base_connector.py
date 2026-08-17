@@ -8,8 +8,9 @@ LAW-21: Every connector exposes validate_connection() health probe
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -58,7 +59,7 @@ class BaseConnector(ABC):
 
     @abstractmethod
     async def validate_connection(
-        self, config: "SourceConfig"
+        self, config: SourceConfig
     ) -> ConnectionHealth:
         """Test connectivity and auth.
 
@@ -73,9 +74,9 @@ class BaseConnector(ABC):
     @abstractmethod
     async def get_delta(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         cursor: str | None,
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Yield (document, new_cursor) tuples incrementally.
 
         Contract (LAW-03):
@@ -96,10 +97,10 @@ class BaseConnector(ABC):
 
     async def on_webhook(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         payload: bytes,
         headers: dict[str, str],
-    ) -> AsyncIterator["RawDocument"]:
+    ) -> AsyncIterator[RawDocument]:
         """Handle real-time push events (webhooks/notifications).
 
         Override for: S3 event notifications, GitHub webhooks,
@@ -113,7 +114,7 @@ class BaseConnector(ABC):
 
     async def get_acl(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         doc_id: str,
     ) -> list[str]:
         """Return allowed principals for a document (LAW-07).
@@ -126,7 +127,7 @@ class BaseConnector(ABC):
 
     async def delete_doc(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         doc_id: str,
     ) -> None:
         """Signal that a source document was deleted.
@@ -135,7 +136,7 @@ class BaseConnector(ABC):
         Default: no-op. Override for connectors that track deletions.
         """
 
-    def estimate_doc_count(self, config: "SourceConfig") -> int | None:
+    def estimate_doc_count(self, config: SourceConfig) -> int | None:
         """Estimate total document count for progress reporting.
 
         Returns None if unknown (streaming sources, large DBs without COUNT).
@@ -164,3 +165,19 @@ class BaseConnector(ABC):
     def supports_dry_run(self) -> bool:
         """True if validate_connection can also estimate doc count (LAW-22)."""
         return False
+
+    @staticmethod
+    def _matches(name: str, include: list[str], exclude: list[str]) -> bool:
+        """Return True if `name` passes include/exclude glob patterns.
+
+        - If include is non-empty, name must match at least one include pattern.
+        - If exclude is non-empty, name must NOT match any exclude pattern.
+        - Empty lists mean "no filter" (all pass).
+        """
+        import fnmatch
+
+        if include and not any(fnmatch.fnmatch(name, p) for p in include):
+            return False
+        if exclude and any(fnmatch.fnmatch(name, p) for p in exclude):
+            return False
+        return True

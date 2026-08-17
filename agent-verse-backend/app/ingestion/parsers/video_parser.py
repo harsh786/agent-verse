@@ -1,5 +1,6 @@
 """VideoParser — extract audio + transcript from video."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,9 +48,9 @@ class VideoParser:
 
     async def _extract_and_transcribe(self, video_bytes: bytes, filename: str) -> str:
         try:
-            import tempfile
             import os
             import subprocess
+            import tempfile
             with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
                 vf.write(video_bytes)
                 video_path = vf.name
