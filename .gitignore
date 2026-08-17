@@ -1,3 +1,6 @@
+*/Archived/*
+./Archived/*
+/Archived/*
 */node_modules/*
 agent-verse-frontend/dist/*
 agent-verse-frontend/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json
@@ -31,3 +34,4 @@ agent-verse-frontend/test-results/
 docs/superpowers/specs/2026-07-19-karishma-product-centric-resume-design.md
 .gitignore
 docs/superpowers/plans/2026-07-19-karishma-product-centric-resume.md
+Archived/agent-verse-sdk-typescript/node_modules/chai/lib/chai/utils/addChainableMethod.js

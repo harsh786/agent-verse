@@ -93,7 +93,7 @@ export function TopBar() {
   }
 
   return (
-    <header className="flex items-center justify-between px-6 py-3 border-b border-border bg-card">
+    <header className="flex items-center justify-between px-6 py-3 border-b border-[#1E2535] bg-[#0F1117]">
       {/* Mobile hamburger */}
       <button
         onClick={toggleSidebar}
@@ -121,7 +121,7 @@ export function TopBar() {
             <button
               onClick={openCommandPalette}
               aria-label="Open command palette"
-              className="hidden sm:flex items-center gap-1 text-xs bg-background border border-border rounded px-1.5 py-0.5 hover:bg-muted"
+          className="hidden sm:flex items-center gap-1 text-xs bg-[#1A1F2E] border border-[#2D3748] rounded px-1.5 py-0.5 hover:bg-[#252B3B] transition-colors text-[#94A3B8]"
             >
               <span>⌘</span>K
             </button>
@@ -130,7 +130,7 @@ export function TopBar() {
 
         {/* Results dropdown */}
         {open && results.length > 0 && (
-          <div className="absolute top-full mt-1 left-0 w-80 bg-card border border-border rounded-lg shadow-lg z-50 overflow-hidden">
+          <div className="absolute top-full mt-1 left-0 w-80 bg-[#1A1F2E] border border-[#2D3748] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] z-50 overflow-hidden">
             {results.map((r) => (
               <button
                 key={`${r.type}-${r.id}`}

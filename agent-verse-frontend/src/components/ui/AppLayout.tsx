@@ -56,7 +56,7 @@ export function AppLayout() {
   const { showHelp, setShowHelp } = useAppHotkeys();
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-[#0A0D14]">
       {/* Mobile backdrop — closes sidebar when tapped */}
       {sidebarOpen && (
         <div

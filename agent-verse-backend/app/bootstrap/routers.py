@@ -9,20 +9,18 @@ from typing import Any
 
 from fastapi import FastAPI
 
-# ── Router imports (verbatim from app/main.py) ───────────────────────────────
-from app.api.billing import router as billing_router
-from app.api.builder import router as builder_router
-from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.api.a2a import router as a2a_router
-from app.chat.router import router as chat_router
-from app.chat.service import ChatService as _ChatService
-from app.api.agent_directory import router as agent_directory_router
-from app.api.solutions import router as solutions_router
 from app.api.admin import router as admin_router
+from app.api.agent_directory import router as agent_directory_router
 from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
 from app.api.artifacts import router as artifacts_router
 from app.api.auth import router as auth_router
+
+# ── Router imports (verbatim from app/main.py) ───────────────────────────────
+from app.api.billing import router as billing_router
+from app.api.builder import router as builder_router
+from app.api.channels.ingestion import router as channels_router  # Phase 2
 from app.api.civilization import router as civilization_router
 from app.api.collab import router as collab_router
 from app.api.connectors import router as connectors_router
@@ -37,28 +35,6 @@ from app.api.coordination_moa import router as coordination_moa_router
 from app.api.coordination_swarm import router as coordination_swarm_router
 from app.api.coordination_transcript import router as coordination_transcript_router
 from app.api.costs import router as costs_router
-from app.api.goals import router as goals_router
-from app.api.strategies import router as strategies_router
-from app.api.governance import router as governance_router
-from app.api.guardrails import router as guardrails_router
-from app.api.insights import router as insights_router
-from app.api.observability import router as observability_router
-from app.api.integrations import router as integrations_router
-from app.api.knowledge import router as knowledge_router
-from app.api.memory import router as memory_router
-from app.api.perception import router as perception_router
-from app.api.replay import router as replay_router
-from app.api.rpa import router as rpa_router
-from app.api.system import router as system_router
-from app.api.templates import router as templates_router
-from app.api.tenants import router as tenants_router
-from app.api.tools import router as tools_router
-from app.api.training_export import router as training_export_router
-from app.api.golden_datasets import router as golden_datasets_router
-from app.api.lab import router as lab_router
-from app.api.skills import router as skills_router
-from app.api.workflows import router as workflows_router
-from app.auth.google_oauth import router as google_oauth_router
 
 # ── Enterprise sub-routers ────────────────────────────────────────────────────
 from app.api.enterprise import (
@@ -68,6 +44,21 @@ from app.api.enterprise import (
     scim_router,
 )
 from app.api.enterprise import router as enterprise_router
+from app.api.goals import router as goals_router
+from app.api.golden_datasets import router as golden_datasets_router
+from app.api.governance import router as governance_router
+from app.api.guardrails import router as guardrails_router
+from app.api.ingestion import documents_router as ingestion_documents_router
+from app.api.ingestion import router as ingestion_sources_router  # Ingestion framework
+from app.api.insights import router as insights_router
+from app.api.integrations import router as integrations_router
+from app.api.knowledge import router as knowledge_router
+from app.api.lab import router as lab_router
+from app.api.memory import router as memory_router
+from app.api.observability import router as observability_router
+from app.api.perception import router as perception_router
+from app.api.replay import router as replay_router
+from app.api.rpa import router as rpa_router
 from app.api.schedules import (
     events_router,
     nl_router,
@@ -76,10 +67,22 @@ from app.api.schedules import (
 from app.api.schedules import (
     router as schedules_router,
 )
-from app.api.triggers import router as triggers_router  # Phase 4: full trigger CRUD
-from app.api.channels.ingestion import router as channels_router  # Phase 2
+from app.api.skills import router as skills_router
+from app.api.solutions import router as solutions_router
 from app.api.state_machines import router as state_machines_router  # Phase 3
-from app.api.ingestion import router as ingestion_sources_router, documents_router as ingestion_documents_router  # Ingestion framework
+from app.api.strategies import router as strategies_router
+from app.api.system import router as system_router
+from app.api.templates import router as templates_router
+from app.api.tenants import router as tenants_router
+from app.api.tools import router as tools_router
+from app.api.training_export import router as training_export_router
+from app.api.triggers import router as triggers_router  # Phase 4: full trigger CRUD
+from app.api.workflows import router as workflows_router
+from app.auth.google_oauth import router as google_oauth_router
+from app.chat.router import router as chat_router
+from app.chat.service import ChatService as _ChatService
+from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
+from app.org.router import router as org_router  # AI Organization OS
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
@@ -341,8 +344,8 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # ── Workflow Automation Engine (Phase WE) ─────────────────────────────────
     try:
         from app.workflow.router import router as workflow_engine_router
-        from app.workflow.router_runs import router as workflow_runs_router
         from app.workflow.router_hitl import router as workflow_hitl_router
+        from app.workflow.router_runs import router as workflow_runs_router
         from app.workflow.router_templates import router as workflow_templates_router
         from app.workflow.router_versions import router as workflow_versions_router
         app.include_router(workflow_engine_router, prefix="/api/v1")
@@ -354,3 +357,9 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     except Exception as _we:
         logger.warning("workflow_engine_router_failed", error=str(_we))
 
+    # ── AI Organization OS ─────────────────────────────────────────────────
+    try:
+        app.include_router(org_router)
+        logger.info("org_os_router_registered")
+    except Exception as _org_err:
+        logger.warning("org_os_router_failed", error=str(_org_err))
