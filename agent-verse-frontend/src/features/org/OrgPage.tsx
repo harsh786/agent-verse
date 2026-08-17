@@ -17,16 +17,20 @@
 import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Building2, Plus, RefreshCw, Zap } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { OrgHealthWidget } from './components/OrgHealthWidget';
-import { MissionsList }     from './components/MissionsList';
-import { MissionDetail }    from './components/MissionDetail';
-import { DepartmentTree }   from './components/DepartmentTree';
-import { ActivityFeed }     from './components/ActivityFeed';
-import { CreateMissionDrawer } from './components/CreateMissionDrawer';
-import { useOrganization }  from './hooks/useOrg';
-import type { OrgMission }  from './types';
+import { OrgHealthWidget }      from './components/OrgHealthWidget';
+import { MissionsList }          from './components/MissionsList';
+import { MissionDetail }         from './components/MissionDetail';
+import { DepartmentTree }        from './components/DepartmentTree';
+import { ActivityFeed }          from './components/ActivityFeed';
+import { CreateMissionDrawer }   from './components/CreateMissionDrawer';
+import { GraphifyProgress }      from './components/GraphifyProgress';
+import { VoiceModal }            from './components/VoiceModal';
+import { CursorPresence }        from './components/CursorPresence';
+import { ConnectorMarketplace }  from './components/ConnectorMarketplace';
+import { useOrganization }       from './hooks/useOrg';
+import type { OrgMission }       from './types';
 
 const PAGE_SPRING = { type: 'spring', stiffness: 200, damping: 24 } as const;
 
@@ -37,6 +41,9 @@ export function OrgPage() {
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
   const [statusFilter, setStatusFilter]       = useState<string | undefined>();
+  const [showGraphify, setShowGraphify]       = useState(false);
+  const [showVoice, setShowVoice]             = useState(false);
+  const [showConnectors, setShowConnectors]   = useState(false);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
 
@@ -93,6 +100,57 @@ export function OrgPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Cursor presence — who else is viewing */}
+            <CursorPresence orgId={orgId} className="hidden sm:flex" />
+
+            {/* Voice input */}
+            <button
+              onClick={() => setShowVoice(true)}
+              aria-label="Voice input"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                'transition-colors duration-150 min-w-[44px] min-h-[44px] flex items-center justify-center',
+              )}
+            >
+              <Mic className="h-4 w-4" aria-hidden />
+            </button>
+
+            {/* Graphify */}
+            <button
+              onClick={() => setShowGraphify(v => !v)}
+              aria-label="Open knowledge graph builder"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showGraphify
+                  ? 'text-violet-300 bg-violet-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Network className="h-4 w-4" aria-hidden />
+            </button>
+
+            {/* Connectors */}
+            <button
+              onClick={() => setShowConnectors(v => !v)}
+              aria-label="Connector marketplace"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showConnectors
+                  ? 'text-violet-300 bg-violet-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Plug className="h-4 w-4" aria-hidden />
+            </button>
+
             {/* Refresh */}
             <button
               onClick={() => refetch()}
@@ -154,11 +212,47 @@ export function OrgPage() {
             </div>
           </main>
 
-          {/* Right sidebar: Dept tree + Activity */}
+          {/* Right sidebar: Graphify / Connectors / Dept tree + Activity */}
           <aside
             className="w-72 shrink-0 hidden lg:flex flex-col overflow-y-auto"
             aria-label="Organisation sidebar"
           >
+            {/* Graphify panel */}
+            <AnimatePresence mode="wait">
+              {showGraphify && (
+                <motion.div
+                  key="graphify"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="p-4">
+                    <GraphifyProgress orgId={orgId} onClose={() => setShowGraphify(false)} />
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Connector marketplace panel */}
+              {showConnectors && (
+                <motion.div
+                  key="connectors"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="h-80">
+                    <ConnectorMarketplace orgId={orgId} onClose={() => setShowConnectors(false)} />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">
               <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
@@ -193,6 +287,19 @@ export function OrgPage() {
         orgId={orgId}
         open={showCreate}
         onClose={() => setShowCreate(false)}
+      />
+
+      {/* ── Voice modal ─────────────────────────────────────────────────── */}
+      <VoiceModal
+        open={showVoice}
+        onClose={() => setShowVoice(false)}
+        onTranscript={(text) => {
+          setShowVoice(false);
+          setShowCreate(true);
+          // Pre-fill title via URL state or context in a real implementation
+          void text;
+        }}
+        placeholder="Describe a mission for your agents…"
       />
     </>
   );
