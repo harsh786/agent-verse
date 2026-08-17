@@ -37,6 +37,7 @@ export interface OrgDepartment {
   capability_domains: string[];
   parent_dept_id:     string | null;
   manager_agent_id:   string | null;
+  agent_count?:       number;     // optional — may not be returned by all endpoints
   status:             string;
   created_at:         string;
   updated_at:         string;
