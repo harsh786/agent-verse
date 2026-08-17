@@ -62,6 +62,8 @@ fi
 cd ..
 
 # ─── 3. Frontend: typecheck + lint + unit tests ───────────────────────────────
+# Return to repo root first
+cd "$(git rev-parse --show-toplevel)"
 echo -e "  ⚛️  Frontend: typecheck + lint + unit tests..."
 cd agent-verse-frontend
 
