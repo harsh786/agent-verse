@@ -14,6 +14,7 @@ const DomainsPage = lazy(() => import('@/features/domains/DomainsPage'));
 const DomainDetailPage = lazy(() => import('@/features/domains/DomainDetailPage'));
 // AI Organization OS
 const OrgPage = lazy(() => import('@/features/org/OrgPage').then(m => ({ default: m.OrgPage })));
+const OrgListPage = lazy(() => import('@/features/org/OrgListPage').then(m => ({ default: m.OrgListPage })));
 const CivilizationPage = lazy(() => import('../features/civilization/CivilizationPage'));
 const GoalDNAPage = lazy(() => import("@/features/goals/GoalDNAPage").then(m => ({ default: m.GoalDNAPage })));
 const AgentRadarPage = lazy(() => import("@/features/agents/AgentRadarPage").then(m => ({ default: m.AgentRadarPage })));
@@ -260,7 +261,8 @@ export default function App() {
         <Route path="chat"                  element={lazy_rb("Chat",            <ChatPage />)} />
         <Route path="chat/:sessionId"       element={lazy_rb("Chat",            <ChatPage />)} />
         <Route path="chat/memory"           element={lazy_rb("Agent Memory",    <AgentMemoryPage />)} />        {/* AI Organization OS */}
-        <Route path="org/:orgId"             element={lazy_rb("Org",             <OrgPage />)} />        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
+        <Route path="org"             element={lazy_rb("Organizations",   <OrgListPage />)} />
+        <Route path="org/:orgId"      element={lazy_rb("Org",             <OrgPage />)} />        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>
   );

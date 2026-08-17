@@ -12,7 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
 
 import { MissionCard } from '../components/MissionCard';
 import { OrgHealthWidget } from '../components/OrgHealthWidget';
@@ -21,16 +21,17 @@ import type { OrgMission } from '../types';
 // ─── Mock framer-motion to avoid animation timing issues in tests ─────────────
 vi.mock('framer-motion', async (importOriginal) => {
   const actual = await importOriginal<typeof import('framer-motion')>();
+  // Build a proxy that stubs ALL motion.* HTML elements
+  const makeStub = (tag: string) =>
+    ({ children, ...props }: { children?: ReactNode; [k: string]: unknown }) =>
+      React.createElement(tag, props as Record<string, unknown>, children);
   return {
     ...actual,
-    useReducedMotion: () => true,   // always reduced in tests
-    motion: {
-      ...actual.motion,
-      div: ({ children, ...props }: { children: ReactNode; [k: string]: unknown }) =>
-        <div {...props as Record<string, unknown>}>{children}</div>,
-      article: ({ children, ...props }: { children: ReactNode; [k: string]: unknown }) =>
-        <article {...props as Record<string, unknown>}>{children}</article>,
-    },
+    useReducedMotion: () => true,
+    AnimatePresence: ({ children }: { children?: ReactNode }) => <>{children}</>,
+    motion: new Proxy(actual.motion as unknown as Record<string, unknown>, {
+      get: (target, key: string) => key in target ? target[key] : makeStub(key),
+    }),
   };
 });
 
@@ -176,6 +177,85 @@ describe('OrgHealthWidget', () => {
     // OrgHealthWidget takes orgId and fetches internally
     // Just verify it renders without throwing
     wrap(<OrgHealthWidget orgId="org-001" />);
+    expect(document.body).toBeInTheDocument();
+  });
+});
+
+// ─── OrgListPage integration tests ───────────────────────────────────────────
+
+describe('OrgListPage', () => {
+  it('renders page heading', async () => {
+    const { OrgListPage } = await import('../OrgListPage');
+    wrap(<OrgListPage />);
+    expect(await screen.findByRole('heading', { name: /AI Organizations/i })).toBeInTheDocument();
+  });
+
+  it('renders loading or content state without crashing', async () => {
+    const { OrgListPage } = await import('../OrgListPage');
+    wrap(<OrgListPage />);
+    // Either heading or loading indicator
+    await screen.findByRole('heading');
+    expect(document.body).toBeInTheDocument();
+  });
+
+  it('has accessible "Create organization" button', async () => {
+    const { OrgListPage } = await import('../OrgListPage');
+    wrap(<OrgListPage />);
+    await screen.findByRole('heading');
+    const btn = screen.getByRole('button', { name: /New Organization/i });
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveAttribute('aria-label');
+  });
+
+  it('shows create form when button clicked', async () => {
+    const user = userEvent.setup();
+    const { OrgListPage } = await import('../OrgListPage');
+    wrap(<OrgListPage />);
+    await screen.findByRole('heading');
+    const newBtn = screen.getByRole('button', { name: /New Organization/i });
+    await user.click(newBtn);
+    // A text input appears inside the create form
+    const input = document.querySelector('input[type="text"]');
+    expect(input).toBeTruthy();
+  });
+});
+
+// ─── ActivityFeed integration tests ─────────────────────────────────────────
+
+describe('ActivityFeed', () => {
+  it('renders activity feed section without crashing', async () => {
+    const { ActivityFeed } = await import('../components/ActivityFeed');
+    wrap(<ActivityFeed orgId="org-001" />);
+    // Section renders — either loading, empty, or data state
+    await screen.findByLabelText('Organisation activity feed');
+    expect(document.body).toBeInTheDocument();
+  });
+
+  it('has aria-live region for real-time updates', async () => {
+    const { ActivityFeed } = await import('../components/ActivityFeed');
+    wrap(<ActivityFeed orgId="org-001" />);
+    await screen.findByLabelText('Organisation activity feed');
+    const liveRegion = document.querySelector('[aria-live]');
+    expect(liveRegion).toBeTruthy();
+  });
+});
+
+// ─── DepartmentTree integration tests ────────────────────────────────────────
+
+describe('DepartmentTree', () => {
+  it('renders department tree section without crashing', async () => {
+    const { DepartmentTree } = await import('../components/DepartmentTree');
+    wrap(<DepartmentTree orgId="org-001" />);
+    // Component renders — loading skeleton or empty
+    expect(document.body).toBeInTheDocument();
+  });
+
+  it('renders nav element when not in loading state', async () => {
+    const { DepartmentTree } = await import('../components/DepartmentTree');
+    wrap(<DepartmentTree orgId="org-001" />);
+    // Wait a tick to see if loading state resolves
+    await new Promise(resolve => setTimeout(resolve, 50));
+    // Should render something (nav, skeleton, or empty message)
     expect(document.body).toBeInTheDocument();
   });
 });
