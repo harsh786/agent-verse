@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# pre-push hook — runs full test suite before pushing to remote
+# Blocks push if tests fail.
+# Install: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+REMOTE=$1
+URL=$2
+
+echo -e "${YELLOW}🚀 AgentVerse pre-push checks (remote: $REMOTE)...${NC}"
+
+# Skip tests when pushing to personal/feature branches (only block main/release)
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "release/"* ]]; then
+  echo -e "${YELLOW}ℹ️  Branch '$CURRENT_BRANCH' — running quick checks only (full suite on PR)${NC}"
+  RUN_FULL_SUITE=false
+else
+  RUN_FULL_SUITE=true
+fi
+
+# ─── 1. Backend: unit tests (always run — fast, no Docker needed) ─────────────
+echo -e "  🐍 Backend: unit tests..."
+cd agent-verse-backend
+
+# Sync deps first (SDK path may not exist on all machines)
+uv sync --frozen 2>/dev/null || true
+
+if ! uv run pytest tests/ -m "not integration and not slow" \
+    --timeout=60 \
+    --tb=short \
+    -q 2>&1 | tail -15; then
+  echo -e "${RED}❌ Backend unit tests failed. Fix before pushing.${NC}"
+  cd ..
+  exit 1
+fi
+echo -e "  ${GREEN}✅ Backend unit tests passed${NC}"
+
+# ─── 2. Backend: full ruff + mypy on all app code ─────────────────────────────
+echo -e "  🔷 Backend: ruff + mypy (full)..."
+if ! uv run ruff check app/ 2>&1 | tail -5; then
+  echo -e "${RED}❌ ruff failed. Run: uv run ruff check --fix app/${NC}"
+  cd ..
+  exit 1
+fi
+
+if ! uv run mypy app/ --no-error-summary 2>&1 | tail -5; then
+  echo -e "${RED}❌ mypy failed. Fix type errors before pushing.${NC}"
+  cd ..
+  exit 1
+fi
+echo -e "  ${GREEN}✅ ruff + mypy passed${NC}"
+cd ..
+
+# ─── 3. Frontend: typecheck + lint + unit tests ───────────────────────────────
+echo -e "  ⚛️  Frontend: typecheck + lint + unit tests..."
+cd agent-verse-frontend
+
+if ! npm run typecheck 2>&1 | tail -5; then
+  echo -e "${RED}❌ TypeScript errors. Fix before pushing.${NC}"
+  cd ..
+  exit 1
+fi
+
+if ! npm run lint 2>&1 | tail -5; then
+  echo -e "${RED}❌ ESLint errors. Fix before pushing.${NC}"
+  cd ..
+  exit 1
+fi
+
+if ! npm run test -- --run 2>&1 | tail -10; then
+  echo -e "${RED}❌ Frontend tests failed. Fix before pushing.${NC}"
+  cd ..
+  exit 1
+fi
+echo -e "  ${GREEN}✅ Frontend checks passed${NC}"
+cd ..
+
+# ─── 4. Full integration tests (only when pushing to main/release) ────────────
+if [ "$RUN_FULL_SUITE" = true ]; then
+  echo -e "  🐳 Running integration tests (pushing to $CURRENT_BRANCH)..."
+  echo -e "  ${YELLOW}This requires Docker (colima start if on macOS)${NC}"
+
+  cd agent-verse-backend
+  if ! DOCKER_HOST="unix:///Users/$USER/.colima/default/docker.sock" \
+      TESTCONTAINERS_RYUK_DISABLED=true \
+      uv run pytest tests/ -m "integration" \
+      --timeout=120 --tb=short -q 2>&1 | tail -20; then
+    echo -e "${RED}❌ Integration tests failed. Fix before pushing to $CURRENT_BRANCH.${NC}"
+    cd ..
+    exit 1
+  fi
+  echo -e "  ${GREEN}✅ Integration tests passed${NC}"
+  cd ..
+fi
+
+echo -e "${GREEN}✅ All pre-push checks passed! Pushing to $REMOTE...${NC}"

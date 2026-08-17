@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# prepare-commit-msg hook — injects branch name as scope in commit message
+# Auto-fills template: "type(branch-scope): " so you only type the subject.
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Only auto-fill for normal commits (not merge/squash/amend)
+if [ -n "$COMMIT_SOURCE" ]; then
+  exit 0
+fi
+
+# Get branch name and derive scope from it
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+# Extract scope: feature/missions-pagination → missions
+# fix/auth-jwt-expired → auth
+SCOPE=$(echo "$BRANCH" | sed -E 's|^(feature|fix|chore|refactor|test|docs)/||' | cut -d'-' -f1 | cut -d'/' -f1)
+
+# Skip for main, develop, release branches
+if [[ "$BRANCH" =~ ^(main|develop|release|hotfix)$ ]]; then
+  exit 0
+fi
+
+# If file is empty (fresh commit), add template
+if [ ! -s "$COMMIT_MSG_FILE" ]; then
+  if [ -n "$SCOPE" ]; then
+    echo "feat($SCOPE): " > "$COMMIT_MSG_FILE"
+  else
+    echo "feat: " > "$COMMIT_MSG_FILE"
+  fi
+  # Add commit template footer
+  cat >> "$COMMIT_MSG_FILE" << 'EOF'
+
+# Conventional Commits format: type(scope): subject
+# Types: feat | fix | docs | chore | refactor | perf | test | ci | style | build
+# Scope: missions | agents | graphify | auth | knowledge | voice | collab | db | infra
+# Subject: imperative mood, max 72 chars, no period at end
+#
+# Examples:
+#   feat(missions): add deadline field to mission creation
+#   fix(auth): handle expired refresh token gracefully
+#   test(graphify): add integration test for community detection
+EOF
+fi
