@@ -1,5 +1,6 @@
 """ModalityPipeline — maps content type to full processing pipeline config."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 

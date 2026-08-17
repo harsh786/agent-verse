@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import math
 import random
 from typing import TYPE_CHECKING
 
@@ -118,10 +117,10 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
     connector = connector_cls()
 
     # ── Create job record ────────────────────────────────────────────────────
+    import uuid as _uuid
     job = await tracker.create_job(
-        source_id=source_id,
-        tenant_id=tenant_id,
-        sync_mode=config.sync_mode,
+        config,
+        job_id=str(_uuid.uuid4()),
         triggered_by=triggered_by,
     )
 
@@ -132,15 +131,16 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         cursor = config.cursor_value or None
         new_cursor = cursor
 
-        async for raw_doc, next_cursor in connector.get_delta(config, cursor):
+        async for raw_doc, next_cursor in connector.get_delta(config, cursor):  # type: ignore[misc]
             try:
-                from app.core.config import settings
-                from app.tenancy.context import TenantContext
+                from app.core.config import get_settings
+                from app.tenancy.context import PlanTier, TenantContext
 
+                _settings = get_settings()
                 tenant_ctx = TenantContext(
                     tenant_id=tenant_id,
                     api_key_id="scheduler",
-                    plan=getattr(settings, "DEFAULT_PLAN", "free"),
+                    plan=PlanTier.FREE,
                 )
 
                 result = await pipeline.run(raw_doc, tenant_context=tenant_ctx)
@@ -251,9 +251,9 @@ def retry_dlq_entries_task(self) -> dict:
 
 async def _retry_dlq_async() -> dict:
     """Pull eligible DLQ entries and resubmit through the pipeline."""
+    from app.core.config import settings
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
-    from app.core.config import settings
     from app.tenancy.context import TenantContext
 
     tracker = IngestionJobTracker()

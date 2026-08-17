@@ -1,7 +1,6 @@
 """Parquet parser — column schema + row sampling for analytics tables."""
 from __future__ import annotations
 
-import io
 import logging
 
 _log = logging.getLogger(__name__)
@@ -21,8 +20,8 @@ class ParquetParser:
 
     def parse(self, content: bytes, *, filename: str = "") -> str:
         try:
-            import pyarrow.parquet as pq  # type: ignore[import-not-found]
             import pyarrow as pa  # type: ignore[import-not-found]
+            import pyarrow.parquet as pq  # type: ignore[import-not-found]
         except ImportError:
             _log.warning("pyarrow not installed — cannot parse Parquet. pip install pyarrow")
             return ""

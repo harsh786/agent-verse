@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -25,7 +26,7 @@ class MySQLConnector(BaseConnector):
 
     source_type = "mysql"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         cc = config.connection_config
@@ -68,10 +69,11 @@ class MySQLConnector(BaseConnector):
             )
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
-        from app.ingestion.source_config import RawDocument
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         import asyncio
+
+        from app.ingestion.source_config import RawDocument
 
         cc = config.connection_config
         query = cc.get("query", "")

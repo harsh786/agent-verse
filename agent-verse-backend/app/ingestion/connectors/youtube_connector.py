@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -26,11 +27,13 @@ class YouTubeConnector(BaseConnector):
 
     source_type = "youtube"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import-not-found]
+            from youtube_transcript_api import (
+                YouTubeTranscriptApi,  # type: ignore[import-not-found]
+            )
             # Test with a well-known public video
             test_id = config.connection_config.get("test_video_id", "dQw4w9WgXcQ")
             transcript = YouTubeTranscriptApi.get_transcript(test_id)
@@ -45,11 +48,14 @@ class YouTubeConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled  # type: ignore[import-not-found]
+            from youtube_transcript_api import (  # type: ignore[import-not-found]
+                TranscriptsDisabled,
+                YouTubeTranscriptApi,
+            )
         except ImportError:
             _log.error("youtube-transcript-api not installed"); return
 

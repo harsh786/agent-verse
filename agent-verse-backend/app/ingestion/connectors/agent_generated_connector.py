@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -30,7 +31,7 @@ class AgentGeneratedConnector(BaseConnector):
     source_type = "agent_generated"
     supports_streaming = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         return ConnectionHealth(
             ok=True,
             latency_ms=0.0,
@@ -38,10 +39,9 @@ class AgentGeneratedConnector(BaseConnector):
         )
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Yield high-quality goal outputs since cursor timestamp."""
-        from app.ingestion.source_config import RawDocument
 
         min_score = config.connection_config.get("min_eval_score", 0.7)
         source_types = config.connection_config.get(
@@ -64,12 +64,13 @@ class AgentGeneratedConnector(BaseConnector):
 
     async def on_webhook(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         payload: bytes,
         headers: dict[str, str],
-    ) -> AsyncIterator["RawDocument"]:
+    ) -> AsyncIterator[RawDocument]:
         """Handle goal.completed Redis events → immediately index output."""
         import json
+
         from app.ingestion.source_config import RawDocument
 
         try:

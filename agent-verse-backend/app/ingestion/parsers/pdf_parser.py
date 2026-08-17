@@ -1,5 +1,6 @@
 """PDFParser — extracts text with page numbers using pdfminer.six → pymupdf → text fallback."""
 from __future__ import annotations
+
 import io
 from dataclasses import dataclass, field
 from typing import Any
@@ -101,7 +102,7 @@ class PDFParser:
     def _parse_with_pdfminer(self, pdf_bytes: bytes, source_name: str) -> PDFParseResult | None:
         try:
             from pdfminer.high_level import extract_pages  # type: ignore[import]
-            from pdfminer.layout import LTTextContainer, LTFigure  # type: ignore[import]
+            from pdfminer.layout import LTFigure, LTTextContainer  # type: ignore[import]
             pages = []
             for page_num, page_layout in enumerate(extract_pages(io.BytesIO(pdf_bytes)), start=1):
                 text_parts: list[str] = []

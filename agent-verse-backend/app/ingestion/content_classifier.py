@@ -19,6 +19,13 @@ class ContentType(str, enum.Enum):
     JSON = "json"
     WEB_PAGE = "web_page"
     MIXED = "mixed"
+    # Extended types for new parsers
+    EXCEL = "excel"           # .xlsx / .xls / .ods
+    YAML = "yaml"             # .yaml / .yml / .toml / .hcl
+    PARQUET = "parquet"       # Apache Parquet
+    AVRO = "avro"             # Apache Avro
+    LATEX = "latex"           # LaTeX source
+    NOTEBOOK = "notebook"     # Jupyter .ipynb
 
 
 _EXT_MAP: dict[str, ContentType] = {
@@ -35,6 +42,14 @@ _EXT_MAP: dict[str, ContentType] = {
     ".mp4": ContentType.VIDEO, ".mov": ContentType.VIDEO, ".avi": ContentType.VIDEO,
     ".csv": ContentType.CSV, ".tsv": ContentType.CSV,
     ".json": ContentType.JSON, ".jsonl": ContentType.JSON,
+    # Extended
+    ".xlsx": ContentType.EXCEL, ".xls": ContentType.EXCEL, ".ods": ContentType.EXCEL,
+    ".yaml": ContentType.YAML, ".yml": ContentType.YAML,
+    ".toml": ContentType.YAML, ".hcl": ContentType.YAML,
+    ".parquet": ContentType.PARQUET,
+    ".avro": ContentType.AVRO,
+    ".tex": ContentType.LATEX, ".latex": ContentType.LATEX,
+    ".ipynb": ContentType.NOTEBOOK,
 }
 
 _CODE_PATTERNS = re.compile(

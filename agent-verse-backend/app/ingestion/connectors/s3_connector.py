@@ -7,8 +7,8 @@ Supports any file format via ParserRegistry dispatch.
 from __future__ import annotations
 
 import logging
-import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -27,7 +27,7 @@ class S3Connector(BaseConnector):
     supports_streaming = True
     supports_deletion_tracking = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -61,8 +61,8 @@ class S3Connector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """List S3 objects sorted by LastModified, yield those newer than cursor."""
         from app.ingestion.source_config import RawDocument
 
@@ -146,13 +146,13 @@ class S3Connector(BaseConnector):
 
     async def on_webhook(
         self,
-        config: "SourceConfig",
+        config: SourceConfig,
         payload: bytes,
         headers: dict[str, str],
-    ) -> AsyncIterator["RawDocument"]:
+    ) -> AsyncIterator[RawDocument]:
         """Handle S3 event notifications (SQS or EventBridge)."""
         import json
-        from app.ingestion.source_config import RawDocument
+
 
         try:
             data = json.loads(payload)
@@ -173,8 +173,8 @@ class S3Connector(BaseConnector):
                         yield raw
 
     async def _fetch_single(
-        self, config: "SourceConfig", bucket: str, key: str
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, bucket: str, key: str
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Fetch and yield a single S3 object."""
         from app.ingestion.source_config import RawDocument
         try:
@@ -203,7 +203,7 @@ class S3Connector(BaseConnector):
         except Exception as exc:
             _log.warning("s3_fetch_single_error bucket=%s key=%s: %s", bucket, key, exc)
 
-    def estimate_doc_count(self, config: "SourceConfig") -> int | None:
+    def estimate_doc_count(self, config: SourceConfig) -> int | None:
         try:
             import boto3
             credentials = config.connection_config.get("credentials", {})

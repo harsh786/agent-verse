@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)

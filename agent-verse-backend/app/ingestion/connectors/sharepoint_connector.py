@@ -5,7 +5,6 @@ Requires an Azure AD app registration with Sites.Read.All permission.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"

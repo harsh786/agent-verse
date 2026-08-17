@@ -407,8 +407,9 @@ class IngestionPipeline:
         if self._kb is None or not config.collection_id:
             return []
 
-        from app.rag.models import Chunk
         import uuid as _uuid
+
+        from app.rag.models import Chunk
 
         rag_chunks: list[Chunk] = []
         for c in chunks:

@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -44,7 +45,7 @@ class MongoDBConnector(BaseConnector):
 
     source_type = "mongodb"
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -63,12 +64,12 @@ class MongoDBConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
         try:
-            from pymongo import MongoClient  # type: ignore[import-not-found]
             from bson import ObjectId  # type: ignore[import-not-found]
+            from pymongo import MongoClient  # type: ignore[import-not-found]
         except ImportError:
             _log.error("pymongo not installed"); return
 

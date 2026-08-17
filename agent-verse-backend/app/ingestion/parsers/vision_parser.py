@@ -9,6 +9,7 @@ Supports two modes:
    controls the attempt order.
 """
 from __future__ import annotations
+
 import base64
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field

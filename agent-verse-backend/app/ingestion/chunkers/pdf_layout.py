@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _PAGE_MARKER = re.compile(r"---\s*PAGE\s*(\d+)\s*---", re.IGNORECASE)

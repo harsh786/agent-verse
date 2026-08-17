@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -26,7 +27,7 @@ class SalesforceConnector(BaseConnector):
     source_type = "salesforce"
     supports_acl_propagation = True
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -44,10 +45,11 @@ class SalesforceConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
-        from app.ingestion.source_config import RawDocument
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         import httpx
+
+        from app.ingestion.source_config import RawDocument
 
         token, instance_url = await self._authenticate(config)
         cc = config.connection_config
@@ -93,7 +95,7 @@ class SalesforceConnector(BaseConnector):
                     url = f"{instance_url}{next_url}" if next_url else None
                     params = {}
 
-    async def _authenticate(self, config: "SourceConfig") -> tuple[str, str]:
+    async def _authenticate(self, config: SourceConfig) -> tuple[str, str]:
         import httpx
         cc = config.connection_config
         login_url = cc.get("login_url", "https://login.salesforce.com")

@@ -68,6 +68,7 @@ class ParquetParser:
     def parse(self, content: bytes, *, filename: str = "") -> str:
         try:
             import io
+
             import pyarrow.parquet as pq  # type: ignore[import-not-found]
             table = pq.read_table(io.BytesIO(content))
             schema = table.schema

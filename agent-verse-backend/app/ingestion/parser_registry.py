@@ -79,8 +79,49 @@ class VisionParser:
         return [content] if content.strip() else []
 
 
+# ── Bridge adapters: wrap bytes-based parsers into the str-based interface ────
+
+class _ExcelBridge:
+    def __init__(self, parser): self._p = parser  # noqa: E704
+    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+        return [self._p.parse(content.encode("utf-8") if isinstance(content, str) else content)]
+
+
+class _YAMLBridge:
+    def __init__(self, parser): self._p = parser  # noqa: E704
+    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+        return [self._p.parse(content)]
+
+
+class _ParquetBridge:
+    def __init__(self, parser): self._p = parser  # noqa: E704
+    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+        raw = content.encode("latin-1") if isinstance(content, str) else content
+        return [self._p.parse(raw)]
+
+
+class _AvroBridge:
+    def __init__(self, parser): self._p = parser  # noqa: E704
+    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+        raw = content.encode("latin-1") if isinstance(content, str) else content
+        return [self._p.parse(raw)]
+
+
+class _LaTeXBridge:
+    def __init__(self, parser): self._p = parser  # noqa: E704
+    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+        result = self._p.parse(content)
+        return [result] if result else [content]
+
+
 class ParserRegistry:
     def __init__(self) -> None:
+        from app.ingestion.parsers.excel_parser import ExcelParser
+        from app.ingestion.parsers.yaml_parser import YAMLParser
+        from app.ingestion.parsers.parquet_parser import ParquetParser
+        from app.ingestion.parsers.avro_parser import AvroParser
+        from app.ingestion.parsers.latex_parser import LaTeXParser
+
         self._parsers: dict[ContentType, object] = {
             ContentType.TEXT: TextParser(),
             ContentType.MARKDOWN: TextParser(),
@@ -94,6 +135,13 @@ class ParserRegistry:
             ContentType.VIDEO: VideoTranscriptParser(),
             ContentType.JSON: JSONParser(),
             ContentType.IMAGE: VisionParser(),
+            # Extended types
+            ContentType.EXCEL: _ExcelBridge(ExcelParser()),
+            ContentType.YAML: _YAMLBridge(YAMLParser()),
+            ContentType.PARQUET: _ParquetBridge(ParquetParser()),
+            ContentType.AVRO: _AvroBridge(AvroParser()),
+            ContentType.LATEX: _LaTeXBridge(LaTeXParser()),
+            ContentType.NOTEBOOK: TextParser(),  # Notebook parser handles .ipynb via pipeline Stage 5
         }
 
     def get_parser(self, content_type: ContentType) -> TextParser:
@@ -106,7 +154,7 @@ class ParserRegistry:
         Falls back to UTF-8 decode if parser raises.
         """
         from app.ingestion.content_classifier import ContentType as CT
-        ct = content_type if isinstance(content_type, CT) else CT.PLAIN_TEXT
+        ct = content_type if isinstance(content_type, CT) else CT.TEXT  # fixed: was CT.PLAIN_TEXT
         parser = self._parsers.get(ct, TextParser())
 
         # Most parsers take str, but pipeline gives bytes

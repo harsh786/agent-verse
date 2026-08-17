@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _TS_PATTERN = re.compile(r"\[(\d{2}:\d{2}:\d{2})\]")

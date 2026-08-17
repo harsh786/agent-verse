@@ -10,8 +10,9 @@ import email
 import imaplib
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from email.header import decode_header as _decode_header
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -62,7 +63,7 @@ class EmailIMAPConnector(BaseConnector):
     source_type = "imap"
     supports_deletion_tracking = False
 
-    async def validate_connection(self, config: "SourceConfig") -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
         t0 = time.perf_counter()
         try:
@@ -90,10 +91,11 @@ class EmailIMAPConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     async def get_delta(
-        self, config: "SourceConfig", cursor: str | None
-    ) -> AsyncIterator[tuple["RawDocument", str]]:
-        from app.ingestion.source_config import RawDocument
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
         import asyncio
+
+        from app.ingestion.source_config import RawDocument
 
         cc = config.connection_config
         host = cc.get("host", "imap.gmail.com")

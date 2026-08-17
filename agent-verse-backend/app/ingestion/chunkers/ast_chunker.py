@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _SYMBOL_PATTERN = re.compile(r"(?m)^(?=def |class |function |const |let |var |public class )")

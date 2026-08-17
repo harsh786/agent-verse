@@ -18,7 +18,7 @@ connectors in get_all_connectors() to ensure they are registered.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Type
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.ingestion.base_connector import BaseConnector
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # Global registry: source_type → connector class
-_REGISTRY: dict[str, Type["BaseConnector"]] = {}
+_REGISTRY: dict[str, type[BaseConnector]] = {}
 
 # Feature flags: source_type → settings attribute name
 _FEATURE_FLAGS: dict[str, str] = {}
@@ -45,7 +45,7 @@ def register(source_type: str, *, feature_flag: str | None = None):
         class S3Connector(BaseConnector):
             source_type = "s3"
     """
-    def decorator(cls: Type["BaseConnector"]) -> Type["BaseConnector"]:
+    def decorator(cls: type[BaseConnector]) -> type[BaseConnector]:
         if source_type in _REGISTRY:
             _log.warning(
                 "connector_registry_overwrite source_type=%s old=%s new=%s",
@@ -61,7 +61,7 @@ def register(source_type: str, *, feature_flag: str | None = None):
     return decorator
 
 
-def get_connector(source_type: str, *, settings: object | None = None) -> Type["BaseConnector"]:
+def get_connector(source_type: str, *, settings: object | None = None) -> type[BaseConnector]:
     """Return the connector class for source_type.
 
     Args:

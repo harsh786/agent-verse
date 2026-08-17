@@ -64,20 +64,26 @@ class IngestionJobTracker:
         self._locks[source_id] = job_id
         return job_id
 
-    async def release_lock(self, source_id: str, tenant_id: str, job_id: str) -> None:
+    async def release_lock(self, source_id: str, tenant_id: str, job_id: str | None = None) -> None:
         """Release the distributed ingestion lock."""
         lock_key = f"ingestion_lock:{tenant_id}:{source_id}"
         if self._redis is not None:
             try:
-                stored = await self._redis.get(lock_key)
-                if stored and stored.decode() == job_id:
+                if job_id:
+                    stored = await self._redis.get(lock_key)
+                    if stored and stored.decode() == job_id:
+                        await self._redis.delete(lock_key)
+                else:
                     await self._redis.delete(lock_key)
                 return
             except Exception as e:
                 _log.debug("ingestion_lock_release_error: %s", e)
         # In-memory fallback
-        if self._locks.get(source_id) == job_id:
-            del self._locks[source_id]
+        if job_id:
+            if self._locks.get(source_id) == job_id:
+                del self._locks[source_id]
+        else:
+            self._locks.pop(source_id, None)
 
     # ── Job lifecycle ─────────────────────────────────────────────────────────
 
@@ -261,3 +267,172 @@ class IngestionJobTracker:
                 )
         except Exception as e:
             _log.debug("ingestion_job_complete_persist_error: %s", e)
+
+    # ── Methods required by scheduler.py ────────────────────────────────────
+
+    async def load_config(self, source_id: str, tenant_id: str) -> "SourceConfig | None":
+        """Load a SourceConfig from DB or in-memory store. Returns None if not found."""
+        from app.ingestion.source_config import SourceConfig, SourceFamily
+        # Try in-memory first (populated during sync loop)
+        if source_id in self._jobs:
+            config = SourceConfig(
+                source_id=source_id,
+                tenant_id=tenant_id,
+                name=source_id,
+                family=SourceFamily.AGENT_GENERATED,
+                source_type="unknown",
+                enabled=True,
+                sync_mode="incremental",
+                connection_config={},
+            )
+            config.cursor_value = self._source_cursors.get(source_id, "")
+            return config
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                row = await session.execute(
+                    text("SELECT * FROM source_configs WHERE source_id = :id AND tenant_id = :tid"),
+                    {"id": source_id, "tid": tenant_id},
+                )
+                data = row.mappings().first()
+                if data:
+                    return SourceConfig(**dict(data))
+        except Exception as exc:
+            _log.debug("load_config_error: %s", exc)
+        return None
+
+    async def get_due_sources(self) -> list[tuple[str, str]]:
+        """Return list of (source_id, tenant_id) tuples whose next sync is due."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT source_id, tenant_id
+                          FROM source_configs
+                         WHERE enabled = true
+                           AND sync_mode != 'streaming'
+                           AND (
+                               last_synced_at IS NULL
+                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval <= NOW()
+                           )
+                    """)
+                )
+                return [(row.source_id, row.tenant_id) for row in result]
+        except Exception as exc:
+            _log.debug("get_due_sources_error: %s", exc)
+            return []
+
+    async def increment_failure_counter(self, source_id: str, tenant_id: str) -> None:
+        """Increment consecutive failure counter on a source."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"),
+                    {"id": source_id, "tid": tenant_id},
+                )
+        except Exception as exc:
+            _log.debug("increment_failure_counter_error: %s", exc)
+
+    async def reset_failure_counter(self, source_id: str, tenant_id: str) -> None:
+        """Reset consecutive failure counter after a successful sync."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"),
+                    {"id": source_id, "tid": tenant_id},
+                )
+        except Exception as exc:
+            _log.debug("reset_failure_counter_error: %s", exc)
+
+    async def add_to_dlq(
+        self,
+        *,
+        source_id: str,
+        tenant_id: str,
+        doc_id: str,
+        error: str,
+        raw_doc: object,
+    ) -> None:
+        """Add a failed document to the DLQ."""
+        import json as _json
+        import uuid as _uuid
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("""
+                        INSERT INTO ingestion_dlq
+                            (dlq_id, source_id, tenant_id, doc_id, error_message, raw_doc_json, retry_count, created_at)
+                        VALUES
+                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error, :raw_doc_json, 0, NOW())
+                    """),
+                    {
+                        "dlq_id": str(_uuid.uuid4()),
+                        "source_id": source_id,
+                        "tenant_id": tenant_id,
+                        "doc_id": doc_id,
+                        "error": error,
+                        "raw_doc_json": _json.dumps({"doc_id": doc_id}),
+                    },
+                )
+        except Exception as exc:
+            _log.debug("add_to_dlq_error: %s", exc)
+
+    async def get_retryable_dlq_entries(self, max_entries: int = 50) -> list[object]:
+        """Return DLQ entries eligible for retry (retry_count < 5, not permanent)."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT * FROM ingestion_dlq
+                         WHERE retry_count < 5
+                           AND permanent_failure IS NOT TRUE
+                         ORDER BY created_at ASC
+                         LIMIT :limit
+                    """),
+                    {"limit": max_entries},
+                )
+                return list(result.mappings())
+        except Exception as exc:
+            _log.debug("get_retryable_dlq_entries_error: %s", exc)
+            return []
+
+    async def resolve_dlq_entry(self, dlq_id: str) -> None:
+        """Mark a DLQ entry as resolved (successfully retried)."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("DELETE FROM ingestion_dlq WHERE dlq_id = :id"),
+                    {"id": dlq_id},
+                )
+        except Exception as exc:
+            _log.debug("resolve_dlq_entry_error: %s", exc)
+
+    async def increment_dlq_retry(self, dlq_id: str, error: str = "") -> None:
+        """Increment retry count on a DLQ entry."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"),
+                    {"id": dlq_id, "error": error},
+                )
+        except Exception as exc:
+            _log.debug("increment_dlq_retry_error: %s", exc)
+
+    async def mark_dlq_permanent_failure(self, dlq_id: str) -> None:
+        """Mark a DLQ entry as permanently failed (no more retries)."""
+        try:
+            from sqlalchemy import text
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("UPDATE ingestion_dlq SET permanent_failure = true WHERE dlq_id = :id"),
+                    {"id": dlq_id},
+                )
+        except Exception as exc:
+            _log.debug("mark_dlq_permanent_failure_error: %s", exc)
