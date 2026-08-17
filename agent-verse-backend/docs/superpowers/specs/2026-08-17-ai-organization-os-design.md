@@ -5895,3 +5895,1084 @@ AUTONOMOUS ORG TEAM FULLY SPECIFIED.
 
 *End of Supplement N — v2.1 Addendum*
 *Spec version: 2.1.0 | Total lines: ~5800 | Sections: 95*
+
+---
+
+# SUPPLEMENT O — FULL BIDIRECTIONAL VOICE AGENT SYSTEM
+## World-Class Voice Intelligence for Autonomous AI Organizations
+
+*Added 2026-08-17 — Complete voice spec: STT + TTS + VAD + wake word + streaming + multilingual*
+
+---
+
+## O1 — VOICE SYSTEM OVERVIEW
+
+The Voice Agent System transforms the platform from a visual command center into a
+**fully conversational AI organization** — one you can talk to from anywhere.
+
+### Core Capability
+
+```
+USER SPEAKS → Transcribed instantly → Org Brain processes → 
+Response streamed as text AND synthesized as voice simultaneously
+```
+
+### Three Voice Interaction Modes
+
+```
+MODE 1: PUSH-TO-TALK (default, most private)
+  Hold button → speak → release → response arrives as voice + text
+
+MODE 2: WAKE WORD (hands-free, always listening)
+  "Hey AgentVerse" (or custom org wake word)
+  → listening indicator activates
+  → speak naturally
+  → response arrives
+
+MODE 3: CONTINUOUS CONVERSATION (meeting mode)
+  Open session → natural back-and-forth dialogue
+  No button holding. Context maintained across turns.
+  Org remembers the conversation thread.
+```
+
+### What makes it world-class
+
+```
+✅ Open source STT (completely free, runs locally)
+✅ Paid STT options (higher accuracy for noisy environments)
+✅ Open source TTS (free, customizable voice)
+✅ Paid TTS options (JARVIS-quality voices)
+✅ Streaming: audio starts playing before full response is ready
+✅ Simultaneous: voice plays while text appears character by character
+✅ Multilingual: Hindi, Tamil, Telugu, Bengali + 99 more languages
+✅ Indian English accent support
+✅ Noise cancellation built in
+✅ End-to-end encrypted (audio never stored by default)
+✅ Offline capable (open source models, no internet required)
+✅ Custom org voice (clone your brand voice with consent)
+✅ Voice + text always together (never voice-only, never blind)
+```
+
+---
+
+## O2 — SPEECH-TO-TEXT (STT) — COMPLETE ENGINE MATRIX
+
+### Open Source STT Options (completely free, self-hosted)
+
+```
+TIER A: BEST QUALITY — PRODUCTION RECOMMENDED
+
+  OpenAI Whisper (local deployment)
+  ──────────────────────────────────
+  Model:     whisper-large-v3 (1.5B params) | whisper-medium (769M) | whisper-small (244M)
+  Quality:   4.9% WER English, best Indian English support
+  Speed:     large-v3: ~2s for 10s audio (GPU) | ~15s (CPU)
+  Languages: 99 languages including Hindi, Tamil, Telugu, Marathi, Bengali
+  License:   MIT — completely free commercial use
+  Deploy:    pip install openai-whisper
+  Hardware:  GPU recommended for large, CPU fine for small/medium
+  Use when:  Best accuracy needed, have compute budget
+
+  faster-whisper
+  ──────────────
+  What:      4x faster Whisper using CTranslate2 engine
+  Quality:   Same as Whisper (same weights, optimized runtime)
+  Speed:     large-v3: ~0.5s for 10s audio (GPU) | ~3s (CPU)
+  License:   MIT — completely free commercial use
+  Deploy:    pip install faster-whisper
+  Use when:  Production real-time transcription, low latency needed
+  Recommended: YES — this is the primary open source choice
+
+  Whisper.cpp
+  ───────────
+  What:      C++ port, runs on CPU efficiently, WASM-compatible
+  Speed:     medium: ~1s on modern CPU
+  License:   MIT
+  Use when:  Embedded, edge, no GPU, or browser WASM deployment
+
+TIER B: REAL-TIME OPTIMIZED
+
+  VOSK
+  ────
+  What:      Offline speech recognition, streaming-capable
+  Quality:   Good for clean audio, lower accuracy than Whisper
+  Speed:     Real-time (streams as you speak)
+  Languages: 20 languages including Hindi
+  License:   Apache 2.0 — completely free commercial use
+  Deploy:    pip install vosk + download model
+  Model size: 50MB (small) to 1.8GB (large English)
+  Use when:  Need true real-time streaming, edge deployment
+
+  Coqui STT (DeepSpeech fork)
+  ────────────────────────────
+  What:      Mozilla DeepSpeech successor
+  License:   MPL 2.0 — free, copyleft
+  Use when:  Community-driven, fine-tunable on domain vocab
+
+TIER C: SPECIALIZED
+
+  Silero STT
+  ──────────
+  What:      Compact, fast, designed for streaming
+  Quality:   Good for short commands
+  License:   MIT
+  Use when:  Command/intent detection (not long-form transcription)
+
+  OpenWakeWord
+  ─────────────
+  What:      Wake word detection only (not full STT)
+  License:   Apache 2.0
+  Use when:  "Hey AgentVerse" detection layer before full STT
+```
+
+### Paid STT Options (higher accuracy, managed service)
+
+```
+  OpenAI Whisper API
+  ──────────────────
+  Cost:      $0.006/minute
+  Quality:   Best-in-class, same as local Whisper but faster
+  Features:  Timestamps, word-level, speaker diarization (coming)
+  Use when:  Don't want to manage compute, need highest speed
+
+  Deepgram Nova-2
+  ───────────────
+  Cost:      $0.0043/minute (pay-as-you-go)
+  Quality:   Extremely fast, ~300ms end-to-end latency
+  Features:  Real-time streaming, diarization, custom vocabulary
+  Languages: 30+ languages
+  Use when:  Lowest latency commercial option, call centers, live transcription
+
+  Google Cloud Speech-to-Text v2
+  ───────────────────────────────
+  Cost:      $0.016/minute (standard) | $0.024/minute (enhanced)
+  Quality:   Excellent for Indian English and Indian languages
+  Features:  Chirp model — best Indian language support
+  Languages: 125+ including all major Indian languages
+  Use when:  Indian language support is critical
+
+  Azure Cognitive Speech
+  ──────────────────────
+  Cost:      $1/hour ($0.0167/minute)
+  Features:  Real-time + batch, custom acoustic models, diarization
+  Use when:  Microsoft ecosystem, enterprise compliance
+
+  AWS Transcribe
+  ──────────────
+  Cost:      $0.024/minute
+  Features:  Custom vocabulary, medical transcription variant
+  Use when:  AWS infrastructure lock-in
+```
+
+### STT Selection Logic (automatic)
+
+```python
+class STTSelector:
+    """
+    Selects STT engine based on: org plan, config, audio quality, language.
+    Priority: accuracy > latency > cost (configurable per org).
+    """
+    
+    def select(self, context: STTContext) -> STTEngine:
+        # Offline mode (no internet or air-gapped)
+        if context.offline_required:
+            return FasterWhisperEngine(model="large-v3")
+        
+        # Free tier orgs
+        if context.plan == "free":
+            return FasterWhisperEngine(model="medium")
+        
+        # Indian language request
+        if context.language in INDIAN_LANGUAGES:
+            if context.prefer_free:
+                return FasterWhisperEngine(model="large-v3")
+            return GoogleSpeechEngine(model="chirp")
+        
+        # Ultra-low latency required (live trading, real-time ops)
+        if context.latency_slo_ms < 500:
+            return DeepgramEngine(model="nova-2")
+        
+        # Default: faster-whisper (free, production-grade)
+        return FasterWhisperEngine(model="large-v3")
+```
+
+---
+
+## O3 — TEXT-TO-SPEECH (TTS) — COMPLETE ENGINE MATRIX
+
+### Open Source TTS Options (completely free)
+
+```
+TIER A: BEST QUALITY — PRODUCTION RECOMMENDED
+
+  Coqui TTS (XTTS v2)
+  ────────────────────
+  What:      Multi-lingual neural TTS, voice cloning in 6 seconds
+  Quality:   Near human-quality, emotional control
+  Languages: 17 languages including Hindi
+  License:   MPL 2.0 — free for most uses
+  Deploy:    pip install TTS
+  Features:  Zero-shot voice cloning, emotion control, speed control
+  Use when:  Custom org voice without paying per character
+  Recommended: YES — best free option for custom voices
+
+  Kokoro TTS
+  ──────────
+  What:      82M parameter model, extremely natural English
+  Quality:   Outperforms many commercial options for English
+  License:   Apache 2.0 — completely free commercial use
+  Speed:     Real-time on CPU
+  Use when:  Best free English TTS, no custom voice needed
+
+  Bark (Suno AI)
+  ──────────────
+  What:      Generative TTS — emotions, laughs, music, sound effects
+  Quality:   Highly expressive, sometimes unreliable
+  License:   MIT
+  Use when:  Expressive non-critical responses, creative contexts
+
+  VITS / VITS2
+  ────────────
+  What:      Fast, high-quality, end-to-end neural TTS
+  License:   MIT
+  Languages: Multiple, including Hindi
+  Use when:  Low-latency, research use, fine-tuning
+
+  Mozilla TTS
+  ──────────
+  What:      Tacotron2 + WaveRNN/WaveGlow
+  License:   MPL 2.0
+  Use when:  Well-tested, enterprise-grade open source pipeline
+
+  Festival + eSpeak NG (fallback)
+  ────────────────────────────────
+  What:      Rule-based TTS, no neural, but works offline
+  Quality:   Robotic but intelligible
+  License:   MIT / GPL
+  Use when:  Absolute fallback when no models available
+
+TIER B: SPECIALIZED
+
+  edge-tts (Microsoft Edge TTS via API)
+  ───────────────────────────────────────
+  What:      Uses Microsoft Edge's TTS without API key
+  Quality:   Very good, near-commercial quality
+  License:   Free (unofficial API)
+  Caveat:    Unofficial — may break, no SLA
+  Use when:  Free high-quality, don't need cloning
+```
+
+### Paid TTS Options (premium quality)
+
+```
+  ElevenLabs
+  ──────────
+  Cost:      $0.30/1K chars (starter) | $0.18/1K (enterprise)
+  Quality:   BEST available — ultra-realistic, emotional
+  Features:  Voice cloning (10 samples), 29 languages, streaming
+  Voices:    Pre-built voices (JARVIS-style available)
+  Streaming: Sub-200ms first chunk latency
+  Use when:  JARVIS experience is the priority, executive demos
+
+  OpenAI TTS
+  ──────────
+  Cost:      $0.015/1K chars (tts-1) | $0.030/1K (tts-1-hd)
+  Quality:   Excellent, 6 voices, natural prosody
+  Features:  Streaming, speed control
+  Use when:  Already using OpenAI, cost-effective premium
+
+  Google Cloud TTS
+  ─────────────────
+  Cost:      Free 1M chars/month | $4/1M after
+  Quality:   WaveNet/Neural2 voices — excellent
+  Languages: 220+ voices in 40+ languages including Hindi
+  Features:  SSML support, custom voice (enterprise)
+  Use when:  Indian language TTS, high volume, Google ecosystem
+
+  Azure Cognitive Speech TTS
+  ───────────────────────────
+  Cost:      $0.016/1K chars neural
+  Quality:   Excellent, emotional voices
+  Features:  SSML, custom neural voice, 400+ voices
+  Use when:  Microsoft ecosystem, compliance requirements
+
+  AWS Polly
+  ─────────
+  Cost:      $4/1M chars (standard) | $16/1M (neural)
+  Quality:   Good, Neural voices better
+  Use when:  AWS infrastructure
+
+  Fish Audio / PlayHT
+  ────────────────────
+  What:      Voice cloning services
+  Cost:      $0.05-0.10/1K chars
+  Quality:   Near-ElevenLabs quality, instant cloning
+  Use when:  Custom org voice branding at lower cost
+```
+
+### TTS Selection Logic (automatic)
+
+```python
+class TTSSelector:
+    def select(self, context: TTSContext) -> TTSEngine:
+        # Free tier / offline
+        if context.plan == "free" or context.offline_required:
+            return CoquiXTTSEngine(voice=context.org_voice or "default")
+        
+        # Indian language response
+        if context.language in INDIAN_LANGUAGES:
+            if context.prefer_free:
+                return CoquiXTTSEngine(language=context.language)
+            return GoogleCloudTTSEngine(language=context.language)
+        
+        # JARVIS premium experience (paid plans)
+        if context.plan in ("professional", "enterprise"):
+            if context.org_voice:  # custom cloned voice
+                return ElevenLabsEngine(voice_id=context.org_voice_id)
+            return ElevenLabsEngine(voice="onyx")  # JARVIS-like deep voice
+        
+        # Starter plan — balance quality + cost
+        return OpenAITTSEngine(model="tts-1", voice="nova")
+```
+
+---
+
+## O4 — VOICE ACTIVITY DETECTION (VAD)
+
+Determines when user starts/stops speaking without button press.
+
+```
+Open Source VAD (recommended):
+
+  Silero VAD
+  ──────────
+  What:      Neural VAD, 1.8MB model, extremely accurate
+  License:   MIT — completely free
+  Speed:     Real-time on CPU
+  False positive rate: <1%
+  Deploy:    pip install silero-vad (or torch.hub)
+  Recommended: YES — best free VAD
+
+  WebRTC VAD
+  ──────────
+  What:      Google's algorithm from WebRTC project
+  License:   BSD 3-clause — free
+  Speed:     Negligible CPU
+  Use when:  Minimal compute, less accurate than Silero
+
+  py-webrtcvad
+  ────────────
+  What:      Python binding for WebRTC VAD
+  License:   MIT
+  Use when:  Server-side VAD when Silero unavailable
+
+VAD Pipeline:
+
+  Audio input (16kHz, 16-bit mono)
+    ↓
+  Silero VAD chunks audio into 30ms frames
+    ↓
+  Speech start detected → begin buffering
+    ↓
+  Silence > 800ms → speech end detected → send to STT
+    ↓
+  STT transcription begins
+```
+
+---
+
+## O5 — WAKE WORD DETECTION
+
+Hands-free activation ("Hey AgentVerse" or custom org keyword).
+
+```
+Open Source Wake Word (free):
+
+  openWakeWord
+  ─────────────
+  What:      Open source, customizable wake word detection
+  License:   Apache 2.0 — free commercial use
+  Train:     Custom wake words trained in <1 hour on consumer GPU
+  Accuracy:  ~97% true positive, <0.5 false positives/hour
+  Deploy:    pip install openwakeword
+  Default words: "alexa", "hey mycroft" (need custom training)
+  Custom:    Train "hey agentverse" or org name in hours
+
+  Porcupine (Picovoice) — free tier available
+  ────────────────────────────────────────────
+  What:      Pre-trained wake words, commercial grade
+  License:   Free for non-commercial | Paid for commercial
+  Pre-built: "Alexa", "Ok Google", etc. + custom (paid)
+  Accuracy:  Best-in-class
+
+  Snowboy — deprecated but historical reference
+  Precise (Mycroft) — open source, good accuracy
+
+Custom org wake word setup:
+
+  "Hey AgentVerse" (default, trained + included)
+  "Hey [OrgName]"  (custom, trained per org on request)
+  "Hey Jarvis"     (power user preset)
+  
+  Training data required: 150 positive samples + 10,000 negative
+  Training time: ~45 minutes on RTX 4090 | ~4 hours on CPU
+```
+
+---
+
+## O6 — NOISE CANCELLATION
+
+Ensures clean audio in noisy offices, open floors, call centers.
+
+```
+Open Source Noise Cancellation:
+
+  RNNoise
+  ───────
+  What:      Mozilla's neural noise suppression
+  License:   BSD 3-clause — free
+  Latency:   10ms (real-time capable)
+  Works on:  Background office noise, keyboard clicks, AC
+  Deploy:    pip install rnnoise-python
+
+  DeepFilterNet
+  ─────────────
+  What:      State-of-the-art open source noise suppression
+  License:   MIT
+  Quality:   Outperforms RNNoise on most benchmarks
+  Deploy:    pip install deepfilternet
+  Recommended: YES — better quality than RNNoise
+
+  Speex DSP
+  ─────────
+  What:      Classical DSP noise suppression
+  License:   BSD — free
+  Use when:  Minimal compute, embedded
+
+Noise Cancellation Pipeline:
+
+  Raw microphone audio
+    ↓
+  DeepFilterNet (or RNNoise as fallback)
+    ↓
+  Clean audio
+    ↓
+  Silero VAD
+    ↓
+  STT Engine
+```
+
+---
+
+## O7 — STREAMING ARCHITECTURE (Real-Time Voice)
+
+Everything streams. User never waits for a full response.
+
+```
+FULL STREAMING PIPELINE:
+
+  [USER SPEAKS]
+       ↓ WebSocket / WebRTC
+  [SERVER: Audio chunks arrive in real-time]
+       ↓ DeepFilterNet noise cancellation (10ms/chunk)
+       ↓ Silero VAD (detect speech boundaries)
+       ↓ faster-whisper streaming transcription
+  [PARTIAL TRANSCRIPTION AVAILABLE: "What is the status of..."]
+       ↓ Sent to frontend (shown as "listening" text)
+  [FULL UTTERANCE COMPLETE]
+       ↓ Org Brain processes (LangGraph — existing engine)
+       ↓ Response generated (streamed token by token)
+  [FIRST 20 TOKENS READY: "The marketing mission is..."]
+       ↓ SIMULTANEOUS:
+       │    TTS synthesis starts on first sentence
+       │    Text streams to UI character by character
+       ↓
+  [AUDIO CHUNK 1 ready: 200ms after response starts]
+       ↓ Streamed to browser via WebSocket
+  [AUDIO PLAYS while more text+audio is being generated]
+       ↓
+  [FULL RESPONSE: played as voice + shown as text]
+
+LATENCY TARGET:
+  User stops speaking → first audio word plays: < 800ms
+  (200ms STT + 200ms LLM first token + 200ms TTS first chunk + 200ms network)
+```
+
+---
+
+## O8 — VOICE RESPONSE MODES
+
+Every voice response is BOTH voice AND text simultaneously.
+
+```
+RESPONSE MODES:
+
+  MODE 1: VOICE + TEXT (default)
+  ──────────────────────────────
+  Agent speaks the response aloud.
+  Simultaneously, text appears in conversation panel.
+  User can read along, pause, copy text.
+  
+  MODE 2: TEXT ONLY (silent environments)
+  ────────────────────────────────────────
+  No audio output. Text only.
+  Activates when: user is in meeting, headphones off, 
+                  or ambient noise > threshold.
+
+  MODE 3: VOICE ONLY (driving / accessibility)
+  ─────────────────────────────────────────────
+  Audio response only. No need to look at screen.
+  Activates when: user explicitly enables, or mobile hands-free.
+
+  MODE 4: BACKGROUND (ambient intelligence)
+  ──────────────────────────────────────────
+  Org speaks important events aloud proactively:
+  "Just wanted to let you know — the SEBI analysis finished.
+   3 items need your attention when you're free."
+  Subtle, non-disruptive voice tone used.
+```
+
+---
+
+## O9 — VOICE EXPERIENCE DESIGN (JARVIS VOICE IDENTITY)
+
+The org has a distinct voice personality — not a generic assistant.
+
+```
+JARVIS VOICE CHARACTERISTICS:
+  Tone:       Calm, confident, intelligent
+  Pace:       Measured — not rushed, not slow
+  Style:      Concise. Never verbose by default.
+  Personality: Professional but not robotic
+
+DEFAULT VOICE PROFILE (ElevenLabs / OpenAI / Coqui mapping):
+  ElevenLabs: "onyx" or custom deep male voice
+  OpenAI TTS: "onyx" (deep, calm)
+  Coqui XTTS: trained on calm professional speech samples
+
+VOICE STATES (different voice character per situation):
+  Normal response:    Clear, measured, full prosody
+  CRITICAL ALERT:     Slightly faster, more assertive
+  SUCCESS:            Warm, slightly brighter tone  
+  APPROVAL REQUEST:   Deliberate, slower, emphasizes key figures
+  MORNING BRIEF:      Slightly warmer, friendly cadence
+  SEARCHING/THINKING: Short acknowledgment: "Looking into that..."
+  ERROR:              Calm, factual, no alarm
+
+CONVERSATIONAL PATTERNS:
+  Short query → Short answer (don't pad)
+  Complex query → Structured answer with natural pauses
+
+  GOOD:   "Three items need approval. The largest is the Germany
+           campaign at twelve thousand dollars."
+  BAD:    "Of course! I would be happy to inform you that there are
+           currently three items requiring your attention..."
+
+NEVER:
+  ❌ Say "Certainly!" or "Of course!" or "Great question!"
+  ❌ Repeat what the user said back to them
+  ❌ Add filler sounds (um, ah)
+  ❌ Be sycophantic
+  ✅ Be direct, confident, helpful
+
+RESPONSE LENGTH RULES:
+  Status query:       1-2 sentences
+  Single fact:        1 sentence
+  Analysis:           3-5 sentences + offer to elaborate
+  Complex report:     Key summary verbally + "Full report on screen"
+```
+
+---
+
+## O10 — VOICE COMMAND TAXONOMY
+
+Commands the org understands without training or configuration.
+
+```
+ORGANIZATION STATUS:
+  "What's happening?"
+  "What needs my attention?"
+  "How are we doing today?"
+  "Give me the morning brief"
+  "What are the active missions?"
+
+MISSION MANAGEMENT:
+  "Start a mission to [describe goal]"
+  "Pause the Germany mission"
+  "Resume the compliance analysis"
+  "What's the status of the Q3 report?"
+  "Cancel the LinkedIn campaign"
+
+APPROVALS:
+  "What needs my approval?"
+  "Approve it"
+  "Reject the email campaign"
+  "Show me the details first"
+  "Delegate this to Sarah"
+
+INTELLIGENCE:
+  "Research [topic]"
+  "What did we learn about [topic]?"
+  "Compare our performance to last month"
+  "Why did the trading volume drop?"
+  "What are competitors doing?"
+
+HISTORY:
+  "What happened yesterday?"
+  "Show me what happened while I was away"
+  "Replay last week's activity"
+  "When did we complete the SEBI filing?"
+
+SETTINGS:
+  "Reduce autonomy level"
+  "Pause all autonomous work"
+  "Increase the marketing budget"
+  "Who's working on the research mission?"
+
+MULTI-TURN CONVERSATION:
+  User: "What are the active missions?"
+  Org:  "Seven missions. The Germany campaign is at 80%, compliance 
+         at 50%, and five others running smoothly."
+  User: "Tell me more about the compliance one"    ← context maintained
+  Org:  "The compliance analysis covers SEBI margin rules. Finance
+         and legal teams are involved. Expected completion: 4 hours."
+  User: "Approve the budget increase they requested"   ← still in context
+  Org:  "Approved. Eight thousand rupees allocated. Confirmation sent."
+```
+
+---
+
+## O11 — MULTILINGUAL VOICE SUPPORT
+
+Full support for Indian languages and global languages.
+
+```
+PRIORITY LANGUAGES:
+  Tier 1 (full STT + TTS):
+    English (en-US, en-IN — Indian accent)
+    Hindi (hi-IN)
+    Tamil (ta-IN)
+    Telugu (te-IN)
+    Kannada (kn-IN)
+    Bengali (bn-IN)
+    Marathi (mr-IN)
+    Gujarati (gu-IN)
+
+  Tier 2 (STT + TTS, lower accuracy):
+    Malayalam, Punjabi, Odia, Urdu, Assamese
+
+  Tier 3 (international):
+    Spanish, French, German, Japanese, Chinese, Arabic, Portuguese
+
+CODE-SWITCHING (natural for Indian users):
+  Users naturally mix Hindi and English:
+  "Kal ka market analysis kya hua?"
+  "Show karo mujhe Germany mission ka status"
+  
+  System handles Hinglish transparently.
+  Whisper large-v3 handles code-switching natively.
+
+LANGUAGE AUTO-DETECTION:
+  No need to set language. System detects automatically.
+  Can be overridden in settings for specific orgs.
+
+VOICE RESPONSE LANGUAGE:
+  Responds in the language user spoke.
+  "Hindi mein poochha → Hindi mein jawab"
+  Override: "Always respond in English" (settings)
+```
+
+---
+
+## O12 — SECURITY AND PRIVACY
+
+```
+AUDIO SECURITY PRINCIPLES:
+
+  1. NEVER store raw audio by default
+     Only the transcription is stored (with user consent).
+     Audio processed in memory, discarded after transcription.
+     
+  2. END-TO-END ENCRYPTION
+     Audio transmitted over WSS (TLS 1.3+).
+     Never transmitted over unencrypted channels.
+     
+  3. ON-PREMISE OPTION
+     All STT/TTS runs locally inside customer VPC.
+     Audio never leaves their infrastructure.
+     Use: faster-whisper (local) + Coqui TTS (local)
+     
+  4. GDPR / HIPAA COMPLIANCE
+     Transcriptions treated as personal data.
+     Retention policy configurable (default: 90 days).
+     Right to deletion: one-click purge.
+     
+  5. VOICE PRINT PROTECTION
+     Voice cloning requires explicit written consent.
+     Cloned voices tagged and auditable.
+     Cannot be used to impersonate humans.
+     
+  6. NO BACKGROUND LISTENING
+     Wake word detection runs locally on device.
+     Audio stream only opens AFTER wake word confirmed.
+     Activity indicator always visible when mic is active.
+     
+  7. AUDIT TRAIL
+     Every voice interaction logged:
+       - Timestamp
+       - Duration (not content)
+       - Intent classification
+       - Action taken
+     Fully auditable.
+```
+
+---
+
+## O13 — BACKEND ARCHITECTURE
+
+```
+NEW BACKEND PACKAGE: app/voice/
+
+app/voice/
+├── __init__.py
+├── router.py              # WebSocket + REST endpoints
+├── stt/
+│   ├── __init__.py
+│   ├── base.py            # STTEngine abstract class
+│   ├── faster_whisper.py  # faster-whisper (primary open source)
+│   ├── whisper_local.py   # openai-whisper (fallback)
+│   ├── openai_api.py      # OpenAI Whisper API (paid)
+│   ├── deepgram.py        # Deepgram (paid, lowest latency)
+│   ├── google_speech.py   # Google Cloud STT (paid, Indian langs)
+│   └── selector.py        # Auto-selects based on config
+├── tts/
+│   ├── __init__.py
+│   ├── base.py            # TTSEngine abstract class  
+│   ├── coqui_xtts.py      # Coqui XTTS v2 (primary open source)
+│   ├── kokoro.py          # Kokoro TTS (open source English)
+│   ├── edge_tts.py        # Microsoft Edge TTS (free tier)
+│   ├── elevenlabs.py      # ElevenLabs (paid premium)
+│   ├── openai_tts.py      # OpenAI TTS (paid)
+│   ├── google_cloud.py    # Google Cloud TTS (paid, Indian langs)
+│   └── selector.py        # Auto-selects based on config
+├── vad/
+│   ├── __init__.py
+│   ├── silero_vad.py      # Silero VAD (recommended)
+│   └── webrtc_vad.py      # WebRTC VAD (fallback)
+├── wake_word/
+│   ├── __init__.py
+│   ├── openwakeword.py    # openWakeWord (open source)
+│   └── porcupine.py       # Picovoice Porcupine (paid tier)
+├── noise/
+│   ├── __init__.py
+│   ├── deepfilternet.py   # DeepFilterNet (recommended)
+│   └── rnnoise.py         # RNNoise (fallback)
+├── session.py             # Voice conversation session management
+├── stream.py              # Streaming coordinator (STT+LLM+TTS pipeline)
+├── config.py              # Voice configuration per org
+└── models.py              # Pydantic models for voice API
+
+NEW ENDPOINTS:
+
+  WebSocket:
+  WS  /v1/voice/stream            ← Main bidirectional audio stream
+  WS  /v1/voice/wake-word         ← Wake word detection stream
+
+  REST:
+  POST /v1/voice/transcribe        ← Transcribe audio file (non-streaming)
+  POST /v1/voice/synthesize        ← Synthesize text to audio
+  GET  /v1/voice/config            ← Get voice config for org
+  PUT  /v1/voice/config            ← Update voice config
+  POST /v1/voice/clone-voice       ← Start custom voice cloning
+  GET  /v1/voice/voices            ← List available voices
+  GET  /v1/voice/languages         ← List supported languages
+  DELETE /v1/voice/audio/{id}      ← Delete voice recording (GDPR)
+```
+
+### Core Session Manager
+
+```python
+class VoiceSession:
+    """
+    Manages a single bidirectional voice conversation.
+    
+    Lifecycle:
+    CREATED → LISTENING → TRANSCRIBING → PROCESSING → 
+    SYNTHESIZING → SPEAKING → LISTENING (loop)
+    """
+    
+    session_id: str
+    tenant_id: str
+    org_id: str
+    language: str                    # auto-detected or configured
+    stt: STTEngine                   # selected by STTSelector
+    tts: TTSEngine                   # selected by TTSSelector
+    vad: VADEngine                   # always Silero
+    noise_filter: NoiseFilter        # always DeepFilterNet
+    conversation_history: list[Turn] # maintained across turns
+    
+    async def process_audio_chunk(self, chunk: bytes) -> AsyncIterator[VoiceEvent]:
+        """
+        Process incoming audio chunk. Yields events as they happen:
+        
+        VoiceEvent types:
+          SPEECH_START         → show listening indicator
+          PARTIAL_TRANSCRIPT   → show partial text
+          FULL_TRANSCRIPT      → show complete user utterance
+          THINKING             → show processing indicator
+          TEXT_CHUNK           → stream text character by character
+          AUDIO_CHUNK          → stream TTS audio bytes
+          RESPONSE_COMPLETE    → response finished
+          ERROR                → something failed
+        """
+        
+        # Step 1: Noise cancellation
+        clean = await self.noise_filter.process(chunk)
+        
+        # Step 2: VAD
+        vad_result = self.vad.process(clean)
+        if vad_result.speech_ended:
+            
+            # Step 3: STT
+            text = await self.stt.transcribe(self.audio_buffer)
+            yield VoiceEvent(type="FULL_TRANSCRIPT", text=text)
+            
+            # Step 4: Org Brain processes
+            async for response_chunk in self.org_brain.stream(text, self.conversation_history):
+                yield VoiceEvent(type="TEXT_CHUNK", text=response_chunk)
+                
+                # Step 5: TTS streams in parallel
+                async for audio_chunk in self.tts.synthesize_stream(response_chunk):
+                    yield VoiceEvent(type="AUDIO_CHUNK", audio=audio_chunk)
+```
+
+---
+
+## O14 — FRONTEND ARCHITECTURE
+
+```
+NEW FRONTEND: src/features/voice/
+
+src/features/voice/
+├── VoiceButton.tsx          # Push-to-talk button (mic icon, hold to speak)
+├── VoiceModal.tsx           # Full-screen voice conversation UI
+├── VoiceConversation.tsx    # Message thread with voice + text
+├── VoicePulse.tsx           # Animated pulse indicator (listening/speaking)
+├── TranscriptBubble.tsx     # User's transcribed words, appears live
+├── AgentVoiceBubble.tsx     # Agent text + playback control
+├── WakeWordSetup.tsx        # Configure custom wake word
+├── VoiceSettings.tsx        # STT/TTS engine config, language, voice selection
+├── VoiceHistory.tsx         # Past voice conversations
+├── hooks/
+│   ├── useVoiceSession.ts   # WebSocket voice session management
+│   ├── useMediaRecorder.ts  # Browser audio capture
+│   ├── useAudioPlayback.ts  # Stream audio playback (with queue)
+│   ├── useWakeWord.ts       # Wake word detection (WASM/worker)
+│   └── useVoiceSettings.ts  # User preferences
+└── types/
+    └── voice.types.ts
+
+GLOBAL INTEGRATION:
+  VoiceButton present in:
+    - ChatInput.tsx (existing chat — add voice to chat)
+    - CommandBar.tsx (org-level voice commands)
+    - TopNav.tsx (always-accessible mic button)
+    - Mobile FAB (floating action button)
+```
+
+### VoiceButton Component Spec
+
+```tsx
+// Shows mic icon in all interaction surfaces
+// Three visual states:
+
+IDLE:
+  ○  Grey mic icon
+  "Hold to speak" tooltip
+
+LISTENING (while held):
+  ◉  Blue pulsing circle + mic icon
+  Animated waveform visualization
+  Real-time transcript appears below: "What is the stat..."
+
+SPEAKING (agent responding):
+  ◉  Animated waveform (agent's audio playing)
+  Text streams in conversation bubble
+  "Tap to interrupt" appears
+
+// Animation: Framer Motion
+// Push-to-talk: onPointerDown / onPointerUp (works on mobile too)
+// Wake word: invisible always-on listener
+```
+
+---
+
+## O15 — VOICE CONFIGURATION PER ORG
+
+```python
+@dataclass  
+class OrgVoiceConfig:
+    # STT Configuration
+    stt_engine: str = "auto"              # auto | faster_whisper | deepgram | openai | google
+    stt_model_size: str = "large-v3"      # tiny | base | small | medium | large-v3
+    stt_language: str = "auto"            # auto-detect or specify
+    stt_offline_only: bool = False        # true = never use paid STT APIs
+    
+    # TTS Configuration  
+    tts_engine: str = "auto"              # auto | coqui | kokoro | elevenlabs | openai | google
+    tts_voice: str = "default"            # voice name or cloned voice ID
+    tts_speed: float = 1.0               # 0.5-2.0
+    tts_language: str = "auto"            # match STT language
+    tts_offline_only: bool = False        # true = never use paid TTS APIs
+    
+    # Noise Cancellation
+    noise_cancellation: bool = True       # deepfilternet
+    noise_intensity: str = "auto"         # auto | off | low | high
+    
+    # Wake Word
+    wake_word_enabled: bool = False       # opt-in
+    wake_word: str = "hey agentverse"     # custom or default
+    wake_word_sensitivity: float = 0.5    # 0.0-1.0 (lower = fewer false positives)
+    
+    # Privacy
+    store_transcriptions: bool = True     # GDPR configurable
+    audio_retention_days: int = 0         # 0 = never store audio
+    
+    # Voice Identity
+    agent_voice_personality: str = "professional"  # professional | friendly | concise
+    response_max_spoken_sentences: int = 3         # truncate long responses for voice
+    
+    # Language
+    multilingual_enabled: bool = True
+    preferred_response_language: str = "match_user"  # match_user | en | hi | auto
+```
+
+---
+
+## O16 — FREE VS PAID CAPABILITY MATRIX
+
+```
+                          OPEN SOURCE (FREE)    PAID OPTIONS
+                          ─────────────────    ────────────────
+STT Quality (English)     ★★★★☆ (faster-whisper)  ★★★★★ (Deepgram/OAI)
+STT Quality (Hindi)       ★★★★☆ (whisper large)  ★★★★★ (Google Chirp)
+STT Latency               ★★★☆☆ (300-500ms GPU)  ★★★★★ (100-200ms)
+STT Cost                  FREE                  $0.004-0.024/min
+TTS Quality               ★★★☆☆ (Coqui XTTS)    ★★★★★ (ElevenLabs)
+TTS Voice Cloning         ★★★☆☆ (Coqui — good)   ★★★★★ (ElevenLabs)
+TTS Cost                  FREE                  $0.015-0.30/1K chars
+Noise Cancellation        ★★★★☆ (DeepFilterNet)  Same (no paid option better)
+Wake Word                 ★★★★☆ (openWakeWord)   ★★★★★ (Porcupine)
+VAD                       ★★★★★ (Silero VAD)     Same
+Offline Capable           ✅ YES                 ❌ NO
+No Data Leaves Org        ✅ YES (on-prem)        ❌ NO
+Indian Language Support   ★★★★☆                  ★★★★★ (Google)
+
+RECOMMENDATION:
+  Free plan + privacy-first:  faster-whisper + Coqui XTTS + Silero VAD
+  Best experience (paid):     Deepgram + ElevenLabs + Silero VAD
+  Indian enterprise:          Google Chirp STT + Google TTS or ElevenLabs
+  Air-gapped/on-prem:         All open source, runs fully offline
+```
+
+---
+
+## O17 — VOICE INTEGRATION WITH ORG FEATURES
+
+```
+VOICE → MORNING BRIEF:
+  At configured time, org speaks morning brief aloud.
+  User: "Go on"  → continues to next section
+  User: "Skip risks" → jumps to recommendations
+  User: "Approve the campaign" → mid-brief approval
+  
+VOICE → APPROVAL CENTER:
+  "You have 3 approvals. First: Germany email campaign, $12,400."
+  User: "Approve it."
+  "Done. Next: Legal contract review for Client A."
+  User: "Show me the document first."
+  → Document opens on screen, voice pauses
+  User: "Looks good. Approve."
+  "Approved. Last item: ..."
+
+VOICE → MISSION CREATION:
+  "Start a mission to analyze the impact of rising US bond yields
+   on our Indian equity portfolio."
+  → Org Brain creates mission automatically
+  → Team forms
+  → Voice confirms: "Mission started. Research team of 3 working on it.
+                     Expected completion: 2 hours."
+
+VOICE → REAL-TIME MISSION MONITORING:
+  User: "How's the Germany mission going?"
+  → Org queries live state
+  → "Germany campaign is at 64%. Marketing team finished drafts.
+     Legal is reviewing. One approval in about 30 minutes."
+
+VOICE → HISTORY/REPLAY:
+  "What happened with the trading volume anomaly last Tuesday?"
+  → Searches org memory
+  → "Tuesday at 2pm, NSE volume dropped 28%. Investigation found
+     an algorithm timing issue. Fixed by engineering at 4:15pm.
+     No financial impact. Lesson stored to org memory."
+```
+
+---
+
+## O18 — TESTING REQUIREMENTS
+
+```
+Backend tests (app/voice/):
+  - test_stt_engines.py      (faster-whisper, mock audio, WER check)
+  - test_tts_engines.py      (Coqui, output audio validation)
+  - test_vad.py              (Silero VAD, speech detection accuracy)
+  - test_wake_word.py        (openWakeWord, false positive rate)
+  - test_noise_filter.py     (DeepFilterNet, SNR improvement)
+  - test_voice_session.py    (full pipeline: audio-in → text-out)
+  - test_streaming.py        (WebSocket events in correct order)
+  - test_voice_api.py        (REST endpoints, auth, config)
+  - test_multilingual.py     (Hindi, Tamil detection + response)
+  - test_privacy.py          (no audio stored, encryption in transit)
+
+Frontend tests (src/features/voice/):
+  - VoiceButton.test.tsx     (states: idle, listening, speaking)
+  - VoiceSession.test.ts     (WebSocket state machine)
+  - AudioPlayback.test.ts    (streaming queue, interruption)
+  - VoiceSettings.test.tsx   (config form, save/load)
+
+Performance targets:
+  STT transcription (10s audio): < 500ms (GPU) | < 3s (CPU)
+  TTS first audio chunk:         < 300ms
+  End-to-end latency:            < 1000ms (user stops → first audio word)
+  Wake word false positive rate: < 1/hour
+  VAD accuracy:                  > 98% for clean audio
+```
+
+---
+
+## SUPPLEMENT O — SUMMARY
+
+```
+VOICE AGENT SYSTEM
+──────────────────────────────────────────────────────────────────
+Open Source STT:    faster-whisper (primary) | VOSK | Whisper.cpp
+Paid STT:           Deepgram | OpenAI Whisper | Google Chirp | Azure
+Open Source TTS:    Coqui XTTS v2 (primary) | Kokoro | Bark | VITS
+Paid TTS:           ElevenLabs (premium) | OpenAI TTS | Google | Azure
+VAD:                Silero VAD (primary) | WebRTC VAD (fallback)
+Wake Word:          openWakeWord (open source) | Porcupine (paid)
+Noise Cancellation: DeepFilterNet (primary) | RNNoise (fallback)
+Languages:          99 (Whisper) | All Indian languages (Tier 1+2)
+Code-switching:     Hinglish + all Indian code-mix dialects
+Offline capable:    YES (fully open source stack)
+Audio storage:      NEVER by default (GDPR/HIPAA compliant)
+New backend files:  20 (app/voice/ package)
+New frontend files: 14 (src/features/voice/ package)
+New API endpoints:  9 (WebSocket + REST)
+Voice interaction modes: 3 (push-to-talk, wake word, continuous)
+Response modes:     4 (voice+text, text-only, voice-only, ambient)
+JARVIS experience:  ✅ Professional voice identity fully specified
+Indian enterprise:  ✅ All 8 major Indian languages supported
+Free tier capable:  ✅ Entire stack works free with open source
+```
+
