@@ -155,6 +155,7 @@ check_module "Civilization" "$BACKEND/civilization"
 # ─── FRONTEND ─────────────────────────────────────────────────────────────────
 section "FRONTEND"
 
+# Generic quantity checks
 FE_PAGES=$(find "$FRONTEND/features" -name "*Page.tsx" 2>/dev/null | wc -l | tr -d ' ')
 [ "$FE_PAGES" -gt 10 ] && pass "Frontend pages ($FE_PAGES feature pages)" || gap "Frontend pages insufficient ($FE_PAGES)"
 
@@ -171,6 +172,22 @@ QUERY=$((QUERY_TS + QUERY_TSX))
 
 A11Y=$(count_grepr "aria-label|aria-live|role=" "$FRONTEND" "*.tsx")
 [ "$A11Y" -gt 20 ] && pass "Accessibility attributes ($A11Y found)" || warn "Accessibility attributes low ($A11Y)"
+
+# ── SPECIFIC NAMED COMPONENT CHECKS (the missing layer) ──────────────────────
+# These prevent "quantity passes but named feature missing" false positives.
+section "FRONTEND: Phase-specific components"
+
+[ -f "$FRONTEND/features/org/OrgListPage.tsx" ]          && pass "OrgListPage exists"       || gap "OrgListPage MISSING — /org route has no list page"
+[ -f "$FRONTEND/features/org/OrgPage.tsx" ]              && pass "OrgPage exists"           || gap "OrgPage MISSING — /org/:orgId route has no page"
+[ -f "$FRONTEND/features/org/components/MissionCard.tsx" ] && pass "MissionCard exists"    || gap "MissionCard MISSING"
+[ -f "$FRONTEND/features/org/components/MissionsList.tsx" ] && pass "MissionsList exists"  || gap "MissionsList MISSING"
+[ -f "$FRONTEND/features/org/components/MissionDetail.tsx" ] && pass "MissionDetail exists" || gap "MissionDetail MISSING"
+[ -f "$FRONTEND/features/org/components/CreateMissionDrawer.tsx" ] && pass "CreateMissionDrawer exists" || gap "CreateMissionDrawer MISSING"
+[ -f "$FRONTEND/features/org/components/DepartmentTree.tsx" ] && pass "DepartmentTree exists" || gap "DepartmentTree MISSING"
+[ -f "$FRONTEND/features/org/components/ActivityFeed.tsx" ]   && pass "ActivityFeed exists"  || gap "ActivityFeed MISSING"
+grep -q "org/:orgId\|/org" "$FRONTEND/app/App.tsx" 2>/dev/null && pass "Org routes in App.tsx" || gap "Org routes MISSING from App.tsx"
+grep -q '"/org"' "$FRONTEND/components/ui/Sidebar.tsx" 2>/dev/null && pass "Org nav link in Sidebar" || gap "Org nav link MISSING from Sidebar"
+[ -f "$REPO_ROOT/agent-verse-frontend/e2e/org.spec.ts" ]      && pass "Org E2E spec exists"  || gap "Org E2E spec MISSING"
 
 # ─── TEST COVERAGE ────────────────────────────────────────────────────────────
 section "TEST COVERAGE"
