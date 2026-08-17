@@ -6985,111 +6985,123 @@ Free tier capable:  ✅ Entire stack works free with open source
 
 ---
 
-## P1 — COMPLIANCE-AS-CODE ENGINE
+## P1 — POLICY EVIDENCE ENGINE (GENERIC)
 
-Enterprise compliance teams spend ₹10-50L/year on manual audit prep.
-This eliminates 80% of that work.
+The platform provides a generic mechanism for continuous evidence collection.
+**Domain-specific frameworks (SOC2, RBI, HIPAA, ISO27001, etc.) are configured
+via domain blueprint packs — they are NOT hardcoded in the platform.**
 
-```
-WHAT IT DOES:
-
-Every agent action automatically maps to a compliance control.
-The org continuously generates audit evidence as a side effect of working.
-
-SUPPORTED FRAMEWORKS:
-  SOC2 Type II          (Controls: CC1.1 – CC9.2)
-  ISO 27001             (Controls: A.5 – A.18)
-  HIPAA                 (Controls: §164.308 – §164.316)
-  RBI Guidelines        (Circular tracking, PMLA, FEMA)
-  GDPR                  (Articles 5, 6, 13, 17, 30, 32)
-  PCI DSS               (Requirements 1–12)
-  SEBI LODR             (Clause 49, continuous disclosure)
-  IRDAI Regulations     (Indian insurance compliance)
-  SOX                   (Section 302, 404)
-```
-
-### How it works
+### What the platform provides (generic)
 
 ```python
-# Every agent action automatically tagged with compliance controls
+@dataclass
+class PolicyControl:
+    """
+    A user-defined or blueprint-defined policy control.
+    The platform maps org actions to controls — but does NOT dictate
+    which frameworks or controls exist. Those come from:
+      - Org admin configuration
+      - Domain blueprint packs (installed per use case)
+      - User-created custom controls
+    """
+    control_id: str          # any string: "CC6.1" | "requirement-12" | "my-policy"
+    framework: str           # any string: "my-compliance-framework"
+    description: str
+    triggered_by: list[str]  # which org event types satisfy this control
+    evidence_type: str       # what kind of evidence this produces
 
 @dataclass
-class ComplianceTag:
-    framework: str          # "SOC2" | "ISO27001" | "HIPAA" | ...
-    control_id: str         # "CC6.1" | "A.12.3.1" | "164.312(a)"
-    evidence_type: str      # "access_log" | "encryption_proof" | "audit_trail"
-    description: str        # human-readable what this proves
+class EvidenceRecord:
+    """Automatically generated when a mapped org event fires."""
+    control_id: str
+    event_type: str           # the org event that triggered this
+    entity_type: str          # which entity (agent/task/mission/tool...)
+    entity_id: str
+    description: str          # human-readable what happened
     timestamp: datetime
     actor_id: str
-    artifact_id: str | None  # linked evidence document
+    artifact_id: str | None   # linked output document if applicable
 
-class ComplianceAsCodeEngine:
+class PolicyEvidenceEngine:
     """
-    Maps every observable org action → compliance control evidence.
-    Generates audit reports on demand.
-    Alerts on compliance drift in real-time.
+    Generic policy evidence collection.
+    Controls are registered per org from:
+      1. Blueprint packs (domain-specific, optional)
+      2. Admin-defined custom controls
+      3. Automatically detected (AI-suggested from org policies)
     """
     
-    CONTROL_MAPPING = {
-        # Every tool call → CC6.1 (Logical Access)
-        "tool_executed":        ["SOC2:CC6.1", "ISO27001:A.9.4.2"],
-        # Approval required → CC6.3 (Access Removal/Restriction)
-        "approval_requested":   ["SOC2:CC6.3", "SOC2:CC8.1"],
-        # Memory write → CC7.2 (Data Classification)
-        "memory_updated":       ["SOC2:CC7.2", "GDPR:Art.5"],
-        # Agent created → CC6.2 (User Registration)
-        "agent_created":        ["SOC2:CC6.2", "ISO27001:A.9.2.1"],
-        # Data processed → GDPR:Art.30 (Record of Processing)
-        "data_processed":       ["GDPR:Art.30", "HIPAA:164.308(a)(1)"],
-        # Audit trail written → CC4.1 (Monitoring)
-        "audit_event":          ["SOC2:CC4.1", "SOC2:CC7.3"],
-    }
-    
-    async def generate_soc2_report(
-        self, org_id: str, period: DateRange
-    ) -> ComplianceReport:
-        """Generate SOC2 Type II evidence report for audit period."""
+    async def register_control(self, org_id: str, control: PolicyControl) -> None:
+        """Register a policy control for evidence collection."""
         ...
     
-    async def get_compliance_posture(self, org_id: str) -> PostureScore:
-        """Real-time compliance posture: 0-100 per framework."""
+    async def collect_evidence(
+        self, org_id: str, event: OrgEvent
+    ) -> list[EvidenceRecord]:
+        """Auto-collect evidence when a relevant org event fires."""
         ...
     
-    async def detect_drift(self, org_id: str) -> list[ComplianceDrift]:
-        """Detect when org behavior deviates from required controls."""
+    async def generate_evidence_report(
+        self, org_id: str, framework: str, period: DateRange
+    ) -> EvidenceReport:
+        """Generate an evidence report for any user-defined framework."""
+        ...
+    
+    async def get_policy_posture(self, org_id: str) -> dict[str, float]:
+        """Coverage score per registered framework (0-100)."""
         ...
 ```
 
-### Compliance Dashboard
+### How domain frameworks are added (blueprint packs, NOT core)
 
 ```
-COMPLIANCE CENTER — Trading Org
+User creates a trading org:
+  Platform: "I see you're creating a trading org. Available compliance
+             packs for your jurisdiction: [SEBI Pack] [RBI Pack] [None]"
+  User: installs "SEBI Pack"
+  SEBI Pack provides: control definitions mapped to org events
+  
+User creates a healthcare org:
+  Platform: "Available packs: [HIPAA Pack] [CDSCO Pack] [None]"
+  
+User creates a custom org in any domain:
+  User defines their own policies in plain language:
+    "Every time an agent sends external communication, I need an approval record"
+  Platform generates the control automatically.
+
+NEVER hardcoded in core platform:
+  ❌ SOC2 control IDs
+  ❌ RBI circular numbers  
+  ❌ Specific regulatory article references
+  ✅ The MECHANISM for collecting, storing, reporting evidence
+  ✅ The EVENT HOOKS that any control can tap into
+  ✅ The EVIDENCE STORAGE and report generation infrastructure
+```
+
+### Evidence Dashboard (generic — works for ANY framework)
+
+```
+POLICY CENTER
 ────────────────────────────────────────────────────────
-  SOC2 Type II     ████████████████████░  94/100  ↑ +2
-  RBI Guidelines   ██████████████████░░░  88/100  ↑ +5 this month
-  SEBI LODR        ████████████████░░░░░  82/100  ⚠ attention
-  GDPR             ████████████████████░  96/100  ✅
-  ISO 27001        ███████████████░░░░░░  78/100  ⚠ 3 gaps
+  [Frameworks installed: 0]   [Browse packs] [Define custom policy]
 
-  EVIDENCE GENERATED THIS QUARTER: 2,847 items
-  AUTO-COLLECTED: 2,819 (99%)   MANUAL: 28 (1%)
+  Once configured by user/blueprint:
+  ─────────────────────────────────
+  My Framework     ████████████████████░  94/100
+  Custom Policy A  ██████████████████░░░  88/100
 
-  UPCOMING AUDITS:
-  📋 SOC2 renewal: 45 days → [Generate full evidence package]
-  📋 RBI quarterly: 12 days → [Generate filing draft]
+  EVIDENCE GENERATED THIS QUARTER: [N] items
+  AUTO-COLLECTED: [%]   MANUAL: [%]
 
-  OPEN GAPS (5):
-  ⚠ ISO 27001 A.12.1.2: Change management process not documented
-    → [Auto-document from git history] [Assign to team]
-  ⚠ SEBI: Insider trading policy last updated 14 months ago
-    → [Trigger policy review mission]
+  OPEN GAPS:
+  [configured controls that haven't fired yet]
+
+  [Generate report] [Export evidence] [Install domain pack →]
 ```
 
 ---
 
-## P2 — ROI INTELLIGENCE DASHBOARD
 
-The single feature that gets board-level buy-in and budget approval.
 
 ```python
 @dataclass
@@ -7323,77 +7335,121 @@ NEXT WEEK'S AUTONOMOUS PRIORITIES:
 
 ---
 
-## P5 — REGULATORY CHANGE INTELLIGENCE
+## P5 — EXTERNAL SIGNAL MONITOR (GENERIC)
 
-Every regulated industry needs this. No one has it automated.
+The platform provides a generic mechanism for monitoring any external source
+for changes relevant to the org's work.
+**Domain-specific sources (RBI circulars, SEBI notifications, FDA guidelines,
+court databases, etc.) are configured via blueprint packs or user settings —
+NOT hardcoded in the platform.**
+
+### What the platform provides (generic)
 
 ```python
-class RegulatoryChangeIntelligence:
+@dataclass
+class SignalSource:
     """
-    Continuously monitors regulatory sources relevant to the org's industry.
-    Detects changes, assesses impact on org, triggers response workflows.
+    A user-configured or blueprint-configured external signal source.
+    The platform provides the monitoring infrastructure.
+    Users define WHAT to watch and WHY it matters to their org.
+    """
+    source_id: str
+    name: str                  # e.g. "Weekly Industry Digest" (user-named)
+    url: str | None            # for web sources
+    rss_feed: str | None       # for RSS sources
+    search_query: str | None   # for search-based monitoring
+    source_type: str           # "web" | "rss" | "api" | "email" | "search"
+    check_frequency_hours: int = 24
+    relevance_keywords: list[str]  # what makes a result relevant to this org
+    impact_assessment_prompt: str  # how to assess impact on this specific org
+
+class ExternalSignalMonitor:
+    """
+    Generic external signal monitoring.
+    Sources are defined by:
+      1. Users directly (in Signal Monitor settings)
+      2. Domain blueprint packs (pre-configured for industry)
+      3. Org Brain (auto-suggested based on org's knowledge + goals)
     
-    Monitors: Government gazettes, regulatory websites, court databases,
-              international standards bodies, sector-specific regulators.
+    Works for ANY type of external signal:
+      - Industry news (for any industry)
+      - Regulatory changes (for any jurisdiction/domain)
+      - Competitor movements (for any market)
+      - Technology changes (for any tech domain)
+      - Market data (for any market)
+      - Customer signals (from any customer data source)
+      - Research papers (from any academic domain)
     """
     
-    # Sources monitored per industry (examples)
-    SOURCES = {
-        "banking_india":     ["rbi.org.in/notifications", "sebi.gov.in/sebiweb/home/HomeAction.do", "irdai.gov.in"],
-        "healthcare_india":  ["cdsco.gov.in", "nhp.gov.in", "mohfw.gov.in"],
-        "legal_india":       ["judis.nic.in", "sci.gov.in", "legalaffairs.gov.in"],
-        "fintech_india":     ["rbi.org.in/Scripts/bs_circularsindex.aspx", "npci.org.in"],
-        "international":     ["eur-lex.europa.eu", "sec.gov/news/pressreleases"],
-    }
+    async def add_source(self, org_id: str, source: SignalSource) -> None:
+        """Register a signal source for monitoring."""
+        ...
     
-    async def monitor(self, org_id: str) -> AsyncIterator[RegulatoryAlert]:
-        """Continuously polls sources. Yields alerts when changes detected."""
-        while True:
-            for source in self.get_org_sources(org_id):
-                new_items = await self.fetch_new(source)
-                for item in new_items:
-                    impact = await self.assess_impact(item, org_id)
-                    if impact.score > 0.3:  # only surface relevant changes
-                        yield RegulatoryAlert(
-                            title=item.title,
-                            url=item.url,
-                            summary=await self.summarize(item),
-                            impact_score=impact.score,
-                            affected_workflows=impact.workflows,
-                            action_required=impact.action_required,
-                            deadline=impact.extract_deadline(),
-                        )
-            await asyncio.sleep(3600)  # check hourly
+    async def monitor(self, org_id: str) -> AsyncIterator[SignalAlert]:
+        """Continuously poll sources. Yield alerts when relevant changes detected."""
+        ...
+    
+    async def assess_impact(
+        self, signal: Signal, org_id: str
+    ) -> ImpactAssessment:
+        """
+        LLM-based impact assessment:
+        'Does this signal matter to this specific org, and why?'
+        Uses org's goals, active missions, knowledge base as context.
+        """
+        ...
 ```
 
-### Regulatory Alert UI
+### Signal Alert UI (generic — any source, any domain)
 
 ```
-🔔 NEW REGULATORY CHANGE DETECTED
+SIGNAL MONITOR — External Changes
+────────────────────────────────────────────────────────
+  CONFIGURED SOURCES (user-defined):
+  • Industry News Daily        ● Active  (last checked: 2h ago)
+  • [User's custom sources]    ● Active
 
-  RBI/2026-27/58 — August 15, 2026
-  "Strengthening of IT and Cyber Security Framework"
+  NEW SIGNAL DETECTED
 
-  IMPACT ON YOUR ORG: HIGH
-  ─────────────────────────────────────────────────────
-  Affected areas:
-  • Data governance policies (update required)
-  • Incident reporting workflow (new 6-hour deadline)
-  • Third-party vendor assessment (annual now mandatory)
+  Source: [user-configured source name]
+  Title:  [title of the detected change]
+  Date:   [detection date]
 
-  DEADLINE: October 15, 2026 (60 days)
+  RELEVANCE TO YOUR ORG: [LOW | MEDIUM | HIGH]
+  ────────────────────────────────────────────
+  Why it matters:   [AI-assessed based on org's goals]
+  Affected areas:   [linked to active missions/knowledge]
+  Recommended action: [auto-suggested, not hardcoded]
 
-  AUTO-ACTIONS AVAILABLE:
-  [✓] Create compliance analysis mission
-  [✓] Schedule policy review
-  [✓] Add to compliance calendar
+  [View source] [Start analysis mission] [Dismiss] [Add to knowledge]
+```
 
-  [View full circular] [Start analysis] [Delegate to compliance team]
+### Signal sources are never hardcoded in platform
+
+```
+PLATFORM PROVIDES:
+  ✅ Infrastructure to monitor any URL / RSS / API / search
+  ✅ Generic change detection (diff from last check)
+  ✅ LLM-based relevance filtering (configurable threshold)
+  ✅ LLM-based impact assessment (uses org's own context)
+  ✅ Auto-mission creation when high-impact signal detected
+  ✅ Signal history and searchability
+
+DOMAIN BLUEPRINT PACKS PROVIDE (optional, user installs):
+  ✅ Pre-configured source URLs for specific industries
+  ✅ Pre-configured relevance keywords for specific domains
+  ✅ Domain-specific impact assessment prompts
+  
+USER CONFIGURES:
+  ✅ Any source they care about
+  ✅ Any keywords relevant to their specific org
+  ✅ Any threshold for triggering missions
+  ✅ Frequency per source
 ```
 
 ---
 
-## P6 — PREDICTIVE FAILURE DETECTION
+
 
 Enterprises hate surprises. This prevents them.
 
@@ -7884,12 +7940,16 @@ PERSISTENCE POLICY:
 RE-AUDIT v2.3 — ALL GAPS CLOSED
 
 NEWLY ADDED IN SUPPLEMENT P:
-  P1:  Compliance-as-Code Engine (SOC2, ISO27001, RBI, GDPR, HIPAA, PCI, SEBI)
-  P2:  ROI Intelligence Dashboard (10x ROI visualization, board-ready reports)
+  P1:  Policy Evidence Engine (GENERIC — domain packs provide framework specifics)
+       User-defined or blueprint-supplied policy controls. Generic evidence
+       collection infrastructure. Framework-agnostic. Blueprint packs add domain
+       specifics (SOC2, RBI, HIPAA etc.) as optional add-ons, not core.
+  P2:  ROI Intelligence Dashboard (value vs cost for any org in any domain)
   P3:  Mission Simulation (pre-execution preview, confidence score, risk flags)
   P4:  Strategic Advisor (weekly brief: performance + market + competitor + rec)
-  P5:  Regulatory Change Intelligence (gazette monitoring, impact assessment)
-  P6:  Predictive Failure Detection (68% → 0% failure via early warning)
+  P5:  External Signal Monitor (GENERIC — user configures any source; blueprint
+       packs add domain-specific source lists as optional add-ons, not core)
+  P6:  Predictive Failure Detection (67% → 0% failure via early warning)
   P7:  Horizontal Scaling + Idempotency (full architecture + code spec)
   P8:  SSO / Enterprise Auth (SAML2, OIDC, LDAP, SCIM, domain restriction)
   P9:  Data Lineage Tracking (provenance chain, GDPR delete, explain feature)
@@ -7897,6 +7957,18 @@ NEWLY ADDED IN SUPPLEMENT P:
   P11: Agent Reputation Market (EWMA scores, domain expertise, auto-retirement)
   P12: Custom Fine-Tuning Per Org (Llama/Mistral/Qwen, LoRA, private registry)
   P13: Team Lifecycle (explicit spec: CREATE→STAFF→BRIEF→EXECUTE→REVIEW→ARCHIVE)
+
+DESIGN PRINCIPLE — PLATFORM GENERICITY:
+  The platform NEVER hardcodes domain-specific items in core spec.
+  Domain-specific content (RBI URLs, SOC2 control IDs, HIPAA articles,
+  SEBI notifications, medical coding systems, legal citation formats, etc.)
+  belongs ONLY in:
+    1. Blueprint packs (optional, user-installed per domain)
+    2. User configuration (org sets their own policies/sources)
+    3. Use case documentation (examples, not core spec)
+  
+  Any organization in any domain can use the platform without
+  encountering domain-specific assumptions in the core layer.
 
 SPEC VERSION: 2.3.0
 TOTAL LINES: ~7,800
@@ -7907,11 +7979,11 @@ FINAL STATUS: WORLD-CLASS ✅
 Every major enterprise requirement is now specced:
   ✅ Core Org OS (N1-N25)
   ✅ Voice Agent (O1-O18)
-  ✅ Compliance-as-Code (P1)
+  ✅ Policy Evidence Engine — generic, domain packs optional (P1)
   ✅ ROI Intelligence (P2)
   ✅ Mission Simulation (P3)
   ✅ Strategic Advisor (P4)
-  ✅ Regulatory Intelligence (P5)
+  ✅ External Signal Monitor — generic, sources user-configured (P5)
   ✅ Predictive Failure (P6)
   ✅ Horizontal Scaling + Idempotency (P7)
   ✅ Enterprise SSO/SAML (P8)
