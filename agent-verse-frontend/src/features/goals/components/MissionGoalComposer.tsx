@@ -3,7 +3,7 @@
  * workflow mode selector, attachment support, and template picker.
  * Uses standard CSS design tokens (bg-card, text-foreground, etc.)
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -63,12 +63,12 @@ interface StrategyOption {
   certified?: boolean;
 }
 
-export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string) => void }) {
+export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (goalId: string) => void; initialGoal?: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const qc = useQueryClient();
 
-  const prefill = (location.state as { prefillGoal?: string } | null)?.prefillGoal ?? '';
+  const prefill = initialGoal ?? (location.state as { prefillGoal?: string } | null)?.prefillGoal ?? '';
   const [goal, setGoal] = useState(prefill);
   const [dryRun, setDryRun] = useState(false);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('single_agent');
@@ -77,6 +77,11 @@ export function MissionGoalComposer({ onSuccess }: { onSuccess?: (goalId: string
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [strategyOverride, setStrategyOverride] = useState('');
   const [patternLimits, setPatternLimits] = useState<Partial<Record<LimitName, string>>>({});
+
+  // Sync when parent passes a new initialGoal (e.g. from TemplatePickerModal)
+  useEffect(() => {
+    if (initialGoal) setGoal(initialGoal);
+  }, [initialGoal]);
 
   const { data: agents = [] } = useQuery({
     queryKey: ['agents-composer'],

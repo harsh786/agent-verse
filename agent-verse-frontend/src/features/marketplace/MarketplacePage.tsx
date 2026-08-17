@@ -711,6 +711,7 @@ export function MarketplacePage() {
   const [selectedTemplate, setSelectedTemplate] = useState<MarketplaceV2Template | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [deployingId, setDeployingId] = useState<string | null>(null);
+  const [lastDeployedId, setLastDeployedId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"install_count" | "rating" | "created_at">("install_count");
 
   const domainFilter = domain !== "all" ? domain : null;
@@ -801,6 +802,7 @@ export function MarketplacePage() {
       const result = await marketplaceApi.deploy(template.template_id, {});
       if (result.agent_id) {
         markInstalled(template.template_id);
+        setLastDeployedId(result.agent_id);
         toast({ kind: "success", message: `Agent "${result.agent_name ?? result.agent_id}" deployed!` });
       } else {
         toast({ kind: "error", message: result.error ?? "Deploy failed" });
@@ -833,6 +835,14 @@ export function MarketplacePage() {
           Publish
         </button>
       </div>
+
+      {/* Quick deploy success banner */}
+      {lastDeployedId && (
+        <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-xl p-3 flex items-center justify-between">
+          <p className="text-sm text-green-800 dark:text-green-300 font-mono">{lastDeployedId}</p>
+          <button onClick={() => setLastDeployedId(null)} className="text-xs text-green-600 hover:text-green-800" aria-label="Dismiss deploy banner">×</button>
+        </div>
+      )}
 
       {/* Search bar + sort controls */}
       <div className="flex gap-3">
