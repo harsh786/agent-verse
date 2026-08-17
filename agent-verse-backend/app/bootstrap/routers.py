@@ -363,3 +363,11 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         logger.info("org_os_router_registered")
     except Exception as _org_err:
         logger.warning("org_os_router_failed", error=str(_org_err))
+
+    # ── Voice (STT + goal refinement) ─────────────────────────────────────────
+    try:
+        from app.voice.router import router as voice_router
+        app.include_router(voice_router)
+        logger.info("voice_router_registered")
+    except Exception as _voice_err:
+        logger.warning("voice_router_failed", error=str(_voice_err))

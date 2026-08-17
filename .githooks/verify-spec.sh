@@ -189,6 +189,12 @@ grep -q "org/:orgId\|/org" "$FRONTEND/app/App.tsx" 2>/dev/null && pass "Org rout
 grep -q '"/org"' "$FRONTEND/components/ui/Sidebar.tsx" 2>/dev/null && pass "Org nav link in Sidebar" || gap "Org nav link MISSING from Sidebar"
 [ -f "$REPO_ROOT/agent-verse-frontend/e2e/org.spec.ts" ]      && pass "Org E2E spec exists"  || gap "Org E2E spec MISSING"
 
+# Phase 2-5 new components
+[ -f "$FRONTEND/features/org/components/GraphifyProgress.tsx" ]     && pass "GraphifyProgress exists (Phase 4)" || gap "GraphifyProgress MISSING"
+[ -f "$FRONTEND/features/org/components/VoiceModal.tsx" ]           && pass "VoiceModal exists (Phase 5)"       || gap "VoiceModal MISSING"
+[ -f "$FRONTEND/features/org/components/CursorPresence.tsx" ]       && pass "CursorPresence exists (Phase 5)"   || gap "CursorPresence MISSING"
+[ -f "$FRONTEND/features/org/components/ConnectorMarketplace.tsx" ] && pass "ConnectorMarketplace exists (Phase 6)" || gap "ConnectorMarketplace MISSING"
+
 # ─── TEST COVERAGE ────────────────────────────────────────────────────────────
 section "TEST COVERAGE"
 
