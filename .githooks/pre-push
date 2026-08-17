@@ -10,6 +10,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 REMOTE=$1
 URL=$2
 
+# Capture repo root once — use this throughout the script
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 echo -e "${YELLOW}🚀 AgentVerse pre-push checks (remote: $REMOTE)...${NC}"
 
 # Skip tests when pushing to personal/feature branches (only block main/release)
@@ -23,10 +26,8 @@ fi
 
 # ─── 1. Backend: unit tests (always run — fast, no Docker needed) ─────────────
 echo -e "  🐍 Backend: unit tests..."
-cd agent-verse-backend
-
-# SDK is out of scope — skip tests if SDK directory missing (run in CI instead)
-if [ ! -d "../agent-verse-sdk-python" ]; then
+  cd "$REPO_ROOT/agent-verse-backend"
+if [ ! -d "$REPO_ROOT/agent-verse-sdk-python" ]; then
   echo -e "  ${YELLOW}⚠️  agent-verse-sdk-python not found — skipping backend tests (CI will run them)${NC}"
   echo -e "  ${YELLOW}   To run locally: cd agent-verse-sdk-python && pip install -e . first${NC}"
   cd ..
@@ -43,7 +44,7 @@ else
 fi
 
 # ─── 2. Backend: ruff + mypy (only when SDK available) ────────────────────────
-if [ -d "../agent-verse-sdk-python" ]; then
+if [ -d "$REPO_ROOT/agent-verse-sdk-python" ]; then
   echo -e "  🔷 Backend: ruff + mypy (full)..."
   if ! uv run ruff check app/ 2>&1 | tail -5; then
     echo -e "${RED}❌ ruff failed. Run: uv run ruff check --fix app/${NC}"
@@ -59,13 +60,11 @@ if [ -d "../agent-verse-sdk-python" ]; then
 else
   echo -e "  ${YELLOW}⚠️  Skipping ruff/mypy (SDK not available) — run: uv run ruff check app/${NC}"
 fi
-cd ..
+cd "$REPO_ROOT"
 
 # ─── 3. Frontend: typecheck + lint + unit tests ───────────────────────────────
-# Return to repo root first
-cd "$(git rev-parse --show-toplevel)"
 echo -e "  ⚛️  Frontend: typecheck + lint + unit tests..."
-cd agent-verse-frontend
+cd "$REPO_ROOT/agent-verse-frontend"
 
 if ! npm run typecheck 2>&1 | tail -5; then
   echo -e "${RED}❌ TypeScript errors. Fix before pushing.${NC}"
@@ -92,7 +91,7 @@ if [ "$RUN_FULL_SUITE" = true ]; then
   echo -e "  🐳 Running integration tests (pushing to $CURRENT_BRANCH)..."
   echo -e "  ${YELLOW}This requires Docker (colima start if on macOS)${NC}"
 
-  cd agent-verse-backend
+  cd "$REPO_ROOT/agent-verse-backend"
   if ! DOCKER_HOST="unix:///Users/$USER/.colima/default/docker.sock" \
       TESTCONTAINERS_RYUK_DISABLED=true \
       uv run pytest tests/ -m "integration" \
