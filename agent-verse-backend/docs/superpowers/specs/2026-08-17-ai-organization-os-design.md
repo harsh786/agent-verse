@@ -10683,206 +10683,286 @@ GET  /v1/org/{id}/knowledge/graph/gaps
 
 ---
 
-## S2 — OBSIDIAN VAULT INTEGRATION
 
-Obsidian is a local-first knowledge base with bidirectional links and graph view.
-The org can export its knowledge as an Obsidian vault — giving users a
-**personal knowledge base view of the entire organization's knowledge**.
+## S2 — KEPANO/OBSIDIAN-SKILLS (Official Agent Skills by Obsidian CEO)
 
-### What the Org Obsidian Vault Contains
+**kepano/obsidian-skills** is the official Agent Skills package created by
+**Steph Ango, CEO of Obsidian** — the first major tool vendor to officially
+embrace the Agent Skills specification.
 
-```
-OrgVault/
-├── Daily Notes/
-│   ├── 2026-08-17.md     ← What the org did today
-│   └── 2026-08-16.md
-├── Missions/
-│   ├── Q3-Revenue-Analysis.md      ← Each mission = a note
-│   ├── SEBI-Compliance-Review.md
-│   └── Germany-Launch.md
-├── Decisions/
-│   ├── Approved-Email-Campaign.md  ← Decision audit notes
-│   └── Paused-Trading-Strategy.md
-├── Knowledge/
-│   ├── RBI-Regulations.md          ← Knowledge items with backlinks
-│   ├── Market-Analysis-Q3.md
-│   └── Competitor-Landscape.md
-├── Agents/
-│   ├── Research-Agent-Maya.md      ← Agent profiles with history
-│   └── Compliance-Agent-Raj.md
-└── graph.json                      ← Graphify-generated connections
-```
+Install: `npx ai-agent-skills install kepano/obsidian-skills`
 
-### Bidirectional Links (the power of Obsidian)
+This changes everything about how org agents write knowledge content.
+Without this skill, agents write plain markdown. With it, agents write
+**native Obsidian content** — wikilinks, bases, canvas files — natively.
 
 ```
-Mission: Q3-Revenue-Analysis.md
-  → [[Market-Analysis-Q3]] (what it used)
-  → [[Research-Agent-Maya]] (who ran it)
-  → [[Approved-Email-Campaign]] (what it led to)
-  ← [[SEBI-Compliance-Review]] (what references it)
-  ← [[Germany-Launch]] (what depends on it)
-
-Decision: Approved-Email-Campaign.md
-  → [[Q3-Revenue-Analysis]] (the evidence)
-  → [[Compliance-Agent-Raj]] (who reviewed)
-  ← [[Germany-Launch]] (what it enables)
-
-When user opens Obsidian graph view:
-  → Sees the entire org as a connected knowledge map
-  → Clusters appear: "German expansion cluster", "Compliance cluster"
-  → Clicking any node → full content + backlinks
+WITHOUT obsidian-skills:  agents write → [standard Markdown] → convert → Obsidian
+WITH obsidian-skills:     agents write → [native Obsidian content] directly
 ```
 
-### Sync Strategy
-
-```python
-class ObsidianVaultSync:
-    """
-    Keeps org knowledge in sync with user's Obsidian vault.
-    One-way: org → Obsidian (read-only for user).
-    Future: two-way (user notes in Obsidian → org knowledge).
-    """
-
-    async def sync(self, org_id: str, vault_path: str) -> SyncResult:
-        """Export org knowledge to Obsidian vault."""
-        # Run graphify with --obsidian flag
-        await graphify(
-            path=self.get_org_artifacts_path(org_id),
-            obsidian=True,
-            obsidian_dir=vault_path,
-            update=True,         # incremental sync
-        )
-
-        # Also write structured notes (not from graphify):
-        await self.write_mission_notes(org_id, vault_path)
-        await self.write_decision_notes(org_id, vault_path)
-        await self.write_daily_notes(org_id, vault_path)
-        await self.write_agent_profiles(org_id, vault_path)
-
-    def _mission_to_markdown(self, mission: OrgMission) -> str:
-        """Convert mission to Obsidian markdown with wikilinks."""
-        return f"""---
-title: {mission.title}
-status: {mission.status}
-created: {mission.created_at}
 ---
 
-# {mission.title}
+## S3 — THREE SKILLS FOR THE ORG TEAM
 
-**Objective**: {mission.objective}
+### Skill 1: obsidian-markdown — Core Skill
 
-**Why this exists**: {mission.why}
+Agents write content using Obsidian Flavored Markdown with ALL extended features:
+wikilinks `[[]]`, callouts, embeds `![[]]`, properties, tags, block references.
 
-## Team
-{self._agents_to_links(mission.assigned_agents)}
+**Example org agent output (research report):**
+
+```markdown
+---
+title: Q3 Competitive Analysis
+status: completed
+mission: "[[Missions/Q3-Revenue-Analysis]]"
+owner: "[[Agents/Research-Maya]]"
+date: 2026-08-17
+tags: [competitive-intel, q3, fintech]
+---
+
+# Q3 Competitive Analysis
+
+> [!tip] Key Finding
+> Zerodha and Groww are targeting identical segments.
+> See [[Market-Analysis-Q3#retail-segment]] for details.
 
 ## Evidence
-{self._evidence_to_links(mission.evidence)}
+![[Competitor-Intel/Zerodha-Analysis#Market Share]]
+![[Market-Research/India-Fintech-2026#key-stats]]
 
-## Outputs
-{self._outputs_to_links(mission.outputs)}
-
-## Connected Knowledge
-{self._related_knowledge_to_links(mission)}
-"""
+## Connections
+- Related to: [[SEBI-Circular-2026-03]]
+- Leads to: [[Missions/Competitive-Response-Strategy]]
+- Evidence for: [[Decisions/Expand-Retail-Segment]]
 ```
 
-### Obsidian Sync UI (in-app settings)
+What this skill teaches agents:
+- `[[wikilinks]]` — build actual knowledge networks (not dead text links)
+- Callouts — `> [!tip]`, `> [!warning]`, `> [!bug]`, `> [!danger]`, 13+ types
+- Embeds `![[]]` — reuse content across notes without duplication (DRY)
+- Properties — YAML frontmatter for queryable metadata (Bases queries use this)
+- Block references `[[Note#^block-id]]` — precise content reuse
+- Tags — inline `#tag` and nested `#research/competitive`
+
+Org team use cases:
+- Research agent completes mission → writes Obsidian note with wikilinks
+- Every `[[link]]` = a real connection in Obsidian graph view
+- Compliance agent writes reports with `> [!warning]` deadlines (color-coded)
+- Mission summaries link to `[[Evidence/...]]` and `[[Decisions/...]]`
+
+### Skill 2: obsidian-bases — Structured Data in Obsidian
+
+Agents create and manage **Obsidian Bases** (`.base` files) — structured data
+that works like a lightweight database inside Obsidian, queryable by any field.
+
+**Example org agent output (mission view):**
+
+```yaml
+# active-missions.base
+filters:
+  and:
+    - status == "active"
+formulas:
+  days_running: if(started_at, date(started_at).relative(), "")
+  cost_to_date: if(cost_usd, "$" + cost_usd, "")
+properties:
+  title:
+    displayName: Mission Title
+  status:
+    displayName: Status
+  priority:
+    displayName: Priority
+  owner:
+    displayName: Owner
+  formula.days_running:
+    displayName: Running For
+  formula.cost_to_date:
+    displayName: Cost
+views:
+  - type: table
+    name: Active Missions
+    groupBy:
+      property: priority
+      direction: DESC
+    order: [title, status, owner, formula.days_running, formula.cost_to_date]
+  - type: cards
+    name: Card View
+    order: [title, priority, owner]
+```
+
+Org team use cases:
+- `active-missions.base` — all active missions grouped by priority (table + cards)
+- `agent-workload.base` — all agents, tasks assigned, utilization percentage
+- `pending-approvals.base` — approval queue with deadlines and cost estimates
+- `reading-list.base` — research articles sorted by date (like the article example)
+- `decisions.base` — all past decisions filterable by outcome + risk level
+
+### Skill 3: json-canvas — Visual Knowledge Maps
+
+Agents generate **JSON Canvas files** (`.canvas`) — Obsidian's open format for
+infinite canvas diagrams. Used for mind maps, org charts, dependency graphs,
+knowledge networks.
+
+**Example org agent output (org map):**
+
+```json
+{
+  "nodes": [
+    {"id": "n1", "type": "text", "text": "Q3 Strategy", "x": 0, "y": 0, "width": 200, "height": 60},
+    {"id": "n2", "type": "file", "file": "Missions/Q3-Revenue-Analysis.md", "x": 280, "y": -100, "width": 380, "height": 200},
+    {"id": "n3", "type": "file", "file": "Missions/SEBI-Compliance.md", "x": 280, "y": 150, "width": 380, "height": 200},
+    {"id": "g1", "type": "group", "label": "Active Missions", "x": 250, "y": -130, "width": 440, "height": 520}
+  ],
+  "edges": [
+    {"id": "e1", "fromNode": "n1", "toNode": "n2", "label": "drives"},
+    {"id": "e2", "fromNode": "n1", "toNode": "n3", "label": "requires"}
+  ]
+}
+```
+
+Org team use cases:
+- `org-map.canvas` — weekly visual of all missions, departments, dependencies
+- `competitor-landscape.canvas` — competitor nodes in clusters by technology
+- `mission-deps.canvas` — mission dependency graph (blocked = red, critical path highlighted)
+- `knowledge-network.canvas` — "Create mind map of everything about kubernetes networking"
+
+---
+
+## S4 — INTEGRATION ARCHITECTURE
 
 ```
-SETTINGS → Integrations → Obsidian Vault
+OrgVault/ (generated natively by org agents with obsidian-skills)
+├── Daily Notes/
+│   └── 2026-08-17.md          ← obsidian-markdown: properties + wikilinks + callouts
+├── Missions/
+│   ├── Q3-Revenue-Analysis.md  ← wikilinks to evidence + decisions + agents
+│   └── SEBI-Compliance.md      ← proper callouts for deadlines + risk levels
+├── Decisions/
+│   └── Approved-Email-Campaign.md  ← evidence wikilinks, callout for risk
+├── Knowledge/
+│   └── India-Fintech-Market.md     ← block references, embeds from research
+├── Views/                           ← obsidian-bases skill
+│   ├── active-missions.base
+│   ├── agent-workload.base
+│   └── pending-approvals.base
+└── Maps/                            ← json-canvas skill
+    ├── org-map.canvas
+    ├── competitor-landscape.canvas
+    └── mission-dependencies.canvas
+```
 
-  VAULT PATH
-  Local: ~/Documents/OrgVaults/acme-trading/    [Change]
+Backend: `app/org/obsidian_skills.py`
 
-  SYNC SCHEDULE
-  ○ Manual only  ● Every hour  ○ Every day
+```python
+class OrgObsidianSkillsService:
+    """
+    Manages obsidian-skills for org agents.
+    Skills loaded on-demand (progressive disclosure — 70-90% less context).
+    """
 
-  INCLUDE IN VAULT
-  ☑ Missions          ☑ Decisions
-  ☑ Knowledge items   ☑ Agent profiles
-  ☑ Daily summaries   ☐ Raw artifacts (large)
+    async def write_research_note(self, mission: Mission, findings: list) -> str:
+        # obsidian-markdown skill loaded
+        # Agent knows to use [[wikilinks]], callouts, properties
+        return await self.llm.complete(
+            system=self.skills["obsidian-markdown"].instructions,
+            user=f"Write research report for '{mission.title}' with: {findings}"
+        )
 
-  OBSIDIAN GRAPH SETTINGS
-  Graph granularity: [Medium ▾]   (Fine = every artifact, Medium = summaries)
+    async def create_mission_base_view(self, org_id: str) -> str:
+        # obsidian-bases skill loaded
+        # Agent generates valid .base format with filters + views
+        missions = await self.mission_service.list(org_id, status="active")
+        return await self.llm.complete(
+            system=self.skills["obsidian-bases"].instructions,
+            user=f"Create a Base view for missions: {missions}"
+        )
 
-  [Sync Now]  [Open in Obsidian]  [View last sync: 2h ago]
+    async def create_knowledge_canvas(self, topic: str, artifacts: list) -> str:
+        # json-canvas skill loaded
+        # Agent generates valid .canvas JSON with nodes + edges
+        return await self.llm.complete(
+            system=self.skills["json-canvas"].instructions,
+            user=f"Create knowledge map for '{topic}': {artifacts}"
+        )
+```
+
+New endpoints:
+```
+POST /v1/org/{id}/obsidian/note           ← write Obsidian note (obsidian-markdown)
+POST /v1/org/{id}/obsidian/base-view      ← create Base view (obsidian-bases)
+POST /v1/org/{id}/obsidian/canvas         ← create Canvas (json-canvas)
+GET  /v1/org/{id}/obsidian/vault-sync     ← trigger vault sync
 ```
 
 ---
 
-## S3 — COMBINED POWER: GRAPHIFY + OBSIDIAN + ORG BRAIN
-
-When all three work together:
+## S5 — COMBINED: GRAPHIFY + OBSIDIAN-SKILLS + ORG BRAIN
 
 ```
-ORG BRAIN discovers: "Customer churn increased 8%"
-    ↓
-RESEARCH MISSION starts: "Analyze churn root causes"
-    ↓
-RESEARCH AGENTS: process 30 support tickets, 15 interviews, 5 analytics reports
-    ↓
-GRAPHIFY runs on mission artifacts:
-  → Knowledge graph built
-  → Community detection: "Price sensitivity cluster" + "Feature gap cluster"
-  → INFERRED edge: "Support tickets about export feature correlate with churn"
-  ↓
-OBSIDIAN VAULT updated:
-  → Mission note written with backlinks
-  → "Export feature" ← backlinked to churn analysis, 3 support tickets, 1 interview
-  → User opens Obsidian: sees the connection immediately in graph view
-    ↓
-ORG BRAIN reads graphify gap report:
-  → "Missing capability: predictive churn scoring"
-  → Proposes new mission: "Build churn prediction model"
-  ↓
-USER in Obsidian graph view:
-  Sees: Churn Analysis → Export Feature ← Support Tickets
-  Clicks "Export Feature" → sees all related knowledge
-  Types in Command Bar: "Why are users churning over the export feature?"
-  → Org Brain answers using graphify graph traversal (BFS)
-  → "Based on 12 connected knowledge nodes: users need bulk export..."
+GRAPHIFY detects structural connections (what's linked implicitly)
+OBSIDIAN-SKILLS makes agents write connections explicitly ([[wikilinks]])
+Together: the org knowledge base is a living, visual, queryable knowledge graph
+
+Full loop:
+  1. Org Brain detects: churn increased 8%
+  2. Research mission starts
+  3. Agents write findings using obsidian-markdown:
+       [[Customer-Feedback-Aug]] [[Export-Feature-Requests]] [[Churn-Data-Q3]]
+       "Export feature appears in 23% of churn notes" > [!warning]
+  4. Graphify runs on vault → detects: Export + Churn form a tight cluster
+     (INFERRED connection: "export limitations = primary churn driver")
+  5. json-canvas skill generates: churn-analysis.canvas
+     → visual map of the insight
+  6. obsidian-bases skill generates: churn-signals.base
+     → structured view of all churn-related notes, sortable by date/severity
+  7. User opens Obsidian → Graph view shows the full connected network
+     → Canvas shows the visual summary
+     → Base shows the structured list
+     → ALL native Obsidian. No conversion. No export step.
 ```
 
 ---
 
-## S4 — BACKEND IMPLEMENTATION
+## SUPPLEMENT S — UPDATED SUMMARY
 
 ```
-NEW FILES:
-  app/org/graphify.py            ← OrgGraphifyService + graphify pipeline wrapper
-  app/org/obsidian_sync.py       ← ObsidianVaultSync
-  app/org/knowledge_graph_ops.py ← graph query, path, community operations
+GRAPHIFY + KEPANO/OBSIDIAN-SKILLS INTEGRATION
 
-NEW ENDPOINTS (7):
-  POST /v1/org/{id}/knowledge/graphify
-  GET  /v1/org/{id}/knowledge/graph
-  POST /v1/org/{id}/knowledge/graph/query
-  POST /v1/org/{id}/knowledge/graph/path
-  GET  /v1/org/{id}/knowledge/graph/communities
-  GET  /v1/org/{id}/knowledge/graph/gaps
-  GET  /v1/org/{id}/knowledge/graph/html
+GRAPHIFY (S1):
+  any input → knowledge graph → community detection → gap detection
+  5 use cases: org knowledge graph, capability graph, research mapping,
+  codebase intelligence, competitive intelligence
 
-NEW SETTINGS ENDPOINTS (2):
-  GET  /v1/org/{id}/settings/obsidian
-  PUT  /v1/org/{id}/settings/obsidian
+KEPANO/OBSIDIAN-SKILLS (S2-S5):
+  Official Agent Skills package by Steph Ango, CEO of Obsidian
+  First major tool to officially embrace the Agent Skills spec
+  Install: npx ai-agent-skills install kepano/obsidian-skills
 
-STORAGE:
-  Graph files: S3/object storage per org (org-graphs/{org_id}/)
-  Neo4j:       optional, per tenant (enterprise plan)
-  Obsidian:    local filesystem sync via API trigger
+  3 skills used by org agents:
 
-DEPENDENCIES:
-  graphify skill (already installed, invoked as subprocess or MCP)
-  neo4j-driver (optional, for Neo4j push)
-  python-markdown (for Obsidian note generation)
-```
+  obsidian-markdown (most important):
+    Agents write wikilinks, callouts, embeds, properties — natively
+    Knowledge network builds automatically as agents write
+    Every research report = a connected node in Obsidian graph view
 
----
+  obsidian-bases:
+    Agents create live structured views inside Obsidian
+    active-missions.base, agent-workload.base, pending-approvals.base
+    Like a lightweight CRM/PM database inside the org's knowledge base
 
-## SUPPLEMENT S — SUMMARY
+  json-canvas:
+    Agents generate visual knowledge maps as native Canvas files
+    org-map.canvas, competitor-landscape.canvas, mission-deps.canvas
+    Opens in Obsidian as interactive, editable visual diagrams
 
+COMBINED POWER:
+  graphify detects implicit structural connections
+  obsidian-skills makes agents write explicit connections via [[wikilinks]]
+  Together: org knowledge is a living, connected, visual, queryable knowledge base
+
+  No conversion. No export step. 100% native Obsidian output from agents.
 ```
 GRAPHIFY + OBSIDIAN INTEGRATION
 
