@@ -143,6 +143,17 @@ celery_app.conf.update(
             "schedule": 60.0,  # every 60 seconds
             "options": {"queue": "maintenance"},
         },
+        # Ingestion: dispatch due sources every 60s, retry DLQ every 5min
+        "ingestion-dispatch-due-sources": {
+            "task": "ingestion.dispatch_due_sources",
+            "schedule": 60.0,
+            "options": {"queue": "ingestion"},
+        },
+        "ingestion-retry-dlq": {
+            "task": "ingestion.retry_dlq_entries",
+            "schedule": 300.0,
+            "options": {"queue": "ingestion"},
+        },
         # Freshness reindex: mark stale knowledge chunks hourly
         "reindex-stale-knowledge": {
             "task": "agentverse.maintenance.reindex_stale_knowledge",

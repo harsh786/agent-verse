@@ -55,6 +55,7 @@ import { ConnectorsCatalogPage } from "@/features/connectors/ConnectorsCatalogPa
 import { ConnectorsRegisteredPage } from "@/features/connectors/ConnectorsRegisteredPage";
 import { SchedulesPage } from "@/features/schedules/SchedulesPage";
 import { KnowledgePage } from "@/features/knowledge/KnowledgePage";
+import { SourcesPage } from "@/features/ingestion/SourcesPage";
 import { GovernancePage } from "@/features/governance/GovernancePage";
 import { CollaborationPage } from "@/features/collaboration/CollaborationPage";
 import { CoordinationRunPage } from "@/features/coordination/CoordinationRunPage";
@@ -207,6 +208,7 @@ export default function App() {
         <Route path="connectors/:connectorId" element={rb("Connector Detail", <ConnectorDetailPage />)} />
         <Route path="schedules"             element={rb("Schedules",          <SchedulesPage />)} />
         <Route path="knowledge"             element={rb("Knowledge",          <KnowledgePage />)} />
+        <Route path="sources"              element={rb("Sources",            <SourcesPage />)} />
         <Route path="governance"            element={rb("Governance",         <GovernancePage />)} />
         <Route path="collaboration"         element={rb("Collaboration",      <CollaborationPage />)} />
         <Route path="coordination/:sessionId?" element={rb("Coordination",    <CoordinationRunPage />)} />

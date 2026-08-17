@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { clsx } from "clsx";
 import { useState } from "react";
 import {
-  LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen,
+  LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen, Database,
   Shield, ShieldCheck, Users, Activity, BarChart3, ShoppingBag, Building,
   Settings, ChevronLeft, ChevronDown, ChevronRight, Zap, CheckSquare, DollarSign,
   GitBranch, FlaskConical, BarChart2, Globe,
@@ -73,6 +73,7 @@ export function Sidebar() {
       items: [
         { to: "/connectors",    icon: Plug,         label: "Connectors"    },
         { to: "/knowledge",     icon: BookOpen,     label: t('nav.knowledge')  },
+        { to: "/sources",       icon: Database,     label: "Sources"             },
         { to: "/knowledge-graph", icon: Network,     label: "Knowledge Graph"   },
         { to: "/schedules",     icon: Calendar,     label: "Schedules"         },
         { to: "/skills",        icon: Sparkles,     label: "Skills"        },
