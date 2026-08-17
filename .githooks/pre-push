@@ -78,17 +78,17 @@ if ! npm run lint 2>&1 | tail -5; then
   exit 1
 fi
 
-# Run tests with retry (1 retry for flaky tests) and a pool size limit
-# The full suite runs in CI — pre-push runs the quick subset
+# Run tests serially (1 thread) to prevent flaky parallel failures
+# Full parallel suite runs in CI — pre-push uses single thread for reliability
 if ! npx vitest run \
-    --pool=forks \
-    --poolOptions.forks.singleFork=true \
-    --reporter=verbose 2>&1 | tail -10; then
+    --reporter=verbose \
+    --poolOptions.threads.maxThreads=1 \
+    --poolOptions.threads.minThreads=1 2>&1 | tail -10; then
   echo -e "${YELLOW}⚠️  Tests failed on first run, retrying once...${NC}"
   if ! npx vitest run \
-      --pool=forks \
-      --poolOptions.forks.singleFork=true \
-      --reporter=verbose 2>&1 | tail -10; then
+      --reporter=verbose \
+      --poolOptions.threads.maxThreads=1 \
+      --poolOptions.threads.minThreads=1 2>&1 | tail -10; then
     echo -e "${RED}❌ Frontend tests failed after retry. Fix before pushing.${NC}"
     cd "$REPO_ROOT"
     exit 1
