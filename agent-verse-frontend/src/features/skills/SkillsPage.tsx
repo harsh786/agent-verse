@@ -112,7 +112,7 @@ function SkillCard({
           </p>
         </div>
         <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono flex-shrink-0">
-          ~{skill.token_estimate}t
+          ~{skill.token_estimate} tokens
         </span>
       </div>
 
