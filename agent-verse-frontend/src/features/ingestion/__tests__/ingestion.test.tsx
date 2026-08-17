@@ -3,7 +3,7 @@
  * SourceCreateWizard, QuotaUsageBar, SourceDetailDrawer.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -50,25 +50,6 @@ const SLACK_SOURCE: import('../types').SourceConfig = {
   name: 'Company Slack',
   family: 'communication',
   source_type: 'slack',
-};
-
-const JOB: import('../types').IngestionJob = {
-  job_id: 'job-001',
-  source_id: 'src-001',
-  tenant_id: 't1',
-  status: 'completed',
-  sync_mode: 'incremental',
-  triggered_by: 'scheduler',
-  started_at: '2026-08-17T01:00:00Z',
-  completed_at: '2026-08-17T01:05:00Z',
-  docs_discovered: 50,
-  docs_indexed: 42,
-  docs_skipped: 5,
-  docs_failed: 3,
-  chunks_created: 180,
-  bytes_processed: 1_048_576,
-  tokens_consumed: 12000,
-  error_summary: null,
 };
 
 const QUOTA: import('../types').IngestionQuota = {

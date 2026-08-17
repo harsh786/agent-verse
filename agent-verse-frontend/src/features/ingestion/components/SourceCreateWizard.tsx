@@ -12,7 +12,7 @@ import { CodeRepoForm } from './families/CodeRepoForm';
 import { WebForm } from './families/WebForm';
 import { GenericSourceForm } from './families/GenericSourceForm';
 
-interface Props { onClose: () => void; }
+interface Props { onClose: () => void; onCreated?: () => void; }
 
 type Step = 'family' | 'type' | 'configure';
 
@@ -54,7 +54,7 @@ function FamilyFormRouter({ family, sourceType, value, onChange }: {
   }
 }
 
-export function SourceCreateWizard({ onClose }: Props) {
+export function SourceCreateWizard({ onClose, onCreated }: Props) {
   const [step, setStep] = useState<Step>('family');
   const [selectedFamily, setSelectedFamily] = useState<SourceFamily | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -74,7 +74,7 @@ export function SourceCreateWizard({ onClose }: Props) {
       connection_config: connConfig,
       sync_mode: syncMode,
       collection_id: collectionId,
-    } as Record<string, unknown>, { onSuccess: onClose });
+    } as Record<string, unknown>, { onSuccess: () => { onCreated?.(); onClose(); } });
   }
 
   const steps: Step[] = ['family', 'type', 'configure'];

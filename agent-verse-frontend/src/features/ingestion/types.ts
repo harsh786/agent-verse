@@ -61,6 +61,7 @@ export interface IngestionJob {
   cursor_before:    string;
   cursor_after:     string;
   error_message:    string;
+  error_summary:    string | null;
   created_at:       string;
 }
 
