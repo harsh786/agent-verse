@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { goalsApi } from "@/lib/api/client";
 import { MissionGoalComposer } from "@/features/goals/components/MissionGoalComposer";
+import { TemplatePickerModal } from "@/features/templates/components/TemplatePickerModal";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
@@ -52,6 +53,10 @@ export function GoalsListPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
 
   const [pageSize, setPageSize] = useState(25);
+
+  // Template picker integration
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [templateGoalText, setTemplateGoalText] = useState<string | undefined>(undefined);
 
   // Fix 1: bulk selection state
   const [selectedGoals, setSelectedGoals] = useState<Set<string>>(new Set());
@@ -192,10 +197,25 @@ export function GoalsListPage() {
            <h1 className="text-2xl font-bold">{t("nav.goals")}</h1>
           <p className="text-muted-foreground text-sm mt-1">Submit and track autonomous agent goals</p>
         </div>
+        <button
+          onClick={() => setShowTemplatePicker(true)}
+          aria-label="Browse goal templates"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-muted transition-colors"
+        >
+          Browse goal templates
+        </button>
       </div>
 
       {/* Mission Goal Composer */}
-      <MissionGoalComposer />
+      <MissionGoalComposer initialGoal={templateGoalText} />
+
+      {/* Template Picker Modal */}
+      {showTemplatePicker && (
+        <TemplatePickerModal
+          onUseInGoal={(text) => { setTemplateGoalText(text); setShowTemplatePicker(false); }}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
 
       {/* Fix 4: Filter pills with status count badges */}
       <div className="flex flex-wrap items-center gap-3">
