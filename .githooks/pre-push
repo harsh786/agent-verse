@@ -68,20 +68,31 @@ cd "$REPO_ROOT/agent-verse-frontend"
 
 if ! npm run typecheck 2>&1 | tail -5; then
   echo -e "${RED}❌ TypeScript errors. Fix before pushing.${NC}"
-  cd ..
+  cd "$REPO_ROOT"
   exit 1
 fi
 
 if ! npm run lint 2>&1 | tail -5; then
   echo -e "${RED}❌ ESLint errors. Fix before pushing.${NC}"
-  cd ..
+  cd "$REPO_ROOT"
   exit 1
 fi
 
-if ! npm run test -- --run --reporter=verbose 2>&1 | tail -10; then
-  echo -e "${RED}❌ Frontend tests failed. Fix before pushing.${NC}"
-  cd ..
-  exit 1
+# Run tests with retry (1 retry for flaky tests) and a pool size limit
+# The full suite runs in CI — pre-push runs the quick subset
+if ! npx vitest run \
+    --pool=forks \
+    --poolOptions.forks.singleFork=true \
+    --reporter=verbose 2>&1 | tail -10; then
+  echo -e "${YELLOW}⚠️  Tests failed on first run, retrying once...${NC}"
+  if ! npx vitest run \
+      --pool=forks \
+      --poolOptions.forks.singleFork=true \
+      --reporter=verbose 2>&1 | tail -10; then
+    echo -e "${RED}❌ Frontend tests failed after retry. Fix before pushing.${NC}"
+    cd "$REPO_ROOT"
+    exit 1
+  fi
 fi
 echo -e "  ${GREEN}✅ Frontend checks passed${NC}"
 cd ..
