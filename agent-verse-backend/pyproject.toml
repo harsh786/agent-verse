@@ -98,7 +98,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "httpx2>=2.4.0",
-    "agentverse-sdk[dev]",
+
 ]
 
 [build-system]
@@ -203,5 +203,4 @@ module = "app.workflow.compiler"
 warn_return_any = false
 no_warn_return_any = true
 
-[tool.uv.sources]
-agentverse-sdk = { path = "../agent-verse-sdk-python" }
+
