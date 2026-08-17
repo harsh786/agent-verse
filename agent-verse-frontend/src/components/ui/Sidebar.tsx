@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { clsx } from "clsx";
 import { useState } from "react";
+
 import {
   LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen, Database,
   Shield, ShieldCheck, Users, Activity, BarChart3, ShoppingBag, Building,
@@ -157,10 +158,12 @@ export function Sidebar() {
       )}
       <aside
         className={clsx(
-          "fixed inset-y-0 left-0 z-30 flex flex-col bg-card border-r border-border",
-          "transition-all duration-200 ease-in-out",
+          // JARVIS surface — glass-dark with scanline depth
+          "fixed inset-y-0 left-0 z-30 flex flex-col",
+          "bg-[#0F1117] border-r border-[#1E2535]",
+          // web-guidelines: no transition:all — list specific properties
+          "transition-[width,transform] duration-200",
           sidebarOpen ? "w-64" : "w-16",
-          // On mobile: translate off-screen when closed, full overlay when open
           sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
         )}
       >
@@ -173,11 +176,16 @@ export function Sidebar() {
         <X className="h-4 w-4" />
       </button>
 
-      {/* Logo */}
-      <div className="flex items-center gap-2 px-4 py-4 border-b border-border">
-        <Zap className="h-6 w-6 text-primary flex-shrink-0" />
+      {/* Logo — JARVIS identity mark */}
+      <div className="flex items-center gap-2.5 px-4 py-4 border-b border-[#1E2535]">
+        <div className="relative flex-shrink-0">
+          <Zap className="h-5 w-5 text-blue-400" aria-hidden />
+          <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse-glow" aria-hidden />
+        </div>
         {sidebarOpen && (
-          <span className="font-bold text-lg truncate">AgentVerse</span>
+          <span className="font-semibold text-[15px] text-[#F1F5F9] tracking-[-0.01em] truncate">
+            AgentVerse
+          </span>
         )}
       </div>
 
@@ -185,11 +193,17 @@ export function Sidebar() {
       <div className="px-3 pt-3 pb-1">
         <button
           onClick={() => navigate('/goals')}
+          // web-guidelines: touch-action prevents double-tap zoom
+          style={{ touchAction: 'manipulation' }}
           className={clsx(
-            "flex items-center gap-2 px-3 py-2 bg-primary text-primary-foreground",
-            "text-sm font-medium rounded-lg hover:opacity-90 transition-opacity w-full",
+            "flex items-center gap-2 px-3 py-2.5 rounded-lg w-full",
+            "bg-blue-600 hover:bg-blue-500 active:scale-[0.98]",
+            "text-white text-sm font-medium",
+            // web-guidelines: transition specific props, not all
+            "transition-[background-color,transform] duration-150",
             !sidebarOpen && "justify-center px-0"
           )}
+          aria-label="Create new goal"
           title="New Goal"
         >
           <Plus className="h-4 w-4 flex-shrink-0" />
@@ -274,13 +288,17 @@ export function Sidebar() {
                     to={to}
                     className={({ isActive }) =>
                       clsx(
-                        "flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors",
-                        "hover:bg-muted/60 focus-visible:bg-muted/60",
+                        "flex items-center gap-3 px-3 py-2.5 rounded-lg mx-1 text-sm font-medium",
+                        // web-guidelines: list specific transition props
+                        "transition-[background-color,color] duration-150",
+                        // web-guidelines: touch-action
+                        "select-none",
                         isActive
-                          ? "bg-primary/10 text-blue-700 dark:text-blue-300 font-medium border-l-2 border-primary"
-                          : "text-muted-foreground border-l-2 border-transparent"
+                          ? "bg-blue-500/10 text-blue-300 border-l-2 border-blue-500"
+                          : "text-[#94A3B8] hover:bg-[#1A1F2E] hover:text-[#F1F5F9] border-l-2 border-transparent"
                       )
                     }
+                    style={{ touchAction: 'manipulation' }}
                   >
                     <div className="relative flex-shrink-0">
                       <Icon className="h-5 w-5" aria-hidden="true" />
@@ -374,7 +392,7 @@ export function Sidebar() {
       {/* Collapse toggle */}
       <button
         onClick={toggleSidebar}
-        className="flex items-center justify-center p-4 border-t border-border hover:bg-muted/60 transition-colors"
+        className="flex items-center justify-center p-4 border-t border-[#1E2535] hover:bg-[#1A1F2E] transition-colors"
         aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
       >
         <ChevronLeft

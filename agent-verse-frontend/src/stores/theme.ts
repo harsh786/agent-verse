@@ -32,7 +32,7 @@ function applyDensity(density: Density) {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'dark',     // JARVIS: dark is the product identity — not optional
       density: 'default',
       setTheme: (theme) => {
         applyTheme(theme);
