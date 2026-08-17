@@ -17,6 +17,8 @@ chmod +x .githooks/pre-push
 chmod +x .githooks/commit-msg
 chmod +x .githooks/post-merge
 chmod +x .githooks/prepare-commit-msg
+chmod +x .githooks/post-commit
+chmod +x .githooks/verify-spec.sh
 
 echo -e "${GREEN}✅ Git hooks installed from .githooks/${NC}"
 echo ""
@@ -26,7 +28,7 @@ echo "  commit-msg        → Conventional Commits format enforcement"
 echo "  prepare-commit-msg→ Auto-fills scope from branch name"
 echo "  pre-push          → full unit tests + typecheck (integration on main)"
 echo "  post-merge        → auto-sync deps + migration reminder"
+echo "  post-commit       → spec verification (advisory — shows implementation gaps)"
 echo ""
-echo -e "${YELLOW}ℹ️  To bypass a hook temporarily (emergencies only):${NC}"
-echo "  git commit --no-verify"
-echo "  git push --no-verify"
+echo "Manual verification:"
+echo "  bash .githooks/verify-spec.sh   → full spec vs implementation audit"
