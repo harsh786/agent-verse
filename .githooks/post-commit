@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# post-commit hook — runs spec verification after each commit
+# Reminds developer of any implementation gaps.
+# This is ADVISORY only — does not block commits.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+YELLOW='\033[1;33m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; NC='\033[0m'
+
+# Only run on feature branches where implementation is happening
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+COMMIT_MSG=$(git log -1 --format=%s 2>/dev/null || echo "")
+
+# Skip for merge commits, docs-only, and chore commits
+if echo "$COMMIT_MSG" | grep -qE '^(docs|chore|style|ci|Merge)'; then
+  exit 0
+fi
+
+echo -e "\n${BLUE}🔍 Post-commit spec verification...${NC}"
+
+# Run the verification script (non-blocking — advisory only)
+if bash "$REPO_ROOT/.githooks/verify-spec.sh" 2>&1 | tail -15; then
+  echo -e "${GREEN}✅ Spec verification passed${NC}"
+else
+  EXIT_CODE=$?
+  if [ "$EXIT_CODE" -eq 1 ]; then
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║ Implementation gaps detected (see above).             ║${NC}"
+    echo -e "${YELLOW}║                                                       ║${NC}"
+    echo -e "${YELLOW}║ To see full audit:                                    ║${NC}"
+    echo -e "${YELLOW}║   bash .githooks/verify-spec.sh                       ║${NC}"
+    echo -e "${YELLOW}║                                                       ║${NC}"
+    echo -e "${YELLOW}║ To implement gaps, ask Copilot:                       ║${NC}"
+    echo -e "${YELLOW}║   /reaudit-implementation                             ║${NC}"
+    echo -e "${YELLOW}║   (uses .github/prompts/reaudit-implementation.prompt.md)║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════╝${NC}"
+  fi
+fi
+
+# Note: post-commit hook always exits 0 (never blocks)
+# Verification is ADVISORY — it informs, doesn't block
+exit 0
