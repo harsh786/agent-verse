@@ -66,7 +66,6 @@
 
 **SUPPLEMENT A** — Autonomy Levels L0-L5 (detailed)  
 **SUPPLEMENT B** — Context Engineering  
-**SUPPLEMENT C** — SDK (Python + TypeScript)  
 **SUPPLEMENT D** — Plugin System  
 **SUPPLEMENT E** — Enterprise Integrations (32 connectors)  
 **SUPPLEMENT F** — Failure Management (5 classes)  
@@ -2497,8 +2496,6 @@ PHASE 9 (3 weeks): Self-Improvement + Org Learning + SDK
   - Improvement proposals + canary
   - Capability gap detection
   - Simulation engine
-  - Python SDK (alpha)
-  - TypeScript SDK (alpha)
 
 PHASE 10 (ongoing): Enterprise Departments + Advanced
   - All 22 department templates with default roles/tools/models
@@ -2709,84 +2706,6 @@ class ContextEngine:
         compressed = self._compress(deduped, max_item_tokens=200)
         final = self._fit_to_budget(compressed, max_tokens=6000)
         return OptimizedContext(items=final, provenance=[i.source for i in final])
-```
-
----
-
-## SUPPLEMENT C — SDK
-
-### Python SDK
-
-```python
-# pip install agentverse-sdk
-
-from agentverse import OrgClient, Mission, Role
-
-client = OrgClient(api_key="av_...", org_id="org_...")
-
-# Submit a goal
-mission = await client.missions.create(
-    goal="Launch our product in Germany",
-    autonomy_level=3,
-    budget_usd=100.0,
-    constraints={"deadline_hours": 48},
-)
-
-# Stream mission events
-async for event in client.missions.stream(mission.id):
-    print(f"{event.type}: {event.summary}")
-
-# Create custom role
-role = await client.roles.create(
-    name="German Market Specialist",
-    department="strategy",
-    capabilities=["market_research", "german_language"],
-    model_profile={"primary": "claude-sonnet-4-5"},
-    tools=["web_search", "knowledge_search"],
-)
-
-# Memory
-dept_memory = await client.memory.list(scope="department", dept_id="dept:engineering")
-await client.memory.add(content="Our API limit is 1000 req/min", scope="org")
-
-# Custom tool registration
-@client.tools.register(name="internal_crm", risk_level="medium")
-async def crm_query(customer_id: str, fields: list[str]) -> dict: ...
-
-# Custom evaluator
-@client.evaluators.register(name="german_language_quality")
-async def evaluate_german(output: str, context: dict) -> EvalResult: ...
-
-# Event subscription
-@client.events.subscribe("org.mission.completed")
-async def on_complete(event: OrgEvent):
-    print(f"Mission {event.mission_id} completed")
-```
-
-### TypeScript SDK
-
-```typescript
-// npm install @agentverse/sdk
-
-import { OrgClient } from '@agentverse/sdk';
-const client = new OrgClient({ apiKey: 'av_...', orgId: 'org_...' });
-
-const mission = await client.missions.create({
-    goal: 'Launch our product in Germany',
-    autonomyLevel: 3,
-    budgetUsd: 100,
-});
-
-// React hook
-import { useMissionStream } from '@agentverse/sdk/react';
-function Monitor({ missionId }) {
-    const { events, isActive } = useMissionStream(missionId);
-    return <ActivityFeed events={events} />;
-}
-
-client.events.on('org.approval.requested', async (event) => {
-    await client.approvals.approve(event.approvalId, { comment: 'OK' });
-});
 ```
 
 ---
@@ -3671,7 +3590,6 @@ MERMAID DIAGRAMS:     20
 IMPL PHASES:          10
 NEW BACKEND MODULES:  15+ (app/org/)
 NEW FRONTEND MODULES: 25+ (src/features/org/)
-SDK LANGUAGES:        2 (Python + TypeScript)
 PLUGIN TYPES:         6 (Model/Tool/Memory/Knowledge/Evaluator/Policy)
 
 NOTHING IN MASTER PROMPT IS MISSED.
@@ -8281,54 +8199,6 @@ COMMON COMMAND EXAMPLES:
   "Create a daily market intelligence schedule"
 ```
 
-### REST Command SDK
-
-```python
-# Python SDK usage
-from agentverse import OrgClient
-
-client = OrgClient(api_key="av_prod_xxx", org_id="org_trading_001")
-
-# Simple command
-response = client.command("What's happening?")
-print(response.text)
-
-# Streaming response
-for chunk in client.command_stream("Research our top 5 competitors"):
-    print(chunk.text, end="")
-
-# Async
-import asyncio
-async def main():
-    response = await client.command_async("Approve the email campaign")
-    print(response.text)
-
-# Approval workflow
-pending = client.list_pending_approvals()
-for item in pending:
-    print(f"Pending: {item.description} — Cost: ${item.estimated_cost}")
-    client.approve(item.approval_id, comment="Looks good")
-```
-
-```typescript
-// TypeScript SDK usage
-import { OrgClient } from "@agentverse/sdk";
-
-const client = new OrgClient({ apiKey: "av_prod_xxx", orgId: "org_trading_001" });
-
-// Simple command
-const response = await client.command("What's happening?");
-console.log(response.text);
-
-// Streaming
-for await (const chunk of client.commandStream("Research competitors")) {
-  process.stdout.write(chunk.text);
-}
-
-// React hook
-const { command, response, loading } = useOrgCommand(orgId);
-```
-
 ---
 
 ## Q4 — TELEGRAM BOT INTEGRATION
@@ -8739,7 +8609,7 @@ class OrgAsAgent:
     """
     Makes an org callable like a standard AI agent.
     Implements the AgentVerse A2A protocol.
-    Compatible with: LangGraph nodes, CrewAI agents, AutoGen agents.
+    Any external system can call this org via HTTP.
     """
     
     # Standard agent interface (any framework can call this)
@@ -8772,20 +8642,10 @@ class OrgAsAgent:
     async def stream(self, task: str) -> AsyncIterator[AgentEvent]:
         """
         Stream events as the mission executes.
-        Compatible with: LangGraph streaming, async generators.
+        Results streamed via SSE as the mission runs.
         """
         async for event in self.execute_streaming(task):
             yield event
-    
-    # LangGraph node (drop-in):
-    # graph.add_node("trading_org", OrgAsAgent(org_id="org_trading_001"))
-    
-    # CrewAI tool:
-    # crew = Crew(agents=[OrgAsAgent(org_id="org_legal_001")])
-    
-    # AutoGen agent:
-    # assistant = OrgAsAgent(org_id="org_research_001")
-    # await assistant.initiate_chat(recipient, "Research this topic")
 ```
 
 ### A2A Protocol (org-to-org calls)
@@ -8824,42 +8684,6 @@ class OrgA2AClient:
 # MetaOrg.delegate("Research task", to=ResearchOrg)
 # MetaOrg.delegate("Legal review", to=LegalOrg)
 # MetaOrg.delegate("Execute strategy", to=ExecutionOrg)
-```
-
-### External AI Framework Adapters
-
-```python
-# LangGraph adapter
-from agentverse.adapters.langgraph import OrgLangGraphNode
-
-org_node = OrgLangGraphNode(org_id="org_research", api_key="av_xxx")
-graph = StateGraph(AgentState)
-graph.add_node("research", org_node)
-
-# CrewAI adapter
-from agentverse.adapters.crewai import OrgCrewAITool
-
-org_tool = OrgCrewAITool(
-    org_id="org_legal",
-    api_key="av_xxx",
-    name="Legal Review Org",
-    description="A complete legal department that reviews contracts",
-)
-
-# AutoGen adapter
-from agentverse.adapters.autogen import OrgAutoGenAgent
-
-org_agent = OrgAutoGenAgent(
-    name="ResearchDept",
-    org_id="org_research",
-    api_key="av_xxx",
-)
-
-# OpenAI function calling (org as a function)
-from agentverse.adapters.openai_functions import OrgAsOpenAIFunction
-
-org_fn = OrgAsOpenAIFunction(org_id="org_analysis", api_key="av_xxx")
-# Registers as: {"name": "run_analysis_org", "description": "...", "parameters": {...}}
 ```
 
 ---
@@ -9023,12 +8847,7 @@ app/gateway/
 ├── a2a/
 │   ├── __init__.py
 │   ├── agent.py           # OrgAsAgent (standard agent interface)
-│   ├── client.py          # OrgA2AClient (call other orgs)
-│   └── adapters/
-│       ├── langgraph.py   # LangGraph node adapter
-│       ├── crewai.py      # CrewAI tool adapter
-│       ├── autogen.py     # AutoGen agent adapter
-│       └── openai.py      # OpenAI function calling adapter
+│   └── client.py          # OrgA2AClient (call other orgs)
 └── tests/
     ├── test_rest_channel.py
     ├── test_telegram_adapter.py
@@ -9123,14 +8942,14 @@ MCP SERVER:
 
 AGENT-AS-SERVICE (A2A):
   Standard agent interface (invoke/stream/invoke_async)
-  Adapters: LangGraph, CrewAI, AutoGen, OpenAI functions
+  A2A protocol: invoke/invoke_async/stream (HTTP-based, no framework lock-in)
   Org-to-org delegation (same tenant or federated)
   
 NEW BACKEND: app/gateway/ (40+ files)
 NEW FRONTEND: src/features/gateway/ (10 files)
 NEW DB TABLE: gateway_conversations
 NEW ENDPOINTS: 14 (REST + WebSocket + A2A)
-SDKs: Python + TypeScript (both already specced in Supplement C)
+A2A interface: invoke/invoke_async/stream (HTTP REST + SSE)
 
 DESIGN PRINCIPLE:
   The org does not care where the command comes from.
