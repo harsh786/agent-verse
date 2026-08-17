@@ -10490,3 +10490,421 @@ TOTAL LINES: ~10,300
 TOTAL SECTIONS: 158
 FINAL STATUS: WORLD-CLASS ✅ — ALL GAPS CLOSED
 ```
+
+---
+
+# SUPPLEMENT S — GRAPHIFY + OBSIDIAN INTEGRATION
+## Knowledge Graph Intelligence for the Autonomous AI Organization
+
+---
+
+## S1 — GRAPHIFY INTEGRATION
+
+### What Graphify Does
+Graphify transforms any folder of files into a navigable knowledge graph with:
+- **Persistent graph** — entities + edges stored in `graph.json`, queryable across sessions
+- **Honest audit trail** — every edge tagged EXTRACTED | INFERRED | AMBIGUOUS
+- **Community detection** — finds cross-document connections no one explicitly made
+- **Outputs**: Interactive HTML, GraphRAG-ready JSON, Obsidian vault, Neo4j cypher
+
+### Integration Architecture
+
+```
+GRAPHIFY INTEGRATION LAYER (app/org/graphify.py)
+
+OrgGraphifyService:
+  Wraps graphify skill for org-layer use.
+  Input: any org artifact collection (files, URLs, text)
+  Output: knowledge graph stored in org's knowledge base
+
+Trigger points:
+  1. Mission completes → research artifacts → auto-graphify
+  2. Knowledge ingestion pipeline → graphify after indexing
+  3. Manual: agent runs graphify on a corpus mid-mission
+  4. Scheduled: nightly graphify on accumulated week's artifacts
+  5. On-demand: user requests "map our knowledge on topic X"
+```
+
+### Use Case 1 — Org Knowledge Graph (Continuous)
+
+```python
+class OrgKnowledgeGrapher:
+    """
+    Continuously maintains a navigable graph of all org knowledge.
+    Uses graphify incrementally (--update flag) to add new artifacts.
+    """
+
+    async def update(self, org_id: str, new_artifacts: list[Artifact]) -> None:
+        """Called after every mission completes with new knowledge artifacts."""
+        artifacts_path = await self.stage_artifacts(org_id, new_artifacts)
+
+        # Incremental update (only re-processes new/changed files)
+        result = await graphify(
+            path=artifacts_path,
+            mode="deep",
+            update=True,          # only process new artifacts
+            neo4j_push=self.neo4j_url,  # push to org's knowledge graph DB
+            output_path=f"org-graphs/{org_id}/",
+        )
+
+        # Store graph metadata in org knowledge base
+        await self.knowledge_store.update_graph_metadata(org_id, result)
+
+    async def query(self, org_id: str, question: str) -> GraphAnswer:
+        """BFS traversal of org knowledge graph to answer a question."""
+        return await graphify_query(
+            graph=f"org-graphs/{org_id}/graph.json",
+            question=question,
+            budget_tokens=2000,
+        )
+
+    async def find_connections(self, org_id: str, concept_a: str, concept_b: str) -> list[str]:
+        """Find the shortest path between two concepts in org knowledge."""
+        return await graphify_path(
+            graph=f"org-graphs/{org_id}/graph.json",
+            from_node=concept_a,
+            to_node=concept_b,
+        )
+```
+
+### Use Case 2 — Capability Graph (Auto-Built via Graphify)
+
+```
+The Capability Graph (N5) is auto-built using graphify:
+
+/graphify app/org/ app/agent/ app/knowledge/ --mode deep --neo4j-push bolt://localhost:7687
+
+Result:
+  → Goal nodes connected to capability nodes
+  → Capability nodes connected to tool nodes
+  → Tool nodes connected to agent nodes
+  → Community detection reveals: "Research cluster", "Compliance cluster", etc.
+  → Missing connections = capability gaps (auto-surfaces to org admin)
+
+CYPHER query example:
+  MATCH (g:Goal)-[:REQUIRES]->(c:Capability)-[:USES]->(t:Tool)
+  WHERE NOT (c)-[:ASSIGNED_TO]->(:Agent)
+  RETURN c.name AS unassigned_capability
+
+This query → "These capabilities have no assigned agent" → gap report
+```
+
+### Use Case 3 — Research Mission Knowledge Mapping
+
+```
+Research mission: "Analyze the Indian fintech regulatory landscape"
+  → 40 documents processed (RBI circulars, NBFC guidelines, court orders, news)
+  → Mission completes, artifacts stored
+
+Graphify agent runs automatically:
+  /graphify ./mission-artifacts/fintech-regulatory/ --mode deep --html --wiki
+
+Outputs:
+  → graph.html: interactive visualization (shared with user via link)
+  → graph.json: loaded into org's RAG for future queries
+  → wiki/: crawlable wiki of the regulatory landscape
+  → GRAPH_REPORT.md: plain-language summary of what was found
+
+Key insight from graphify:
+  "RBI Circular 2024-03 and NBFC Directive 2023-12 both reference the same
+   payment aggregator framework — suggesting they are part of a unified
+   regulatory push. No agent explicitly made this connection."
+
+  This INFERRED connection → new mission automatically proposed:
+  "Analyze unified payment aggregator regulatory strategy"
+```
+
+### Use Case 4 — Engineering Org Codebase Intelligence
+
+```
+New engineering team joins. Need to understand the codebase.
+
+Graphify agent runs:
+  /graphify ./src/ --mode deep --wiki --svg
+
+Result:
+  → Architecture graph: which modules import what
+  → Community detection: "Auth cluster", "Payment cluster", "Notification cluster"
+  → Each cluster → wiki article auto-generated
+  → Agent can query: graphify query "what depends on the AuthModule?"
+  → Shortest path: graphify path "UserController" "Database" → dependency chain
+
+Engineering agents use this graph for:
+  → Impact analysis before code changes
+  → Understanding unfamiliar subsystems
+  → Finding coupling issues (too many edges from one node)
+```
+
+### Use Case 5 — Competitive Intelligence Map
+
+```
+Competitor research mission completes for 5 companies:
+
+/graphify ./competitor-intel/ --community-only --html
+
+Community detection finds:
+  Community A: Zerodha, Groww (same tech stack cluster: React + Python)
+  Community B: AngelOne, 5Paisa (legacy stack: Java + Oracle)
+  Community C: [EMPTY] — no player uses real-time ML for risk scoring
+
+Community C (empty) → opportunity detection:
+  "Gap identified: no competitor uses real-time ML risk scoring"
+  → Auto-creates strategic opportunity mission
+```
+
+### Graphify API Endpoints (org layer)
+
+```
+POST /v1/org/{id}/knowledge/graphify
+  body: { artifact_ids: [...], mode: "deep" | "fast", output: ["html","neo4j","obsidian"] }
+  → Triggers graphify pipeline on specified artifacts
+  → Returns: job_id (async)
+
+GET  /v1/org/{id}/knowledge/graph
+  → Returns graph metadata (node count, edge count, communities)
+
+POST /v1/org/{id}/knowledge/graph/query
+  body: { question: str, method: "bfs" | "dfs", budget_tokens: 2000 }
+  → BFS/DFS traversal of org knowledge graph
+
+POST /v1/org/{id}/knowledge/graph/path
+  body: { from_node: str, to_node: str }
+  → Shortest path between two concepts
+
+GET  /v1/org/{id}/knowledge/graph/communities
+  → List of detected communities + their members
+
+GET  /v1/org/{id}/knowledge/graph/html
+  → Download interactive graph visualization (HTML)
+
+GET  /v1/org/{id}/knowledge/graph/gaps
+  → Capability/knowledge gaps detected via graph analysis
+```
+
+---
+
+## S2 — OBSIDIAN VAULT INTEGRATION
+
+Obsidian is a local-first knowledge base with bidirectional links and graph view.
+The org can export its knowledge as an Obsidian vault — giving users a
+**personal knowledge base view of the entire organization's knowledge**.
+
+### What the Org Obsidian Vault Contains
+
+```
+OrgVault/
+├── Daily Notes/
+│   ├── 2026-08-17.md     ← What the org did today
+│   └── 2026-08-16.md
+├── Missions/
+│   ├── Q3-Revenue-Analysis.md      ← Each mission = a note
+│   ├── SEBI-Compliance-Review.md
+│   └── Germany-Launch.md
+├── Decisions/
+│   ├── Approved-Email-Campaign.md  ← Decision audit notes
+│   └── Paused-Trading-Strategy.md
+├── Knowledge/
+│   ├── RBI-Regulations.md          ← Knowledge items with backlinks
+│   ├── Market-Analysis-Q3.md
+│   └── Competitor-Landscape.md
+├── Agents/
+│   ├── Research-Agent-Maya.md      ← Agent profiles with history
+│   └── Compliance-Agent-Raj.md
+└── graph.json                      ← Graphify-generated connections
+```
+
+### Bidirectional Links (the power of Obsidian)
+
+```
+Mission: Q3-Revenue-Analysis.md
+  → [[Market-Analysis-Q3]] (what it used)
+  → [[Research-Agent-Maya]] (who ran it)
+  → [[Approved-Email-Campaign]] (what it led to)
+  ← [[SEBI-Compliance-Review]] (what references it)
+  ← [[Germany-Launch]] (what depends on it)
+
+Decision: Approved-Email-Campaign.md
+  → [[Q3-Revenue-Analysis]] (the evidence)
+  → [[Compliance-Agent-Raj]] (who reviewed)
+  ← [[Germany-Launch]] (what it enables)
+
+When user opens Obsidian graph view:
+  → Sees the entire org as a connected knowledge map
+  → Clusters appear: "German expansion cluster", "Compliance cluster"
+  → Clicking any node → full content + backlinks
+```
+
+### Sync Strategy
+
+```python
+class ObsidianVaultSync:
+    """
+    Keeps org knowledge in sync with user's Obsidian vault.
+    One-way: org → Obsidian (read-only for user).
+    Future: two-way (user notes in Obsidian → org knowledge).
+    """
+
+    async def sync(self, org_id: str, vault_path: str) -> SyncResult:
+        """Export org knowledge to Obsidian vault."""
+        # Run graphify with --obsidian flag
+        await graphify(
+            path=self.get_org_artifacts_path(org_id),
+            obsidian=True,
+            obsidian_dir=vault_path,
+            update=True,         # incremental sync
+        )
+
+        # Also write structured notes (not from graphify):
+        await self.write_mission_notes(org_id, vault_path)
+        await self.write_decision_notes(org_id, vault_path)
+        await self.write_daily_notes(org_id, vault_path)
+        await self.write_agent_profiles(org_id, vault_path)
+
+    def _mission_to_markdown(self, mission: OrgMission) -> str:
+        """Convert mission to Obsidian markdown with wikilinks."""
+        return f"""---
+title: {mission.title}
+status: {mission.status}
+created: {mission.created_at}
+---
+
+# {mission.title}
+
+**Objective**: {mission.objective}
+
+**Why this exists**: {mission.why}
+
+## Team
+{self._agents_to_links(mission.assigned_agents)}
+
+## Evidence
+{self._evidence_to_links(mission.evidence)}
+
+## Outputs
+{self._outputs_to_links(mission.outputs)}
+
+## Connected Knowledge
+{self._related_knowledge_to_links(mission)}
+"""
+```
+
+### Obsidian Sync UI (in-app settings)
+
+```
+SETTINGS → Integrations → Obsidian Vault
+
+  VAULT PATH
+  Local: ~/Documents/OrgVaults/acme-trading/    [Change]
+
+  SYNC SCHEDULE
+  ○ Manual only  ● Every hour  ○ Every day
+
+  INCLUDE IN VAULT
+  ☑ Missions          ☑ Decisions
+  ☑ Knowledge items   ☑ Agent profiles
+  ☑ Daily summaries   ☐ Raw artifacts (large)
+
+  OBSIDIAN GRAPH SETTINGS
+  Graph granularity: [Medium ▾]   (Fine = every artifact, Medium = summaries)
+
+  [Sync Now]  [Open in Obsidian]  [View last sync: 2h ago]
+```
+
+---
+
+## S3 — COMBINED POWER: GRAPHIFY + OBSIDIAN + ORG BRAIN
+
+When all three work together:
+
+```
+ORG BRAIN discovers: "Customer churn increased 8%"
+    ↓
+RESEARCH MISSION starts: "Analyze churn root causes"
+    ↓
+RESEARCH AGENTS: process 30 support tickets, 15 interviews, 5 analytics reports
+    ↓
+GRAPHIFY runs on mission artifacts:
+  → Knowledge graph built
+  → Community detection: "Price sensitivity cluster" + "Feature gap cluster"
+  → INFERRED edge: "Support tickets about export feature correlate with churn"
+  ↓
+OBSIDIAN VAULT updated:
+  → Mission note written with backlinks
+  → "Export feature" ← backlinked to churn analysis, 3 support tickets, 1 interview
+  → User opens Obsidian: sees the connection immediately in graph view
+    ↓
+ORG BRAIN reads graphify gap report:
+  → "Missing capability: predictive churn scoring"
+  → Proposes new mission: "Build churn prediction model"
+  ↓
+USER in Obsidian graph view:
+  Sees: Churn Analysis → Export Feature ← Support Tickets
+  Clicks "Export Feature" → sees all related knowledge
+  Types in Command Bar: "Why are users churning over the export feature?"
+  → Org Brain answers using graphify graph traversal (BFS)
+  → "Based on 12 connected knowledge nodes: users need bulk export..."
+```
+
+---
+
+## S4 — BACKEND IMPLEMENTATION
+
+```
+NEW FILES:
+  app/org/graphify.py            ← OrgGraphifyService + graphify pipeline wrapper
+  app/org/obsidian_sync.py       ← ObsidianVaultSync
+  app/org/knowledge_graph_ops.py ← graph query, path, community operations
+
+NEW ENDPOINTS (7):
+  POST /v1/org/{id}/knowledge/graphify
+  GET  /v1/org/{id}/knowledge/graph
+  POST /v1/org/{id}/knowledge/graph/query
+  POST /v1/org/{id}/knowledge/graph/path
+  GET  /v1/org/{id}/knowledge/graph/communities
+  GET  /v1/org/{id}/knowledge/graph/gaps
+  GET  /v1/org/{id}/knowledge/graph/html
+
+NEW SETTINGS ENDPOINTS (2):
+  GET  /v1/org/{id}/settings/obsidian
+  PUT  /v1/org/{id}/settings/obsidian
+
+STORAGE:
+  Graph files: S3/object storage per org (org-graphs/{org_id}/)
+  Neo4j:       optional, per tenant (enterprise plan)
+  Obsidian:    local filesystem sync via API trigger
+
+DEPENDENCIES:
+  graphify skill (already installed, invoked as subprocess or MCP)
+  neo4j-driver (optional, for Neo4j push)
+  python-markdown (for Obsidian note generation)
+```
+
+---
+
+## SUPPLEMENT S — SUMMARY
+
+```
+GRAPHIFY + OBSIDIAN INTEGRATION
+
+GRAPHIFY USE CASES IN ORG TEAM:
+  S1a: Org Knowledge Graph — continuous graph of all org artifacts
+  S1b: Capability Graph — auto-built from codebase + org data
+  S1c: Research Mission Mapping — visualize mission knowledge
+  S1d: Engineering Codebase Intelligence — architecture graph
+  S1e: Competitive Intelligence Map — community detection for gaps
+
+OBSIDIAN USE CASES IN ORG TEAM:
+  S2a: Personal knowledge base view of entire org knowledge
+  S2b: Bidirectional links (mission → evidence → decision → outcome)
+  S2c: Daily notes = daily org activity log
+  S2d: Graph view = org's living knowledge map
+
+COMBINED POWER:
+  Org Brain discovers → agents research → graphify maps connections →
+  Obsidian shows user → user queries Org Brain using graphify traversal
+
+NEW BACKEND: 3 files, 9 API endpoints
+GRAPH STORAGE: S3 (files) + optional Neo4j (graph DB)
+OBSIDIAN SYNC: incremental, configurable schedule
+DEPENDENCY: graphify skill (already available in platform)
+```
