@@ -10988,3 +10988,708 @@ GRAPH STORAGE: S3 (files) + optional Neo4j (graph DB)
 OBSIDIAN SYNC: incremental, configurable schedule
 DEPENDENCY: graphify skill (already available in platform)
 ```
+
+---
+
+# SUPPLEMENT T — JARVIS-STYLE KNOWLEDGE VISUALIZATION
+## World-Class Animated UI/UX for Graphify + Obsidian-Skills
+
+*The org's knowledge should feel alive — not a static list of files.*
+
+---
+
+## T1 — KNOWLEDGE GRAPH VIEW (Primary Screen)
+
+The **Knowledge Graph** is the visual heart of the org's intelligence.
+Built on React Flow + Framer Motion + D3-force simulation.
+
+### Visual Design
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  KNOWLEDGE GRAPH                    [2D ⟷ 3D] [Filter ▾] [+]   │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│     ◉ Q3-Revenue-Analysis              ●─────●                  │
+│    /│\                                SEBI   RBI                 │
+│   / │ \     ●─────◉                  Circular Laws              │
+│  ◉  ◉  ◉  Zerodha  Groww                                       │
+│  │  │                   ●─────●                                 │
+│  Market  Competitor   Churn   Export                            │
+│  Research  Intel      Data    Feature                           │
+│                          ↑                                      │
+│                    [INFERRED CONNECTION]                         │
+│                    ✨ Graphify just found this                   │
+│                                                                  │
+│  Zoom: [──────●──────]  Layout: [Force ▾]  [Search nodes...]   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Node Visual Language
+
+```
+NODE TYPES + APPEARANCE:
+
+  ● Research Note     Circle, 24px, Blue (#3B82F6)
+                      Slow breathing pulse (scale 1.0→1.03→1.0, 4s)
+
+  ◉ Active Mission    Circle, 32px, Bright Blue with glow ring
+                      Fast breathing (scale 1.0→1.05→1.0, 2s)
+                      Glow: box-shadow 0 0 12px rgba(59,130,246,0.6)
+
+  ◆ Decision          Diamond, 24px, Amber (#F59E0B)
+                      Static (decisions are complete events)
+
+  ▣ Evidence/Artifact Rectangle, 20×16px, Green (#10B981)
+                      Subtle shimmer on hover
+
+  ⬡ Capability        Hexagon (via SVG), Purple (#8B5CF6)
+                      Rotating border animation when capability is in use
+
+  ★ Key Discovery     Star burst, Bright Gold, larger (36px)
+                      Created by graphify for high-value INFERRED connections
+                      Entrance: expand from 0 + sparkle particles
+
+  ○ Archived/Inactive Faded circle, 50% opacity, no animation
+
+NODE SIZES:
+  Connection count scales size: more connections = larger node
+  Range: 16px (isolated) → 48px (hub node with 10+ connections)
+  Size transition: smooth (300ms) when new connections added
+```
+
+### Edge Visual Language
+
+```
+EDGE TYPES + ANIMATION:
+
+  EXTRACTED connection (agent wrote [[wikilink]]):
+    ─────────    Solid line, 1.5px, muted blue (#93C5FD)
+    No animation (established fact)
+
+  INFERRED connection (graphify discovered):
+    ─ ─ ─ ─    Dashed line, 1px, gold (#FCD34D)
+    Animation: dashes flow in direction of connection (5s loop)
+    Entrance: line draws itself from source to target (600ms)
+
+  ACTIVE KNOWLEDGE FLOW (agent currently using this connection):
+    ═════════    Thick line, 3px, bright blue, with flowing particles
+    Particles: small dots (4px) travel along the edge (2s loop)
+    Like neural activation — information flowing through the graph
+
+  CAPABILITY GAP (capability exists but no agent assigned):
+    ─ ─ ─ ─    Red dashed line (#EF4444), pulsing
+    Gap node: red ring expanding outward (1s pulse)
+    "Fill me" visual hint: + icon on the gap node
+
+  COMMUNITY BOUNDARY:
+    ──────── ──  Dotted boundary around cluster
+    Background: subtle tinted area (low opacity)
+    Community label floats above center of cluster
+```
+
+### Graph Physics Simulation
+
+```
+D3-Force configuration for organic, JARVIS-like layout:
+
+  forceSimulation()
+    .force("charge", forceManyBody().strength(-300))     // nodes repel
+    .force("link", forceLink().distance(80).strength(0.8))  // edges pull
+    .force("center", forceCenter())                      // centered
+    .force("collision", forceCollide().radius(40))       // no overlap
+    .alphaDecay(0.02)                                    // slow settling
+    .velocityDecay(0.4)                                  // organic movement
+
+  // Nodes gently float when idle (like neurons at rest)
+  // Each tick: add tiny random noise to position (±0.5px)
+  // This creates the "alive" feeling — graph never fully stops
+
+  // When new node added: enters with burst of energy
+  // Nearby nodes briefly push apart, then re-settle
+  // Duration: 800ms → settles back to stable state
+```
+
+---
+
+## T2 — DISCOVERY ANIMATION (When Graphify Finds Connections)
+
+The most dramatic and satisfying animation in the entire UI.
+Triggered when graphify detects a new INFERRED connection.
+
+### The Discovery Sequence (1.8 seconds total)
+
+```
+T+0ms    ✨ DISCOVERY NOTIFICATION appears bottom-right:
+         ┌────────────────────────────────────────┐
+         │ ✨ New connection discovered           │
+         │   "Churn Rate" ←→ "Export Feature"    │
+         │   Confidence: 87% (INFERRED)           │
+         │   [View in graph] [Dismiss]            │
+         └────────────────────────────────────────┘
+         Slides in from right (300ms, spring easing)
+
+T+300ms  Both connected nodes pulse simultaneously:
+         Scale: 1.0 → 1.15 → 1.0 (200ms)
+         Color: brief white flash then settle to gold (#FCD34D)
+
+T+500ms  New edge draws itself between the two nodes:
+         Line grows from source to target (400ms)
+         Color: animated gold gradient flowing through the line
+         Dashed style (INFERRED), with flowing dashes
+
+T+900ms  Sparkle particles burst from both nodes:
+         12 small particles radiate outward (300ms)
+         Colors: gold, white, blue (alternating)
+         Fade out as they spread
+
+T+1200ms Graph physics re-runs to accommodate new connection:
+         Affected nodes gently drift to new equilibrium
+         Duration: 600ms with spring easing
+
+T+1800ms Settled. New connection is permanent in the graph.
+         Dashed gold line pulses gently (INFERRED visual reminder)
+
+ANNOTATION floats next to new edge:
+  "✨ graphify" with small badge showing confidence score
+  Hovering shows full discovery details
+```
+
+### Discovery Panel (slide-in from right)
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  ✨ KNOWLEDGE DISCOVERY                              [×]   │
+│  ─────────────────────────────────────────────────────── │
+│                                                            │
+│  graphify found an unexpected connection                   │
+│                                                            │
+│  ┌──────────────────────────────────────────────────┐     │
+│  │    [Churn Rate] ──✨──→ [Export Feature]         │     │
+│  │                INFERRED  87% confidence          │     │
+│  └──────────────────────────────────────────────────┘     │
+│                                                            │
+│  WHY graphify found this:                                  │
+│  "Export Feature" appears in 23% of all churn-tagged      │
+│  notes. 3 support tickets and 1 user interview all         │
+│  reference it alongside churn indicators.                  │
+│                                                            │
+│  SOURCE NOTES (6):                                         │
+│  ● Support-Ticket-2341.md                                  │
+│  ● User-Interview-Aug-12.md                               │
+│  ● Churn-Analysis-Q3.md         [+3 more]                 │
+│                                                            │
+│  SUGGESTED ACTION:                                         │
+│  "Start mission: Investigate export feature as churn driver│
+│  [Create mission] [Mark as known] [Dismiss]               │
+└────────────────────────────────────────────────────────────┘
+
+Animation: slides in from right (400ms, spring)
+Background: subtle backdrop blur
+Border: gold left accent (3px) for discovery type
+```
+
+---
+
+## T3 — COMMUNITY DETECTION VISUALIZATION
+
+When graphify identifies knowledge clusters (communities), the graph
+visually groups them with animated cluster emergence.
+
+### Cluster Animation Sequence
+
+```
+T+0ms    Graphify completes community detection
+
+T+0ms    ALL nodes dim slightly (opacity 0.4, 300ms)
+         This creates the "scanning" effect
+
+T+300ms  Community 1 emerges:
+         Nodes in cluster brighten back to full opacity
+         Colored boundary appears around them (500ms fade in)
+         Community label fades in above center of cluster
+         Background tint fills the cluster area
+
+T+800ms  Community 2 emerges (stagger 300ms from community 1)
+         Same animation, different color
+
+T+1100ms Community 3 emerges (stagger 300ms)
+         ...
+
+T+last   Empty space between communities:
+         "This area has no community — possible gap"
+         Gap indicator: subtle pulsing dotted circle
+         Tooltip on hover: "No nodes in this knowledge domain"
+```
+
+### Community Color Palette
+
+```
+Community 1 (Research):      Blue cluster  — #1D4ED8 border, #EFF6FF fill
+Community 2 (Compliance):    Amber cluster — #D97706 border, #FFFBEB fill
+Community 3 (Competitor):    Green cluster — #059669 border, #ECFDF5 fill
+Community 4 (Financial):     Purple cluster— #7C3AED border, #F5F3FF fill
+Community 5 (Operations):    Gray cluster  — #4B5563 border, #F9FAFB fill
+Community 6+ (additional):   Rotate palette
+
+GAP zone:                     Red pulsing outline — #EF4444
+                              Text: "Knowledge Gap"
+```
+
+---
+
+## T4 — NODE INTERACTION EXPERIENCE
+
+### Hover State
+
+```
+HOVER over any node:
+  Duration: 150ms
+  Effect: Node scales 1.0 → 1.12
+  Connected edges: brighten (opacity 0.3 → 1.0)
+  Unconnected edges: dim (opacity 0.3 → 0.1)
+  
+  TOOLTIP appears (200ms delay to prevent flicker):
+  ┌──────────────────────────────────────┐
+  │ Q3-Revenue-Analysis                  │
+  │ ─────────────────────────────────── │
+  │ Type: Research Note                  │
+  │ Mission: Q3 Strategy                 │
+  │ Created: Aug 15 by Research-Maya    │
+  │ Connections: 8                       │
+  │ Last updated: 2h ago                 │
+  │                                      │
+  │ [Preview ▸]   [Open in Obsidian ↗]  │
+  └──────────────────────────────────────┘
+
+  Tooltip position: smart (avoids edges of screen)
+  Arrow points to node
+```
+
+### Click — Node Spotlight Mode
+
+```
+CLICK on any node:
+  Duration: 400ms
+  
+  Effect:
+  1. Clicked node: moves to center of visible area (smooth pan, 400ms)
+  2. Clicked node: scales up to 1.4× (400ms, spring)
+  3. All other nodes: dim to 20% opacity
+  4. Connected nodes: remain at full opacity
+  5. All connecting edges: animate (flowing particles)
+  
+  RIGHT PANEL slides in (400ms from right):
+  ┌──────────────────────────────────────────────┐
+  │ ← Back to graph                               │
+  │                                              │
+  │ Q3-Revenue-Analysis.md                       │
+  │ ─────────────────────────────────────────── │
+  │                                              │
+  │ [Note Preview]                               │
+  │ # Q3 Revenue Analysis                        │
+  │ > [!tip] Key finding: Market expanding      │
+  │ See [[Market-Analysis-Q3]] for numbers...   │
+  │                                              │
+  │ CONNECTIONS (8)                              │
+  │ → [[Decisions/Expand-Retail]] (leads to)    │
+  │ ← [[SEBI-Circular]] (referenced by)         │
+  │ ↔ [[Competitor-Zerodha]] (related to)       │
+  │ [+5 more connections]                        │
+  │                                              │
+  │ GRAPHIFY METADATA                            │
+  │ Community: Research cluster (#1)             │
+  │ Hub score: 0.87 (high centrality)           │
+  │ INFERRED connections: 2                      │
+  │                                              │
+  │ [Open in Obsidian ↗] [Start mission +]      │
+  └──────────────────────────────────────────────┘
+  
+  ESC or click empty area → deselect (reverse all animations, 300ms)
+```
+
+### Double-Click — Expand Node
+
+```
+DOUBLE-CLICK on any node:
+  Shows all connected notes as child nodes
+  Child nodes radiate outward from parent (physics burst)
+  If already expanded → collapse (children fly back, 400ms)
+```
+
+---
+
+## T5 — CANVAS MAP VIEWER (JSON Canvas)
+
+The JSON Canvas files generated by the json-canvas skill are displayed
+in a dedicated canvas viewer built into the JARVIS command center.
+
+### Canvas Viewer UI
+
+```
+CANVAS VIEW — Mission Dependencies
+┌──────────────────────────────────────────────────────────────────┐
+│  Maps / mission-dependencies.canvas            [Edit] [Export]  │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│  ┌─────────────────────────────────────────┐                   │
+│  │ ACTIVE MISSIONS GROUP                   │                   │
+│  │                                         │                   │
+│  │  ┌─────────────┐   drives   ┌─────────┐│                   │
+│  │  │ Q3 Strategy │──────────→│ Germany  ││                   │
+│  │  │  [text node]│            │ Launch   ││                   │
+│  │  └─────────────┘            │[file node││                   │
+│  │                             └─────────┘│                   │
+│  └─────────────────────────────────────────┘                   │
+│                                                                  │
+│  ┌──────────────────┐     requires     ┌──────────────────┐   │
+│  │ SEBI-Compliance  │──────────────→  │ Legal-Review.md  │   │
+│  │ [file node]      │                  │ [file node]       │   │
+│  │ ● BLOCKED        │                  │ ◉ IN PROGRESS    │   │
+│  └──────────────────┘                  └──────────────────┘   │
+│                                                                  │
+│  Zoom: ─────●──  Minimap [▣]  Agent generated • Aug 17 09:14  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Canvas Node States + Animations
+
+```
+FILE NODE (embeds an Obsidian note):
+  Default:  Card with document icon, note title, first 2 lines preview
+  Hover:    Card lifts (elevation shadow increases), preview expands
+  Active mission node: Animated blue border (flowing clockwise, 3s loop)
+  Blocked node: Red pulsing border (0.8s pulse)
+  Complete node: Green checkmark badge, faded slightly (done = history)
+
+TEXT NODE (pure text content):
+  Default:  Clean card, rounded corners
+  Hover:    Subtle scale 1.02
+
+GROUP (cluster of nodes):
+  Default:  Colored background region with label
+  Hover:    Label brightens, background tint increases slightly
+
+EDGE ANIMATION:
+  Normal edge:   Static line with arrow
+  "drives" edge: Animated particles flowing in direction (blue)
+  "requires" edge: Animated particles + pulsing when target is blocked (red)
+  "leads to" edge: Animated green particles (positive flow)
+  Animated edges update in real-time as mission status changes
+```
+
+### Canvas Live Status Overlay
+
+```
+Each file node that links to an active mission gets a live overlay:
+
+  ┌─────────────────────────────┐
+  │  Germany-Launch.md          │
+  │  ─────────────────────────  │
+  │  ████████░░  80%            │  ← live progress bar (updates real-time)
+  │  3 agents  ◉  $12.40       │  ← cost meter
+  │  [View mission]             │
+  └─────────────────────────────┘
+
+Progress bar animation:
+  Updates every 30 seconds via SSE
+  Bar fills smoothly (500ms transition) not jumping
+  Color: blue → amber (70%) → red (90%+)
+```
+
+---
+
+## T6 — KNOWLEDGE PULSE (Ambient Intelligence)
+
+A persistent ambient visualization showing the org's knowledge growing.
+Appears in the corner of the Command Center — always present, never intrusive.
+
+```
+KNOWLEDGE PULSE widget (bottom-left Command Center):
+
+┌──────────────────────────────────────┐
+│  ● KNOWLEDGE BASE                    │
+│                                      │
+│    [○ ○ ○ ○ ○ ○ ○ ○]               │
+│    [○ ● ○ ○ ● ○ ○ ○]               │
+│    [○ ○ ○ ● ○ ○ ● ○]               │
+│    [○ ○ ● ○ ○ ○ ○ ●]               │
+│    [○ ● ○ ○ ● ○ ○ ○]               │
+│                                      │
+│    847 nodes  |  2,341 connections   │
+│    +12 today  |  +47 today           │
+│                                      │
+│    Last discovery: 14 min ago        │
+│    [Open Knowledge Graph →]          │
+└──────────────────────────────────────┘
+
+The dot grid represents the knowledge graph structure:
+  ● = node (scales with note count)
+  Lines between ● = connections
+
+Animation:
+  When new note added: one dot "lights up" (white flash → blue, 300ms)
+  When connection added: brief line flashes between two dots
+  When community detected: cluster of dots pulse together
+  Ambient: dots pulse very slowly (1% opacity change, 8s loop) — "breathing"
+
+This creates a sense that knowledge is ALIVE and growing.
+```
+
+---
+
+## T7 — OBSIDIAN VAULT EXPLORER (In-App)
+
+Users can explore their Obsidian vault structure directly inside the
+JARVIS command center without opening Obsidian.
+
+### Vault Explorer Panel
+
+```
+VAULT EXPLORER
+┌──────────────────────────────────────────────────────────────────┐
+│  ← Back                                             [Obsidian ↗]│
+│                                                                  │
+│  [Graph View] [File Tree] [Timeline] [Bases] [Maps]             │
+│                                                                  │
+│  ─── GRAPH VIEW TAB ───                                         │
+│  [Same animated knowledge graph as T1]                           │
+│                                                                  │
+│  ─── BASES TAB ───                                              │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ active-missions.base                        [Open ↗]    │   │
+│  │ ────────────────────────────────────────────────────── │   │
+│  │ Title              Priority  Owner      Running For    │   │
+│  │ Q3 Revenue         HIGH      Maya        3 days        │   │
+│  │ SEBI Compliance    HIGH      Raj         1 day         │   │
+│  │ Competitor Intel   MEDIUM    Team        5 hours       │   │
+│  │ ────────────────────────────────────────────────────── │   │
+│  │ 3 active missions  | Avg cost: $8.40/day              │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ─── MAPS TAB ───                                               │
+│  [Canvas thumbnails: org-map, competitor-landscape, mission-deps]│
+│  Click → full canvas viewer (T5)                                 │
+│                                                                  │
+│  ─── TIMELINE TAB ───                                           │
+│  Shows knowledge growth over time:                               │
+│  Aug 17 ████████████████████ 28 notes added                    │
+│  Aug 16 ████████████        18 notes added                    │
+│  Aug 15 ███████████████████ 25 notes added                    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## T8 — GRAPHIFY PROGRESS ANIMATION
+
+When the user triggers a graphify run, show its progress visually.
+
+```
+GRAPHIFY RUNNING animation:
+
+  Status bar at top of Knowledge Graph view:
+
+  Analyzing knowledge base...
+  ┌──────────────────────────────────────────────────────────┐
+  │  ⟳  GRAPHIFY RUNNING                                     │
+  │  ─────────────────────────────────────────────────────  │
+  │  Phase 1: Extracting entities    ████████████  100%      │
+  │  Phase 2: Building edges         ████████░░░░   67%  ←  │
+  │  Phase 3: Community detection    ░░░░░░░░░░░░    0%      │
+  │  Phase 4: Gap analysis           ░░░░░░░░░░░░    0%      │
+  │                                                           │
+  │  Nodes found: 247  |  Edges: 1,847  |  ETA: ~30s        │
+  └──────────────────────────────────────────────────────────┘
+
+While graphify runs:
+  Graph nodes appear one by one as extracted (fast stagger, 20ms each)
+  Each new edge draws itself as added
+  Community boundaries fade in as detected
+  Discovery animations fire for each INFERRED connection found
+
+Final state:
+  All communities fully colored
+  "Graphify complete" notification (1 second, then fades)
+  Graph settles into final physics equilibrium (800ms)
+```
+
+---
+
+## T9 — KNOWLEDGE SEARCH (Animated)
+
+```
+SEARCH within knowledge graph:
+
+  User types in search bar: "churn"
+
+  Animation:
+  T+0ms:    Nodes start filtering (non-matching dim to 10% opacity)
+  T+0ms:    Matching nodes highlight (bright pulse, scale 1.1)
+  T+200ms:  Graph auto-pans/zooms to show all matching nodes
+  T+400ms:  Matching nodes connected by temporary search-result edges
+            (thin white dashed lines connecting all matches)
+
+  Result panel below search bar:
+  ┌──────────────────────────────────────────────────────┐
+  │ 8 nodes match "churn"                                │
+  │                                                      │
+  │ ● Churn-Analysis-Q3.md        (Research Note)       │
+  │ ◆ Expand-Retention-Budget     (Decision)            │
+  │ ● Customer-Feedback-Aug.md    (Research Note)       │
+  │ ★ Churn ←→ Export Feature     (Discovery)          │
+  │ [+4 more]                                            │
+  └──────────────────────────────────────────────────────┘
+
+  Clearing search:
+  Non-matching nodes fade back in (300ms)
+  Search edges disappear (200ms)
+  Graph returns to original zoom/pan (500ms smooth transition)
+```
+
+---
+
+## T10 — FRONTEND COMPONENTS
+
+```
+NEW FRONTEND: src/features/knowledge/
+
+src/features/knowledge/
+├── KnowledgeGraphPage.tsx         ← Main graph view (T1)
+├── KnowledgeGraph.tsx             ← React Flow graph component
+├── GraphNode.tsx                  ← Animated node component
+├── GraphEdge.tsx                  ← Animated edge (flowing particles)
+├── DiscoveryPanel.tsx             ← Slide-in discovery notification (T2)
+├── CommunityOverlay.tsx           ← Colored cluster boundaries (T3)
+├── NodeSpotlight.tsx              ← Click → spotlight + right panel (T4)
+├── CanvasViewer.tsx               ← JSON Canvas viewer (T5)
+├── KnowledgePulse.tsx             ← Ambient knowledge widget (T6)
+├── VaultExplorer.tsx              ← In-app Obsidian explorer (T7)
+├── GraphifyProgress.tsx           ← Graphify run progress (T8)
+├── KnowledgeSearch.tsx            ← Animated search (T9)
+└── hooks/
+    ├── useKnowledgeGraph.ts       ← Graph state + physics
+    ├── useGraphifyStream.ts       ← SSE stream for live updates
+    ├── useNodeInteraction.ts      ← Hover/click/select state
+    └── useCommunityColors.ts      ← Community color assignment
+
+DEPENDENCIES:
+  @xyflow/react    ← React Flow (graph rendering, pan/zoom)
+  d3-force         ← Physics simulation
+  framer-motion    ← All animations (nodes, panels, discovery)
+  d3               ← SVG utilities for edges, particles
+  @radix-ui        ← Accessible tooltips, panels
+
+PERFORMANCE:
+  Max nodes rendered: 500 (virtual scroll beyond this)
+  Level of detail: zoom out → show community labels only, hide node text
+  Particle effects: disabled at >200 nodes (performance mode)
+  prefers-reduced-motion: all physics/particles disabled → static layout
+```
+
+---
+
+## T11 — NAVIGATION + TRANSITIONS
+
+### Entering the Knowledge Graph
+
+```
+FROM Command Center:
+  User clicks "Knowledge" in sidebar or "View in graph" on any note
+
+  Transition (600ms):
+  1. Command Center content slides left + fades (200ms)
+  2. Graph fades in from center, nodes expand from 0 size (400ms stagger)
+  3. Physics simulation fires — nodes find their positions (800ms)
+  4. Result: graph has "assembled itself" from nothing
+
+This feels like JARVIS bringing up a new display.
+```
+
+### Navigating to a Note from Graph
+
+```
+User clicks a node → Node Spotlight (T4)
+User clicks "Open in Obsidian" → deep link opens Obsidian at that note
+
+If user came from a mission:
+  Breadcrumb: Missions → Q3 Revenue → Knowledge Graph → [node]
+  Back navigation preserves scroll + zoom state
+```
+
+### Entering Canvas View
+
+```
+FROM Knowledge Graph:
+  User clicks a canvas file node or navigates to Maps tab
+
+  Transition:
+  Knowledge graph fades out (300ms)
+  Canvas slides in from right (400ms)
+  Canvas nodes render and position themselves (200ms stagger)
+```
+
+---
+
+## SUPPLEMENT T — SUMMARY
+
+```
+JARVIS-STYLE KNOWLEDGE VISUALIZATION
+
+T1:  Knowledge Graph View
+     D3-force physics simulation (organic, alive movement)
+     Node types: research, mission, decision, evidence, capability, discovery
+     Edge types: extracted (solid), inferred (dashed+flowing), active (particles)
+
+T2:  Discovery Animation (1.8s sequence)
+     Notification → nodes pulse gold → edge draws itself → sparkles
+     Discovery panel slides in with full graphify evidence
+
+T3:  Community Detection Visualization
+     Nodes dim → clusters emerge one by one → color-coded boundaries
+     Gap zones highlighted with pulsing red outline
+
+T4:  Node Interaction
+     Hover: spotlight + dim others + tooltip
+     Click: center + expand + right panel with full note preview
+     Double-click: expand/collapse connected nodes
+
+T5:  Canvas Map Viewer
+     JSON Canvas files rendered in JARVIS style
+     File nodes show live mission progress (real-time SSE)
+     Edge animations: flowing particles (direction indicates relationship)
+
+T6:  Knowledge Pulse Widget
+     Ambient dot-grid showing knowledge structure
+     Lights up when notes/connections added
+     Always visible in Command Center corner
+
+T7:  Vault Explorer (in-app)
+     Tabs: Graph / File Tree / Timeline / Bases / Maps
+     Bases rendered as live tables
+     Maps shown as canvas thumbnails
+
+T8:  Graphify Progress Animation
+     Phase-by-phase progress bar
+     Nodes/edges appear in real-time as graphify processes
+     Discovery animations fire live during the run
+
+T9:  Knowledge Search
+     Matching nodes highlight, others dim
+     Auto-pan/zoom to show matches
+     Result panel with node type indicators
+
+T10: Frontend Components (11 files + 4 hooks)
+     @xyflow/react + d3-force + framer-motion + d3
+
+T11: Navigation Transitions
+     Graph assembles from nothing on entry (JARVIS-style)
+     Smooth transitions between graph/canvas/notes
+     Breadcrumb navigation preserves state
+
+PERFORMANCE:
+  500 nodes before virtual scroll
+  Level-of-detail: simplified at zoom out
+  Reduced motion: all physics/particles disabled
+  Particle effects: disabled at >200 nodes
+```
