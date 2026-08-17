@@ -2625,7 +2625,7 @@ Q3: Autonomy (Phases 7-9)
     Full L4/L5 autonomy, org learning, self-improvement, digital twin
 
 Q4: Enterprise (Phase 10)
-    All 22 dept templates, SDK GA, 32 enterprise connectors, simulation engine
+    All 22 dept templates, 32 enterprise connectors, simulation engine
 ```
 
 ### 3-Year Vision
@@ -2635,6 +2635,114 @@ Year 1: AI Organization OS (this spec)
 Year 2: Cross-org collaboration (AI companies collaborate with each other)
 Year 3: AI economy (AI organizations exchange services, specialize, compete)
 ```
+
+### Deferred to Future — SDK + Framework Adapters
+
+The following are intentionally deferred from the current implementation scope.
+They will be added in a future release once the core platform is stable.
+
+#### Python SDK (Future)
+
+```python
+# FUTURE — not in current scope
+# pip install agentverse-sdk
+
+from agentverse import OrgClient
+
+client = OrgClient(api_key="av_prod_xxx", org_id="org_trading_001")
+
+# Simple command
+response = client.command("What's happening?")
+print(response.text)
+
+# Streaming
+for chunk in client.command_stream("Research our top 5 competitors"):
+    print(chunk.text, end="")
+
+# Async
+response = await client.command_async("Approve the email campaign")
+
+# Approval workflow
+pending = client.list_pending_approvals()
+for item in pending:
+    client.approve(item.approval_id, comment="Looks good")
+
+# Event subscription
+@client.events.subscribe("org.mission.completed")
+async def on_complete(event):
+    print(f"Mission {event.mission_id} completed")
+```
+
+#### TypeScript SDK (Future)
+
+```typescript
+// FUTURE — not in current scope
+// npm install @agentverse/sdk
+
+import { OrgClient } from "@agentverse/sdk";
+
+const client = new OrgClient({ apiKey: "av_prod_xxx", orgId: "org_trading_001" });
+
+const response = await client.command("What's happening?");
+
+// Streaming
+for await (const chunk of client.commandStream("Research competitors")) {
+  process.stdout.write(chunk.text);
+}
+
+// React hook (for web apps built on top of the platform)
+import { useOrgCommand } from "@agentverse/sdk/react";
+const { command, response, loading } = useOrgCommand(orgId);
+```
+
+#### AI Framework Adapters (Future)
+
+When SDK is released, these adapters will allow org to be used
+as a native node/tool/agent inside popular AI frameworks:
+
+```python
+# FUTURE — not in current scope
+
+# LangGraph: org as a graph node
+from agentverse.adapters.langgraph import OrgLangGraphNode
+org_node = OrgLangGraphNode(org_id="org_research", api_key="av_xxx")
+graph.add_node("research", org_node)
+
+# CrewAI: org as a crew tool
+from agentverse.adapters.crewai import OrgCrewAITool
+org_tool = OrgCrewAITool(
+    org_id="org_legal", api_key="av_xxx",
+    name="Legal Review Org",
+    description="A complete legal department that reviews contracts",
+)
+
+# AutoGen: org as an agent
+from agentverse.adapters.autogen import OrgAutoGenAgent
+org_agent = OrgAutoGenAgent(name="ResearchDept", org_id="org_research", api_key="av_xxx")
+
+# OpenAI function calling: org as a callable function
+from agentverse.adapters.openai_functions import OrgAsOpenAIFunction
+org_fn = OrgAsOpenAIFunction(org_id="org_analysis", api_key="av_xxx")
+# Exposes as: {"name": "run_analysis_org", "description": "...", "parameters": {...}}
+```
+
+#### New Backend Files (when SDK/adapters are built)
+
+```
+app/org/sdk_server.py          # SDK authentication + request routing
+app/gateway/a2a/adapters/
+  ├── langgraph.py             # LangGraph node adapter
+  ├── crewai.py                # CrewAI tool adapter
+  ├── autogen.py               # AutoGen agent adapter
+  └── openai.py                # OpenAI function calling adapter
+packages/
+  ├── agentverse-sdk-python/   # Python package (pip install agentverse-sdk)
+  └── agentverse-sdk-js/       # TypeScript package (npm install @agentverse/sdk)
+```
+
+> **Note**: Until SDK is released, all integration is via the REST API
+> (`POST /v1/org/{id}/command`) or MCP server. Both are fully functional
+> without any SDK.
 
 ---
 
