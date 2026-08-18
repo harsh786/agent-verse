@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -142,23 +142,23 @@ function FrameworkCard({
             ))}
           </div>
         ) : data?.checks?.length ? (
-          <ul className="space-y-1.5">
+          <JARVISStagger className="space-y-1.5">
             {data.checks.map((c, i) => (
-              <li key={i} className="flex items-start gap-2 text-xs">
+              <JARVISStaggerItem key={i} className="flex items-start gap-2 text-xs">
                 {c.passed ? (
                   <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
                 ) : (
                   <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
                 )}
-                <span className={c.passed ? "" : "text-red-600 dark:text-red-400"}>
+                <span className={c.passed ? '' : 'text-red-600 dark:text-red-400'}>
                   {c.check}
                   {c.detail && (
                     <span className="text-muted-foreground ml-1">— {c.detail}</span>
                   )}
                 </span>
-              </li>
+              </JARVISStaggerItem>
             ))}
-          </ul>
+          </JARVISStagger>
         ) : (
           <p className="text-xs text-muted-foreground">No check data available.</p>
         )}

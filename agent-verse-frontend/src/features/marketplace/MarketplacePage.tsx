@@ -33,7 +33,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { useAuthStore } from "@/stores/auth";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DOMAINS = [
@@ -934,18 +934,19 @@ export function MarketplacePage() {
             {domain !== "all" && ` in "${domain}"`}
             {debouncedSearch && ` matching "${debouncedSearch}"`}
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <JARVISStagger className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {templates.map((tmpl) => (
-              <MarketplaceCard
-                key={tmpl.template_id}
-                template={tmpl}
-                installed={installedIds.has(tmpl.template_id)}
-                onSelect={() => setSelectedTemplate(tmpl)}
-                onDeploy={() => handleQuickDeploy(tmpl)}
-                deploying={deployingId === tmpl.template_id}
-              />
+              <JARVISStaggerItem interactive key={tmpl.template_id}>
+                <MarketplaceCard
+                  template={tmpl}
+                  installed={installedIds.has(tmpl.template_id)}
+                  onSelect={() => setSelectedTemplate(tmpl)}
+                  onDeploy={() => handleQuickDeploy(tmpl)}
+                  deploying={deployingId === tmpl.template_id}
+                />
+              </JARVISStaggerItem>
             ))}
-          </div>
+          </JARVISStagger>
           {/* Fix 1: Infinite scroll sentinel */}
           <div ref={sentinelRef} className="h-4" />
           {isFetchingNextPage && (

@@ -39,7 +39,7 @@ import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
@@ -599,14 +599,17 @@ function TerminalPanel({
             </p>
           </div>
         ) : (
-          events.map((ev, i) => (
-            <TerminalLine
-              key={readStr(ev.event_id) ?? `ev-${i}`}
-              event={ev}
-              onRetry={onRetry}
-              isRetrying={isRetrying}
-            />
-          ))
+          <JARVISStagger>
+          {events.map((ev, i) => (
+            <JARVISStaggerItem key={readStr(ev.event_id) ?? `ev-${i}`}>
+              <TerminalLine
+                event={ev}
+                onRetry={onRetry}
+                isRetrying={isRetrying}
+              />
+            </JARVISStaggerItem>
+          ))}
+          </JARVISStagger>
         )}
 
         {/* Live LLM streaming token */}
