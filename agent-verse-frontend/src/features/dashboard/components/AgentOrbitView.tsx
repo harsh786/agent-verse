@@ -19,9 +19,9 @@ interface AgentOrbitViewProps {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  active: "#22c55e",
-  idle: "#6b7280",
-  error: "#ef4444",
+  active: "#00D4FF",   // electric cyan — Jarvis active
+  idle:   "#475569",
+  error:  "#EF4444",
 };
 
 export function AgentOrbitView({
@@ -49,6 +49,19 @@ export function AgentOrbitView({
 
       // Clear previous
       while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+      // SVG defs: glow filter for active agent nodes
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      defs.innerHTML = `
+        <filter id="glow-active" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+          <feMerge>
+            <feMergeNode in="coloredBlur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+      `;
+      svg.appendChild(defs);
 
       // Central core node
       const coreNode = { id: "__core__", x: cx, y: cy, fx: cx, fy: cy };
@@ -95,8 +108,9 @@ export function AgentOrbitView({
       // Draw core node
       const coreEl = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       coreEl.setAttribute("r", "14");
-      coreEl.setAttribute("fill", "hsl(var(--primary))");
-      coreEl.setAttribute("opacity", "0.9");
+      coreEl.setAttribute('fill', '#00D4FF');
+      coreEl.setAttribute('opacity', '0.9');
+      coreEl.setAttribute('filter', 'url(#glow-active)');
       coreEl.setAttribute("cx", String(cx));
       coreEl.setAttribute("cy", String(cy));
       svg.appendChild(coreEl);
@@ -116,22 +130,23 @@ export function AgentOrbitView({
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         g.style.cursor = "pointer";
 
-        // Outer ring for active agents
-        if (agent.status === "active") {
-          const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          ring.setAttribute("r", String(agent.r + 4));
-          ring.setAttribute("fill", "none");
-          ring.setAttribute("stroke", STATUS_COLORS.active);
-          ring.setAttribute("stroke-width", "1.5");
-          ring.setAttribute("opacity", "0.4");
+        // Outer ring for active agents + glow
+        if (agent.status === 'active') {
+          const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          ring.setAttribute('r', String(agent.r + 6));
+          ring.setAttribute('fill', 'none');
+          ring.setAttribute('stroke', STATUS_COLORS.active);
+          ring.setAttribute('stroke-width', '1.5');
+          ring.setAttribute('opacity', '0.5');
           g.appendChild(ring);
         }
 
         // Main circle
-        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        circle.setAttribute("r", String(agent.r));
-        circle.setAttribute("fill", STATUS_COLORS[agent.status] ?? STATUS_COLORS.idle);
-        circle.setAttribute("fill-opacity", "0.8");
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('r', String(agent.r));
+        circle.setAttribute('fill', STATUS_COLORS[agent.status] ?? STATUS_COLORS.idle);
+        circle.setAttribute('fill-opacity', '0.85');
+        if (agent.status === 'active') circle.setAttribute('filter', 'url(#glow-active)');
         g.appendChild(circle);
 
         // Label

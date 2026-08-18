@@ -4,6 +4,7 @@
  * Uses standard CSS design tokens (bg-card, text-foreground, etc.)
  */
 import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -145,13 +146,23 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
 
   const recommendedModel = modelRec?.models?.[0];
 
+  const [isFocused, setIsFocused] = useState(false);
+
   return (
     <>
-      <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+      <motion.div
+        animate={{
+          boxShadow: isFocused
+            ? '0 0 0 2px rgba(0,212,255,0.4), 0 0 20px rgba(0,212,255,0.15)'
+            : '0 0 0 1px rgba(255,255,255,0.07)'
+        }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        className="bg-[#1A1F2E] rounded-2xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-muted/30">
           <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" aria-hidden="true" />
+            <span className="h-2 w-2 rounded-full bg-[#00D4FF] animate-pulse" aria-hidden="true" />
             <span className="text-xs font-semibold text-foreground">New Goal</span>
             {recommendedModel?.display_name && (
               <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
@@ -202,7 +213,9 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
             }}
             rows={3}
             placeholder="Describe your goal in natural language… (⌘↵ to submit)"
-            className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none resize-none pr-10"
+            className="w-full bg-transparent text-sm text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none resize-none pr-10"
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
             aria-label="Goal text"
           />
           <div className="absolute right-5 top-4">
@@ -383,7 +396,7 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
             )}
           </button>
         </div>
-      </div>
+      </motion.div>
 
       {showTemplatePicker && (
         <TemplatePickerModal
