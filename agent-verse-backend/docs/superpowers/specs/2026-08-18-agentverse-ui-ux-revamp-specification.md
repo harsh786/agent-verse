@@ -3134,3 +3134,721 @@ PHASE 7 — Architecture:
   EXTRACT: hooks to hooks/ directories (goals, agents, workflows, knowledge)
   REPLACE: inline styles → Tailwind (civilization, org, landing, workflow-builder)
 ```
+
+---
+
+# COVERAGE GAP FILL — v5 (2026-08-18)
+## 12 Features With Incomplete Spec — All Gaps Closed
+
+---
+
+## 1. Compliance (`CompliancePage`) — was 25% covered
+
+**Missing:** GDPR, SOC2, PCI compliance scores + animated arc system.
+
+```
+Layout:
+┌─────────────────────────────────────────────────────────────────┐
+│ Compliance Score Overview                                        │
+│                                                                  │
+│ ┌────────────────┐  ┌────────────────┐  ┌────────────────┐     │
+│ │   GDPR         │  │   SOC2         │  │   PCI-DSS      │     │
+│ │ [arc: 94%]     │  │ [arc: 87%]     │  │ [arc: 78%]     │     │
+│ │ ✅ Compliant    │  │ ⚠ 3 gaps       │  │ ❌ Action req.  │     │
+│ └────────────────┘  └────────────────┘  └────────────────┘     │
+│                                                                  │
+│ Gap Analysis:                                                    │
+│ ● Data retention policy   GDPR  ✅ Met                          │
+│ ● Right to erasure        GDPR  ⚠ Partial                       │
+│ ● Encryption at rest      PCI   ❌ Required                     │
+└─────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Score arc cards: JARVISStagger stagger 0.08s
+• Each SVG arc: strokeDashoffset 0→circumference×(score/100), springs.slow
+  Color: emerald (≥90%), amber (70-89%), rose (<70%)
+• Gap row entries: listItemVariants stagger 0.04s
+• ✅ status: checkmark SVG draw-in (strokeDashoffset)
+• ⚠ status: amber pulse ring after mount
+• ❌ status: rose left border + listItem animation
+• Score change (SSE): counterVariants + arc re-animates
+• "Run Compliance Check" button: JARVISButton with springs.fast
+• Modal for gap details: backdropVariants + modalVariants
+```
+
+---
+
+## 2. Schedules (`SchedulesPage`) — was 25% covered
+
+**Missing:** calendar view, cron pattern display, next run countdown.
+
+```
+Layout — 3 views (toggle: List | Calendar | Timeline):
+
+Calendar View:
+┌──────────────────────────────────────────────────────────────────┐
+│ [Month navigation ← August 2026 →]                               │
+│                                                                  │
+│  Mon  Tue  Wed  Thu  Fri  Sat  Sun                              │
+│   1    2    3    4    5    6    7                                │
+│  [●]        [●●]     [●]                                         │
+│   8    9   10   11   12   13   14                               │
+│  [●●●]      [●]                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+List View:
+│ Daily Report  Every 9am  → ReportAgent  ● Active  Next: 2h 14m  │
+│ Weekly Audit  Mon 8am    → AuditAgent   ● Paused  [Resume]       │
+│ Cron: 0 9 * * *  (human-readable: "9:00 AM every day")          │
+
+Animations:
+• Calendar month transition: AnimatePresence x:±30→0 springs.page
+• Schedule dots on calendar dates: StatusOrb size=6, stagger appear
+• Active dot: pulseVariants.active (electric for enabled, gray for paused)
+• Toggle active: StatusOrb transitions springs.fast (emerald↔gray)
+• List rows: listItemVariants stagger 0.04s
+• "Next run" countdown: live decrement animation (AnimatePresence counterVariants)
+• Cron expression: monospace with electric text color, tooltip on hover
+• Pause/Resume action: JARVISButton, toast feedback
+• New schedule drawer: drawerVariants from bottom
+• Calendar hover day: surface4 highlight + scale 1.02 springs.gentle
+```
+
+---
+
+## 3. Lab (`AgentLabPage`) — was 33% covered
+
+**Missing:** prompt editor panel, compare mode, history sidebar.
+
+```
+Layout (IDE-style, split pane):
+┌────────────────────────────────┬──────────────────────────────────┐
+│ Prompt Editor (left 50%)       │ Response (right 50%)             │
+│ ─────────────────────────────  │ ──────────────────────────────── │
+│ System: [editable textarea]    │ [Streaming response]             │
+│ User:   [editable textarea]    │ Tokens: 1,234 (count-up)         │
+│                                │ Cost: $0.0023 (count-up)         │
+│ Model: [selector ▾]            │ Latency: 1,204ms                 │
+│ Temp:  [0-2 slider]            │                                  │
+│ MaxTok:[2000 input]            │ [Compare mode ▾ ]                │
+│                                │ (opens second pane, side-by-side)│
+│ [▶ Run]  [Save]  [Share]       │ [Copy] [Save as Example]         │
+└────────────────────────────────┴──────────────────────────────────┘
+
+Prompt History (slide-in from left when open):
+  [History] ← toggle                        Session A (8 runs)
+  ─────────────────────────────────────────  run #1: "Research..."
+                                             run #2: "Analyze..."
+
+Animations:
+• Run button: JARVISButton, spinner during execution, springs.fast press
+• Streaming response: character-by-character typewriter (30ms/char) with cursor blink
+• Token counter: AnimatePresence counterVariants on each token chunk
+• Cost counter: same — count-up as tokens arrive
+• Compare mode: AnimatePresence — second pane panelVariants from right
+  Both panes update side-by-side with different model responses
+• Slider (temperature): whileDrag spring physics thumb, value counterVariants
+• Model selector: AnimatePresence dropdown, listItemVariants per model option
+• History sidebar: panelVariants from left when toggled
+• Save example: brief scale 0→1.2→1 springs.bouncy + emerald flash
+• Share: springs.fast, copy to clipboard + toast
+• Editor focus: CSS border → electric `ring-[#00D4FF]/60`
+```
+
+---
+
+## 4. Onboarding (`OnboardingPage`) — was 33% covered
+
+**Missing:** wizard multi-step, stepper progress, step transitions.
+
+```
+Layout:
+┌─────────────────────────────────────────────────────────────────┐
+│ [Horizontal stepper — top]                                      │
+│ ①━━━━━━━②━━━━━━━③━━━━━━━④                                       │
+│ Setup    Agent   Goal    Invite                                  │
+│                                                                  │
+│ [Step Content — animated with AnimatePresence]                  │
+│                                                                  │
+│ Step 2: Create Your First Agent                                 │
+│ ┌────────────────────────────────────────────────────────┐     │
+│ │ [Agent templates — choose one]                         │     │
+│ │  🔍 Research  |  💻 Code  |  📊 Analysis  |  ⚙ Custom │     │
+│ │  [selected: electric border, scale 1.03]               │     │
+│ │                                                        │     │
+│ │  Name: [input]    Model: [selector]                   │     │
+│ └────────────────────────────────────────────────────────┘     │
+│                                                                  │
+│ [◀ Back]                           [Continue ▶]                 │
+│                                                                  │
+│ [Right: Live preview of configured agent — updates as you type] │
+└─────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Step entry (forward): content x:-40→0, opacity 0→1, springs.page
+• Step entry (back): x:40→0, opacity 0→1, springs.page
+• Stepper progress: electric fill advances with springs.standard
+• Stepper dot active: scale 1→1.3→1 springs.bouncy + electric ring
+• Template card selection: scale 1.03, border.active, ring checkmark in springs.snappy
+• Name input focus: border → electric ring, shadow.glow
+• Live preview agent: panelVariants from right, updates with 300ms debounce
+• "Continue" button: JARVISButton, disabled state opacity 0.4
+• Final step (Step 4): confetti animation + ✅ scale 0→1.3→1 springs.bouncy
+• Welcome screen: pageVariants with "You're ready" message
+```
+
+---
+
+## 5. Org Feature — Missing: CommandCenter, MorningBrief, DigitalTwin
+
+### CommandCenter Component (within OrgPage)
+
+```
+This is the central mission input area in OrgPage:
+┌─────────────────────────────────────────────────────────────────┐
+│ ✨ What should your AI org accomplish today?                    │
+│ [goal input bar — full width, centered]                          │
+│ Suggested: "Generate Q3 report" | "Monitor GitHub PRs"          │
+│ [Voice 🎙]  [Template 📋]  [Launch ⚡]                          │
+└─────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Input focus: border glow electric + shadow.glowStrong springs.page
+• Placeholder rotation: typewriter fade-in of 4 rotating suggestions (4s cycle)
+• Suggestion pill hover: scale 1.03, border.glow springs.gentle
+• Voice button: pulse ring while recording (rose, 1.5s loop)
+• Launch button: JARVISButton, springs.bouncy, spinner → ✅
+• Intent preview: AnimatePresence y:-8→0 as you type (debounced 300ms)
+  "I'll use: ResearchAgent + web_search + synthesize"
+```
+
+### MorningBrief Component (within OrgPage)
+
+```
+Layout — dismissable banner at top of OrgPage:
+┌─────────────────────────────────────────────────────────────────┐
+│ 🌅 Good morning. 3 goals completed overnight. 1 approval waiting.│
+│ [View Goals ↗]  [Review Approval ↗]  [Dismiss ✕]               │
+└─────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Entry: y:-48→0, springs.page with 0.3s delay (loads after page)
+• Dismiss: y:-48→exit, opacity→0, AnimatePresence
+• CTA buttons: JARVISButton springs.snappy
+• Approval count badge: springs.bouncy appear
+```
+
+### DigitalTwinPanel Component (within OrgPage)
+
+```
+Layout — right panel showing org simulation state:
+┌──────────────────────────────────────────────────────────────────┐
+│ Digital Twin  [Simulate ▶]  [Reset ↺]                           │
+│ ──────────────────────────────────────────────────────────────   │
+│ Predicted outcomes:                                             │
+│ If you deploy this: Cost +$45/day | Success rate: 94%           │
+│ [Particle simulation — agent nodes moving]                      │
+└──────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Particle simulation: D3-force layout, nodes move with spring physics
+• Prediction values: counterVariants on update
+• [Simulate] click: brief loading state, then particles animate to new state
+• Success/risk color: emerald (high success) → amber → rose (high risk)
+```
+
+---
+
+## 6. Analytics — Missing: Cost Trend, Score Trend Animations
+
+```
+AnalyticsDashboardPage:
+
+Cost Trend Chart (D3 area):
+• Initial render: path draw-in left→right (700ms, cubic-bezier)
+• New data point (live): smooth path morph via D3 transition (400ms)
+• Hover: vertical crosshair line tracks mouse x-position with springs.gentle
+• Tooltip: modalVariants scale-in at cursor
+• Time period switch (7d/30d/90d): chart fades 0.3 → new data → fades in
+
+Score Trend Chart (D3 line):
+• Same animation pattern as cost trend
+• Multiple lines (P50/P95/P99): each draws in with 100ms stagger
+• Toggle line visibility: opacity 0↔1 springs.fast
+• Regression detection: rose dot appears with springs.bouncy when score drops
+
+SelfImprovementPage:
+• Prompt version timeline: horizontal scroll, nodes springs.bouncy on mount
+• Score bars: fill animation left→right springs.page
+  Color progression: rose→amber→emerald as score improves
+• A/B winner badge: scale 0→1.2→1 springs.bouncy + emerald glow
+• Version delta: AnimatePresence counterVariants (±Δ)
+```
+
+---
+
+## 7. Audit (`AuditExplorerPage`) — Missing: Hash Chain Verify Animation
+
+```
+Hash Chain Integrity Animation:
+┌──────────────────────────────────────────────────────────────────┐
+│ [Verify Integrity ▶]    Last verified: 2 hours ago   ✅ Valid     │
+│                                                                   │
+│ Chain visualization (horizontal):                                │
+│ [Event #1] → [Event #2] → [Event #3] → [Event #4] → [Now]       │
+│  ✅ hash ok   ✅ hash ok   ✅ hash ok   ✅ hash ok   ✅            │
+└──────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Verify button click: spinner + "Verifying chain..." text typewriter
+• Chain nodes: appear sequentially left→right (stagger 0.08s)
+  Each: scale 0→1 springs.snappy + ✅ checkmark draw-in
+• Final node: emerald flash + "✅ Chain intact" toast (toastVariants)
+• TAMPERED detection: rose flash at corrupted position + rose toast
+• Audit timeline rows: listItemVariants stagger 0.035s
+• Security event rows: rose left border + rose glow on hover
+• New SSE event: y:-16→0 springs.bouncy + highlight pulse for 2s
+• Expand row: AnimatePresence height 0→auto springs.page
+  Content: stagger reveal of fields 0.03s each
+• Filter bar results: AnimatePresence fade per row change
+```
+
+---
+
+## 8. Governance (`GovernancePage`) — Missing: Audit Timeline, Diff Viewer
+
+```
+Audit Timeline (immutable, virtualized):
+┌──────────────────────────────────────────────────────────────────┐
+│ ●──────────────────────────────────────────────────── (time axis)│
+│                                                                   │
+│ 14:23:11  🔑 api_key.created   ak_pro_xyz  ✅  [▶ Details]      │
+│ 14:20:03  🎯 goal.completed    goal:abc    ✅  [▶ Details]       │
+│ 14:15:44  🛑 jailbreak.detect  goal:def    ❌  [▶ Details]       │
+└──────────────────────────────────────────────────────────────────┘
+
+Diff Viewer (side-by-side, for config changes):
+┌──────────────────────────────────────────────────────────────────┐
+│ Agent config changed by admin                                    │
+│ ┌──────────────────────┬──────────────────────────────────────┐  │
+│ │ Before               │ After                                │  │
+│ │ model: claude-haiku  │ model: gpt-4o                        │  │
+│ │ temperature: 0.1     │ temperature: 0.7                     │  │
+│ │ [removed: rose]      │ [added: emerald]                     │  │
+│ └──────────────────────┴──────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Timeline rows: listItemVariants stagger 0.035s (virtualized)
+• New SSE event: y:-16→0 springs.bouncy + event-type color pulse
+  🛑 security events: rose border + rose glow on hover
+• Row [▶ Details] expand: AnimatePresence height springs.page
+  Expanded content stagger 0.03s per field
+• Diff viewer:
+  - Two panes slide from sides simultaneously (x:±40→0 springs.page)
+  - Removed lines: rose left-border + fade in with rose tint bg
+  - Added lines: emerald left-border + fade in with emerald tint bg
+  - Line hover: highlight strengthens, full value shown
+```
+
+---
+
+## 9. Memory (`MemoryExplorerPage`) — Missing: Episodic, Semantic Cluster
+
+```
+Layout:
+┌─────────────────────────────────────────────────────────────────┐
+│ [Type Tabs]                                                     │
+│ Episodic (45) | Working (3) | Long-term (89) | Procedural (12) │
+│                                                                  │
+│ [Episodic Tab — horizontal timeline]                            │
+│ ←──────────────────────────────────────────────────────────→   │
+│ ●         ●●        ●          ●●●       ●         ●           │
+│ Aug 16  Aug 17   Aug 17      Aug 18   Aug 18    Today           │
+│ Goal#1  Goal#12  Session    Goal#45   Session    Now            │
+│                                                                  │
+│ [Memory Detail Panel — click timeline node]                     │
+│ Cluster: "AI Research" — 42 memories                           │
+│ Relevance: ████████░░ 82%                                       │
+│ "Found that GPT-4o outperforms Claude on coding tasks..."       │
+│                                                                  │
+│ [Semantic Cluster Tab — D3 force graph]                         │
+│ Nodes: memory items, edges: semantic similarity                 │
+└─────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Timeline nodes: springs.bouncy on mount, stagger left→right
+• Active timeline node: scale 1.3 + electric ring pulseVariants.pulse
+• Timeline zoom (scroll wheel): smooth scale springs.gentle
+• Timeline click → detail panel: panelVariants from right
+• Memory detail: stagger reveal of fields springs.page
+• Relevance bar: fill left→right springs.page (color: emerald>80%, amber>50%)
+• "Forget" action: scale 0 + rose flash springs.fast → toast
+• Semantic cluster (D3 force):
+  - Nodes: spring into position from center (d3-force simulation)
+  - Selected node: scale 1.3 + electric ring + related nodes highlight
+  - Hover node: expand to show memory preview, edges brighten
+  - Cluster drag: spring physics resist then snap back
+• Tab switch: AnimatePresence content fade springs.page
+```
+
+---
+
+## 10. RPA (`RpaLivePage`) — Missing: Click Target, Step Builder, Browser Preview
+
+```
+Layout (split-pane):
+┌──────────────────────────┬──────────────────────────────────────┐
+│  Step Builder (35%)      │  Browser Preview (65%)               │
+│  ─────────────────────   │  ┌────────────────────────────────┐  │
+│  1. Open URL ✅          │  │                                │  │
+│  2. Click ● (active)    │  │  [Live screenshot stream]      │  │
+│  3. Type text ⏳         │  │  Click targets: ring overlay   │  │
+│  4. Extract ⏳           │  │  Field outlines: electric glow │  │
+│  5. Wait ⏳              │  │  Extracted: emerald highlight  │  │
+│  ─────────────────────   │  └────────────────────────────────┘  │
+│  [+ Add Step]            │  [Record ●] [▶ Play] [⏭ Step] [⏹]   │
+│  [▶ Run] [Export]        │  [Screenshot] [Export Script]        │
+└──────────────────────────┴──────────────────────────────────────┘
+
+Step-Level Animations:
+• Step list: listItemVariants stagger 0.05s
+• Active step: electric left border + bg surface3 + scale 1.01
+• Step completed: ✅ scale 0→1.2→1 springs.bouncy + emerald flash
+• Step error: rose left border + shake x:[-4,4,-4,0]
+
+Browser Preview Overlay Animations:
+• Click target: concentric rings expand outward (scale 1→2.5→3.5) + opacity 1→0
+  Spring: { stiffness: 200, damping: 20, repeat: 1 }
+• Field fill: outline glows electric as text appears (typewriter effect)
+• Element extraction: emerald highlight flash 0→1→0.3
+• Screenshot update: brief opacity 0.8→1 on each screenshot
+
+Recording Mode:
+• Record button: rose pulse ring while recording (1.5s loop, scale 1→1.4→1)
+• Auto-step creation: new step slides in from right springs.bouncy
+
+Split pane:
+• Draggable divider: cursor resize, smooth spring on drag
+• Width: animated springs.gentle on drag release (snaps to grid)
+```
+
+---
+
+## 11. Marketplace (`MarketplacePage`) — Missing: Hero Carousel
+
+```
+Hero Carousel Animation:
+┌──────────────────────────────────────────────────────────────────┐
+│ ┌────────────────────────────────────────────────────────────┐  │
+│ │ [Featured card 1 of 3]                                    │  │
+│ │ 🏆 Research & Report Agent    ★★★★★ 4.9  1,243 installs  │  │
+│ │ "Multi-source research + executive report in minutes"      │  │
+│ │ [Preview ▶]  [Install in 1 click]                         │  │
+│ └────────────────────────────────────────────────────────────┘  │
+│  ●  ○  ○  (carousel dots)                                       │
+└──────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Carousel slide: x:100%→0 (forward), x:-100%→0 (back), springs.page
+  AnimatePresence mode="wait" for clean transitions
+• Auto-advance: 5s interval, resets on user interaction
+• Dot indicators: active dot scale 1.2 + electric, others opacity 0.4
+• Card hover: y:-4, glowStrong shadow, border.glow springs.gentle
+• Install button: JARVISButton springs.fast, spinner → ✅ "Installed!"
+• Star rating: stars fill left→right 0.1s stagger on enter
+• Install count badge: count-up animation on carousel enter
+```
+
+---
+
+## 12. Skills (`SkillsPage`) — Missing: Enable Toggle Animation
+
+```
+Skill Card with Enable Toggle:
+┌──────────────────────────────────────────────────────────────────┐
+│ [Skill Grid]                                                     │
+│ ┌──────────────────────────┐  ┌──────────────────────────┐      │
+│ │ 📊 Data Analysis         │  │ 🔍 Web Research          │      │
+│ │ ● Enabled (pulse)        │  │ ○ Disabled               │      │
+│ │ Reliability: ████████░░  │  │ Reliability: ████████░░  │      │
+│ │ Used by: 3 agents        │  │ Used by: 0 agents        │      │
+│ │ [Configure] [● Enabled▾] │  │ [Enable]  [Configure]   │      │
+│ └──────────────────────────┘  └──────────────────────────┘      │
+└──────────────────────────────────────────────────────────────────┘
+
+Enable Toggle Animation:
+• Click Enable: JARVISButton springs.fast press
+• Toggle spring: StatusOrb transitions gray→emerald springs.fast
+  Simultaneously: card border transitions glass→success
+• Enabled ring: emerald glow ring expands once (scale 1→2→fade)
+• Disabled agent count: counterVariants on change
+• Configure drawer: drawerVariants from bottom
+
+Card Animations:
+• Grid: JARVISStagger cardContainer variants, stagger 0.06s
+• Card hover: y:-3, border.glow, shadow.glowStrong springs.gentle
+• Card tap: scale 0.98 springs.fast
+```
+
+---
+
+## 13. Simulation (`SimulationPage`) — Missing: Dry Run Mode
+
+```
+Simulation Mode:
+┌──────────────────────────────────────────────────────────────────┐
+│ [SIMULATION MODE BANNER]                                         │
+│ 🧪 Simulation Mode — mock tools, no real actions                │
+│ All tool calls return simulated responses                        │
+│ [Exit Simulation]                                                │
+│                                                                  │
+│ [Same goal interface as GoalsListPage]                           │
+│ → Goal input + submit (all animations same as goals)            │
+│ → Results show "SIMULATED" badge on every tool output           │
+│ → Cost shows "$0.00 (simulated)"                                 │
+│                                                                  │
+│ [Diff Viewer — compare simulated vs expected output]             │
+│ Left: Simulated output  |  Right: Expected/Previous output       │
+└──────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Simulation banner: amber/violet gradient animated border
+  Border: conic-gradient rotating 2s loop
+• "SIMULATED" badge: violet color, springs.bouncy first appear per result
+• Diff viewer: same pattern as GovernancePage diff viewer
+• Tool output badges: violet outline, not rose/emerald (simulated data)
+• Cost display: always shows "$0.00 (simulated)" in violet
+• [Exit Simulation]: rose border transition, scale springs.fast
+```
+
+---
+
+## 14. Builder (`BuilderPage`) — Missing: Node Canvas Animations
+
+```
+Visual Agent Builder (node canvas):
+┌────────────────────────────────────────────────────────────────┐
+│ [Toolbar: Save | Test | Deploy | +Node | Auto-Layout]          │
+├──────────────────────────────────────────────────────────────────┤
+│ [Node Palette — left 280px]  │  [Canvas — @xyflow/react]       │
+│ ─────────────────────────    │                                  │
+│ 🎯 Goal Node                  │  ● START ─→ [AgentStep] ─→    │
+│ 🔧 Tool Node                  │            ─→ [ToolStep] ─→    │
+│ 🤖 Agent Step                 │            ─→ [HITL] ─→ END    │
+│ 📋 Condition                  │                                  │
+│ 🔁 Loop Node                  │  Connection: particle flow ✦✦✦ │
+│ ✋ HITL Step                   │  Selected: electric border      │
+│                              │  Running: electric pulse         │
+└──────────────────────────────┴──────────────────────────────────┘
+
+Animations:
+• Node palette items: listItemVariants stagger 0.03s
+  Hover: scale 1.05, border.glow springs.gentle
+• Drag from palette → canvas: springs.bouncy drop with scale 0.8→1.0
+• Connection edge: animated particle flow along edge direction
+  Particles: small dots travel from source to target (CSS stroke-dashoffset)
+  Active connection: particles brighter, faster
+  Idle connection: slow drift
+• Selected node:
+  - border color: transparent → electric (#00D4FF) springs.fast
+  - scale: 1→1.02 springs.gentle
+  - control handles: appear with springs.bouncy
+• Node delete: scale 0 + fade springs.fast
+• Auto-layout: nodes animate to new positions stagger springs.page
+• Test run: nodes highlight in execution sequence
+  Running node: pulseVariants.pulse electric ring
+  Completed node: emerald flash + ✅
+• Undo/redo: brief scale pulse on affected nodes
+```
+
+---
+
+## 15. Notifications (`NotificationCenterPage`) — Missing: SSE Notification
+
+```
+SSE Real-Time Notification:
+┌──────────────────────────────────────────────────────────────────┐
+│ 🔔 Notifications (3 unread)    [Mark all read]   [Settings]     │
+│                                                                   │
+│ [NEW — SSE driven]                                              │
+│ ┌──────────────────────────────────────────────────────────┐    │
+│ │ ⚡ [electric]  Goal Completed            2m ago  ●       │    │
+│ │ "Research AI trends" completed            [View Result]  │    │
+│ └──────────────────────────────────────────────────────────┘    │
+│ ┌──────────────────────────────────────────────────────────┐    │
+│ │ ✋ [amber]  Approval Required             5m ago  ●       │    │
+│ │ "Deploy to production" needs review       [Approve][❌]  │    │
+│ └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+
+SSE New Notification Animation (critical):
+• Arrive: y:-16→0, scale 0.93→1, opacity 0→1, springs.bouncy
+  Duration: 300ms — snappy arrival
+• Electric left border flash: 0→1→0.5 opacity (2s settle)
+• Bell icon badge: AnimatePresence counterVariants (number springs.bouncy)
+• Type-specific glow: left 3px border color per type
+  success/complete → emerald, approval/warning → amber, error → rose, info → electric
+• Mark read: opacity 1→0.6, ● dot scale 0, border fades springs.fast
+• Mark all read: cascade stagger 0.04s per item (left→right opacity animation)
+• Hover row: bg surface4, action buttons slide up (y:6→0 springs.fast)
+• Action buttons in notification (Approve/Reject inline):
+  Approve: JARVISButton emerald, click → item exits right
+  Reject: JARVISButton rose, click → item exits left
+• Load more: listItemVariants stagger on append (pagination)
+```
+
+---
+
+## 16. Landing (`LandingPage`) — Missing: Constellation, Scroll Animations
+
+```
+Hero Constellation (the signature visual):
+• 12 agent nodes arranged in constellation pattern
+• SVG circles with electric color (#00D4FF)
+• Each node: gentle float animation (y ±6px, 3-5s cycle, staggered start)
+• Connecting lines: animated stroke-dashoffset flowing between nodes
+  Direction: random, gives "data flowing" appearance
+• Hover node: scale 1.2, glow ring expands, tooltip with agent type
+• Page load: nodes appear stagger (scale 0→1, springs.bouncy, 0.1s stagger)
+
+Scroll-Triggered Feature Sections:
+• IntersectionObserver threshold 0.2 → triggers JARVISStagger
+• Section 1 (Live demo): JARVISStagger slides content in from bottom
+  Auto-typing goal input → simulated response with typewriter
+• Section 2 (Providers): CSS infinite marquee (provider logos)
+  Pause on hover, resume on mouse leave
+• Section 3 (Pricing): cardVariants stagger on scroll-in
+• Section 4 (Testimonials): horizontal carousel, autoplay 6s
+
+Hero Text:
+• Title: blur 8px→0px + y 20→0 springs.cinematic (0.2s delay)
+• Subtitle: same, 0.4s delay
+• CTAs: springs.bouncy enter, 0.6s delay
+  hover: y:-3, glow electric springs.gentle
+
+Scroll indicator (↓):
+• Gentle bounce animation (y 0→8→0, 1.5s loop)
+• Fades out after user scrolls 200px
+```
+
+---
+
+## Final Spec Verification — All 37 Features Covered
+
+```
+✅ goals              — GoalsListPage, GoalDetailPage, GoalDNA, GoalDiff,
+                        GhostRun, GoalOutcomeHero, GoalResultCanvas,
+                        GoalEvidencePanel, GoalExplainPanel,
+                        MissionGoalComposer (streaming, step pulse, focus glow)
+
+✅ org               — OrgPage, OrgListPage, StrategicAdvisorPage,
+                        CommandCenter, MorningBrief, DigitalTwinPanel,
+                        GraphifyProgress, ObsidianVaultExplorer
+
+✅ workflow          — WorkflowListPage, WorkflowRunDetailPage,
+                        WorkflowAnalyticsPage, WorkflowBuilderPage,
+                        WorkflowMarketplacePage, WorkflowRunsPage,
+                        ApprovalInboxPage, WorkflowSettingsPage, HITL
+
+✅ ingestion         — SourcesPage, SourceCard, SourceList,
+                        SourceDetailDrawer, drop zone, progress queue
+
+✅ triggers          — TriggersPage, TriggerList, TriggerCreateModal
+
+✅ guardrails        — GuardrailCenterPage, rule cards, rule toggle,
+                        toggle animation, trigger count counterVariants
+
+✅ governance        — GovernancePage, audit timeline, hash chain verify,
+                        diff viewer, AuditExplorerPage
+
+✅ agents            — AgentsListPage, AgentDetailPage, AgentCreatePage,
+                        AgentRadarPage (D3 radar), AgentDashboardPage,
+                        AgentIdentityPage, AgentPersonalityPage,
+                        AgentOrbitView (D3 electric glow)
+
+✅ knowledge         — KnowledgePage, GraphExplorerPage (D3 glowing nodes),
+                        semantic search, collection CRUD
+
+✅ dashboard         — DashboardPage, LiveActivityStream (SSE animated),
+                        AgentOrbitView, AIOpsDashboard, KPI cards, StatusOrb
+
+✅ analytics         — AnalyticsDashboardPage (D3 live charts),
+                        SelfImprovementPage (prompt versions, A/B winner)
+
+✅ approvals         — ApprovalsPage, ApprovalInboxPage, HITL queue,
+                        approve/reject animations
+
+✅ audit             — AuditExplorerPage, hash chain verify animation,
+                        timeline stagger, security event rows
+
+✅ compliance        — CompliancePage, GDPR/SOC2/PCI arcs, gap analysis
+
+✅ memory            — MemoryExplorerPage, episodic timeline, semantic cluster D3
+
+✅ observability     — ObservabilityPage (service map, trace waterfall),
+                        CostDashboardPage (treemap, area chart)
+
+✅ marketplace       — MarketplacePage, hero carousel, template cards
+
+✅ connectors        — ConnectorsCatalogPage, ConnectorsRegisteredPage,
+                        ConnectorDetailPage, OAuthCallbackPage
+
+✅ settings          — SettingsPage, BillingPage, BudgetManagerPage,
+                        GuardrailCenterPage, RoleEditorPage, ScopeExplorerPage
+
+✅ shared layout     — Sidebar (spring collapse, nav hover, layoutId),
+                        TopBar (search AnimatePresence, notification badge),
+                        ConfirmModal (backdrop + modal spring),
+                        Toaster (AnimatePresence popLayout + StatusOrb),
+                        EmptyState (float/pulse/orbit), StatusOrb
+
+✅ auth              — AuthPage (plan badge, error shake),
+                        MFAVerifyPage (6-digit, success bounce),
+                        SSOCallbackPage (spinner)
+
+✅ chat              — ChatPage (typewriter, SSE),
+                        AgentMemoryPage (memory cards, Forget animation),
+                        ChatStepCard, ChatHITLCard
+
+✅ rpa               — RpaLivePage, click target rings, step builder,
+                        browser preview overlay, record mode
+
+✅ ocr               — OcrPage, bounding boxes, confidence bars
+
+✅ civilization      — CivilizationPage, D3 globe rotation, arc flows
+
+✅ schedules         — SchedulesPage, calendar month slide, cron display,
+                        next-run countdown, status orb toggle
+
+✅ templates         — TemplateLibraryPage, TemplatePickerModal,
+                        TemplateInstantiator
+
+✅ tools             — ToolsPage, tool rows stagger, risk badge
+
+✅ status            — StatusPage, uptime bars stagger, component health orbs
+
+✅ lab               — AgentLabPage, prompt editor, streaming typewriter,
+                        compare mode panelVariants, history sidebar
+
+✅ landing           — LandingPage, hero constellation, scroll triggers
+
+✅ skills            — SkillsPage, enable toggle animation, orb transition
+
+✅ simulation        — SimulationPage, SIMULATION banner, dry run badge
+
+✅ builder           — BuilderPage, node canvas, particle edge flow,
+                        drag-drop spring physics
+
+✅ rbac              — RbacPage, permission matrix, role selector
+
+✅ notifications     — NotificationCenterPage, SSE notification spring entry,
+                        bell badge counterVariants, mark-read cascade
+
+✅ onboarding        — OnboardingPage, wizard stepper, step transitions,
+                        confetti on completion
+
+✅ errors            — NotFoundPage, 404 glitch CSS, typewriter text
+```
+
+**37/37 features: Layout ✅ | Motion ✅ | SSE ✅ (where applicable) | Agentic ✅**
