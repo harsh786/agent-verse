@@ -11,12 +11,12 @@
  *  - Activity feed: real-time event stream
  */
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Users, DollarSign, Clock, Target, CheckCircle2,
   AlertTriangle, Pause, Play, StopCircle, BarChart3,
 } from 'lucide-react';
+// JARVIS palette — electric #00D4FF surfaces #0F1826 #0A0F1A
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -25,6 +25,7 @@ import { useMission, useOrgTasks } from './hooks/useOrg';
 import { KanbanBoard } from './KanbanBoard';
 import { ArtifactGallery } from './ArtifactGallery';
 import { ActivityFeed } from './components/ActivityFeed';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import type { MissionStatus } from './types';
 
 // ── Status config ──────────────────────────────────────────────────────────
@@ -83,11 +84,14 @@ function MissionTimeline({ progress }: { progress: number }) {
 // ── Main component ─────────────────────────────────────────────────────────
 
 interface MissionPageProps {
-  orgId: string;
-  missionId: string;
+  orgId?: string;
+  missionId?: string;
 }
 
-export function MissionPage({ orgId, missionId }: MissionPageProps) {
+export function MissionPage({ orgId: orgIdProp, missionId: missionIdProp }: MissionPageProps = {}) {
+  const params = useParams<{ orgId: string; missionId: string }>();
+  const orgId = orgIdProp ?? params.orgId ?? '';
+  const missionId = missionIdProp ?? params.missionId ?? '';
   const navigate = useNavigate();
   const { data: mission, isLoading } = useMission(orgId, missionId);
   const { data: tasksPage } = useOrgTasks(orgId, { mission_id: missionId });
@@ -95,9 +99,9 @@ export function MissionPage({ orgId, missionId }: MissionPageProps) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-[var(--bg-base)]">
-        <div className="text-[var(--text-muted)] text-sm" aria-live="polite">Loading mission…</div>
-      </div>
+      <JARVISPageShell className="flex items-center justify-center min-h-screen bg-[#0A0F1A]">
+        <div aria-live="polite" className="text-[#5A7494] text-sm">Loading mission…</div>
+      </JARVISPageShell>
     );
   }
 
@@ -118,12 +122,8 @@ export function MissionPage({ orgId, missionId }: MissionPageProps) {
   const riskClass = RISK_COLOR[(mission as any).risk_level ?? 'medium'] ?? RISK_COLOR.medium;
 
   return (
-    <motion.div
-      className="min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]"
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
-    >
+    <JARVISPageShell className="min-h-screen bg-[#0A0F1A] text-[#F0F6FF]">
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? 'Loading…' : ''}</div>
       <div className="max-w-6xl mx-auto px-6 py-6 space-y-6">
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div className="flex items-start gap-4">
@@ -214,6 +214,6 @@ export function MissionPage({ orgId, missionId }: MissionPageProps) {
           </TabsContent>
         </Tabs>
       </div>
-    </motion.div>
+    </JARVISPageShell>
   );
 }
