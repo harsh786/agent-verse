@@ -256,6 +256,11 @@ class MCPClient:
         self, *, server_id: str, tenant_ctx: TenantContext
     ) -> list[ToolDefinition]:
         """Discover available tools on a registered MCP server."""
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("mcp.discover_tools") as span:
+            span.set_attribute("server_id", server_id)
+            span.set_attribute("tenant_id", getattr(tenant_ctx, "tenant_id", ""))
         if not server_id:
             logger.warning("discover_tools called with empty server_id")
             return []
@@ -950,7 +955,7 @@ class MCPClient:
         # Step 1: Resolve arguments against the tool's JSON schema before the
         # first call so the LLM's parameter name variations are fixed upstream.
         try:
-            from app.mcp.tool_intelligence import get_resolver, get_healer
+            from app.mcp.tool_intelligence import get_healer, get_resolver
             _resolver = get_resolver()
             _healer = get_healer(getattr(self, "_provider", None))
 

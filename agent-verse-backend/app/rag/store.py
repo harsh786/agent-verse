@@ -120,6 +120,11 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
     ) -> str:
         """Persist a collection before making it visible to the caller."""
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("rag.create_collection") as span:
+            span.set_attribute("tenant_id", tenant_ctx.tenant_id)
+            span.set_attribute("collection_id", collection.collection_id)
         if self._db is None:
             return self.create_collection(collection, tenant_ctx=tenant_ctx)
         # Persist to DB first (fail-closed). Only expose in-memory after success.
@@ -786,6 +791,12 @@ class KnowledgeStore:
         metadata_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return plain-dict results from the configured source of truth."""
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("rag.search") as span:
+            span.set_attribute("tenant_id", tenant_ctx.tenant_id)
+            span.set_attribute("collection_id", collection_id)
+            span.set_attribute("top_k", top_k)
         if self._db is not None:
             persisted = await self.hybrid_search_db(
                 query,
