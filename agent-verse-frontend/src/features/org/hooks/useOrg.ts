@@ -2,7 +2,9 @@
  * TanStack Query hooks for the AI Organization OS.
  * All data fetching goes through these hooks — never call orgApi directly in components.
  */
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api/client';
 import { orgApi } from '../api';
 import type {
   Organization,
@@ -187,5 +189,116 @@ export function useOrgEvents(orgId: string | null | undefined) {
     enabled:       !!orgId,
     staleTime:     10_000,
     refetchInterval: 30_000,  // live event feed
+  });
+}
+
+// ── Alias hooks (used by new components) ──────────────────────────────────
+
+/** Alias for useMission — used by MissionPage. */
+export function useOrgMission(orgId: string, missionId: string | null | undefined) {
+  return useMission(orgId, missionId);
+}
+
+/** Alias for useDepartments — used by OrgChart / DepartmentPage. */
+export function useOrgDepartments(orgId: string | null | undefined) {
+  return useDepartments(orgId);
+}
+
+// ── Task hooks ────────────────────────────────────────────────────────────
+
+export function useOrgTasks(
+  orgId: string | null | undefined,
+  filters?: { mission_id?: string; status?: string; limit?: number },
+) {
+  return useQuery({
+    queryKey: orgKeys.tasks(orgId!, filters),
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (filters?.mission_id) qs.set('mission_id', filters.mission_id);
+      if (filters?.status) qs.set('status', filters.status);
+      if (filters?.limit) qs.set('limit', String(filters.limit));
+      return apiFetch<any>(`/v1/org/${orgId!}/tasks?${qs}`).catch(() => ({ data: [] }));
+    },
+    enabled: !!orgId,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useUpdateTaskStatus(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, status }: { taskId: string; status: string }) =>
+      apiFetch(`/v1/org/${orgId}/tasks/${taskId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: orgKeys.tasks(orgId) });
+    },
+  });
+}
+
+// ── SSE hooks ─────────────────────────────────────────────────────────────
+
+/** Subscribe to live org-level SSE event stream. */
+export function useOrgStream(orgId: string, onEvent?: (ev: any) => void) {
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!orgId) return;
+    const es = new EventSource(`/v1/org/${orgId}/events/stream`);
+    setConnected(true);
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        onEvent?.(data);
+      } catch { /* ignore malformed */ }
+    };
+    es.onerror = () => setConnected(false);
+    return () => {
+      es.close();
+      setConnected(false);
+    };
+  }, [orgId, onEvent]);
+
+  return { connected };
+}
+
+/** Subscribe to mission execution SSE stream. */
+export function useMissionStream(orgId: string, missionId: string | null | undefined) {
+  const [events, setEvents] = useState<any[]>([]);
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!orgId || !missionId) return;
+    const es = new EventSource(`/v1/org/${orgId}/missions/${missionId}/stream`);
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setEvents(prev => [...prev.slice(-99), data]);
+        // Refresh mission cache on completion
+        if (data.type === 'mission_completed' || data.type === 'mission_failed') {
+          qc.invalidateQueries({ queryKey: orgKeys.mission(orgId, missionId) });
+        }
+      } catch { /* ignore */ }
+    };
+    return () => es.close();
+  }, [orgId, missionId, qc]);
+
+  return events;
+}
+
+/** Hook for approval queue. */
+export function useApprovals(orgId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['approvals', orgId],
+    queryFn: () =>
+      apiFetch<any>(`/v1/org/${orgId!}/approvals`)
+        .then(r => (Array.isArray(r) ? r : r?.data ?? []))
+        .catch(() => []),
+    enabled: !!orgId,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   });
 }
