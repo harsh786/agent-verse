@@ -31,10 +31,10 @@ export function ChatHITLCard({
           {riskLevel} risk
         </span>
       </div>
-      <p className="text-sm text-gray-800 dark:text-gray-200 mb-1">
+      <p className="text-sm text-[#F0F6FF] dark:text-gray-200 mb-1">
         <strong>Step:</strong> {stepName}
       </p>
-      <p className="text-xs text-gray-500 mb-3">
+      <p className="text-xs text-[#5A7494] mb-3">
         Timeout in {Math.floor(timeoutSeconds / 60)} min. This action requires your approval before continuing.
       </p>
       <div className="flex gap-2">

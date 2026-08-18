@@ -180,7 +180,7 @@ export default function ChatPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="flex h-full w-full overflow-hidden bg-white dark:bg-gray-950">
+    <JARVISStagger className="flex h-full w-full overflow-hidden bg-[#0F1826] dark:bg-gray-950">
       <ChatSidebar
         sessions={sessions}
         folders={folders}
@@ -196,11 +196,11 @@ export default function ChatPage() {
         {sessionId ? (
           <>
             {/* Thread header */}
-            <header className="px-6 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between bg-white dark:bg-gray-900">
-              <h1 className="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate">
+            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-gray-700 flex items-center justify-between bg-[#0F1826] dark:bg-gray-900">
+              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-gray-200 truncate">
                 {sessions.find((s) => s.id === sessionId)?.title ?? 'Chat'}
               </h1>
-              <span className="text-xs text-gray-400">
+              <span className="text-xs text-[#A0B4CC]">
                 {allMessages.length} messages
               </span>
             </header>
@@ -228,10 +228,10 @@ export default function ChatPage() {
               💬
             </div>
             <div>
-              <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
+              <h2 className="text-xl font-semibold text-[#F0F6FF] dark:text-gray-200">
                 AgentVerse Chat
               </h2>
-              <p className="mt-2 text-sm text-gray-500 max-w-sm">
+              <p className="mt-2 text-sm text-[#5A7494] max-w-sm">
                 Ask questions, execute goals, schedule tasks — all in one
                 conversational interface powered by AI agents.
               </p>
@@ -243,7 +243,7 @@ export default function ChatPage() {
               Start a New Chat
             </button>
             {sessions.length > 0 && (
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-[#A0B4CC]">
                 Or select a session from the sidebar
               </p>
             )}

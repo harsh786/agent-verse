@@ -49,7 +49,7 @@ function StepResultRow({ step }: { step: WEStepResult }) {
       </button>
 
       {expanded && (
-        <div className="border-t border-white/8 px-4 py-3 bg-white/2">
+        <div className="border-t border-white/8 px-4 py-3 bg-[#0F1826]/2">
           {step.error && (
             <div className="mb-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
               <p className="text-xs text-red-400 font-mono leading-relaxed">{step.error}</p>
@@ -182,7 +182,7 @@ export default function WorkflowRunDetailPage() {
             },
           ].map(({ icon, label, value }) => (
             <div key={label}
-              className="rounded-xl border border-white/8 bg-white/3 px-4 py-3
+              className="rounded-xl border border-white/8 bg-[#0F1826]/3 px-4 py-3
                          flex items-center gap-3">
               <span className="text-white/30">{icon}</span>
               <div>

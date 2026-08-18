@@ -70,9 +70,9 @@ function MetricCard({
         <Icon className={`h-5 w-5 ${colors[accent].split(' ')[0]}`} />
       </div>
       <div>
-        <p className="text-xs text-slate-500 uppercase tracking-wider">{label}</p>
+        <p className="text-xs text-[#5A7494] uppercase tracking-wider">{label}</p>
         <p className="text-2xl font-bold text-[#00D4FF]">{value}</p>
-        {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
+        {sub && <p className="text-xs text-[#5A7494] mt-0.5">{sub}</p>}
       </div>
     </div>
   );
@@ -178,7 +178,7 @@ export default function AdminPage() {
 
       {/* Plan distribution */}
       <div className="flex flex-wrap gap-2 rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3" data-testid="plan-distribution">
-        <span className="text-xs text-slate-500 mr-2 self-center">Plans:</span>
+        <span className="text-xs text-[#5A7494] mr-2 self-center">Plans:</span>
         {PLANS.map((p) => (
           <button
             key={p}
@@ -190,7 +190,7 @@ export default function AdminPage() {
           </button>
         ))}
         {planFilter !== 'all' && (
-          <button onClick={() => setPlanFilter('all')} className="ml-auto rounded-full px-3 py-1 text-xs text-slate-500 hover:text-slate-300">Clear ×</button>
+          <button onClick={() => setPlanFilter('all')} className="ml-auto rounded-full px-3 py-1 text-xs text-[#5A7494] hover:text-slate-300">Clear ×</button>
         )}
       </div>
 
@@ -198,13 +198,13 @@ export default function AdminPage() {
       <div className="rounded-xl border border-slate-700 bg-slate-800/40 overflow-hidden">
         <div className="flex items-center gap-3 border-b border-slate-700 px-4 py-3">
           <h2 className="font-semibold text-slate-200 flex-1 flex items-center gap-2">
-            <Database className="h-4 w-4 text-slate-500" />
+            <Database className="h-4 w-4 text-[#5A7494]" />
             Tenants
-            <span className="text-xs text-slate-500 font-normal">{sorted.length} / {allTenants.length}</span>
+            <span className="text-xs text-[#5A7494] font-normal">{sorted.length} / {allTenants.length}</span>
           </h2>
           <p className="hidden sm:block text-xs text-slate-600">Updated {lastUpdated}</p>
           <div className="relative">
-            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#5A7494]" />
             <input
               className="rounded-lg border border-slate-700 bg-slate-900 pl-7 pr-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none w-44"
               placeholder="Search…"
@@ -217,14 +217,14 @@ export default function AdminPage() {
         </div>
 
         {tenantsLoading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-slate-500" data-testid="tenants-loading">
+          <div className="flex items-center justify-center gap-2 py-16 text-[#5A7494]" data-testid="tenants-loading">
             <Loader2 className="h-5 w-5 animate-spin" /> Loading tenants…
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm" data-testid="tenant-table">
               <thead>
-                <tr className="border-b border-slate-700 text-xs uppercase tracking-wider text-slate-500">
+                <tr className="border-b border-slate-700 text-xs uppercase tracking-wider text-[#5A7494]">
                   <th className="px-4 py-2.5 font-medium">Tenant ID</th>
                   <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Name</th>
                   <th className="px-4 py-2.5 font-medium">Plan</th>
@@ -234,7 +234,7 @@ export default function AdminPage() {
               <tbody>
                 {sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-12 text-center text-sm text-slate-500" data-testid="tenants-empty">
+                    <td colSpan={4} className="py-12 text-center text-sm text-[#5A7494]" data-testid="tenants-empty">
                       No tenants match your filter
                     </td>
                   </tr>

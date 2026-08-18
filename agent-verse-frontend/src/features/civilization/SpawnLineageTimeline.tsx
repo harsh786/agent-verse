@@ -40,7 +40,7 @@ export function SpawnLineageTimeline({ spawns }: Props) {
   return (
     <div className="space-y-3">
       {/* Stats */}
-      <div className="flex items-center gap-3 text-xs text-slate-500">
+      <div className="flex items-center gap-3 text-xs text-[#5A7494]">
         <span className="flex items-center gap-1 text-green-400 font-semibold">
           <CheckCircle className="h-3.5 w-3.5" />
           {approved} approved
@@ -119,7 +119,7 @@ export function SpawnLineageTimeline({ spawns }: Props) {
 
                   {/* Parent → child */}
                   {s.requester_agent_id && (
-                    <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#5A7494]">
                       <span className="text-slate-600">{s.requester_agent_id.slice(0, 10)}…</span>
                       <GitBranch className="h-3 w-3 text-indigo-500" />
                       <span className="text-indigo-400">new agent</span>

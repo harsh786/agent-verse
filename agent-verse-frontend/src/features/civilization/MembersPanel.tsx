@@ -110,7 +110,7 @@ function MemberCard({
         </div>
         <div className="flex items-center gap-2 mt-0.5">
           <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
-          <span className="text-[10px] text-slate-500 capitalize">{member.status}</span>
+          <span className="text-[10px] text-[#5A7494] capitalize">{member.status}</span>
           <span className="text-[10px] text-slate-600">·</span>
           <span
             className="text-[10px] font-semibold tabular-nums"
@@ -119,7 +119,7 @@ function MemberCard({
             {repPct}% rep
           </span>
           <span className="text-[10px] text-slate-600">·</span>
-          <span className="text-[10px] text-slate-500 font-mono">
+          <span className="text-[10px] text-[#5A7494] font-mono">
             ${member.budget_spent_usd.toFixed(2)} / ${member.budget_usd.toFixed(0)}
           </span>
         </div>
@@ -136,7 +136,7 @@ function MemberCard({
         className="
           opacity-0 group-hover:opacity-100
           w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0
-          text-slate-500 hover:text-red-400 hover:bg-red-500/10
+          text-[#5A7494] hover:text-red-400 hover:bg-red-500/10
           transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 disabled:opacity-30
         "
       >
@@ -243,13 +243,13 @@ function AddAgentModal({
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
           <div>
             <h2 className="text-base font-bold text-white">Add Agent to Society</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-[#5A7494] mt-0.5">
               Pick an existing agent or create a new one
             </p>
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-[#5A7494] hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -264,7 +264,7 @@ function AddAgentModal({
               className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-colors ${
                 mode === m
                   ? 'bg-indigo-600 text-white'
-                  : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'
+                  : 'bg-[#0F1826]/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'
               }`}
             >
               {m === 'pick' ? '🔍 Pick Existing' : '✨ Create New'}
@@ -277,14 +277,14 @@ function AddAgentModal({
           {mode === 'pick' && (
             <div className="space-y-3">
               {agentsLoading ? (
-                <div className="flex items-center gap-2 text-slate-500 py-4 justify-center">
+                <div className="flex items-center gap-2 text-[#5A7494] py-4 justify-center">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="text-sm">Loading agents…</span>
                 </div>
               ) : availableAgents.length === 0 ? (
                 <div className="text-center py-6">
-                  <Bot className="h-8 w-8 text-slate-700 mx-auto mb-2" />
-                  <p className="text-sm text-slate-500">
+                  <Bot className="h-8 w-8 text-[#A0B4CC] mx-auto mb-2" />
+                  <p className="text-sm text-[#5A7494]">
                     {existingAgents.length === 0
                       ? 'No agents created yet. Use "Create New" tab.'
                       : 'All agents are already in this civilization.'}
@@ -305,7 +305,7 @@ function AddAgentModal({
                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                           isSelected
                             ? 'bg-indigo-600/20 border border-indigo-500/40'
-                            : 'bg-white/3 border border-white/6 hover:bg-white/8'
+                            : 'bg-[#0F1826]/3 border border-white/6 hover:bg-white/8'
                         }`}
                         style={{ border: isSelected ? undefined : '1px solid rgba(255,255,255,0.06)' }}
                       >
@@ -313,11 +313,11 @@ function AddAgentModal({
                           className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                           style={{ background: isSelected ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)' }}
                         >
-                          <Bot className={`h-4 w-4 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`} />
+                          <Bot className={`h-4 w-4 ${isSelected ? 'text-indigo-400' : 'text-[#5A7494]'}`} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-200 truncate">{a.name}</p>
-                          <p className="text-[10px] text-slate-500 capitalize">
+                          <p className="text-[10px] text-[#5A7494] capitalize">
                             {(a.autonomy_mode ?? 'supervised').replace(/-/g, ' ')}
                           </p>
                         </div>
@@ -339,7 +339,7 @@ function AddAgentModal({
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                   placeholder="e.g. Jira Analyst"
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50"
+                  className="w-full bg-[#0F1826]/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50"
                   autoFocus
                 />
               </div>
@@ -348,7 +348,7 @@ function AddAgentModal({
                 <select
                   value={newMode}
                   onChange={e => setNewMode(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 appearance-none"
+                  className="w-full bg-[#0F1826]/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 appearance-none"
                   style={{ background: 'rgba(15,23,42,0.9)' }}
                 >
                   <option value="supervised">Supervised — approve all writes</option>
@@ -363,7 +363,7 @@ function AddAgentModal({
                   onChange={e => setNewGoalTemplate(e.target.value)}
                   placeholder="Describe what this agent specialises in…"
                   rows={2}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 resize-none"
+                  className="w-full bg-[#0F1826]/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 resize-none"
                 />
               </div>
             </div>
@@ -376,7 +376,7 @@ function AddAgentModal({
               <select
                 value={role}
                 onChange={e => setRole(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 appearance-none"
+                className="w-full bg-[#0F1826]/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 appearance-none"
                 style={{ background: 'rgba(15,23,42,0.9)' }}
               >
                 {ROLE_OPTIONS.map(r => (
@@ -392,7 +392,7 @@ function AddAgentModal({
                 onChange={e => setBudget(e.target.value)}
                 min="0.1"
                 step="1"
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50"
+                className="w-full bg-[#0F1826]/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50"
               />
             </div>
           </div>
@@ -453,7 +453,7 @@ export function MembersPanel({ civId }: Props) {
             <Users className="h-4 w-4 text-indigo-400" />
             Society Members
           </h3>
-          <p className="text-[10px] text-slate-500 mt-0.5">
+          <p className="text-[10px] text-[#5A7494] mt-0.5">
             {members.length} member{members.length !== 1 ? 's' : ''} in this civilization
           </p>
         </div>
@@ -473,7 +473,7 @@ export function MembersPanel({ civId }: Props) {
 
       {/* Member list */}
       {isLoading ? (
-        <div className="flex items-center justify-center py-8 gap-2 text-slate-500">
+        <div className="flex items-center justify-center py-8 gap-2 text-[#5A7494]">
           <Loader2 className="h-4 w-4 animate-spin" />
           <span className="text-sm">Loading members…</span>
         </div>
@@ -481,7 +481,7 @@ export function MembersPanel({ civId }: Props) {
         <div className="rounded-xl border-2 border-dashed py-10 text-center space-y-3"
           style={{ borderColor: 'rgba(255,255,255,0.07)' }}
         >
-          <Users className="h-8 w-8 text-slate-700 mx-auto" />
+          <Users className="h-8 w-8 text-[#A0B4CC] mx-auto" />
           <div>
             <p className="text-sm font-medium text-slate-400">No members yet</p>
             <p className="text-xs text-slate-600 mt-1">Add an agent to start the civilization</p>

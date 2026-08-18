@@ -30,7 +30,7 @@ function TextField({
   placeholder?: string; multiline?: boolean; description?: string; mono?: boolean;
 }) {
   const id = `cfg-${label.replace(/\s+/g, '-').toLowerCase()}`;
-  const cls = `w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/90
+  const cls = `w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white/90
     placeholder-white/30 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500
     focus:border-transparent ${mono ? 'font-mono' : ''}`;
   return (
@@ -79,7 +79,7 @@ function SelectField({
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/90
+        className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white/90
                    text-xs focus:outline-none focus:ring-2 focus:ring-sky-500"
       >
         {options.map((o) => (

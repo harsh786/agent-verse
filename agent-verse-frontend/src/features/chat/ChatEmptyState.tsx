@@ -30,10 +30,10 @@ export function ChatEmptyState({ onSelect }: Props): JSX.Element {
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-3xl mb-5 shadow-lg">
         💬
       </div>
-      <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-2">
+      <h2 className="text-xl font-semibold text-[#F0F6FF] dark:text-gray-200 mb-2">
         How can I help you today?
       </h2>
-      <p className="text-sm text-gray-500 mb-8 max-w-sm">
+      <p className="text-sm text-[#5A7494] mb-8 max-w-sm">
         Ask questions, execute goals, schedule tasks — powered by intelligent agents.
       </p>
 
@@ -41,15 +41,15 @@ export function ChatEmptyState({ onSelect }: Props): JSX.Element {
         {SUGGESTIONS.map((s, i) => (
           <button
             key={i}
-            className="flex items-start gap-3 p-3 text-left bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-indigo-300 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/50 transition-colors group"
+            className="flex items-start gap-3 p-3 text-left bg-[#0F1826] dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-indigo-300 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/50 transition-colors group"
             onClick={() => onSelect(s.prompt)}
           >
             <span className="text-xl shrink-0">{s.icon}</span>
             <div>
-              <p className="text-xs font-medium text-gray-600 dark:text-gray-300 group-hover:text-indigo-700 dark:group-hover:text-indigo-300">
+              <p className="text-xs font-medium text-[#5A7494] dark:text-gray-300 group-hover:text-indigo-700 dark:group-hover:text-indigo-300">
                 {s.label}
               </p>
-              <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{s.prompt}</p>
+              <p className="text-xs text-[#A0B4CC] mt-0.5 line-clamp-2">{s.prompt}</p>
             </div>
           </button>
         ))}

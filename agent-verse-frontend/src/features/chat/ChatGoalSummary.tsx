@@ -18,13 +18,13 @@ export function ChatGoalSummary({ summary, suggestions = [], onSuggestionClick }
         <CheckCircle className="w-4 h-4 text-green-600" />
         <span className="text-sm font-medium text-green-700 dark:text-green-300">Goal completed</span>
       </div>
-      <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">{summary}</p>
+      <p className="text-sm text-[#A0B4CC] dark:text-gray-300 mb-3">{summary}</p>
       {suggestions.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {suggestions.map((s, i) => (
             <button
               key={i}
-              className="text-xs px-3 py-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-600 dark:text-gray-300 hover:border-indigo-400 hover:text-indigo-600 transition-colors"
+              className="text-xs px-3 py-1 bg-[#0F1826] dark:bg-gray-800 border border-white/[0.08] dark:border-gray-700 rounded-full text-[#5A7494] dark:text-gray-300 hover:border-indigo-400 hover:text-indigo-600 transition-colors"
               onClick={() => onSuggestionClick?.(s)}
             >
               {s}

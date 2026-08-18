@@ -486,7 +486,7 @@ function ViolationsTab(): JSX.Element {
                   <td className="px-3 py-2.5 font-medium text-xs">{v.guardrail_name}</td>
                   <td className="px-3 py-2.5 text-xs font-mono">{v.type}</td>
                   <td className="px-3 py-2.5">
-                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${SEVERITY_STYLES[v.severity as GuardrailConfig["severity"]] ?? "bg-gray-100 text-gray-600"}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${SEVERITY_STYLES[v.severity as GuardrailConfig["severity"]] ?? "bg-[#0F1826] text-[#5A7494]"}`}>
                       {v.severity}
                     </span>
                   </td>

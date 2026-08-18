@@ -15,7 +15,7 @@ export function ChatImageOutput({ src, alt = 'Output image' }: Props): JSX.Eleme
 
   return (
     <>
-      <div className="relative rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 group max-w-sm">
+      <div className="relative rounded-xl overflow-hidden border border-white/[0.08] dark:border-gray-700 group max-w-sm">
         <img
           src={src}
           alt={alt}

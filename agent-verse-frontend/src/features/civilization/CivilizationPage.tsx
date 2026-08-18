@@ -79,7 +79,7 @@ function CivilizationList() {
               <Globe className="h-5 w-5 text-indigo-400" />
               Agent Civilizations
             </h1>
-            <p className="text-slate-500 text-sm mt-0.5">
+            <p className="text-[#5A7494] text-sm mt-0.5">
               Autonomous multi-agent societies — each solves goals collectively
             </p>
           </div>
@@ -97,7 +97,7 @@ function CivilizationList() {
 
       <div className="max-w-5xl mx-auto px-6 py-8">
         {isLoading && (
-          <div className="flex items-center justify-center h-64 gap-3 text-slate-500">
+          <div className="flex items-center justify-center h-64 gap-3 text-[#5A7494]">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading civilizations…</span>
           </div>
@@ -122,7 +122,7 @@ function CivilizationList() {
               className="rounded-2xl p-10 text-center max-w-md"
               style={{ background: 'rgba(255,255,255,0.03)', border: '2px dashed rgba(255,255,255,0.08)' }}
             >
-              <Globe className="h-12 w-12 text-slate-700 mx-auto mb-4" />
+              <Globe className="h-12 w-12 text-[#A0B4CC] mx-auto mb-4" />
               <p className="text-base font-semibold text-slate-300">No civilizations yet</p>
               <p className="text-sm text-slate-600 mt-1">
                 Create one via the API or backend to get started
@@ -458,12 +458,12 @@ function CivilizationTheater({ civId }: { civId: string }) {
         {/* Breadcrumb */}
         <Link
           to="/civilization"
-          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 text-xs text-[#5A7494] hover:text-slate-300 transition-colors flex-shrink-0"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Civilizations</span>
         </Link>
-        <span className="text-slate-700 text-xs">/</span>
+        <span className="text-[#A0B4CC] text-xs">/</span>
 
         {/* Title */}
         <div className="min-w-0 flex-1">
@@ -571,7 +571,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                     </span>
                     <EventTypeBadge type={e.type} />
                     {(e.payload as Record<string, unknown>)?.agent_id != null && (
-                      <span className="text-slate-500 font-mono truncate">
+                      <span className="text-[#5A7494] font-mono truncate">
                         {String((e.payload as Record<string, unknown>).agent_id).slice(0, 10)}
                       </span>
                     )}
@@ -693,7 +693,7 @@ function PanelPlaceholder({
         className="w-12 h-12 rounded-xl flex items-center justify-center"
         style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.15)' }}
       >
-        <Icon className="h-6 w-6 text-slate-500" />
+        <Icon className="h-6 w-6 text-[#5A7494]" />
       </div>
       <p className="text-xs text-slate-600 max-w-[200px] leading-relaxed">{message}</p>
     </div>
@@ -713,7 +713,7 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
   return (
     <JARVISPageShell>
     <JARVISStagger className="space-y-1.5">
-      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
+      <div className="flex items-center justify-between text-[10px] text-[#5A7494] mb-2">
         <span>{events.length} event{events.length !== 1 ? 's' : ''}</span>
         <span className="flex items-center gap-1 text-green-400">
           <StatusOrb status="completed" size={6} />

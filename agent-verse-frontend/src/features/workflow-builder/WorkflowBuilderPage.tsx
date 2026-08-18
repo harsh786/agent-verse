@@ -31,10 +31,10 @@ const NODE_COLORS: Record<string, string> = {
   parallel:       'bg-orange-500/15 border-orange-400/60 text-orange-400',
   loop:           'bg-telemetry-cyan/10 border-telemetry-cyan/40 text-telemetry-cyan/80',
   human_approval: 'bg-mission-red/15 border-mission-red/60 text-mission-red',
-  delay:          'bg-white/5 border-white/20 text-white/50',
+  delay:          'bg-[#0F1826]/5 border-white/20 text-white/50',
   rag:            'bg-teal-500/15 border-teal-400/60 text-teal-400',
   skill:          'bg-neural-violet/25 border-neural-violet text-white/90',
-  end:            'bg-white/5 border-white/15 text-white/40',
+  end:            'bg-[#0F1826]/5 border-white/15 text-white/40',
 };
 
 const NODE_ICONS: Record<string, string> = {
@@ -84,7 +84,7 @@ interface WorkflowNodeData {
 }
 
 function WorkflowNode({ data, selected }: { data: WorkflowNodeData; selected?: boolean }) {
-  const color = NODE_COLORS[data.type] ?? 'bg-white/5 border-white/20 text-white/60';
+  const color = NODE_COLORS[data.type] ?? 'bg-[#0F1826]/5 border-white/20 text-white/60';
   const hasValidationError = data.type === 'tool_call' && !data.tool;
   return (
     <div

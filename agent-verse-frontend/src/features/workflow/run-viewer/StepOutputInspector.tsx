@@ -142,7 +142,7 @@ export function StepOutputInspector({
       transition={springs.gentle}
       className={`rounded-xl border border-white/8 bg-slate-900/50 overflow-hidden ${className}`}
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/8 bg-white/3">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/8 bg-[#0F1826]/3">
         <span className="text-xs font-semibold text-white/50 uppercase tracking-wide">{title}</span>
         <CopyButton value={data} />
       </div>

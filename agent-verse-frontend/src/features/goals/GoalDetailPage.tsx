@@ -478,8 +478,8 @@ function TerminalLine({ event, onRetry, isRetrying }: {
         <span className={`shrink-0 w-4 text-center ${color}`}>{icon}</span>
         <span className={`flex-1 ${color}`}>{label}</span>
         {hasDetails && (expanded
-          ? <ChevronDown className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
-          : <ChevronRight className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
+          ? <ChevronDown className="h-3 w-3 text-[#5A7494] shrink-0" aria-hidden="true" />
+          : <ChevronRight className="h-3 w-3 text-[#5A7494] shrink-0" aria-hidden="true" />
         )}
       </button>
 
@@ -570,11 +570,11 @@ function TerminalPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-500 font-mono">{events.length} events</span>
+          <span className="text-[10px] text-[#5A7494] font-mono">{events.length} events</span>
           <button
             onClick={() => setAutoScroll((v) => !v)}
             title={autoScroll ? "Disable auto-scroll" : "Enable auto-scroll"}
-            className={`text-[10px] px-1.5 py-0.5 rounded font-mono transition-colors ${autoScroll ? "text-emerald-400 bg-emerald-950/40" : "text-slate-500"}`}
+            className={`text-[10px] px-1.5 py-0.5 rounded font-mono transition-colors ${autoScroll ? "text-emerald-400 bg-emerald-950/40" : "text-[#5A7494]"}`}
           >
             {autoScroll ? "↓ auto" : "↓ manual"}
           </button>

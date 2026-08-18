@@ -142,7 +142,7 @@ function ToastItem({
 
       {/* Progress bar */}
       {duration > 0 && toast.type !== 'loading' && (
-        <div className="h-0.5 w-full bg-white/10">
+        <div className="h-0.5 w-full bg-[#0F1826]/10">
           <div
             className={`h-full transition-none ${cfg.track}`}
             style={{ width: `${progress}%` }}

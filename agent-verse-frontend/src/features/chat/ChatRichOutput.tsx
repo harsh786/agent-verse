@@ -13,15 +13,15 @@ interface Props {
 }
 
 function TableOutput({ data }: { data: unknown[] }) {
-  if (!data || data.length === 0) return <p className="text-xs text-gray-400">No data</p>;
+  if (!data || data.length === 0) return <p className="text-xs text-[#A0B4CC]">No data</p>;
   const keys = Object.keys(data[0] as Record<string, unknown>);
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+    <div className="overflow-x-auto rounded-lg border border-white/[0.08] dark:border-gray-700">
       <table className="min-w-full text-xs" role="table">
-        <thead className="bg-gray-50 dark:bg-gray-800">
+        <thead className="bg-[#0A0F1A] dark:bg-gray-800">
           <tr>
             {keys.map((k) => (
-              <th key={k} className="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wide" scope="col">
+              <th key={k} className="px-3 py-2 text-left font-medium text-[#5A7494] uppercase tracking-wide" scope="col">
                 {k}
               </th>
             ))}
@@ -31,7 +31,7 @@ function TableOutput({ data }: { data: unknown[] }) {
           {(data as Record<string, unknown>[]).map((row, i) => (
             <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800">
               {keys.map((k) => (
-                <td key={k} className="px-3 py-2 text-gray-700 dark:text-gray-300">
+                <td key={k} className="px-3 py-2 text-[#A0B4CC] dark:text-gray-300">
                   {String(row[k] ?? '')}
                 </td>
               ))}
@@ -46,7 +46,7 @@ function TableOutput({ data }: { data: unknown[] }) {
 function DiffOutput({ content }: { content: string }) {
   const lines = content.split('\n');
   return (
-    <pre className="text-xs rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto p-3 bg-gray-50 dark:bg-gray-900">
+    <pre className="text-xs rounded-lg border border-white/[0.08] dark:border-gray-700 overflow-x-auto p-3 bg-[#0A0F1A] dark:bg-gray-900">
       {lines.map((line, i) => (
         <div
           key={i}
@@ -55,7 +55,7 @@ function DiffOutput({ content }: { content: string }) {
               ? 'text-green-600 dark:text-green-400'
               : line.startsWith('-') && !line.startsWith('---')
               ? 'text-red-600 dark:text-red-400'
-              : 'text-gray-600 dark:text-gray-400'
+              : 'text-[#5A7494] dark:text-gray-400'
           }
         >
           {line}
@@ -67,7 +67,7 @@ function DiffOutput({ content }: { content: string }) {
 
 function ImageOutput({ url }: { url: string }) {
   return (
-    <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
+    <div className="rounded-lg overflow-hidden border border-white/[0.08] dark:border-gray-700">
       <img
         src={url}
         alt="Generated output"
@@ -95,5 +95,5 @@ export function ChatRichOutput({ outputType, data, imageUrl, diffContent, artifa
       </div>
     );
   }
-  return <span className="text-xs text-gray-400">Rich output: {outputType}</span>;
+  return <span className="text-xs text-[#A0B4CC]">Rich output: {outputType}</span>;
 }

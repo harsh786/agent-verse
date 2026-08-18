@@ -78,7 +78,7 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
             >
               <div className="flex items-center gap-2 mb-1">
                 <Icon className={`h-3.5 w-3.5 ${kpi.color}`} />
-                <span className="text-[10px] text-slate-500">{kpi.label}</span>
+                <span className="text-[10px] text-[#5A7494]">{kpi.label}</span>
               </div>
               <div className={`text-xl font-bold tabular-nums ${kpi.color}`}>{kpi.value}</div>
             </div>
@@ -94,8 +94,8 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
             style={{ background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.15)' }}
           >
             <div className="flex items-center gap-2 mb-1">
-              <Moon className="h-3.5 w-3.5 text-slate-500" />
-              <span className="text-[10px] text-slate-500">Idle</span>
+              <Moon className="h-3.5 w-3.5 text-[#5A7494]" />
+              <span className="text-[10px] text-[#5A7494]">Idle</span>
             </div>
             <div className="text-xl font-bold text-slate-400 tabular-nums">
               {metrics.idle_members ?? 0}
@@ -107,7 +107,7 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
           >
             <div className="flex items-center gap-2 mb-1">
               <span className="text-slate-600 text-xs">✕</span>
-              <span className="text-[10px] text-slate-500">Retired</span>
+              <span className="text-[10px] text-[#5A7494]">Retired</span>
             </div>
             <div className="text-xl font-bold text-slate-600 tabular-nums">
               {metrics.retired_members ?? 0}
@@ -121,8 +121,8 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
         className="rounded-xl p-3 space-y-2"
         style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
       >
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Reputation Range</p>
-        <div className="relative h-3 bg-white/5 rounded-full overflow-hidden">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[#5A7494]">Reputation Range</p>
+        <div className="relative h-3 bg-[#0F1826]/5 rounded-full overflow-hidden">
           {/* Range bar */}
           <div
             className="absolute h-full rounded-full"
@@ -134,11 +134,11 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
           />
           {/* Avg marker */}
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-white rounded"
+            className="absolute top-0 bottom-0 w-0.5 bg-[#0F1826] rounded"
             style={{ left: `${repPct}%`, boxShadow: '0 0 6px rgba(255,255,255,0.6)' }}
           />
         </div>
-        <div className="flex items-center justify-between text-[10px] text-slate-500">
+        <div className="flex items-center justify-between text-[10px] text-[#5A7494]">
           <span className="text-red-400">Min {minRepPct}%</span>
           <span className="text-white font-semibold">Avg {repPct}%</span>
           <span className="text-green-400">Max {maxRepPct}%</span>
@@ -151,7 +151,7 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
           className="rounded-xl p-3 space-y-2"
           style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
         >
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Composition</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#5A7494]">Composition</p>
           <div className="flex h-2 rounded-full overflow-hidden gap-px">
             {memberBreakdown.map(d => (
               <div
@@ -181,7 +181,7 @@ export function CivilizationMetrics({ metrics, spawnHistory = [] }: Props) {
           className="rounded-xl p-3 space-y-2"
           style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
         >
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Spawn Rate</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#5A7494]">Spawn Rate</p>
           <div className="h-20">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={spawnHistory} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>

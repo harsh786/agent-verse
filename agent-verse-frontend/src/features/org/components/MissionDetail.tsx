@@ -34,7 +34,7 @@ const STATUS_COLOR: Record<MissionStatus, string> = {
   completed: 'text-emerald-400',
   failed:    'text-rose-400',
   cancelled: 'text-slate-400',
-  archived:  'text-slate-500',
+  archived:  'text-[#5A7494]',
 };
 
 const STATUS_BG: Record<MissionStatus, string> = {

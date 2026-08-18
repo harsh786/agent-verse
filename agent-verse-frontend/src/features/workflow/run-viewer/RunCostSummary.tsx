@@ -60,7 +60,7 @@ export function RunCostSummary({ run, stepCount }: Props) {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ ...springs.gentle, delay: idx * 0.08 }}
-          className="rounded-xl border border-white/8 bg-white/3 px-4 py-3 flex items-center gap-3"
+          className="rounded-xl border border-white/8 bg-[#0F1826]/3 px-4 py-3 flex items-center gap-3"
           role="listitem"
         >
           <span aria-hidden>{icon}</span>

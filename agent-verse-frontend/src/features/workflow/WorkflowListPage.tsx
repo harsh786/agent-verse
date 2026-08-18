@@ -58,7 +58,7 @@ function WorkflowCard({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="group relative rounded-2xl border border-white/10 bg-white/5 hover:bg-white/8
+      className="group relative rounded-2xl border border-white/10 bg-[#0F1826]/5 hover:bg-white/8
                  backdrop-blur-sm p-5 flex flex-col gap-3 transition-colors
                  focus-within:ring-2 focus-within:ring-sky-500"
       role="article"
@@ -98,7 +98,7 @@ function WorkflowCard({
         <Link
           to={`/workflows/${wf.id}/edit`}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium
-                     py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70
+                     py-1.5 rounded-lg bg-[#0F1826]/5 hover:bg-white/10 text-white/70
                      hover:text-white transition-colors"
           aria-label={`Edit workflow ${wf.name}`}
         >
@@ -147,7 +147,7 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
     >
       {/* Illustration */}
       <div className="relative mb-6">
-        <div className="w-24 h-24 rounded-3xl bg-white/5 border border-white/10 flex items-center
+        <div className="w-24 h-24 rounded-3xl bg-[#0F1826]/5 border border-white/10 flex items-center
                         justify-center">
           <Zap className="h-10 w-10 text-white/20" />
         </div>
@@ -271,7 +271,7 @@ export default function WorkflowListPage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search workflows…"
               aria-label="Search workflows"
-              className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-white/5
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-[#0F1826]/5
                          text-white placeholder-white/30 text-sm focus:outline-none
                          focus:ring-2 focus:ring-sky-500 focus:border-transparent"
             />
@@ -288,7 +288,7 @@ export default function WorkflowListPage() {
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   statusFilter === s
                     ? 'bg-sky-600 text-white'
-                    : 'bg-white/5 text-white/50 hover:text-white hover:bg-white/10'
+                    : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
                 }`}
               >
                 {s || 'All'}
@@ -310,7 +310,7 @@ export default function WorkflowListPage() {
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-44 rounded-2xl bg-white/5 animate-pulse" />
+              <div key={i} className="h-44 rounded-2xl bg-[#0F1826]/5 animate-pulse" />
             ))}
           </div>
         ) : error ? (

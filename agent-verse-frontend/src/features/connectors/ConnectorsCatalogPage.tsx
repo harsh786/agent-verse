@@ -29,16 +29,16 @@ const CATEGORY_COLORS: Record<string, string> = {
   crm: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
   finance: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
   cloud: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
-  database: 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300',
+  database: 'bg-[#0F1826] text-[#A0B4CC] dark:bg-slate-800/50 dark:text-slate-300',
   observability: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
   productivity: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300',
-  other: 'bg-gray-100 text-gray-600 dark:bg-gray-800/50 dark:text-gray-400',
+  other: 'bg-[#0F1826] text-[#5A7494] dark:bg-gray-800/50 dark:text-gray-400',
 };
 
 const AUTH_COLORS: Record<string, string> = {
   bearer: 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300',
   api_key: 'bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300',
-  basic: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
+  basic: 'bg-[#0F1826] text-[#A0B4CC] dark:bg-gray-800 dark:text-gray-300',
   oauth_ac: 'bg-green-50 text-green-700 dark:bg-green-950/40 dark:text-green-300',
   connection_string: 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
 };
@@ -287,7 +287,7 @@ export function ConnectorsCatalogPage() {
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="rounded-lg bg-white dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
+            <div className="rounded-lg bg-[#0F1826] dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
               <p className="font-semibold text-amber-900 dark:text-amber-200">⚡ Built-in (Native)</p>
               <ul className="space-y-1 text-amber-800 dark:text-amber-300">
                 <li>✅ No external server needed</li>
@@ -298,7 +298,7 @@ export function ConnectorsCatalogPage() {
                 <li>Example: Jira, GitHub, Slack, Confluence, Stripe…</li>
               </ul>
             </div>
-            <div className="rounded-lg bg-white dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
+            <div className="rounded-lg bg-[#0F1826] dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1.5">
               <p className="font-semibold text-amber-900 dark:text-amber-200">🔌 Custom Registration</p>
               <ul className="space-y-1 text-amber-800 dark:text-amber-300">
                 <li>🔵 Points to any external MCP server URL</li>

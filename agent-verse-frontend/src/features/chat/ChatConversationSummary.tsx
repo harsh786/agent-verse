@@ -30,14 +30,14 @@ export function ChatConversationSummary({ summary }: Props): JSX.Element {
       {isStructured && data ? (
         <div className="space-y-3">
           {data.topic && (
-            <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{data.topic}</p>
+            <p className="text-sm font-medium text-[#F0F6FF] dark:text-gray-200">{data.topic}</p>
           )}
           {data.what_we_did && data.what_we_did.length > 0 && (
             <div>
-              <p className="text-xs font-medium text-gray-500 mb-1">What we did:</p>
+              <p className="text-xs font-medium text-[#5A7494] mb-1">What we did:</p>
               <ul className="space-y-0.5">
                 {data.what_we_did.map((item, i) => (
-                  <li key={i} className="text-xs text-gray-700 dark:text-gray-300 flex items-start gap-1.5">
+                  <li key={i} className="text-xs text-[#A0B4CC] dark:text-gray-300 flex items-start gap-1.5">
                     <span className="text-green-500 mt-0.5">✓</span>
                     {item}
                   </li>
@@ -47,10 +47,10 @@ export function ChatConversationSummary({ summary }: Props): JSX.Element {
           )}
           {data.outstanding && data.outstanding.length > 0 && (
             <div>
-              <p className="text-xs font-medium text-gray-500 mb-1">Outstanding:</p>
+              <p className="text-xs font-medium text-[#5A7494] mb-1">Outstanding:</p>
               <ul className="space-y-0.5">
                 {data.outstanding.map((item, i) => (
-                  <li key={i} className="text-xs text-gray-700 dark:text-gray-300 flex items-start gap-1.5">
+                  <li key={i} className="text-xs text-[#A0B4CC] dark:text-gray-300 flex items-start gap-1.5">
                     <span className="text-yellow-500 mt-0.5">○</span>
                     {item}
                   </li>
@@ -60,7 +60,7 @@ export function ChatConversationSummary({ summary }: Props): JSX.Element {
           )}
         </div>
       ) : (
-        <p className="text-sm text-gray-700 dark:text-gray-300">{String(summary)}</p>
+        <p className="text-sm text-[#A0B4CC] dark:text-gray-300">{String(summary)}</p>
       )}
     </div>
   );

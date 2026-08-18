@@ -78,7 +78,7 @@ function fmtDuration(sec: number) {
 function actionColor(action: string) {
   if (action === 'deny') return 'bg-red-100 text-red-700 border-red-200';
   if (action === 'require_approval') return 'bg-orange-100 text-orange-700 border-orange-200';
-  return 'bg-gray-100 text-gray-600 border-gray-200';
+  return 'bg-[#0F1826] text-[#5A7494] border-white/[0.08]';
 }
 
 function riskColor(risk?: string) {
@@ -87,7 +87,7 @@ function riskColor(risk?: string) {
     case 'high': return 'bg-orange-100 text-orange-700';
     case 'medium': return 'bg-yellow-100 text-yellow-700';
     case 'low': return 'bg-green-100 text-green-700';
-    default: return 'bg-gray-100 text-gray-600';
+    default: return 'bg-[#0F1826] text-[#5A7494]';
   }
 }
 
@@ -96,7 +96,7 @@ function outcomeBadge(outcome: string) {
   if (o.includes('allow') || o === 'success') return 'bg-green-100 text-green-700';
   if (o.includes('deny') || o.includes('block')) return 'bg-red-100 text-red-700';
   if (o.includes('approv')) return 'bg-orange-100 text-orange-700';
-  return 'bg-gray-100 text-gray-600';
+  return 'bg-[#0F1826] text-[#5A7494]';
 }
 
 function actionLevelBadge(level: string) {
@@ -105,7 +105,7 @@ function actionLevelBadge(level: string) {
     case 'allow_log': return 'bg-blue-100 text-blue-700';
     case 'approval': return 'bg-orange-100 text-orange-700';
     case 'deny': return 'bg-red-100 text-red-700';
-    default: return 'bg-gray-100 text-gray-600';
+    default: return 'bg-[#0F1826] text-[#5A7494]';
   }
 }
 
@@ -197,7 +197,7 @@ function EmergencyStopBanner() {
         <button
           onClick={() => clearMutation.mutate()}
           disabled={clearMutation.isPending}
-          className="px-3 py-1.5 bg-white text-red-700 rounded-md text-sm font-medium hover:bg-red-50"
+          className="px-3 py-1.5 bg-[#0F1826] text-red-700 rounded-md text-sm font-medium hover:bg-red-50"
         >
           {clearMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Clear Emergency Stop'}
         </button>
@@ -1573,7 +1573,7 @@ function BudgetTab() {
           <div className="divide-y divide-border">
             {anomalies.map((a) => (
               <div key={a.id} className="px-4 py-3 flex items-center gap-3 text-sm">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${a.severity === 'high' ? 'bg-red-100 text-red-700' : a.severity === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${a.severity === 'high' ? 'bg-red-100 text-red-700' : a.severity === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-[#0F1826] text-[#5A7494]'}`}>
                   {a.severity}
                 </span>
                 <div className="flex-1">

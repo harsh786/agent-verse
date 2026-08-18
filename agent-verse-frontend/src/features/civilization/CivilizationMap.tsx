@@ -161,7 +161,7 @@ function MapInner({
           </div>
           <div>
             <p className="text-slate-200 font-semibold text-lg">Society is empty</p>
-            <p className="text-slate-500 text-sm mt-1">
+            <p className="text-[#5A7494] text-sm mt-1">
               Submit a goal above to spawn the first agent
             </p>
           </div>

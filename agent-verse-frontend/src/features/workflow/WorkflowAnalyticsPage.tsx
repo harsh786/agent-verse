@@ -24,7 +24,7 @@ function StatCard({
     sky: 'text-sky-400', emerald: 'text-emerald-400', amber: 'text-amber-400', red: 'text-red-400',
   };
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/3 px-5 py-4">
+    <div className="rounded-2xl border border-white/8 bg-[#0F1826]/3 px-5 py-4">
       <div className={`flex items-center gap-2 ${colorMap[color] ?? colorMap.sky} mb-2`}>
         {icon}
         <span className="text-xs font-medium text-white/50">{label}</span>
@@ -44,7 +44,7 @@ function MiniBarChart({
 }) {
   const max = Math.max(...data.map((d) => d.value), 1);
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/3 p-5">
+    <div className="rounded-2xl border border-white/8 bg-[#0F1826]/3 p-5">
       <h3 className="text-sm font-semibold text-white mb-4">{title}</h3>
       <div className="flex items-end gap-1.5 h-24">
         {data.map((d, i) => (

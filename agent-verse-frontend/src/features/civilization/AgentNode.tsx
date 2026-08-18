@@ -57,7 +57,7 @@ const STATUS_CONFIG: Record<string, {
     gradient: 'from-gray-600 to-gray-700',
     glow: 'shadow-gray-500/10',
     dot: 'bg-gray-500',
-    badge: 'bg-gray-500/10 text-gray-500 border-gray-600/30',
+    badge: 'bg-gray-500/10 text-[#5A7494] border-gray-600/30',
     pulse: false,
   },
   failed: {
@@ -185,20 +185,20 @@ export const AgentNode = memo(({ data, selected }: { data: AgentNodeData; select
                 {STATUS_LABELS[data.status] ?? data.status}
               </span>
             </div>
-            <span className="text-[10px] text-slate-500 font-mono">D:{data.depth}</span>
+            <span className="text-[10px] text-[#5A7494] font-mono">D:{data.depth}</span>
           </div>
 
           {/* Reputation bar */}
           <div className="space-y-0.5">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-slate-500">Reputation</span>
+              <span className="text-[10px] text-[#5A7494]">Reputation</span>
               <span className={`text-[10px] font-semibold tabular-nums ${
                 repPct > 60 ? 'text-green-400' : repPct > 30 ? 'text-amber-400' : 'text-red-400'
               }`}>
                 {repPct}%
               </span>
             </div>
-            <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+            <div className="h-1 bg-[#0F1826]/5 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full bg-gradient-to-r ${cfg.gradient} transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700`}
                 style={{ width: `${repPct}%` }}
@@ -210,7 +210,7 @@ export const AgentNode = memo(({ data, selected }: { data: AgentNodeData; select
           {(data.budget_spent_usd !== undefined || data.current_step) && (
             <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between gap-2">
               {data.budget_spent_usd !== undefined && (
-                <span className="text-[10px] text-slate-500 font-mono">
+                <span className="text-[10px] text-[#5A7494] font-mono">
                   ${data.budget_spent_usd.toFixed(3)}
                 </span>
               )}

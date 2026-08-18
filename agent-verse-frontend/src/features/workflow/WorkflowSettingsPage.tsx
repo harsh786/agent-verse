@@ -54,7 +54,7 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
               id="wf-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white
+              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
@@ -67,7 +67,7 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white
+              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
             />
           </div>
@@ -82,7 +82,7 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
               onChange={(e) => setRetention(Number(e.target.value))}
               min={1}
               max={365}
-              className="w-32 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white
+              className="w-32 px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
@@ -178,7 +178,7 @@ function WebhookPanel({ wf }: { wf: WEWorkflow }) {
     <div>
       <h3 className="text-sm font-semibold text-white mb-4">Webhook Trigger</h3>
       <div className="space-y-4">
-        <div className="rounded-xl border border-white/10 bg-white/3 p-4">
+        <div className="rounded-xl border border-white/10 bg-[#0F1826]/3 p-4">
           <p className="text-xs text-white/50 mb-2">Webhook URL</p>
           <code className="text-xs text-sky-400 font-mono break-all">
             {`${window.location.origin}/api/v1/webhooks/workflows/${wf.id}`}

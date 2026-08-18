@@ -100,7 +100,7 @@ export function WorkflowToolPalette() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search steps…"
             aria-label="Search step types"
-            className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white/5 border border-white/10
+            className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-[#0F1826]/5 border border-white/10
                        text-white/80 placeholder-white/30 text-xs focus:outline-none
                        focus:ring-1 focus:ring-sky-500"
           />

@@ -85,9 +85,9 @@ export default function AgentMemoryPage(): JSX.Element {
     <JARVISStagger className="max-w-2xl mx-auto px-4 py-8">
       <div className="flex items-center gap-3 mb-6">
         <Brain className="w-6 h-6 text-indigo-600" />
-        <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Agent Memory</h1>
+        <h1 className="text-xl font-semibold text-[#F0F6FF] dark:text-gray-200">Agent Memory</h1>
       </div>
-      <p className="text-sm text-gray-500 mb-6">
+      <p className="text-sm text-[#5A7494] mb-6">
         Memories help the agent personalise its responses across sessions.
       </p>
 
@@ -95,7 +95,7 @@ export default function AgentMemoryPage(): JSX.Element {
       {adding ? (
         <div className="flex gap-2 mb-4">
           <input
-            className="flex-1 text-sm border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="flex-1 text-sm border border-white/[0.08] dark:border-gray-700 rounded-xl px-3 py-2 bg-[#0A0F1A] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             placeholder="New memory…"
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
@@ -106,7 +106,7 @@ export default function AgentMemoryPage(): JSX.Element {
             <Check className="w-4 h-4" />
           </button>
           <button className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl" onClick={() => setAdding(false)} aria-label="Cancel">
-            <X className="w-4 h-4 text-gray-400" />
+            <X className="w-4 h-4 text-[#A0B4CC]" />
           </button>
         </div>
       ) : (
@@ -119,13 +119,13 @@ export default function AgentMemoryPage(): JSX.Element {
         </button>
       )}
 
-      {loading && <p className="text-sm text-gray-400">Loading…</p>}
+      {loading && <p className="text-sm text-[#A0B4CC]">Loading…</p>}
 
       <div className="space-y-2" role="list" aria-label="Agent memories">
         {memories.map((m) => (
           <div
             key={m.id}
-            className="flex items-start gap-3 p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
+            className="flex items-start gap-3 p-3 bg-[#0F1826] dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
             role="listitem"
           >
             <Brain className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
@@ -138,12 +138,12 @@ export default function AgentMemoryPage(): JSX.Element {
                   autoFocus
                 />
                 <button onClick={() => handleEdit(m.id)} aria-label="Save edit"><Check className="w-4 h-4 text-green-500" /></button>
-                <button onClick={() => setEditingId(null)} aria-label="Cancel edit"><X className="w-4 h-4 text-gray-400" /></button>
+                <button onClick={() => setEditingId(null)} aria-label="Cancel edit"><X className="w-4 h-4 text-[#A0B4CC]" /></button>
               </div>
             ) : (
               <div className="flex-1">
-                <p className="text-sm text-gray-700 dark:text-gray-200">{m.content}</p>
-                <p className="text-xs text-gray-400 mt-0.5">
+                <p className="text-sm text-[#A0B4CC] dark:text-gray-200">{m.content}</p>
+                <p className="text-xs text-[#A0B4CC] mt-0.5">
                   {m.source} · {new Date(m.created_at).toLocaleDateString()}
                 </p>
               </div>
@@ -154,7 +154,7 @@ export default function AgentMemoryPage(): JSX.Element {
                 onClick={() => { setEditingId(m.id); setEditContent(m.content); }}
                 aria-label="Edit memory"
               >
-                <Edit2 className="w-3 h-3 text-gray-400" />
+                <Edit2 className="w-3 h-3 text-[#A0B4CC]" />
               </button>
               <button
                 className="p-1 hover:bg-red-50 dark:hover:bg-red-950 rounded"
@@ -168,7 +168,7 @@ export default function AgentMemoryPage(): JSX.Element {
         ))}
 
         {!loading && memories.length === 0 && (
-          <p className="text-sm text-gray-400 text-center py-8">
+          <p className="text-sm text-[#A0B4CC] text-center py-8">
             No memories yet. The agent will build memories as you chat.
           </p>
         )}
