@@ -403,6 +403,15 @@ class AgentGraph(
         initial_context: dict[str, Any] | None = None,
         event_callback: EventCallback | None = None,
         goal_id: str | None = None,
+        # ── Org context (Integration Point 2: Org OS → AgentGraph wiring) ──
+        # When an org mission dispatches a goal these carry department, role, and
+        # mission identity so the agent's memory and knowledge access are scoped
+        # correctly (dept_memory, knowledge_access_policy, RBAC).
+        org_id: str | None = None,
+        dept_id: str | None = None,
+        role_id: str | None = None,
+        team_id: str | None = None,
+        mission_id: str | None = None,
     ) -> AgentState:
         """Execute the agent graph and return the final AgentState.
 
@@ -425,6 +434,55 @@ class AgentGraph(
                 span.set_attribute("goal.text", goal[:200])
                 span.set_attribute("tenant.id", tenant_ctx.tenant_id)
 
+                # ── Org context injection ─────────────────────────────────────
+                # When dispatched from an OrgMission, enrich initial_context with
+                # org metadata and pre-fetch department memory so the planner and
+                # executor know their organisational role and prior decisions.
+                if org_id or dept_id or mission_id:
+                    _org_ctx: dict[str, Any] = dict(initial_context or {})
+                    if org_id:
+                        _org_ctx["org_id"] = org_id
+                        span.set_attribute("org.id", org_id)
+                    if dept_id:
+                        _org_ctx["dept_id"] = dept_id
+                        span.set_attribute("org.dept_id", dept_id)
+                    if role_id:
+                        _org_ctx["role_id"] = role_id
+                        span.set_attribute("org.role_id", role_id)
+                    if team_id:
+                        _org_ctx["team_id"] = team_id
+                        span.set_attribute("org.team_id", team_id)
+                    if mission_id:
+                        _org_ctx["mission_id"] = mission_id
+                        span.set_attribute("org.mission_id", mission_id)
+
+                    # Retrieve department memory and prepend to context so the
+                    # planner has access to lessons learned, SOPs, and decisions.
+                    if dept_id:
+                        try:
+                            from app.memory.dept_memory import DepartmentMemory
+                            _dept_mem = DepartmentMemory()
+                            _mem_entries = await _dept_mem.retrieve(
+                                dept_id, goal, top_k=6
+                            )
+                            if _mem_entries:
+                                _org_ctx["dept_memory"] = [
+                                    {
+                                        "content": e.content,
+                                        "confidence": e.confidence,
+                                        "category": e.category,
+                                    }
+                                    for e in _mem_entries
+                                ]
+                                span.set_attribute(
+                                    "org.dept_memory_entries", len(_mem_entries)
+                                )
+                        except Exception as _dm_exc:
+                            # Non-fatal: proceed without dept memory
+                            pass
+
+                    initial_context = _org_ctx
+
                 self._event_callback = event_callback
                 # Extract civilization_id from initial_context for spawn tool support
                 if initial_context and isinstance(initial_context, dict):
@@ -432,6 +490,20 @@ class AgentGraph(
                     if civ_id:
                         self._civilization_id = civ_id
                         self._civilization_spawn_enabled = True
+                    # Extract org context passed via execution_context from GoalService
+                    # (org_id, dept_id, mission_id etc. are forwarded through initial_context)
+                    _ec_org_id = initial_context.get("org_id")
+                    _ec_dept_id = initial_context.get("dept_id")
+                    _ec_mission_id = initial_context.get("mission_id")
+                    if _ec_org_id and not org_id:
+                        org_id = str(_ec_org_id)
+                        span.set_attribute("org.id", org_id)
+                    if _ec_dept_id and not dept_id:
+                        dept_id = str(_ec_dept_id)
+                        span.set_attribute("org.dept_id", dept_id)
+                    if _ec_mission_id and not mission_id:
+                        mission_id = str(_ec_mission_id)
+                        span.set_attribute("org.mission_id", mission_id)
                 self._tenant_ctx_ref = tenant_ctx
                 thread_id = f"goal-{goal_id}" if goal_id else uuid.uuid4().hex
                 config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}

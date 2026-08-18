@@ -1926,3 +1926,219 @@ async def org_dept_memory_add(
             "confidence": entry.confidence,
             "created_at": entry.created_at,
         }
+
+
+# ── Integration Point 3: Real MCP WebSocket Endpoint ──────────────────────────
+#
+# This is the actual WS transport layer for OrgMCPServer.
+# Clients: Claude Desktop, Cursor, any JSON-RPC 2.0 / MCP client.
+# Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+@router.websocket("/{org_id}/mcp")
+async def org_mcp_websocket(
+    org_id: str,
+    websocket: WebSocket,
+    api_key: str | None = None,  # ?api_key= query param fallback
+) -> None:
+    """WebSocket MCP server for the organisation.
+
+    Speaks JSON-RPC 2.0 / MCP protocol:
+      → { "id": 1, "method": "tools/list" }
+      ← { "id": 1, "result": { "tools": [...] } }
+
+      → { "id": 2, "method": "tools/call", "params": { "name": "get_status", "arguments": {} } }
+      ← { "id": 2, "result": { "content": [...] } }
+    """
+    import json as _json
+    from app.gateway.mcp_server import OrgMCPServer
+
+    await websocket.accept()
+
+    # Resolve auth header → extract api_key and tenant_id
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        api_key = auth_header[7:].strip()
+
+    # Resolve tenant_id from X-Tenant-Id header or default
+    tenant_id = websocket.headers.get("x-tenant-id", "system")
+
+    # Attach app.state for live service injection
+    _app_state = None
+    try:
+        from app.main import app as _av_app  # type: ignore[attr-defined]
+        _app_state = getattr(_av_app, "state", None)
+    except Exception:
+        pass
+
+    mcp_server = OrgMCPServer(
+        org_id=org_id,
+        api_key=api_key,
+        app_state=_app_state,
+        tenant_id=tenant_id,
+    )
+
+    _log = structlog.get_logger(__name__)
+    _log.info("mcp.ws.connected", org_id=org_id, tenant_id=tenant_id)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = _json.loads(raw)
+            except Exception:
+                await websocket.send_text(_json.dumps({
+                    "error": {"code": -32700, "message": "Parse error"},
+                }))
+                continue
+
+            msg_id     = msg.get("id")
+            method     = msg.get("method", "")
+            params     = msg.get("params", {})
+
+            # ── MCP protocol methods ──────────────────────────────────────────
+            if method == "initialize":
+                resp = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "agentverse-org-mcp", "version": "1.0.0"},
+                }
+
+            elif method == "tools/list":
+                resp = {"tools": mcp_server.list_tools()}
+
+            elif method == "tools/call":
+                tool_name = params.get("name", "")
+                arguments = params.get("arguments", {})
+                resp = await mcp_server.call_tool(tool_name, arguments)
+
+            elif method == "resources/list":
+                try:
+                    from app.gateway.mcp_server.resources import OrgMCPResources
+                    res_server = OrgMCPResources(org_id)
+                    resp = {"resources": res_server.list_resources()}
+                except Exception:
+                    resp = {"resources": []}
+
+            elif method == "resources/read":
+                try:
+                    from app.gateway.mcp_server.resources import OrgMCPResources
+                    res_server = OrgMCPResources(org_id)
+                    resp = await res_server.read_resource(params.get("uri", ""))
+                except Exception as exc:
+                    resp = {"error": str(exc)[:100]}
+
+            elif method == "prompts/list":
+                try:
+                    from app.gateway.mcp_server.resources import OrgMCPPrompts
+                    prompt_server = OrgMCPPrompts(org_id)
+                    resp = {"prompts": prompt_server.list_prompts()}
+                except Exception:
+                    resp = {"prompts": []}
+
+            elif method == "prompts/get":
+                try:
+                    from app.gateway.mcp_server.resources import OrgMCPPrompts
+                    prompt_server = OrgMCPPrompts(org_id)
+                    resp = await prompt_server.get_prompt(
+                        params.get("name", ""), params.get("arguments", {})
+                    )
+                except Exception as exc:
+                    resp = {"error": str(exc)[:100]}
+
+            elif method in ("notifications/initialized", "ping"):
+                resp = {}
+
+            else:
+                resp = {
+                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                }
+
+            envelope: dict = {"jsonrpc": "2.0"}
+            if msg_id is not None:
+                envelope["id"] = msg_id
+            envelope["result"] = resp
+
+            await websocket.send_text(_json.dumps(envelope))
+
+    except WebSocketDisconnect:
+        _log.info("mcp.ws.disconnected", org_id=org_id)
+    except Exception as exc:
+        _log.error("mcp.ws.error", org_id=org_id, error=str(exc)[:150])
+        try:
+            await websocket.send_text(_json.dumps({
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": "Internal error"},
+            }))
+        except Exception:
+            pass
+
+
+# ── create_mission_and_execute REST endpoint ─────────────────────────────────
+
+class _MissionExecuteRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    objective: str = Field(default="", max_length=2000)
+    why: str = Field(default="", max_length=1000)
+    expected_outcome: str = Field(default="", max_length=1000)
+    priority: str = Field(default="medium")
+    dept_id: str | None = None
+    assigned_team_id: str | None = None
+    autonomy_level: int | None = None
+    budget_usd: float | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post(
+    "/{org_id}/missions/execute",
+    operation_id="org_create_mission_execute",
+    summary="Create a mission AND immediately dispatch it to the agent engine",
+    status_code=status.HTTP_201_CREATED,
+)
+async def org_create_mission_execute(
+    org_id: str,
+    body: _MissionExecuteRequest,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, Any]:
+    """Creates an OrgMission record, runs MetaOrchestrator team formation,
+    and dispatches the goal to the AgentGraph via GoalService (Celery).
+
+    Returns immediately with mission_id + goal_id for tracking.
+    """
+    ctx = _require_tenant(request)
+    tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None
+
+    mission, dispatch = await service.create_mission_and_execute(
+        org_id=org_id,
+        title=body.title,
+        objective=body.objective,
+        why=body.why,
+        expected_outcome=body.expected_outcome,
+        priority=body.priority,
+        dept_id=body.dept_id,
+        assigned_team_id=body.assigned_team_id,
+        autonomy_level=body.autonomy_level,
+        budget_usd=body.budget_usd,
+        tags=body.tags,
+        metadata=body.metadata,
+        source="api",
+        tenant_ctx=tenant_ctx,
+    )
+
+    return {
+        "mission_id":      str(mission.id),
+        "title":           mission.title,
+        "status":          mission.status,
+        "goal_id":         dispatch.get("goal_id"),
+        "topology":        dispatch.get("topology"),
+        "departments":     dispatch.get("departments", []),
+        "agent_count":     dispatch.get("agent_count", 0),
+        "autonomy_level":  dispatch.get("autonomy_level"),
+        "estimated_cost_usd": dispatch.get("estimated_cost_usd", 0.0),
+        "dispatched":      dispatch.get("goal_id") is not None,
+        "warning":         dispatch.get("warning"),
+        "error":           dispatch.get("error"),
+    }

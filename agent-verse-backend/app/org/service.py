@@ -998,3 +998,241 @@ class OrgService:
             ).order_by(OrgWorkstream.order_index)
         )
         return list(result.scalars().all())
+
+    # ── Integration Point 1: Mission → Agent Execution Bridge ────────────────
+    #
+    # This is the critical wiring that connects the Org OS layer to the existing
+    # AgentGraph execution engine.  Every mission submitted here goes through:
+    #   OrgService.create_mission_and_execute()
+    #     → MetaOrchestrator.plan_mission()        (team formation + topology)
+    #     → GoalService.submit_goal()              (Celery dispatch → AgentGraph)
+    #     → mission.metadata["goal_id"] updated    (linkage preserved in DB)
+
+    async def create_mission_and_execute(
+        self,
+        *,
+        org_id: str,
+        title: str,
+        objective: str = "",
+        why: str = "",
+        expected_outcome: str = "",
+        priority: str = "medium",
+        dept_id: str | None = None,
+        assigned_team_id: str | None = None,
+        autonomy_level: int | None = None,
+        source: str = "api",
+        success_criteria: list[Any] | None = None,
+        budget_usd: float | None = None,
+        deadline: datetime | None = None,
+        tags: list[str] | None = None,
+        created_by: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        # Optional caller-supplied TenantContext (richer plan tier).
+        # When omitted a PROFESSIONAL-tier context is synthesised from tenant_id.
+        tenant_ctx: Any | None = None,
+    ) -> tuple[OrgMission, dict[str, Any]]:
+        """Create an OrgMission and immediately dispatch it to the AgentGraph.
+
+        This is the single entry-point for fully autonomous mission execution:
+
+        1. Persist the OrgMission record.
+        2. Run MetaOrchestrator to produce an OrchestrationPlan (team + topology).
+        3. Dispatch to GoalService → Celery → AgentGraph.run() with org context
+           injected so the agent knows its dept, role, and mission.
+        4. Store the resulting goal_id back on the mission for status tracking.
+        5. Update mission status → "active" and emit telemetry.
+
+        Returns ``(mission, dispatch_result)`` where dispatch_result contains
+        goal_id, orchestration plan summary, and topology chosen.
+        """
+        with _tracer.start_as_current_span("org.create_mission_and_execute") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("mission.priority", priority)
+            span.set_attribute("mission.source", source)
+
+            # ── Step 1: Persist the mission record ───────────────────────────
+            mission = await self.create_mission(
+                org_id=org_id,
+                title=title,
+                objective=objective,
+                why=why,
+                expected_outcome=expected_outcome,
+                priority=priority,
+                dept_id=dept_id,
+                assigned_team_id=assigned_team_id,
+                autonomy_level=autonomy_level,
+                source=source,
+                success_criteria=success_criteria,
+                budget_usd=budget_usd,
+                deadline=deadline,
+                tags=tags,
+                created_by=created_by,
+                metadata=metadata,
+            )
+
+            # ── Step 2: Load org entity for MetaOrchestrator ─────────────────
+            org = await self.get_organization(org_id)
+            if org is None:
+                _log.warning("org.create_mission_and_execute.org_not_found", org_id=org_id)
+                return mission, {"goal_id": None, "error": "org_not_found"}
+
+            # ── Step 3: Form the team + produce execution plan ────────────────
+            dispatch_result: dict[str, Any] = {
+                "mission_id": str(mission.id),
+                "goal_id": None,
+                "topology": "sequential",
+                "departments": [],
+                "autonomy_level": autonomy_level or 2,
+                "estimated_cost_usd": 0.0,
+            }
+
+            try:
+                from app.org.meta_orchestrator import MetaOrchestrator
+
+                # Lazily resolve LLM provider from app.state (best-effort)
+                _llm_provider: Any | None = None
+                try:
+                    from app.main import app as _app  # type: ignore[attr-defined]
+                    _llm_provider = getattr(getattr(_app, "state", None), "planner_provider", None)
+                except Exception:
+                    pass
+
+                orchestrator = MetaOrchestrator(llm_provider=_llm_provider)
+                orch_plan = await orchestrator.plan_mission(
+                    objective or title,
+                    org,
+                    self._tenant_id,
+                    mission,
+                )
+
+                dispatch_result.update({
+                    "topology": orch_plan.topology,
+                    "departments": orch_plan.departments,
+                    "autonomy_level": orch_plan.autonomy_level,
+                    "estimated_cost_usd": orch_plan.estimated_total_cost_usd,
+                    "estimated_duration_hours": orch_plan.estimated_total_duration_hours,
+                    "agent_count": orch_plan.team_manifest.agent_count if orch_plan.team_manifest else 0,
+                    "requires_preview": getattr(
+                        orch_plan.team_manifest, "requires_human_preview", False
+                    ),
+                })
+                span.set_attribute("topology", orch_plan.topology)
+                span.set_attribute("dept_count", len(orch_plan.departments))
+
+            except Exception as orch_exc:
+                _log.warning(
+                    "org.create_mission_and_execute.orchestration_fallback",
+                    mission_id=str(mission.id),
+                    error=str(orch_exc)[:120],
+                )
+                orch_plan = None  # type: ignore[assignment]
+
+            # ── Step 4: Dispatch to GoalService → AgentGraph (Celery) ─────────
+            try:
+                from app.main import app as _app  # type: ignore[attr-defined]
+                goal_service = getattr(getattr(_app, "state", None), "goal_service", None)
+            except Exception:
+                goal_service = None
+
+            if goal_service is not None:
+                # Build a minimal TenantContext when caller didn't provide one
+                if tenant_ctx is None:
+                    from app.tenancy.context import PlanTier, TenantContext
+                    tenant_ctx = TenantContext(
+                        tenant_id=self._tenant_id,
+                        plan=PlanTier.PROFESSIONAL,
+                        api_key_id="org_mission_dispatch",
+                    )
+
+                # Serialise orch_plan summary for injection into agent context
+                plan_summary: dict[str, Any] = {
+                    "topology": dispatch_result.get("topology", "sequential"),
+                    "departments": dispatch_result.get("departments", []),
+                    "autonomy_level": dispatch_result.get("autonomy_level", 2),
+                }
+                if orch_plan is not None:
+                    try:
+                        plan_summary["approval_gates"] = orch_plan.approval_gates
+                        plan_summary["model_profile"] = str(orch_plan.model_gateway_profile)
+                    except Exception:
+                        pass
+
+                # Execution context injected into every AgentGraph call:
+                # The graph's run() reads these as initial_context / org attributes.
+                execution_ctx: dict[str, Any] = {
+                    "org_id": org_id,
+                    "mission_id": str(mission.id),
+                    "mission_title": title,
+                    "source": "org_mission",
+                    "orchestration_plan": plan_summary,
+                }
+                if dept_id:
+                    execution_ctx["dept_id"] = dept_id
+                if assigned_team_id:
+                    execution_ctx["team_id"] = assigned_team_id
+
+                workflow_mode = dispatch_result.get("topology", "sequential")
+                # Map org topologies → GoalService workflow modes
+                _topology_mode_map = {
+                    "sequential": "single_agent",
+                    "parallel": "multi_agent",
+                    "hierarchical": "multi_agent",
+                    "swarm": "multi_agent",
+                    "pipeline": "single_agent",
+                    "moa": "multi_agent",
+                }
+                workflow_mode = _topology_mode_map.get(workflow_mode, "single_agent")
+
+                try:
+                    goal_result = await goal_service.submit_goal(
+                        goal=objective or title,
+                        priority=priority,
+                        dry_run=False,
+                        tenant_ctx=tenant_ctx,
+                        workflow_mode=workflow_mode,
+                        execution_context=execution_ctx,
+                    )
+                    goal_id: str | None = goal_result.get("goal_id")
+                    dispatch_result["goal_id"] = goal_id
+                    dispatch_result["goal_status"] = goal_result.get("status", "queued")
+                    span.set_attribute("goal_id", goal_id or "")
+                    _log.info(
+                        "org.create_mission_and_execute.dispatched",
+                        mission_id=str(mission.id),
+                        goal_id=goal_id,
+                        topology=workflow_mode,
+                    )
+                except Exception as submit_exc:
+                    _log.error(
+                        "org.create_mission_and_execute.submit_failed",
+                        mission_id=str(mission.id),
+                        error=str(submit_exc)[:200],
+                    )
+                    dispatch_result["error"] = str(submit_exc)[:200]
+            else:
+                _log.warning(
+                    "org.create_mission_and_execute.no_goal_service",
+                    mission_id=str(mission.id),
+                )
+                dispatch_result["warning"] = "goal_service_unavailable"
+
+            # ── Step 5: Write goal_id back to mission + activate it ───────────
+            goal_id = dispatch_result.get("goal_id")
+            if goal_id:
+                new_meta = dict(mission.metadata or {})
+                new_meta["goal_id"] = goal_id
+                new_meta["orchestration_plan_summary"] = {
+                    "topology": dispatch_result.get("topology"),
+                    "departments": dispatch_result.get("departments"),
+                    "autonomy_level": dispatch_result.get("autonomy_level"),
+                    "estimated_cost_usd": dispatch_result.get("estimated_cost_usd"),
+                }
+                mission.metadata = new_meta
+                mission.updated_at = datetime.now(UTC)
+                await self._session.flush()
+                # Transition to active — triggers the mission.active event
+                await self.update_mission_status(str(mission.id), "active")
+
+            span.set_attribute("dispatched", goal_id is not None)
+            return mission, dispatch_result
