@@ -64,7 +64,7 @@ export function GoalOutcomeHero({
       <div className="relative flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-blue-100 ring-1 ring-white/10">
+            <span className="inline-flex items-center gap-2 rounded-full bg-[#0F1826]/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-blue-100 ring-1 ring-white/10">
               <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
               Agent result
             </span>
@@ -74,19 +74,19 @@ export function GoalOutcomeHero({
               <Icon className="h-3.5 w-3.5" aria-hidden="true" />
               {tone.label}
             </span>
-            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-slate-300 ring-1 ring-white/10">
+            <span className="rounded-full bg-[#0F1826]/10 px-3 py-1 text-xs font-medium text-slate-300 ring-1 ring-white/10">
               Goal status: {status.replace(/_/g, ' ')}
             </span>
           </div>
 
           <div className="flex items-start gap-3">
-            <div className="mt-1 rounded-2xl bg-white/10 p-2 ring-1 ring-white/10">
+            <div className="mt-1 rounded-2xl bg-[#0F1826]/10 p-2 ring-1 ring-white/10">
               <Icon className={`h-6 w-6 ${tone.icon}`} aria-hidden="true" />
             </div>
             <div className="min-w-0">
               <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">{artifact.title}</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">{artifact.summary}</p>
-              <div className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-xs text-slate-300 ring-1 ring-white/10">
+              <div className="mt-3 rounded-xl bg-[#0F1826]/5 px-3 py-2 text-xs text-slate-300 ring-1 ring-white/10">
                 <span className="font-medium text-slate-100">Goal:</span> {goal}
               </div>
             </div>
@@ -95,7 +95,7 @@ export function GoalOutcomeHero({
           {artifact.metrics.length > 0 && (
             <dl className="flex flex-wrap gap-2">
               {artifact.metrics.map((metric) => (
-                <div key={metric.label} className="rounded-xl bg-white/10 px-4 py-3 ring-1 ring-white/10">
+                <div key={metric.label} className="rounded-xl bg-[#0F1826]/10 px-4 py-3 ring-1 ring-white/10">
                   <dt className="text-xs font-medium text-slate-300">{metric.label}</dt>
                   <dd className="mt-1 text-xl font-semibold tabular-nums text-white">{metric.value}</dd>
                 </div>

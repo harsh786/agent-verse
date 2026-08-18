@@ -47,7 +47,7 @@ function RunRow({ run }: { run: WERun }) {
     <Link
       to={`/workflow-runs/${run.run_id}`}
       className="flex items-center gap-4 px-4 py-3 rounded-xl border border-white/8
-                 bg-white/3 hover:bg-white/6 transition-colors group"
+                 bg-[#0F1826]/3 hover:bg-white/6 transition-colors group"
       aria-label={`Run ${run.run_id}, status: ${run.status}`}
     >
       <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${statusCls}`}>

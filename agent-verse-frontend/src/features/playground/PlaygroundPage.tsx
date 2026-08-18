@@ -214,7 +214,7 @@ function ToolCard({
           aria-label={`Toggle ${tool.name}`}
         >
           <span
-            className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+            className={`absolute top-0.5 w-3 h-3 rounded-full bg-[#0F1826] shadow transition-transform ${
               isOn ? "left-[18px]" : "left-0.5"
             }`}
           />

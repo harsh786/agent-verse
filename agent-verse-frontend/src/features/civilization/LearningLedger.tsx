@@ -80,7 +80,7 @@ export function LearningLedger({ records }: { records: LearningRecord[] }) {
       <div className="flex items-center gap-3 text-xs">
         <span className="text-green-400 font-semibold">{promoted} promoted to LTM</span>
         <span className="w-1 h-1 rounded-full bg-slate-700" />
-        <span className="text-slate-500">{total} total</span>
+        <span className="text-[#5A7494]">{total} total</span>
       </div>
 
       {records.map(r => {
@@ -127,7 +127,7 @@ export function LearningLedger({ records }: { records: LearningRecord[] }) {
 
             {/* Score bar */}
             {scorePct !== null && (
-              <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+              <div className="h-1 bg-[#0F1826]/5 rounded-full overflow-hidden">
                 <div
                   className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700"
                   style={{

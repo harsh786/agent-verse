@@ -19,7 +19,7 @@ export function ChatTokenCostBadge({ tokensIn = 0, tokensOut = 0, costUsd = 0, m
   return (
     <div className="relative inline-block">
       <button
-        className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+        className="flex items-center gap-1 text-xs text-[#A0B4CC] hover:text-gray-600 transition-colors"
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
         aria-label={`${total} tokens, $${costUsd.toFixed(5)}`}
@@ -31,17 +31,17 @@ export function ChatTokenCostBadge({ tokensIn = 0, tokensOut = 0, costUsd = 0, m
       {show && (
         <div className="absolute bottom-full left-0 mb-1 z-50 w-48 bg-gray-900 text-white text-xs rounded-lg p-2.5 shadow-xl">
           <div className="space-y-1">
-            {model && <p className="font-medium text-gray-300">{model}</p>}
+            {model && <p className="font-medium text-[#A0B4CC]">{model}</p>}
             <div className="flex justify-between">
-              <span className="text-gray-400">Input</span>
+              <span className="text-[#A0B4CC]">Input</span>
               <span>{tokensIn} tokens</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Output</span>
+              <span className="text-[#A0B4CC]">Output</span>
               <span>{tokensOut} tokens</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-1 mt-1">
-              <span className="text-gray-400">Cost</span>
+              <span className="text-[#A0B4CC]">Cost</span>
               <span className="text-green-400">${costUsd.toFixed(5)}</span>
             </div>
           </div>

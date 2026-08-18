@@ -54,7 +54,7 @@ export function BlackboardFeed({ entries }: { entries: BlackboardEntry[] }) {
 
   return (
     <div className="space-y-2.5">
-      <div className="flex items-center justify-between text-[10px] text-slate-500">
+      <div className="flex items-center justify-between text-[10px] text-[#5A7494]">
         <span>{entries.length} posting{entries.length !== 1 ? 's' : ''}</span>
         <span className="flex items-center gap-1">
           <RefreshCw className="h-3 w-3" />
@@ -100,13 +100,13 @@ export function BlackboardFeed({ entries }: { entries: BlackboardEntry[] }) {
               <div className="flex items-center gap-3">
                 {/* Confidence bar */}
                 <div className="flex items-center gap-1.5">
-                  <div className="w-12 h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div className="w-12 h-1 bg-[#0F1826]/5 rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                       style={{ width: `${confPct}%`, background: confColor }}
                     />
                   </div>
-                  <span className="text-slate-500">{confPct}%</span>
+                  <span className="text-[#5A7494]">{confPct}%</span>
                 </div>
                 {e.version !== undefined && (
                   <span className="text-slate-600">v{e.version}</span>

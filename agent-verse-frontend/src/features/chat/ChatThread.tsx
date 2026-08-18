@@ -47,12 +47,12 @@ export function ChatThread({
       aria-live="polite"
     >
       {messages.length === 0 && !isStreaming && (
-        <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 gap-4">
+        <div className="flex flex-col items-center justify-center h-full text-center text-[#A0B4CC] gap-4">
           <div className="w-16 h-16 rounded-2xl bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center text-3xl">
             💬
           </div>
           <div>
-            <p className="text-lg font-medium text-gray-600 dark:text-gray-300">
+            <p className="text-lg font-medium text-[#5A7494] dark:text-gray-300">
               Start a conversation
             </p>
             <p className="text-sm mt-1">

@@ -279,7 +279,7 @@ function BuilderCanvas({
             <Redo2 className="h-4 w-4" />
           </motion.button>
 
-          <div className="w-px h-5 bg-white/10 mx-0.5" />
+          <div className="w-px h-5 bg-[#0F1826]/10 mx-0.5" />
 
           {/* Auto layout */}
           <button
@@ -304,7 +304,7 @@ function BuilderCanvas({
             <Code2 className="h-4 w-4" />
           </button>
 
-          <div className="w-px h-5 bg-white/10 mx-0.5" />
+          <div className="w-px h-5 bg-[#0F1826]/10 mx-0.5" />
 
           {/* Test */}
           <button

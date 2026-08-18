@@ -84,7 +84,7 @@ const DOMAIN_META: Record<
     name: 'Legal',
     icon: '⚖️',
     description: 'Contract review at paralegal speed.',
-    color: 'bg-slate-100 dark:bg-slate-900/20',
+    color: 'bg-[#0F1826] dark:bg-slate-900/20',
     tags: ['contracts', 'compliance', 'NDAs'],
   },
   'gst-tax': {
@@ -147,7 +147,7 @@ const DOMAIN_META: Record<
     name: 'Cybersecurity',
     icon: '🔒',
     description: 'SIEM triage without analyst fatigue.',
-    color: 'bg-gray-100 dark:bg-gray-900/20',
+    color: 'bg-[#0F1826] dark:bg-gray-900/20',
     tags: ['SIEM', 'threat detection', 'incident response'],
   },
   'logistics': {
@@ -259,7 +259,7 @@ const DOMAIN_META: Record<
     name: 'Automobile & EV',
     icon: '🚗',
     description: 'RC transfer to service reminders, automated.',
-    color: 'bg-slate-100 dark:bg-slate-900/20',
+    color: 'bg-[#0F1826] dark:bg-slate-900/20',
     tags: ['RC', 'service', 'EV'],
   },
   'nonprofit-ngo': {

@@ -16,7 +16,7 @@ function renderCell(value: unknown, type: ResultColumn['type'], row: Record<stri
 
   if (type === 'badge') {
     return (
-      <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
+      <span className="inline-flex rounded-full bg-[#0F1826] px-2 py-0.5 text-xs font-medium text-[#A0B4CC]">
         {text}
       </span>
     );
@@ -63,14 +63,14 @@ export function GoalResultCanvas({ artifact, onShowExecution }: GoalResultCanvas
         <p className="mt-2 text-sm text-red-800 dark:text-red-200">{artifact.summary}</p>
         <dl className="mt-5 grid gap-3 sm:grid-cols-2">
           {successfulToolName && (
-            <div className="rounded-xl border border-red-200 bg-white/70 p-3 dark:border-red-900/60 dark:bg-red-950/40">
+            <div className="rounded-xl border border-red-200 bg-[#0F1826]/70 p-3 dark:border-red-900/60 dark:bg-red-950/40">
               <dt className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
                 Last successful tool
               </dt>
               <dd className="mt-1 break-words text-sm font-medium">{successfulToolName}</dd>
             </div>
           )}
-          <div className="rounded-xl border border-red-200 bg-white/70 p-3 dark:border-red-900/60 dark:bg-red-950/40">
+          <div className="rounded-xl border border-red-200 bg-[#0F1826]/70 p-3 dark:border-red-900/60 dark:bg-red-950/40">
             <dt className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
               Suggested next action
             </dt>

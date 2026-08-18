@@ -38,10 +38,10 @@ function ConfidenceMeter({ value, colorClass }: { value: number; colorClass: str
   return (
     <div className="mt-2 space-y-0.5">
       <div className="flex items-center justify-between text-[10px]">
-        <span className="text-slate-500">Confidence</span>
+        <span className="text-[#5A7494]">Confidence</span>
         <span className={`font-semibold tabular-nums ${colorClass}`}>{pct}%</span>
       </div>
-      <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+      <div className="h-1 bg-[#0F1826]/5 rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700 ${colorClass.includes('blue') ? 'bg-blue-500' : 'bg-orange-500'}`}
           style={{ width: `${pct}%` }}
@@ -102,7 +102,7 @@ function DebateCard({ debate, index }: { debate: DebateMessage; index: number })
         }`}>
           {isResolved ? 'Resolved' : payload.status ?? 'Open'}
         </span>
-        {open ? <ChevronDown className="h-4 w-4 text-slate-500" /> : <ChevronRight className="h-4 w-4 text-slate-500" />}
+        {open ? <ChevronDown className="h-4 w-4 text-[#5A7494]" /> : <ChevronRight className="h-4 w-4 text-[#5A7494]" />}
       </button>
 
       {/* Expanded body */}
@@ -177,7 +177,7 @@ function DebateCard({ debate, index }: { debate: DebateMessage; index: number })
               <p className="text-[10px] text-slate-600 mb-1">Participants</p>
               <div className="flex flex-wrap gap-1">
                 {debate.participants.map((p, i) => (
-                  <span key={i} className="text-[10px] font-mono bg-white/5 border border-white/10 px-1.5 py-0.5 rounded">
+                  <span key={i} className="text-[10px] font-mono bg-[#0F1826]/5 border border-white/10 px-1.5 py-0.5 rounded">
                     {p.slice(0, 10)}…
                   </span>
                 ))}
@@ -216,7 +216,7 @@ export function DebateViewer({ debates }: { debates: DebateMessage[] }) {
   return (
     <div className="space-y-3">
       {/* Stats bar */}
-      <div className="flex items-center gap-3 text-xs text-slate-500">
+      <div className="flex items-center gap-3 text-xs text-[#5A7494]">
         <span className="text-green-400 font-semibold">{resolved.length} resolved</span>
         <span className="w-1 h-1 rounded-full bg-slate-700" />
         <span className="text-amber-400 font-semibold">{open.length} open</span>

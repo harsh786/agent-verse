@@ -99,12 +99,12 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
             <p className="text-sm font-semibold text-slate-100">
               {agentConfig ? String(agentConfig.name ?? 'Agent') : 'Agent Inspector'}
             </p>
-            <p className="text-[10px] font-mono text-slate-500">{agentId.slice(0, 16)}…</p>
+            <p className="text-[10px] font-mono text-[#5A7494]">{agentId.slice(0, 16)}…</p>
           </div>
           <button
             onClick={onClose}
             aria-label="Close inspector"
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-[#5A7494] hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -122,7 +122,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
               className={`flex items-center gap-1.5 flex-1 justify-center px-2 py-2.5 text-xs font-medium transition-colors border-b-2 ${
                 tab === key
                   ? 'border-indigo-500 text-indigo-300'
-                  : 'border-transparent text-slate-500 hover:text-slate-300'
+                  : 'border-transparent text-[#5A7494] hover:text-slate-300'
               }`}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -134,7 +134,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
         {/* Body */}
         <div className="flex-1 overflow-y-auto">
           {loading && (
-            <div className="flex items-center justify-center h-40 gap-3 text-slate-500">
+            <div className="flex items-center justify-center h-40 gap-3 text-[#5A7494]">
               <span className="w-4 h-4 border-2 border-slate-600 border-t-indigo-400 rounded-full animate-spin" />
               <span className="text-sm">Loading…</span>
             </div>
@@ -194,12 +194,12 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                       {member.budget_usd !== undefined && (
                         <div className="space-y-1">
                           <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-slate-500">Budget used</span>
+                            <span className="text-[#5A7494]">Budget used</span>
                             <span className="font-mono text-slate-400">
                               ${Number(member.budget_spent_usd ?? 0).toFixed(2)} / ${Number(member.budget_usd).toFixed(2)}
                             </span>
                           </div>
-                          <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-[#0F1826]/5 rounded-full overflow-hidden">
                             <div
                               className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700"
                               style={{
@@ -222,7 +222,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                       </div>
                     </>
                   ) : (
-                    <p className="text-sm text-slate-500 text-center py-8">No member data available.</p>
+                    <p className="text-sm text-[#5A7494] text-center py-8">No member data available.</p>
                   )}
                 </div>
               )}
@@ -232,8 +232,8 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                 <div className="space-y-2">
                   {messages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-10 space-y-2 text-center">
-                      <MessageSquare className="h-8 w-8 text-slate-700" />
-                      <p className="text-sm text-slate-500">No recent messages</p>
+                      <MessageSquare className="h-8 w-8 text-[#A0B4CC]" />
+                      <p className="text-sm text-[#5A7494]">No recent messages</p>
                     </div>
                   ) : messages.map((msg, i) => (
                     <div
@@ -268,7 +268,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                         if (!val) return null;
                         return (
                           <div key={key} className="space-y-1">
-                            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-[#5A7494]">
                               {key.replace(/_/g, ' ')}
                             </p>
                             <div
@@ -283,7 +283,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
 
                       {Array.isArray(agentConfig.connector_ids) && agentConfig.connector_ids.length > 0 && (
                         <div className="space-y-1">
-                          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Connectors</p>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#5A7494]">Connectors</p>
                           <div className="flex flex-wrap gap-1.5">
                             {(agentConfig.connector_ids as string[]).map((c, i) => (
                               <span
@@ -299,7 +299,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                       )}
                     </>
                   ) : (
-                    <p className="text-sm text-slate-500 text-center py-8">No config available.</p>
+                    <p className="text-sm text-[#5A7494] text-center py-8">No config available.</p>
                   )}
                 </div>
               )}

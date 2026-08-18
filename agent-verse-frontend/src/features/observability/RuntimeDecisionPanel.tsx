@@ -34,8 +34,8 @@ export function RuntimeDecisionPanel({
   overallScore,
 }: RuntimeDecisionPanelProps) {
   return (
-    <div className="runtime-decision-panel border rounded-lg p-4 bg-gray-50 text-sm" data-goal-id={goalId}>
-      <h3 className="font-semibold text-gray-800 mb-3">
+    <div className="runtime-decision-panel border rounded-lg p-4 bg-[#0A0F1A] text-sm" data-goal-id={goalId}>
+      <h3 className="font-semibold text-[#F0F6FF] mb-3">
         Runtime Orchestration Decisions
       </h3>
 
@@ -70,12 +70,12 @@ export function RuntimeDecisionPanel({
           </span>
         )}
         {guardrailBundle && (
-          <span className="px-2 py-1 bg-gray-100 text-gray-800 rounded text-xs">
+          <span className="px-2 py-1 bg-[#0F1826] text-[#F0F6FF] rounded text-xs">
             guardrails: {guardrailBundle}
           </span>
         )}
         {assemblyLatencyMs !== undefined && (
-          <span className="px-2 py-1 bg-gray-100 text-gray-500 rounded text-xs">
+          <span className="px-2 py-1 bg-[#0F1826] text-[#5A7494] rounded text-xs">
             profiled in {assemblyLatencyMs.toFixed(1)}ms
           </span>
         )}
@@ -84,7 +84,7 @@ export function RuntimeDecisionPanel({
       {/* Active patterns */}
       {patternsActive && (
         <div className="mb-4">
-          <p className="text-xs font-medium text-gray-600 mb-1">Active patterns:</p>
+          <p className="text-xs font-medium text-[#5A7494] mb-1">Active patterns:</p>
           <div className="flex flex-wrap gap-1">
             {Object.entries(patternsActive).flatMap(([category, patterns]) =>
               patterns.map((p) => (
@@ -103,17 +103,17 @@ export function RuntimeDecisionPanel({
       {/* Decision trace */}
       {decisions.length > 0 && (
         <details className="mt-2">
-          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+          <summary className="cursor-pointer text-xs text-[#5A7494] hover:text-gray-700">
             Show {decisions.length} decisions
           </summary>
           <div className="mt-2 space-y-1">
             {decisions.map((d, i) => (
               <div key={i} className="text-xs border-l-2 border-blue-200 pl-2">
-                <span className="font-medium text-gray-700">{d.dimension}</span>
+                <span className="font-medium text-[#A0B4CC]">{d.dimension}</span>
                 {" → "}
                 <span className="text-blue-700">{d.selected}</span>
                 {d.reason && (
-                  <span className="text-gray-400 ml-1">({d.reason})</span>
+                  <span className="text-[#A0B4CC] ml-1">({d.reason})</span>
                 )}
               </div>
             ))}
@@ -125,8 +125,8 @@ export function RuntimeDecisionPanel({
       {overallScore !== null && overallScore !== undefined && (
         <div className="mt-3 pt-3 border-t">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">Eval score:</span>
-            <div className="flex-1 h-1.5 bg-gray-200 rounded-full">
+            <span className="text-xs text-[#5A7494]">Eval score:</span>
+            <div className="flex-1 h-1.5 bg-[#162035] rounded-full">
               <div
                 className={`h-full rounded-full ${
                   overallScore >= 0.8

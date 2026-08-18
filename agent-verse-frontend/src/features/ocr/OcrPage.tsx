@@ -186,7 +186,7 @@ function DropZone({
         disabled ? 'pointer-events-none opacity-50' : '',
       ].join(' ')}
     >
-      <Upload className={`h-10 w-10 ${dragging ? 'text-indigo-400' : 'text-slate-500'}`} />
+      <Upload className={`h-10 w-10 ${dragging ? 'text-indigo-400' : 'text-[#5A7494]'}`} />
       <p className="text-sm text-slate-400">{label}</p>
       <p className="text-xs text-slate-600">JPEG · PNG · WebP · GIF · PDF — max 10 MB</p>
       <input
@@ -324,7 +324,7 @@ function OcrResultPanel({
             </span>
           </div>
 
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-[#5A7494]">
             {fields.length} fields extracted &nbsp;·&nbsp;
             <span className="text-emerald-400">{validCount} valid</span>
             {fields.length - validCount > 0 && (
@@ -365,10 +365,10 @@ function OcrResultPanel({
             <table className="w-full text-left" data-testid="fields-table">
               <thead>
                 <tr className="border-b border-slate-700">
-                  <th className="pb-2 text-xs uppercase tracking-wider text-slate-500">Field</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-slate-500">Value</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-slate-500">Confidence</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-slate-500">Valid</th>
+                  <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Field</th>
+                  <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Value</th>
+                  <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Confidence</th>
+                  <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Valid</th>
                   <th className="pb-2" />
                 </tr>
               </thead>
@@ -411,7 +411,7 @@ function OcrResultPanel({
               </pre>
               <button
                 onClick={() => copyText(result.raw_text)}
-                className="absolute right-2 top-2 rounded-md bg-slate-800 p-1.5 text-slate-500 hover:text-slate-300 transition-colors"
+                className="absolute right-2 top-2 rounded-md bg-slate-800 p-1.5 text-[#5A7494] hover:text-slate-300 transition-colors"
                 aria-label="Copy raw text"
                 data-testid="copy-raw"
               >
@@ -606,20 +606,20 @@ export default function OcrPage() {
                       />
                     ) : (
                       <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-slate-700 bg-slate-800">
-                        <FileText className="h-8 w-8 text-slate-500" />
+                        <FileText className="h-8 w-8 text-[#5A7494]" />
                       </div>
                     )}
                     <div className="flex flex-col gap-1">
                       <p className="font-medium text-slate-200" data-testid="filename">
                         {file.name}
                       </p>
-                      <p className="text-xs text-slate-500">
+                      <p className="text-xs text-[#5A7494]">
                         {(file.size / 1024).toFixed(1)} KB · {file.type}
                       </p>
                     </div>
                     <button
                       onClick={handleReset}
-                      className="ml-auto rounded-lg p-2 text-slate-500 hover:text-red-400 transition-colors"
+                      className="ml-auto rounded-lg p-2 text-[#5A7494] hover:text-red-400 transition-colors"
                       aria-label="Remove file"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -709,7 +709,7 @@ export default function OcrPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => { setBatchItems([]); setBatchResult(null); }}
-                    className="text-xs text-slate-500 hover:text-red-400 transition-colors"
+                    className="text-xs text-[#5A7494] hover:text-red-400 transition-colors"
                   >
                     Clear all
                   </button>
@@ -736,7 +736,7 @@ export default function OcrPage() {
                     data-testid={`batch-item-${item.status}`}
                   >
                     <div className="flex items-center gap-2">
-                      <FileText className="h-5 w-5 shrink-0 text-slate-500" />
+                      <FileText className="h-5 w-5 shrink-0 text-[#5A7494]" />
                       <p className="truncate text-sm font-medium text-slate-200">{item.file.name}</p>
                       {item.status === 'pending' && (
                         <button
@@ -794,7 +794,7 @@ export default function OcrPage() {
           {history.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-slate-700 py-16 text-center">
               <History className="h-10 w-10 text-slate-600" />
-              <p className="text-sm text-slate-500">No extraction history yet</p>
+              <p className="text-sm text-[#5A7494]">No extraction history yet</p>
               <p className="text-xs text-slate-600">Save results from the Single tab to see them here</p>
             </div>
           ) : (
@@ -802,7 +802,7 @@ export default function OcrPage() {
               <div className="flex justify-end">
                 <button
                   onClick={clearHistory}
-                  className="text-xs text-slate-500 hover:text-red-400 transition-colors"
+                  className="text-xs text-[#5A7494] hover:text-red-400 transition-colors"
                 >
                   Clear history
                 </button>
@@ -816,10 +816,10 @@ export default function OcrPage() {
                   >
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-2 min-w-0">
-                        <FileText className="h-4 w-4 shrink-0 text-slate-500" />
+                        <FileText className="h-4 w-4 shrink-0 text-[#5A7494]" />
                         <span className="truncate text-sm font-medium text-slate-200">{entry.filename}</span>
                       </div>
-                      <span className="shrink-0 text-xs text-slate-500">
+                      <span className="shrink-0 text-xs text-[#5A7494]">
                         {new Date(entry.timestamp).toLocaleString()}
                       </span>
                     </div>
@@ -834,7 +834,7 @@ export default function OcrPage() {
                       <span className={`text-xs ${confidenceText(entry.result.overall_confidence)}`}>
                         {pct(entry.result.overall_confidence)} confidence
                       </span>
-                      <span className="text-xs text-slate-500">
+                      <span className="text-xs text-[#5A7494]">
                         {Object.keys(entry.result.fields).length} fields
                       </span>
                     </div>

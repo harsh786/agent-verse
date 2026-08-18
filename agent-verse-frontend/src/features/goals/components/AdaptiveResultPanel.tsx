@@ -61,7 +61,7 @@ function statusLabel(result: AdaptiveResultViewModel) {
     return {
       icon: <Database className="h-4 w-4" aria-hidden="true" />,
       label: 'No rows',
-      className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/70 dark:text-slate-200',
+      className: 'bg-[#0F1826] text-[#A0B4CC] dark:bg-slate-900/70 dark:text-slate-200',
     };
   }
 
@@ -78,7 +78,7 @@ function renderCell(value: unknown, type: AdaptiveColumnType, row: Record<string
 
   if (type === 'badge') {
     return (
-      <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+      <span className="inline-flex rounded-full bg-[#0F1826] px-2 py-0.5 text-xs font-medium text-[#A0B4CC] dark:bg-slate-800 dark:text-slate-200">
         {text}
       </span>
     );

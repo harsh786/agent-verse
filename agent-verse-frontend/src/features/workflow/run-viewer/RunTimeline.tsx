@@ -113,7 +113,7 @@ function StepRow({
     >
       {/* Vertical line */}
       {!isLast && (
-        <div className="absolute left-[15px] top-8 bottom-0 w-0.5 bg-white/10" aria-hidden />
+        <div className="absolute left-[15px] top-8 bottom-0 w-0.5 bg-[#0F1826]/10" aria-hidden />
       )}
 
       {/* Status dot — pulses when running, bounces when complete */}

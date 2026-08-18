@@ -85,7 +85,7 @@ export function ControlBar({
       }}
     >
       {/* Globe icon */}
-      <Globe className="h-4 w-4 text-slate-500 flex-shrink-0" aria-hidden />
+      <Globe className="h-4 w-4 text-[#5A7494] flex-shrink-0" aria-hidden />
 
       {/* Goal input */}
       <div className="relative flex-1 min-w-0">
@@ -136,7 +136,7 @@ export function ControlBar({
       </button>
 
       {/* Divider */}
-      <div className="w-px h-5 bg-white/10 flex-shrink-0" />
+      <div className="w-px h-5 bg-[#0F1826]/10 flex-shrink-0" />
 
       {/* Pause / Resume */}
       <button
@@ -172,7 +172,7 @@ export function ControlBar({
             title={`Budget: $${currentBudget ?? '—'}`}
             className="
               flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs
-              bg-white/5 border border-white/10 text-slate-400
+              bg-[#0F1826]/5 border border-white/10 text-slate-400
               hover:bg-white/10 hover:text-slate-200 hover:border-white/20
               transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95
             "
@@ -201,7 +201,7 @@ export function ControlBar({
                   onKeyDown={e => e.key === 'Enter' && void handleBudgetSave()}
                   placeholder="USD"
                   className="
-                    flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5
+                    flex-1 bg-[#0F1826]/5 border border-white/10 rounded-lg px-2 py-1.5
                     text-xs text-slate-200 placeholder-slate-600
                     focus:outline-none focus:border-indigo-500/50
                   "
@@ -229,7 +229,7 @@ export function ControlBar({
             'bg-slate-500'
           }`}
         />
-        <span className="text-xs text-slate-500 capitalize hidden sm:inline">{status}</span>
+        <span className="text-xs text-[#5A7494] capitalize hidden sm:inline">{status}</span>
       </div>
     </div>
   );

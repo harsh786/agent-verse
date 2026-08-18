@@ -51,15 +51,15 @@ export function ChatInput({
   };
 
   return (
-    <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3">
+    <div className="border-t border-white/[0.08] dark:border-gray-700 bg-[#0F1826] dark:bg-gray-900 px-4 py-3">
       {availableModels.length > 0 && onModelChange && (
         <div className="mb-2 flex items-center gap-2">
-          <label htmlFor="model-selector" className="text-xs text-gray-500">
+          <label htmlFor="model-selector" className="text-xs text-[#5A7494]">
             Model:
           </label>
           <select
             id="model-selector"
-            className="text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
+            className="text-xs border border-white/[0.08] dark:border-gray-700 rounded-lg px-2 py-1 bg-[#0F1826] dark:bg-gray-800 text-[#A0B4CC] dark:text-gray-300"
             value={selectedModel ?? ''}
             onChange={(e) => onModelChange(e.target.value)}
             aria-label="Select LLM model"
@@ -77,7 +77,7 @@ export function ChatInput({
         <textarea
           ref={textareaRef}
           rows={1}
-          className="flex-1 resize-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[44px] max-h-[200px]"
+          className="flex-1 resize-none rounded-xl border border-white/[0.08] dark:border-gray-700 bg-[#0A0F1A] dark:bg-gray-800 px-4 py-3 text-sm text-[#F0F6FF] dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[44px] max-h-[200px]"
           placeholder="Ask a question or describe a goal… (Enter to send, Shift+Enter for newline)"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -103,7 +103,7 @@ export function ChatInput({
         </button>
       </div>
 
-      <p className="mt-1 text-xs text-gray-400">
+      <p className="mt-1 text-xs text-[#A0B4CC]">
         Enter to send · Shift+Enter for new line
       </p>
     </div>

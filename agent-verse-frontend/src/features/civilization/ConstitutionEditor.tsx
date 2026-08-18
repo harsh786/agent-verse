@@ -123,7 +123,7 @@ function SliderField({ def, value, onChange, readOnly }: {
         </span>
       </div>
       <div className="relative h-4 flex items-center">
-        <div className="absolute inset-x-0 h-1.5 bg-white/8 rounded-full overflow-hidden">
+        <div className="absolute inset-x-0 h-1.5 bg-[#0F1826]/8 rounded-full overflow-hidden">
           <div
             className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150"
             style={{ width: `${pct}%` }}
@@ -143,7 +143,7 @@ function SliderField({ def, value, onChange, readOnly }: {
         />
         {/* Thumb */}
         <div
-          className="absolute w-3.5 h-3.5 bg-white rounded-full shadow-lg border-2 border-indigo-400 pointer-events-none transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150"
+          className="absolute w-3.5 h-3.5 bg-[#0F1826] rounded-full shadow-lg border-2 border-indigo-400 pointer-events-none transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150"
           style={{ left: `calc(${pct}% - 7px)` }}
         />
       </div>
@@ -171,12 +171,12 @@ function ToggleField({ def, value, onChange, readOnly }: {
         onClick={() => !readOnly && onChange(!value)}
         disabled={readOnly}
         className={`relative flex-shrink-0 w-10 h-5.5 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${
-          value ? 'bg-indigo-500' : 'bg-white/10'
+          value ? 'bg-indigo-500' : 'bg-[#0F1826]/10'
         } disabled:opacity-40 disabled:cursor-not-allowed`}
         style={{ height: '22px', width: '40px' }}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-4.5 h-4.5 bg-white rounded-full shadow transition-transform duration-200 ${
+          className={`absolute top-0.5 left-0.5 w-4.5 h-4.5 bg-[#0F1826] rounded-full shadow transition-transform duration-200 ${
             value ? 'translate-x-[18px]' : 'translate-x-0'
           }`}
           style={{ width: '18px', height: '18px' }}
@@ -201,7 +201,7 @@ function SelectField({ def, value, onChange, readOnly }: {
         disabled={readOnly}
         className="
           w-full text-xs rounded-lg px-2.5 py-1.5
-          bg-white/5 border border-white/10 text-slate-200
+          bg-[#0F1826]/5 border border-white/10 text-slate-200
           focus:outline-none focus:border-indigo-500/50
           disabled:opacity-40 disabled:cursor-not-allowed
           appearance-none cursor-pointer
@@ -268,7 +268,7 @@ export function ConstitutionEditor({ constitution, onSave, readOnly = false }: P
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-slate-200">Governance Rules</h3>
-          <p className="text-[10px] text-slate-500 mt-0.5">Controls society behaviour and resource limits</p>
+          <p className="text-[10px] text-[#5A7494] mt-0.5">Controls society behaviour and resource limits</p>
         </div>
         {isDirty && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
@@ -324,7 +324,7 @@ export function ConstitutionEditor({ constitution, onSave, readOnly = false }: P
           setJsonOpen(o => !o);
           if (!jsonOpen) setJsonDraft(JSON.stringify(draft, null, 2));
         }}
-        className="w-full flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors py-1"
+        className="w-full flex items-center gap-2 text-xs text-[#5A7494] hover:text-slate-300 transition-colors py-1"
       >
         {jsonOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         Raw JSON
@@ -387,7 +387,7 @@ export function ConstitutionEditor({ constitution, onSave, readOnly = false }: P
             title="Reset to last saved"
             className="
               flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs
-              bg-white/5 border border-white/10 text-slate-400
+              bg-[#0F1826]/5 border border-white/10 text-slate-400
               hover:bg-white/10 hover:text-slate-200
               disabled:opacity-30 disabled:cursor-not-allowed
               transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150

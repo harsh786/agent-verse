@@ -198,7 +198,7 @@ export function MFASettings() {
               <img
                 src={enrollData.qr_code}
                 alt="MFA QR Code"
-                className="w-48 h-48 border border-border rounded-lg bg-white p-2"
+                className="w-48 h-48 border border-border rounded-lg bg-[#0F1826] p-2"
               />
             ) : (
               <div className="w-48 h-48 border border-border rounded-lg bg-muted flex items-center justify-center">

@@ -130,11 +130,11 @@ function PipelineDemo() {
         <div className="absolute -inset-px bg-gradient-to-r from-violet-600/0 via-violet-600/20 to-violet-600/0 rounded-2xl blur-xl" />
         <div className="relative bg-[#0c0c18] border border-white/[0.07] rounded-2xl overflow-hidden">
           {/* Header */}
-          <div className="flex items-center gap-2 px-5 py-3.5 border-b border-white/[0.06] bg-white/[0.015]">
+          <div className="flex items-center gap-2 px-5 py-3.5 border-b border-white/[0.06] bg-[#0F1826]/[0.015]">
             <span className="h-2.5 w-2.5 rounded-full bg-rose-500/60" />
             <span className="h-2.5 w-2.5 rounded-full bg-amber-500/60" />
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/60" />
-            <span className="ml-3 font-mono text-xs text-slate-500">agent execution pipeline</span>
+            <span className="ml-3 font-mono text-xs text-[#5A7494]">agent execution pipeline</span>
             <span className="ml-auto flex items-center gap-1.5 text-xs text-emerald-400">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
               live
@@ -143,7 +143,7 @@ function PipelineDemo() {
           {/* Goal */}
           <div className="px-5 pt-5 pb-3">
             <div className="flex items-center gap-2 mb-5">
-              <span className="text-xs text-slate-500 font-mono">goal:</span>
+              <span className="text-xs text-[#5A7494] font-mono">goal:</span>
               <span className="text-sm text-white font-medium">
                 &quot;Find all Jira tickets assigned to Abhay Dwivedi across all projects&quot;
               </span>
@@ -155,10 +155,10 @@ function PipelineDemo() {
                   key={s.id}
                   className={`relative flex flex-col items-center gap-2 p-3 rounded-xl border transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-500 ${
                     active === i
-                      ? "border-white/20 bg-white/[0.06] scale-105"
+                      ? "border-white/20 bg-[#0F1826]/[0.06] scale-105"
                       : active > i
                       ? "border-emerald-500/20 bg-emerald-900/10"
-                      : "border-white/[0.04] bg-white/[0.01] opacity-40"
+                      : "border-white/[0.04] bg-[#0F1826]/[0.01] opacity-40"
                   }`}
                 >
                   <span className={`text-lg ${active === i ? s.color : active > i ? "text-emerald-400" : "text-slate-600"}`}>
@@ -401,7 +401,7 @@ function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: num
   return (
     <div
       ref={ref}
-      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 cursor-default p-5`}
+      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-[#0F1826]/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 cursor-default p-5`}
       style={{ transitionDelay: `${delay}ms`, animationDelay: `${delay}ms` }}
     >
       <div className={`absolute inset-0 bg-gradient-to-br ${glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -409,7 +409,7 @@ function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: num
         <div className="flex items-start justify-between mb-3">
           <span className="text-2xl">{icon}</span>
           {tag && (
-            <span className="text-[10px] font-semibold tracking-wider uppercase text-slate-500 border border-white/[0.07] rounded-full px-2 py-0.5">
+            <span className="text-[10px] font-semibold tracking-wider uppercase text-[#5A7494] border border-white/[0.07] rounded-full px-2 py-0.5">
               {tag}
             </span>
           )}
@@ -457,7 +457,7 @@ const CONNECTORS_ROW2 = [
 
 function ConnectorTag({ n, c }: { n: string; c: string }) {
   return (
-    <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:border-white/15 transition-colors">
+    <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg border border-white/[0.06] bg-[#0F1826]/[0.02] hover:border-white/15 transition-colors">
       <span className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: c }} />
       <span className="text-sm text-slate-300 whitespace-nowrap font-medium">{n}</span>
     </div>
@@ -511,7 +511,7 @@ function StatCard({ stat, on }: { stat: typeof STATS[0]; on: boolean }) {
       <div className="font-display text-4xl md:text-5xl font-bold text-white tabular-nums">
         {count.toLocaleString()}{stat.suffix}
       </div>
-      <div className="text-xs text-slate-500 mt-2 leading-tight">{stat.label}</div>
+      <div className="text-xs text-[#5A7494] mt-2 leading-tight">{stat.label}</div>
     </div>
   );
 }
@@ -603,7 +603,7 @@ function ArchSection() {
   return (
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
-        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Architecture
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
@@ -673,7 +673,7 @@ function SpotlightCard({ item, delay }: { item: typeof SPOTLIGHTS[0]; delay: num
   return (
     <div
       ref={ref}
-      className={`reveal ${on ? "reveal-on" : ""} relative rounded-2xl border ${item.border} bg-white/[0.025] p-6 flex flex-col`}
+      className={`reveal ${on ? "reveal-on" : ""} relative rounded-2xl border ${item.border} bg-[#0F1826]/[0.025] p-6 flex flex-col`}
       style={{ transitionDelay: `${delay}ms` }}
     >
       <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${item.accent} text-white mb-4`}>
@@ -690,7 +690,7 @@ function SpotlightCard({ item, delay }: { item: typeof SPOTLIGHTS[0]; delay: num
       </ul>
       <div className="mt-5 pt-4 border-t border-white/[0.05] flex flex-wrap gap-1.5">
         {item.connectors.map(c => (
-          <span key={c} className="text-[10px] font-medium text-slate-500 border border-white/[0.06] rounded px-1.5 py-0.5">
+          <span key={c} className="text-[10px] font-medium text-[#5A7494] border border-white/[0.06] rounded px-1.5 py-0.5">
             {c}
           </span>
         ))}
@@ -704,7 +704,7 @@ function SpotlightSection() {
   return (
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
-        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Use Cases
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
@@ -739,7 +739,7 @@ function ObsCard({ item, delay }: { item: typeof OBS_ITEMS[0]; delay: number }) 
   return (
     <div
       ref={ref}
-      className={`reveal ${on ? "reveal-on" : ""} p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-colors`}
+      className={`reveal ${on ? "reveal-on" : ""} p-5 rounded-2xl border border-white/[0.06] bg-[#0F1826]/[0.02] hover:border-white/[0.12] transition-colors`}
       style={{ transitionDelay: `${delay}ms` }}
     >
       <div className="text-2xl mb-3">{item.icon}</div>
@@ -754,7 +754,7 @@ function ObsSection() {
   return (
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
-        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-slate-500 mb-4">
+        <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Observability
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
@@ -805,7 +805,7 @@ function CTASection({ onStart }: { onStart: () => void }) {
               onClick={onStart}
               className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
-              <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span className="absolute inset-0 rounded-xl bg-[#0F1826]/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
             <button
@@ -886,7 +886,7 @@ function Footer() {
             </div>
             <span className="font-display font-semibold text-white">AgentVerse</span>
           </div>
-          <p className="text-xs text-slate-500 leading-relaxed">
+          <p className="text-xs text-[#5A7494] leading-relaxed">
             A multi-tenant operating system for autonomous AI agents. Governance-first. Enterprise-ready. Open architecture.
           </p>
         </div>
@@ -900,7 +900,7 @@ function Footer() {
               <div className="text-white font-medium mb-3">{h}</div>
               {ls.map(l => (
                 <div key={l} className="mb-1.5">
-                  <a href="#" className="text-slate-500 hover:text-slate-300 transition-colors text-xs">{l}</a>
+                  <a href="#" className="text-[#5A7494] hover:text-slate-300 transition-colors text-xs">{l}</a>
                 </div>
               ))}
             </div>
@@ -973,7 +973,7 @@ export function LandingPage() {
               onClick={go}
               className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
-              <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span className="absolute inset-0 rounded-xl bg-[#0F1826]/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
             <a href="#platform" className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-white/[0.03]">
@@ -993,7 +993,7 @@ export function LandingPage() {
             ].map(({ n, l }) => (
               <div key={l} className="flex flex-col items-center">
                 <span className="font-display text-2xl font-bold text-[#00D4FF]">{n}</span>
-                <span className="text-[11px] text-slate-500 mt-0.5">{l}</span>
+                <span className="text-[11px] text-[#5A7494] mt-0.5">{l}</span>
               </div>
             ))}
           </div>

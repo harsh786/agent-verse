@@ -92,11 +92,11 @@ export function WorkflowCanvasSkeleton() {
         ].map((pos, i) => (
           <div
             key={i}
-            className="absolute animate-pulse rounded-xl border border-white/10 bg-white/5 p-3"
+            className="absolute animate-pulse rounded-xl border border-white/10 bg-[#0F1826]/5 p-3"
             style={{ left: pos.x, top: pos.y, width: pos.w }}
           >
-            <div className="h-3 w-2/3 bg-white/10 rounded mb-2" />
-            <div className="h-2 w-1/2 bg-white/6 rounded" />
+            <div className="h-3 w-2/3 bg-[#0F1826]/10 rounded mb-2" />
+            <div className="h-2 w-1/2 bg-[#0F1826]/6 rounded" />
           </div>
         ))}
       </div>
@@ -134,7 +134,7 @@ export function RunStatsSkeleton() {
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" role="status" aria-label="Loading run stats…">
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="rounded-xl border border-white/8 bg-white/3 px-4 py-3 flex items-center gap-3">
+        <div key={i} className="rounded-xl border border-white/8 bg-[#0F1826]/3 px-4 py-3 flex items-center gap-3">
           <SkeletonBox className="h-8 w-8 rounded-full shrink-0" />
           <div className="space-y-1.5">
             <SkeletonBox className="h-2.5 w-16" />

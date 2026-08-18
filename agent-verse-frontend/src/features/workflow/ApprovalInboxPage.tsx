@@ -106,7 +106,7 @@ function ApprovalCard({
       exit="exit"
       className={`
         rounded-2xl border transition-colors
-        ${selected ? 'border-sky-500/40 bg-sky-950/30' : 'border-white/8 bg-white/3'}
+        ${selected ? 'border-sky-500/40 bg-sky-950/30' : 'border-white/8 bg-[#0F1826]/3'}
       `}
       role="article"
       aria-label={`Approval request for run ${req.run_id}`}
@@ -120,7 +120,7 @@ function ApprovalCard({
               checked={selected}
               onChange={() => onSelect(req.request_id)}
               aria-label={`Select request ${req.request_id}`}
-              className="rounded border-white/20 bg-white/10 text-sky-500
+              className="rounded border-white/20 bg-[#0F1826]/10 text-sky-500
                          focus:ring-sky-500 focus:ring-offset-slate-900"
             />
             <PriorityBadge priority={req.priority} />
@@ -142,7 +142,7 @@ function ApprovalCard({
         {req.context?.length > 0 && (
           <div className="space-y-2 mb-3">
             {req.context.slice(0, 2).map((item, i) => (
-              <div key={i} className="rounded-lg bg-white/4 border border-white/8 px-3 py-2">
+              <div key={i} className="rounded-lg bg-[#0F1826]/4 border border-white/8 px-3 py-2">
                 <p className="text-xs text-white/50 mb-1">{item.title}</p>
                 <p className="text-xs text-white/80 font-mono truncate">
                   {typeof item.data === 'string' ? item.data : JSON.stringify(item.data)}
@@ -159,7 +159,7 @@ function ApprovalCard({
             onChange={(e) => setNote(e.target.value)}
             placeholder="Add a note (optional)…"
             rows={2}
-            className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/80
+            className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white/80
                        placeholder-white/30 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500
                        resize-none mb-3"
             aria-label="Decision note"
@@ -224,7 +224,7 @@ function ApprovalCard({
 
           <button
             onClick={() => setShowNote((v) => !v)}
-            className="flex items-center gap-1 px-2 py-1.5 rounded-xl bg-white/5
+            className="flex items-center gap-1 px-2 py-1.5 rounded-xl bg-[#0F1826]/5
                        hover:bg-white/10 text-white/40 text-xs transition-colors ml-auto"
             aria-label={showNote ? 'Hide note field' : 'Add note'}
             aria-expanded={showNote}
@@ -333,7 +333,7 @@ export default function ApprovalInboxPage() {
               className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
                 priorityFilter === p
                   ? 'bg-sky-600 text-white'
-                  : 'bg-white/5 text-white/50 hover:text-white hover:bg-white/10'
+                  : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
               }`}
             >
               {p || 'All'}

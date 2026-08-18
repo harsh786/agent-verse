@@ -39,7 +39,7 @@ function TableRenderer({ item }: { item: ContextItem }) {
       <p className="text-xs text-white/40 font-semibold mb-1.5">{item.title}</p>
       <div className="overflow-auto max-h-48 rounded-lg border border-white/10">
         <table className="w-full text-xs" role="table">
-          <thead className="bg-white/5">
+          <thead className="bg-[#0F1826]/5">
             <tr>
               {headers.map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-white/50 font-medium" scope="col">
@@ -149,7 +149,7 @@ function ChartRenderer({ item }: { item: ContextItem }) {
   return (
     <div>
       <p className="text-xs text-white/40 font-semibold mb-1.5">{item.title}</p>
-      <div className="rounded-lg bg-white/3 border border-white/8 p-3 text-xs text-white/40 text-center">
+      <div className="rounded-lg bg-[#0F1826]/3 border border-white/8 p-3 text-xs text-white/40 text-center">
         📊 Chart: {JSON.stringify(item.data).slice(0, 80)}…
       </div>
     </div>
@@ -175,7 +175,7 @@ export function HITLContextRenderer({ item }: { item: ContextItem }) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={springs.gentle}
-      className="rounded-xl border border-white/8 bg-white/3 p-4"
+      className="rounded-xl border border-white/8 bg-[#0F1826]/3 p-4"
       role="region"
       aria-label={`Context: ${item.title} (${item.display_type})`}
     >

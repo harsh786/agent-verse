@@ -44,7 +44,7 @@ function TemplateCard({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="rounded-2xl border border-white/8 bg-white/3 hover:bg-white/5 p-5
+      className="rounded-2xl border border-white/8 bg-[#0F1826]/3 hover:bg-white/5 p-5
                  flex flex-col gap-3 transition-colors"
       role="article"
       aria-label={`Template: ${template.name}`}
@@ -73,7 +73,7 @@ function TemplateCard({
         <div className="flex flex-wrap gap-1">
           {template.tags.slice(0, 4).map((tag) => (
             <span key={tag}
-              className="px-1.5 py-0.5 rounded bg-white/5 text-white/40 text-xs">
+              className="px-1.5 py-0.5 rounded bg-[#0F1826]/5 text-white/40 text-xs">
               #{tag}
             </span>
           ))}
@@ -168,7 +168,7 @@ export default function WorkflowMarketplacePage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search templates…"
               aria-label="Search templates"
-              className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-white/5
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-[#0F1826]/5
                          text-white placeholder-white/30 text-sm focus:outline-none
                          focus:ring-2 focus:ring-sky-500"
             />
@@ -180,7 +180,7 @@ export default function WorkflowMarketplacePage() {
               onClick={() => setCategory('')}
               aria-pressed={category === ''}
               className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
-                category === '' ? 'bg-sky-600 text-white' : 'bg-white/5 text-white/50 hover:text-white hover:bg-white/10'
+                category === '' ? 'bg-sky-600 text-white' : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
               }`}
             >
               All
@@ -191,7 +191,7 @@ export default function WorkflowMarketplacePage() {
                 onClick={() => setCategory(c.category)}
                 aria-pressed={category === c.category}
                 className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
-                  category === c.category ? 'bg-sky-600 text-white' : 'bg-white/5 text-white/50 hover:text-white hover:bg-white/10'
+                  category === c.category ? 'bg-sky-600 text-white' : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
                 }`}
               >
                 {c.category} <span className="opacity-60">({c.count})</span>
@@ -204,7 +204,7 @@ export default function WorkflowMarketplacePage() {
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 9 }).map((_, i) => (
-              <div key={i} className="h-48 rounded-2xl bg-white/5 animate-pulse" />
+              <div key={i} className="h-48 rounded-2xl bg-[#0F1826]/5 animate-pulse" />
             ))}
           </div>
         ) : (templates?.items ?? []).length === 0 ? (

@@ -67,7 +67,7 @@ export function BaseWorkflowNode({
       <Handle
         type="target"
         position={Position.Left}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-sky-400"
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-sky-400"
         aria-label={`Input to ${label}`}
       />
 
@@ -124,7 +124,7 @@ export function BaseWorkflowNode({
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-sky-400"
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-sky-400"
         aria-label={`Output from ${label}`}
       />
     </>

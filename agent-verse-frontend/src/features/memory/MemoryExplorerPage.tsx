@@ -32,11 +32,11 @@ const TYPE_COLORS: Record<string, string> = {
   preference:       'bg-pink-500/15 text-pink-400 border border-pink-500/30',
   tool_usage:       'bg-risk-amber/15 text-risk-amber border border-risk-amber/30',
   goal_completion:  'bg-verified-green/15 text-verified-green border border-verified-green/30',
-  observation:      'bg-white/8 text-white/50 border border-white/15',
+  observation:      'bg-[#0F1826]/8 text-white/50 border border-white/15',
 };
 
 function typeColor(t: string) {
-  return TYPE_COLORS[t] ?? 'bg-white/8 text-white/50 border border-white/15';
+  return TYPE_COLORS[t] ?? 'bg-[#0F1826]/8 text-white/50 border border-white/15';
 }
 
 function formatDate(iso: string) {
@@ -53,7 +53,7 @@ function ConfidenceBar({ value }: { value: number }) {
   const color = pct >= 80 ? 'bg-verified-green' : pct >= 50 ? 'bg-risk-amber' : 'bg-mission-red';
   return (
     <div className="flex items-center gap-1.5">
-      <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
+      <div className="w-16 h-1.5 bg-[#0F1826]/10 rounded-full overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-[10px] text-white/40 tabular-nums">{pct}%</span>
@@ -501,8 +501,11 @@ export function MemoryExplorerPage() {
             </div>
           ) : safeMemories.length === 0 ? (
             <EmptyState
-              title="No memories yet"
-              description={typeFilter ? `No ${typeFilter.replace('_', ' ')} memories.` : 'Memories accumulate as agents complete goals.'}
+              
+          icon={<Inbox size={40} />}
+          title="No memories yet"
+              description={typeFilter ? `No ${typeFilter.replace('_', ' ')} memories.` : 'Memories accumulate as agents complete goals.'}          variant="float"
+        
             />
           ) : (
             <>
@@ -606,7 +609,7 @@ export function MemoryExplorerPage() {
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2">
-                            <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                            <div className="w-20 h-1.5 bg-[#0F1826]/10 rounded-full overflow-hidden">
                               <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
                             </div>
                             <span className={`text-xs font-medium tabular-nums font-mono ${rateColor}`}>{pct}%</span>

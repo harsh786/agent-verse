@@ -58,28 +58,28 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.08] dark:border-gray-700">
         <div className="flex items-center gap-2">
           <PlugZap className="w-4 h-4 text-indigo-500" />
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Connected Services</h2>
+          <h2 className="text-sm font-semibold text-[#F0F6FF] dark:text-gray-200">Connected Services</h2>
         </div>
         {onClose && (
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xs" aria-label="Close panel">✕</button>
+          <button onClick={onClose} className="text-[#A0B4CC] hover:text-gray-600 text-xs" aria-label="Close panel">✕</button>
         )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-2">
-        {loading && <p className="text-xs text-gray-400">Loading…</p>}
+        {loading && <p className="text-xs text-[#A0B4CC]">Loading…</p>}
 
         {services.map((s) => (
           <div
             key={s.id}
-            className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
+            className="flex items-center gap-3 p-3 bg-[#0A0F1A] dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
           >
             <Plug className="w-4 h-4 text-green-500 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-700 dark:text-gray-200 truncate">{s.name}</p>
-              <p className="text-xs text-gray-400 truncate">{s.url}</p>
+              <p className="text-sm font-medium text-[#A0B4CC] dark:text-gray-200 truncate">{s.name}</p>
+              <p className="text-xs text-[#A0B4CC] truncate">{s.url}</p>
             </div>
             <span className="text-xs text-green-500 bg-green-50 dark:bg-green-950 px-1.5 py-0.5 rounded-full shrink-0">
               {s.status}
@@ -95,24 +95,24 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
         ))}
 
         {!loading && services.length === 0 && (
-          <p className="text-xs text-gray-400 text-center py-6">
+          <p className="text-xs text-[#A0B4CC] text-center py-6">
             No services connected. Add an MCP tool to extend agent capabilities.
           </p>
         )}
       </div>
 
       {/* Add service */}
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+      <div className="p-4 border-t border-white/[0.08] dark:border-gray-700">
         {showAdd ? (
           <div className="space-y-2">
             <input
-              className="w-full text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full text-xs border border-white/[0.08] dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               placeholder="Service name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
             <input
-              className="w-full text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full text-xs border border-white/[0.08] dark:border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               placeholder="MCP server URL"
               value={newUrl}
               onChange={(e) => setNewUrl(e.target.value)}
@@ -121,7 +121,7 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
               <button className="flex-1 py-1.5 bg-indigo-600 text-white text-xs rounded-lg hover:bg-indigo-700" onClick={connect}>
                 Connect
               </button>
-              <button className="flex-1 py-1.5 border border-gray-200 text-xs rounded-lg text-gray-500 hover:bg-gray-50" onClick={() => setShowAdd(false)}>
+              <button className="flex-1 py-1.5 border border-white/[0.08] text-xs rounded-lg text-[#5A7494] hover:bg-gray-50" onClick={() => setShowAdd(false)}>
                 Cancel
               </button>
             </div>

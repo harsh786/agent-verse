@@ -58,7 +58,7 @@ export const TriggerNode = (props: NodeProps) => {
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-emerald-400"
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-emerald-400"
         aria-label="Trigger output"
       />
     </div>
@@ -76,7 +76,7 @@ export const ConditionalNode = (props: NodeProps) => {
   return (
     <div>
       <Handle type="target" position={Position.Left}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-amber-400"
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-amber-400"
         aria-label="Condition input" />
       {/* Diamond shape via CSS clip */}
       <div
@@ -118,7 +118,7 @@ export const ParallelNode = (props: NodeProps) => {
   return (
     <div>
       <Handle type="target" position={Position.Left}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-orange-400" />
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-orange-400" />
       <div
         className={`
           relative min-w-[180px] rounded-xl border px-3 py-2
@@ -142,7 +142,7 @@ export const ParallelNode = (props: NodeProps) => {
         </div>
       </div>
       <Handle type="source" position={Position.Right}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40 hover:!bg-orange-400" />
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40 hover:!bg-orange-400" />
     </div>
   );
 };
@@ -158,7 +158,7 @@ export const WaitNode = (props: NodeProps) => {
   return (
     <div>
       <Handle type="target" position={Position.Left}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40" />
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40" />
       <div
         className={`
           relative min-w-[160px] rounded-xl border px-3 py-2.5
@@ -176,7 +176,7 @@ export const WaitNode = (props: NodeProps) => {
         </div>
       </div>
       <Handle type="source" position={Position.Right}
-        className="!w-3 !h-3 !bg-white/20 !border-2 !border-white/40" />
+        className="!w-3 !h-3 !bg-[#0F1826]/20 !border-2 !border-white/40" />
     </div>
   );
 };

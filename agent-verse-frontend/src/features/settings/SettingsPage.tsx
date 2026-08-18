@@ -690,7 +690,7 @@ function NotificationsTab() {
                 prefs[key] ? 'bg-primary' : 'bg-muted'
               }`}
             >
-              <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+              <span className={`inline-block h-4 w-4 rounded-full bg-[#0F1826] shadow transition-transform ${
                 prefs[key] ? 'translate-x-6' : 'translate-x-1'
               }`} />
             </div>
@@ -724,7 +724,7 @@ function AppearanceTab() {
               }`}
             >
               <div className={`w-full h-12 rounded-lg mb-2 flex items-center justify-center ${
-                t === 'light' ? 'bg-white border border-gray-200' :
+                t === 'light' ? 'bg-[#0F1826] border border-white/[0.08]' :
                 t === 'dark' ? 'bg-gray-900' :
                 'bg-gradient-to-r from-white to-gray-900'
               }`}>
