@@ -2588,3 +2588,549 @@ The dashboard feels "world-class agentic" when ALL of these are true:
 - [ ] All mutations have optimistic updates (❌ 48 missing)
 - [ ] All high-volume lists virtualized (❌ 6 lists)
 - [ ] Zero console.log in prod (❌ 1 file)
+
+---
+
+# EXHAUSTIVE CODE AUDIT — v4 (2026-08-18)
+## Every Gap Found. Nothing Missed.
+
+---
+
+## A. Console.log in Production Code — Full List
+
+Previous audit said "1 file". Actual count is **5 files**:
+
+| File | Occurrences | Remove |
+|------|-------------|--------|
+| `features/tools/ToolsPage.tsx` | 3x `console.log` | Delete all 3 |
+| `features/playground/PlaygroundPage.tsx` | 1x `console.log` | Delete |
+| `features/goals/GoalDNAPage.tsx` | 2x `console.log` | Delete both |
+| `components/ui/RouteErrorBoundary.tsx` | 1x `console.error` | Replace with structlog/toast |
+| `components/ui/ErrorBoundary.tsx` | 1x `console.error` | Replace with error reporting |
+
+---
+
+## B. ErrorBoundary Missing — 87/87 Pages
+
+**Every single Page.tsx lacks an `<ErrorBoundary>` wrapper.**  
+`RouteErrorBoundary` is in the router config, but individual pages have no boundary — meaning an error in any section crashes the whole page.
+
+**Pattern to apply:**
+```tsx
+// In each Page.tsx — wrap each SECTION, not the whole page:
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+
+// BEFORE:
+return (
+  <JARVISPageShell>
+    <KpiSection />
+    <ActivityFeed />
+    <AgentGrid />
+  </JARVISPageShell>
+);
+
+// AFTER:
+return (
+  <JARVISPageShell>
+    <ErrorBoundary name="KpiSection">
+      <KpiSection />
+    </ErrorBoundary>
+    <ErrorBoundary name="ActivityFeed">
+      <ActivityFeed />
+    </ErrorBoundary>
+    <ErrorBoundary name="AgentGrid">
+      <AgentGrid />
+    </ErrorBoundary>
+  </JARVISPageShell>
+);
+```
+
+**High priority pages** (complex, most likely to throw):
+```
+features/goals/GoalDetailPage.tsx       — 1183 lines, multiple async sections
+features/governance/GovernancePage.tsx  — 1682 lines, hash chain logic
+features/observability/CostDashboardPage.tsx — 1342 lines, D3 charts
+features/observability/ObservabilityPage.tsx — 1336 lines, live traces
+features/workflow-builder/WorkflowBuilderPage.tsx — 1323 lines, canvas
+features/dashboard/DashboardPage.tsx    — SSE + D3 + multiple queries
+```
+
+---
+
+## C. TypeScript `any` — Full Count Per File
+
+Previous audit said "32 files". Full breakdown with counts:
+
+| File | `any` count | Priority |
+|------|------------|----------|
+| `features/goals/GoalDetailPage.tsx` | **25** | P0 — most used page |
+| `features/agents/AgentDetailPage.tsx` | **14** | P0 — critical resource |
+| `features/dashboard/DashboardPage.tsx` | **14** | P0 — home page |
+| `features/settings/SettingsPage.tsx` | **15** | P1 |
+| `features/dashboard/AIOpsDashboard.tsx` | **11** | P0 — dashboard core |
+| `lib/api/client.ts` | **11** | P0 — affects all API calls |
+| `features/dashboard/components/AgentOrbitView.tsx` | **8** | P0 — D3 component |
+| `features/knowledge-graph/GraphExplorerPage.tsx` | **8** | P1 |
+| `features/goals/GoalsListPage.tsx` | **5** | P0 |
+| `features/models/ModelControlCenter.tsx` | **7** | P1 |
+| `features/civilization/MembersPanel.tsx` | **6** | P2 |
+| `features/settings/BillingPage.tsx` | **3** | P1 |
+| `features/connectors/ConnectorsRegisteredPage.tsx` | **3** | P1 |
+
+**Fix pattern:**
+```tsx
+// BEFORE:
+const [data, setData] = useState<any>(null);
+const result = response as any;
+
+// AFTER:
+interface AgentData { id: string; name: string; status: AgentStatus }
+const [data, setData] = useState<AgentData | null>(null);
+const result = response as AgentData;  // with Zod validation at boundary
+```
+
+---
+
+## D. Inline Fetch in useEffect — Full List with Counts
+
+| File | Fetch calls | Convert to |
+|------|------------|-----------|
+| `features/settings/BudgetManagerPage.tsx` | **7** | `useQuery` (multiple queries) |
+| `features/chat/AgentMemoryPage.tsx` | 4 | `useQuery` |
+| `features/goals/GoalDNAPage.tsx` | 3 | `useQuery` |
+| `features/chat/ConnectedServicesPanel.tsx` | 3 | `useQuery` |
+| `features/observability/ObservabilityPage.tsx` | 3 | `useQuery` |
+| `lib/api/client.ts` | 4 | Already correct — these are the base fetch wrappers |
+| `features/auth/AuthPage.tsx` | 2 | Acceptable — auth flow special case |
+| `features/auth/SSOCallbackPage.tsx` | 2 | Acceptable — OAuth callback |
+| `lib/sse/useGoalStream.ts` | 1 | Keep — SSE requires raw EventSource |
+| `lib/sse/useEventStream.ts` | 1 | Keep — SSE requires raw EventSource |
+| `lib/sse/useCivilizationStream.ts` | 1 | Keep — SSE |
+| `features/eval/EvalPage.tsx` | 2 | `useQuery` |
+| `features/org/components/GraphifyProgress.tsx` | 1 | `useQuery` or SSE |
+| `features/simulation/SimulationPage.tsx` | 1 | `useQuery` |
+| `features/agents/AgentIdentityPage.tsx` | 1 | `useQuery` |
+| `app/App.tsx` | 1 | `useQuery` (health check) |
+
+**Convert priority:** BudgetManagerPage (7!) → AgentMemoryPage (4) → GoalDNAPage (3)
+
+---
+
+## E. Page Complexity Debt — Files Over 1000 Lines (Need Splitting)
+
+These monolithic pages violate the 300-line rule. They make debugging, testing, and animation additions extremely difficult:
+
+| File | Lines | Split Into |
+|------|-------|-----------|
+| `features/governance/GovernancePage.tsx` | **1682** | `AuditTimeline`, `HashChainPanel`, `DiffViewer`, `GovernanceFilters` |
+| `features/workflow-builder/WorkflowBuilderPage.tsx` | **1323** | `StepPalette`, `BuilderCanvas`, `StepConfigPanel`, `BuilderToolbar` |
+| `features/observability/CostDashboardPage.tsx` | **1342** | `CostGauges`, `CostTreemap`, `CostTimeline`, `TopCostGoals` |
+| `features/observability/ObservabilityPage.tsx` | **1336** | `ServiceMap`, `TraceList`, `TraceWaterfall`, `MetricsPanel` |
+| `features/playground/PlaygroundPage.tsx` | **1056** | `PromptEditor`, `ResponsePanel`, `ComparePanel`, `HistorySidebar` |
+| `features/settings/SettingsPage.tsx` | **988** | `GeneralSettings`, `SecuritySettings`, `NotifSettings`, `AdvancedSettings` |
+| `features/settings/BudgetManagerPage.tsx` | **995** | `BudgetGauges`, `BudgetRules`, `AlertHistory`, `CostBreakdown` |
+| `features/collaboration/CollaborationPage.tsx` | **1030** | `CollabCanvas`, `PresenceBar`, `CollabChat` |
+| `features/goals/GoalDetailPage.tsx` | **1183** | `PlanTimeline`, `StepOutputList`, `GoalMetrics`, `GoalActions` |
+| `features/knowledge/KnowledgePage.tsx` | **1121** | `CollectionGrid`, `DocBrowser`, `ChunkViewer`, `SemanticSearch` |
+| `features/eval/EvalPage.tsx` | **1119** | `EvalRunList`, `EvalScorePanel`, `EvalComparison` |
+| `features/lab/AgentLabPage.tsx` | **1060** | `PromptPanel`, `ResponsePanel`, `ModelSelector`, `HistoryPanel` |
+
+**Splitting each monolith:**
+1. Extract sub-sections into `components/` directory
+2. Each component gets its own animation (easier to add motion to 100-line components)
+3. Each component gets its own test file
+4. Page becomes a simple layout shell: `<Section1 /> <Section2 /> <Section3 />`
+
+---
+
+## F. i18n Missing — 40/87 Pages Not Translated
+
+40 pages use hardcoded English strings. Full list:
+
+```
+features/agents/AgentDashboardPage.tsx
+features/agents/AgentPersonalityPage.tsx
+features/agents/AgentRadarPage.tsx
+features/analytics/SelfImprovementPage.tsx
+features/approvals/ApprovalsPage.tsx
+features/auth/AuthPage.tsx
+features/auth/MFAVerifyPage.tsx
+features/channels/ChannelMappingsPage.tsx
+features/civilization/CivilizationPage.tsx
+features/connectors/ConnectorsCatalogPage.tsx
+features/coordination/CoordinationRunPage.tsx
+features/domains/DomainDetailPage.tsx
+features/domains/DomainsPage.tsx
+features/errors/NotFoundPage.tsx
+features/gateway/GatewaySettingsPage.tsx
+features/goals/GhostRunPage.tsx
+features/goals/GoalDiffPage.tsx
+features/goals/GoalDNAPage.tsx
+features/integrations/IntegrationsPage.tsx
+features/knowledge-graph/GraphExplorerPage.tsx
+features/landing/LandingPage.tsx
+features/marketplace/MarketplacePage.tsx  (partial)
+features/models/ModelControlCenter.tsx
+features/notifications/NotificationCenterPage.tsx
+features/ocr/OcrPage.tsx
+features/onboarding/OnboardingPage.tsx
+features/org/OrgListPage.tsx
+features/org/StrategicAdvisorPage.tsx
+features/perception/PerceptionPage.tsx
+features/playground/PlaygroundPage.tsx
+features/rbac/RbacPage.tsx
+features/rpa/RpaLivePage.tsx
+features/security/SecurityCenterPage.tsx
+features/simulation/SimulationPage.tsx
+features/skills/SkillsPage.tsx
+features/state-machines/StateMachinesPage.tsx
+features/status/StatusPage.tsx
+features/templates/TemplateLibraryPage.tsx
+features/training/TrainingExportPage.tsx
+features/workflow-builder/WorkflowBuilderPage.tsx
+```
+
+**Fix pattern (same for all 40):**
+```tsx
+// BEFORE:
+<h1>Agents</h1>
+<p>Manage your AI agents</p>
+
+// AFTER:
+import { useTranslation } from 'react-i18next';
+const { t } = useTranslation('agents');
+<h1>{t('agents.title')}</h1>
+<p>{t('agents.description')}</p>
+```
+
+---
+
+## G. Inline Styles — Replace with Tailwind
+
+Components with high inline style counts (Tailwind equivalent needed):
+
+| File | Inline styles | Impact |
+|------|--------------|--------|
+| `features/civilization/CivilizationPage.tsx` | **15** | Complex D3 — keep D3 styles, move others to Tailwind |
+| `features/civilization/MembersPanel.tsx` | **11** | Move to Tailwind classes |
+| `features/org/OrgPage.tsx` | **16** | Move to Tailwind, keep motion style props |
+| `features/landing/LandingPage.tsx` | **10** | Move to Tailwind |
+| `features/workflow-builder/WorkflowBuilderPage.tsx` | **9** | Keep canvas/flow styles, move others |
+| `features/civilization/AgentInspectorDrawer.tsx` | **9** | Move to Tailwind |
+| `features/org/components/ObsidianVaultExplorer.tsx` | **8** | Move to Tailwind |
+| `features/settings/RoleEditorPage.tsx` | **8** | Move to Tailwind |
+
+**Exception:** D3 visualization and `motion.div` style props for dynamic values are valid. Only static color/spacing/font inline styles need to move to Tailwind.
+
+---
+
+## H. Toaster.tsx — NO Animation (Toast = Key Agentic Feedback)
+
+`components/ui/Toaster.tsx` — 94 lines, **zero animation**.
+
+Every success/error/info toast appears and disappears instantly. This is a critical UX gap — toast is how the system communicates "goal completed", "agent deployed", "error occurred".
+
+**What it needs:**
+```tsx
+// src/components/ui/Toaster.tsx — full replacement
+
+import { motion, AnimatePresence } from 'framer-motion';
+import { useReducedMotion } from 'framer-motion';
+import { useToastStore } from '@/stores/toast';
+import { StatusOrb } from './StatusOrb';
+
+const TOAST_SPRING = { type: 'spring', stiffness: 450, damping: 18 } as const;
+const TOAST_EXIT = { duration: 0.18 } as const;
+
+const TOAST_COLORS: Record<string, string> = {
+  success: '#10B981',  error: '#EF4444',
+  warning: '#F59E0B',  info:  '#00D4FF',
+};
+
+export function Toaster() {
+  const reduce = useReducedMotion();
+  const { toasts, dismiss } = useToastStore();
+
+  return (
+    <div
+      aria-live="polite"
+      aria-atomic="false"
+      className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 items-end"
+    >
+      <AnimatePresence mode="popLayout">
+        {toasts.map(toast => (
+          <motion.div
+            key={toast.id}
+            layout
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 32, scale: 0.92 }}
+            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0,  scale: 1 }}
+            exit={reduce  ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.96 }}
+            transition={reduce ? TOAST_EXIT : TOAST_SPRING}
+            className="flex items-center gap-3 px-4 py-3 rounded-xl
+                       bg-[#1A1F2E] border border-white/[0.08]
+                       shadow-[0_8px_32px_rgba(0,0,0,0.5)]
+                       min-w-[280px] max-w-[420px] cursor-pointer
+                       hover:border-white/[0.14] transition-colors"
+            style={{
+              borderLeft: `3px solid ${TOAST_COLORS[toast.kind] ?? TOAST_COLORS.info}`
+            }}
+            onClick={() => dismiss(toast.id)}
+            role="status"
+            aria-label={`${toast.kind}: ${toast.message}`}
+          >
+            <StatusOrb status={toast.kind === 'success' ? 'completed' :
+                               toast.kind === 'error'   ? 'failed' :
+                               toast.kind === 'warning' ? 'pending' : 'idle'}
+                       size={8} />
+            <p className="text-sm text-[#F1F5F9] flex-1 leading-snug">
+              {toast.message}
+            </p>
+            {toast.action && (
+              <button
+                onClick={e => { e.stopPropagation(); toast.action!.fn(); dismiss(toast.id); }}
+                className="text-xs text-[#00D4FF] hover:text-white transition-colors shrink-0 font-medium">
+                {toast.action.label}
+              </button>
+            )}
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+```
+
+---
+
+## I. WorkflowBuilderPage — whileHover/whileTap Without Spring
+
+`features/workflow/WorkflowBuilderPage.tsx` has hover/tap animations but no spring physics — using CSS `duration` instead.
+
+```tsx
+// FIND and REPLACE in WorkflowBuilderPage.tsx:
+// ANY occurrence of: transition={{ duration: ... }}
+// WITH:              transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+
+// FIND: whileTap={{ scale: X }} with duration transition
+// REPLACE with: whileTap={{ scale: X }} transition={{ type: 'spring', stiffness: 600, damping: 35 }}
+```
+
+---
+
+## J. Missing hooks/ Directory — Feature-by-Feature Plan
+
+46/55 features have NO hooks directory. Business logic is entangled in Page components.
+
+**Priority hooks to extract (grouped by feature):**
+
+### Goals Feature
+```
+features/goals/hooks/useGoals.ts          — list with cursor pagination
+features/goals/hooks/useGoal.ts           — single goal detail
+features/goals/hooks/useGoalStream.ts     — SSE streaming (move from lib/sse)
+features/goals/hooks/useGoalActions.ts    — cancel, retry, fork mutations
+features/goals/hooks/useGoalCost.ts       — real-time cost tracking
+```
+
+### Agents Feature
+```
+features/agents/hooks/useAgents.ts        — list with filters
+features/agents/hooks/useAgent.ts         — single agent CRUD
+features/agents/hooks/useAgentStatus.ts   — real-time status polling
+features/agents/hooks/useAgentConfig.ts   — config mutation with optimistic
+```
+
+### Workflows Feature
+```
+features/workflow/hooks/useWorkflows.ts   — list with search/filter
+features/workflow/hooks/useWorkflowRun.ts — run lifecycle + SSE
+features/workflow/hooks/useHITL.ts        — approval queue management
+```
+
+### Knowledge Feature
+```
+features/knowledge/hooks/useCollections.ts  — collection CRUD
+features/knowledge/hooks/useDocuments.ts    — document management
+features/knowledge/hooks/useSearch.ts       — semantic search with debounce
+```
+
+### Common (All Features)
+```
+hooks/usePagination.ts     — cursor pagination (used by every list)
+hooks/useSSE.ts            — generalized SSE hook with reconnect
+hooks/useCopyToClipboard.ts — copy with toast feedback
+hooks/useKeyboardShortcut.ts — Cmd+K, Escape, etc.
+```
+
+---
+
+## K. Skeleton Missing — 8 Pages with useQuery and No Loading State
+
+Pages that call APIs but show nothing during loading:
+
+| File | API calls | Add |
+|------|-----------|-----|
+| `features/domains/DomainsPage.tsx` | Yes | Domain tree skeleton |
+| `features/gateway/GatewaySettingsPage.tsx` | Yes | Route table skeleton |
+| `features/goals/GhostRunPage.tsx` | Yes | Replay skeleton |
+| `features/integrations/IntegrationsPage.tsx` | Yes | Integration card skeleton |
+| `features/playground/PlaygroundPage.tsx` | Yes | Editor skeleton |
+| `features/settings/BillingPage.tsx` | Yes | Gauge skeleton |
+| `features/settings/RoleEditorPage.tsx` | Yes | Matrix skeleton |
+| `features/workflow-builder/WorkflowBuilderPage.tsx` | Yes | Canvas skeleton |
+
+**Pattern:**
+```tsx
+if (isLoading) return (
+  <JARVISPageShell>
+    <div className="grid grid-cols-3 gap-4 p-6">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="h-32 rounded-xl bg-[#1A1F2E] animate-pulse" />
+      ))}
+    </div>
+  </JARVISPageShell>
+);
+```
+
+---
+
+## L. Full Implementation Priority Matrix
+
+All findings ranked by impact × effort:
+
+### Tier 1 — Maximum Impact, Minimum Effort (Do First)
+
+| # | Change | Files | Effort | Impact |
+|---|--------|-------|--------|--------|
+| L1 | Fix `--primary` color → `#00D4FF` | 1 file, 2 lines | 5 min | ⭐⭐⭐⭐⭐ Electric everywhere |
+| L2 | Toaster.tsx animate | 1 file | 30 min | ⭐⭐⭐⭐⭐ Every action has feedback |
+| L3 | LiveActivityStream animate | 1 file | 45 min | ⭐⭐⭐⭐⭐ "Bots working" feel |
+| L4 | Create StatusOrb component | 1 new file | 20 min | ⭐⭐⭐⭐⭐ Unblocks all orb usage |
+| L5 | Sidebar spring collapse + nav | 1 file | 1h | ⭐⭐⭐⭐⭐ Every page feels alive |
+| L6 | MissionGoalComposer focus glow | 1 file | 45 min | ⭐⭐⭐⭐⭐ Most-used interaction |
+| L7 | Delete 8 console.log calls | 5 files | 5 min | ⭐⭐⭐⭐ Prod cleanliness |
+| L8 | ConfirmModal animate | 1 file | 30 min | ⭐⭐⭐⭐ Every destructive action |
+| L9 | TopBar search AnimatePresence | 1 file | 30 min | ⭐⭐⭐⭐ Global search UX |
+| L10 | AgentOrbitView electric color + glow | 1 file | 1h | ⭐⭐⭐⭐ D3 nodes go electric |
+
+### Tier 2 — High Impact, Moderate Effort
+
+| # | Change | Files | Effort |
+|---|--------|-------|--------|
+| L11 | JARVISStagger on 20 shell-only pages | 20 files | 10h |
+| L12 | Add ErrorBoundary to key sections | 10 priority pages | 4h |
+| L13 | Fix GoalDetailPage (25 `any`, no ErrorBoundary) | 1 file | 3h |
+| L14 | Fix AgentDetailPage (14 `any`) | 1 file | 2h |
+| L15 | Skeleton loading for 8 pages | 8 files | 4h |
+| L16 | Hover glow on all clickable cards | ~50 files | 8h |
+| L17 | GoalOutcomeHero / result panels animate | 4 files | 2h |
+| L18 | WorkflowBuilderPage: spring physics | 1 file | 1h |
+
+### Tier 3 — Structural (High Effort, Long-Term)
+
+| # | Change | Effort |
+|---|--------|--------|
+| L19 | Split 12 monolith pages (1000+ lines) | 40h |
+| L20 | 48 mutations → optimistic updates | 20h |
+| L21 | 22 inline fetches → TanStack Query | 15h |
+| L22 | 40 pages → add i18n | 20h |
+| L23 | Inline styles → Tailwind | 8h |
+| L24 | Extract hooks to hooks/ directories | 20h |
+| L25 | Virtualization on 6 high-volume lists | 6h |
+
+---
+
+## M. Complete Updated Definition of Done
+
+**18 original checkboxes + 9 new from this audit = 27 total.**  
+Currently passing: **1/27** (page entrance animation only).
+
+### Visual Identity
+- [ ] Primary accent = `#00D4FF` electric cyan (currently `#3B82F6`)
+- [ ] Running agents/goals show sonar-ping StatusOrb
+- [ ] Cards lift 2px + electric glow on hover (`hover:shadow-glow-electric`)
+- [ ] Dark surfaces: `#0A0D14` → `#0F1117` → `#1A1F2E` hierarchy (CSS vars ✅)
+
+### Motion & Animation
+- [x] Page entrance: blur+y spring (87/87 pages ✅)
+- [ ] Sidebar collapse/expand: spring width
+- [ ] Search results: AnimatePresence dropdown
+- [ ] Lists: JARVISStagger (0/87 pages)
+- [ ] SSE activity feed: items slide in with springs.bouncy
+- [ ] Modal/ConfirmModal: AnimatePresence spring
+- [ ] **Toast/Toaster: AnimatePresence popLayout spring (0/87 action feedback)**
+
+### Agentic Signals
+- [ ] LiveActivityStream: animated, StatusOrb per event
+- [ ] Goal execution: streaming typewriter + step pulse
+- [ ] AgentOrbitView: electric color + SVG glow filter
+- [ ] MissionGoalComposer: focus glow + intent preview
+- [ ] Running agent badge on every agent card
+
+### Code Quality
+- [ ] Zero TypeScript `any` (currently 32 files — worst: GoalDetailPage=25, DashboardPage=14)
+- [ ] Zero inline fetch in useEffect (currently 22 files — worst: BudgetManagerPage=7)
+- [ ] All mutations have optimistic updates (48 missing)
+- [ ] All high-volume lists virtualized (6 missing)
+- [ ] Zero console.log in prod (currently 5 files)
+
+### Architecture
+- [ ] **No monolith pages over 1000 lines (12 violating — worst: GovernancePage=1682)**
+- [ ] **All pages have section-level ErrorBoundary (0/87 currently)**
+- [ ] **40 pages missing i18n — all user-facing strings use t()**
+- [ ] **Inline styles replaced with Tailwind where applicable**
+- [ ] Hooks extracted to feature hooks/ directories
+
+---
+
+## N. Files to Create / Modify — Complete Ordered List
+
+```
+PHASE 0 — Foundation (unblocks everything):
+  MODIFY: src/app/globals.css (--primary: 189 100% 42%)
+  MODIFY: tailwind.config.js (jarvis.electric, glow-electric shadow)
+  CREATE: src/lib/design/tokens.ts
+  CREATE: src/lib/design/motion.ts
+  CREATE: src/components/ui/StatusOrb.tsx
+  MODIFY: src/components/ui/EmptyState.tsx (animate)
+  MODIFY: src/components/ui/Toaster.tsx (AnimatePresence + StatusOrb)
+  MODIFY: src/components/ui/ConfirmModal.tsx (backdrop + modal spring)
+  MODIFY: src/components/ui/Sidebar.tsx (spring collapse + nav hover + layoutId)
+  MODIFY: src/components/ui/TopBar.tsx (search AnimatePresence + badge bounce)
+
+PHASE 1 — Dashboard Core (most visible):
+  MODIFY: src/features/dashboard/components/LiveActivityStream.tsx
+  MODIFY: src/features/dashboard/components/AgentOrbitView.tsx
+  MODIFY: src/features/goals/components/MissionGoalComposer.tsx
+  MODIFY: src/features/goals/components/GoalOutcomeHero.tsx
+  MODIFY: src/features/goals/components/GoalResultCanvas.tsx
+  MODIFY: src/features/goals/components/GoalEvidencePanel.tsx
+  MODIFY: src/features/goals/components/GoalExplainPanel.tsx
+
+PHASE 2 — Pages with JARVISStagger (20 shell-only pages):
+  MODIFY: 20 pages (see Step 1 list in Phase 1 section above)
+
+PHASE 3 — Hover glow + StatusOrb replace:
+  MODIFY: All clickable cards (~50 files) — add hover:shadow-glow-electric
+  MODIFY: All status dot patterns — replace with <StatusOrb>
+
+PHASE 4 — ErrorBoundary + Skeleton:
+  MODIFY: 10 priority pages — add section-level ErrorBoundary
+  MODIFY: 8 pages — add Skeleton loading states
+
+PHASE 5 — Fix monoliths (split into components):
+  SPLIT:  12 pages over 1000 lines into component files
+
+PHASE 6 — Code quality:
+  FIX:    5 files with console.log
+  FIX:    32 files TypeScript any (prioritize: GoalDetailPage, DashboardPage)
+  FIX:    22 inline fetches → useQuery
+  ADD:    48 mutations → onMutate optimistic updates
+  ADD:    6 lists → useVirtualizer
+  ADD:    40 pages → useTranslation
+  FIX:    WorkflowBuilderPage — duration → spring
+
+PHASE 7 — Architecture:
+  EXTRACT: hooks to hooks/ directories (goals, agents, workflows, knowledge)
+  REPLACE: inline styles → Tailwind (civilization, org, landing, workflow-builder)
+```
